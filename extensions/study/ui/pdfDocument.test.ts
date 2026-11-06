@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import * as pdfjs from 'pdfjs-dist'
 import { loadReadingPdf } from './pdfDocument'
 
@@ -20,9 +21,9 @@ it('extracts Chinese text using the locally packaged CMaps', async () => {
   mkdirSync(join(root, 'pdfjs'))
   const packageRoot = dirname(require.resolve('pdfjs-dist/package.json'))
   for (const directory of ['cmaps', 'standard_fonts', 'wasm'])
-    symlinkSync(join(packageRoot, directory), join(root, 'pdfjs', directory), 'dir')
+    symlinkSync(join(packageRoot, directory), join(root, 'pdfjs', directory), process.platform === 'win32' ? 'junction' : 'dir')
   vi.stubEnv('BASE_URL', `${root}/`)
-  pdfjs.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')
+  pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')).href
 
   // A valid non-embedded Chinese font requires the named UniGB-UCS2-H CMap.
   const stream = 'BT /F1 24 Tf 50 700 Td <4F60597D> Tj ET'

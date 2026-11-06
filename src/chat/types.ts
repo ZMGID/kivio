@@ -193,6 +193,8 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  irc_message?: import('../generated/chatProtocol').SubagentIrcMessage | null
+  ircMessage?: import('../generated/chatProtocol').SubagentIrcMessage | null
   attachments?: Attachment[]
   reasoning?: string
   artifacts?: ChatToolArtifact[]

@@ -162,7 +162,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_agent_preserves_null_empty_and_unsupported_fields() {
+    fn plugin_agent_preserves_null_empty_and_output_fields() {
         use crate::plugins::packages::{Package, Resolved};
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("helper.md");
@@ -179,7 +179,8 @@ mod tests {
         let defs = load_agent_definitions(None, None, std::slice::from_ref(&plugin));
         let helper = find_definition(&defs, "example:helper").unwrap();
         assert_eq!(helper.tools, Some(vec![]));
-        assert_eq!(helper.unsupported, ["output"]);
+        assert_eq!(helper.output, Some(serde_json::json!({"type":"object"})));
+        assert!(helper.unsupported.is_empty());
         std::fs::write(&path, "---\nname: helper\ntools: null\n---\nbody").unwrap();
         let defs = load_agent_definitions(None, None, &[plugin]);
         assert_eq!(find_definition(&defs, "example:helper").unwrap().tools, None);

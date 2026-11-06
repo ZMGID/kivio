@@ -334,6 +334,9 @@ export type ChatSubagentPayload = {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'aborted'
   preview?: string
   steps?: string[]
+  generation?: number | null
+  childRunId?: string | null
+  progress?: unknown
 }
 
 export type AskUserPhase = 'awaiting' | 'answered' | 'skipped' | 'timeout' | 'cancelled'
@@ -698,6 +701,20 @@ export type ChatToolsConfig = {
   taskMaxRuntimeMs?: number
   /** Completion side probes for interactive direct children. Default true. */
   taskCompletionProbeEnabled?: boolean
+  taskFileEnabled?: boolean
+  taskStructured?: boolean
+  taskEnableEffort?: boolean
+  taskMaxEffort?: string | null
+  taskPerCallModel?: 'off' | 'eval' | 'on'
+  taskPerCallModelAllow?: string[]
+  taskIsolationEnabled?: boolean
+  taskAgentSoftRequestBudget?: Record<string, number | null>
+  taskAgentModelOverrides?: Record<string, string[] | null>
+  taskAgentCompactionThresholdOverrides?: Record<string, number | string | null>
+  taskPrewalk?: boolean
+  taskAgentPrewalk?: Record<string, string | null>
+  taskAgentAdvisor?: Record<string, string | null>
+  taskEvalWorkpoolFreshAgents?: boolean
   /** 子代理角色的模型与推理强度；SMOL/SLOW 未配置时跟随 TASK，TASK 跟随主对话。 */
   subAgentModels?: Record<string, SubAgentModelSelection>
   /** 开发者「请求调试」开关：开启后每次 provider 调用被记录到内存环形缓冲（脱敏）。默认关。 */
@@ -2244,8 +2261,15 @@ export const api = {
         status: event.status as ChatSubagentPayload['status'],
         preview: event.preview ?? undefined,
         steps: event.steps,
+        generation: 'generation' in event && typeof event.generation === 'number' ? event.generation : undefined,
+        childRunId: 'childRunId' in event && typeof event.childRunId === 'string' ? event.childRunId : undefined,
+        progress: 'progress' in event ? event.progress : undefined,
       })
     })
+  },
+  onChatSubagentIrc: (listener: (payload: import('../generated/chatProtocol').SubagentIrcMessage) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return on<import('../generated/chatProtocol').SubagentIrcMessage>('subagent-irc', listener)
   },
   onChatUserPrompt: (listener: (payload: ChatUserPromptPayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})

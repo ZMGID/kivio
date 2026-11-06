@@ -640,6 +640,7 @@ mod tests {
 
     fn test_chat_message(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
+            irc_message: None,
             id: format!("msg_{role}"),
             role: role.to_string(),
             content: content.to_string(),

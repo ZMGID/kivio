@@ -13,6 +13,7 @@ import type { AgentPlanState, ChatMessage, ChatToolArtifact, Conversation, Conve
 import { isQueuedSubmitted, type QueuedMessage } from './hooks/useMessageQueue'
 import { userSteerId, userFollowUpId } from './segments'
 import { MessageBubble } from './MessageBubble'
+import { IrcObservations } from './IrcMessageCard'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { MessageGroup } from './MessageGroup'
 import { useMultiAnswerViewMode } from './multiAnswerViewMode'
@@ -2609,6 +2610,7 @@ function MessageListBase({
           }} />
         </div>
       ))}
+      <div className="chat-reading-content"><IrcObservations conversationId={conversationId} /></div>
       <div ref={tailSpacerRef} aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />
     </div>
   )

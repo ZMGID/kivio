@@ -8,7 +8,7 @@ use crate::chat::commands::send::{send_user_message_when_idle, QueuedSendOutcome
 use crate::chat::repository::{repository, repository_error};
 use crate::chat::storage::ConversationLibraryQuery;
 use crate::chat::types::{
-    AgentPlanMode, AgentRuntimeConfig, AgentRuntimeKind, ChatAssistantSnapshot, ChatMessage,
+    AgentPlanMode, AgentRuntimeConfig, AgentRuntimeKind, ChatAssistantSnapshot,
     Conversation,
 };
 use crate::state::AppState;
@@ -535,6 +535,7 @@ pub(crate) async fn call_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::ChatMessage;
 
     fn message(id: &str, role: &str, content: &str, outcome: Option<&str>) -> ChatMessage {
         serde_json::from_value(json!({"id": id, "role": role, "content": content, "timestamp": 1, "stream_outcome": outcome})).unwrap()

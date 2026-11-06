@@ -1,4 +1,5 @@
 import type { ChatRetryStatusPayload } from '../generated/chatProtocol'
+import { record } from '../api/subagents'
 
 export interface ConversationStreamSnapshot {
   runId: string | null
@@ -38,20 +39,23 @@ export function isTerminalSubagentStatus(status: unknown): boolean {
   return status === 'completed' || status === 'failed' || status === 'aborted' || status === 'cancelled'
 }
 
-function progressEntries(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+export function mergeSubagentEntry(previous: unknown, next: unknown): Record<string, unknown> {
+  const before = record(previous)
+  const after = record(next)
+  const oldGeneration = typeof before.generation === 'number' ? before.generation : null
+  const newGeneration = typeof after.generation === 'number' ? after.generation : null
+  if (oldGeneration !== null && newGeneration !== null && newGeneration < oldGeneration) return before
+  if (oldGeneration !== null && newGeneration !== null && newGeneration > oldGeneration) return after
+  if (before.runId && after.runId && before.runId !== after.runId) return before
+  if (isTerminalSubagentStatus(before.status)
+    || (before.status === 'running' && (after.status === 'pending' || after.status === 'queued'))) return before
+  return { ...before, ...after }
 }
 
 function mergeSubagentEntries(previous: unknown, next: unknown): Record<string, unknown> {
-  const merged = { ...progressEntries(previous) }
-  for (const [id, value] of Object.entries(progressEntries(next))) {
-    const before = progressEntries(merged[id])
-    const after = progressEntries(value)
-    const beforeStatus = before.status
-    const afterStatus = after.status
-    const stale = isTerminalSubagentStatus(beforeStatus)
-      || (beforeStatus === 'running' && (afterStatus === 'pending' || afterStatus === 'queued'))
-    merged[id] = stale ? before : { ...before, ...after }
+  const merged = { ...record(previous) }
+  for (const [id, value] of Object.entries(record(next))) {
+    merged[id] = mergeSubagentEntry(merged[id], value)
   }
   return merged
 }

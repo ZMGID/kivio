@@ -165,13 +165,17 @@ async fn read_in(
     }
 
     let agent = registry.resolve(root, requested);
-    if agent.as_ref().is_some_and(|agent| !agent.published) {
+    if agent.as_ref().is_some_and(|agent| !registry.is_published(root, &agent.id)) {
         return Err(not_found(dir, registry, root, requested, if scheme == Scheme::Agent { ".md" } else { ".jsonl" }).await?);
     }
     let id = agent.as_ref().map(|agent| agent.id.as_str()).unwrap_or(requested);
     let registered = agent.is_some();
     if scheme == Scheme::Agent {
-        if let Some((actual, text, modified)) = find_artifact(dir, id, "md", registered).await? {
+        let output_id = agent.as_ref().and_then(|agent| agent.output_file.strip_prefix(dir).ok())
+            .filter(|path| path.components().count() == 1)
+            .and_then(|path| path.file_stem()).and_then(|stem| stem.to_str()).unwrap_or(id);
+        if let Some((_, text, modified)) = find_artifact(dir, output_id, "md", registered).await? {
+            let actual = id;
             let started_at = agent.as_ref()
                 .filter(|agent| agent.status == AgentStatus::Running)
                 .and_then(|agent| jobs.running(root, &agent.parent_id).into_iter()

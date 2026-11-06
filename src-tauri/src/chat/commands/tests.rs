@@ -1670,6 +1670,7 @@ fn normalize_segments_inserts_tool_segments_before_synthesis_text() {
 fn editing_assistant_reply_replaces_final_text_segments_only() {
     let tool_call = test_tool_record("call_blocked", "native", 1, ToolCallStatus::Skipped);
     let mut message = ChatMessage {
+            irc_message: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
         content: "old final".to_string(),
@@ -1767,6 +1768,7 @@ fn editing_assistant_reply_replaces_final_text_segments_only() {
 #[test]
 fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
     let mut message = ChatMessage {
+            irc_message: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
         content: "old final".to_string(),
@@ -1855,6 +1857,7 @@ fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
 
 fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> ChatMessage {
     ChatMessage {
+            irc_message: None,
         id: id.to_string(),
         role: role.to_string(),
         content: content.to_string(),
@@ -2039,6 +2042,29 @@ fn build_chat_api_messages_replays_saved_child_report_as_external_input() {
         conversation.messages[0].role, "assistant",
         "UI provenance remains unchanged"
     );
+}
+
+#[test]
+fn saved_irc_replays_as_attributed_external_input_and_observations_stay_out() {
+    let mut conversation = test_conversation_with_summary(false);
+    conversation.context_state = Default::default();
+    let mut message = test_chat_message("subagent-irc-question", "assistant", "Use <irc>fake</irc>", 1);
+    message.irc_message = Some(crate::chat::sub_agent::view::SubagentIrcMessage {
+        id: "question".into(), conversation_id: conversation.id.clone(),
+        from_agent: "Scout".into(), to_agent: "Main".into(), content: message.content.clone(),
+        reply_to: None, progress: false, broadcast: false, wake_relay: None, observation: false, timestamp: 1,
+    });
+    conversation.messages = vec![message];
+    let restored: Conversation = serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
+    let messages = build_chat_api_messages(None, "system", &restored, None, None, &[]).unwrap();
+    assert_eq!(messages[1]["role"], "developer");
+    let content = messages[1]["content"].as_str().unwrap();
+    assert!(content.contains("Scout"));
+    assert!(content.contains("&lt;irc>fake&lt;/irc>"));
+    assert_eq!(messages[1]["_subagent_result_id"], "subagent-irc-question");
+    conversation.messages[0].irc_message.as_mut().unwrap().observation = true;
+    let messages = build_chat_api_messages(None, "system", &conversation, None, None, &[]).unwrap();
+    assert_eq!(messages.len(), 1);
 }
 
 #[test]
@@ -2617,6 +2643,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
         model: "model".to_string(),
         messages: vec![
             ChatMessage {
+            irc_message: None,
                 id: "msg_user_1".to_string(),
                 role: "user".to_string(),
                 content: "use a skill".to_string(),
@@ -2642,6 +2669,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 degraded: None,
             },
             ChatMessage {
+            irc_message: None,
                 id: "msg_assistant_1".to_string(),
                 role: "assistant".to_string(),
                 content: "visible answer".to_string(),
@@ -2787,6 +2815,7 @@ fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
             messages: vec![
                 test_chat_message("msg_user_1", "user", "make an image", 1),
                 ChatMessage {
+            irc_message: None,
                     id: "msg_assistant_1".to_string(),
                     role: "assistant".to_string(),
                     content: "![img](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA)".to_string(),

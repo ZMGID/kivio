@@ -779,6 +779,7 @@ pub(super) fn conversation_cache_usage(
     for (idx, message) in conversation.messages.iter().enumerate() {
         if message.role != "assistant"
             || message.id.starts_with("subagent-result-")
+            || message.irc_message.is_some()
             || clear_until.is_some_and(|end| idx <= end)
             || group_answer_excluded_from_context(conversation, message)
         {
@@ -1189,6 +1190,12 @@ pub(crate) fn build_chat_api_messages_with_video(
             message.content.as_str()
         };
         let sanitized_content = sanitize_image_payloads_for_model(content);
+        if let Some(incoming) = message.irc_message.as_ref() {
+            if !incoming.observation {
+                messages.push(tag_ui_message_id(crate::chat::sub_agent::view::model_input(incoming), &message.id));
+            }
+            continue;
+        }
         if message.role == "assistant" && message.id.starts_with("subagent-result-") {
             messages.push(tag_ui_message_id(
                 crate::chat::sub_agent::delivery::report_input(&sanitized_content),

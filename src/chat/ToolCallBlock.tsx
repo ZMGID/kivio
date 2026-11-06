@@ -2306,7 +2306,7 @@ export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = fals
 
 function ToolCallBlockComponent(props: ToolCallBlockProps) {
   if (isNativeTaskToolCall(props.toolCall)) {
-    return <SubAgentToolCard toolCall={props.toolCall} />
+    return <SubAgentToolCard toolCall={props.toolCall} conversationId={props.conversationId} />
   }
   if (isAskUserTool(props.toolCall)) {
     return <AskUserBlock toolCall={props.toolCall} />

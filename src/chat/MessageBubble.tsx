@@ -33,6 +33,7 @@ import { openChatImageViewer } from './imageViewer'
 import { ChatInlineImage, CHAT_IMAGE_TILE_MAX_PX } from './ChatInlineImage'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
+import { IrcMessageCard } from './IrcMessageCard'
 import { ModelIcon } from '../components/ModelIcon'
 import { ToolCallBlock, ToolCallCluster, ImageReadCluster } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
@@ -1561,4 +1562,7 @@ function MessageBubbleComponent({
 }
 
 // memo：流式生成时历史消息 props 不变 → 跳过重渲染，避免每个 token 重新解析 Markdown
-export const MessageBubble = memo(MessageBubbleComponent)
+export const MessageBubble = memo(function MessageBubble(props: MessageBubbleProps) {
+  const irc = props.message.irc_message ?? props.message.ircMessage
+  return irc ? <IrcMessageCard message={irc} /> : <MessageBubbleComponent {...props} />
+})

@@ -43,6 +43,8 @@ pub struct JobSnapshot {
     pub result: Option<String>,
     /// Latest `AgentProgress` JSON while running.
     pub progress: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub structured_output: Option<Value>,
     pub consumed: bool,
 }
 
@@ -65,10 +67,23 @@ struct Job {
 /// Called with `(root, owner_id)` whenever an owner may have a deliverable result.
 pub type SettledHook = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
+#[derive(Default)]
+struct JobIdentities {
+    used: HashSet<String>,
+    // Restore origins survive result eviction; forgetting their root releases them.
+    restored: HashMap<String, HashMap<String, Option<RestoreAlias>>>,
+}
+
+struct RestoreAlias {
+    owner: String,
+    agent: String,
+    job: String,
+}
+
 pub struct JobManager {
     inner: Arc<Mutex<HashMap<String, Job>>>,
     // shortcut: ids remain reserved for this process; carry execution ids into executor callbacks to reclaim them safely.
-    used_ids: Mutex<HashSet<String>>,
+    identities: Mutex<JobIdentities>,
     changed: watch::Sender<u64>,
     hook: Mutex<Option<SettledHook>>,
 }
@@ -77,7 +92,7 @@ impl Default for JobManager {
     fn default() -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            used_ids: Mutex::new(HashSet::new()),
+            identities: Mutex::new(JobIdentities::default()),
             changed: watch::channel(0).0,
             hook: Mutex::new(None),
         }
@@ -85,6 +100,11 @@ impl Default for JobManager {
 }
 
 impl JobManager {
+    pub(crate) fn set_structured_output(&self, id: &str, output: Value) {
+        if let Some(job) = self.lock().get_mut(id).filter(|job| job.snapshot.status == JobStatus::Running) {
+            job.snapshot.structured_output = Some(output);
+        }
+    }
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Job>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -166,19 +186,51 @@ impl JobManager {
         self.register_with_mode(root, owner_id, agent_id, label, true)
     }
 
+    pub(crate) fn register_restored(&self, root: &str, owner: &str, agent: &str, id: &str, label: &str) -> Option<(String, watch::Receiver<bool>)> {
+        self.register_identity(root, owner, agent, label, false, id, true)
+    }
+
+    pub(crate) fn cancel_agent(&self, root: &str, agent: &str) {
+        let jobs: Vec<_> = self.lock().values().filter(|job| job.snapshot.root == root && (job.snapshot.agent_id == agent || job.snapshot.owner_id == agent))
+            .map(|job| (job.snapshot.id.clone(), job.snapshot.owner_id.clone())).collect();
+        for (id, owner) in jobs { self.cancel(root, &id, &owner); }
+    }
+
     fn register_with_mode(
         &self, root: &str, owner_id: &str, agent_id: &str, label: &str, inline: bool,
     ) -> (String, watch::Receiver<bool>) {
+        self.register_identity(root, owner_id, agent_id, label, inline, agent_id, false)
+            .expect("new jobs always allocate an unused identity")
+    }
+
+    fn register_identity(
+        &self, root: &str, owner_id: &str, agent_id: &str, label: &str, inline: bool, preferred_id: &str, restored: bool,
+    ) -> Option<(String, watch::Receiver<bool>)> {
         let mut jobs = self.lock();
-        let mut used_ids = self.used_ids.lock().unwrap_or_else(|e| e.into_inner());
+        let mut identities = self.identities.lock().unwrap_or_else(|e| e.into_inner());
         prune(&mut jobs);
-        let mut id = agent_id.to_string();
+        if restored {
+            let origins = identities.restored.entry(root.into()).or_default();
+            if origins.contains_key(preferred_id) || origins.values().flatten().any(|alias| {
+                alias.job == preferred_id && alias.owner == owner_id && alias.agent == agent_id
+            }) { return None; }
+            origins.insert(preferred_id.into(), None);
+            if jobs.values().any(|job| job.snapshot.root == root && job.snapshot.owner_id == owner_id
+                && job.snapshot.agent_id == agent_id && job.snapshot.status == JobStatus::Running) { return None; }
+        }
+        let mut id = preferred_id.to_string();
         let mut n = 2;
-        while used_ids.contains(&id) {
-            id = format!("{agent_id}-{n}");
+        while identities.used.contains(&id) {
+            id = format!("{preferred_id}-{n}");
             n += 1;
         }
-        used_ids.insert(id.clone());
+        identities.used.insert(id.clone());
+        if restored && id != preferred_id {
+            // A resumed journal can contain the new job id instead of its saved origin.
+            identities.restored.entry(root.into()).or_default().insert(preferred_id.into(), Some(RestoreAlias {
+                owner: owner_id.into(), agent: agent_id.into(), job: id.clone(),
+            }));
+        }
         let (cancel, cancelled) = watch::channel(false);
         jobs.insert(
             id.clone(),
@@ -195,6 +247,7 @@ impl JobManager {
                     finished_at: None,
                     result: None,
                     progress: None,
+                    structured_output: None,
                     consumed: false,
                 },
                 cancel,
@@ -204,9 +257,10 @@ impl JobManager {
                 expires_at: None,
             },
         );
+        drop(identities);
         drop(jobs);
         self.bump();
-        (id, cancelled)
+        Some((id, cancelled))
     }
 
     pub fn report_progress(&self, job_id: &str, mut progress: Value) {
@@ -602,7 +656,12 @@ impl JobManager {
     }
 
     pub fn remove_root(&self, root: &str) {
-        self.lock().retain(|_, job| job.snapshot.root != root);
+        {
+            let mut jobs = self.lock();
+            let mut identities = self.identities.lock().unwrap_or_else(|error| error.into_inner());
+            jobs.retain(|_, job| job.snapshot.root != root);
+            identities.restored.remove(root);
+        }
         self.bump();
     }
 
@@ -662,6 +721,59 @@ mod tests {
         assert_eq!(jobs.take_deliverable("c", "Main").len(), 1);
         assert!(jobs.take_deliverable("c", "Main").is_empty(), "consumed once");
         assert_eq!(jobs.get(&a).unwrap().result, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn restored_origin_is_not_replayed_after_settlement_or_eviction() {
+        let jobs = JobManager::default();
+        let (other_root, _) = jobs.register("other-root", "Main", "saved-job", "unrelated work");
+        let (id, _) = jobs.register_restored("root", "Main", "Agent", "saved-job", "restore").unwrap();
+        assert_ne!(id, other_root);
+        assert!(jobs.register_restored("root", "Main", "Agent", "saved-job", "repeat").is_none());
+        jobs.settle(&id, Ok("restored result".into()));
+        assert!(jobs.register_restored("root", "Main", "Agent", "saved-job", "settled repeat").is_none());
+        assert_eq!(jobs.take_deliverable("root", "Main").len(), 1);
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(CONSUMED_RETENTION_MS as u64)).await;
+        tokio::task::yield_now().await;
+        assert!(jobs.get(&id).is_none());
+        assert!(jobs.register_restored("root", "Main", "Agent", "saved-job", "expired repeat").is_none());
+        assert!(jobs.register_restored("root", "Main", "Agent", &id, "stale resumed journal").is_none());
+        assert!(jobs.register_restored("root", "Main", "Other", &id, "different saved worker with the same id").is_some());
+        jobs.remove_root("root");
+        assert!(jobs.get(&other_root).is_some());
+        assert!(jobs.register_restored("root", "Main", "Agent", "saved-job", "forgotten root").is_some());
+    }
+
+    #[test]
+    fn restored_claims_are_atomic_and_scoped_to_root() {
+        let jobs = Arc::new(JobManager::default());
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let attempts: Vec<_> = (0..8).map(|_| {
+            let jobs = jobs.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                jobs.register_restored("root", "Main", "Agent", "same-saved-id", "restore").is_some()
+            })
+        }).collect();
+        assert_eq!(attempts.into_iter().map(|attempt| attempt.join().unwrap()).filter(|accepted| *accepted).count(), 1);
+        let first = jobs.running("root", "Main");
+        assert_eq!(first.len(), 1);
+        let (other, _) = jobs.register_restored("other-root", "Main", "Agent", "same-saved-id", "other root").unwrap();
+        assert_ne!(first[0].id, other);
+        assert_eq!(jobs.get(&other).unwrap().root, "other-root");
+        assert!(jobs.register_restored("other-root", "Main", "Agent", "same-saved-id", "repeat").is_none());
+    }
+
+    #[tokio::test]
+    async fn restore_skips_an_already_running_owned_agent_and_remembers_the_origin() {
+        let jobs = JobManager::default();
+        let (running, _) = jobs.register("root", "Main", "Agent", "current work");
+        assert!(jobs.register_restored("root", "Main", "Agent", "old-saved-id", "stale snapshot").is_none());
+        assert_eq!(jobs.running("root", "Main").len(), 1);
+        jobs.settle(&running, Ok("current result".into()));
+        assert!(jobs.register_restored("root", "Main", "Agent", "old-saved-id", "late stale snapshot").is_none());
     }
 
     #[test]

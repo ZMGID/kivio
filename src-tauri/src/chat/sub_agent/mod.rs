@@ -13,11 +13,25 @@ pub mod jobs;
 pub mod names;
 pub mod prompts;
 pub mod registry;
+pub mod lifecycle;
+pub mod irc;
+pub(crate) mod session;
+pub(crate) mod awaits;
+pub mod view;
+pub(crate) mod services;
+pub(crate) mod spawn;
+pub(crate) mod structured;
+pub(crate) mod isolation;
+pub(crate) mod seance;
 pub(crate) mod progress;
 pub(crate) mod speculative;
 pub mod task;
 pub mod urls;
 pub mod wait;
+pub mod commands;
+pub(crate) mod policies;
+pub(crate) mod eval;
+pub(crate) mod workpool;
 
 pub const TASK_TOOL_NAME: &str = "task";
 pub const WAIT_TOOL_NAME: &str = "wait";
@@ -26,6 +40,12 @@ pub const MAIN_AGENT_ID: &str = "Main";
 
 pub fn is_sub_agent_tool_name(name: &str) -> bool {
     matches!(name, TASK_TOOL_NAME | WAIT_TOOL_NAME)
+}
+
+pub async fn collect_for_main(app: &tauri::AppHandle, root: &str, run: &str, history: &[Value]) -> Result<Vec<Value>, String> {
+    let mut incoming = delivery::collect_for_main(app, root, run, history).await?;
+    incoming.extend(irc::collect_for_main(app, root, run, history).await?);
+    Ok(incoming)
 }
 
 /// Context handed to `task` / `wait` handlers, dispatched before workspace resolution.
@@ -43,6 +63,11 @@ pub struct SubAgentManager {
     pub jobs: jobs::JobManager,
     pub(crate) admission: task::Admission,
     pub(crate) speculative: speculative::Sessions,
+    pub(crate) sessions: session::Sessions,
+    pub irc: irc::Bus,
+    pub(crate) awaits: awaits::AwaitGraph,
+    pub(crate) eval: eval::Kernels,
+    pub(crate) pools: workpool::Pools,
     user_interrupted: std::sync::Mutex<std::collections::HashMap<String, Interruption>>,
 }
 
@@ -63,6 +88,10 @@ impl SubAgentManager {
         // Admission first: `remove_root` permanently tombstones the root under the
         // allocation guard, so no in-flight or later `task` dispatch can re-register.
         self.admission.remove_root(root);
+        self.sessions.forget(root);
+        self.eval.forget_root(root);
+        self.pools.forget_root(root);
+        self.irc.forget(root);
         self.jobs.cancel_root(root);
         self.jobs.remove_root(root);
         self.registry.remove_root(root);
@@ -129,7 +158,7 @@ pub fn append_tool_definitions(
 ) {
     let task = (settings.chat_tools.task_max_recursion_depth != 0)
         .then(|| task::tool_definition(defs, settings));
-    for tool in task.into_iter().chain(std::iter::once(wait::definition())) {
+    for tool in task.into_iter().chain([wait::definition(), eval::definition()]) {
         if !tools
             .iter()
             .any(|existing| existing.openai_tool_name() == tool.openai_tool_name())

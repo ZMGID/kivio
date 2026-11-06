@@ -426,6 +426,8 @@ pub struct ChatMessage {
     pub id: String,
     pub role: String, // "user" | "assistant"
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub irc_message: Option<crate::chat::sub_agent::view::SubagentIrcMessage>,
     #[serde(default)]
     pub attachments: Vec<Attachment>,
     #[serde(default)]

@@ -32,6 +32,7 @@ import { MultiModelSelector } from './MultiModelSelector'
 import { GitStatusPill } from './dock/GitStatusPill'
 import { GitDiffChip } from './dock/GitDiffChip'
 import { AgentTodoIndicator } from './AgentTodoIndicator'
+import { AgentHubEntry } from './AgentHub'
 import { Button, IconButton } from '../components/Button'
 import { useT, type I18n, type Lang } from '../components/i18n'
 import { api, type ChatToolDefinition, type ChatMcpServer } from '../api/tauri'
@@ -2274,6 +2275,7 @@ export const InputBar = memo(function InputBar({
                 />
               </div>
             )}
+            {!usesExternalRuntime && !usesChatRuntime && conversationId && <AgentHubEntry key={conversationId} conversationId={conversationId} />}
 
             <IconButton
               size="sm"

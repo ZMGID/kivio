@@ -421,4 +421,123 @@ Kivio 使用自己的模板渲染器，需要对 **实际用到的** `if/unless/
 
 构建通过、单位测试通过、上述两次 smoke 和 OMP 源码符合度是四种不同证据，不能互相替代。之前全套测试中失败项所在文件未修改，并不能证明失败与本改动无关；未与基线运行对比前只能写“归因未确定”。
 
+## 14. 2026-11-06 完整交付调查
+
+用户要求先完成源码对照、计划和实现文档，再完整实现与测试。此节更新当前状态。第 12、13 节保留为 `dde91fd7` 的历史审查和运行证据，不能当作当前缺陷或当前版本验收。
+
+### 14.1 对照版本和当前路径
+
+Kivio 基线 `672013832a8eb59dc230e528bd9fa861c69a9b89`。本地 `.scratch/omp-src/repo` 的 `git rev-parse HEAD` 为 `5dec65ed5f500ec456c2c7f91f7e517f99d92eec`。下文 `CA` 仍表示该提交 `packages/coding-agent/src`，`TUI` 表示 `packages/tui/src`。
+
+当前 task 路径为 `task::prepare/preflight` 整批校验，`reserve` 占住内存及磁盘名字，`launch` 注册 inline job 并申请派工 session 的 FIFO permit，`dispatch` 采用 speculative、按 blocking 和 async 模式返回或等待。`executor::execute` 准备子会话、实际工具授权、资源和模型，写 session_init 后调用共享 Agent 循环。`Host` 追加历史、记录压缩并计量预算。`run` 发布结果、终态和 idle 身份。`delivery` 与 `wait` 通过同一个 JobManager 认领协议竞争消费。
+
+第 12 节的七个主要修复在当前源码已有实现，包括磁盘占名、执行 UUID、投递回滚重试、新轮 interruption epoch、session 并发、tools null 与终态 journal。不得重新实现一套。`delivery::retry_delay` 限制退避间隔至 30 秒，不限制重试次数；未消费 job 的 retention 是另一项约束。追加 transcript 当前不 fsync，不能宣称强退时所有记录均可靠持久。
+
+### 14.2 身份、会话、执行和消息
+
+可跨多轮保留的是 worker session，不是当前 Host。Host 的 job id、开始时间、取消、deadline、预算、progress 和 permit 属于单次运行。继续旧身份必须创建新运行对象。保留的会话包含实际系统指令、资源、有效授权、模型约束、当前模型历史及追加 journal。
+
+OMP 的三种恢复入口必须区分。`CA/registry/persisted-agents.ts` 恢复名单。`CA/task/persisted-revive.ts` 根据 session_init 和有效历史重建可用会话。`CA/task/restore.ts:restoreSubagents` 才继续中断执行，并先注册子 job、按父子顺序恢复。仅扫描 JSONL 不是恢复执行。
+
+冷复活检查工作目录、父链、实际工具、mounted tools、只读、spawns、模型和用户策略。没有旧 spawns 时采用空授权。当前新增 MCP 或插件不能扩大保存授权。损坏、缺 contract、缺工作目录或不能恢复的隔离会话仅保留可读历史。源码见 `CA/task/persisted-revive.ts:143-197,258-340,397-550`、`CA/session/session-manager.ts:4744-4803`。
+
+park、revive 和 reopen 合并同一身份的在途操作。kill 同步切断当前 generation 后才执行文件和释放操作，写 tombstone。迟到初始化、回调、进度和结果必须核对 generation 及 run 所有权。普通运行失败保留 idle 身份，不写 kill 标记。源码见 `CA/registry/agent-lifecycle.ts:337-455,500-713`、`CA/task/executor.ts:3584-3703`。
+
+### 14.3 IRC 与 wait 的精确分支
+
+`write agent://<id>` 是代理消息入口，不能落入文件写入。发送不等回复。父直接消息优先成为忙碌子代理的 steering。后代向正在等待它的祖先发问时，祖先能在当前运行边界处理。peer 消息通常也能在步骤边界消费，但任务交卷和归属交接期间必须延期到单独 wake turn，不能用 peer 答复替换原任务结果。源码见 `CA/session/irc-bridge.ts`、`CA/irc/bus.ts`、`CA/task/executor.ts` 的 wake/relay 分支。
+
+quiet 并不表示永远不唤醒。非 plan 的 idle 收件方收到 progress、broadcast、wakeRelay 也可以执行，但这些类型不再次自动回信。忙碌投递先判断 fromParent，父方 progress 仍可能走 parent steering。其他 quiet peer 消息不打断普通 job wait。自动 relay 必须引用 replyTo，失败和取消也要回报，不能因之前发过 progress 就不再结束对方的等待。
+
+wait 先处理合适的收信，再处理 owned jobs、服务和未回答的直接发送。progress 表示承诺之后正式回复，原 job 结束不能清掉该承诺。回复义务使用独立发送标识，旧回复不能清掉新问题。waiter 优先直接认领，避免同一消息又进入 inbox。已停止、被 kill、等待调用方或等待用户的对象必须返回原因。等待依赖图要检查传递依赖及独立退出路径，不能只用递归父链判断死锁。源码见 `CA/tools/wait.ts`、`CA/registry/agent-awaits.ts`、`CA/irc/bus.ts`。
+
+### 14.4 尚缺的执行能力
+
+| 能力 | OMP 源码入口 | 当前 Kivio 与完整实现要求 |
+|---|---|---|
+| structured/yield | `CA/task/structured-subagent.ts:resolveSchema`、`CA/task/yield-assembly.ts`、`CA/task/executor.ts:finalizeSubprocessOutput` | 当前只有最终文本。全局默认 false，角色 structured true 仍生效。显式 caller schema 的存在优先，再角色，再会话。支持 strict/permissive、增量拼装、提醒与异步结果导致旧 yield 失效。 |
+| taskFile | `CA/task/index.ts`、`CA/task/types.ts:MAX_TASK_FILE_BYTES` | 当前仅内联 task。读取真实文件，4 MiB 上限，保存路径与 SHA-256；与 task 互斥，整批预检，文件任务不流式预启动。 |
+| effort | `CA/task/settings.ts:cfgTaskEnableEffort`、`CA/task/structured-subagent.ts` | 当前只有 auto thinking 分类。按最终模型可用档位映射 lo/med/hi，应用 cap，恢复仍守同一约束。 |
+| 逐次模型授权 | `CA/task/model-approval.ts:assertPerCallModelApproved`、`CA/task/structured-subagent.ts:preflightPerCallModel` | 当前没有逐次参数。模型必须是用户授权的精确标识，支持 off/eval/on 和收窄名单。项目、transcript、已知目录模型不能产生新授权。显式模型不可用时失败。 |
+| 角色模型列表 | `CA/task/types.ts:AgentDefinition`、共享 model resolver | 当前取首项并拒绝列表。需按顺序选可用模型，解析 provider/model 和角色，不发送整串到父 provider。 |
+| isolation | `CA/task/isolation-runner.ts`、`CA/task/isolation-ownership.ts`、`CA/task/worktree.ts` | 当前无隔离执行。准备、执行、capture、应用及清理必须覆盖真实 cwd、脏父目录、新删文件、二进制、嵌套仓库、冲突与取消。Rust Git 后端可适配，不声称 native CoW 一致。 |
+| seance | `CA/task/seance.ts`、`CA/task/seance-policy.ts` | 当前内置角色不可用。只读 fork 保存会话，源历史不写入，解析原模型及允许覆盖，保留自定义同名角色的普通语义。 |
+| workpool | `CA/task/workpool.ts`、`CA/task/workpool-yield.ts` | 当前无池。提供真实模型调用入口、队列、并发、复用 worker、逐项状态、push/peek/status/drain/close 和取消。普通 IRC wake 前清理池的 yield 契约。 |
+| eval 工具共享 | `CA/task/eval-tools.ts` | 当前无 eval kernel。共享显式 kernel 工具，检查名字冲突、schema 和 owner 生命周期；不能把 tools 参数改成普通内置工具白名单。 |
+| prewalk | `CA/task/prewalk.ts`、`CA/task/executor.ts` 的首次 edit/write 交接 | 当前拒绝启用字段。resolved model 开始，首次写操作前切换；目标缺失或相同则跳过，明确逐次模型不再切换。 |
+| advisor | `CA/task/executor.ts` 的 advisor 初始化与 drain | 当前拒绝启用字段。需要真实审阅会话、调度、结束前收齐及错误/取消。Kivio 已有单次 advisor 工具，不等价于这一生命周期。 |
+| readSummarize | `CA/task/types.ts`、read 工具 | 当前只做原文 read。需在 read 归属中实现结构读取并传递角色覆盖，不能靠 parser 接受字段宣称实现。 |
+| 服务/proc URL | `CA/launch/services.ts`、`CA/tools/wait.ts` | Kivio shell 有后台进程，owner 目前只有根对话。需补 agent owner 和完成通知，复用原进程管理并接入 proc 状态、日志与 wait。 |
+| 角色覆盖设置 | `CA/task/settings.ts` | 除全局预算和三个 Mixer 项外，多数逐角色模型、预算、prewalk、advisor、compaction、service tier、account pool 覆盖尚缺。必须有生效调用点，不能新增空配置。 |
+
+这里的缺口是调查结果，不是删除范围的决定。依赖其他宿主能力的分支也应在交付矩阵中保留，实际未通过时不得标记整个子代理完成。
+
+### 14.5 UI 与公开接口
+
+`executor::snapshot` 已产生丰富指标，但 `ChatRunEvent::SubagentUpdated` 当前只传 name/model/depth/status/preview/steps。必须让 task 卡片和 Hub 读取同一份权威状态。批量 inline 结果、async handles、逐项终态不能互相覆盖。卡片完成项按耗时、未完成项按派发顺序展示，Hub 则按 generation 首见顺序稳定排序。源码消费者见 `TUI/tools/task.ts`、`TUI/overlays/agent-hub.ts`。
+
+Agent Hub 使用一个共享弹层，由主窗口与 popout 的 InputBar 进入。后端提供名单、打开、消息、复活、kill 与历史游标。打开和发送的状态分支归生命周期模块。前端不判断是否要重建会话。transcript 读取完整 JSONL 行，游标检测截断和替换。IRC incoming 和 Main-only A→B relay 分开，后者不能注入模型。保留外部 CLI 已有子代理 renderer。
+
+### 14.6 基线与验收状态
+
+本轮重新跑了 `chat::sub_agent`，84 通过。全量 Rust 在仅为测试进程加入已安装 Python312 的 PATH 后，3041 通过，52 忽略。最初 9 失败不能归因于本轮代码，因为这些检查发生于任何生产代码修改之前。全量 Vitest 初次 10 失败，独立复跑将 readingLibrary 的 9 项失败收窄为并发负载下的超时和连锁状态问题，pdfDocument 的目录 symlink 权限错误仍复现。详情见计划 §1.3 与本机日志。
+
+这些是改动前基线。新版必须重跑协议、类型、架构、相关及完整测试，并验证真实 provider 的批量任务、父空闲续轮、Stop 后新轮、IRC、休眠复活、kill 后新代、跨进程恢复，以及真实 Hub、历史、明暗主题和键盘操作。未执行的验收继续标记未通过。
+
+### 14.7 实现结构选择
+
+对比了两个独立设计。A 保留每个身份的已准备会话与当前历史，每轮独立 Host。B 保留资源和 hooks lease，但每轮从 journal 重建当前历史。两者都要求身份 generation、单次 turn token、独占会话写入和可在模型运行时独立触达的取消通道。
+
+选择 A。它保留 OMP 的 warm idle 语义，避免每条消息重复重建上下文。吸收 B 的显式 continuation、统一 replay、写入失败禁止自动续跑和 expected-turn 检查。冷复活、历史咨询和恢复执行共用 replay。当前借用的 AgentRunConfig 不能直接保存在长生命周期对象中。
+
+设计比较检查了单写入者、kill/park 竞态、授权不扩大、原执行路径复用和可验证性。两份设计在 `.scratch/omp-completion/design-a.md` 与 `design-b.md`。原定 Astra 候选因容量不可用，B 改用第二个独立 Sol 候选。当前可用模型均为 GPT 家族，没有跨模型家族裁判，未声称进行了该项审查。
+
 [source]: https://github.com/can1357/oh-my-pi/tree/5dec65ed5f500ec456c2c7f91f7e517f99d92eec
+
+
+## 15. 2026-11-06 实施落点与整合验收
+
+本节记录本轮实现和验收。前文“未实现”表格保留为调查前基线。
+
+| 能力 | 实现位置 | 关键行为 |
+|---|---|---|
+| 保留会话与每轮执行 | `sub_agent/session.rs`、`executor.rs` | 身份保留资源和历史；每轮新建 Host、job、取消、预算和 permit。generation 与 run 双重校验。 |
+| 角色与任务参数 | `agents/`、`sub_agent/spawn.rs`、`task.rs` | taskFile/hash、模型列表、effort、逐次模型授权与作用范围；调用方/角色/会话 schema 继承。文件批次先整批预检。 |
+| structured/yield | `structured.rs`、`executor.rs` | 本地 JSON Schema/JTD、增量结果、重试和 strict/permissive；新输入要求更新提交；空提交有终止上限。 |
+| IRC 与协调等待 | `irc.rs`、`wait.rs`、`awaits.rs` | 消息标识、顺序、progress 回复承诺、自动回复、广播、等待环和取消。后续提升的作业能进入已开始的回复等待。 |
+| 主会话收件 | `sub_agent::collect_for_main`、`commands/agent_host.rs`、`send.rs` | GUI、probe 和空闲续轮共用 job/IRC 收件入口；持久化后提交 claim；旁观通信不进入 Main 模型上下文。 |
+| 生命周期和恢复 | `lifecycle.rs`、`registry.rs`、`session.rs`、`jobs.rs` | park/冷复活、kill/tombstone、新 generation、重启名单及中断任务恢复。仅执行已正式接纳且父链也已接纳的身份；重复恢复不会再次运行。恢复保留原任务卡标识。工具、cwd、模型和 spawns 按保存授权与当前可用权限收窄。 |
+| 隔离与历史咨询 | `isolation.rs`、`seance.rs` | 真实 Git worktree/二进制及嵌套仓库差异、冲突恢复；历史只读 fork，不改变源会话。隔离租约不支持冷复活，明确失败。 |
+| eval 与共享工具 | `eval.rs`、`eval-kernel.cjs`、`eval-kernel.py` | 真实 Node/Python 持久内核、显式工具描述和调用；内核身份保存在恢复契约；取消/重置/owner 释放使旧工具失效。 |
+| eval agent 与 workpool | `workpool.rs`、`task.rs` | `agent({prompt,label?,schema?,...})` 返回后台句柄；池使用同一派工授权、逐项结果、worker 复用/新建、push/peek/status/drain/close 和聚合作业。 |
+| prewalk 与 advisor | `policies.rs`、`executor.rs` | 实际 todo/edit/write 结果驱动模型交接；子 todo 不写父清单；并行配对审阅、最新终答收齐、独立计费与取消。恢复实际工具效应，不重执行外部副作用。 |
+| 文件结构摘要与进程服务 | `native_tools/read_summary.rs`、`background_registry.rs`、`sub_agent/services.rs` | 真正的语法树折叠；明确行选择仍读原文；服务日志、状态与 wait 按 owner 隔离。 |
+| 桌面操作与协议 | `sub_agent/{commands,view}.rs`、`src/chat/AgentHub.tsx`、`AgentProgress.tsx`、`IrcMessageCard.tsx` | 批次指标、Hub 树/筛选、发送/park/open/kill/restore、游标历史；主窗口/弹窗共享入口；Rust 生成 DTO。 |
+| 配置入口 | `src/chat/McpCenter.tsx`、`settings.rs` | 现有高级设置提供任务文件、结构化、effort、隔离、prewalk、池模式和逐次模型控制。复杂的逐角色覆盖保持 JSON 配置。 |
+
+### 15.1 宿主适配与实际限制
+
+Kivio 保留既有 Rust/Tauri/provider/审批/资源实现，不引入 OMP 的 Bun 会话或第二套执行器。`agent()` 的 `id` 是 Kivio job ID，另带稳定 `agentId`；通过原 wait/job 协议消费。eval 依赖已安装 Node.js/Python，缺少运行时会明确报错。内核及共享工具不是操作系统安全沙箱，执行权限沿用现有会话的工具授权。
+
+文件摘要当前打包 Rust、JavaScript/JSX、TypeScript/TSX、Python 语法；其余语言、解析失败、过短/过大文件和显式行选择回退原文。没有用正则或头部截断伪造 AST 摘要，也不在运行时自动下载语法包。advisor 每个审阅请求及最终收齐有 30 秒上限；每轮最多一个在途审阅。
+
+逐角色配置键为 `taskAgentSoftRequestBudget`（角色 → 数字/null）、`taskAgentModelOverrides`（角色 → 字符串数组/null）、`taskAgentPrewalk` / `taskAgentAdvisor`（角色 → 字符串/null）、`taskAgentCompactionThresholdOverrides`（角色 → 正整数 token 数、百分比字符串或 null）。压缩阈值沿用 OMP 的精确角色名规则（`CA/task/settings.ts:608`、`CA/config/compaction-threshold.ts`），走现有压缩流程，仍受模型输入硬上限约束。`spawns`、模型与授权由既有角色/设置负责人解析。OMP 的 provider account pool/service-tier 无对应 Kivio provider 能力；配置不会静默作为已生效处理。
+
+IRC 在模型步骤边界消费。OMP 默认同样把父消息放进 steering 队列（`CA/session/irc-bridge.ts:305-313`）；OMP 默认关闭的 GPT-6 Codex WebSocket 流中引导（`CA/session/settings.ts:1183-1193`）未接入 Kivio。没有正式接纳标记的旧 journal、失效的 eval 内核、不能验证授权的历史及隔离租约可读，不能以旧状态恢复执行。
+
+### 15.2 自动检查与实机证据
+
+日志保存在本机 `.scratch/omp-completion/`。
+
+| 验收 | 实测结果与证据 |
+|---|---|
+| 全量 Rust | 3131 通过、0 失败、55 忽略（`rust-all-final-2.log`）。恢复回归覆盖并发请求、结果过期后重复恢复、跨对话 ID 冲突，以及未接纳身份和父链的执行拒绝。 |
+| 全量前端 | 356 文件、2969 测试通过（`vitest-final.log`）。协议生成一致性和 TypeScript 检查通过（`typecheck-final-2.log`）；生产前端构建通过（`build-ui-final.log`）。 |
+| 真实内核 | 独立运行 3 项 Rust 内核集成测试均通过（`rust-real-kernels-final.log`）；`node scripts/test-subagent-kernels.mjs` 验证 Node.js/Python 持久状态、工具描述、调用、重入和错误处理。 |
+| 边界与 lint | 架构检查 0 项临时例外（`architecture-final-2.log`）。项目 ESLint 通过（`lint-final-owned.log`）；排除了用户未跟踪的第三方参考目录 `task-GPUI/`。 |
+| 真实 provider：基础链路 | 三个 scout 批量派工与汇总、父空闲自动收结果、两层 IRC、派工错误后继续、取消后同会话继续，共 5 个场景通过（`provider-smoke-core.log`）。 |
+| 真实 provider：eval 和池 | 子代理实际调用共享 JS 工具并以 strict schema 返回文件 nonce；三个池任务返回各自结果，两个 worker 中一个保留身份处理两轮（`smoke/2026-11-05T18-03-17-810Z-4fe1bedb/summary.json`）。 |
+| Windows 桌面 | 真实批次进度和历史；Hub 发直接消息并执行第二轮；park 后重开、kill 后新 generation；弹窗和主窗入口、明暗主题、Escape、滚动及高级设置控件。 |
+| 跨进程恢复 | 首次强退试验逐行校验了 1–3000，并发现原任务卡未更新（`restart-result.json`）。修复后用新版重新强退，重开应用并在 Hub 点两次恢复：同一 generation 只执行一次，逐行返回 1–800，主会话只保存一份结果并自行回答，原任务卡显示且持久化为完成（`restart-result-final.json`）。 |
+
+模拟测试覆盖的并发边界、权限变化和错误路径没有逐一对真实 provider 重跑。实机证据来自 Windows 和当时配置的 GPT provider，不作为其它操作系统或其它 provider 的通过证据。

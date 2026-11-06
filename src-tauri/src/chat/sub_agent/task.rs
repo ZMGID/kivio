@@ -12,7 +12,7 @@ use crate::mcp::native_registry::NativeToolFuture;
 use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
 use crate::settings::Settings;
 
-use super::{executor, names, prompts, registry, SubAgentCallCtx, MAIN_AGENT_ID, TASK_TOOL_NAME};
+use super::{executor, names, prompts, registry, spawn, SubAgentCallCtx, MAIN_AGENT_ID, TASK_TOOL_NAME};
 
 #[derive(Default)]
 pub(crate) struct Admission {
@@ -41,6 +41,12 @@ struct AdmissionState {
 }
 
 impl Admission {
+    pub(crate) async fn acquire_wake(
+        &self, app: &tauri::AppHandle, root: &str, owner: &str, cancel: &mut watch::Receiver<bool>,
+    ) -> Option<Permit> {
+        let max = app.state::<crate::state::AppState>().settings_read().chat_tools.task_max_concurrency;
+        self.root(root).session(owner).enqueue_with_app(max, Some(app)).wait(cancel).await
+    }
     fn root(&self, root: &str) -> Arc<RootAdmission> {
         self.roots
             .lock()
@@ -232,9 +238,9 @@ pub(crate) fn tool_definition_with_policy(
         })
         .collect::<String>();
     let async_guidance = prompts::render(prompts::TASK_ASYNC_CONTRACT, &json!({
-        "waitTool": true, "ircEnabled": false
+        "waitTool": true, "ircEnabled": true
     }));
-    let description = prompts::render(prompts::TASK_TOOL, &json!({
+    let mut description = prompts::render(prompts::TASK_TOOL, &json!({
         "asyncGuidance": async_guidance,
         "asyncEnabled": settings.chat_tools.task_async_enabled,
         "hasBlockingAgents": available.iter().any(|def| def.blocking),
@@ -242,9 +248,36 @@ pub(crate) fn tool_definition_with_policy(
         "scoutAvailable": available.iter().any(|def| def.name.eq_ignore_ascii_case("scout")),
         "spawningDisabled": policy.allowed.as_ref().is_some_and(Vec::is_empty),
         "hasModelMentions": false,
-        "ircEnabled": false,
+        "ircEnabled": true,
         "agentList": agent_list,
     }));
+    if settings.chat_tools.task_file_enabled { description.push_str("\nUse exactly one of task or taskFile. taskFile accepts an absolute path or local:// URL to a regular UTF-8 file up to 4 MiB. File tasks are never launched speculatively.\n"); }
+    if settings.chat_tools.task_enable_effort { description.push_str("\nOptional effort lo/med/hi selects the resolved model's supported effort within the configured ceiling.\n"); }
+    if settings.chat_tools.task_per_call_model == crate::settings::TaskPerCallModel::On { description.push_str("\nOptional model selects one exact operator-approved provider/model identity. Unavailable or unapproved selections fail without fallback.\n"); }
+    if settings.chat_tools.task_structured || available.iter().any(|def| def.structured) { description.push_str("\nStructured roles finish through yield. outputSchema overrides role output, including explicit null to disable schema validation. schemaMode is strict or permissive.\n"); }
+    if settings.chat_tools.task_isolation_enabled { description.push_str("\nOptional isolated runs in a separate Git worktree. merge selects patch or branch. apply false retains recovery artifacts without applying changes. Conflicts preserve the isolated files and recovery patch.\n"); }
+    if available.iter().any(|def| super::seance::is_bundled(def)) { description.push_str("\nThe bundled seance role requires sourceSession. It forks historical evidence read only and accepts an optional saved-model override.\n"); }
+    let mut properties = json!({
+        "name": {"type": "string"}, "agent": {"type": "string"},
+        "task": {"type": "string", "minLength": 1}, "solutionSpace": {"type": "string"}
+    });
+    let properties = properties.as_object_mut().expect("task properties");
+    if settings.chat_tools.task_file_enabled { properties.insert("taskFile".into(), json!({"type":"string","minLength":1})); }
+    if settings.chat_tools.task_enable_effort { properties.insert("effort".into(), json!({"enum":["lo","med","hi"]})); }
+    if settings.chat_tools.task_per_call_model == crate::settings::TaskPerCallModel::On || available.iter().any(|def| super::seance::is_bundled(def)) {
+        properties.insert("model".into(), json!({"type":"string","minLength":1}));
+    }
+    if settings.chat_tools.task_structured || available.iter().any(|def| def.structured) {
+        properties.insert("outputSchema".into(), json!({}));
+        properties.insert("schemaMode".into(), json!({"enum":["strict","permissive"]}));
+    }
+    if settings.chat_tools.task_isolation_enabled {
+        properties.insert("isolated".into(), json!({"type":"boolean"}));
+        properties.insert("merge".into(), json!({"enum":["patch","branch"]}));
+        properties.insert("apply".into(), json!({"type":"boolean"}));
+    }
+    properties.insert("tools".into(), json!({"type":"array","items":{"type":"string","minLength":1},"description":"Names defined by this session's retained eval kernels. These are additional custom tools, not a native tool allowlist."}));
+    if available.iter().any(|def| super::seance::is_bundled(def)) { properties.insert("sourceSession".into(), json!({"type":"string","minLength":1})); }
     ChatToolDefinition {
         id: "native__task".into(),
         name: TASK_TOOL_NAME.into(),
@@ -258,13 +291,9 @@ pub(crate) fn tool_definition_with_policy(
                 "context": {"type": "string"},
                 "tasks": {"type": "array", "minItems": 1, "items": {
                     "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "agent": {"type": "string"},
-                        "task": {"type": "string", "minLength": 1},
-                        "solutionSpace": {"type": "string"}
-                    },
-                    "required": ["task", "solutionSpace"],
+                    "properties": properties,
+                    "required": ["solutionSpace"],
+                    "oneOf": [{"required":["task"]},{"required":["taskFile"]}],
                     "additionalProperties": false
                 }}
             },
@@ -283,6 +312,8 @@ struct PlannedTask {
     definition: AgentDefinition,
     task: String,
     solution_space: String,
+    options: spawn::SpawnOptions,
+    policy_key: String,
 }
 
 pub(crate) fn valid_agent_id(id: &str) -> bool {
@@ -326,11 +357,14 @@ fn preflight(
     for (index, item) in tasks.iter().enumerate() {
         let label = format!("Task {}", index + 1);
         let item = item.as_object().ok_or_else(|| format!("{label} must be an object."))?;
-        if let Some(key) = item.keys().find(|key| !matches!(key.as_str(), "name" | "agent" | "task" | "solutionSpace")) {
+        if let Some(key) = item.keys().find(|key| !matches!(key.as_str(), "name" | "agent" | "task" | "taskFile" | "solutionSpace" | "effort" | "model" | "outputSchema" | "schemaMode" | "isolated" | "merge" | "apply" | "sourceSession" | "tools")) {
             return Err(format!("{label} has unexpected field `{key}`."));
         }
-        if item.get("task").and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
-            return Err(format!("{label} is missing non-empty `task` instructions."));
+        if item.contains_key("task") == item.contains_key("taskFile") {
+            return Err(format!("{label} requires exactly one of `task` and `taskFile`."));
+        }
+        if item.get("task").or_else(|| item.get("taskFile")).and_then(Value::as_str).is_none_or(|s| s.trim().is_empty()) {
+            return Err(format!("{label} is missing non-empty task instructions."));
         }
         if item.get("solutionSpace").and_then(Value::as_str).is_none() {
             return Err(format!("{label} requires a string `solutionSpace`."));
@@ -365,7 +399,7 @@ fn preflight(
     for (index, item) in tasks.iter().enumerate() {
         let label = format!("Task {}", index + 1);
         let name = item.get("name").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty()).map(str::to_string);
-        let task = item["task"].as_str().expect("validated task");
+        let task = item.get("task").and_then(Value::as_str).unwrap_or_default();
         let solution_space = item["solutionSpace"].as_str().expect("validated solutionSpace");
         let agent = item.get("agent").and_then(Value::as_str).map(str::trim).unwrap_or_else(|| policy.default_agent());
         let definition = find_definition(defs, agent).ok_or_else(|| {
@@ -381,6 +415,8 @@ fn preflight(
         planned.push(PlannedTask {
             name, definition: definition.clone(), task: task.trim().to_string(),
             solution_space: solution_space.to_string(),
+            options: spawn::SpawnOptions::default(),
+            policy_key: String::new(),
         });
     }
     Ok((context.to_string(), planned))
@@ -402,7 +438,7 @@ fn soft_error(content: String) -> McpToolCallResult {
     McpToolCallResult { content, is_error: true, ..Default::default() }
 }
 
-async fn prepare(ctx: &SubAgentCallCtx<'_>) -> Result<(Settings, String, String, Vec<PlannedTask>), String> {
+async fn prepare(ctx: &SubAgentCallCtx<'_>, invocation: spawn::ModelInvocation) -> Result<(Settings, String, String, Vec<PlannedTask>), String> {
     if ctx.native_ctx.depth > 0 && crate::chat::plan::is_plan_mode(ctx.native_ctx.plan_state) {
         return Err("Plan-mode subagents cannot spawn additional agents.".into());
     }
@@ -413,9 +449,9 @@ async fn prepare(ctx: &SubAgentCallCtx<'_>) -> Result<(Settings, String, String,
     }
     let settings = ctx.state.settings_read().clone();
     let conversation = crate::chat::storage::load_conversation(ctx.app, root)?;
-    let cwd = crate::chat::storage::resolve_conversation_working_directory(
+    let cwd = super::lifecycle::cwd_for_run(&ctx.state.sub_agents, &ctx.native_ctx.run_id).map(Ok).unwrap_or_else(|| crate::chat::storage::resolve_conversation_working_directory(
         ctx.app, &conversation, &settings.chat_tools.native_tools.working_directory,
-    )?;
+    ))?;
     let catalog = ctx.state.chat_runtime().resource_catalog(
         ctx.app, root, &settings.chat_tools.skill_scan_paths, Some(&cwd), false,
     ).await?;
@@ -431,10 +467,46 @@ async fn prepare(ctx: &SubAgentCallCtx<'_>) -> Result<(Settings, String, String,
         Some(find_definition(&catalog.agents, &record.agent_type)
             .ok_or_else(|| format!("The spawning agent definition `{}` is unavailable.", record.agent_type))?)
     };
-    let (context, planned) = preflight(
+    let (context, mut planned) = preflight(
         ctx.arguments, &catalog.agents, parent.and_then(|def| def.spawns.as_deref()),
         ctx.native_ctx.depth, settings.chat_tools.task_max_recursion_depth,
     )?;
+    if owner != MAIN_AGENT_ID {
+        let saved = super::lifecycle::spawn_policy_for_run(&ctx.state.sub_agents, &ctx.native_ctx.run_id).ok_or("Spawning authority is unavailable for this run")?;
+        let policy = SpawnPolicy::new(Some(&saved));
+        if let Some(item) = planned.iter().find(|item| !policy.allows(&item.definition)) { return Err(format!("Agent `{}` is outside this session's saved spawn grant", item.definition.name)); }
+    }
+    for (index, item) in planned.iter_mut().enumerate() {
+        let raw = ctx.arguments["tasks"][index].as_object().expect("preflight task object");
+        let (task, source) = spawn::read_task_source(raw, settings.chat_tools.task_file_enabled, std::path::Path::new(&cwd))?;
+        item.task = task;
+        let inherited_schema = super::lifecycle::completion_schema_for_run(&ctx.state.sub_agents, &ctx.native_ctx.run_id);
+        item.options = spawn::options(raw, &item.definition, &settings, source,
+            crate::chat::plan::is_plan_mode(ctx.native_ctx.plan_state), inherited_schema.as_ref(), invocation)?;
+        let shared = ctx.state.sub_agents.eval.shared(root, &owner, &item.options.tools).await?;
+        if !shared.is_empty() {
+            let mounted = crate::mcp::registry::list_enabled_tool_catalog_for_run(ctx.app, ctx.state, Some(ctx.native_ctx.mcp_server_ids)).await;
+            if let Some(tool) = shared.iter().find(|tool| mounted.tools.iter().any(|mounted| mounted.openai_tool_name() == tool.definition.name)) {
+                return Err(format!("Eval tool `{}` conflicts with an enabled tool", tool.definition.name));
+            }
+        }
+        if let Some(source) = &item.options.source_session {
+            let selected = super::seance::resolve_source(source, std::path::Path::new(&cwd), &registry::artifacts_dir(ctx.app, root)?)?;
+            item.options.source_session = Some(selected.file.to_string_lossy().into_owned());
+            if item.options.model.selector.is_none() { item.options.model.selector = Some(selected.model_selector); }
+        }
+        if let Some(Some(models)) = settings.chat_tools.task_agent_model_overrides.get(&item.definition.name) {
+            if item.options.model.selector.is_none() { item.options.model.role_models = models.clone(); }
+        }
+        let resolved = spawn::resolve_model(&settings, &item.options.model, &ctx.native_ctx.provider.id, ctx.native_ctx.model)?;
+        item.policy_key = serde_json::to_string(&json!({
+            "definition":item.definition,"options":item.options,
+            "provider":resolved.provider.id,"model":resolved.model,"thinkingLevel":resolved.thinking_level,
+            "maxEffort":settings.chat_tools.task_max_effort,
+            "perCallModel":settings.chat_tools.task_per_call_model,"allow":settings.chat_tools.task_per_call_model_allow,
+            "evalTools":shared.iter().map(|tool| json!({"kernelId":tool.kernel_id,"descriptor":tool.descriptor})).collect::<Vec<_>>(),
+        })).map_err(|error| error.to_string())?;
+    }
     Ok((settings, owner, context, planned))
 }
 
@@ -442,11 +514,11 @@ fn disk_names(artifacts: &std::path::Path, taken: &mut HashSet<String>) -> Resul
     std::fs::create_dir_all(artifacts).map_err(|e| format!("Creating subagent artifact directory failed: {e}"))?;
     for entry in std::fs::read_dir(artifacts).map_err(|e| format!("Reading subagent artifacts failed: {e}"))? {
         let path = entry.map_err(|e| format!("Reading subagent artifact entry failed: {e}"))?.path();
-        if matches!(path.extension().and_then(|s| s.to_str()), Some("jsonl" | "md")) {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                taken.insert(stem.to_lowercase());
-            }
-        }
+        let accepted = path.file_name().and_then(|name| name.to_str()).and_then(|name| name.strip_suffix(".jsonl.accepted"));
+        let stem = if accepted.is_some() { accepted }
+            else if matches!(path.extension().and_then(|s| s.to_str()), Some("jsonl" | "md")) { path.file_stem().and_then(|s| s.to_str()) }
+            else { None };
+        if let Some(stem) = stem { taken.insert(stem.to_lowercase()); }
     }
     Ok(())
 }
@@ -534,7 +606,7 @@ fn launch(
     let mcp_server_ids = ctx.native_ctx.mcp_server_ids.to_vec();
     let context = context.to_string();
     let definition_key = if record.published { String::new() } else {
-        serde_json::to_string(&item.definition).expect("agent definition serializes")
+        item.policy_key.clone()
     };
     let run_record = record.clone();
     let run_job = job_id.clone();
@@ -542,12 +614,10 @@ fn launch(
     let handle = tauri::async_runtime::spawn(async move {
         let Some(permit) = ticket.wait(&mut cancel_rx).await else {
             let state = app.state::<crate::state::AppState>();
-            state.sub_agents.registry.update(&run_record.root, &run_record.id, |current| {
-                if current.generation == run_record.generation {
+            state.sub_agents.registry.update_checked(&run_record.root, &run_record.id, run_record.generation, None, |current| {
                     current.status = registry::AgentStatus::Idle;
                     current.run_id = None;
                     current.activity = None;
-                }
             });
             state.sub_agents.jobs.settle(&run_job, Err("Task cancelled before execution.".into()));
             if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable(
@@ -560,6 +630,7 @@ fn launch(
         executor::run(app, executor::Request {
             record: run_record, job_id: run_job, index, definition: item.definition,
             task: item.task, solution_space: item.solution_space, context,
+            options: item.options,
             parent_run_id, parent_tool_call_id, parent_provider_id, parent_model,
             plan_state, mcp_tool_ids, mcp_server_ids, approval_policy, interactive_host, cancel_rx, permit,
         }).await;
@@ -572,9 +643,10 @@ pub(crate) async fn start_speculative(
     app: &tauri::AppHandle, native_ctx: &crate::mcp::registry::NativeToolContext<'_>,
     prefix_args: &Value, index: usize,
 ) -> Option<SpeculativeRun> {
+    if prefix_args.get("tasks").and_then(Value::as_array).is_some_and(|items| items.iter().any(|item| item.get("taskFile").is_some())) { return None; }
     let state = app.state::<crate::state::AppState>();
     let ctx = SubAgentCallCtx { app, state: &state, native_ctx, arguments: prefix_args };
-    let (settings, owner, context, planned) = prepare(&ctx).await.ok()?;
+    let (settings, owner, context, planned) = prepare(&ctx, spawn::ModelInvocation::Task).await.ok()?;
     if !settings.chat_tools.task_speculative_launch { return None; }
     let item = planned.get(index)?.clone();
     let record = reserve(&ctx, &owner, std::slice::from_ref(&item), &[], false).ok()?.pop()?;
@@ -582,30 +654,53 @@ pub(crate) async fn start_speculative(
 }
 
 pub fn dispatch(ctx: SubAgentCallCtx<'_>) -> NativeToolFuture<'_> {
+    dispatch_with_mode(ctx, spawn::ModelInvocation::Task, Vec::new(), false)
+}
+
+pub(crate) fn dispatch_eval(ctx: SubAgentCallCtx<'_>) -> NativeToolFuture<'_> {
+    dispatch_with_mode(ctx, spawn::ModelInvocation::Eval, Vec::new(), false)
+}
+
+pub(crate) fn dispatch_pool(ctx: SubAgentCallCtx<'_>, items: Vec<String>) -> NativeToolFuture<'_> {
+    dispatch_with_mode(ctx, spawn::ModelInvocation::Eval, items, true)
+}
+
+fn dispatch_with_mode(ctx: SubAgentCallCtx<'_>, invocation: spawn::ModelInvocation, workpool_items: Vec<String>, force_inline: bool) -> NativeToolFuture<'_> {
     Box::pin(async move {
-        let (settings, owner, context, planned) = match prepare(&ctx).await {
+        let (settings, owner, context, mut planned) = match prepare(&ctx, invocation).await {
             Ok(prepared) => prepared,
             Err(error) => {
                 ctx.state.sub_agents.speculative.discard(ctx.native_ctx);
                 return Ok(soft_error(error));
             }
         };
-        let mut adopted = ctx.state.sub_agents.speculative.adopt(ctx.native_ctx, ctx.arguments).await;
+        if !workpool_items.is_empty() {
+            if planned.len() != 1 { return Err("A workpool batch requires exactly one worker".into()); }
+            planned[0].options.workpool_items = workpool_items;
+        }
+        if invocation == spawn::ModelInvocation::Eval && !force_inline && !settings.chat_tools.task_async_enabled { return Ok(soft_error("agent() requires async jobs".into())); }
+        let mut adopted = if invocation == spawn::ModelInvocation::Eval { Vec::new() }
+            else { ctx.state.sub_agents.speculative.adopt(ctx.native_ctx, ctx.arguments).await };
         if adopted.iter().enumerate().any(|(index, run)| run.as_ref().is_some_and(|run| {
             run.async_enabled != settings.chat_tools.task_async_enabled
-                || planned.get(index).is_none_or(|item| serde_json::to_string(&item.definition).ok().as_deref() != Some(run.definition_key.as_str()))
+                || planned.get(index).is_none_or(|item| item.policy_key != run.definition_key)
         })) { adopted.clear(); }
-        let records = reserve(&ctx, &owner, &planned, &adopted, true)?;
+        let records = reserve(&ctx, &owner, &planned, &adopted, false)?;
         let mut all = Vec::with_capacity(planned.len());
         let mut started = Vec::new();
         let mut inline = Vec::new();
         for (index, (item, record)) in planned.into_iter().zip(records).enumerate() {
-            let background = settings.chat_tools.task_async_enabled && !item.definition.blocking;
+            let background = if invocation == spawn::ModelInvocation::Eval { !force_inline } else { settings.chat_tools.task_async_enabled && !item.definition.blocking };
+            let record = {
+                let admission = ctx.state.sub_agents.admission.root(&record.root);
+                let allocation = admission.allocation.lock().unwrap_or_else(|error| error.into_inner());
+                if *allocation { return Err("The conversation was deleted.".into()); }
+                ctx.state.sub_agents.registry.publish(&record.root, &record.id, record.generation)?
+            };
             let mut run = match adopted.get_mut(index).and_then(Option::take) {
                 Some(run) => run,
                 None => launch(&ctx, &owner, &context, item, record, index, &settings)?,
             };
-            ctx.state.sub_agents.registry.update(&run.record.root, &run.record.id, |r| r.published = true);
             if !run.record.published {
                 replay_progress(ctx.app, &ctx.native_ctx.run_id,
                     ctx.native_ctx.tool_call_id.as_deref().unwrap_or_default(), &run).await;
@@ -688,6 +783,9 @@ fn progress_event(tool_call_id: &str, record: &registry::AgentRecord, status: &s
         status: status.into(),
         preview: (status == "aborted").then(|| "Task cancelled before execution.".into()),
         steps: Vec::new(),
+        generation: Some(record.generation),
+        child_run_id: record.run_id.clone(),
+        progress: None,
     }
 }
 
@@ -857,9 +955,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Alpha.jsonl"), "old transcript").unwrap();
         std::fs::write(dir.path().join("Alpha-2.md"), "old output").unwrap();
+        std::fs::write(dir.path().join("Alpha-3.jsonl.accepted"), r#"{"root":"root","id":"Alpha-3"}"#).unwrap();
         let mut taken = HashSet::new();
         disk_names(dir.path(), &mut taken).unwrap();
-        assert_eq!(allocate_id(MAIN_AGENT_ID, "alpha", &mut taken), "alpha-3");
+        assert_eq!(allocate_id(MAIN_AGENT_ID, "alpha", &mut taken), "alpha-4");
         assert_eq!(std::fs::read_to_string(dir.path().join("Alpha.jsonl")).unwrap(), "old transcript");
     }
 

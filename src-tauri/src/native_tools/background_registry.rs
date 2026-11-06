@@ -25,9 +25,14 @@ impl From<&BackgroundCommand> for BackgroundCommandSnapshot {
         }
     }
 }
-#[derive(Default)]
 pub(crate) struct BackgroundCommandRegistry {
     jobs: Mutex<HashMap<String, BackgroundCommand>>,
+    changed: tokio::sync::watch::Sender<u64>,
+}
+impl Default for BackgroundCommandRegistry {
+    fn default() -> Self {
+        Self { jobs: Mutex::default(), changed: tokio::sync::watch::channel(0).0 }
+    }
 }
 fn visible(job: &BackgroundCommand, caller: Option<&str>, include_unowned: bool) -> bool {
     caller.is_none()
@@ -35,6 +40,8 @@ fn visible(job: &BackgroundCommand, caller: Option<&str>, include_unowned: bool)
         || (include_unowned && job.conversation_id.is_none())
 }
 impl BackgroundCommandRegistry {
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> { self.changed.subscribe() }
+    fn notify(&self) { self.changed.send_modify(|sequence| *sequence = sequence.wrapping_add(1)); }
     pub(crate) fn register(&self, job: crate::native_tools::BackgroundCommand) {
         const MAX_TRACKED_BACKGROUND_COMMANDS: usize = 64;
         let mut evicted_logs = Vec::new();
@@ -67,6 +74,7 @@ impl BackgroundCommandRegistry {
         }
         map.insert(job.job_id.clone(), job);
         drop(map);
+        self.notify();
         for path in evicted_logs {
             let _ = std::fs::remove_file(path);
         }
@@ -103,6 +111,8 @@ impl BackgroundCommandRegistry {
                 job.status = status;
             }
         }
+        drop(jobs);
+        self.notify();
     }
     pub(crate) fn kill(&self, id: &str, caller: Option<&str>) -> Result<bool, String> {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -117,6 +127,7 @@ impl BackgroundCommandRegistry {
         let signal = job.kill_tx.take();
         let pid = job.pid;
         drop(jobs);
+        self.notify();
         if let Some(signal) = signal {
             let _ = signal.send(());
         } else if let Some(pid) = pid {
@@ -129,6 +140,7 @@ impl BackgroundCommandRegistry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|_, j| matches!(j.status, Status::Running) || !visible(j, caller, false));
+        self.notify();
     }
     pub(crate) fn kill_all(&self) -> usize {
         let jobs: Vec<_> = self
@@ -138,6 +150,7 @@ impl BackgroundCommandRegistry {
             .drain()
             .map(|(_, job)| job)
             .collect();
+        self.notify();
         Self::dispose(jobs)
     }
     pub(crate) fn kill_for_conversation(&self, conversation_id: &str) -> usize {
@@ -152,6 +165,7 @@ impl BackgroundCommandRegistry {
             .filter_map(|id| jobs.remove(&id))
             .collect();
         drop(jobs);
+        self.notify();
         Self::dispose(removed)
     }
     fn dispose(jobs: Vec<BackgroundCommand>) -> usize {
@@ -206,6 +220,22 @@ mod tests {
             Status::Killed
         );
         assert!(!owner.kill("one", Some("a")).unwrap());
+    }
+
+    #[tokio::test]
+    async fn completion_and_removal_wake_waiters_without_exposing_sibling_jobs() {
+        let owner = BackgroundCommandRegistry::default();
+        let mut changed = owner.subscribe();
+        owner.register(job("A-service", Some("subagent-root-A")));
+        owner.register(job("B-service", Some("subagent-root-B")));
+        changed.borrow_and_update();
+        owner.complete("A-service", Status::Exited { code: Some(0) });
+        tokio::time::timeout(std::time::Duration::from_secs(1), changed.changed()).await.unwrap().unwrap();
+        assert_eq!(owner.snapshots(Some("subagent-root-A"), false).len(), 1);
+        assert!(owner.snapshot("B-service", Some("subagent-root-A")).is_none());
+        owner.kill_for_conversation("subagent-root-A");
+        changed.changed().await.unwrap();
+        assert!(owner.snapshot("B-service", Some("subagent-root-B")).is_some());
     }
 
     #[test]

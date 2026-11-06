@@ -87,6 +87,7 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
   const [cliSelected, setCliSelected] = useState<Set<string>>(new Set())
   const [cliImportDone, setCliImportDone] = useState('')
   const [query, setQuery] = useState('')
+  const [modelAllowDraft, setModelAllowDraft] = useState<string | null>(null)
   const settingsRef = useRef<Settings | null>(null)
 
   const chatTools = settings?.chatTools
@@ -112,6 +113,40 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
     { key: 'automation', label: t.chatMcpNativeAutomation, defaultOn: true },
     { key: 'scheduledTasks', label: t.chatMcpNativeScheduledTasks, defaultOn: true },
   ]
+
+  const subagentText = lang === 'zh' ? {
+    title: '子代理',
+    file: '允许从文件读取任务', fileDesc: '允许 taskFile 使用本地文件作为任务内容。',
+    structured: '结构化结果', structuredDesc: '允许子代理通过 yield 返回结构化结果。',
+    effort: '允许任务指定推理强度', effortDesc: '允许每个任务选择模型支持的推理强度。',
+    isolation: '允许工作区隔离', isolationDesc: '允许任务在独立 Git 工作树中运行。',
+    prewalk: '任务预先规划', prewalkDesc: '内置 task 角色先规划，再使用可用的 SMOL 模型执行。',
+    fresh: '工作池使用新代理', freshDesc: '为工作池中的每项任务使用新代理。',
+    model: '按任务选择模型', modelDesc: '仅可选择已在模型设置中授权的模型。',
+    off: '关闭', eval: '仅 eval', on: '所有任务',
+    effortCap: '最高推理强度', noLimit: '不限制',
+    allow: '可选模型范围', allowDesc: '以逗号分隔 provider/model；留空时不额外限制已授权模型。',
+  } : {
+    title: 'Subagents',
+    file: 'Allow task files', fileDesc: 'Allow taskFile to load task instructions from a local file.',
+    structured: 'Structured results', structuredDesc: 'Allow subagents to return structured results with yield.',
+    effort: 'Allow per-task effort', effortDesc: 'Allow each task to select a supported reasoning effort.',
+    isolation: 'Allow workspace isolation', isolationDesc: 'Allow tasks to run in a separate Git worktree.',
+    prewalk: 'Plan before implementation', prewalkDesc: 'The built-in task role plans first, then uses SMOL for implementation when available.',
+    fresh: 'Use fresh workpool agents', freshDesc: 'Use a new agent for each workpool item.',
+    model: 'Per-task model selection', modelDesc: 'Only models already authorized in model settings can be selected.',
+    off: 'Off', eval: 'Eval only', on: 'All tasks',
+    effortCap: 'Maximum reasoning effort', noLimit: 'No limit',
+    allow: 'Allowed model scope', allowDesc: 'Separate provider/model identities with commas. Leave empty to allow all authorized models.',
+  }
+  const subagentToggles = [
+    { key: 'taskFileEnabled', label: subagentText.file, description: subagentText.fileDesc },
+    { key: 'taskStructured', label: subagentText.structured, description: subagentText.structuredDesc },
+    { key: 'taskEnableEffort', label: subagentText.effort, description: subagentText.effortDesc },
+    { key: 'taskIsolationEnabled', label: subagentText.isolation, description: subagentText.isolationDesc },
+    { key: 'taskPrewalk', label: subagentText.prewalk, description: subagentText.prewalkDesc },
+    { key: 'taskEvalWorkpoolFreshAgents', label: subagentText.fresh, description: subagentText.freshDesc },
+  ] as const
 
   const loadSettings = useCallback(async () => {
     try {
@@ -769,6 +804,52 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
                     MCP_IDLE_TIMEOUT_PRESETS_MS.map((ms) => ({ value: String(ms), label: formatToolTimeoutLabel(ms, lang) })),
                     t.chatMcpIdleTimeoutDesc,
                   )}
+                </div>
+                <div className="mt-6">
+                  <div className="mb-3 text-[13px] font-semibold text-neutral-800">{subagentText.title}</div>
+                  <div className="overflow-hidden rounded-md border border-neutral-200 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
+                    {subagentToggles.map(({ key, label, description }) => (
+                      <div key={key} className="flex items-center justify-between gap-4 px-4 py-2.5">
+                        <div>
+                          <div className="text-[13px] text-neutral-800">{label}</div>
+                          <p className="mt-0.5 text-[12px] text-neutral-500 dark:text-neutral-400">{description}</p>
+                        </div>
+                        <Toggle ariaLabel={label} checked={chatTools?.[key] ?? false} onChange={(checked) => persistChatTools({ [key]: checked })} />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] items-stretch gap-x-4 gap-y-5">
+                    {renderRuntimeSelect(subagentText.model, chatTools?.taskPerCallModel ?? 'off', (value) => {
+                      if (value === 'off' || value === 'eval' || value === 'on') persistChatTools({ taskPerCallModel: value })
+                    }, [
+                      { value: 'off', label: subagentText.off },
+                      { value: 'eval', label: subagentText.eval },
+                      { value: 'on', label: subagentText.on },
+                    ], subagentText.modelDesc)}
+                    {renderRuntimeSelect(subagentText.effortCap, chatTools?.taskMaxEffort ?? '', (value) => persistChatTools({ taskMaxEffort: value || null }), [
+                      { value: '', label: subagentText.noLimit },
+                      ...['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map((value) => ({ value, label: value })),
+                    ])}
+                  </div>
+                  <div className="mt-4">
+                    <div className="mb-2">
+                      <div className="text-[13px] font-medium text-neutral-800">{subagentText.allow}</div>
+                      <p className="mt-0.5 text-[12px] text-neutral-500 dark:text-neutral-400">{subagentText.allowDesc}</p>
+                    </div>
+                    <Input
+                      aria-label={subagentText.allow}
+                      mono
+                      placeholder="provider/model, provider/model"
+                      value={modelAllowDraft ?? (chatTools?.taskPerCallModelAllow ?? []).join(', ')}
+                      onChange={setModelAllowDraft}
+                      onBlur={() => {
+                        if (modelAllowDraft === null) return
+                        persistChatTools({ taskPerCallModelAllow: modelAllowDraft.split(',').map((model) => model.trim()).filter(Boolean) })
+                        setModelAllowDraft(null)
+                      }}
+                      onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
+                    />
+                  </div>
                 </div>
               </section>
             </div>

@@ -1466,6 +1466,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     refreshSidebar()
   }, [applyConversationIfCurrent, refreshSidebar])
 
+  useTauriEvent(api.onChatSubagentIrc, (message) => {
+    if (message.observation || message.conversationId !== currentConversationIdRef.current || popoutOwner.owns(message.conversationId)) return
+    const lease = captureConversationNavigation()
+    void chatApi.getConversation(message.conversationId).then(updated => {
+      if (isCurrentConversationNavigation(lease) && !popoutOwner.owns(message.conversationId)) applyConversationIfCurrent(message.conversationId, updated)
+    }).catch(error => console.error('Failed to refresh incoming agent message:', error))
+  }, [applyConversationIfCurrent, popoutOwner])
+
   useTauriEvent(api.onChatHook, (payload) => {
     const currentConversationId = currentConversationIdRef.current
     if (!currentConversationId || payload.conversationId !== currentConversationId) {

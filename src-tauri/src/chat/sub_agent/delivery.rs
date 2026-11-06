@@ -221,7 +221,10 @@ fn schedule_idle_flush(app: &AppHandle, root: &str) {
             &IDLE_FLUSHES,
             &root,
             || crate::chat::commands::send::resume_subagents_when_idle(&app, &root),
-            || !app.state::<AppState>().sub_agents.jobs.undelivered(&root, MAIN_AGENT_ID).is_empty(),
+            || {
+                let state = app.state::<AppState>();
+                !state.sub_agents.jobs.undelivered(&root, MAIN_AGENT_ID).is_empty() || state.sub_agents.irc.has_pending_main(&root)
+            },
         ).await;
     });
 }
@@ -275,6 +278,7 @@ pub fn on_main_run_ended(app: &AppHandle, root: &str) {
     let jobs = &state.sub_agents.jobs;
     if !jobs.running(root, MAIN_AGENT_ID).is_empty()
         || !jobs.undelivered(root, MAIN_AGENT_ID).is_empty()
+        || state.sub_agents.irc.has_pending_main(root)
     {
         schedule_idle_flush(app, root);
     }
@@ -297,6 +301,7 @@ mod tests {
             finished_at: Some(1),
             result: Some(result.into()),
             progress: None,
+            structured_output: None,
             consumed: false,
         }
     }

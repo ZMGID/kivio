@@ -1,16 +1,23 @@
-# 子代理改用 OMP：三步实施与验收计划
+# 子代理改用 OMP：完整实现与验收计划
 
-更新：2026-11-05。分支：`feat/omp-subagents`。产品决定：[ADR-0007](../adr/0007-subagents-follow-omp.md)。OMP 基线：[5dec65ed5f500ec456c2c7f91f7e517f99d92eec](https://github.com/can1357/oh-my-pi/tree/5dec65ed5f500ec456c2c7f91f7e517f99d92eec)，MIT 许可见 [许可文件](../licenses/oh-my-pi-MIT.txt)。
+更新：2026-11-06。分支：`feat/omp-subagents`。产品决定：[ADR-0007](../adr/0007-subagents-follow-omp.md)。OMP 基线：[5dec65ed5f500ec456c2c7f91f7e517f99d92eec](https://github.com/can1357/oh-my-pi/tree/5dec65ed5f500ec456c2c7f91f7e517f99d92eec)，MIT 许可见 [许可文件](../licenses/oh-my-pi-MIT.txt)。
 
 **先读 [OMP 实现与运行调查](../research/omp-subagents-implementation.md)。** 该文档记录源代码事实、调用链、状态/消息/持久化契约、提示词和运行证据；本文件只规定做什么、依赖什么、怎样算完成，不再用“按 OMP”代替接口定义。
 
-## 1. 当前状态与范围
+## 1. 两步交付与当前状态
 
-| 阶段 | 当前状态 | 完成条件 |
+交付分两步。旧的三个阶段作为第二步内部工作范围保留。
+
+1. **调查与文档：完成。** 对照固定版本 OMP 源码，核实基线、缺口、数据归属、调用点与验收标准，更新本计划和实现调查。
+2. **实现与测试：完成。** Kivio 的派工、等待、IRC、身份和恢复、工具共享、工作池与桌面入口已接通。全量测试通过，真实模型及 Windows 桌面证据见第 15 节；该节也列出依赖 OMP 特有 provider 或平台能力的差异。
+
+调查基线为 Kivio `672013832a8eb59dc230e528bd9fa861c69a9b89`。本地 OMP checkout 的 HEAD 已核对为上述完整 SHA。调查已完成，见[实现调查第 14 节](../research/omp-subagents-implementation.md#14-2026-11-06-完整交付调查)。实现、当前验收和宿主边界见[第 15 节](../research/omp-subagents-implementation.md#15-2026-11-06-实施落点与整合验收)。决策和验证检查点见[决策记录](../research/omp-subagents-decisions.tsv)。
+
+| 阶段 | 调查前基线 | 完成条件 |
 |---|---|---|
-| 第一步：派工、执行、结果与 wait | `dde91fd7` 后的对齐改动已落入工作区，定向回归通过；**尚未通过本版完整实机验收** | 下文第一步验收全部有证据，且无结果丢失/产物覆盖问题 |
-| 第二步：IRC 与身份生命周期 | 未实施 | 投递、回复、park/复活、kill、重启语义端到端通过 |
-| 第三步：显示与操作 | 仅旧 UI 清理及简易 task 卡片；未完成 OMP 展示 | 批量卡片、Hub、通信与历史显示在真实界面验收 |
+| 派工、执行、结果与 wait | 已提交 `67201383`；2026-11-06 子代理 84 项回归通过；**完整实机验收未完成** | 下文执行验收全部有证据，且无结果丢失、产物覆盖问题 |
+| IRC 与身份生命周期 | 未实施 | 投递、回复、park/复活、kill、重启语义端到端通过 |
+| 显示与操作 | 仅旧 UI 清理及简易 task 卡片；未完成 OMP 展示 | 批量卡片、Hub、通信与历史显示在真实界面验收 |
 
 旧的 `agent` / `agent_control`、durable runtime 和旧面板放弃，不留兼容别名、不迁移旧运行记录。旧对话里的旧工具卡退化为普通工具卡。外部 CLI 代理不随本次更换；其共享进度协议不得误删。
 
@@ -20,9 +27,49 @@
 - 工作区已加入 blocking/async 混合、async disabled 同步执行、speculative adopt/discard；旧版本的全异步限制不再代表当前代码，但这些路径仍须完成本版运行验收。
 - structured/yield、taskFile、effort、per-call model、isolation、seance/workpool/prewalk/advisor、eval 工具共享、proc 服务、恢复执行等未覆盖能力，要记录状态及共享字段/文案影响；默认关闭不能当作批准删除。
 - Rust/Tauri、目录布局、UI 组件和工具名可适配；调度、授权、消息消费和用户可观察行为不能悄悄改成另一套。
-- 本轮已进入第一步实现；收尾时区分代码落地、自动检查和真实运行证据，不用旧版本 smoke 证明新代码。
 
-## 2. 三步共享的契约
+### 1.1 完整能力与依赖
+
+以下状态是实现前基线，不是完成声明。源码依据和具体缺口见实现调查第 14 节。
+
+| 能力 | 基线状态 | 必须完成的可观察行为 |
+|---|---|---|
+| 批量、blocking、async、同步退化、speculative | 有实现及定向测试 | 整批预检；采用和撤销一致；真实混合批次、授权和 hooks 验收 |
+| 结果与 wait | job 路径已有 | 单次消费；失败保存后可重投；IRC 与服务完成也能结束合适的等待 |
+| 会话、消息与复活 | 只有一次执行及初始化记录 | 一个身份串行执行多轮；park 后冷复活；kill 失效旧代；恢复权限不扩大 |
+| structured 与 yield | 未实现 | 调用方、角色、会话 schema 优先级；strict/permissive；增量结果；异步子结果使旧提交失效 |
+| taskFile | 未实现 | 文件指令与内联指令互斥；4 MiB 上限；保存路径和 SHA-256；不预启动文件任务 |
+| effort 与逐次模型 | 未实现 | lo/med/hi 映射与上限；确切模型标识；用户授权来源和收窄名单；恢复重新检查 |
+| 角色模型列表与配置 | 单模型及三个 Mixer 角色 | 按顺序解析可用模型；不把 provider/model 整串发给父 provider |
+| isolation | 未实现 | 隔离工作目录；真实 Git 差异、应用、冲突、取消和清理；保留失败恢复产物 |
+| seance | 内置角色被标记不可用 | 历史会话只读 fork；源不改变；恢复模型；同名自定义角色不冒充内置特例 |
+| workpool | 未实现 | 入队、状态、drain、close；复用或新建 worker；并发和逐项失败；可执行的模型入口 |
+| eval 工具共享 | 没有对应 kernel | 注册与调用真实工具；名字冲突；内核失效后明确失败；不把它改成普通工具名单 |
+| prewalk 与 advisor | 未实现 | 首次修改时模型交接；真实审阅会话和结束前收齐；各自取消和错误处理 |
+| 服务与 proc URL | shell 有后台进程 | 按 agent owner 隔离；状态和日志；服务结束与 job wait 竞争 |
+| 重启与恢复执行 | 只有磁盘产物 | 名单恢复、冷复活、继续中断执行分别验收；先注册子 job 再继续父会话 |
+| task/wait 卡片、IRC、Hub、历史 | 只有基础 task/wait 卡片 | 批次逐项、完整指标、通信归属、Hub 操作、游标读取、主窗口与弹窗入口 |
+
+### 1.2 数据与模块归属
+
+先确认数据形状，再写调用逻辑。`AgentRecord` 维护身份和 generation。可保留的 worker session 维护实际授权、模型约束、资源、当前模型上下文与追加 journal。每轮 `Host` 单独持有 run、job、取消、deadline、预算、permit 和进度。IRC 消息、回复义务和等待依赖另有自己的标识，不能从 agent 的 running 状态推导。
+
+保留 `chat/sub_agent` 和现有 JobManager。task、消息唤醒、恢复与池任务共用执行入口。模型工具与桌面命令共用生命周期入口。跨端 DTO 由 Rust 生成，前端只提交动作并展示快照。旧 `agent_control` 不复活。
+
+实现依赖顺序为会话与复活基础、IRC 与 wait、结构化与派工参数、隔离及历史咨询、池和关联能力、界面整合、整体恢复与验收。独立文件可以并行处理，依赖同一个会话契约的工作必须等契约验证后接入。
+
+### 1.3 新的基线检查
+
+| 检查 | 2026-11-06 结果 | 证据 |
+|---|---|---|
+| `scripts/win-cargo-test.ps1 --lib chat::sub_agent` | 84 通过 | 本机 `.scratch/omp-completion/baseline-rust.log` |
+| 全量 Rust `--lib` | 加入已安装 Python312 的进程 PATH 后 3041 通过、52 忽略 | `.scratch/omp-completion/baseline-rust-python.log` |
+| 全量 Vitest | 初次 2934 通过、10 失败 | `.scratch/omp-completion/baseline-vitest.log` |
+| 两个失败文件独立复跑 | readingLibrary 12 通过；pdfDocument 因 Windows 目录 symlink 权限失败 | `.scratch/omp-completion/baseline-vitest-recheck.log` |
+
+Python PATH 只改测试子进程，不改用户系统设置。前端并发下超时与后续连锁失败已通过独立复跑收窄。PDF 测试需要可跨 Windows 运行的目录 fixture，不能忽略后声称全量通过。
+
+## 2. 各能力共享的契约
 
 ### 2.1 身份、状态与数据所有权
 
@@ -43,7 +90,7 @@
 
 审批按 OMP 的 yolo 模式但保留用户显式 `tools.approval` 策略，不等于无条件允许一切。Kivio 适配保留根会话授权与显式确认策略，子代理继承有效策略；无人处理的确认不自动放行，speculative 不绕过审批与 hooks。
 
-## 3. 第一步：派工、执行、结果送达、wait
+## 3. 实现范围 A：派工、执行、结果送达、wait
 
 ### 3.1 实施项
 
@@ -84,7 +131,7 @@
 - custom→模型角色映射、数值上限 256/8/10000、plan 工具门控、OMP 角色全集、部分移植的主系统委派规则。
 - 新增死代码 `child_conversation_ids`、无调用的 `close_runtime_input`、仅测试使用的旧 pending-input 方法，以及旧 model README/MessageList 注释；删除时按调用证据，不凭编译 warning 全删。
 
-### 3.3 第一阶段验收矩阵
+### 3.3 调查前的派工验收记录
 
 | 场景 | 通过标准 | 当前证据 |
 |---|---|---|
@@ -102,9 +149,9 @@
 
 旧版本构建、类型检查、protocol 检查已跑过，不能代替本版验收。旧版本全套测试有失败，尚未与 main 同环境基线运行比较，归因未确定。本轮检查单独记在 §3.4。
 
-### 3.4 本轮实现收尾记录
+### 3.4 调查前的派工收尾记录
 
-本节记录工作区改动，不代表上表全部验收通过。上表的“实机成功”来自旧版本，本轮须重新验证。
+本节保留旧版本的工作记录。当前代码的测试和实机证据见[实现调查第 15 节](../research/omp-subagents-implementation.md#15-2026-11-06-实施落点与整合验收)。
 
 - **派工与执行**：混合 blocking/async、同步 fanout、流式 speculative 的采用/废弃；按派工 session 的 FIFO 并发、运行中 resize、递归不共享根信号量；磁盘名字预留及独立执行身份。
 - **结果与生命周期边界**：认领失败回滚及退避重投，消费/未消费定时淘汰；Stop 与新轮 admission 的 epoch 保护；wait 可被 steering 打断。IRC、service wait、park/复活仍属于后续阶段。
@@ -125,9 +172,7 @@
 
 集成检查修复了大型 `session_init` JSON 宏递归超限、错误日志依赖，以及不完整但已经非法的 Unicode escape 未立即撤销 speculative run 的缺陷；后者保留了失败前/修复后通过的回归。
 
-按本轮“先收尾”要求，未继续进入第二步；新版桌面端真实模型、刷新重开、跨进程重启 smoke 及全量测试、protocol 检查未重跑。编译仍有弃用/未使用项警告，未借收尾清理无关代码。第一步因此保持“实现已落地、完整验收未完成”，不是已交付的 OMP 全量等价实现。
-
-## 4. 第二步：IRC 与完整身份生命周期
+## 4. 实现范围 B：IRC 与完整身份生命周期
 
 ### 4.1 实施顺序与依赖
 
@@ -140,7 +185,7 @@
 
 消息总线的状态与持久 transcript 不等价：队列/回复账本重启后不能凭 transcript 自动恢复成原来的活跃等待关系。用户 kill、父 stop、取消 job、进程退出也不得合成一个 `cancel_root` 后声称等价。
 
-### 4.2 第二阶段验收矩阵
+### 4.2 消息与生命周期验收矩阵
 
 | 场景 | 可观察结果 |
 |---|---|
@@ -156,9 +201,9 @@
 | 缺 contract/cwd、损坏 transcript | 明确失败，历史仍可读，不造空会话 |
 | 切换/压缩/用户新输入与 wake 竞争 | 单一会话归属，不串消息，不越过被接受的用户输入 |
 
-## 5. 第三步：任务卡片、通信与 Agent Hub
+## 5. 实现范围 C：任务卡片、通信与 Agent Hub
 
-第一步的简易卡片不是最终 UI；第二步的 backend 是 Hub 操作前提。
+Hub 和任务卡片依赖同一套身份、会话与终态数据。
 
 - task 卡片同时支持异步回执、blocking 内联结果、同步 fanout、持续进度、失败/取消。数据 keyed by agent/run，不让一个 batch 多项互相覆盖。
 - live progress/终态/持久历史分别有来源；UI 重载以持久终态恢复，再合并更新的 live 事件。按调查 10 的分支核对排序与截断，而不是统一硬编码 3/12 行。
