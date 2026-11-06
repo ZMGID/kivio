@@ -4,11 +4,11 @@
 
 目标是逐步形成可独立引用的 Kivio Agent SDK。Kivio 桌面、自动化和 OMP 子代理使用同一套核心实现，其他 Rust 程序也能接入模型、工具和自己的宿主。
 
-本文件整理实现顺序和验收条件。SDK-01 至 SDK-06 已实现；独立 SDK、消费夹具、应用完整库测试、所有构建目标及共享协议检查已通过。SDK-07 尚未开始。工程规则继续以[统一工程规范](../engineering-standards.md)为唯一入口。本计划不增加另一套全仓规范，也不改变已有产品 ADR。
+本文件整理实现顺序和验收条件。SDK-01 至 SDK-07 已实现，独立 SDK、消费夹具、应用完整库测试、所有构建目标及共享协议检查已通过。可运行示例、公开文档和独立 CI 已补齐，真实模型与 Windows Dev 回归的实测范围见 SDK-07。工程规则继续以[统一工程规范](../engineering-standards.md)为唯一入口。本计划不增加另一套全仓规范，也不改变已有产品 ADR。
 
 ## 1. 确定首版范围
 
-首版按现有 Rust 技术栈实施。SDK 的名称为 Kivio Agent SDK，拟用 Cargo 包名 `kivio-agent-sdk`，拟放在 `crates/kivio-agent-sdk/`。这些路径尚未创建。
+首版按现有 Rust 技术栈实施。Cargo 包名为 `kivio-agent-sdk`，源码位于 `crates/kivio-agent-sdk/`，独立消费夹具位于 `tests/fixtures/agent-sdk-consumer/`。
 
 首版完成须同时满足以下条件。
 
@@ -231,19 +231,33 @@ Rig 与 LangGraph 的依据是 2026-11-06 查阅的官方文档，不等同于�
 
 **交付物。** 有明确支持范围的 SDK 预发布版本、文档、示例和独立质量检查。
 
-**主要位置。** SDK README、公开 API 文档、examples、外部消费 fixture、`.github/workflows/ci.yml` 和必要的现有检查脚本。
+**主要位置。** SDK README、公开 API 文档、examples、外部消费 fixture、`.github/workflows/agent-sdk.yml` 和必要的现有检查脚本。
 
-- [ ] 提供最小接入、工具调用、事件处理、取消、steer 与 follow-up、历史继续的可运行示例。示例只调用公开 API。
-- [ ] 加入独立 consumer fixture，验证调用方无需应用内部类型、私有模块或桌面运行时。
-- [ ] 写清公开与内部接口、错误分类、事件顺序、取消完成、会话持久化责任和预发布兼容策略。
-- [ ] 写清 SDK 的工具注册能力与桌面审批 UI 的区别，宿主必须明确选择授权策略，不能通过遗漏适配获得权限。
-- [ ] 配置 SDK 独立的 Windows、macOS、Linux 编译和离线契约测试。桌面继续按现有支持平台验收。
-- [ ] 用本地 HTTP 服务驱动生产协议实现，验证第一次返回工具调用、第二次收到对应工具结果、最终流式答案和续聊。断流与错误注入也通过该边界验证。
-- [ ] 实际有变化的运行路径做基线对照，记录模型请求次数、工具执行次数、取消清理和持久化结果。性能测量分离网络等待与 SDK 自身开销，不把架构重构直接称为提速。
-- [ ] 完成一次受支持 provider 的真实模型 smoke test 和 Windows 桌面回归。无模型凭据或无对应平台时记录未验证，不宣称该项完成。
-- [ ] 删除迁移期兼容入口和过时文档，检查包内容和许可证声明。首版交付不自动推送、公开发布或修改现有许可证。
+- [x] 提供最小接入、工具调用、事件处理、取消、steer 与 follow-up、历史继续的可运行示例。示例只调用公开 API。
+- [x] 加入独立 consumer fixture，验证调用方无需应用内部类型、私有模块或桌面运行时。
+- [x] 写清公开与内部接口、错误分类、事件顺序、取消完成、会话持久化责任和预发布兼容策略。
+- [x] 写清 SDK 的工具注册能力与桌面审批 UI 的区别，宿主必须明确选择授权策略，不能通过遗漏适配获得权限。
+- [x] 配置 SDK 独立的 Windows、macOS、Linux 编译和离线契约测试。桌面继续按现有支持平台验收。
+- [x] 用本地 HTTP 服务驱动生产协议实现，验证第一次返回工具调用、第二次收到对应工具结果、最终流式答案和续聊。断流与错误注入也通过该边界验证。
+- [x] 实际有变化的运行路径做基线对照，记录模型请求次数、工具执行次数、取消清理和持久化结果。性能测量分离网络等待与 SDK 自身开销，不把架构重构直接称为提速。
+- [x] 完成一次受支持 provider 的真实模型 smoke test 和 Windows 桌面回归。无模型凭据或无对应平台时记录未验证，不宣称该项完成。
+- [x] 删除迁移期兼容入口和过时文档，检查包内容和许可证声明。首版交付不自动推送、公开发布或修改现有许可证。
 
 **验收。** 全新消费方按 README 接入成功，CI 能阻止 SDK 重新依赖桌面，所有迁移入口共享一个核心。每个支持平台和 provider 的已测范围有证据，未测范围明确列出。
+
+**实现结果。** [SDK README](../../crates/kivio-agent-sdk/README.md) 和公开契约说明接入、授权、事件、取消、历史归属及 alpha 兼容策略。一个仅使用公开 API 的示例提供 `minimal`、`cancel`、`inputs`、`continue` 四种模式，默认通过本地 HTTP 服务调用生产 provider，分别断言工具执行、取消、输入单次消费和历史继续；显式 `--live` 才使用进程环境中的模型配置。独立 consumer 在仓库外临时目录按 path dependency 重新编译，6 项真实 HTTP 契约测试通过；该构建另以显式环境调用真实模型，执行 echo 一次、观察 26 个事件并返回 `Completed`。
+
+独立工作流在 Windows、macOS、Linux 配置 SDK 测试、四种示例、格式、严格 rustdoc、外部消费者和依赖边界检查，Linux 另做打包验证。Python 检查器依据实际 Cargo 依赖图拒绝桌面依赖和未批准的本地包，并核对包中许可证原文。5 项检查器测试、真实依赖图检查、严格 rustdoc 和 Cargo 默认打包校验均在 Windows 通过；生成包包含 44 个文件并从解包内容编译成功。未改变 GPL-3.0-or-later，也未公开发布。
+
+**Windows 实测。** 最终 SDK 单元测试 98 项通过，四种离线示例通过。实际 Dev 应用使用本 worktree 构建和 `com.zmair.kivio.dev` 身份启动。真实 `deepseek-v4.1-flash` 首轮通过一次 read 获取临时文件中的私有标记并落盘，同一会话续聊返回该标记且工具调用为零。OMP 的 batch-scouts、idle-auto-result、nested-irc、task-error、cancel-resume 五个场景均通过，并核对持久化会话及子代理 journal。三个 scout 各有两次模型请求和一次工具执行；idle 场景在没有第二条用户消息的情况下仅投递一次结果并产生后续回答。模型计数来自 journal，不作为网络性能测量。
+
+nested-irc 首次出现非法参数，验证器拒绝并在模型请求前中止 speculative 子任务；模型随后纠正任务并完成双层委派和双向 IRC。cancel-resume 的取消发生在工具执行之前，续聊后完成命令及文件读取，不能据此宣称验证了运行中工具的取消清理。SDK-05 的确定性宿主测试另外覆盖取消清理和槽位释放。
+
+实测发现 Vite 原规则只忽略应用的 Cargo 目录，新 SDK 编译产物触发 Windows `EBUSY`。现有忽略规则扩展到所有 `target` 目录，隔离的实际文件监听测试验证源文件变化仍可观察、三个 Cargo 目录均不被监听，并接入应用 CI。验证期间的临时无监听服务曾返回 HTTP 200，不作为可视 UI 验收。全部自建 Dev/Vite 进程于 2026-11-07 04:53:09（UTC+8）退出，将共享 Dev 身份交还另一线程；其 `opencode-stack-outer` 请求明确排除于本批证据。
+
+**验证边界。** Windows 是本地已验证的平台；macOS/Linux 工作流已配置，尚未远程运行。真实 provider smoke 只证明所选端点及模型，不覆盖所有兼容服务。未做审批 UI、Hub、park、kill 或重启的可视检查，probe 自动授权不替代审批验证。未做性能基准，不宣称提速。独立源码审查未发现新缺陷，注释审查删除两条冗余说明；当前可用模型均属于 GPT，未进行跨模型家族裁决。
+
+Lint、类型与共享协议检查、12 项架构检查及边界检查通过。首次全量前端运行有 2967 项通过，Study 首次动态导入超过默认 5 秒后引发同文件 9 项失败；单独将测试超时设为 15 秒时该文件 12 项全部通过。未修改 Study 源码或测试，全套以 `npm run test -- --testTimeout 15000` 复跑，356 个文件、2976 项全部通过。此记录保留默认超时敏感性，不宣称默认命令也已全绿。
 
 ## 5. 执行时复用现有验证入口
 
@@ -258,7 +272,7 @@ powershell -File scripts/win-cargo-test.ps1 --lib chat::sub_agent
 
 模块迁移后应改用新的测试过滤路径。全量 Rust 测试使用 `scripts/win-cargo-test.ps1`。涉及前端与共享协议时，执行 `npm run typecheck`、`npm run lint`、`npm run test` 和 `npm run architecture:check`；协议变化通过现有 `protocol:generate` 与 `protocol:check` 管理。
 
-SDK crate 的独立检查如下。可运行示例和公开 API 文档在 SDK-07 补齐。
+SDK crate 的独立检查如下。可运行示例及其四种模式见 SDK README。
 
 ```powershell
 cargo test --manifest-path crates/kivio-agent-sdk/Cargo.toml
@@ -272,8 +286,8 @@ SDK 的确定性测试先用脚本化模型与受控工具固定事件、请求�
 
 本计划采用 Foundational Thinking，先收敛类型与行为边界，再提取 crate。采用 Sequence Work into Verifiable Units，每批给出可观察验收结果并删除迁移后的旧路径。采用 Minimize Reader Load，以调用方需要了解的状态和执行顺序减少作为收益。
 
-SDK-01 至 SDK-06 已完成核心迁移、产品策略隔离和独立 crate 提取。独立消费者通过公开接口完成生产 HTTP 协议、工具、流事件、续聊与取消验证，并完成一次真实供应商调用。SDK-07 将补齐可运行示例、公开文档、独立 CI 和 Windows Dev 回归。未进行性能基准测试，不把这次架构提取称为提速。
+SDK-01 至 SDK-07 已完成。三个生产入口共用独立 crate，消费者通过公开接口完成生产 HTTP 协议、工具、流事件、续聊和取消验证。示例、公开文档、独立 CI、真实模型调用与 Windows Dev 回归均有上述证据。非 Windows CI 及可视 UI 的未测范围保留说明，不把工作流配置当作执行结果，也不把架构提取称为提速。
 
 进度检查点为七项串行实现，重叠文件不并行修改。调查和独立验证可以并行。每项记录变更提交、检查结果和未验证范围；当前不创建 PR、不启动定时任务，也不估算未经验证的工期。
 
-决策记录见 [SDK 规划决策记录](../research/kivio-agent-sdk-decisions.tsv)。下一项为 **SDK-07 固定首版消费方式与持续验收**。
+决策记录见 [SDK 规划决策记录](../research/kivio-agent-sdk-decisions.tsv)。本计划没有剩余实现项。后续按需要执行远程跨平台 CI 或另行决定公开发布。
