@@ -4,7 +4,7 @@ use serde_json::Value;
 use tauri::Manager;
 
 use crate::chat::model::{
-    GenerateOutput, GeneratedImageData, ModelError, PendingToolCall, StreamPart, StreamSink,
+    GenerateOutput, ModelError, PendingToolCall, StreamPart, StreamSink,
     WebCitation,
 };
 use crate::chat::types::{
@@ -19,8 +19,7 @@ use super::finalize::{build_web_search_record, build_web_search_segment};
 use super::host::AgentHost;
 use super::prepare::disabled_builtin_tool_feedback;
 use super::stop::{
-    empty_assistant_response_error, final_assistant_api_message, pending_tool_calls_from_dsml,
-    sanitize_assistant_text_response,
+    empty_assistant_response_error, pending_tool_calls_from_dsml, sanitize_assistant_text_response,
 };
 use super::types::AgentStreamPolicy;
 
@@ -762,9 +761,6 @@ impl StreamSink for AgentStreamSink<'_> {
                     self.reasoning_segment.as_ref(),
                 );
             }
-            StreamPart::Error { message } => {
-                return Err(ModelError::provider_stream_error(message))
-            }
             StreamPart::ToolCallStart { id, name } => self.emit_tool_call_start(id, name),
             StreamPart::ToolCallDelta { id, delta } => self.emit_tool_call_delta(id, delta)?,
             StreamPart::ToolCallDone { call } => self.emit_tool_call_done(&call)?,
@@ -856,177 +852,68 @@ pub fn should_flush_tool_planning_text_buffer(buffer: &str) -> bool {
     buffer.chars().count() >= 12 || buffer.contains('\n')
 }
 
-pub struct ChatStreamOutput {
-    pub canonical_message: Option<crate::chat::model::ModelMessage>,
-    pub content: String,
-    pub raw_content: String,
-    pub reasoning: Option<String>,
-    pub tool_calls: Vec<PendingToolCall>,
-    pub finish_reason: Option<String>,
-    pub cancelled: bool,
-    /// Provider-reported usage for this single model call (None when the
-    /// provider does not report usage or the stream was cancelled mid-flight).
-    pub usage: Option<crate::chat::model::ModelUsage>,
-    pub billing_usage: Option<crate::chat::model::ModelUsage>,
-    /// 模型原生内置联网搜索的解析结果（仅内置搜索发生时为 Some）。循环据此合成一张
-    /// 「网络搜索」工具卡（任务 07-23）。
-    pub web_search: Option<crate::chat::model::BuiltinWebSearch>,
-    /// 模型原生生成的图片（Gemini native image gen，任务 07-24）：finish 时聚合到
-    /// `GenerateOutput.images`，循环据此落成 assistant 消息级 artifacts。空 = 未出图。
-    pub images: Vec<GeneratedImageData>,
-    /// OpenAI Responses 的原生 reasoning items（含 encrypted_content）。必须随
-    /// `to_openai_compatible_message` 进入 runtime 历史，下一轮回放给模型——否则
-    /// 思维链在每个工具轮边界被斩断（gpt-5 系 agent 行为退化的根因）。
-    pub reasoning_items: Vec<crate::chat::model::ProviderReasoningItem>,
-}
-
-impl ChatStreamOutput {
-    pub fn new(content: String, reasoning: String, cancelled: bool) -> Self {
-        Self::from_generate_output(
-            content.clone(),
-            content,
-            reasoning,
-            Vec::new(),
-            None,
-            cancelled,
-        )
-    }
-
-    pub fn from_generate_output(
-        content: String,
-        raw_content: String,
-        reasoning: String,
-        tool_calls: Vec<PendingToolCall>,
-        finish_reason: Option<String>,
-        cancelled: bool,
-    ) -> Self {
-        Self {
-            canonical_message: None,
-            billing_usage: None,
-            content,
-            raw_content,
-            reasoning: if reasoning.trim().is_empty() {
-                None
-            } else {
-                Some(reasoning)
-            },
-            tool_calls,
-            finish_reason,
-            cancelled,
-            usage: None,
-            web_search: None,
-            images: Vec::new(),
-            reasoning_items: Vec::new(),
+pub(crate) fn normalize_stream_output(
+    mut output: GenerateOutput,
+    snapshot_content: String,
+    snapshot_reasoning: String,
+    policy: AgentStreamPolicy,
+) -> GenerateOutput {
+    if matches!(policy, AgentStreamPolicy::PlanningNoDoneUntilNoTools) {
+        if let Some(message) = &output.canonical_message {
+            output.text = message.text_content();
         }
     }
-
-    pub fn from_generate_output_with_snapshot(
-        output: GenerateOutput,
-        snapshot_content: String,
-        snapshot_reasoning: String,
-    ) -> Self {
-        let canonical_message = output.canonical_message;
-        let raw_content = if output.text.trim().is_empty() {
-            snapshot_content
-        } else {
-            output.text
-        };
-        let cleaned = sanitize_assistant_text_response(raw_content.trim());
-        let reasoning = output.reasoning.unwrap_or(snapshot_reasoning);
-        let web_search = output.web_search;
-        let images = output.images;
-        let mut result = Self::from_generate_output(
-            cleaned,
-            raw_content,
-            reasoning,
-            output.tool_calls,
-            output.finish_reason,
-            false,
-        );
-        result.canonical_message = canonical_message;
-        result.usage = output.usage;
-        result.billing_usage = output.billing_usage;
-        result.web_search = web_search;
-        result.images = images;
-        result.reasoning_items = output.reasoning_items;
-        result
+    if output.text.trim().is_empty() {
+        output.text = snapshot_content;
     }
-
-    pub fn to_openai_compatible_message(&self) -> Value {
-        if let Some(message) = &self.canonical_message {
-            if let Some(mut value) = crate::chat::model::openai_messages_from_model_messages(
-                std::slice::from_ref(message),
-            )
-            .into_iter()
-            .next()
-            {
-                if let Some(reason) = &self.finish_reason {
-                    value["finish_reason"] = Value::String(reason.clone());
-                }
-                return value;
-            }
-        }
-        let content = if self.raw_content.trim().is_empty() {
-            self.content.clone()
-        } else {
-            self.raw_content.clone()
-        };
-        let mut message = final_assistant_api_message(&content, self.reasoning.as_deref());
-        if !self.tool_calls.is_empty() {
-            message["tool_calls"] = Value::Array(
-                self.tool_calls
-                    .iter()
-                    .map(|call| {
-                        let mut tc = serde_json::json!({
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.function_name,
-                                "arguments": call.arguments_raw,
-                            }
-                        });
-                        // Gemini thoughtSignature：搭在自定义键上，经存储/回放 → canonical
-                        // MessagePart::ToolCall.signature → 回放时带回 functionCall（其他 provider 无此字段）。
-                        if let Some(signature) = &call.signature {
-                            tc["thought_signature"] = Value::String(signature.clone());
-                        }
-                        tc
-                    })
-                    .collect(),
-            );
-        }
-        if let Some(finish_reason) = self
-            .finish_reason
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            message["finish_reason"] = Value::String(finish_reason.to_string());
-        }
-        // Responses 原生 reasoning items 搭自定义键进历史（同 Gemini thought_signature
-        // 的方式）：经存储/回放 → MessagePart::ReasoningItem → 下一轮随 input 送回。
-        if !self.reasoning_items.is_empty() {
-            if let Ok(items) = serde_json::to_value(&self.reasoning_items) {
-                message["reasoning_items"] = items;
-            }
-        }
-        message
+    if output.reasoning.is_none() && !snapshot_reasoning.trim().is_empty() {
+        output.reasoning = Some(snapshot_reasoning);
     }
+    let dsml_calls = if matches!(policy, AgentStreamPolicy::PlanningNoDoneUntilNoTools)
+        && output.tool_calls.is_empty()
+    {
+        pending_tool_calls_from_dsml(&output.text)
+    } else {
+        Vec::new()
+    };
+    let cleaned = sanitize_assistant_text_response(output.text.trim());
+    if !dsml_calls.is_empty() {
+        let mut replay = output.replay_message();
+        replay.content.retain(|part| {
+            !matches!(
+                part,
+                crate::chat::model::MessagePart::Text { .. }
+                    | crate::chat::model::MessagePart::ToolCall { .. }
+            ) && !matches!(part, crate::chat::model::MessagePart::AnthropicNativeBlock { block, .. }
+            if block["type"] == "text")
+        });
+        if !cleaned.is_empty() {
+            replay.content.push(crate::chat::model::MessagePart::Text {
+                text: cleaned.clone(),
+            });
+        }
+        replay
+            .content
+            .extend(dsml_calls.iter().map(PendingToolCall::replay_part));
+        output.canonical_message = Some(replay);
+        output.tool_calls = dsml_calls;
+    }
+    output.text = cleaned;
+    output
 }
 
 pub fn validate_stream_output(
     label: &str,
     policy: AgentStreamPolicy,
-    output: &ChatStreamOutput,
+    output: &GenerateOutput,
 ) -> Result<(), String> {
-    let tool_calls_from_stream = !output.tool_calls.is_empty()
-        || !pending_tool_calls_from_dsml(&output.raw_content).is_empty();
+    let tool_calls_from_stream = !output.tool_calls.is_empty();
     // hosted 出图（Responses `image_generation_call` / Gemini inlineData）时正文本就是
     // 空串——图即答案。此时空正文不是失败，否则整轮报「空助手响应」而图被丢掉。
-    if output.content.trim().is_empty() && !output.images.is_empty() {
+    if output.text.trim().is_empty() && !output.images.is_empty() {
         return Ok(());
     }
-    if output.content.trim().is_empty() {
+    if output.text.trim().is_empty() {
         match policy {
             AgentStreamPolicy::SynthesisAlwaysDone => {
                 return Err(empty_assistant_response_error(label));
@@ -1043,6 +930,7 @@ pub fn validate_stream_output(
 
 #[cfg(test)]
 mod tests {
+    use crate::chat::model::{FinishReason, GeneratedImageData};
     use std::sync::Mutex;
 
     use super::*;
@@ -1398,14 +1286,7 @@ mod tests {
 
     #[test]
     fn synthesis_defer_empty_allows_agent_fallback_without_done() {
-        let output = ChatStreamOutput::from_generate_output(
-            String::new(),
-            String::new(),
-            String::new(),
-            Vec::new(),
-            Some("done".to_string()),
-            false,
-        );
+        let output = GenerateOutput::text(String::new(), None);
 
         assert!(validate_stream_output(
             "Chat stream",
@@ -1428,14 +1309,7 @@ mod tests {
     fn image_only_output_validates_despite_empty_text() {
         // 真机形态（xb1520 + gpt-5.6 走 Responses hosted image_generation_call）：正文空串、
         // 无工具调用，但出了图——图即答案。此前 planning 策略会判成「空助手响应」把图丢掉。
-        let mut output = ChatStreamOutput::from_generate_output(
-            String::new(),
-            String::new(),
-            String::new(),
-            Vec::new(),
-            Some("stop".to_string()),
-            false,
-        );
+        let mut output = GenerateOutput::text(String::new(), None);
         output.images = vec![GeneratedImageData {
             mime_type: "image/png".to_string(),
             data: "aGVsbG8=".to_string(),
@@ -1460,14 +1334,7 @@ mod tests {
 
     #[test]
     fn synthesis_defer_empty_emits_done_for_non_empty_output() {
-        let output = ChatStreamOutput::from_generate_output(
-            "final".to_string(),
-            "final".to_string(),
-            String::new(),
-            Vec::new(),
-            Some("done".to_string()),
-            false,
-        );
+        let output = GenerateOutput::text("final".to_string(), None);
 
         validate_stream_output(
             "Chat stream",
@@ -1625,8 +1492,6 @@ mod tests {
             .is_empty());
     }
 
-    /// Responses 原生 reasoning items 必须穿过 ChatStreamOutput 进入 runtime 历史
-    /// （planning 的 assistant 消息走这条路，不走 GenerateOutput 的转换）。
     #[test]
     fn stream_output_carries_reasoning_items_into_openai_message() {
         let output = crate::chat::model::GenerateOutput {
@@ -1641,8 +1506,7 @@ mod tests {
                 signature: None,
             }],
             usage: None,
-            finish_reason: Some("tool_calls".to_string()),
-            provider_messages: Vec::new(),
+            finish_reason: Some(FinishReason::from_openai("tool_calls")),
             cancelled: false,
             web_search: None,
             images: Vec::new(),
@@ -1656,12 +1520,16 @@ mod tests {
                 }),
             }],
         };
-        let stream_output = ChatStreamOutput::from_generate_output_with_snapshot(
+        let stream_output = normalize_stream_output(
             output,
             String::new(),
             String::new(),
+            AgentStreamPolicy::PlanningNoDoneUntilNoTools,
         );
-        let message = stream_output.to_openai_compatible_message();
+        let message = crate::chat::model::openai_messages_from_model_messages(&[
+            stream_output.replay_message()
+        ])
+        .remove(0);
         assert_eq!(message["reasoning_items"][0]["model"], "gpt-5.6");
         assert_eq!(message["reasoning_items"][0]["item"]["id"], "rs_1");
         assert_eq!(message["tool_calls"][0]["id"], "call_1");

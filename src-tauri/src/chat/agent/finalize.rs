@@ -1,6 +1,6 @@
-use serde_json::Value;
+use super::history::{export_history, RuntimeMessage};
 
-use crate::chat::model::{PendingToolCall, WebCitation};
+use crate::chat::model::{GenerateOutput, ModelMessage, PendingToolCall, WebCitation};
 use crate::chat::types::{
     ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase, ToolCallRecord,
     ToolCallStatus,
@@ -9,7 +9,7 @@ use crate::chat::types::{
 use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunIds, RunState};
 use super::stop::{
-    final_assistant_api_message, final_response_from_planning_message_with_images, merge_reasoning,
+    final_assistant_message, final_response_from_planning_message_with_images, merge_reasoning,
 };
 use super::stream::ToolCallDraftTracker;
 use super::synthesis::SynthesisCompleted;
@@ -24,6 +24,7 @@ pub(crate) struct RunResultBuilder<'a> {
     ids: RunIds<'a>,
     content: String,
     api_reasoning: Option<String>,
+    replay: Option<ModelMessage>,
     reasoning_tail: Option<String>,
     emit_segment: Option<ChatMessageSegment>,
     append_template: Option<ChatMessageSegment>,
@@ -41,6 +42,7 @@ impl<'a> RunResultBuilder<'a> {
             ids,
             content,
             api_reasoning: None,
+            replay: None,
             reasoning_tail: None,
             emit_segment: None,
             append_template: None,
@@ -68,6 +70,11 @@ impl<'a> RunResultBuilder<'a> {
 
     pub(crate) fn api_reasoning(mut self, reasoning: Option<String>) -> Self {
         self.api_reasoning = reasoning;
+        self
+    }
+
+    pub(crate) fn replay(mut self, message: Option<ModelMessage>) -> Self {
+        self.replay = message;
         self
     }
 
@@ -113,7 +120,7 @@ impl<'a> RunResultBuilder<'a> {
         }
     }
 
-    fn push_api_message(&self, generated_api_messages: &mut Vec<Value>) {
+    fn push_api_message(&self, generated_api_messages: &mut Vec<RuntimeMessage>) {
         if self.outcome == "cancelled"
             && self.content.is_empty()
             && self.api_reasoning.as_deref().is_none_or(str::is_empty)
@@ -121,17 +128,19 @@ impl<'a> RunResultBuilder<'a> {
             return;
         }
         if self.push_api_always || !generated_api_messages.is_empty() {
-            generated_api_messages.push(final_assistant_api_message(
-                &self.content,
-                self.api_reasoning.as_deref(),
-            ));
+            generated_api_messages.push(RuntimeMessage::model(self.replay.clone().unwrap_or_else(
+                || final_assistant_message(&self.content, self.api_reasoning.as_deref()),
+            )));
         }
     }
 
     /// Emit + api push only, for fallbacks that flow into the common loop tail
     /// (segment append and result construction happen there). Returns the
     /// fallback content.
-    pub(crate) fn emit_and_record(self, generated_api_messages: &mut Vec<Value>) -> String {
+    pub(crate) fn emit_and_record(
+        self,
+        generated_api_messages: &mut Vec<RuntimeMessage>,
+    ) -> String {
         self.emit();
         self.push_api_message(generated_api_messages);
         self.content
@@ -144,7 +153,7 @@ impl<'a> RunResultBuilder<'a> {
         mut segment_builder: SegmentBuilder,
         planning_reasoning_parts: &[String],
         tool_records: Vec<ToolCallRecord>,
-        mut generated_api_messages: Vec<Value>,
+        mut generated_api_messages: Vec<RuntimeMessage>,
     ) -> AgentRunResult {
         self.emit();
         self.push_api_message(&mut generated_api_messages);
@@ -152,11 +161,12 @@ impl<'a> RunResultBuilder<'a> {
             segment_builder.append_text_from_template(template, self.content.clone());
         }
         AgentRunResult {
+            final_message: self.replay,
             content: self.content,
             reasoning: merge_reasoning(planning_reasoning_parts, self.reasoning_tail),
             tool_records,
             segments: segment_builder.all(),
-            api_messages: generated_api_messages,
+            api_messages: export_history(&generated_api_messages),
             stream_outcome: self.outcome.to_string(),
             usage: None,
             cache_pairs: None,
@@ -300,35 +310,30 @@ pub(crate) fn segment_phase_for_agent_phase(phase: AgentPhase) -> ChatMessageSeg
 
 /// Final result when planning ended with a natural answer (no tool calls left).
 pub(crate) fn finalize_planning_final(
-    env: &LoopEnv<'_>,
     state: &mut RunState,
-    message: Value,
+    message: GenerateOutput,
 ) -> Result<AgentRunResult, String> {
-    let config = env.config;
     let (response, reasoning) = final_response_from_planning_message_with_images(
         &message,
         &state.planning_reasoning_parts,
         !state.generated_images.is_empty(),
     )?;
-    if !state.planning_final_streamed {
-        env.host.emit_stream_delta(
-            &config.conversation_id,
-            &config.run_id,
-            &config.message_id,
-            &response,
-            None,
-            None,
-        );
-    }
-    if !state.generated_api_messages.is_empty() || message.get("anthropic_content").is_some() {
-        state.generated_api_messages.push(message);
+    let replay = message.replay_message();
+    if !state.generated_api_messages.is_empty()
+        || message.canonical_message.is_some()
+        || !message.reasoning_items.is_empty()
+    {
+        state
+            .generated_api_messages
+            .push(RuntimeMessage::model(replay.clone()));
     }
     Ok(AgentRunResult {
+        final_message: Some(replay),
         content: response,
         reasoning,
         tool_records: std::mem::take(&mut state.tool_records),
         segments: std::mem::take(&mut state.segment_builder).all(),
-        api_messages: std::mem::take(&mut state.generated_api_messages),
+        api_messages: export_history(&std::mem::take(&mut state.generated_api_messages)),
         stream_outcome: "completed".to_string(),
         usage: None,
         cache_pairs: None,
@@ -349,6 +354,7 @@ pub(crate) fn finalize_completed(
     completed: SynthesisCompleted,
 ) -> AgentRunResult {
     let SynthesisCompleted {
+        replay,
         response,
         reasoning,
         response_reasoning,
@@ -371,11 +377,12 @@ pub(crate) fn finalize_completed(
     }
 
     AgentRunResult {
+        final_message: replay,
         content: response,
         reasoning,
         tool_records: std::mem::take(&mut state.tool_records),
         segments: std::mem::take(&mut state.segment_builder).all(),
-        api_messages: std::mem::take(&mut state.generated_api_messages),
+        api_messages: export_history(&std::mem::take(&mut state.generated_api_messages)),
         stream_outcome: "completed".to_string(),
         usage: None,
         cache_pairs: None,
@@ -419,7 +426,7 @@ pub(crate) fn tool_planning_failed_run_result(
     planning_text_segment: ChatMessageSegment,
     tool_draft_tracker: ToolCallDraftTracker,
     planning_reasoning_parts: &[String],
-    generated_api_messages: Vec<Value>,
+    generated_api_messages: Vec<RuntimeMessage>,
     error: String,
 ) -> AgentRunResult {
     let failed_records = tool_draft_tracker.mark_error(&error);
@@ -465,14 +472,15 @@ pub(crate) fn cancelled_tool_round_run_result(
     planning_reasoning_parts: &[String],
     tool_records: Vec<ToolCallRecord>,
     segments: Vec<ChatMessageSegment>,
-    generated_api_messages: Vec<Value>,
+    generated_api_messages: Vec<RuntimeMessage>,
 ) -> AgentRunResult {
     AgentRunResult {
+        final_message: None,
         content: String::new(),
         reasoning: merge_reasoning(planning_reasoning_parts, None),
         tool_records,
         segments,
-        api_messages: generated_api_messages,
+        api_messages: export_history(&generated_api_messages),
         stream_outcome: "cancelled".to_string(),
         usage: None,
         cache_pairs: None,

@@ -1,3 +1,6 @@
+pub use crate::chat::model::ModelArtifact as ChatToolArtifact;
+use crate::chat::model::ModelTool;
+
 use serde::{Deserialize, Serialize};
 
 use crate::settings::{ChatMcpServer, ChatNativeToolsConfig};
@@ -76,6 +79,16 @@ pub struct ChatToolDefinition {
     pub output_schema: Option<serde_json::Value>,
 }
 
+impl From<&ChatToolDefinition> for ModelTool {
+    fn from(tool: &ChatToolDefinition) -> Self {
+        Self {
+            name: tool.openai_tool_name(),
+            description: tool.description.clone(),
+            input_schema: tool.input_schema.clone(),
+        }
+    }
+}
+
 impl ChatToolDefinition {
     pub fn openai_tool_name(&self) -> String {
         wire_tool_name(
@@ -139,21 +152,6 @@ pub struct McpToolCallResult {
     /// text, so the actual image rides here as a follow-up user message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub follow_up_user_messages: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatToolArtifact {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub name: String,
-    #[serde(alias = "mimeType")]
-    pub mime_type: String,
-    #[serde(alias = "dataUrl")]
-    pub data_url: String,
-    #[serde(default, alias = "sizeBytes")]
-    pub size_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

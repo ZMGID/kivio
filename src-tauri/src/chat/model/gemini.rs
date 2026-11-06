@@ -1,15 +1,14 @@
+use super::{FinishKind, FinishReason, ModelTransport, ProviderConfig};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING};
 use serde_json::Value;
 
-use crate::api::{send_with_failover, with_chat_request_timeout};
+use crate::api::{send_model_with_failover, with_chat_request_timeout};
 use crate::provider_oauth::antigravity;
-use crate::settings::ModelProvider;
-use crate::state::AppState;
 use crate::usage::{
-    chat_usage_source_for_label, error_kind_from_message, operation_from_label, record_model_call,
-    UsageRecordInput,
+    chat_usage_source_for_label, error_kind_from_message, operation_from_label, UsageRecordInput,
 };
 
+use super::error::provider_error_code;
 use super::{
     parse_tool_arguments, stream_read_error, BuiltinWebSearch, FirstTokenStreamSink,
     GenerateOutput, GenerateRequest, GeneratedImageData, LanguageModelProvider, MessagePart,
@@ -21,10 +20,9 @@ use super::{
 /// 用 Gemini 原生协议，天然不发 OpenAI 专有字段（`promptCacheKey`/`tool_choice`/…），
 /// 绕开 Gemini OpenAI-compat 端点对未知 body 字段的 400 严格校验。
 /// wire 形状据 opencode 真实流量确认（见任务 research/opencode-real-traffic.md）。
-pub struct GeminiProvider<'a> {
-    state: &'a AppState,
-    provider: &'a ModelProvider,
-    retry_attempts: usize,
+pub(super) struct GeminiProvider<'a> {
+    transport: ModelTransport<'a>,
+    config: ProviderConfig<'a>,
 }
 
 struct DiscardSink;
@@ -35,12 +33,8 @@ impl StreamSink for DiscardSink {
 }
 
 impl<'a> GeminiProvider<'a> {
-    pub fn new(state: &'a AppState, provider: &'a ModelProvider, retry_attempts: usize) -> Self {
-        Self {
-            state,
-            provider,
-            retry_attempts,
-        }
+    pub(super) fn new(transport: ModelTransport<'a>, config: ProviderConfig<'a>) -> Self {
+        Self { transport, config }
     }
 }
 
@@ -60,7 +54,7 @@ impl LanguageModelProvider for GeminiProvider<'_> {
 
 impl GeminiProvider<'_> {
     async fn generate_inner(&self, request: GenerateRequest) -> Result<GenerateOutput, ModelError> {
-        if antigravity::is_provider(self.provider) {
+        if self.config.antigravity {
             return self.stream_inner(request, &mut DiscardSink).await;
         }
         let label = request_label(&request, "Gemini generateContent");
@@ -68,38 +62,51 @@ impl GeminiProvider<'_> {
         let started = std::time::Instant::now();
         let body = self.request_body(&request, false);
         if crate::chat::video::has_video(&request) {
-            crate::chat::video::validate_request(self.provider, &request)?;
+            crate::chat::video::validate_request(self.config.source, &request)?;
             crate::chat::video::validate_body(&body)?;
         }
         let url = self.endpoint_url(&request.model, false);
-        let response = send_with_failover(
-            self.state,
+        let response = send_model_with_failover(
+            self.transport.runtime,
             &label,
-            self.retry_attempts,
-            &self.provider.id,
-            &self.provider.api_keys,
+            self.transport.retry_attempts,
+            self.config.id,
+            self.config.api_keys,
             |key| {
                 with_chat_request_timeout(crate::api::attach_json_body(
                     crate::provider_request::apply(
-                        self.state
-                            .client_for(self.provider)
+                        self.transport
+                            .client
                             .post(&url)
                             .headers(self.auth_headers(key))
                             .header(ACCEPT_ENCODING, "identity"),
-                        self.provider,
+                        self.config.source,
                         request.metadata.conversation_id.as_deref(),
                     ),
                     &body,
-                    self.provider.compress_request_body,
+                    self.config.compress_request_body,
                 ))
                 .send()
             },
         )
         .await
         .map_err(|err| {
-            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
-            self.record_debug_failure(&request, &label, false, &err, started_at, started.elapsed());
-            ModelError::new(err)
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.message,
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &err.message,
+                started_at,
+                started.elapsed(),
+            );
+            err
         })?;
 
         let raw = response.text().await.map_err(|err| {
@@ -157,7 +164,7 @@ impl GeminiProvider<'_> {
         request: GenerateRequest,
         sink: &mut (dyn StreamSink + Send),
     ) -> Result<GenerateOutput, ModelError> {
-        if antigravity::is_provider(self.provider) && request.options.builtin_web_search {
+        if self.config.antigravity && request.options.builtin_web_search {
             return Err(ModelError::new("Antigravity does not support built-in Google Search here. Turn off native search or use agent web-search tools."));
         }
         let label = request_label(&request, "Gemini stream");
@@ -167,38 +174,51 @@ impl GeminiProvider<'_> {
         let sink = &mut measured_sink;
         let body = self.request_body(&request, true);
         if crate::chat::video::has_video(&request) {
-            crate::chat::video::validate_request(self.provider, &request)?;
+            crate::chat::video::validate_request(self.config.source, &request)?;
             crate::chat::video::validate_body(&body)?;
         }
         let url = self.endpoint_url(&request.model, true);
-        let mut response = send_with_failover(
-            self.state,
+        let mut response = send_model_with_failover(
+            self.transport.runtime,
             &label,
-            self.retry_attempts,
-            &self.provider.id,
-            &self.provider.api_keys,
+            self.transport.retry_attempts,
+            self.config.id,
+            self.config.api_keys,
             |key| {
                 crate::api::attach_json_body(
                     crate::provider_request::apply(
-                        self.state
-                            .client_for(self.provider)
+                        self.transport
+                            .client
                             .post(&url)
                             .headers(self.auth_headers(key))
                             .header(ACCEPT_ENCODING, "identity"),
-                        self.provider,
+                        self.config.source,
                         request.metadata.conversation_id.as_deref(),
                     ),
                     &body,
-                    self.provider.compress_request_body,
+                    self.config.compress_request_body,
                 )
                 .send()
             },
         )
         .await
         .map_err(|err| {
-            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
-            self.record_debug_failure(&request, &label, true, &err, started_at, started.elapsed());
-            ModelError::new(err)
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.message,
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                true,
+                &err.message,
+                started_at,
+                started.elapsed(),
+            );
+            err
         })?;
 
         let mut sse = super::sse::SseDecoder::default();
@@ -207,7 +227,7 @@ impl GeminiProvider<'_> {
         let mut tool_calls: Vec<PendingToolCall> = Vec::new();
         // thoughtSignature 兜底（跨 chunk 记住，functionCall 自身没有时回退用它）。
         let mut carry_sig: Option<String> = None;
-        let mut finish_reason = "stop".to_string();
+        let mut finish_reason = None;
         let mut usage: Option<ModelUsage> = None;
         let mut saw_terminal = false;
         // 内置搜索引用：groundingMetadata 通常在末段 chunk，逐段合并兜底。
@@ -246,16 +266,12 @@ impl GeminiProvider<'_> {
                 let Ok(mut value) = serde_json::from_str::<Value>(data) else {
                     continue;
                 };
-                if antigravity::is_provider(self.provider) {
+                if self.config.antigravity {
                     value = antigravity::unwrap_response(value);
                 }
                 if let Some(err) = gemini_error_message(&value) {
-                    sink.emit(StreamPart::Error {
-                        message: err.clone(),
-                    })?;
-                    return Err(ModelError::provider_stream_error(format!(
-                        "Gemini stream error: {err}"
-                    )));
+                    let code = provider_error_code(&value["error"]);
+                    return Err(ModelError::from_provider_stream(code.as_deref(), err));
                 }
                 // 逐 part：text/thought → 增量；functionCall → 完整工具调用。
                 // 先整块预扫一个候选签名（thoughtSignature 可能在 functionCall 兄弟 part 上、
@@ -296,7 +312,7 @@ impl GeminiProvider<'_> {
                 }
                 if let Some(reason) = gemini_finish_reason_str(&value) {
                     saw_terminal = true;
-                    finish_reason = reason;
+                    finish_reason = Some(reason);
                 }
                 if let Some(next_usage) = gemini_usage(&value) {
                     if let Some(input_tokens) = next_usage.input_tokens {
@@ -345,7 +361,8 @@ impl GeminiProvider<'_> {
             return Err(err);
         }
         // 有工具调用则结束原因归一为 tool_calls（Gemini 常仍返回 STOP）。
-        let finish_reason = normalize_finish_reason(&finish_reason, !tool_calls.is_empty());
+        let finish_reason =
+            normalize_finish_reason(finish_reason.as_deref(), !tool_calls.is_empty());
         sink.emit(StreamPart::Finish {
             reason: finish_reason.clone(),
             full: full.clone(),
@@ -373,17 +390,17 @@ impl GeminiProvider<'_> {
     }
 
     fn endpoint_url(&self, model: &str, stream: bool) -> String {
-        if antigravity::is_provider(self.provider) {
+        if self.config.antigravity {
             return format!(
                 "{}/v1internal:streamGenerateContent?alt=sse",
                 antigravity::BASE
             );
         }
-        gemini_url(&self.provider.base_url, model, stream)
+        gemini_url(self.config.base_url, model, stream)
     }
 
     fn auth_headers(&self, key: &str) -> HeaderMap {
-        if antigravity::is_provider(self.provider) {
+        if self.config.antigravity {
             HeaderMap::new()
         } else {
             gemini_headers(key).unwrap_or_default()
@@ -393,7 +410,7 @@ impl GeminiProvider<'_> {
     fn request_body(&self, request: &GenerateRequest, _stream: bool) -> Value {
         // 注意：Gemini 的 model/method/stream 都在 URL 上，不在 body 里。
         let mut body = serde_json::json!({
-            "contents": contents_with_tool_ids(request, antigravity::is_provider(self.provider) && (request.model.starts_with("claude-") || request.model.starts_with("gpt-oss-"))),
+            "contents": contents_with_tool_ids(request, self.config.antigravity && (request.model.starts_with("claude-") || request.model.starts_with("gpt-oss-"))),
             "generationConfig": {},
         });
         if request.options.max_tokens > 0 {
@@ -401,7 +418,7 @@ impl GeminiProvider<'_> {
         }
         if let Some(temperature) = crate::chat::model_metadata::temperature_for_request(
             request.options.temperature,
-            Some(self.provider),
+            Some(self.config.source),
             &request.model,
         ) {
             body["generationConfig"]["temperature"] = serde_json::json!(temperature);
@@ -463,8 +480,8 @@ impl GeminiProvider<'_> {
             body.as_object_mut().unwrap().remove("tools");
             body["toolConfig"] = serde_json::json!({ "functionCallingConfig": { "mode": "NONE" } });
         }
-        if antigravity::is_provider(self.provider) {
-            antigravity::wrap_request(self.provider, &request.model, body)
+        if self.config.antigravity {
+            antigravity::wrap_request(self.config.source, &request.model, body)
         } else {
             body
         }
@@ -476,15 +493,15 @@ impl GeminiProvider<'_> {
         metadata: &crate::chat::model::RequestMetadata,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
-        if let Some(key) = self.provider.preferred_api_key() {
-            if !antigravity::is_provider(self.provider) {
+        if let Some(key) = self.config.preferred_api_key {
+            if !self.config.antigravity {
                 headers.insert("x-goog-api-key".to_string(), key.to_string());
             }
         }
         headers.insert("content-type".to_string(), "application/json".to_string());
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
         for (name, value) in crate::provider_request::header_pairs(
-            self.provider,
+            self.config.source,
             metadata.conversation_id.as_deref(),
         ) {
             headers.insert(name, value);
@@ -501,12 +518,12 @@ impl GeminiProvider<'_> {
         started_at: i64,
         duration: std::time::Duration,
     ) {
-        if !self.state.request_debug_enabled() {
+        let Some(debug) = (self.transport.request_debug)() else {
             return;
-        }
+        };
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
-                provider: self.provider,
+                provider: self.config.source,
                 request,
                 label,
                 started_at,
@@ -522,7 +539,7 @@ impl GeminiProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        debug.record(record);
     }
 
     fn record_debug_failure(
@@ -534,12 +551,12 @@ impl GeminiProvider<'_> {
         started_at: i64,
         duration: std::time::Duration,
     ) {
-        if !self.state.request_debug_enabled() {
+        let Some(debug) = (self.transport.request_debug)() else {
             return;
-        }
+        };
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
-                provider: self.provider,
+                provider: self.config.source,
                 request,
                 label,
                 started_at,
@@ -555,7 +572,7 @@ impl GeminiProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        debug.record(record);
     }
 
     fn record_usage_success(
@@ -577,26 +594,23 @@ impl GeminiProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: "success",
-                status_code: Some(200),
-                usage,
-                usage_source: "provider_reported",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: None,
-            },
-        );
+        (self.transport.record_usage)(UsageRecordInput {
+            provider: self.config.source,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: None,
+        });
     }
 
     fn record_usage_failure(
@@ -617,26 +631,23 @@ impl GeminiProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: crate::usage::failure_status_from_message(error),
-                status_code: crate::api::extract_status_code(error),
-                usage: None,
-                usage_source: "missing",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms: None,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: Some(error_kind_from_message(error)),
-            },
-        );
+        (self.transport.record_usage)(UsageRecordInput {
+            provider: self.config.source,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: crate::usage::failure_status_from_message(error),
+            status_code: crate::api::extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms: None,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: Some(error_kind_from_message(error)),
+        });
     }
 }
 
@@ -872,8 +883,8 @@ pub fn gemini_function_declarations(tools: &[ModelTool]) -> Vec<Value> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for tool in tools {
-        let name = tool.openai_tool_name();
-        if name.is_empty() || !seen.insert(name.clone()) {
+        let name = &tool.name;
+        if name.is_empty() || !seen.insert(name) {
             continue;
         }
         out.push(serde_json::json!({
@@ -971,7 +982,11 @@ pub fn output_from_gemini_response(
     label: &str,
 ) -> Result<GenerateOutput, ModelError> {
     if let Some(msg) = gemini_error_message(value) {
-        return Err(ModelError::new(format!("{label}: {msg}")));
+        let code = provider_error_code(&value["error"]);
+        return Err(ModelError::from_provider_payload(
+            code.as_deref(),
+            format!("{label}: {msg}"),
+        ));
     }
     let mut content_parts: Vec<String> = Vec::new();
     let mut reasoning_parts: Vec<String> = Vec::new();
@@ -996,7 +1011,7 @@ pub fn output_from_gemini_response(
         }
     }
     let finish_reason = normalize_finish_reason(
-        gemini_finish_reason_str(value).as_deref().unwrap_or("stop"),
+        gemini_finish_reason_str(value).as_deref(),
         !tool_calls.is_empty(),
     );
     let content = content_parts.join("");
@@ -1006,19 +1021,12 @@ pub fn output_from_gemini_response(
         Some(reasoning_parts.join(""))
     };
     let usage = gemini_usage(value);
-    let provider_message = openai_compatible_message(
-        &content,
-        reasoning.as_deref(),
-        &tool_calls,
-        Some(&finish_reason),
-    );
     Ok(GenerateOutput {
         text: content,
         reasoning,
         tool_calls,
         usage,
         finish_reason: Some(finish_reason),
-        provider_messages: vec![provider_message],
         cancelled: false,
         web_search: web_search_from_gemini_value(value),
         images,
@@ -1246,22 +1254,21 @@ fn gemini_finish_reason_str(value: &Value) -> Option<String> {
 }
 
 /// Gemini finishReason → canonical。有工具调用时恒为 tool_calls（Gemini 常仍返回 STOP）。
-fn normalize_finish_reason(reason: &str, has_tool_calls: bool) -> String {
+fn normalize_finish_reason(reason: Option<&str>, has_tool_calls: bool) -> FinishReason {
     if has_tool_calls {
-        return "tool_calls".to_string();
+        return FinishReason::new(FinishKind::ToolCalls, reason.unwrap_or_default());
     }
-    match reason {
-        "STOP" => "stop",
-        "MAX_TOKENS" => "length",
-        other => {
-            if other.eq_ignore_ascii_case("stop") {
-                "stop"
-            } else {
-                return other.to_ascii_lowercase();
-            }
-        }
+    let Some(reason) = reason else {
+        return FinishReason::new(FinishKind::Stop, "");
+    };
+    if reason.eq_ignore_ascii_case("stop") {
+        return FinishReason::new(FinishKind::Stop, reason);
     }
-    .to_string()
+    if reason == "MAX_TOKENS" {
+        return FinishReason::new(FinishKind::Length, reason);
+    }
+    let legacy = reason.to_ascii_lowercase();
+    FinishReason::new(FinishReason::from_openai(&legacy).kind, reason).with_legacy_name(&legacy)
 }
 
 fn gemini_usage(value: &Value) -> Option<ModelUsage> {
@@ -1289,65 +1296,20 @@ fn gemini_error_message(value: &Value) -> Option<String> {
     })
 }
 
-fn openai_compatible_message(
-    text: &str,
-    reasoning: Option<&str>,
-    tool_calls: &[PendingToolCall],
-    finish_reason: Option<&str>,
-) -> Value {
-    let mut message = serde_json::json!({
-        "role": "assistant",
-        "content": if text.is_empty() { Value::Null } else { Value::String(text.to_string()) },
-    });
-    if let Some(reasoning) = reasoning.map(str::trim).filter(|v| !v.is_empty()) {
-        message["reasoning_content"] = Value::String(reasoning.to_string());
-    }
-    if !tool_calls.is_empty() {
-        message["tool_calls"] = Value::Array(
-            tool_calls
-                .iter()
-                .map(|call| {
-                    let mut tc = serde_json::json!({
-                        "id": call.id,
-                        "type": "function",
-                        "function": { "name": call.function_name, "arguments": call.arguments_raw }
-                    });
-                    // Gemini thoughtSignature：写在自定义键上，经存储/回放带回（其他 provider 忽略）。
-                    if let Some(sig) = &call.signature {
-                        tc["thought_signature"] = Value::String(sig.clone());
-                    }
-                    tc
-                })
-                .collect(),
-        );
-    }
-    if let Some(finish_reason) = finish_reason {
-        message["finish_reason"] = Value::String(finish_reason.to_string());
-    }
-    message
-}
-
 fn stream_output(
     text: String,
     reasoning: String,
     tool_calls: Vec<PendingToolCall>,
-    finish_reason: String,
+    finish_reason: FinishReason,
     usage: Option<ModelUsage>,
 ) -> GenerateOutput {
     let reasoning = non_empty(reasoning);
-    let provider_message = openai_compatible_message(
-        &text,
-        reasoning.as_deref(),
-        &tool_calls,
-        Some(&finish_reason),
-    );
     GenerateOutput {
         text,
         reasoning,
         tool_calls,
         usage,
         finish_reason: Some(finish_reason),
-        provider_messages: vec![provider_message],
         cancelled: false,
         web_search: None,
         images: Vec::new(),
@@ -1406,7 +1368,11 @@ mod tests {
             std::env::temp_dir(),
         );
         let p = provider();
-        GeminiProvider::new(&state, &p, 1).request_body(request, stream)
+        GeminiProvider::new(
+            ModelTransport::for_test(&state, &p),
+            ProviderConfig::from_settings(&p),
+        )
+        .request_body(request, stream)
     }
 
     #[test]
@@ -1423,7 +1389,10 @@ mod tests {
             project_id: Some("account-project".into()),
         });
         crate::provider_oauth::validate_provider(&p).unwrap();
-        let adapter = GeminiProvider::new(&state, &p, 1);
+        let adapter = GeminiProvider::new(
+            ModelTransport::for_test(&state, &p),
+            ProviderConfig::from_settings(&p),
+        );
         let request = GenerateRequest {
             model: "claude-test-thinking".into(),
             system: "System prompt".into(),
@@ -1456,6 +1425,15 @@ mod tests {
         let output = output_from_gemini_response(&value, "Antigravity fixture").unwrap();
         assert_eq!(output.tool_calls[0].id, "server-call");
         assert_eq!(output.tool_calls[0].signature.as_deref(), Some("signature"));
+        let saved = serde_json::to_vec(&output.replay_message()).unwrap();
+        let mut replay_request = request;
+        replay_request
+            .messages
+            .push(serde_json::from_slice(&saved).unwrap());
+        let replay = contents_with_tool_ids(&replay_request, true);
+        let call = &replay[1]["parts"][1];
+        assert_eq!(call["functionCall"]["id"], "server-call");
+        assert_eq!(call["thoughtSignature"], "signature");
         p.base_url = "https://example.com".into();
         assert!(crate::provider_oauth::validate_provider(&p).is_err());
     }
@@ -1714,7 +1692,11 @@ mod tests {
             },
             metadata: Default::default(),
         };
-        GeminiProvider::new(&state, &p, 1).request_body(&request, false)
+        GeminiProvider::new(
+            ModelTransport::for_test(&state, &p),
+            ProviderConfig::from_settings(&p),
+        )
+        .request_body(&request, false)
     }
 
     #[test]
@@ -1768,12 +1750,8 @@ mod tests {
                 content: vec![MessagePart::Text { text: "hi".into() }],
             }],
             tools: vec![ModelTool {
-                id: "native__glob".into(),
                 name: "glob".into(),
                 description: "find files".into(),
-                source: "native".into(),
-                server_id: None,
-                server_name: None,
                 input_schema: serde_json::json!({
                     "type": "object",
                     "$schema": "http://json-schema.org/draft-07/schema#",
@@ -1781,7 +1759,6 @@ mod tests {
                     "properties": { "pattern": { "type": "string" } },
                     "required": ["pattern"]
                 }),
-                sensitive: false,
             }],
             options: GenerateOptions::default(),
             metadata: Default::default(),
@@ -1938,7 +1915,10 @@ mod tests {
         });
         let out = output_from_gemini_response(&response, "test").expect("output");
         assert_eq!(out.text, "收到");
-        assert_eq!(out.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            out.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("stop")
+        );
         assert!(out.tool_calls.is_empty());
         assert_eq!(out.usage.as_ref().and_then(|u| u.total_tokens), Some(9456));
         assert_eq!(out.usage.as_ref().and_then(|u| u.input_tokens), Some(9449));
@@ -1960,7 +1940,10 @@ mod tests {
         assert_eq!(out.tool_calls[0].arguments["pattern"], "*.rs");
         assert!(out.tool_calls[0].id.starts_with("call_"));
         // 由 functionCall 存在推导 tool_calls（而非 STOP→stop）
-        assert_eq!(out.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(
+            out.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("tool_calls")
+        );
     }
 
     #[test]

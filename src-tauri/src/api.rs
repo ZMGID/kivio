@@ -26,6 +26,7 @@ use crate::chat::model::{
     MessagePart, ModelError, ModelErrorKind, ModelMessage, ModelRole, RequestMetadata, StreamPart,
     StreamSink,
 };
+use crate::chat::provider_runtime::ProviderRuntimeState;
 use crate::lens_commands::resolve_explain_image_path;
 use crate::prompts::COMBINED_TRANSLATE_SEPARATOR;
 use crate::settings::{
@@ -334,62 +335,6 @@ fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
         .and_then(|value| value.parse::<u64>().ok())
 }
 
-/// 判断请求错误是否可重试
-/// 包括建立连接失败、超时，以及发送请求时连接被代理/上游切断。
-pub(crate) fn is_invalid_image_error(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    ["image", "图片", "base64", "mime", "media type"]
-        .iter()
-        .any(|word| lower.contains(word))
-        && [
-            "invalid",
-            "decode",
-            "corrupt",
-            "format",
-            "unsupported",
-            "too large",
-            "size",
-            "dimension",
-            "exceeds",
-            "损坏",
-            "格式",
-            "超过",
-            "超出",
-        ]
-        .iter()
-        .any(|word| lower.contains(word))
-}
-
-/// Provider errors that require changing input, credentials or account state.
-/// Shared by HTTP rate-limit handling and errors delivered inside a successful SSE response.
-pub(crate) fn is_permanent_provider_error(message: &str) -> bool {
-    if is_invalid_image_error(message) {
-        return true;
-    }
-    let lower = message.to_ascii_lowercase();
-    [
-        "insufficient_quota",
-        "out of budget",
-        "quota exceeded",
-        "billing",
-        "available balance",
-        "monthly usage limit reached",
-        "gousagelimiterror",
-        "freeusagelimiterror",
-        "subscription_sharing_usage_limit_exceeded",
-        "subscription_sharing_workplace_individual_usage_limit_exceeded",
-        "invalid_request_error",
-        "invalid_argument",
-        "authentication_error",
-        "permission_denied",
-        "permission_error",
-        "invalid_api_key",
-        "unsupported_format",
-    ]
-    .iter()
-    .any(|code| lower.contains(code))
-}
-
 fn is_retryable_error(error: &reqwest::Error) -> bool {
     error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
 }
@@ -447,36 +392,7 @@ fn retry_delay_ms(attempt: usize, retry_after: Option<u64>) -> u64 {
         .min(RETRY_MAX_DELAY_MS)
 }
 
-fn parse_leading_status_code(value: &str) -> Option<u16> {
-    let end = value
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(value.len());
-    if end == 0 {
-        return None;
-    }
-    value[..end].parse().ok()
-}
-
-/// 从 HTTP 错误信息中提取状态码
-/// 格式约定：`"{label} Error: {status} - {body}"`，
-/// status 形如 `"429 Too Many Requests"`，第一段数字即可
-/// 兼容少数防御性分支使用的 `"{label} HTTP {status}: {body}"`。
-/// 网络错误（reqwest::Error 路径）格式为 `"{label} Error: <reqwest msg>"`，无前导数字 → 返回 None
-pub fn extract_status_code(err_msg: &str) -> Option<u16> {
-    if let Some(idx) = err_msg.find(" Error: ") {
-        let rest = &err_msg[idx + " Error: ".len()..];
-        if let Some(code) = parse_leading_status_code(rest) {
-            return Some(code);
-        }
-    }
-
-    if let Some(idx) = err_msg.find(" HTTP ") {
-        let rest = &err_msg[idx + " HTTP ".len()..];
-        return parse_leading_status_code(rest);
-    }
-
-    None
-}
+pub use crate::chat::model::extract_status_code;
 
 /// 判断错误信息是否触发 key failover（外层换 key 决策）
 /// 严格按 HTTP 状态码：401/402/403/429 才换 key —— 与 key 直接相关的错误：
@@ -516,8 +432,32 @@ where
     F: Fn(&str) -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
 {
+    send_model_with_failover(
+        state.provider_runtime(),
+        label,
+        attempts,
+        provider_id,
+        api_keys,
+        send,
+    )
+    .await
+    .map_err(|error| error.message)
+}
+
+pub(crate) async fn send_model_with_failover<F, Fut>(
+    runtime: &ProviderRuntimeState,
+    label: &str,
+    attempts: usize,
+    provider_id: &str,
+    api_keys: &[String],
+    send: F,
+) -> Result<reqwest::Response, ModelError>
+where
+    F: Fn(&str) -> Fut,
+    Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
+{
     send_with_failover_cancelable(
-        state,
+        runtime,
         label,
         attempts,
         provider_id,
@@ -529,14 +469,14 @@ where
 }
 
 async fn send_with_failover_cancelable<F, Fut, C>(
-    state: &AppState,
+    runtime: &ProviderRuntimeState,
     label: &str,
     attempts: usize,
     provider_id: &str,
     api_keys: &[String],
     is_cancelled: C,
     send: F,
-) -> Result<reqwest::Response, String>
+) -> Result<reqwest::Response, ModelError>
 where
     F: Fn(&str) -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
@@ -545,7 +485,7 @@ where
     with_retry_budget(
         attempts,
         send_with_failover_budgeted(
-            state,
+            runtime,
             label,
             attempts,
             provider_id,
@@ -558,14 +498,14 @@ where
 }
 
 async fn send_with_failover_budgeted<F, Fut, C>(
-    state: &AppState,
+    runtime: &ProviderRuntimeState,
     label: &str,
     attempts: usize,
     provider_id: &str,
     api_keys: &[String],
     is_cancelled: C,
     send: F,
-) -> Result<reqwest::Response, String>
+) -> Result<reqwest::Response, ModelError>
 where
     F: Fn(&str) -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
@@ -590,16 +530,16 @@ where
         .enumerate()
         .filter_map(|(idx, key)| key.trim().is_empty().then_some(idx))
         .collect();
-    let mut last_err: Option<String> = None;
+    let mut last_err = None;
 
     while tried.len() < total {
         if is_cancelled() {
-            return Err(format!("{} cancelled", label));
+            return Err(ModelError::with_kind(
+                format!("{label} cancelled"),
+                ModelErrorKind::Cancelled,
+            ));
         }
-        let idx = match state
-            .provider_runtime()
-            .pick_active_key(provider_id, total, &tried)
-        {
+        let idx = match runtime.pick_active_key(provider_id, total, &tried) {
             Some(i) => i,
             None => break,
         };
@@ -607,8 +547,7 @@ where
         let key = api_keys[idx].as_str();
 
         // 是否还有未试过的备用 key —— 决定 429 是否在阈值处提前交回外层换 key。
-        let has_backup_key = state
-            .provider_runtime()
+        let has_backup_key = runtime
             .pick_active_key(provider_id, total, &tried)
             .is_some();
         let rate_limit_cap = if has_backup_key {
@@ -628,12 +567,12 @@ where
         .await
         {
             Ok(resp) => {
-                state.provider_runtime().mark_key_ok(provider_id, idx);
+                runtime.mark_key_ok(provider_id, idx);
                 return Ok(resp);
             }
             Err(err_msg) => {
-                if is_failover_error(&err_msg) && tried.len() < total {
-                    state.provider_runtime().mark_key_failed(provider_id, idx);
+                if matches!(err_msg.status, Some(401 | 402 | 403 | 429)) && tried.len() < total {
+                    runtime.mark_key_failed(provider_id, idx);
                     eprintln!(
                         "[failover] {} key #{}/{} failed, switching to next: {}",
                         label,
@@ -650,15 +589,20 @@ where
                     continue;
                 }
                 // 非 failover 错误（或已穷举所有 key）→ 直接返回
-                if is_failover_error(&err_msg) {
-                    state.provider_runtime().mark_key_failed(provider_id, idx);
+                if matches!(err_msg.status, Some(401 | 402 | 403 | 429)) {
+                    runtime.mark_key_failed(provider_id, idx);
                 }
                 return Err(err_msg);
             }
         }
     }
 
-    Err(last_err.unwrap_or_else(|| format!("{} Error: all {} keys exhausted", label, total)))
+    Err(last_err.unwrap_or_else(|| {
+        ModelError::with_kind(
+            format!("{label} Error: all {total} keys exhausted"),
+            ModelErrorKind::ProviderUnavailable,
+        )
+    }))
 }
 
 /// 带重试机制的 HTTP 发送函数
@@ -688,6 +632,7 @@ where
         &never_cancelled,
     )
     .await
+    .map_err(|error| error.message)
 }
 
 /// failover 内层重试策略：
@@ -723,7 +668,7 @@ async fn send_with_retry_status_policy<F, Fut>(
     send: &mut F,
     policy: FailoverRetryPolicy,
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
-) -> Result<reqwest::Response, String>
+) -> Result<reqwest::Response, ModelError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
@@ -732,9 +677,12 @@ where
     let mut rate_limit_attempts = 0;
     loop {
         if is_cancelled() {
-            return Err(format!("{label} cancelled"));
+            return Err(ModelError::with_kind(
+                format!("{label} cancelled"),
+                ModelErrorKind::Cancelled,
+            ));
         }
-        let (err_msg, retry_after, reason, retryable) = match send().await {
+        let (mut error, retry_after, reason, retryable) = match send().await {
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
@@ -742,13 +690,17 @@ where
                 }
                 let retry_after = parse_retry_after(response.headers());
                 let text = response.text().await.unwrap_or_default();
-                let err_msg = format!("{label} Error: {status} - {text}");
+                let error = ModelError::from_provider_http(
+                    status.as_u16(),
+                    &text,
+                    format!("{label} Error: {status} - {text}"),
+                );
                 let is_rate_limit = status == StatusCode::TOO_MANY_REQUESTS;
                 if is_rate_limit {
                     rate_limit_attempts += 1;
                 }
                 // Gate every status: relays may wrap deterministic upstream errors in 5xx.
-                let retryable = !is_permanent_provider_error(&text)
+                let retryable = !crate::chat::model::is_permanent_provider_error(&text)
                     && if is_rate_limit {
                         policy.should_retry_rate_limit(rate_limit_attempts)
                     } else {
@@ -760,7 +712,7 @@ where
                     408 | 504 => "Request timed out",
                     _ => "Server error",
                 };
-                (err_msg, retry_after, reason, retryable)
+                (error, retry_after, reason, retryable)
             }
             Err(err) => {
                 let retryable = is_retryable_error(&err);
@@ -770,7 +722,7 @@ where
                     "Connection interrupted"
                 };
                 (
-                    format!("{label} Error: {}", format_reqwest_error(&err)),
+                    ModelError::new(format!("{label} Error: {}", format_reqwest_error(&err))),
                     None,
                     reason,
                     retryable,
@@ -779,7 +731,10 @@ where
         };
         if retryable {
             if is_cancelled() {
-                return Err(format!("{label} cancelled"));
+                return Err(ModelError::with_kind(
+                    format!("{label} cancelled"),
+                    ModelErrorKind::Cancelled,
+                ));
             }
             if let Some((retry, delay_ms)) = budget.schedule(retry_after, reason, false) {
                 eprintln!(
@@ -792,7 +747,10 @@ where
             }
         }
         let (attempt, max) = budget.attempts();
-        return Err(format!("{err_msg} (attempt {attempt}/{max})"));
+        error
+            .message
+            .push_str(&format!(" (attempt {attempt}/{max})"));
+        return Err(error);
     }
 }
 
@@ -800,11 +758,14 @@ async fn sleep_with_cancel(
     label: &str,
     delay_ms: u64,
     is_cancelled: &(dyn Fn() -> bool + Send + Sync),
-) -> Result<(), String> {
+) -> Result<(), ModelError> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(delay_ms);
     loop {
         if is_cancelled() {
-            return Err(format!("{label} cancelled"));
+            return Err(ModelError::with_kind(
+                format!("{label} cancelled"),
+                ModelErrorKind::Cancelled,
+            ));
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
@@ -1282,7 +1243,6 @@ impl<F: FnMut(serde_json::Value) + Send> StreamSink for LensEventSink<'_, F> {
             StreamPart::Finish { .. } => {
                 self.emit_done("done");
             }
-            StreamPart::Error { message } => return Err(ModelError::new(message)),
             // 不传 tools，ToolCall* 不会出现。
             _ => {}
         }
@@ -1492,7 +1452,6 @@ impl<F: FnMut(serde_json::Value) + Send> StreamSink for CombinedTranslateEventSi
                 self.flush_tail_emit();
                 self.emit_done("done");
             }
-            StreamPart::Error { message } => return Err(ModelError::new(message)),
             _ => {}
         }
         Ok(())
@@ -1777,7 +1736,7 @@ mod tests {
             let cancelled = std::sync::atomic::AtomicBool::new(false);
             let calls = AtomicUsize::new(0);
             let result = send_with_failover_cancelable(
-                &state,
+                state.provider_runtime(),
                 "Test",
                 2,
                 "prov",
@@ -1791,7 +1750,9 @@ mod tests {
                 },
             )
             .await;
-            assert!(matches!(result, Err(err) if err == "Test cancelled"));
+            assert!(
+                matches!(result, Err(err) if err.is_cancelled() && err.message == "Test cancelled")
+            );
             assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
         }
     }
@@ -1947,7 +1908,7 @@ mod tests {
 
             let err = result.expect_err("auth error should fail");
             assert!(
-                is_failover_error(&err),
+                is_failover_error(&err.message),
                 "status {status} should be failover"
             );
             assert_eq!(
@@ -1991,7 +1952,9 @@ mod tests {
         tokio::time::advance(Duration::from_millis(250)).await;
 
         let result = (&mut task).await.expect("retry task should finish");
-        assert!(matches!(result, Err(err) if err == "Test cancelled"));
+        assert!(
+            matches!(result, Err(err) if err.is_cancelled() && err.message == "Test cancelled")
+        );
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     }
 
@@ -2109,7 +2072,7 @@ mod tests {
             .unwrap();
             sink.emit(text_delta(" world")).unwrap();
             sink.emit(StreamPart::Finish {
-                reason: "done".to_string(),
+                reason: crate::chat::model::FinishReason::from_openai("done"),
                 full: "Hello world".to_string(),
             })
             .unwrap();
@@ -2303,7 +2266,7 @@ mod tests {
             sink.emit(text_delta(&format!("你好\n{TEST_SEP}\nHello")))
                 .unwrap();
             sink.emit(StreamPart::Finish {
-                reason: "done".to_string(),
+                reason: crate::chat::model::FinishReason::from_openai("done"),
                 full: String::new(),
             })
             .unwrap();

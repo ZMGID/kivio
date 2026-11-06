@@ -43,9 +43,9 @@ pub trait AgentHost: Send + Sync {
         &'a self,
         _conversation_id: &'a str,
         _run_id: &'a str,
-        _history: &'a [serde_json::Value],
+        _history: &'a [super::history::RuntimeMessage],
         _finishing: bool,
-    ) -> AgentHostFuture<'a, Result<Vec<serde_json::Value>, String>> {
+    ) -> AgentHostFuture<'a, Result<Vec<super::history::RuntimeMessage>, String>> {
         Box::pin(async { Ok(Vec::new()) })
     }
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
@@ -122,7 +122,7 @@ pub trait AgentHost: Send + Sync {
         _message_id: &str,
         _provider_id: &str,
         _model: &str,
-        _messages: &[serde_json::Value],
+        _messages: &[super::history::RuntimeMessage],
         _tools: &[crate::mcp::ChatToolDefinition],
     ) {
     }
@@ -164,7 +164,7 @@ pub trait AgentHost: Send + Sync {
         _message_id: &'a str,
         _tool_records: &'a [ToolCallRecord],
         _segments: &'a [ChatMessageSegment],
-        _api_messages: &'a [serde_json::Value],
+        _api_messages: &'a [super::history::RuntimeMessage],
     ) -> AgentHostFuture<'a, ()> {
         Box::pin(async {})
     }

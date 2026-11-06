@@ -42,7 +42,12 @@ pub fn is_sub_agent_tool_name(name: &str) -> bool {
     matches!(name, TASK_TOOL_NAME | WAIT_TOOL_NAME)
 }
 
-pub async fn collect_for_main(app: &tauri::AppHandle, root: &str, run: &str, history: &[Value]) -> Result<Vec<Value>, String> {
+pub async fn collect_for_main(
+    app: &tauri::AppHandle,
+    root: &str,
+    run: &str,
+    history: &[crate::chat::agent::history::RuntimeMessage],
+) -> Result<Vec<crate::chat::agent::history::RuntimeMessage>, String> {
     let mut incoming = delivery::collect_for_main(app, root, run, history).await?;
     incoming.extend(irc::collect_for_main(app, root, run, history).await?);
     Ok(incoming)

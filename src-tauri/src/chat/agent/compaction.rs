@@ -1,9 +1,13 @@
 //! Context compaction, following ZCode's structured-history and assistant-round policy.
 //! This module owns selection, summary requests, retries and replacement. UI history is retained.
+use super::history::{export_history, import_history, RuntimeBody, RuntimeMessage};
 use super::loop_::{LoopEnv, RunState};
-use super::planning::call_chat_completion_message_streamed;
+use super::planning::generate_via_stream_collect;
 use super::prepare::{estimate_tokens, estimate_value_tokens, IMAGE_PART_TYPES, TEXT_PART_TYPES};
-use crate::chat::model::{MessagePart, ModelMessage};
+use crate::chat::model::{
+    generate_request_from_openai_messages, FinishKind, GenerateOptions, GenerateRequestContext,
+    MessagePart, ModelErrorKind, ModelMessage, ModelRole,
+};
 use crate::chat::model_metadata::{chat_max_output_tokens_for_model, context_window_for_model};
 use crate::chat::types::{
     ChatMessage, CompactionBoundaryRecord, CompactionReplay, Conversation,
@@ -53,6 +57,24 @@ fn estimate_request_tokens(
             })
             .sum::<usize>(),
     )
+}
+
+fn estimate_runtime_request_tokens(
+    messages: &[RuntimeMessage],
+    provider: &crate::settings::ModelProvider,
+    model: &str,
+) -> usize {
+    messages
+        .iter()
+        .map(|message| {
+            estimate_runtime_message_tokens(message)
+                + crate::chat::commands::context::runtime_message_image_tokens(
+                    message,
+                    Some(provider),
+                    model,
+                )
+        })
+        .sum()
 }
 
 /// Groups begin at assistant messages, keeping every tool call beside its results.
@@ -304,9 +326,15 @@ fn initial_kept_groups(messages: &[Value], groups: &[usize], budget: usize) -> u
 }
 
 /// Whether automatic compaction has anything to summarize.
-pub(crate) fn has_compactable_history(messages: &[Value]) -> bool {
-    let (_, groups) = group_starts(messages);
-    groups.len() > 1
+pub(crate) fn has_compactable_history(messages: &[RuntimeMessage]) -> bool {
+    messages
+        .iter()
+        .skip_while(|message| {
+            matches!(&message.body, RuntimeBody::System(text)
+                if !text.starts_with(PERSISTED_SUMMARY_PREFIX))
+        })
+        .skip(1)
+        .any(|message| message.role() == Some(ModelRole::Assistant))
 }
 
 /// Summary requests keep the run's tool definitions, as ZCode does below this count, so
@@ -506,45 +534,44 @@ pub(crate) async fn summarize_history(
             batch_calls += 1;
         }
         let sent_input_tokens = estimate_request_tokens(&request, provider, model);
-        let call = call_chat_completion_message_streamed(
-            state,
-            provider,
+        let request = generate_request_from_openai_messages(
             model,
             request,
             (transcript.is_none() && !tools.is_empty()).then_some(tools),
-            1,
-            false,
-            request_max_output,
-            conversation_id,
-            message_id,
+            GenerateOptions {
+                max_tokens: request_max_output,
+                thinking_enabled: false,
+                ..GenerateOptions::default()
+            },
             "Chat context compaction",
+            GenerateRequestContext::new(Some(conversation_id), Some(message_id)),
         );
+        let call = generate_via_stream_collect(state, provider, 1, request);
         let result = if let Some(ref mut cancellation) = cancel {
             tokio::select! { result = call => result, _ = cancellation.as_mut() => return CompactOutcome::Cancelled }
         } else {
             call.await
         };
-        let error = match result {
-            Ok(message) => {
-                let finish = message["finish_reason"].as_str().unwrap_or("");
-                let raw = super::stop::assistant_content_from_api_message(&message);
+        let (kind, error): (ModelErrorKind, String) = match result {
+            Ok(output) => {
+                let finish = output.finish_reason.map(|reason| reason.kind);
+                let raw = output.text.trim();
                 // GLM-style providers end an overlong summary request with an empty `length`.
-                let empty_length =
-                    matches!(finish, "length" | "max_tokens") && raw.trim().is_empty();
-                if super::recovery::is_context_overflow_finish(finish) || empty_length {
-                    "Compaction summary context length exceeded".to_string()
+                let empty_length = finish == Some(FinishKind::Length) && raw.is_empty();
+                if finish == Some(FinishKind::ContextOverflow) || empty_length {
+                    (
+                        ModelErrorKind::ContextOverflow,
+                        "Compaction summary context length exceeded".into(),
+                    )
                 } else if matches!(
                     finish,
-                    "length" | "max_tokens" | "cancelled" | "content_filter"
+                    Some(FinishKind::Length | FinishKind::Cancelled | FinishKind::ContentFilter)
                 ) {
                     return CompactOutcome::Failed;
-                } else if message["tool_calls"]
-                    .as_array()
-                    .is_some_and(|calls| !calls.is_empty())
-                {
+                } else if !output.tool_calls.is_empty() {
                     // Never execute tools emitted by the summary model.
                     return CompactOutcome::Failed;
-                } else if let Some(text) = summary_text(&raw) {
+                } else if let Some(text) = summary_text(raw) {
                     if let Some(source) = &transcript {
                         if estimate_tokens(&text) > carry_capacity {
                             // Provider tokenization can differ from our local
@@ -595,16 +622,19 @@ pub(crate) async fn summarize_history(
                     compacted.extend(read_reminders(&messages[prefix..end], kept, read_budget));
                     return CompactOutcome::Compacted(compacted, text);
                 } else {
-                    "Empty or incomplete compaction summary".to_string()
+                    (
+                        ModelErrorKind::EmptyResponse,
+                        "Empty or incomplete compaction summary".into(),
+                    )
                 }
             }
-            Err(error) => error,
+            Err(error) => (error.kind, error.message),
         };
         let lower = error.to_lowercase();
         if transcript.is_some() {
             // Only explicit overflow can justify shrinking a rejected request.
             // Invalid images, schemas and credentials are not input-size evidence.
-            if super::recovery::classify(&error) == super::recovery::FailureKind::ContextOverflow {
+            if kind == ModelErrorKind::ContextOverflow {
                 overflow_attempts += 1;
                 if overflow_attempts >= MAX_SUMMARY_ATTEMPTS {
                     return CompactOutcome::Failed;
@@ -622,14 +652,11 @@ pub(crate) async fn summarize_history(
             }
         }
         // A provider without tool support rejects the definitions; send the history as text.
-        if transcript.is_none()
-            && !tools.is_empty()
-            && super::stop::is_tools_unsupported_error(&error)
-        {
+        if transcript.is_none() && !tools.is_empty() && kind == ModelErrorKind::ToolsUnsupported {
             tools = &[];
             continue;
         }
-        if super::recovery::classify(&error) == super::recovery::FailureKind::ContextOverflow {
+        if kind == ModelErrorKind::ContextOverflow {
             overflow_attempts += 1;
             if overflow_attempts >= MAX_SUMMARY_ATTEMPTS {
                 return CompactOutcome::Failed;
@@ -884,15 +911,12 @@ const IMAGE_BYTES_BUDGET: usize = 16 * 1024 * 1024;
 /// 超预算时优先保留最新读取的图。对齐 Claude Code 用户在要的
 /// 「按年龄丢图」与 Strands Agents 的「图片换带元信息占位符」。
 ///
-/// ponytail: 指纹直接用 part 的 JSON 串哈希——同一张图序列化必然逐字节相同，
-/// 不用解 data URL、不用管 `image_url` / `input_image` / `image` 三种形状的差异。
 fn prune_image_parts(messages: &mut [Value], budget: usize) -> usize {
-    use std::collections::HashSet;
-    use std::hash::{DefaultHasher, Hash, Hasher};
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
 
-    let mut seen = HashSet::new();
-    let mut unique_bytes = 0usize;
-    let mut images: Vec<_> = messages
+    let hasher = BuildHasherDefault::<DefaultHasher>::default();
+
+    let images = messages
         .iter_mut()
         .filter_map(|message| message.get_mut("content").and_then(Value::as_array_mut))
         .flat_map(|parts| parts.iter_mut())
@@ -903,17 +927,81 @@ fn prune_image_parts(messages: &mut [Value], budget: usize) -> usize {
         })
         .map(|part| {
             let serialized = part.to_string();
-            let mut hasher = DefaultHasher::new();
-            serialized.hash(&mut hasher);
-            let hash = hasher.finish();
-            let bytes = serialized.len();
-            if seen.insert(hash) {
-                unique_bytes = unique_bytes.saturating_add(bytes);
-            }
-            (part, hash, bytes)
+            let hash = hasher.hash_one(&serialized);
+            (part, hash, serialized.len())
         })
         .collect();
+    prune_images(images, budget, |part, text| {
+        *part = json!({"type": "text", "text": text});
+    })
+}
 
+fn prune_runtime_images(messages: &mut [RuntimeMessage], budget: usize) -> usize {
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+
+    const IMAGE_URL_ENVELOPE: &str = r#"{"type":"image_url","image_url":{"url":""}}"#;
+    let hasher = BuildHasherDefault::<DefaultHasher>::default();
+    let optional_bytes = |key: &str, value: &Option<String>| {
+        value.as_ref().map_or(0, |value| {
+            key.len() + ",\"\":\"\"".len() + json_escaped_bytes(value)
+        })
+    };
+    let images = messages
+        .iter_mut()
+        .filter_map(RuntimeMessage::model_message_mut)
+        .flat_map(|message| &mut message.content)
+        .filter_map(|part| {
+            let (hash, bytes) = match &*part {
+                MessagePart::Image {
+                    mime_type,
+                    data,
+                    detail,
+                    path,
+                } if !data.is_empty() || path.is_some() => (
+                    hasher.hash_one((mime_type, data, detail, path)),
+                    IMAGE_URL_ENVELOPE.len()
+                        + "data:;base64,".len()
+                        + mime_type.len()
+                        + data.len()
+                        + optional_bytes("detail", detail)
+                        + optional_bytes("path", path),
+                ),
+                MessagePart::ImageUrl { url, detail } => (
+                    hasher.hash_one((url, detail)),
+                    IMAGE_URL_ENVELOPE.len()
+                        + json_escaped_bytes(url)
+                        + optional_bytes("detail", detail),
+                ),
+                _ => return None,
+            };
+            Some((part, hash, bytes))
+        })
+        .collect();
+    prune_images(images, budget, |part, text| {
+        *part = MessagePart::Text { text };
+    })
+}
+
+fn json_escaped_bytes(text: &str) -> usize {
+    text.bytes()
+        .map(|byte| match byte {
+            b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
+            0x00..=0x1f => 6,
+            _ => 1,
+        })
+        .sum()
+}
+
+fn prune_images<P>(
+    mut images: Vec<(P, u64, usize)>,
+    budget: usize,
+    replace: impl Fn(P, String),
+) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    let unique_bytes = images
+        .iter()
+        .filter(|(_, hash, _)| seen.insert(*hash))
+        .fold(0usize, |sum, (_, _, bytes)| sum.saturating_add(*bytes));
     // Preserve the cached prefix when all distinct images fit. Under pressure,
     // select newest copies first; deduplicate only against images actually kept.
     if unique_bytes > budget {
@@ -925,16 +1013,16 @@ fn prune_image_parts(messages: &mut [Value], budget: usize) -> usize {
     for (part, hash, bytes) in images {
         if seen.contains(&hash) {
             saved += bytes;
-            *part = json!({"type":"text", "text":DUPLICATE_IMAGE_PLACEHOLDER});
+            replace(part, DUPLICATE_IMAGE_PLACEHOLDER.into());
         } else if kept_bytes.saturating_add(bytes) > budget {
             saved += bytes;
-            *part = json!({
-                "type": "text",
-                "text": format!(
+            replace(
+                part,
+                format!(
                     "[图片已从上下文移除以控制请求体积（约 {}KB）。需要时请重新读取该文件。]",
                     bytes / 1024
                 ),
-            });
+            );
         } else {
             seen.insert(hash);
             kept_bytes += bytes;
@@ -976,56 +1064,85 @@ fn render_content_part(part: &Value) -> String {
 }
 
 fn estimate_model_messages_tokens(messages: &[ModelMessage]) -> usize {
-    messages
+    messages.iter().map(estimate_model_message_tokens).sum()
+}
+
+pub(crate) fn estimate_runtime_message_tokens(message: &RuntimeMessage) -> usize {
+    match &message.body {
+        RuntimeBody::System(text) => estimate_tokens(text) + 4,
+        RuntimeBody::Model(message) => estimate_model_message_tokens(message),
+    }
+}
+
+fn estimate_model_message_tokens(message: &ModelMessage) -> usize {
+    let native_reasoning: usize = message
+        .content
         .iter()
-        .map(|message| {
-            let native_reasoning: usize = message
-                .content
-                .iter()
-                .filter_map(|part| match part {
-                    MessagePart::ReasoningItem { item, .. } => {
-                        Some(super::prepare::estimate_reasoning_item_tokens(item))
-                    }
-                    _ => None,
-                })
-                .sum();
-            let parts: usize = message
-                .content
-                .iter()
-                .map(|part| match part {
-                    MessagePart::Text { text } => estimate_tokens(text),
-                    MessagePart::AnthropicThinking { thinking, .. } => estimate_tokens(thinking),
-                    MessagePart::Reasoning { text } => {
-                        if native_reasoning == 0 {
-                            estimate_tokens(text)
-                        } else {
-                            0
-                        }
-                    }
-                    MessagePart::ToolCall {
-                        name,
-                        arguments_raw,
-                        ..
-                    } => estimate_tokens(name) + estimate_tokens(arguments_raw),
-                    MessagePart::ToolResult { content, .. } => estimate_tokens(content),
-                    MessagePart::AnthropicNativeBlock { block, .. } => block
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .map(estimate_tokens)
-                        .unwrap_or(0),
-                    // 图片部件记 0（与 estimate_value_tokens 同口径，不把 base64 算进 token）。
-                    // reasoning item 同理：encrypted_content 是密文 base64，按字符估算会
-                    // 数倍虚高；其真实占用由 usage 锚点覆盖。
-                    MessagePart::Image { .. }
-                    | MessagePart::Video { .. }
-                    | MessagePart::ImageUrl { .. }
-                    | MessagePart::ReasoningItem { .. }
-                    | MessagePart::AnthropicRedactedThinking { .. } => 0,
-                })
-                .sum();
-            parts + native_reasoning + 4
+        .filter_map(|part| match part {
+            MessagePart::ReasoningItem { item, .. } => {
+                Some(super::prepare::estimate_reasoning_item_tokens(item))
+            }
+            _ => None,
         })
-        .sum()
+        .sum();
+    let parts: usize = message
+        .content
+        .iter()
+        .map(|part| match part {
+            MessagePart::Text { text } => estimate_tokens(text),
+            MessagePart::AnthropicThinking { thinking, .. } => estimate_tokens(thinking),
+            MessagePart::Reasoning { text } => {
+                if native_reasoning == 0 {
+                    estimate_tokens(text)
+                } else {
+                    0
+                }
+            }
+            MessagePart::ToolCall {
+                id,
+                name,
+                arguments_raw,
+                signature,
+                ..
+            } => {
+                let envelope =
+                    r#"{"id":"","type":"function","function":{"name":"","arguments":""}}"#;
+                estimate_tokens(envelope)
+                    + estimate_json_text_tokens(id)
+                    + estimate_json_text_tokens(name)
+                    + estimate_json_text_tokens(arguments_raw)
+                    + signature.as_deref().map_or(0, |signature| {
+                        estimate_tokens(r#","thought_signature":" "#)
+                            + estimate_json_text_tokens(signature)
+                    })
+            }
+            MessagePart::ToolResult { content, .. } => estimate_tokens(content),
+            MessagePart::AnthropicNativeBlock { block, .. } => block
+                .get("text")
+                .and_then(Value::as_str)
+                .map(estimate_tokens)
+                .unwrap_or(0),
+            // 图片部件记 0（与 estimate_value_tokens 同口径，不把 base64 算进 token）。
+            // reasoning item 同理：encrypted_content 是密文 base64，按字符估算会
+            // 数倍虚高；其真实占用由 usage 锚点覆盖。
+            MessagePart::Image { .. }
+            | MessagePart::Video { .. }
+            | MessagePart::ImageUrl { .. }
+            | MessagePart::ReasoningItem { .. }
+            | MessagePart::AnthropicRedactedThinking { .. } => 0,
+        })
+        .sum();
+    parts + native_reasoning + 4
+}
+
+fn estimate_json_text_tokens(text: &str) -> usize {
+    let (bytes, non_ascii) = text
+        .chars()
+        .filter(|ch| !ch.is_ascii())
+        .fold((0, 0), |(bytes, chars), ch| {
+            (bytes + ch.len_utf8(), chars + 1)
+        });
+    (json_escaped_bytes(text) - bytes).div_ceil(4) + non_ascii
 }
 
 /// 把单条 UI `ChatMessage` 估算成 token 数。**优先按展开形态**（model_messages /
@@ -1084,7 +1201,7 @@ pub(crate) async fn maybe_compact_send_view(
     env: &LoopEnv<'_>,
     state: &mut RunState,
     request_tools: &[crate::mcp::ChatToolDefinition],
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<RuntimeMessage>, String> {
     compact_send_view(env, state, false, request_tools).await
 }
 
@@ -1093,7 +1210,7 @@ pub(crate) async fn compact_send_view(
     state: &mut RunState,
     force: bool,
     request_tools: &[crate::mcp::ChatToolDefinition],
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<RuntimeMessage>, String> {
     let messages = compact_send_view_inner(env, state, force, request_tools).await?;
     let config = env.config;
     let window = context_window_for_model(Some(&config.provider), &config.model).0;
@@ -1107,7 +1224,7 @@ pub(crate) async fn compact_send_view(
     if env
         .host
         .is_generation_active(&config.conversation_id, config.generation)
-        && estimate_request_tokens(&messages, &config.provider, &config.model)
+        && estimate_runtime_request_tokens(&messages, &config.provider, &config.model)
             .saturating_add(schemas)
             > window.saturating_sub(config.max_output_tokens as usize)
     {
@@ -1121,11 +1238,11 @@ async fn compact_send_view_inner(
     state: &mut RunState,
     force: bool,
     request_tools: &[crate::mcp::ChatToolDefinition],
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<RuntimeMessage>, String> {
     let config = env.config;
     // 先做无条件的图片收敛：与 token 预算无关，重复上传同一张图、以及无上限堆积的历史
     // 图片，任何情况下都是纯浪费；随后请求预算仍计入保留图片的 token（详见 `prune_image_parts`）。
-    let saved_bytes = prune_image_parts(&mut state.runtime_messages, IMAGE_BYTES_BUDGET);
+    let saved_bytes = prune_runtime_images(&mut state.runtime_messages, IMAGE_BYTES_BUDGET);
     if saved_bytes > 0 {
         state.last_step_usage = None;
         state.initial_anchor_valid = false;
@@ -1138,8 +1255,10 @@ async fn compact_send_view_inner(
     // keep a local floor so a stale/under-reported anchor cannot hide context growth.
     let window = if window == 0 { 200_000 } else { window };
     let hard_limit = window.saturating_sub(config.max_output_tokens as usize);
-    let budget = env.host.compaction_threshold(window)
-        .map_or_else(|| request_context_budget(window, config.max_output_tokens), |threshold| threshold.min(hard_limit));
+    let budget = env.host.compaction_threshold(window).map_or_else(
+        || request_context_budget(window, config.max_output_tokens),
+        |threshold| threshold.min(hard_limit),
+    );
     // Include the schemas actually sent with each request in the local safety floor.
     // 按「工具名集合哈希」做轮间缓存：每轮为上百个工具重建整份 schema JSON 只为估个
     // token 数太浪费；工具集只在 Skill 激活时变（同名工具的 schema run 内稳定）。
@@ -1163,7 +1282,7 @@ async fn compact_send_view_inner(
         }
     };
     let estimate_full =
-        estimate_request_tokens(&state.runtime_messages, &config.provider, &config.model)
+        estimate_runtime_request_tokens(&state.runtime_messages, &config.provider, &config.model)
             .saturating_add(tool_schema_tokens);
     let hard_pressure = estimate_full > hard_limit;
     let trigger = if force || hard_pressure {
@@ -1178,7 +1297,10 @@ async fn compact_send_view_inner(
             .min(state.runtime_messages.len());
         (
             super::context_estimate::anchor_total_tokens(usage, &config.provider.api_format),
-            estimate_messages_tokens(&state.runtime_messages[start..]),
+            state.runtime_messages[start..]
+                .iter()
+                .map(estimate_runtime_message_tokens)
+                .sum(),
         )
     } else if state.initial_anchor_valid {
         // 本轮尚未调用模型（首次压缩检查）：用上一轮落盘 usage 组成的 config 锚点。
@@ -1230,7 +1352,11 @@ async fn compact_send_view_inner(
     let cancel = env
         .host
         .wait_for_generation_inactive(&config.conversation_id, config.generation);
-    let runtime_before_compact = state.runtime_messages.clone();
+    let source_until_message_id = state
+        .runtime_messages
+        .iter()
+        .rev()
+        .find_map(|message| message.source.ui_message_id.clone());
     let (compression_provider_id, compression_model) = config
         .settings
         .effective_compression_model_for_session(Some(crate::settings::SessionModel {
@@ -1255,7 +1381,7 @@ async fn compact_send_view_inner(
         .summarize(super::provider_runtime::SummaryRequest {
             provider: compression_provider,
             model: &compression_model,
-            messages: &state.runtime_messages,
+            messages: &export_history(&state.runtime_messages),
             automatic: true,
             tools: request_tools,
             // Keep the model's real output budget, not the run's shorter answer budget.
@@ -1272,9 +1398,11 @@ async fn compact_send_view_inner(
         .await;
 
     match compacted {
-        CompactOutcome::Compacted(mut compacted, summary_text) => {
-            let after = estimate_request_tokens(&compacted, &config.provider, &config.model)
-                .saturating_add(tool_schema_tokens);
+        CompactOutcome::Compacted(compacted, summary_text) => {
+            let mut compacted = import_history(compacted);
+            let after =
+                estimate_runtime_request_tokens(&compacted, &config.provider, &config.model)
+                    .saturating_add(tool_schema_tokens);
             if after >= estimate_full || after > budget.saturating_mul(9) / 10 {
                 state.auto_compact_failures = state.auto_compact_failures.saturating_add(1);
                 env.host.set_auto_compact_failures(
@@ -1289,22 +1417,32 @@ async fn compact_send_view_inner(
                 );
                 return Ok(state.runtime_messages.clone());
             }
-            let incoming = match env.host.checkpoint_runtime(
-                &config.conversation_id,
-                &config.run_id,
-                &state.runtime_messages,
-                false,
-            ).await {
+            let incoming = match env
+                .host
+                .checkpoint_runtime(
+                    &config.conversation_id,
+                    &config.run_id,
+                    &state.runtime_messages,
+                    false,
+                )
+                .await
+            {
                 Ok(incoming) => incoming,
                 Err(error) => {
                     env.host.emit_compaction_status(
-                        &config.conversation_id, "failed", Some(trigger), None,
+                        &config.conversation_id,
+                        "failed",
+                        Some(trigger),
+                        None,
                     );
                     return Err(error);
                 }
             };
             state.generated_api_messages.extend(
-                incoming.iter().filter(|message| message["subagent_parent_persisted"] != true).cloned()
+                incoming
+                    .iter()
+                    .filter(|message| message.source.subagent_parent_persisted != Some(true))
+                    .cloned(),
             );
             compacted.extend(incoming);
             state.tool_batches_since_compact = 0;
@@ -1325,11 +1463,7 @@ async fn compact_send_view_inner(
                 Some(window as u64),
                 None,
             );
-            if let Some(source_until_message_id) = runtime_before_compact
-                .iter()
-                .rev()
-                .find_map(|m| m[UI_MESSAGE_ID_KEY].as_str().map(str::to_string))
-            {
+            if let Some(source_until_message_id) = source_until_message_id {
                 let created_at = chrono::Local::now().timestamp();
                 let summary_record = ConversationContextSummary {
                     id: format!("ctxsum_{}", uuid::Uuid::new_v4()),
@@ -1343,23 +1477,17 @@ async fn compact_send_view_inner(
                     model: compression_model.clone(),
                     stale: false,
                     // Populated at the reply.rs persist site, which has the
-                    // Conversation (this L2 path only holds runtime Values).
+                    // Conversation.
                     file_ledger: None,
                     replay: Some(CompactionReplay {
                         through_message_id: config.message_id.clone(),
-                        messages: replacement_body(&compacted),
+                        messages: replacement_body(&export_history(&compacted)),
                     }),
                 };
                 let boundary = CompactionBoundaryRecord {
                     id: format!("ctxbd_{}", uuid::Uuid::new_v4()),
+                    display_after_message_id: Some(source_until_message_id.clone()),
                     source_until_message_id,
-                    // 时间线锚点：触发压缩时 runtime 里最后一条可映射的 UI 消息（run 进行中
-                    // assistant 尚未落库，即最后一条 user）——divider 标记压缩发生的时刻。
-                    display_after_message_id: runtime_before_compact
-                        .iter()
-                        .rev()
-                        .find_map(|m| m.get(UI_MESSAGE_ID_KEY).and_then(Value::as_str))
-                        .map(str::to_string),
                     token_estimate_before: estimated,
                     token_estimate_after: after,
                     summary_content: summary_text,
@@ -1779,6 +1907,34 @@ mod tests {
             "reasoning (~100 tok) must be counted"
         );
     }
+    #[test]
+    fn typed_image_pruning_keeps_the_same_copies_at_both_budgets() {
+        let picture = |name: &str| {
+            json!({
+                "role": "user",
+                "_ui_message_id": name,
+                "content": [
+                    {"type": "text", "text": name},
+                    {"type": "image_url", "image_url": {
+                        "url": format!("data:image/png;base64,{}", name.repeat(1_000)),
+                        "detail": "high"
+                    }}
+                ]
+            })
+        };
+        let messages = vec![picture("A"), picture("B"), picture("C"), picture("A")];
+        for budget in [2_400, IMAGE_BYTES_BUDGET] {
+            let mut legacy = messages.clone();
+            let mut typed = import_history(messages.clone());
+            assert_eq!(
+                prune_runtime_images(&mut typed, budget),
+                prune_image_parts(&mut legacy, budget),
+            );
+            assert_eq!(typed, import_history(legacy));
+            assert_eq!(prune_runtime_images(&mut typed, budget), 0);
+        }
+    }
+
     #[test]
     fn prune_image_parts_keeps_cached_prefix_when_duplicate_is_appended() {
         // 真实故障复现：同一张图被 `read` 读了两次，两份逐字节相同的 base64 各占请求体

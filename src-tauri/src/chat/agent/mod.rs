@@ -5,6 +5,7 @@ pub mod execute;
 pub(crate) mod file_ledger;
 pub mod filter;
 pub(crate) mod finalize;
+pub(crate) mod history;
 pub mod host;
 pub mod loop_;
 pub(crate) mod planning;
@@ -19,6 +20,7 @@ pub(crate) mod synthesis;
 pub mod types;
 
 pub use execute::{ToolExecutionContext, ToolExecutor, ToolExecutorFuture};
+pub use history::{RuntimeBody, RuntimeMessage, RuntimeSource};
 pub use host::{AgentHost, AgentHostFuture};
 pub use loop_::run_agent_loop;
 pub use steering::{SteeringMessage, FOLLOW_UP_TOOL_NAME, STEER_TOOL_NAME};

@@ -1,4 +1,5 @@
-use serde_json::{json, Value};
+use super::history::RuntimeMessage;
+use crate::chat::model::{GenerateOutput, ModelError, ModelErrorKind, ModelMessage, ModelRole};
 
 use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ToolCallStatus};
 
@@ -8,14 +9,12 @@ use super::finalize::{
 };
 use super::loop_::{LoopEnv, RunState};
 use super::recovery::{self, RecoveryAction};
-use super::stop::{
-    empty_assistant_response_error, final_assistant_api_message, merge_reasoning,
-    sanitize_assistant_text_response,
-};
-use super::stream::{ChatStreamOutput, WebSearchCardTracker};
+use super::stop::{empty_assistant_response_error, merge_reasoning, sanitize_assistant_text_response};
+use super::stream::WebSearchCardTracker;
 use super::types::{AgentPhase, AgentRunConfig, AgentRunResult, AgentStreamPolicy};
 
 pub(crate) struct SynthesisCompleted {
+    pub(crate) replay: Option<crate::chat::model::ModelMessage>,
     pub(crate) response: String,
     pub(crate) reasoning: Option<String>,
     pub(crate) response_reasoning: Option<String>,
@@ -135,23 +134,24 @@ pub(crate) async fn synthesis_step(
             web_search_tracker: synth_web_search_tracker.clone(),
         },
     )
-    .await
-    .map_err(|err| err.to_string());
+    .await;
     let mut stream = match stream {
         Ok(stream) => stream,
         Err(err) if !state.tool_records.is_empty() => {
             eprintln!("Chat synthesis stream failed after tool records; recovering: {err}");
             let recovered = recover_synthesis(env, state, &err).await?;
-            let content = if recovered.trim().is_empty() {
+            let replay = recovered.replay;
+            let content = if recovered.text.trim().is_empty() {
                 synthesis_failed_fallback_response(&config.language)
             } else {
-                recovered
+                recovered.text
             };
             return Ok(SynthesisFlow::Early(
                 RunResultBuilder::new(host, env.ids(), content)
                     .segment(&response_segment)
                     .emit_done("done")
                     .outcome("recovered")
+                    .replay(replay.clone())
                     .degraded(state.degraded.take())
                     .finish(
                         std::mem::take(&mut state.segment_builder),
@@ -161,12 +161,12 @@ pub(crate) async fn synthesis_step(
                     ),
             ));
         }
-        Err(err) => return Err(err),
+        Err(err) => return Err(err.message),
     };
     if stream.cancelled {
         if !state.tool_records.is_empty() {
             return Ok(SynthesisFlow::Early(
-                RunResultBuilder::new(host, env.ids(), stream.content.clone())
+                RunResultBuilder::new(host, env.ids(), stream.text.clone())
                     .segment(&response_segment)
                     .api_reasoning(stream.reasoning.clone())
                     .reasoning_tail(stream.reasoning)
@@ -179,7 +179,7 @@ pub(crate) async fn synthesis_step(
                     ),
             ));
         }
-        let partial = sanitize_assistant_text_response(&stream.content);
+        let partial = sanitize_assistant_text_response(&stream.text);
         if partial.trim().is_empty() {
             return Err("cancelled".to_string());
         }
@@ -209,34 +209,44 @@ pub(crate) async fn synthesis_step(
     state.generated_images.append(&mut stream.images);
     let final_reasoning_for_api = stream.reasoning.clone();
     let reasoning = merge_reasoning(&state.planning_reasoning_parts, stream.reasoning.clone());
-    let response = sanitize_assistant_text_response(&stream.content);
+    let response = sanitize_assistant_text_response(&stream.text);
+    let replay;
     let (response, reasoning, response_reasoning) = if response.trim().is_empty() {
         if !state.tool_records.is_empty() {
             log_empty_synthesis_output(config, phase, &stream, state.tool_records.len());
-            let recovered = recover_synthesis(env, state, "").await?;
-            let content = if recovered.trim().is_empty() {
+            let recovered = recover_synthesis(
+                env,
+                state,
+                &ModelError::with_kind("", ModelErrorKind::EmptyResponse),
+            )
+            .await?;
+            replay = recovered.replay;
+            let content = if recovered.text.trim().is_empty() {
                 empty_synthesis_fallback_response(&config.language)
             } else {
-                recovered
+                recovered.text
             };
             let fallback = RunResultBuilder::new(host, env.ids(), content)
                 .emit_segment_opt(Some(response_segment.clone()))
                 .api_reasoning(final_reasoning_for_api.clone())
                 .emit_done("done")
+                .replay(replay.clone())
                 .emit_and_record(&mut state.generated_api_messages);
             (fallback, reasoning, final_reasoning_for_api)
         } else {
             return Err(empty_assistant_response_error("Chat stream"));
         }
     } else {
-        if !state.generated_api_messages.is_empty() || stream.canonical_message.is_some() {
-            let message = if stream.canonical_message.is_some() {
-                stream.to_openai_compatible_message()
-            } else {
-                final_assistant_api_message(&response, final_reasoning_for_api.as_deref())
-            };
-            state.generated_api_messages.push(message);
+        let message = stream.replay_message();
+        if !state.generated_api_messages.is_empty()
+            || stream.canonical_message.is_some()
+            || !stream.reasoning_items.is_empty()
+        {
+            state
+                .generated_api_messages
+                .push(RuntimeMessage::model(message.clone()));
         }
+        replay = Some(message);
         (response, reasoning, final_reasoning_for_api)
     };
 
@@ -251,6 +261,7 @@ pub(crate) async fn synthesis_step(
     }
 
     Ok(SynthesisFlow::Completed(SynthesisCompleted {
+        replay,
         response,
         reasoning,
         response_reasoning,
@@ -259,28 +270,14 @@ pub(crate) async fn synthesis_step(
     }))
 }
 
-fn last_user_text(messages: &[Value]) -> Option<String> {
+fn last_user_text(messages: &[RuntimeMessage]) -> Option<String> {
     messages
         .iter()
         .rev()
-        .filter(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
-        // Runtime todo reminders are user-role messages but never the question.
-        .filter(|m| !crate::chat::todo::is_reminder_message(m))
-        .find_map(|message| {
-            // Tool-generated image turns carry no question. Keep looking for
-            // the user's text, including multimodal messages and steering.
-            let text = match message.get("content")? {
-                Value::String(text) => text.clone(),
-                Value::Array(parts) => parts
-                    .iter()
-                    .filter(|part| part["type"] == "text")
-                    .filter_map(|part| part["text"].as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                _ => return None,
-            };
-            (!text.trim().is_empty()).then_some(text)
-        })
+        .filter(|message| message.role() == Some(ModelRole::User))
+        .filter(|message| !crate::chat::todo::is_reminder_message(message))
+        .map(RuntimeMessage::text_content)
+        .find(|text| !text.trim().is_empty())
 }
 
 /// 收集本轮成功工具产出的可读摘要(用于去敏重做的输入)。
@@ -301,7 +298,7 @@ fn gathered_previews(state: &RunState) -> Vec<String> {
 
 /// 去敏 + 精简的恢复输入:仅用「用户问题 + 工具产出摘要 + 中立指令」重做一次合成,
 /// 去掉触发审核的完整正文/历史。
-fn build_neutral_reduced_messages(state: &RunState, language: &str) -> Vec<Value> {
+fn build_neutral_reduced_messages(state: &RunState, language: &str) -> Vec<RuntimeMessage> {
     let question = last_user_text(&state.runtime_messages).unwrap_or_default();
     let previews = gathered_previews(state).join("\n\n");
     let system = format!(
@@ -309,30 +306,43 @@ fn build_neutral_reduced_messages(state: &RunState, language: &str) -> Vec<Value
     );
     let user = format!("User question: {question}\n\nSearch snippets:\n{previews}");
     vec![
-        json!({ "role": "system", "content": system }),
-        json!({ "role": "user", "content": user }),
+        RuntimeMessage::system(system),
+        RuntimeMessage::text(ModelRole::User, user),
     ]
 }
 
-/// 统一恢复入口(恢复策略中枢的执行端):按 `recovery::decide` 走
-/// 「overflow 压缩重发 → 去敏重做 → 确定性兜底」阶梯。
-/// 返回非空内容即视为已恢复;返回空串表示无可恢复(调用方退回静态文案)。
-/// planning 阶段中途失败也复用此入口,保证两条路径同一恢复策略。
-///
-/// 取 `&mut RunState`:overflow 分支需要调用 `maybe_compact_send_view` 压缩历史
-/// (会写回 `state.runtime_messages` 工作副本)。其它分支不修改 state。
+pub(crate) struct RecoveredAnswer {
+    pub text: String,
+    pub replay: Option<ModelMessage>,
+}
+
+impl RecoveredAnswer {
+    fn fallback(text: String) -> Self {
+        Self { text, replay: None }
+    }
+
+    fn from_model(output: GenerateOutput) -> Self {
+        let replay = Some(output.replay_message());
+        Self {
+            text: output.text,
+            replay,
+        }
+    }
+}
+
 pub(crate) async fn recover_synthesis(
     env: &LoopEnv<'_>,
     state: &mut RunState,
-    failure_message: &str,
-) -> Result<String, String> {
+    failure: &ModelError,
+) -> Result<RecoveredAnswer, String> {
     let config = env.config;
-    let kind = silent_overflow_aware_kind(env, state, recovery::classify(failure_message));
+    let failure_message = &failure.message;
+    let kind = silent_overflow_aware_kind(env, state, recovery::failure_kind(failure.kind));
     let has_results = !state.tool_records.is_empty();
     // 恢复中枢只在此处被调用一次/次失败,故 already_remediated / overflow_recovery_attempted
     // 都从 false 起算;真正的「只重试一次」守门在各分支内部用本地标志实现。
     Ok(match recovery::decide(kind, has_results, false, false) {
-        RecoveryAction::Surface => String::new(),
+        RecoveryAction::Surface => RecoveredAnswer::fallback(String::new()),
         RecoveryAction::DegradeToGathered => {
             // 结构化留存一份供前端渲染成独立卡片；返回值仍是同样的纯文本，
             // 兼容旧前端 / 外部 CLI（它们只读 content）。
@@ -347,7 +357,7 @@ pub(crate) async fn recover_synthesis(
                 .map(|d| d.text.clone())
                 .unwrap_or_default();
             state.degraded = degraded;
-            text
+            RecoveredAnswer::fallback(text)
         }
         RecoveryAction::CompactAndRetry => recover_overflow_compact_and_retry(env, state).await?,
         RecoveryAction::Remediate => recover_remediate(env, state, kind, failure_message).await,
@@ -392,15 +402,20 @@ fn silent_overflow_aware_kind(
 
 /// CompactAndRetry 执行:压缩一次历史 → 用压缩后的发送视图重发一次合成。/// 成功 → 用其结果;仍失败 → 降级到确定性兜底(对应 decide 的 overflow_recovery_attempted 臂)。
 /// 单次守门:本函数只压缩-重试一次,绝不递归,杜绝「压完仍超 → 再压」死循环。
-async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunState) -> Result<String, String> {
+async fn recover_overflow_compact_and_retry(
+    env: &LoopEnv<'_>,
+    state: &mut RunState,
+) -> Result<RecoveredAnswer, String> {
     let config = env.config;
     // 压缩一次(L1 snip → L2 摘要);返回压缩后的发送视图,并已写回 state.runtime_messages。
     let compacted = super::compaction::compact_send_view(env, state, true, &[]).await?;
     if state.compaction_blocked {
-        return Ok(recovery::assemble_results_from_tool_records(
-            &state.tool_records,
-            &config.language,
-            recovery::FailureKind::ContextOverflow,
+        return Ok(RecoveredAnswer::fallback(
+            recovery::assemble_results_from_tool_records(
+                &state.tool_records,
+                &config.language,
+                recovery::FailureKind::ContextOverflow,
+            ),
         ));
     }
     if config.depth == 0 {
@@ -430,44 +445,42 @@ async fn recover_overflow_compact_and_retry(env: &LoopEnv<'_>, state: &mut RunSt
             label: "Chat synthesis overflow recovery",
         }) => result,
         _ = env.host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
-            Err("cancelled".to_string())
+            Err(ModelError::with_kind("cancelled", ModelErrorKind::Cancelled))
         }
     };
     // 重试自己的报错也要留给卡片——否则用户只看到"压缩后仍失败"这句空话。
     let mut retry_error: Option<String> = None;
-    let text = match result {
-        Ok((message, usage)) => {
-            state.merge_usage(usage, env, true);
-            sanitize_assistant_text_response(
-                message
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or_default(),
-            )
+    match result {
+        Ok(mut output) => {
+            state.merge_usage_with_billing(
+                output.usage.clone(),
+                output.billing_usage.clone(),
+                env,
+                true,
+            );
+            output.text = sanitize_assistant_text_response(&output.text);
+            if !output.text.trim().is_empty() {
+                state.generated_images.append(&mut output.images);
+                return Ok(RecoveredAnswer::from_model(output));
+            }
         }
         Err(err) => {
             eprintln!("Chat synthesis overflow compact-and-retry failed: {err}");
-            retry_error = Some(err);
-            String::new()
+            retry_error = Some(err.message);
         }
-    };
-    Ok(if !text.trim().is_empty() {
-        text
-    } else {
-        // 压缩重试仍失败 → 确定性兜底(decide 的 overflow_recovery_attempted=true 臂)。
-        let degraded = recovery::assemble_degraded_answer(
-            &state.tool_records,
-            &config.language,
-            recovery::FailureKind::ContextOverflow,
-            retry_error.as_deref(),
-        );
-        let text = degraded
-            .as_ref()
-            .map(|d| d.text.clone())
-            .unwrap_or_default();
-        state.degraded = degraded;
-        text
-    })
+    }
+    let degraded = recovery::assemble_degraded_answer(
+        &state.tool_records,
+        &config.language,
+        recovery::FailureKind::ContextOverflow,
+        retry_error.as_deref(),
+    );
+    let text = degraded
+        .as_ref()
+        .map(|answer| answer.text.clone())
+        .unwrap_or_default();
+    state.degraded = degraded;
+    Ok(RecoveredAnswer::fallback(text))
 }
 
 /// Remediate 执行:用「用户问题 + 工具产出摘要 + 中立指令」去敏精简后重做一次合成。
@@ -477,7 +490,7 @@ async fn recover_remediate(
     state: &mut RunState,
     kind: recovery::FailureKind,
     failure_message: &str,
-) -> String {
+) -> RecoveredAnswer {
     let config = env.config;
     let reduced = build_neutral_reduced_messages(state, &config.language);
     // 同 recover_overflow_compact_and_retry：恢复重试必须接取消。
@@ -497,59 +510,52 @@ async fn recover_remediate(
             label: "Chat synthesis recovery",
         }) => result,
         _ = env.host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
-            Err("cancelled".to_string())
+            Err(ModelError::with_kind("cancelled", ModelErrorKind::Cancelled))
         }
     };
-    let text = match result {
-        Ok((message, usage)) => {
-            // Bill only. The reduced prompt is not the context meter or the budget anchor.
-            state.merge_usage(usage, env, false);
-            sanitize_assistant_text_response(
-                message
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or_default(),
-            )
-        }
-        Err(_) => String::new(),
-    };
-    if !text.trim().is_empty() {
-        text
-    } else {
-        // 去敏重试仍失败 → 确定性兜底(decide 的 already_remediated 臂)。
-        // detail 用**最初**那次失败的报错：去敏重试只是补救手段，用户要排查的是原始原因。
-        let degraded = recovery::assemble_degraded_answer(
-            &state.tool_records,
-            &config.language,
-            kind,
-            Some(failure_message),
+    if let Ok(mut output) = result {
+        state.merge_usage_with_billing(
+            output.usage.clone(),
+            output.billing_usage.clone(),
+            env,
+            false,
         );
-        let text = degraded
-            .as_ref()
-            .map(|d| d.text.clone())
-            .unwrap_or_default();
-        state.degraded = degraded;
-        text
+        output.text = sanitize_assistant_text_response(&output.text);
+        if !output.text.trim().is_empty() {
+            state.generated_images.append(&mut output.images);
+            return RecoveredAnswer::from_model(output);
+        }
     }
+    let degraded = recovery::assemble_degraded_answer(
+        &state.tool_records,
+        &config.language,
+        kind,
+        Some(failure_message),
+    );
+    let text = degraded
+        .as_ref()
+        .map(|answer| answer.text.clone())
+        .unwrap_or_default();
+    state.degraded = degraded;
+    RecoveredAnswer::fallback(text)
 }
 
 fn log_empty_synthesis_output(
     config: &AgentRunConfig<'_>,
     phase: AgentPhase,
-    stream: &ChatStreamOutput,
+    stream: &GenerateOutput,
     tool_record_count: usize,
 ) {
     eprintln!(
-        "Chat agent empty synthesis fallback: conversation_id={} run_id={} provider_id={} model={} phase={:?} stream=true tool_records={} finish_reason={} raw_chars={} cleaned_chars={} reasoning_chars={} stream_tool_calls={}",
+        "Chat agent empty synthesis fallback: conversation_id={} run_id={} provider_id={} model={} phase={:?} stream=true tool_records={} finish_reason={} text_chars={} reasoning_chars={} stream_tool_calls={}",
         config.conversation_id,
         config.run_id,
         config.provider.id,
         config.model,
         phase,
         tool_record_count,
-        stream.finish_reason.as_deref().unwrap_or("unknown"),
-        stream.raw_content.chars().count(),
-        stream.content.chars().count(),
+        stream.finish_reason.as_ref().map(|reason| reason.raw.as_str()).unwrap_or("unknown"),
+        stream.text.chars().count(),
         stream.reasoning.as_deref().map(|value| value.chars().count()).unwrap_or(0),
         stream.tool_calls.len(),
     );
@@ -562,8 +568,11 @@ mod tests {
     #[test]
     fn last_user_text_skips_todo_reminders() {
         let messages = vec![
-            json!({ "role": "user", "content": "修一下登录页" }),
-            json!({ "role": "user", "content": "<todo-reminder>\n1. [pending] x\n</todo-reminder>" }),
+            RuntimeMessage::text(ModelRole::User, "修一下登录页"),
+            RuntimeMessage::text(
+                ModelRole::User,
+                "<todo-reminder>\n1. [pending] x\n</todo-reminder>",
+            ),
         ];
         assert_eq!(last_user_text(&messages).as_deref(), Some("修一下登录页"));
     }

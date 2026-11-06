@@ -96,6 +96,7 @@ impl AgentRunConfig<'_> {
 
 #[derive(Debug, Clone)]
 pub struct AgentRunResult {
+    pub(crate) final_message: Option<crate::chat::model::ModelMessage>,
     pub content: String,
     pub reasoning: Option<String>,
     pub tool_records: Vec<ToolCallRecord>,

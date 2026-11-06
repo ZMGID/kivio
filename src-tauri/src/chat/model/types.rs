@@ -3,7 +3,10 @@ use std::{future::Future, pin::Pin};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::mcp::{self, types::ChatToolArtifact, ChatToolDefinition};
+use super::ModelError;
+
+#[cfg(test)]
+use super::{generate_request_from_openai_messages, is_missing_stream_terminal_error};
 
 /// 外置图片读不回来时的替身文本。落盘的 `MessagePart::Image` 只有 `path`，回放前
 /// 必须经 `attachments::rehydrate_model_message_images` 填回 `data`；文件被用户删掉
@@ -35,7 +38,7 @@ impl ModelRole {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MessagePart {
     /// Runtime video bytes; persistence uses the same external attachment path as images.
@@ -93,7 +96,8 @@ pub enum MessagePart {
         tool_call_id: String,
         content: String,
         is_error: bool,
-        artifacts: Vec<ChatToolArtifact>,
+        #[serde(default)]
+        artifacts: Vec<ModelArtifact>,
     },
     Reasoning {
         text: String,
@@ -141,13 +145,44 @@ pub enum MessagePart {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelArtifact {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(alias = "mimeType")]
+    pub mime_type: String,
+    #[serde(alias = "dataUrl")]
+    pub data_url: String,
+    #[serde(default, alias = "sizeBytes")]
+    pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelMessage {
     pub role: ModelRole,
     pub content: Vec<MessagePart>,
 }
 
 impl ModelMessage {
+    pub fn text_content(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|part| match part {
+                MessagePart::Text { text } | MessagePart::ToolResult { content: text, .. } => {
+                    Some(text.as_str())
+                }
+                MessagePart::AnthropicNativeBlock { block, .. } if block["type"] == "text" => {
+                    block["text"].as_str()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn text(role: ModelRole, text: impl Into<String>) -> Self {
         Self {
             role,
@@ -158,31 +193,17 @@ impl ModelMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelTool {
-    pub id: String,
     pub name: String,
     pub description: String,
-    pub source: String,
-    pub server_id: Option<String>,
-    pub server_name: Option<String>,
     pub input_schema: Value,
-    pub sensitive: bool,
 }
 
 impl ModelTool {
-    pub fn openai_tool_name(&self) -> String {
-        mcp::types::wire_tool_name(
-            &self.source,
-            &self.name,
-            &self.id,
-            self.server_id.as_deref(),
-        )
-    }
-
     pub fn to_openai_tool(&self) -> Value {
         serde_json::json!({
             "type": "function",
             "function": {
-                "name": self.openai_tool_name(),
+                "name": self.name,
                 "description": self.description,
                 "parameters": self.input_schema,
             }
@@ -194,25 +215,10 @@ impl ModelTool {
     pub fn to_openai_responses_tool(&self) -> Value {
         serde_json::json!({
             "type": "function",
-            "name": self.openai_tool_name(),
+            "name": self.name,
             "description": self.description,
             "parameters": self.input_schema,
         })
-    }
-}
-
-impl From<&ChatToolDefinition> for ModelTool {
-    fn from(tool: &ChatToolDefinition) -> Self {
-        Self {
-            id: tool.id.clone(),
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            source: tool.source.clone(),
-            server_id: tool.server_id.clone(),
-            server_name: tool.server_name.clone(),
-            input_schema: tool.input_schema.clone(),
-            sensitive: tool.sensitive,
-        }
     }
 }
 
@@ -346,9 +352,21 @@ pub struct PendingToolCall {
     pub arguments_parse_error: Option<String>,
     /// Provider-specific opaque signature echoed back on replay (Gemini 3.x
     /// `thoughtSignature`; other providers leave `None`). Rides through the
-    /// stream accumulator + provider_messages so tool-call turns replay intact.
+    /// stream accumulator into typed history so tool-call turns replay intact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+}
+
+impl PendingToolCall {
+    pub fn replay_part(&self) -> MessagePart {
+        MessagePart::ToolCall {
+            id: self.id.clone(),
+            name: self.function_name.clone(),
+            arguments: self.arguments.clone(),
+            arguments_raw: self.arguments_raw.clone(),
+            signature: self.signature.clone(),
+        }
+    }
 }
 
 /// 单条内置搜索引用（服务端托管的原生联网搜索返回的来源）。{title,url} 是底线，
@@ -405,6 +423,87 @@ pub struct ProviderReasoningItem {
     pub item: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FinishKind {
+    Stop,
+    ToolCalls,
+    Length,
+    ContentFilter,
+    ContextOverflow,
+    PauseTurn,
+    Done,
+    Cancelled,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishReason {
+    pub kind: FinishKind,
+    pub raw: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy: Option<String>,
+}
+
+impl FinishReason {
+    pub fn new(kind: FinishKind, raw: impl Into<String>) -> Self {
+        Self {
+            kind,
+            raw: raw.into(),
+            detail: None,
+            legacy: None,
+        }
+    }
+
+    pub fn from_openai(raw: &str) -> Self {
+        let kind = match raw {
+            "stop" => FinishKind::Stop,
+            "tool_calls" => FinishKind::ToolCalls,
+            "length" | "max_tokens" => FinishKind::Length,
+            "content_filter" => FinishKind::ContentFilter,
+            "pause_turn" => FinishKind::PauseTurn,
+            "done" => FinishKind::Done,
+            "cancelled" => FinishKind::Cancelled,
+            _ if matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "context_exceeded"
+                    | "context_length_exceeded"
+                    | "context_window_exceeded"
+                    | "model_context_window_exceeded"
+                    | "model_context_exceeded"
+                    | "prompt_too_long"
+            ) =>
+            {
+                FinishKind::ContextOverflow
+            }
+            _ => FinishKind::Other,
+        };
+        Self::new(kind, raw).with_legacy_name(raw)
+    }
+
+    pub(super) fn with_legacy_name(mut self, name: &str) -> Self {
+        if name != self.legacy_name() {
+            self.legacy = Some(name.to_string());
+        }
+        self
+    }
+
+    pub fn legacy_name(&self) -> &str {
+        self.legacy.as_deref().unwrap_or(match self.kind {
+            FinishKind::Stop => "stop",
+            FinishKind::ToolCalls => "tool_calls",
+            FinishKind::Length => "length",
+            FinishKind::ContentFilter => "content_filter",
+            FinishKind::PauseTurn => "pause_turn",
+            FinishKind::Done => "done",
+            FinishKind::Cancelled => "cancelled",
+            FinishKind::ContextOverflow | FinishKind::Other => &self.raw,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateOutput {
     /// Ordered canonical output when the provider requires lossless content replay.
@@ -417,8 +516,7 @@ pub struct GenerateOutput {
     /// Billing across internal server-tool continuations; usage above remains the latest request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub billing_usage: Option<ModelUsage>,
-    pub finish_reason: Option<String>,
-    pub provider_messages: Vec<Value>,
+    pub finish_reason: Option<FinishReason>,
     pub cancelled: bool,
     /// 模型原生内置联网搜索的解析结果（仅 provider 服务端执行了内置搜索时为 Some）。
     /// 默认 None：绝大多数调用不开内置搜索，解析失败也降级为 None，不阻断答案。
@@ -428,22 +526,20 @@ pub struct GenerateOutput {
     /// 绝大多数调用不出图。runtime 据此把图落地为 assistant 消息 artifact。
     #[serde(default)]
     pub images: Vec<GeneratedImageData>,
-    /// OpenAI Responses 的原生 reasoning items（含 encrypted_content），仅该适配器
-    /// 填充；随 `to_openai_compatible_message` 挂到 `reasoning_items` 键上进入历史，
-    /// 下一轮由 responses 适配器回放（见 [`MessagePart::ReasoningItem`]）。
+    /// OpenAI Responses reasoning items retain opaque encrypted content for replay
+    /// through [`MessagePart::ReasoningItem`].
     #[serde(default)]
     pub reasoning_items: Vec<ProviderReasoningItem>,
 }
 
 impl GenerateOutput {
-    pub fn text(text: String, reasoning: Option<String>, provider_message: Value) -> Self {
+    pub fn text(text: String, reasoning: Option<String>) -> Self {
         Self {
             text,
             reasoning,
             tool_calls: Vec::new(),
             usage: None,
             finish_reason: None,
-            provider_messages: vec![provider_message],
             cancelled: false,
             web_search: None,
             images: Vec::new(),
@@ -455,77 +551,43 @@ impl GenerateOutput {
 
     pub fn cancelled(text: String, reasoning: Option<String>) -> Self {
         Self {
-            text,
-            reasoning,
-            tool_calls: Vec::new(),
-            usage: None,
-            finish_reason: Some("cancelled".to_string()),
-            provider_messages: Vec::new(),
+            finish_reason: Some(FinishReason::from_openai("cancelled")),
             cancelled: true,
-            web_search: None,
-            images: Vec::new(),
-            reasoning_items: Vec::new(),
-            canonical_message: None,
-            billing_usage: None,
+            ..Self::text(text, reasoning)
         }
     }
 
-    pub fn to_openai_compatible_message(&self) -> Value {
+    pub fn replay_message(&self) -> ModelMessage {
         if let Some(message) = &self.canonical_message {
-            if let Some(mut value) = openai_messages_from_model_message(message)
-                .into_iter()
-                .next()
-            {
-                if let Some(reason) = &self.finish_reason {
-                    value["finish_reason"] = Value::String(reason.clone());
-                }
-                return value;
-            }
+            return message.clone();
         }
-        if let Some(message) = self.provider_messages.first() {
-            let mut message = message.clone();
-            if let (Some(reason), Some(object)) = (&self.finish_reason, message.as_object_mut()) {
-                object.insert("finish_reason".into(), Value::String(reason.clone()));
-            }
-            return message;
+        let mut content: Vec<_> = self
+            .reasoning_items
+            .iter()
+            .map(|item| MessagePart::ReasoningItem {
+                model: item.model.clone(),
+                item: item.item.clone(),
+            })
+            .collect();
+        if !self.text.is_empty() {
+            content.push(MessagePart::Text {
+                text: self.text.clone(),
+            });
         }
-        let mut message = serde_json::json!({
-            "role": "assistant",
-            "content": if self.text.is_empty() { Value::Null } else { Value::String(self.text.clone()) },
-        });
         if let Some(reasoning) = self
             .reasoning
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
+            .as_ref()
+            .filter(|text| !text.trim().is_empty())
         {
-            message["reasoning_content"] = Value::String(reasoning.to_string());
+            content.push(MessagePart::Reasoning {
+                text: reasoning.clone(),
+            });
         }
-        if !self.tool_calls.is_empty() {
-            message["tool_calls"] = Value::Array(
-                self.tool_calls
-                    .iter()
-                    .map(|call| {
-                        serde_json::json!({
-                            "id": call.id,
-                            "type": "function",
-                            "function": {
-                                "name": call.function_name,
-                                "arguments": call.arguments_raw,
-                            }
-                        })
-                    })
-                    .collect(),
-            );
+        content.extend(self.tool_calls.iter().map(PendingToolCall::replay_part));
+        ModelMessage {
+            role: ModelRole::Assistant,
+            content,
         }
-        if !self.reasoning_items.is_empty() {
-            if let Ok(items) = serde_json::to_value(&self.reasoning_items) {
-                message["reasoning_items"] = items;
-            }
-        }
-        if let Some(reason) = &self.finish_reason {
-            message["finish_reason"] = Value::String(reason.clone());
-        }
-        message
     }
 }
 
@@ -572,149 +634,9 @@ pub enum StreamPart {
         data: String,
     },
     Finish {
-        reason: String,
+        reason: FinishReason,
         full: String,
     },
-    Error {
-        message: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelErrorKind {
-    Other,
-    StreamReadInterrupted,
-    /// 调用方主动取消（如 Lens owner 的 stream generation 代际失配）。
-    /// 由 sink 在 emit 时返回，适配器沿 `?` 上抛；包装层据此把取消当正常结束处理。
-    Cancelled,
-}
-
-#[derive(Debug, Clone)]
-pub struct ModelError {
-    pub message: String,
-    pub kind: ModelErrorKind,
-}
-
-impl ModelError {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-            kind: ModelErrorKind::Other,
-        }
-    }
-
-    pub fn with_kind(message: impl Into<String>, kind: ModelErrorKind) -> Self {
-        Self {
-            message: message.into(),
-            kind,
-        }
-    }
-
-    /// Errors reported inside an established SSE stream. HTTP failures are
-    /// already retried by api.rs and must not acquire another retry multiplier.
-    pub fn provider_stream_error(message: impl Into<String>) -> Self {
-        let message = message.into();
-        let lower = message.to_ascii_lowercase();
-        let transient = !crate::api::is_permanent_provider_error(&message)
-            && (is_missing_stream_terminal_error(&message)
-                || [
-                    "overloaded_error",
-                    "server_error",
-                    "rate_limit_error",
-                    "rate_limit_exceeded",
-                    "service_unavailable",
-                    "internal_server_error",
-                    "service temporarily unavailable",
-                    "service is temporarily unavailable",
-                    "service is unavailable",
-                    "server_busy",
-                    "servers are currently busy",
-                    "model is at capacity",
-                    "currently experiencing high demand",
-                    "unable to forward upstream",
-                    "upstream_request_failed",
-                    "upstream request failed",
-                    "upstream_stream_read_error",
-                    "stream was interrupted",
-                    "stream disconnected before completion",
-                    "resource_exhausted",
-                ]
-                .iter()
-                .any(|code| lower.contains(code)));
-        Self::with_kind(
-            message,
-            if transient {
-                ModelErrorKind::StreamReadInterrupted
-            } else {
-                ModelErrorKind::Other
-            },
-        )
-    }
-
-    pub fn stream_ended_early(label: &str) -> Self {
-        Self::with_kind(
-            format!("{label} 流式响应读取中断：stream ended without terminal event"),
-            ModelErrorKind::StreamReadInterrupted,
-        )
-    }
-
-    pub fn is_stream_read_interrupted(&self) -> bool {
-        self.kind == ModelErrorKind::StreamReadInterrupted
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.kind == ModelErrorKind::Cancelled
-    }
-}
-
-pub fn stream_read_error(label: &str, err: &reqwest::Error) -> ModelError {
-    let reason = if err.is_timeout() {
-        "the provider stream timed out"
-    } else if err.is_connect() {
-        "the provider connection was interrupted"
-    } else if err.is_decode() {
-        "the provider sent an incomplete or invalid encoded stream chunk"
-    } else {
-        "the provider stream ended unexpectedly"
-    };
-    ModelError::with_kind(
-        format!(
-            "{label} 流式响应读取中断：{reason}。这通常是临时的网络、代理或模型服务流式断包问题，请重试。"
-        ),
-        ModelErrorKind::StreamReadInterrupted,
-    )
-}
-
-/// Recognize relay errors that explicitly say no completion marker arrived.
-/// Partial text alone is not proof of completion; the stream owner may retry.
-pub fn is_missing_stream_terminal_error(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("without terminal")
-        || lower.contains("missing terminal")
-        || lower.contains("without finish_reason")
-        || lower.contains("stream closed before response.completed")
-        || (lower.contains("stream ended")
-            && (lower.contains("completed") || lower.contains("terminal event")))
-}
-
-impl std::fmt::Display for ModelError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for ModelError {}
-
-impl From<String> for ModelError {
-    fn from(value: String) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<&str> for ModelError {
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
 }
 
 pub trait StreamSink: Send {
@@ -836,7 +758,10 @@ pub fn split_workbench_system_suffix(system: &str) -> Option<(String, String)> {
     Some((prefix, suffix))
 }
 
-fn prepend_text_to_first_user_message(messages: &mut [ModelMessage], prefix: &str) -> bool {
+pub(super) fn prepend_text_to_first_user_message(
+    messages: &mut [ModelMessage],
+    prefix: &str,
+) -> bool {
     let Some(message) = messages.iter_mut().find(|m| m.role == ModelRole::User) else {
         return false;
     };
@@ -859,66 +784,6 @@ fn prepend_text_to_first_user_message(messages: &mut [ModelMessage], prefix: &st
         );
     }
     true
-}
-
-pub fn generate_request_from_openai_messages(
-    model: &str,
-    messages: Vec<Value>,
-    tools: Option<&[ChatToolDefinition]>,
-    options: GenerateOptions,
-    label: &str,
-    context: GenerateRequestContext,
-) -> GenerateRequest {
-    let mut system_parts = Vec::new();
-    let mut model_messages = Vec::new();
-    for message in messages {
-        let role = message
-            .get("role")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        if role == "system" {
-            if let Some(content) = openai_message_text_content(&message) {
-                system_parts.push(content);
-            }
-            continue;
-        }
-        if let Some(model_message) = model_message_from_openai_message(&message) {
-            model_messages.push(model_message);
-        }
-    }
-    repair_legacy_tool_result_order(&mut model_messages);
-    if let Some(first) = system_parts.first_mut() {
-        if let Some((prefix, suffix)) = split_workbench_system_suffix(first) {
-            *first = prefix;
-            if !prepend_text_to_first_user_message(&mut model_messages, &suffix) {
-                // No user turn to park it on — keep the paragraph in system.
-                if first.is_empty() {
-                    *first = suffix;
-                } else {
-                    first.push_str("\n\n");
-                    first.push_str(&suffix);
-                }
-            }
-        }
-    }
-    system_parts.retain(|part| !part.trim().is_empty());
-    GenerateRequest {
-        model: model.to_string(),
-        system: system_parts.join("\n\n"),
-        messages: model_messages,
-        tools: tools
-            .unwrap_or_default()
-            .iter()
-            .map(ModelTool::from)
-            .collect(),
-        options,
-        metadata: RequestMetadata {
-            label: label.to_string(),
-            conversation_id: context.conversation_id,
-            message_id: context.message_id,
-            ..RequestMetadata::default()
-        },
-    }
 }
 
 pub fn model_messages_from_openai_messages(messages: Vec<Value>) -> Vec<ModelMessage> {
@@ -1047,7 +912,7 @@ pub fn openai_messages_from_generate_request(request: &GenerateRequest) -> Vec<V
         }));
     }
     for message in paired_model_messages(&request.messages).iter() {
-        messages.extend(openai_messages_from_model_message(message));
+        messages.extend(openai_messages_from_model_message(message, false));
     }
     // 这是 Chat Completions 的**发送**路径：`reasoning_items` 是 Responses 专属的
     // 存续键（密文可达几 KB/轮），发给 Chat Completions 端点纯属浪费、严格端点还可能
@@ -1064,7 +929,7 @@ pub fn openai_messages_from_generate_request(request: &GenerateRequest) -> Vec<V
 pub fn openai_messages_from_model_messages(messages: &[ModelMessage]) -> Vec<Value> {
     messages
         .iter()
-        .flat_map(openai_messages_from_model_message)
+        .flat_map(|message| openai_messages_from_model_message(message, true))
         .collect()
 }
 
@@ -1092,7 +957,7 @@ pub(crate) fn openai_message_text_content(message: &Value) -> Option<String> {
     }
 }
 
-fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage> {
+pub(super) fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage> {
     let role = match message
         .get("role")
         .and_then(|value| value.as_str())
@@ -1117,8 +982,13 @@ fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage> {
                 .and_then(|value| value.as_str())
                 .unwrap_or_default()
                 .to_string(),
-            is_error: false,
-            artifacts: Vec::new(),
+            is_error: message["is_error"].as_bool().unwrap_or(false),
+            artifacts: message["artifacts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|artifact| serde_json::from_value(artifact.clone()).ok())
+                .collect(),
         });
         return Some(ModelMessage {
             role,
@@ -1170,27 +1040,57 @@ fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage> {
                                 });
                             }
                         }
-                        "image_url" => {
+                        "image_url" | "input_image" => {
                             let url = item
                                 .get("image_url")
-                                .and_then(|value| value.get("url"))
+                                .and_then(|value| value.get("url").or(Some(value)))
                                 .and_then(|value| value.as_str())
                                 .unwrap_or_default();
                             let detail = item
                                 .get("image_url")
                                 .and_then(|value| value.get("detail"))
+                                .or_else(|| item.get("detail"))
                                 .and_then(Value::as_str)
                                 .map(str::to_string);
                             if let Some((mime_type, data)) = parse_data_image_url(url) {
                                 parts.push(MessagePart::Image {
                                     mime_type,
                                     data,
-                                    path: None,
+                                    path: item["image_url"]["path"].as_str().map(str::to_string),
                                     detail,
                                 });
                             } else if !url.is_empty() {
                                 parts.push(MessagePart::ImageUrl {
                                     url: url.to_string(),
+                                    detail,
+                                });
+                            }
+                        }
+                        "image" => {
+                            let source = item.get("source").unwrap_or(item);
+                            let detail = item
+                                .get("detail")
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
+                            if let Some(data) = source.get("data").and_then(Value::as_str) {
+                                let mime_type = source
+                                    .get("media_type")
+                                    .or_else(|| source.get("mime_type"))
+                                    .or_else(|| source.get("mimeType"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("image/png");
+                                parts.push(MessagePart::Image {
+                                    mime_type: mime_type.into(),
+                                    data: data.into(),
+                                    path: source
+                                        .get("path")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string),
+                                    detail,
+                                });
+                            } else if let Some(url) = source.get("url").and_then(Value::as_str) {
+                                parts.push(MessagePart::ImageUrl {
+                                    url: url.into(),
                                     detail,
                                 });
                             }
@@ -1209,7 +1109,9 @@ fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage> {
                                         parts.push(MessagePart::Video {
                                             mime_type: mime.into(),
                                             data: data.into(),
-                                            path: None,
+                                            path: item["video_url"]["path"]
+                                                .as_str()
+                                                .map(str::to_string),
                                         });
                                     }
                                 }
@@ -1281,7 +1183,10 @@ pub fn pending_tool_calls_from_openai_message(message: &Value) -> Vec<PendingToo
         .unwrap_or_default()
 }
 
-fn openai_messages_from_model_message(message: &ModelMessage) -> Vec<Value> {
+fn openai_messages_from_model_message(
+    message: &ModelMessage,
+    preserve_legacy_metadata: bool,
+) -> Vec<Value> {
     if message.role == ModelRole::Tool {
         return message
             .content
@@ -1290,12 +1195,22 @@ fn openai_messages_from_model_message(message: &ModelMessage) -> Vec<Value> {
                 MessagePart::ToolResult {
                     tool_call_id,
                     content,
-                    ..
-                } => Some(serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "content": content,
-                })),
+                    is_error,
+                    artifacts,
+                } => {
+                    let mut result = serde_json::json!({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": content,
+                    });
+                    if preserve_legacy_metadata && *is_error {
+                        result["is_error"] = Value::Bool(true);
+                    }
+                    if preserve_legacy_metadata && !artifacts.is_empty() {
+                        result["artifacts"] = serde_json::json!(artifacts);
+                    }
+                    Some(result)
+                }
                 _ => None,
             })
             .collect();
@@ -1308,15 +1223,23 @@ fn openai_messages_from_model_message(message: &ModelMessage) -> Vec<Value> {
     for part in &message.content {
         match part {
             MessagePart::Video {
-                mime_type, data, ..
+                mime_type,
+                data,
+                path,
             } => {
-                if data.is_empty() {
+                if data.is_empty() && (!preserve_legacy_metadata || path.is_none()) {
                     text_parts.push("[视频附件不可用，请重新添加]".into());
                     multimodal_parts.push(
                         serde_json::json!({"type":"text", "text":"[视频附件不可用，请重新添加]"}),
                     );
                 } else {
-                    multimodal_parts.push(serde_json::json!({"type":"video_url", "video_url":{"url":format!("data:{mime_type};base64,{data}")}}));
+                    let mut video_url =
+                        serde_json::json!({"url":format!("data:{mime_type};base64,{data}")});
+                    if let Some(path) = path.as_ref().filter(|_| preserve_legacy_metadata) {
+                        video_url["path"] = Value::String(path.clone());
+                    }
+                    multimodal_parts
+                        .push(serde_json::json!({"type":"video_url", "video_url":video_url}));
                 }
             }
             MessagePart::Text { text } => {
@@ -1327,17 +1250,20 @@ fn openai_messages_from_model_message(message: &ModelMessage) -> Vec<Value> {
                 mime_type,
                 data,
                 detail,
-                ..
+                path,
             } => {
                 // data 为空 = 外置了但没 rehydrate（回放路径漏了读盘）。发个占位符
                 // 而不是 `data:image/png;base64,`，免得让 provider 400。
-                if data.is_empty() {
+                if data.is_empty() && (!preserve_legacy_metadata || path.is_none()) {
                     multimodal_parts.push(
                         serde_json::json!({ "type": "text", "text": MISSING_IMAGE_PLACEHOLDER }),
                     );
                 } else {
                     let mut image_url =
                         serde_json::json!({"url":format!("data:{mime_type};base64,{data}")});
+                    if let Some(path) = path.as_ref().filter(|_| preserve_legacy_metadata) {
+                        image_url["path"] = Value::String(path.clone());
+                    }
                     if let Some(detail) = detail {
                         image_url["detail"] = serde_json::json!(detail);
                     }
@@ -1604,7 +1530,7 @@ mod tests {
                 path: None,
             }],
         };
-        let messages = openai_messages_from_model_message(&message);
+        let messages = openai_messages_from_model_message(&message, true);
         assert_eq!(
             messages[0]["content"][0],
             serde_json::json!({
@@ -1615,15 +1541,98 @@ mod tests {
     }
 
     #[test]
-    fn model_error_kind_marks_stream_read_interrupts_without_message_matching() {
-        let stream_error = ModelError::with_kind(
-            "temporary stream failure",
-            ModelErrorKind::StreamReadInterrupted,
+    fn legacy_image_aliases_survive_storage_and_wire_projection() {
+        for part in [
+            serde_json::json!({"type":"image_url","image_url":{"url":"data:image/png;base64,AA==","detail":"high"}}),
+            serde_json::json!({"type":"input_image","image_url":"data:image/png;base64,AA==","detail":"high"}),
+            serde_json::json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="},"detail":"high"}),
+            serde_json::json!({"type":"image","data":"AA==","mimeType":"image/png","detail":"high"}),
+        ] {
+            let request = generate_request_from_openai_messages(
+                "m",
+                vec![serde_json::json!({"role":"user", "content":[part]})],
+                None,
+                Default::default(),
+                "test",
+                Default::default(),
+            );
+            let saved = serde_json::to_string(&request.messages).unwrap();
+            let restored: Vec<ModelMessage> = serde_json::from_str(&saved).unwrap();
+            assert_eq!(
+                restored[0].content,
+                vec![MessagePart::Image {
+                    mime_type: "image/png".into(),
+                    data: "AA==".into(),
+                    path: None,
+                    detail: Some("high".into()),
+                }]
+            );
+            let wire = openai_messages_from_generate_request(&GenerateRequest {
+                messages: restored,
+                ..request
+            });
+            assert_eq!(
+                wire[0]["content"][0]["image_url"]["url"],
+                "data:image/png;base64,AA=="
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_history_round_trips_tool_artifacts_and_external_media_without_leaking_metadata() {
+        let legacy = vec![
+            serde_json::json!({"role":"user","content":[
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,AA==","path":"image.png"}},
+                {"type":"video_url","video_url":{"url":"data:video/mp4;base64,","path":"video.mp4"}}
+            ]}),
+            serde_json::json!({"role":"assistant","tool_calls":[
+                {"id":"call","type":"function","function":{"name":"read","arguments":"{}"}}
+            ]}),
+            serde_json::json!({"role":"tool","tool_call_id":"call","content":"failed","is_error":true,
+                "artifacts":[{"name":"render","mimeType":"image/png","dataUrl":"","sizeBytes":12,"path":"render.png"}]}),
+        ];
+        let request = generate_request_from_openai_messages(
+            "m",
+            legacy,
+            None,
+            Default::default(),
+            "test",
+            Default::default(),
         );
+        let encoded = openai_messages_from_model_messages(&request.messages);
+        assert_eq!(
+            model_messages_from_openai_messages(encoded),
+            request.messages
+        );
+        let MessagePart::ToolResult {
+            artifacts,
+            is_error,
+            ..
+        } = &request.messages[2].content[0]
+        else {
+            panic!("expected tool result");
+        };
+        assert!(*is_error);
+        assert_eq!(artifacts[0].size_bytes, Some(12));
+        assert_eq!(artifacts[0].path.as_deref(), Some("render.png"));
+
+        let wire = openai_messages_from_generate_request(&request);
+        assert_eq!(
+            wire[0]["content"][0]["image_url"],
+            serde_json::json!({"url":"data:image/png;base64,AA=="})
+        );
+        assert_eq!(wire[0]["content"][1]["type"], "text");
+        assert!(wire[2].get("artifacts").is_none());
+        assert!(wire[2].get("is_error").is_none());
+    }
+
+    #[test]
+    fn model_error_kind_marks_stream_read_interrupts_without_message_matching() {
+        let stream_error = ModelError::stream_ended_early("Test");
         let generic_error = ModelError::new("temporary stream failure");
 
-        assert!(stream_error.is_stream_read_interrupted());
-        assert!(!generic_error.is_stream_read_interrupted());
+        assert!(stream_error.is_retryable_stream_error());
+        assert!(!generic_error.is_retryable_stream_error());
     }
 
     #[test]
@@ -1834,7 +1843,7 @@ MCP note after the path.";
         assert_eq!(wire[1]["tool_call_id"], "missing");
         assert!(wire[1]["content"].as_str().unwrap().contains("interrupted"));
         assert!(matches!(
-            &request.messages[1].content[0],
+            &paired_model_messages(&request.messages)[1].content[0],
             MessagePart::ToolResult { is_error: true, .. }
         ));
         assert!(wire

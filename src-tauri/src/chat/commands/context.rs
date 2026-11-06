@@ -474,36 +474,19 @@ fn estimate_gemini_image_tokens(width: u32, height: u32) -> usize {
     tiles.max(1) * 258
 }
 
-/// Display measurement of the exact request, including model-specific image costs.
+#[cfg(test)]
 pub(super) fn measure_request_segments(
     messages: &[Value],
     tools: &[crate::mcp::ChatToolDefinition],
     provider: Option<&ModelProvider>,
     model: &str,
 ) -> Vec<ContextUsageSegment> {
-    let mut segments =
-        crate::chat::agent::context_measure::measure_prepared_request(messages, tools);
-    let image_tokens = messages
-        .iter()
-        .map(|message| request_image_tokens(message, provider, model))
-        .sum::<usize>();
-    if image_tokens > 0 {
-        if let Some(conversation) = segments
-            .iter_mut()
-            .find(|segment| segment.id == "conversation")
-        {
-            conversation.estimated_tokens += image_tokens;
-        } else {
-            segments.push(ContextUsageSegment {
-                id: "conversation".into(),
-                label: "Conversation".into(),
-                estimated_tokens: image_tokens,
-                chars: 0,
-                color: None,
-            });
-        }
-    }
-    segments
+    crate::chat::agent::context_measure::measure_prepared_request(
+        &crate::chat::agent::history::import_history(messages.to_vec()),
+        tools,
+        provider,
+        model,
+    )
 }
 
 /// Decode only the image header, following OMP's bounded metadata probe.
@@ -574,6 +557,40 @@ pub(crate) fn request_image_tokens(
             .sum(),
         _ => 0,
     }
+}
+
+pub(crate) fn runtime_message_image_tokens(
+    message: &crate::chat::agent::history::RuntimeMessage,
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> usize {
+    use crate::chat::model::MessagePart;
+
+    message
+        .model_message()
+        .into_iter()
+        .flat_map(|message| &message.content)
+        .map(|part| match part {
+            MessagePart::Image {
+                data, detail, path, ..
+            } if !data.is_empty() || path.is_some() => estimate_image_tokens(
+                provider,
+                model,
+                image_header_dimensions(data),
+                detail.as_deref(),
+            ),
+            MessagePart::ImageUrl { url, detail } => estimate_image_tokens(
+                provider,
+                model,
+                image_url_dimensions(url),
+                detail.as_deref(),
+            ),
+            MessagePart::AnthropicNativeBlock { block, .. } => {
+                request_image_tokens(block, provider, model)
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 /// Model/detail rules apply equally to decoded images and unknown-size budgets.
@@ -1192,7 +1209,10 @@ pub(crate) fn build_chat_api_messages_with_video(
         let sanitized_content = sanitize_image_payloads_for_model(content);
         if let Some(incoming) = message.irc_message.as_ref() {
             if !incoming.observation {
-                messages.push(tag_ui_message_id(crate::chat::sub_agent::view::model_input(incoming), &message.id));
+                messages.push(tag_ui_message_id(
+                    crate::chat::sub_agent::view::model_input(incoming),
+                    &message.id,
+                ));
             }
             continue;
         }

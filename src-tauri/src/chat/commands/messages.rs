@@ -492,21 +492,22 @@ pub(super) async fn persist_partial_assistant_snapshot(
     message_id: &str,
     tool_records: &[ToolCallRecord],
     segments: &[ChatMessageSegment],
-    api_messages: &[Value],
+    api_messages: &[crate::chat::agent::history::RuntimeMessage],
 ) -> Result<(), String> {
     if tool_records.is_empty() && segments.is_empty() {
         return Ok(());
     }
+    let api_messages = crate::chat::agent::history::export_history(api_messages);
     let segments = segments.to_vec();
     // 中断草稿是「永不完成」run 的最终存档，最易出孤立工具分段——同样反向对账补齐。
     let mut tool_records = tool_records.to_vec();
-    reconcile_orphan_tool_segments(&mut tool_records, &segments, api_messages);
+    reconcile_orphan_tool_segments(&mut tool_records, &segments, &api_messages);
     let content = content_from_segments(&segments).unwrap_or_default();
     let reasoning = reasoning_from_segments(&segments);
     let model_messages = assistant_model_messages_for_storage(
         &content,
         reasoning.as_deref(),
-        api_messages,
+        &api_messages,
         &tool_records,
     );
     let draft = ChatMessage {
@@ -520,7 +521,7 @@ pub(super) async fn persist_partial_assistant_snapshot(
         tool_calls: tool_records,
         segments,
         agent_plan: None,
-        api_messages: api_messages.to_vec(),
+        api_messages,
         model_messages,
         active_skill_id: None,
         run_entry: None,

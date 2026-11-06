@@ -1,26 +1,9 @@
 use serde_json::Value;
 
-use crate::api::extract_status_code;
-use crate::chat::model::{pending_tool_calls_from_openai_message, PendingToolCall};
-
-pub fn extract_reasoning_content(message: &Value) -> Option<String> {
-    message
-        .get("reasoning_content")
-        .or_else(|| message.get("reasoning"))
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-pub fn assistant_content_from_api_message(message: &Value) -> String {
-    message
-        .get("content")
-        .and_then(|content| content.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
+use super::history::{RuntimeBody, RuntimeMessage};
+#[cfg(test)]
+use crate::chat::model::is_tools_unsupported_error;
+use crate::chat::model::{GenerateOutput, MessagePart, ModelMessage, ModelRole, PendingToolCall};
 
 pub fn merge_reasoning(
     planning_parts: &[String],
@@ -47,7 +30,7 @@ pub fn merge_reasoning(
 }
 
 pub fn final_response_from_planning_message(
-    message: &Value,
+    message: &GenerateOutput,
     planning_reasoning_parts: &[String],
 ) -> Result<(String, Option<String>), String> {
     final_response_from_planning_message_with_images(message, planning_reasoning_parts, false)
@@ -56,36 +39,26 @@ pub fn final_response_from_planning_message(
 /// 同上，但允许「本轮出了图」时正文为空：hosted image generation（Responses
 /// `image_generation_call`）的正文本就是空串——图即答案，此时空正文不是失败。
 pub fn final_response_from_planning_message_with_images(
-    message: &Value,
+    message: &GenerateOutput,
     planning_reasoning_parts: &[String],
     has_images: bool,
 ) -> Result<(String, Option<String>), String> {
-    let response = sanitize_assistant_text_response(&assistant_content_from_api_message(message));
+    let response = sanitize_assistant_text_response(&message.text);
     if response.trim().is_empty() && !has_images {
         return Err(empty_assistant_response_error("Chat tools planning"));
     }
-    let reasoning = merge_reasoning(planning_reasoning_parts, extract_reasoning_content(message));
+    let reasoning = merge_reasoning(planning_reasoning_parts, message.reasoning.clone());
     Ok((response, reasoning))
 }
 
-pub fn final_assistant_api_message(content: &str, reasoning: Option<&str>) -> Value {
-    let mut message = serde_json::json!({
-        "role": "assistant",
-        "content": content,
-    });
+pub fn final_assistant_message(content: &str, reasoning: Option<&str>) -> ModelMessage {
+    let mut message = ModelMessage::text(ModelRole::Assistant, content);
     if let Some(reasoning) = reasoning.map(str::trim).filter(|value| !value.is_empty()) {
-        message["reasoning_content"] = Value::String(reasoning.to_string());
+        message.content.push(MessagePart::Reasoning {
+            text: reasoning.to_string(),
+        });
     }
     message
-}
-
-pub fn extract_tool_calls(message: &Value) -> Vec<PendingToolCall> {
-    let from_api = pending_tool_calls_from_openai_message(message);
-    if !from_api.is_empty() {
-        return from_api;
-    }
-    let content = assistant_content_from_api_message(message);
-    pending_tool_calls_from_dsml(&content)
 }
 
 pub fn pending_tool_calls_from_dsml(content: &str) -> Vec<PendingToolCall> {
@@ -107,39 +80,6 @@ pub fn pending_tool_calls_from_dsml(content: &str) -> Vec<PendingToolCall> {
         .collect()
 }
 
-pub fn assistant_api_message_for_tool_calls(
-    message: &Value,
-    tool_calls: &[PendingToolCall],
-) -> Value {
-    if message
-        .get("tool_calls")
-        .and_then(|value| value.as_array())
-        .is_some_and(|calls| !calls.is_empty())
-    {
-        return message.clone();
-    }
-    let mut rebuilt = serde_json::json!({
-        "role": "assistant",
-        "content": Value::Null,
-        "tool_calls": tool_calls.iter().map(|call| {
-            serde_json::json!({
-                "id": call.id,
-                "type": "function",
-                "function": {
-                    "name": call.function_name,
-                    "arguments": call.arguments_raw,
-                }
-            })
-        }).collect::<Vec<_>>(),
-    });
-    // DSML 重建会丢掉原生 `tool_calls` 之外的回放键。Responses 下一轮靠
-    // `reasoning_items` 里的 encrypted_content 接上思考链，必须原样带过去。
-    if let Some(items) = message.get("reasoning_items") {
-        rebuilt["reasoning_items"] = items.clone();
-    }
-    rebuilt
-}
-
 pub fn sanitize_assistant_text_response(content: &str) -> String {
     let stripped = crate::chat::dsml_tools::strip_dsml_tool_markup(content);
     if stripped.is_empty() && crate::chat::dsml_tools::contains_dsml_tool_markup(content) {
@@ -152,38 +92,13 @@ pub fn empty_assistant_response_error(scope: &str) -> String {
     format!("{scope} returned an empty assistant response")
 }
 
-pub fn is_tools_unsupported_error(err: &str) -> bool {
-    let Some(code) = extract_status_code(err) else {
-        return false;
-    };
-    if !matches!(code, 400 | 404 | 422 | 501) {
-        return false;
-    }
-    let lower = err.to_ascii_lowercase();
-    // The stage prefix itself contains "tools". A 400 mentioning malformed
-    // history/schema/reasoning is not a capability rejection.
-    [
-        "tools",
-        "tool_choice",
-        "function calling",
-        "function_call",
-        "function call",
-    ]
-    .iter()
-    .any(|feature| {
-        lower.contains(&format!("{feature} not supported"))
-            || lower.contains(&format!("{feature} is not supported"))
-            || lower.contains(&format!("{feature} are not supported"))
-            || lower.contains(&format!("does not support {feature}"))
-            || lower.contains(&format!("unsupported {feature}"))
-    }) || (lower.contains("tools[") && lower.contains("unknown variant `function`"))
-}
-
-pub fn patch_system_message(messages: &mut [Value], prompt: &str) {
-    if let Some(first) = messages.first_mut() {
-        if first.get("role").and_then(|role| role.as_str()) == Some("system") {
-            first["content"] = Value::String(prompt.to_string());
-        }
+pub(crate) fn patch_system_message(messages: &mut [RuntimeMessage], prompt: &str) {
+    if let Some(RuntimeMessage {
+        body: RuntimeBody::System(content),
+        ..
+    }) = messages.first_mut()
+    {
+        *content = prompt.to_string();
     }
 }
 
@@ -238,178 +153,38 @@ mod tests {
             "Chat tools planning Error: 400 - This model does not support images",
             "Chat tools planning Error: 400 - The `reasoning_text` in the thinking mode must be passed back to the API.",
         ] {
-            assert!(extract_status_code(error).is_some(), "fixture must exercise HTTP classification");
+            assert!(crate::chat::model::extract_status_code(error).is_some(), "fixture must exercise HTTP classification");
             assert!(!is_tools_unsupported_error(error), "{error}");
         }
     }
 
     #[test]
-    fn extract_tool_calls_parses_dsml_when_api_tool_calls_missing() {
-        const SAMPLE: &str = concat!(
-            "<|DSML|tool_calls><|DSML|invoke name=\"skill\">",
-            "<|DSML|parameter name=\"name\" string=\"true\">pdf</|DSML|parameter>",
-            "</|DSML|invoke></|DSML|tool_calls>",
-        );
-        let message = serde_json::json!({
-            "role": "assistant",
-            "content": SAMPLE,
-        });
-
-        let calls = extract_tool_calls(&message);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].function_name, "skill");
-        assert_eq!(
-            calls[0]
-                .arguments
-                .get("name")
-                .and_then(|value| value.as_str()),
-            Some("pdf")
-        );
-    }
-
-    #[test]
-    fn extract_openai_tool_calls_preserves_invalid_arguments_error() {
-        let message = serde_json::json!({
-            "role": "assistant",
-            "tool_calls": [{
-                "id": "call_write",
-                "type": "function",
-                "function": {
-                    "name": "write_file",
-                    "arguments": "{\"path\":\"/tmp/out.html\",\"content\":\"unterminated"
-                }
-            }]
-        });
-
-        let calls = extract_tool_calls(&message);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].function_name, "write_file");
-        assert!(calls[0].arguments.is_null());
-        assert!(calls[0]
-            .arguments_parse_error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("invalid or incomplete"));
-    }
-
-    #[test]
-    fn planning_final_message_becomes_final_reply_without_second_request() {
-        let message = serde_json::json!({
-            "role": "assistant",
-            "content": "直接回答",
-            "reasoning_content": "final thought"
-        });
-
+    fn planning_final_uses_display_reasoning_without_mutating_replay() {
+        let message = GenerateOutput::text("直接回答".into(), Some("final thought".into()));
         let (response, reasoning) =
-            final_response_from_planning_message(&message, &["plan thought".to_string()])
-                .expect("planning final message should become final reply");
-
+            final_response_from_planning_message(&message, &["plan thought".into()]).unwrap();
         assert_eq!(response, "直接回答");
         assert_eq!(reasoning.as_deref(), Some("plan thought\n\nfinal thought"));
+        assert_eq!(message.reasoning.as_deref(), Some("final thought"));
     }
 
     #[test]
-    fn planning_final_message_rejects_empty_text() {
-        let message = serde_json::json!({
-            "role": "assistant",
-            "content": "<|DSML|tool_calls></|DSML|tool_calls>"
-        });
-
-        let err = final_response_from_planning_message(&message, &[])
-            .expect_err("empty planning final text should fail");
-
+    fn planning_final_rejects_empty_text() {
+        let message = GenerateOutput::text("<|DSML|tool_calls></|DSML|tool_calls>".into(), None);
         assert_eq!(
-            err,
+            final_response_from_planning_message(&message, &[]).unwrap_err(),
             "Chat tools planning returned an empty assistant response"
         );
     }
 
     #[test]
-    fn patch_system_message_replaces_first_system_entry() {
+    fn patch_system_message_preserves_other_entries() {
         let mut messages = vec![
-            serde_json::json!({ "role": "system", "content": "old" }),
-            serde_json::json!({ "role": "user", "content": "hi" }),
+            RuntimeMessage::system("old"),
+            RuntimeMessage::text(ModelRole::User, "hi"),
         ];
-
         patch_system_message(&mut messages, "new prompt");
-
-        assert_eq!(
-            messages[0].get("content").and_then(|value| value.as_str()),
-            Some("new prompt")
-        );
-    }
-
-    #[test]
-    fn final_assistant_api_message_omits_reasoning_without_tool_calls() {
-        let message = final_assistant_api_message("done", None);
-
-        assert_eq!(
-            message.get("role").and_then(|value| value.as_str()),
-            Some("assistant")
-        );
-        assert_eq!(
-            message.get("content").and_then(|value| value.as_str()),
-            Some("done")
-        );
-        assert!(message.get("reasoning_content").is_none());
-    }
-
-    #[test]
-    fn final_assistant_api_message_keeps_reasoning_when_requested() {
-        let message = final_assistant_api_message("done", Some(" thinking "));
-
-        assert_eq!(
-            message
-                .get("reasoning_content")
-                .and_then(|value| value.as_str()),
-            Some("thinking")
-        );
-    }
-
-    #[test]
-    fn dsml_rebuild_keeps_reasoning_items() {
-        let message = serde_json::json!({
-            "role": "assistant",
-            "content": "<|DSML|tool_calls></|DSML|tool_calls>",
-            "reasoning_items": [{
-                "model": "gpt-5.6",
-                "item": { "id": "rs_1", "encrypted_content": "gAAA" }
-            }]
-        });
-        let calls = vec![PendingToolCall {
-            id: "call_1".to_string(),
-            function_name: "skill".to_string(),
-            arguments: serde_json::json!({ "name": "pdf" }),
-            arguments_raw: "{\"name\":\"pdf\"}".to_string(),
-            arguments_parse_error: None,
-            signature: None,
-        }];
-        let rebuilt = assistant_api_message_for_tool_calls(&message, &calls);
-        assert_eq!(rebuilt["tool_calls"][0]["id"], "call_1");
-        assert_eq!(rebuilt["reasoning_items"][0]["item"]["id"], "rs_1");
-        assert_eq!(
-            rebuilt["reasoning_items"][0]["item"]["encrypted_content"],
-            "gAAA"
-        );
-    }
-
-    #[test]
-    fn assistant_content_from_api_message_trims_missing_or_null_content() {
-        assert_eq!(
-            assistant_content_from_api_message(&serde_json::json!({
-                "role": "assistant",
-                "content": " answer "
-            })),
-            "answer"
-        );
-        assert_eq!(
-            assistant_content_from_api_message(&serde_json::json!({
-                "role": "assistant",
-                "content": null
-            })),
-            ""
-        );
+        assert_eq!(messages[0].text_content(), "new prompt");
+        assert_eq!(messages[1].text_content(), "hi");
     }
 }

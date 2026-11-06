@@ -1,5 +1,7 @@
 //! Owner-routed background result delivery (OMP async-job-delivery).
 
+use crate::chat::agent::history::RuntimeMessage;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -126,16 +128,29 @@ fn reports_for(jobs: &[JobSnapshot]) -> Vec<(String, String)> {
     )).collect()
 }
 
-fn report_inputs(reports: Vec<(String, String)>, history: &[Value]) -> Vec<Value> {
-    let seen: HashSet<&str> = history.iter().flat_map(|message| [
-        message.get(REPORT_MESSAGE_ID_KEY).and_then(Value::as_str),
-        message.get("_ui_message_id").and_then(Value::as_str),
-    ]).flatten().collect();
-    reports.into_iter().filter(|(id, _)| !seen.contains(id.as_str())).map(|(id, content)| {
-        let mut input = report_input(&content);
-        input[REPORT_MESSAGE_ID_KEY] = Value::String(id);
-        input
-    }).collect()
+fn report_inputs(
+    reports: Vec<(String, String)>,
+    history: &[RuntimeMessage],
+) -> Vec<RuntimeMessage> {
+    let seen: HashSet<&str> = history
+        .iter()
+        .flat_map(|message| {
+            [
+                message.source.subagent_result_id.as_deref(),
+                message.source.ui_message_id.as_deref(),
+            ]
+        })
+        .flatten()
+        .collect();
+    reports
+        .into_iter()
+        .filter(|(id, _)| !seen.contains(id.as_str()))
+        .map(|(id, content)| {
+            let mut input = report_input(&content);
+            input[REPORT_MESSAGE_ID_KEY] = Value::String(id);
+            RuntimeMessage::from_legacy(input).expect("report input is a model message")
+        })
+        .collect()
 }
 
 /// Persist one report per execution before injecting it at a running parent's boundary.
@@ -143,8 +158,8 @@ pub async fn collect_for_main(
     app: &AppHandle,
     root: &str,
     _run_id: &str,
-    history: &[Value],
-) -> Result<Vec<Value>, String> {
+    history: &[RuntimeMessage],
+) -> Result<Vec<RuntimeMessage>, String> {
     let state = app.state::<AppState>();
     let mut claim = DeliveryClaim {
         jobs: &state.sub_agents.jobs,
@@ -286,6 +301,7 @@ pub fn on_main_run_ended(app: &AppHandle, root: &str) {
 
 #[cfg(test)]
 mod tests {
+    use crate::chat::agent::history::import_history;
     use super::*;
 
     fn job(id: &str, label: &str, result: &str) -> JobSnapshot {
@@ -413,13 +429,31 @@ mod tests {
         let mut messages = Vec::new();
         insert_reports(&mut messages, &old).unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(report_inputs(old.clone(), &[]).len(), 1, "an already-written report must still wake an idle owner after an index failure");
-        assert!(report_inputs(old.clone(), &[json!({ "_subagent_result_id": old[0].0.as_str() })]).is_empty());
+        assert_eq!(
+            report_inputs(old.clone(), &[]).len(),
+            1,
+            "an already-written report must still wake an idle owner after an index failure"
+        );
+        assert!(report_inputs(
+            old.clone(),
+            &import_history(vec![
+                json!({ "role":"user", "content":"", "_subagent_result_id": old[0].0.as_str() })
+            ])
+        )
+        .is_empty());
         let retried_batch = [old[0].clone(), new[0].clone()];
         insert_reports(&mut messages, &retried_batch).unwrap();
-        let inputs = report_inputs(retried_batch.to_vec(), &[json!({ "_ui_message_id": old[0].0.as_str() })]);
+        let inputs = report_inputs(
+            retried_batch.to_vec(),
+            &import_history(vec![
+                json!({ "role":"user", "content":"", "_ui_message_id": old[0].0.as_str() }),
+            ]),
+        );
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0][REPORT_MESSAGE_ID_KEY], new[0].0);
+        assert_eq!(
+            inputs[0].source.subagent_result_id.as_deref(),
+            Some(new[0].0.as_str())
+        );
         assert_eq!(report_inputs(retried_batch.to_vec(), &[]).len(), 2);
         assert_eq!(messages.len(), 2);
     }

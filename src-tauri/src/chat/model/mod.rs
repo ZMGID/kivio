@@ -4,156 +4,175 @@
 //! Provider-specific JSON belongs inside this module's adapters.
 
 pub mod anthropic;
+mod error;
 pub mod gemini;
+mod legacy;
 pub mod openai;
 pub mod responses;
 mod sse;
 pub mod types;
 
-pub use anthropic::AnthropicMessagesProvider;
-pub use gemini::GeminiProvider;
-pub use openai::OpenAiChatProvider;
-pub use responses::OpenAiResponsesProvider;
+use crate::chat::provider_runtime::ProviderRuntimeState;
+use crate::chat::request_debug::RequestDebugState;
+use crate::settings::{CacheRetention, ModelProvider, ProviderApiFormat};
+use crate::state::AppState;
+use crate::usage::UsageRecordInput;
+
+use anthropic::AnthropicMessagesProvider;
+pub use error::extract_status_code;
+pub use error::{is_missing_stream_terminal_error, stream_read_error, ModelError, ModelErrorKind};
+pub(crate) use error::is_permanent_provider_error;
+#[cfg(test)]
+pub(crate) use error::is_tools_unsupported_error;
+use gemini::GeminiProvider;
+pub use legacy::{generate_request_from_model_messages, generate_request_from_openai_messages};
+use openai::OpenAiChatProvider;
+use responses::OpenAiResponsesProvider;
 pub use types::*;
 
-/// 官方 DeepSeek 开内置搜索时的协议跳转：
-/// - Chat Completions → Responses 的服务端 `web_search`
-/// - 地址已是 `/anthropic` 但协议还标成 Chat Completions → Anthropic Messages
-/// 协议本身已是 Responses / Anthropic 时返回 None，走下面的正常分发。
-fn official_deepseek_builtin_hop(
-    provider: &crate::settings::ModelProvider,
-    builtin_web_search: bool,
-) -> Option<OfficialDeepseekBuiltinHop> {
-    use crate::settings::ProviderApiFormat;
-    if !builtin_web_search || !crate::utils::is_official_deepseek_api(&provider.base_url) {
-        return None;
-    }
-    if crate::utils::is_official_deepseek_anthropic_api(&provider.base_url) {
-        return match provider.api_format_kind() {
-            ProviderApiFormat::AnthropicMessages => None,
-            _ => Some(OfficialDeepseekBuiltinHop::Anthropic),
-        };
-    }
-    match provider.api_format_kind() {
-        ProviderApiFormat::OpenAiChat => Some(OfficialDeepseekBuiltinHop::Responses),
-        _ => None,
+#[derive(Clone, Copy)]
+struct ModelTransport<'a> {
+    client: &'a reqwest::Client,
+    runtime: &'a ProviderRuntimeState,
+    retry_attempts: usize,
+    request_debug: &'a (dyn Fn() -> Option<&'a RequestDebugState> + Sync),
+    record_usage: &'a (dyn Fn(UsageRecordInput<'_>) + Sync),
+}
+
+#[cfg(test)]
+impl<'a> ModelTransport<'a> {
+    fn for_test(state: &'a AppState, provider: &ModelProvider) -> Self {
+        Self {
+            client: state.client_for(provider),
+            runtime: state.provider_runtime(),
+            retry_attempts: 1,
+            request_debug: &|| None,
+            record_usage: &|_| (),
+        }
     }
 }
 
-enum OfficialDeepseekBuiltinHop {
-    Responses,
-    Anthropic,
+#[derive(Clone, Copy)]
+struct ProviderConfig<'a> {
+    source: &'a ModelProvider,
+    id: &'a str,
+    base_url: &'a str,
+    api_keys: &'a [String],
+    preferred_api_key: Option<&'a str>,
+    api_format: ProviderApiFormat,
+    cache_retention: CacheRetention,
+    compress_request_body: bool,
+    claude_code: bool,
+    codex_identity: bool,
+    codex_oauth: bool,
+    antigravity: bool,
+    opencode_free: bool,
 }
 
-/// 按供应商 `api_format` 分发到对应适配器的非流式调用。全 crate 统一入口：
-/// 聊天 planning、以及翻译/截图/Lens 等旧调用路径都应经由这里，而不是各自 match 协议。
+impl<'a> ProviderConfig<'a> {
+    fn from_settings(provider: &'a ModelProvider) -> Self {
+        Self {
+            source: provider,
+            id: &provider.id,
+            base_url: &provider.base_url,
+            api_keys: &provider.api_keys,
+            preferred_api_key: provider.preferred_api_key(),
+            api_format: provider.api_format_kind(),
+            cache_retention: provider.cache_retention(),
+            compress_request_body: provider.compress_request_body,
+            claude_code: crate::provider_request::is_claude_code_identity(provider),
+            codex_identity: crate::provider_request::is_codex_identity(provider),
+            codex_oauth: crate::provider_oauth::is_codex(provider),
+            antigravity: crate::provider_oauth::antigravity::is_provider(provider),
+            opencode_free: provider.is_opencode_free(),
+        }
+    }
+
+    // DeepSeek's built-in search uses Responses, or Messages on its Anthropic endpoint.
+    fn protocol_for_request(&self, request: &GenerateRequest) -> ProviderApiFormat {
+        if request.options.builtin_web_search
+            && request.options.tool_choice != ToolChoice::None
+            && crate::utils::is_official_deepseek_api(self.base_url)
+        {
+            if crate::utils::is_official_deepseek_anthropic_api(self.base_url) {
+                return ProviderApiFormat::AnthropicMessages;
+            }
+            if self.api_format == ProviderApiFormat::OpenAiChat {
+                return ProviderApiFormat::OpenAiResponses;
+            }
+        }
+        self.api_format
+    }
+}
+
+/// Shared desktop entry point for buffered model calls.
 pub(crate) async fn generate_with_chat_provider(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
+    state: &AppState,
+    provider: &ModelProvider,
     retry_attempts: usize,
     request: GenerateRequest,
 ) -> Result<GenerateOutput, ModelError> {
-    crate::chat::video::validate_request(provider, &request)?;
-    let resolved = crate::provider_oauth::resolve_provider(state, provider)
-        .await
-        .map_err(ModelError::new)?;
-    let provider = &resolved;
-    use crate::settings::ProviderApiFormat;
-    match official_deepseek_builtin_hop(
-        provider,
-        request.options.builtin_web_search && request.options.tool_choice != ToolChoice::None,
-    ) {
-        Some(OfficialDeepseekBuiltinHop::Responses) => {
-            return OpenAiResponsesProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await;
-        }
-        Some(OfficialDeepseekBuiltinHop::Anthropic) => {
-            return AnthropicMessagesProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await;
-        }
-        None => {}
-    }
-    match provider.api_format_kind() {
-        ProviderApiFormat::OpenAiChat => {
-            OpenAiChatProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-        ProviderApiFormat::AnthropicMessages => {
-            AnthropicMessagesProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-        // xAI 与 OpenAI 的 Responses 是同一条线协议，共用适配器；差异只在请求体清洗，
-        // 由 `responses.rs` 内部按 `api_format_kind()` 分叉。
-        ProviderApiFormat::OpenAiResponses | ProviderApiFormat::XaiResponses => {
-            OpenAiResponsesProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-        ProviderApiFormat::Gemini => {
-            GeminiProvider::new(state, provider, retry_attempts)
-                .generate(request)
-                .await
-        }
-    }
+    call_chat_provider(state, provider, retry_attempts, request, None).await
 }
 
-/// `generate_with_chat_provider` 的流式版本。同为全 crate 统一分发入口。
+/// Shared desktop entry point for streamed model calls.
 pub(crate) async fn stream_with_chat_provider(
-    state: &crate::state::AppState,
-    provider: &crate::settings::ModelProvider,
+    state: &AppState,
+    provider: &ModelProvider,
     retry_attempts: usize,
     request: GenerateRequest,
     sink: &mut (dyn StreamSink + Send),
 ) -> Result<GenerateOutput, ModelError> {
+    call_chat_provider(state, provider, retry_attempts, request, Some(sink)).await
+}
+
+async fn call_chat_provider(
+    state: &AppState,
+    provider: &ModelProvider,
+    retry_attempts: usize,
+    request: GenerateRequest,
+    sink: Option<&mut (dyn StreamSink + Send)>,
+) -> Result<GenerateOutput, ModelError> {
     crate::chat::video::validate_request(provider, &request)?;
     let resolved = crate::provider_oauth::resolve_provider(state, provider)
         .await
         .map_err(ModelError::new)?;
-    let provider = &resolved;
-    use crate::settings::ProviderApiFormat;
-    match official_deepseek_builtin_hop(
-        provider,
-        request.options.builtin_web_search && request.options.tool_choice != ToolChoice::None,
-    ) {
-        Some(OfficialDeepseekBuiltinHop::Responses) => {
-            return OpenAiResponsesProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await;
-        }
-        Some(OfficialDeepseekBuiltinHop::Anthropic) => {
-            return AnthropicMessagesProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await;
-        }
-        None => {}
-    }
-    match provider.api_format_kind() {
+    let config = ProviderConfig::from_settings(&resolved);
+    let request_debug = || state.request_debug_enabled().then(|| state.request_debug());
+    let record_usage = |input: UsageRecordInput<'_>| crate::usage::record_model_call(state, input);
+    let transport = ModelTransport {
+        client: state.client_for(&resolved),
+        runtime: state.provider_runtime(),
+        retry_attempts,
+        request_debug: &request_debug,
+        record_usage: &record_usage,
+    };
+
+    let openai;
+    let anthropic;
+    let responses;
+    let gemini;
+    let adapter: &(dyn LanguageModelProvider + Sync) = match config.protocol_for_request(&request) {
         ProviderApiFormat::OpenAiChat => {
-            OpenAiChatProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
+            openai = OpenAiChatProvider::new(transport, config);
+            &openai
         }
         ProviderApiFormat::AnthropicMessages => {
-            AnthropicMessagesProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
+            anthropic = AnthropicMessagesProvider::new(transport, config);
+            &anthropic
         }
-        // xAI 与 OpenAI 的 Responses 是同一条线协议，共用适配器；差异只在请求体清洗，
-        // 由 `responses.rs` 内部按 `api_format_kind()` 分叉。
         ProviderApiFormat::OpenAiResponses | ProviderApiFormat::XaiResponses => {
-            OpenAiResponsesProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
+            responses = OpenAiResponsesProvider::new(transport, config);
+            &responses
         }
         ProviderApiFormat::Gemini => {
-            GeminiProvider::new(state, provider, retry_attempts)
-                .stream(request, sink)
-                .await
+            gemini = GeminiProvider::new(transport, config);
+            &gemini
         }
+    };
+    match sink {
+        Some(sink) => adapter.stream(request, sink).await,
+        None => adapter.generate(request).await,
     }
 }
 
@@ -397,6 +416,7 @@ mod anonymous_http_tests {
 
     #[tokio::test]
     async fn no_tools_and_finish_reason_survive_provider_wire_and_message_runtime() {
+        use crate::chat::agent::history::RuntimeMessage;
         use crate::chat::agent::provider_runtime::{MessageRequest, ProviderRuntime};
         for format in FORMATS {
             for stream in [false, true] {
@@ -408,30 +428,35 @@ mod anonymous_http_tests {
                         crate::settings::Settings::default(), std::env::temp_dir(),
                     );
                     let provider = provider(format, url, Vec::new());
-                    let message = if stream {
-                        ProviderRuntime::message(&state, MessageRequest {
-                            provider: &provider,
-                            model: "local-model",
-                            messages: vec![serde_json::json!({"role":"user","content":"hello"})],
-                            tool_choice: ToolChoice::None,
-                            retry_attempts: 1,
-                            thinking_enabled: false,
-                            thinking_level: None,
-                            builtin_web_search: true,
-                            max_output_tokens: 100,
-                            conversation_id: "conv",
-                            message_id: "msg",
-                            label: "finish regression",
-                        }).await.unwrap().0
+                    let output = if stream {
+                        ProviderRuntime::message(
+                            &state,
+                            MessageRequest {
+                                provider: &provider,
+                                model: "local-model",
+                                messages: vec![RuntimeMessage::text(ModelRole::User, "hello")],
+                                tool_choice: ToolChoice::None,
+                                retry_attempts: 1,
+                                thinking_enabled: false,
+                                thinking_level: None,
+                                builtin_web_search: true,
+                                max_output_tokens: 100,
+                                conversation_id: "conv",
+                                message_id: "msg",
+                                label: "finish regression",
+                            },
+                        )
+                        .await
+                        .unwrap()
                     } else {
                         let request = GenerateRequest {
                             model: "local-model".into(),
                             system: String::new(),
                             messages: vec![ModelMessage::text(ModelRole::User, "hello")],
                             tools: vec![ModelTool {
-                                id: "native__read".into(), name: "read".into(), description: String::new(),
-                                source: "native".into(), server_id: None, server_name: None,
-                                input_schema: serde_json::json!({"type":"object"}), sensitive: false,
+                                name: "read".into(),
+                                description: String::new(),
+                                input_schema: serde_json::json!({"type":"object"}),
                             }],
                             options: GenerateOptions {
                                 tool_choice: ToolChoice::None,
@@ -445,9 +470,14 @@ mod anonymous_http_tests {
                             metadata: Default::default(),
                         };
                         generate_with_chat_provider(&state, &provider, 1, request)
-                            .await.unwrap().to_openai_compatible_message()
+                            .await
+                            .unwrap()
                     };
-                    assert_eq!(message["finish_reason"], finish, "{format} stream={stream}");
+                    assert_eq!(
+                        output.finish_reason.as_ref().unwrap().legacy_name(),
+                        finish,
+                        "{format} stream={stream}"
+                    );
                     let captured = server.await.unwrap();
                     let (_, body) = captured[0].split_once("\r\n\r\n").unwrap();
                     let body: serde_json::Value = serde_json::from_str(body).unwrap();
@@ -464,6 +494,7 @@ mod anonymous_http_tests {
 
     #[tokio::test]
     async fn message_runtime_preserves_provider_errors() {
+        use crate::chat::agent::history::RuntimeMessage;
         use crate::chat::agent::provider_runtime::{MessageRequest, ProviderRuntime};
         let (url, server) = endpoint(
             vec![("401 Unauthorized", r#"{"error":{"message":"server requires authentication"}}"#.into())],
@@ -471,21 +502,27 @@ mod anonymous_http_tests {
         ).await;
         let state = crate::state::test_app_state();
         let provider = provider("openai_chat", url, Vec::new());
-        let result = ProviderRuntime::message(&state, MessageRequest {
-            provider: &provider,
-            model: "local-model",
-            messages: vec![serde_json::json!({"role":"user","content":"hello"})],
-            tool_choice: ToolChoice::None,
-            retry_attempts: 1,
-            thinking_enabled: false,
-            thinking_level: None,
-            builtin_web_search: false,
-            max_output_tokens: 100,
-            conversation_id: "conv",
-            message_id: "msg",
-            label: "error regression",
-        }).await;
-        assert!(result.unwrap_err().contains("server requires authentication"));
+        let result = ProviderRuntime::message(
+            &state,
+            MessageRequest {
+                provider: &provider,
+                model: "local-model",
+                messages: vec![RuntimeMessage::text(ModelRole::User, "hello")],
+                tool_choice: ToolChoice::None,
+                retry_attempts: 1,
+                thinking_enabled: false,
+                thinking_level: None,
+                builtin_web_search: false,
+                max_output_tokens: 100,
+                conversation_id: "conv",
+                message_id: "msg",
+                label: "error regression",
+            },
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert_eq!(error.kind, ModelErrorKind::Auth);
+        assert!(error.message.contains("server requires authentication"));
         assert_eq!(server.await.unwrap().len(), 1);
     }
 
@@ -631,7 +668,7 @@ mod anonymous_http_tests {
                     .iter()
                     .filter_map(|part| match part {
                         StreamPart::Finish { reason, full } => {
-                            Some((reason.as_str(), full.as_str()))
+                            Some((reason.legacy_name(), full.as_str()))
                         }
                         _ => None,
                     })
@@ -656,7 +693,10 @@ mod anonymous_http_tests {
                 );
             }
             assert_eq!(output.text, "Before After");
-            assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+            assert_eq!(
+                output.finish_reason.as_ref().map(FinishReason::legacy_name),
+                Some("stop")
+            );
             assert_eq!(output.usage.as_ref().unwrap().input_tokens, Some(5));
             assert_eq!(output.usage.as_ref().unwrap().output_tokens, Some(2));
             assert_eq!(output.billing_usage.as_ref().unwrap().input_tokens, Some(8));
@@ -739,16 +779,18 @@ mod anonymous_http_tests {
         let provider = provider("anthropic_messages", url, Vec::new());
         let state = crate::state::test_app_state();
         let output = call(&state, &provider, true).await.unwrap();
-        let stream =
-            crate::chat::agent::stream::ChatStreamOutput::from_generate_output_with_snapshot(
-                output,
-                String::new(),
-                String::new(),
-            );
-        let mut messages = model_messages_from_openai_messages(vec![
-            stream.to_openai_compatible_message(),
-            serde_json::json!({"role":"tool", "tool_call_id":"toolu_1", "content":"found"}),
-        ]);
+        let mut messages = vec![
+            output.replay_message(),
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: vec![MessagePart::ToolResult {
+                    tool_call_id: "toolu_1".into(),
+                    content: "found".into(),
+                    is_error: false,
+                    artifacts: Vec::new(),
+                }],
+            },
+        ];
         messages = serde_json::from_slice(&serde_json::to_vec(&messages).unwrap()).unwrap();
         generate_with_chat_provider(
             &state,
@@ -826,13 +868,12 @@ mod anonymous_http_tests {
         let provider = provider("anthropic_messages", url, Vec::new());
         let state = crate::state::test_app_state();
         let error = call(&state, &provider, true).await.unwrap_err();
-        assert!(error.is_stream_read_interrupted());
+        assert!(error.is_retryable_stream_error());
         let fresh = call(&state, &provider, true).await.unwrap();
         assert_eq!(fresh.text, "anonymous ok");
         assert!(fresh.reasoning.is_none());
-        assert!(!fresh
-            .to_openai_compatible_message()
-            .to_string()
+        assert!(!serde_json::to_string(&fresh.replay_message())
+            .unwrap()
             .contains("unfinished"));
         server.await.unwrap();
     }
@@ -893,6 +934,67 @@ mod anonymous_http_tests {
     }
 
     #[tokio::test]
+    async fn unknown_provider_finish_codes_keep_raw_and_legacy_behavior() {
+        let cases = [
+            (
+                "openai_chat",
+                r#"{"choices":[{"delta":{"content":"answer"},"finish_reason":"New_Status"}]}"#,
+                FinishKind::Other,
+                "New_Status",
+                None,
+                "New_Status",
+            ),
+            (
+                "openai_responses",
+                r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"New_Status"}}}"#,
+                FinishKind::Other,
+                "incomplete",
+                Some("New_Status"),
+                "incomplete",
+            ),
+            (
+                "anthropic_messages",
+                r#"{"type":"message_delta","delta":{"stop_reason":"New_Status"}}"#,
+                FinishKind::Stop,
+                "New_Status",
+                None,
+                "stop",
+            ),
+            (
+                "gemini",
+                r#"{"candidates":[{"finishReason":"New_Status","content":{"parts":[{"text":"answer"}]}}]}"#,
+                FinishKind::Other,
+                "New_Status",
+                None,
+                "new_status",
+            ),
+            (
+                "gemini",
+                r#"{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"functionCall":{"name":"read","args":{}}}]}}]}"#,
+                FinishKind::ToolCalls,
+                "MAX_TOKENS",
+                None,
+                "tool_calls",
+            ),
+        ];
+        for (format, event, kind, raw, detail, legacy) in cases {
+            let (url, server) =
+                endpoint(vec![("200 OK", format!("data: {event}\n\n"))], false).await;
+            let provider = provider(format, url, Vec::new());
+            let state = crate::state::test_app_state();
+            let output = call(&state, &provider, true).await.unwrap();
+            let finish = output.finish_reason.as_ref().unwrap();
+            assert_eq!(
+                (finish.kind, finish.raw.as_str(), finish.detail.as_deref()),
+                (kind, raw, detail),
+                "{format}"
+            );
+            assert_eq!(finish.legacy_name(), legacy, "{format}");
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn anonymous_model_protocols_propagate_server_auth_failure() {
         for format in FORMATS {
             for (status, code) in [("401 Unauthorized", 401), ("403 Forbidden", 403)] {
@@ -900,7 +1002,7 @@ mod anonymous_http_tests {
                     let (url, server) = endpoint(
                         vec![(
                             status,
-                            r#"{"error":{"message":"server requires authentication"}}"#.into(),
+                            r#"{"error":{"message":"server requires authentication","code":"auth_required"}}"#.into(),
                         )],
                         false,
                     )
@@ -908,7 +1010,10 @@ mod anonymous_http_tests {
                     let provider = provider(format, url, Vec::new());
                     let state = crate::state::test_app_state();
                     let error = call(&state, &provider, stream).await.unwrap_err();
-                    assert_eq!(crate::api::extract_status_code(&error.message), Some(code));
+                    assert_eq!(error.status, Some(code));
+                    assert_eq!(error.kind, ModelErrorKind::Auth);
+                    assert_eq!(error.provider_code.as_deref(), Some("auth_required"));
+                    assert!(!error.is_retryable_stream_error());
                     assert!(error.message.contains("server requires authentication"));
                     let captured = server.await.unwrap();
                     assert_eq!(captured.len(), 1, "auth failure must not retry");
@@ -916,6 +1021,48 @@ mod anonymous_http_tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn model_protocols_use_selected_client_and_record_provider_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = crate::settings::Settings::default();
+        settings.chat_tools.request_debug_enabled = true;
+        let mut state = AppState::new_headless(settings, temp.path().join("usage"));
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-client-route",
+            reqwest::header::HeaderValue::from_static("shared"),
+        );
+        state.http = reqwest::Client::builder()
+            .no_proxy()
+            .default_headers(headers)
+            .build()
+            .unwrap();
+
+        for format in FORMATS {
+            for use_system_proxy in [true, false] {
+                let (url, server) = endpoint(vec![("200 OK", success(format, false))], false).await;
+                let mut provider = provider(format, url, Vec::new());
+                provider.request.use_system_proxy = use_system_proxy;
+                let output = call(&state, &provider, false).await.unwrap();
+                assert_eq!(output.text, "anonymous ok");
+                let captured = server.await.unwrap();
+                assert_eq!(
+                    header(&captured[0], "x-client-route"),
+                    use_system_proxy.then_some("shared")
+                );
+                assert_eq!(header(&captured[0], "x-local-routing"), Some("preserved"));
+
+                let records = crate::chat::request_debug::snapshot(&state);
+                let record = records.first().unwrap();
+                assert_eq!(record.provider_id, provider.id);
+                assert_eq!(record.provider_name, provider.name);
+                assert_eq!(record.api_format, format);
+            }
+        }
+        let usage = crate::usage::today_usage(&state.usage_dir).unwrap();
+        assert_eq!(usage.summary.total_requests as usize, FORMATS.len() * 2);
     }
 
     #[tokio::test]

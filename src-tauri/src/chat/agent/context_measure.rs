@@ -7,10 +7,13 @@
 
 use serde_json::Value;
 
+use super::compaction::estimate_runtime_message_tokens;
+use super::history::{RuntimeBody, RuntimeMessage};
 use super::prepare::{estimate_tokens, estimate_value_tokens, IMAGE_PART_TYPES};
-use crate::chat::model::ModelUsage;
+use crate::chat::model::{MessagePart, ModelUsage};
 use crate::chat::types::{ContextRequestMeasurement, ContextUsageSegment};
 use crate::mcp::ChatToolDefinition;
+use crate::settings::ModelProvider;
 
 /// In-process measurement. Higher `seq` wins over anything already on disk.
 #[derive(Debug, Clone, Default)]
@@ -74,13 +77,7 @@ pub(crate) struct DisplayMeasurement {
 /// skipped in place so base64 is neither copied nor counted.
 pub(crate) fn utf16_content_chars(value: &Value) -> usize {
     match value {
-        Value::String(text) => {
-            if is_binary_payload(text) {
-                0
-            } else {
-                text.encode_utf16().count()
-            }
-        }
+        Value::String(text) => utf16_text_chars(text),
         Value::Array(items) => items.iter().map(utf16_content_chars).sum(),
         Value::Object(map) => {
             if map
@@ -98,9 +95,13 @@ pub(crate) fn utf16_content_chars(value: &Value) -> usize {
     }
 }
 
-fn is_binary_payload(text: &str) -> bool {
+fn utf16_text_chars(text: &str) -> usize {
     let trimmed = text.trim_start();
-    trimmed.starts_with("data:") || trimmed.starts_with("kivio-attachment://")
+    if trimmed.starts_with("data:") || trimmed.starts_with("kivio-attachment://") {
+        0
+    } else {
+        text.encode_utf16().count()
+    }
 }
 
 fn push_category(
@@ -124,18 +125,59 @@ fn push_category(
 
 /// Three display groups measured from the request that is about to be sent.
 pub(crate) fn measure_prepared_request(
-    messages: &[Value],
+    messages: &[RuntimeMessage],
+    tools: &[ChatToolDefinition],
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> Vec<ContextUsageSegment> {
+    measure_request(
+        messages.iter().map(|message| {
+            let tokens = estimate_runtime_message_tokens(message)
+                + crate::chat::commands::context::runtime_message_image_tokens(
+                    message, provider, model,
+                );
+            let chars = match &message.body {
+                RuntimeBody::System(text) => utf16_text_chars(text),
+                RuntimeBody::Model(message) => message
+                    .content
+                    .iter()
+                    .map(|part| match part {
+                        MessagePart::Text { text }
+                        | MessagePart::Reasoning { text }
+                        | MessagePart::AnthropicThinking { thinking: text, .. }
+                        | MessagePart::ToolResult { content: text, .. } => utf16_text_chars(text),
+                        MessagePart::ToolCall {
+                            name,
+                            arguments_raw,
+                            ..
+                        } => utf16_text_chars(name) + utf16_text_chars(arguments_raw),
+                        MessagePart::AnthropicNativeBlock { block, .. } => {
+                            utf16_content_chars(block)
+                        }
+                        _ => 0,
+                    })
+                    .sum(),
+            };
+            (
+                matches!(message.body, RuntimeBody::System(_)),
+                tokens,
+                chars,
+            )
+        }),
+        tools,
+    )
+}
+
+fn measure_request(
+    messages: impl Iterator<Item = (bool, usize, usize)>,
     tools: &[ChatToolDefinition],
 ) -> Vec<ContextUsageSegment> {
     let mut system_tokens = 0usize;
     let mut system_chars = 0usize;
     let mut conversation_tokens = 0usize;
     let mut conversation_chars = 0usize;
-    for message in messages {
-        let role = message.get("role").and_then(Value::as_str).unwrap_or("");
-        let tokens = estimate_value_tokens(message);
-        let chars = utf16_content_chars(message);
-        if role == "system" {
+    for (system, tokens, chars) in messages {
+        if system {
             system_tokens += tokens;
             system_chars += chars;
         } else {
@@ -326,7 +368,6 @@ pub(crate) fn resolve_display(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::model::ModelUsage;
 
     fn usage(input: Option<u64>, cached: Option<u64>) -> ModelUsage {
         ModelUsage {
@@ -377,7 +418,12 @@ mod tests {
             annotations: None,
             output_schema: None,
         };
-        let segments = measure_prepared_request(&messages, &[tool]);
+        let segments = measure_prepared_request(
+            &super::super::history::import_history(messages),
+            &[tool],
+            None,
+            "gpt-4o",
+        );
         let ids: Vec<_> = segments.iter().map(|segment| segment.id.as_str()).collect();
         assert_eq!(ids, vec!["system_prompt", "tools", "conversation"]);
         let conversation = segments

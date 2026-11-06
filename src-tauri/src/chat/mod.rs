@@ -50,12 +50,6 @@ pub mod workflow_hooks;
 
 pub use types::*;
 
-// 这里曾经有一个非流式的 `call_chat_completion_message`（`generate_with_chat_provider`）。
-// **已删除，不要再加回来**：部分 openai_responses 代理只可靠地服务流式请求，非流式调用报
-// "Unknown Responses API error"——压缩、标题总结、辅助视觉先后各被绊过一次。需要「一次拿完整
-// 结果」的调用统一用 `chat::agent::planning::call_chat_completion_message_streamed`
-// （或要 usage/引用时用 `call_chat_completion_output_with_usage`，它内部也已走流式）。
-
 pub(crate) fn format_chat_login_required_error(provider_name: &str) -> String {
     let provider = provider_name.trim();
     if provider.is_empty() {

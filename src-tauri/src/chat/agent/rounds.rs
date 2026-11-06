@@ -1,3 +1,5 @@
+use super::history::{import_history, RuntimeMessage};
+use crate::chat::model::FinishKind;
 use serde_json::Value;
 
 use crate::chat::model::PendingToolCall;
@@ -14,7 +16,6 @@ use super::finalize::cancelled_tool_round_run_result;
 use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
 use super::planning::PlannedToolRound;
-use super::stop::assistant_api_message_for_tool_calls;
 use super::types::AgentRunResult;
 
 /// Maximum number of eligible tool calls executed concurrently in one batch.
@@ -37,20 +38,10 @@ pub(crate) async fn run_tool_round(
     let _draft_guard = planned.drafts;
     let config = env.config;
     let host = env.host;
-    let assistant_message =
-        assistant_api_message_for_tool_calls(&planned.message, &planned.tool_calls);
-    state.runtime_messages.push(assistant_message);
-    // 真实用量锚点的 trailing 切点：本次规划响应刚 push 进 runtime，其后的工具结果即 trailing
-    // 增量（`runtime_messages[runtime_len_at_last_call..]`）。响应本身用锚点里的真实 output 计入，
-    // 故切点设在响应**之后**，避免与 output 双算（对齐 pi 的「anchor + 响应后消息估算」）。
+    let assistant_message = RuntimeMessage::model(planned.message);
+    state.runtime_messages.push(assistant_message.clone());
     state.runtime_len_at_last_call = state.runtime_messages.len();
-    state.generated_api_messages.push(
-        state
-            .runtime_messages
-            .last()
-            .cloned()
-            .unwrap_or(Value::Null),
-    );
+    state.generated_api_messages.push(assistant_message);
     let mut task_records = planned.tool_calls.iter().filter_map(|call| {
         let tool = match_tool_call(&state.tools, &call.function_name)?;
         (tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME)
@@ -88,10 +79,7 @@ pub(crate) async fn run_tool_round(
             mcp_server_ids: &config.mcp_server_ids,
             approval_policy: &config.effective_chat_tools.approval_policy,
             interactive_host: config.interactive_host,
-            finish_reason: planned
-                .message
-                .get("finish_reason")
-                .and_then(|v| v.as_str()),
+            finish_reason: planned.finish_kind,
         },
         &state.tools,
         &state.blocked_tool_calls,
@@ -100,12 +88,9 @@ pub(crate) async fn run_tool_round(
     )
     .await;
     let round_cancelled = round_result.cancelled;
-    state
-        .runtime_messages
-        .extend(round_result.response_messages.iter().cloned());
-    state
-        .generated_api_messages
-        .extend(round_result.response_messages.iter().cloned());
+    let responses = import_history(round_result.response_messages);
+    state.runtime_messages.extend(responses.iter().cloned());
+    state.generated_api_messages.extend(responses);
     state.tool_records.extend(round_result.tool_records);
     if round_cancelled {
         return ToolRoundOutcome::Cancelled(cancelled_tool_round_run_result(
@@ -136,7 +121,7 @@ pub(crate) struct ToolRoundContext<'a> {
     /// finish_reason of the generation that produced these tool calls. When
     /// `"length"`, the model hit max_output_tokens and any tool-call JSON is
     /// truncated — so we explain *that* instead of "invalid JSON, retry".
-    pub(crate) finish_reason: Option<&'a str>,
+    pub(crate) finish_reason: Option<FinishKind>,
 }
 
 pub(crate) struct ToolRoundResult {
@@ -189,7 +174,7 @@ pub(crate) async fn execute_tool_round(
     // 在 max_output_tokens 处被拦腰截断——流式工具参数经 salvage 收尾后完全可能「JSON 合法
     // 但语义残缺」（写文件只写了半个 content、编辑少了半条 edit），逐个看解析是否成功不可靠。
     // 整批作废、一个都不执行，让模型带着完整参数重发。
-    if ctx.finish_reason == Some("length") && !tool_calls.is_empty() {
+    if ctx.finish_reason == Some(FinishKind::Length) && !tool_calls.is_empty() {
         let mut response_messages = Vec::new();
         let mut tool_records = Vec::new();
         for tool_call in tool_calls {
@@ -721,7 +706,7 @@ fn invalid_tool_arguments_result(
     // tool-call JSON was cut off mid-stream — not malformed JSON. Telling the
     // model to "retry compact" is misleading; name the real cause so it (and
     // the user) can react: split a large write, or raise max output tokens.
-    let truncated = ctx.finish_reason == Some("length");
+    let truncated = ctx.finish_reason == Some(FinishKind::Length);
     let (record_error, model_hint) = if truncated {
         (
             format!(
