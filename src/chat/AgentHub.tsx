@@ -1,20 +1,21 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, ArrowLeft, ChevronRight, Users, X } from 'lucide-react'
+import { Activity, ArrowLeft, ChevronRight, Users, Wrench, X } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
-import { Input, TextArea } from '../settings/public/controls'
+import { Input } from '../settings/public/controls'
 import { subagentProgress, subagentsApi, type SubagentActivity, type SubagentRoster, type SubagentTranscriptEntry, type SubagentView } from '../api/subagents'
-import { AgentProgress, AgentStatus } from './AgentProgress'
+import { AgentStatus } from './AgentProgress'
 import { useSubagentRoster } from './useSubagentRoster'
+import { ChatMarkdown } from './ChatMarkdown'
+import { requestDockSubagent, type DockSubagent } from './dock/dockPreview'
 import './AgentHub.css'
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
-type Inspection = { agentId: string; entry?: SubagentActivity } | 'activity'
 
 export function SubagentTaskList({ conversationId, roster }: { conversationId: string; roster: SubagentRoster }) {
   const zh = useLang() === 'zh'
-  const [inspection, setInspection] = useState<Inspection | null>(null)
+  const [showActivity, setShowActivity] = useState(false)
   if (!roster.agents.length) return null
   const active = roster.agents.filter(agent => agent.status === 'running')
   const finished = roster.agents.filter(agent => agent.status !== 'running')
@@ -22,7 +23,7 @@ export function SubagentTaskList({ conversationId, roster }: { conversationId: s
     <header className="flex items-center gap-2 px-2 py-1.5">
       <Users size={15} aria-hidden="true" />
       <h3 className="min-w-0 flex-1 text-xs font-semibold">{zh ? '子代理' : 'Subagents'}</h3>
-      <IconButton variant="ghost" aria-haspopup="dialog" label={zh ? '查看子代理活动' : 'View subagent activity'} onClick={() => setInspection('activity')}><Activity size={15} /></IconButton>
+      <IconButton variant="ghost" aria-haspopup="dialog" label={zh ? '查看子代理活动' : 'View subagent activity'} onClick={() => setShowActivity(true)}><Activity size={15} /></IconButton>
     </header>
     {([
       [zh ? '进行中' : 'Active', active],
@@ -30,19 +31,24 @@ export function SubagentTaskList({ conversationId, roster }: { conversationId: s
     ] satisfies [string, SubagentView[]][]).map(([label, agents]) => agents.length > 0 && <section key={label} className="kv-agent-group">
       <h4>{label}</h4>
       {agents.map(agent =>
-        <button key={agent.id} type="button" className="kv-agent-list-row" aria-haspopup="dialog" onClick={() => setInspection({ agentId: agent.id })}>
+        <button key={agent.id} type="button" className="kv-agent-list-row" onClick={() => requestDockSubagent({ conversationId, agentId: agent.id })}>
           <span className="min-w-0 flex-1 truncate font-medium">{agent.displayName || agent.id}</span>
           <AgentStatus state={displayStatus(agent)} zh={zh} />
           <ChevronRight size={14} className="shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
         </button>
       )}
     </section>)}
-    {inspection && <SubagentInspectionDialog conversationId={conversationId} initial={inspection} onClose={() => setInspection(null)} />}
+    {showActivity && <SubagentDialog title={zh ? '子代理活动' : 'Subagent activity'} onClose={() => setShowActivity(false)}>
+      <SubagentActivityList conversationId={conversationId} roster={roster} onSelect={entry => {
+        setShowActivity(false)
+        requestDockSubagent({ conversationId, agentId: entry.agentId, entryId: entry.entryId })
+      }} />
+    </SubagentDialog>}
   </section>
 }
 
-export function SubagentDialog({ title, onClose, onBack, children }: {
-  title: string; onClose: () => void; onBack?: () => void; children: ReactNode
+export function SubagentDialog({ title, onClose, children }: {
+  title: string; onClose: () => void; children: ReactNode
 }) {
   const zh = useLang() === 'zh'
   const dialog = useRef<HTMLDialogElement>(null)
@@ -64,7 +70,6 @@ export function SubagentDialog({ title, onClose, onBack, children }: {
     onCancel={event => { event.preventDefault(); onClose() }}>
     <div className="kv-agent-panel">
       <header className="kv-agent-panel-bar">
-        {onBack && <IconButton variant="ghost" label={zh ? '返回活动' : 'Back to activity'} onClick={onBack}><ArrowLeft size={16} /></IconButton>}
         <h2 id={titleId} tabIndex={-1} ref={heading} className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</h2>
         <IconButton variant="ghost" label={zh ? '关闭' : 'Close'} onClick={onClose}><X size={17} /></IconButton>
       </header>
@@ -73,29 +78,35 @@ export function SubagentDialog({ title, onClose, onBack, children }: {
   </dialog>, document.body)
 }
 
-export function SubagentInspectionDialog({ conversationId, initial, onClose }: { conversationId: string; initial: Inspection; onClose: () => void }) {
+export function SubagentSidebar({ target, onBack }: { target: DockSubagent; onBack?: () => void }) {
   const zh = useLang() === 'zh'
-  const [inspection, setInspection] = useState<Inspection>(initial)
+  const { conversationId, agentId, entryId } = target
   const { roster, error, refresh } = useSubagentRoster(conversationId)
-  const selected = inspection !== 'activity' && roster?.agents.find(agent => agent.id === inspection.agentId)
-  const parent = selected && roster?.agents.find(agent => agent.id === selected.parentId)
-  const title = inspection === 'activity' ? zh ? '子代理活动' : 'Subagent activity'
-    : selected ? selected.displayName || selected.id : inspection.agentId
-  return <SubagentDialog title={title} onClose={onClose}
-    onBack={initial === 'activity' && inspection !== 'activity' ? () => setInspection('activity') : undefined}>
-    {initial === 'activity' && <section className="kv-agent-activity-view" hidden={inspection !== 'activity'}>
-      <SubagentActivityList conversationId={conversationId} roster={roster} onSelect={entry => setInspection({ agentId: entry.agentId, entry })} />
-    </section>}
-    {inspection !== 'activity' && (selected
-        ? <AgentDetail key={`${selected.id}:${selected.generation}`} conversationId={conversationId} agent={selected}
-            parentName={parent ? parent.displayName || parent.id : undefined} onChanged={refresh} anchor={inspection.entry} />
-        : <div className="kv-agent-panel-scroll custom-scrollbar">
-          {error ? <div role="alert"><p className="mb-2 break-words text-sm">{error}</p><Button size="sm" onClick={refresh}>{zh ? '重试' : 'Retry'}</Button></div>
-            : <p role="status" className="text-sm text-[var(--text-muted)]">{roster
-              ? zh ? '这个任务的代理会话不可查看。' : 'The agent session is unavailable.'
-              : zh ? '正在加载子代理…' : 'Loading subagent…'}</p>}
-        </div>)}
-  </SubagentDialog>
+  const selected = roster?.agents.find(agent => agent.id === agentId)
+  const titleId = useId()
+  const title = useRef<HTMLHeadingElement>(null)
+  useLayoutEffect(() => {
+    const trigger = document.activeElement
+    title.current?.focus({ preventScroll: true })
+    return () => {
+      if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true })
+    }
+  }, [])
+  return <section className="kv-agent-panel" aria-labelledby={titleId}>
+    <header className="kv-agent-panel-bar">
+      {onBack && <IconButton variant="ghost" label={zh ? '返回' : 'Back'} onClick={onBack}><ArrowLeft size={16} /></IconButton>}
+      <h2 id={titleId} ref={title} tabIndex={-1} className="min-w-0 flex-1 truncate text-sm font-semibold">{selected?.displayName || agentId}</h2>
+      {selected && <AgentStatus state={displayStatus(selected)} zh={zh} />}
+    </header>
+    {selected
+      ? <AgentTranscript key={selected.generation} conversationId={conversationId} agent={selected} entryId={entryId} />
+      : <div className="kv-agent-panel-scroll custom-scrollbar text-sm">
+        {error ? <div role="alert"><p className="mb-2 break-words">{error}</p><Button size="sm" onClick={refresh}>{zh ? '重试' : 'Retry'}</Button></div>
+          : <p role="status" className="text-[var(--text-muted)]">{roster
+            ? zh ? '没有可查看的对话' : 'No conversation available'
+            : zh ? '正在加载…' : 'Loading…'}</p>}
+      </div>}
+  </section>
 }
 
 function SubagentActivityList({ conversationId, roster, onSelect }: {
@@ -163,143 +174,92 @@ function displayStatus(agent: SubagentView) {
 }
 
 function isConversationMessage(entry: SubagentTranscriptEntry) {
-  return entry.kind === 'message' && ['user', 'assistant', 'irc'].includes(entry.role) && Boolean(entry.content.trim())
+  if (entry.kind !== 'message' || !['user', 'assistant', 'irc'].includes(entry.role)) return false
+  const content = entry.content.trim()
+  return Boolean(content) && (entry.role !== 'user' || !/^(<kivio_runtime_context>|<system-reminder>)/.test(content))
 }
 
-function AgentDetail({ conversationId, agent, parentName, onChanged, anchor }: {
-  conversationId: string; agent: SubagentView; parentName?: string; onChanged: () => void; anchor?: SubagentActivity
+function AgentTranscript({ conversationId, agent, entryId }: {
+  conversationId: string; agent: SubagentView; entryId?: string
 }) {
   const zh = useLang() === 'zh'
-  const t = (cn: string, en: string) => zh ? cn : en
   const [entries, setEntries] = useState<SubagentTranscriptEntry[]>([])
   const [loaded, setLoaded] = useState(false)
-  const [view, setView] = useState<'result' | 'conversation' | 'diagnostics'>(
-    anchor ? anchor.kind === 'response' || anchor.kind === 'message' ? 'conversation' : 'diagnostics' : 'result',
-  )
-  const [tailError, setTailError] = useState('')
-  const [tailRetry, setTailRetry] = useState(0)
-  const [draft, setDraft] = useState('')
-  const [operation, setOperation] = useState<string | null>(null)
-  const [issue, setIssue] = useState('')
-  const [receipt, setReceipt] = useState('')
-  const mounted = useRef(true)
-  const busy = useRef(false)
-  const selectedEntry = useRef<HTMLElement>(null)
-  const target = { conversationId, agentId: agent.id, expectedGeneration: agent.generation }
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
+  const scroll = useRef<HTMLDivElement>(null)
+  const follow = useRef(true)
+  const anchor = useRef<HTMLElement>(null)
+  const anchorAvailable = entries.some(entry => entry.id === entryId && (isConversationMessage(entry) || transcriptTool(entry)))
+  const { id, generation } = agent
   useEffect(() => {
     let cancelled = false
     let timer: ReturnType<typeof setTimeout> | undefined
     let cursor: Parameters<typeof subagentsApi.transcript>[1] = null
     async function tail() {
       try {
-        const page = await subagentsApi.transcript({ conversationId, agentId: agent.id, expectedGeneration: agent.generation }, cursor)
-        if (cancelled || page.id !== agent.id || page.generation !== agent.generation) return
+        const page = await subagentsApi.transcript({ conversationId, agentId: id, expectedGeneration: generation }, cursor)
+        if (cancelled || page.id !== id || page.generation !== generation) return
         cursor = page.cursor
-        setEntries(previous => {
-          const known = new Set(page.reset ? [] : previous.map(entry => entry.id))
-          return [...(page.reset ? [] : previous), ...page.entries.filter(entry => !known.has(entry.id))]
-        })
+        if (page.reset || page.entries.length) {
+          setEntries(previous => {
+            const retained = page.reset ? [] : previous
+            const known = new Set(retained.map(entry => entry.id))
+            return [...retained, ...page.entries.filter(entry => !known.has(entry.id))]
+          })
+        }
         setLoaded(!page.hasMore)
-        setTailError('')
+        setError('')
         timer = setTimeout(() => void tail(), page.hasMore ? 0 : 500)
-      } catch (error) { if (!cancelled) setTailError(errorText(error)) }
+      } catch (error) {
+        if (!cancelled) setError(errorText(error))
+      }
     }
     void tail()
     return () => { cancelled = true; clearTimeout(timer) }
-  }, [conversationId, agent.id, agent.generation, tailRetry])
-  async function act(kind: 'kill' | 'send') {
-    if (busy.current) return
-    busy.current = true; setOperation(kind); setIssue(''); setReceipt('')
-    const sent = draft
-    try {
-      if (kind === 'send') {
-        await subagentsApi.send(target, sent)
-        if (mounted.current) { setDraft(current => current === sent ? '' : current); setReceipt(t('消息已受理', 'Message accepted')) }
-      } else await subagentsApi.kill(target)
-      if (mounted.current) onChanged()
-    } catch (error) { if (mounted.current) setIssue(errorText(error)) }
-    finally { busy.current = false; if (mounted.current) setOperation(null) }
-  }
-  const readonly = agent.agentType === 'advisor' || (!agent.revivable && agent.status !== 'running' && agent.status !== 'idle')
-  const progress = subagentProgress(agent.progress)
-  const conversation = entries.filter(isConversationMessage)
-  const diagnostics = entries.filter(entry => !isConversationMessage(entry))
-  const anchorAvailable = Boolean(anchor && entries.some(entry => entry.id === anchor.entryId))
+  }, [conversationId, id, generation, retry])
   useEffect(() => {
-    if (!anchorAvailable || !selectedEntry.current) return
-    selectedEntry.current.scrollIntoView?.({ block: 'center' })
-    selectedEntry.current.focus({ preventScroll: true })
-  }, [anchorAvailable, view])
-  const latestAnswer = conversation.filter(entry => entry.role === 'assistant').at(-1)
-  const latestResult = latestAnswer?.content || (agent.status !== 'running' ? progress?.preview : null)
+    if (!anchorAvailable || !anchor.current) return
+    follow.current = false
+    anchor.current.scrollIntoView?.({ block: 'center' })
+    anchor.current.focus({ preventScroll: true })
+  }, [anchorAvailable, entryId])
+  useLayoutEffect(() => {
+    const node = scroll.current
+    if (node && follow.current && !anchorAvailable) node.scrollTop = node.scrollHeight
+  }, [entries, anchorAvailable])
+
+  const conversation = entries.filter(entry => isConversationMessage(entry) || transcriptTool(entry))
   const assignment = conversation.some(entry => entry.role === 'user') ? null
-    : progress?.task || entries.find(entry => entry.kind === 'init')?.content.split('\n').slice(1).join('\n')
-  const views = [
-    { id: 'result', label: t('结果', 'Result') },
-    { id: 'conversation', label: t('对话', 'Conversation') },
-    { id: 'diagnostics', label: t('诊断', 'Diagnostics') },
-  ] as const
-  return <section className="kv-agent-detail" aria-label={t('代理详情', 'Agent details')}>
-    <div className="kv-agent-detail-heading">
-      <div className="min-w-0 space-y-1">
-        <AgentStatus state={displayStatus(agent)} zh={zh} />
-        <p className="truncate text-xs text-[var(--text-muted)]" title={agent.model ?? undefined}>{[agent.agentType, agent.model].filter(Boolean).join(' · ')}</p>
-        {parentName && <p className="truncate text-xs text-[var(--text-muted)]">{t('派工者', 'Assigned by')} {parentName}</p>}
-      </div>
-      {agent.status === 'running' && !readonly && <Button size="sm" variant="danger" disabled={operation !== null} onClick={() => void act('kill')}>{t('停止', 'Stop')}</Button>}
-    </div>
-    {agent.reviveError && <p className="px-4 pb-2 break-words text-xs text-[var(--text-muted)]">{agent.reviveError}</p>}
-    <nav className="kv-agent-views" aria-label={t('代理详情视图', 'Agent detail views')}>
-      {views.map(item => <button key={item.id} type="button" aria-pressed={view === item.id} onClick={() => setView(item.id)}>{item.label}</button>)}
-    </nav>
-    <div key={view} className="kv-agent-panel-scroll custom-scrollbar" role="region" aria-label={views.find(item => item.id === view)?.label}>
-      {view === 'result' && <>
-        {(agent.activity || progress) && <div className="kv-agent-activity">
-          {agent.activity && agent.activity !== progress?.stage && <p>{agent.activity}</p>}
-          <AgentProgress value={agent.progress} expanded={false} zh={zh} />
-        </div>}
-        {progress?.error && <p className="mb-3 break-words text-xs text-[var(--danger)]">{progress.error}</p>}
-        {latestResult ? <TranscriptText label={agent.status === 'running' ? t('最近回复', 'Latest reply') : t('最近结果', 'Latest result')} content={latestResult} />
-          : loaded && !tailError && <p className="py-3 text-sm text-[var(--text-muted)]" role="status">
-            {agent.status === 'running' ? t('等待子代理回复…', 'Waiting for a reply…') : t('暂无子代理回复', 'No subagent replies yet')}
-          </p>}
-      </>}
-      {view === 'conversation' && <>
-        {assignment && <TranscriptText label={t('任务指令', 'Assignment')} content={assignment} />}
-        {conversation.map(entry => <TranscriptLine key={entry.id} entry={entry} zh={zh} anchorRef={entry.id === anchor?.entryId ? selectedEntry : undefined} />)}
-        {loaded && !assignment && conversation.length === 0 && <p className="text-sm text-[var(--text-muted)]">{t('暂无对话记录', 'No conversation history')}</p>}
-      </>}
-      {view === 'diagnostics' && diagnostics.map(entry => <TranscriptLine key={entry.id} entry={entry} zh={zh} anchorRef={entry.id === anchor?.entryId ? selectedEntry : undefined} />)}
-      {view === 'diagnostics' && loaded && diagnostics.length === 0 && <p className="text-sm text-[var(--text-muted)]">{t('暂无诊断记录', 'No diagnostics yet')}</p>}
-      {anchor && loaded && !anchorAvailable && <p role="status" className="mt-2 text-xs text-[var(--text-muted)]">{t('这条活动的原记录已不可用。', 'The original entry is no longer available.')}</p>}
-      {!loaded && !tailError && <p role="status" className="text-sm text-[var(--text-muted)]">{t('正在加载记录…', 'Loading activity…')}</p>}
-      {tailError && <div role="alert" className="space-y-2 py-3 text-xs"><p>{t('读取历史失败', 'Could not read transcript')}</p><p className="break-words">{tailError}</p><Button size="sm" onClick={() => setTailRetry(value => value + 1)}>{t('重试读取', 'Retry transcript')}</Button></div>}
-    </div>
-    <footer className="kv-agent-composer">
-      {issue && <p role="alert" className="break-words text-xs text-[var(--danger)]">{issue}</p>}
-      {readonly ? <p className="text-xs text-[var(--text-muted)]">{t('此代理仅供查看历史', 'This agent is read-only')}</p> : <>
-        <TextArea value={draft} onChange={setDraft} aria-label={t('发送给代理的消息', 'Message to agent')}
-          placeholder={agent.status === 'running' ? t('在下一步引导子代理…', 'Steer this agent at its next step…') : t('向子代理发送后续指令…', 'Send a follow-up instruction…')} rows={2} maxRows={5} />
-        <div className="flex items-center justify-between gap-2">
-          <p role="status" className="text-xs text-[var(--text-muted)]">{operation ? t('处理中…', 'Working…') : receipt}</p>
-          <Button size="sm" variant="primary" disabled={!draft.trim() || operation !== null} onClick={() => void act('send')}>{t('发送消息', 'Send message')}</Button>
-        </div>
-      </>}
-    </footer>
-  </section>
+    : entries.find(entry => entry.kind === 'init')?.content.split('\n').slice(1).join('\n')
+  return <div ref={scroll} className="kv-agent-panel-scroll custom-scrollbar space-y-4" onScroll={event => {
+    const node = event.currentTarget
+    follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48
+  }}>
+    {assignment?.trim() && <div className="kv-agent-chat-user"><ChatMarkdown content={assignment} /></div>}
+    {conversation.map(entry => {
+      const tool = transcriptTool(entry)
+      return <article key={entry.id} ref={entry.id === entryId ? anchor : undefined}
+        tabIndex={entry.id === entryId ? -1 : undefined}
+        className={tool ? 'flex items-center gap-2 break-all text-xs text-[var(--text-muted)]'
+          : entry.role === 'user' ? 'kv-agent-chat-user' : 'min-w-0'}>
+        {tool ? <><Wrench size={13} className="shrink-0" aria-hidden="true" />{tool}</>
+          : <ChatMarkdown content={entry.role === 'user' ? entry.content.replace(/^Complete assignment thoroughly:\s+/, '') : entry.content} />}
+      </article>
+    })}
+    {!error && (!loaded || (conversation.length === 0 && !assignment?.trim())) && <p role="status" className="text-sm text-[var(--text-muted)]">
+      {!loaded ? zh ? '正在加载…' : 'Loading…'
+        : agent.status === 'running' ? zh ? '等待子代理回复…' : 'Waiting for a reply…'
+          : zh ? '暂无对话记录' : 'No conversation history'}
+    </p>}
+    {error && <div role="alert" className="space-y-2 py-3 text-xs"><p className="break-words">{error}</p>
+      <Button size="sm" onClick={() => setRetry(value => value + 1)}>{zh ? '重试读取' : 'Retry transcript'}</Button>
+    </div>}
+  </div>
 }
 
-function TranscriptLine({ entry, zh, anchorRef }: { entry: SubagentTranscriptEntry; zh: boolean; anchorRef?: React.RefObject<HTMLElement> }) {
-  const label = entry.role === 'assistant' ? zh ? '子代理' : 'Subagent'
-    : entry.role === 'user' ? zh ? '指令' : 'Instruction'
-      : entry.role === 'irc' ? zh ? '通信' : 'Message' : entry.role || entry.kind
-  return <TranscriptText label={label} content={entry.content} anchorRef={anchorRef} />
-}
-
-function TranscriptText({ label, content, anchorRef }: { label: string; content: string; anchorRef?: React.RefObject<HTMLElement> }) {
-  return <article ref={anchorRef} tabIndex={anchorRef ? -1 : undefined} className="kv-agent-answer" data-target={anchorRef ? 'true' : undefined}>
-    <h4>{label}</h4>
-    <p className="whitespace-pre-wrap [overflow-wrap:anywhere]">{content}</p>
-  </article>
+function transcriptTool(entry: SubagentTranscriptEntry): string {
+  if (entry.role !== 'tool' || !/-tool-\d+$/.test(entry.id)) return ''
+  const name = entry.content.split('\n', 1)[0]
+  return /^[\w:.-]+$/.test(name) ? name.replace(/^native__/, '') : ''
 }

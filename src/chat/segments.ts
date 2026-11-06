@@ -465,7 +465,6 @@ function segmentHasContent(segment: ChatMessageSegment): boolean {
 export type TimelineGroupItem =
   | { type: 'text'; segment: ChatMessageSegment }
   | { type: 'presentation'; segment: ChatMessageSegment }
-  | { type: 'subagent'; segment: SubagentSegment }
   | { type: 'group'; segments: ChatMessageSegment[] }
 
 /** 过程按交付位置分段展示，各段共享同一个 Work 开关。
@@ -480,8 +479,6 @@ export function groupTimelineSegments(
   // 交付卡属于结果，不应切分 Work，也不应成为隐藏前面正文的过程边界。
   const presentations = new Set(orderedSegments.filter(segment =>
     segment.kind === 'tool' && isPresentation?.(segment)))
-  const hasInlineSubagentTimeline = orderedSegments.some(segment =>
-    isSubagentTimelineSegment(segment) && segment.kind.subagent.afterOrder !== SUBAGENT_TIMELINE_TAIL_ORDER)
   let lastProcessIndex = -1
   let lastActivityIndex = -1
   orderedSegments.forEach((segment, index) => {
@@ -510,11 +507,6 @@ export function groupTimelineSegments(
   }
   orderedSegments.forEach((segment, index) => {
     if (!segmentHasContent(segment)) return
-    if (isSubagentTimelineSegment(segment)) {
-      flushProcess()
-      body.push({ type: 'subagent', segment })
-      return
-    }
     if (presentations.has(segment)) {
       flushProcess()
       body.push({ type: 'presentation', segment })
@@ -530,7 +522,7 @@ export function groupTimelineSegments(
       : ((segment.phase === 'tool_loop' || segment.phase === 'auxiliary')
           && (state === 'stopped' || hasCancellationNotice || hasFinalAnswer || index <= lastActivityIndex))
         || (hasFinalAnswer && index <= lastProcessIndex)
-    if (segment.kind === 'text' && (hasInlineSubagentTimeline || !foldText)) {
+    if (segment.kind === 'text' && !foldText) {
       flushProcess()
       body.push({ type: 'text', segment })
     } else {

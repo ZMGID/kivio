@@ -10,6 +10,8 @@ import { GitPanel } from './GitPanel'
 import { TerminalPanel } from './TerminalPanel'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel'
 import { SidebarToggleIcon } from '../SidebarToggleIcon'
+import { SubagentSidebar } from '../AgentHub'
+import type { DockSubagent } from './dockPreview'
 
 export type DockTab = 'files' | 'git' | 'terminal' | 'tasks'
 export type DockOpenTabRequest = { tab: DockTab }
@@ -52,6 +54,8 @@ type RightDockProps = {
   treeExpanded: string[]
   revealRequest: DockRevealRequest
   previewRequest: DockPreviewRequest
+  subagent?: DockSubagent | null
+  onBackFromSubagent?: () => void
   onToggleTab: (tab: DockTab) => void
   onOpenTabRequestHandled: (request: DockOpenTabRequest) => void
   onWidthChange: (width: number) => void
@@ -73,6 +77,8 @@ export const RightDock = memo(function RightDock({
   treeExpanded,
   revealRequest,
   previewRequest,
+  subagent,
+  onBackFromSubagent,
   onToggleTab,
   onOpenTabRequestHandled,
   onWidthChange,
@@ -134,6 +140,7 @@ export const RightDock = memo(function RightDock({
   const filesActive = open && shown === 'files'
   const gitActive = open && shown === 'git'
   const terminalActive = open && shown === 'terminal'
+  const selectedSubagent = open && shown === 'tasks' && subagent?.conversationId === conversationId ? subagent : null
   // 代码提前加载，PTY 和画布只在首次真正打开终端时创建，之后切标签保留会话。
   // Dock 折叠时即使记住了终端标签，也不能提前启动 shell。
   const [terminalMounted, setTerminalMounted] = useState(() => terminalActive)
@@ -278,11 +285,12 @@ export const RightDock = memo(function RightDock({
         )}
       </div>
       <div data-task-scroll className="flex min-h-0 flex-1 flex-col overflow-y-auto custom-scrollbar" hidden={shown !== 'tasks'}>
-        <BackgroundTasksPanel
+        {selectedSubagent ? <SubagentSidebar key={JSON.stringify([selectedSubagent.conversationId, selectedSubagent.agentId])}
+          target={selectedSubagent} onBack={onBackFromSubagent} /> : <BackgroundTasksPanel
           active={open && shown === 'tasks'}
           lang={lang}
           conversationId={conversationId}
-        />
+        />}
       </div>
     </aside>
   )

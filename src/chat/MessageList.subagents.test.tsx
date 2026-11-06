@@ -56,9 +56,10 @@ describe('sub-agent result receipts in the parent timeline', () => {
     const reloaded = JSON.parse(JSON.stringify(saved)) as ChatMessage[]
     const { container, rerender } = render(<MessageList conversationId="subagent-history" messages={reloaded} />)
     expect(screen.getByText('汇总结论')).toBeVisible()
-    expect(screen.queryByRole('button', { name: /^Worked/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Inline 已完成' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
     const completed = screen.getByRole('button', { name: 'Inline 已完成' })
-    expect(completed).toHaveAttribute('aria-haspopup', 'dialog')
+    expect(completed).not.toHaveAttribute('aria-haspopup')
     expect(screen.getByRole('button', { name: 'Background 失败' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /^子代理 / })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '查看派工回执' }))
@@ -78,6 +79,40 @@ describe('sub-agent result receipts in the parent timeline', () => {
     expect(within(dialog).getByText('Inline final result')).toBeVisible()
     expect(within(dialog).getByText('Background failed with evidence')).toBeVisible()
     expect(screen.queryByText('stale snapshot')).toBeNull()
+  })
+
+  it('keeps a late completion under the dispatch reply’s Worked control after reopening', () => {
+    const lifecycle = { agentId: 'delay', name: 'DelayedProbe', parentToolCallId: 'task',
+      afterSegmentId: null, textChars: null }
+    const messages: ChatMessage[] = [
+      { id: 'user', role: 'user', timestamp: 1, content: 'Delegate the check' },
+      { id: 'dispatch', role: 'assistant', timestamp: 2, content: 'I handed off the check.', stream_outcome: 'completed',
+        tool_calls: [{ id: 'task', name: 'task', source: 'native', status: 'success' }],
+        segments: [
+          { id: 'task', kind: 'tool', phase: 'tool_loop', order: 1001, tool_call_id: 'task' },
+          { id: 'handoff', kind: 'text', phase: 'plain', order: 1002, text: 'I handed off the check.' },
+          { id: 'start', kind: { subagent: { ...lifecycle, afterOrder: null, status: 'started' } }, phase: 'auxiliary', order: 3 },
+          { id: 'finish', kind: { subagent: { ...lifecycle, afterOrder: 0xffff_ffff, status: 'completed' } }, phase: 'auxiliary', order: 0 },
+        ],
+      },
+      { id: 'subagent-result-delay', role: 'assistant', timestamp: 3, content: 'Raw worker output' },
+      { id: 'answer', role: 'assistant', timestamp: 4, content: 'Here is the result.' },
+    ]
+    render(<MessageList conversationId="subagent-late-finish" messages={messages} />)
+    const worked = screen.getByRole('button', { name: /^Worked/ })
+    const handoff = screen.getByText('I handed off the check.')
+    const answer = screen.getByText('Here is the result.')
+    expect(screen.queryByRole('button', { name: /^DelayedProbe/ })).not.toBeInTheDocument()
+    expect(handoff).toBeVisible()
+    expect(answer).toBeVisible()
+    fireEvent.click(worked)
+    const ordered = [
+      worked, screen.getByRole('button', { name: 'DelayedProbe 开始工作' }), handoff,
+      screen.getByRole('button', { name: 'DelayedProbe 已完成' }), answer,
+    ]
+    for (let index = 1; index < ordered.length; index += 1) {
+      expect(ordered[index - 1].compareDocumentPosition(ordered[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
   })
 
   it('does not hide user or assistant text just because it quotes a worker header', () => {

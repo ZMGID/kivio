@@ -156,15 +156,17 @@ describe('assistant body visibility', () => {
     expect(screen.getAllByLabelText('过程分组')).toHaveLength(1)
     expect(screen.getByRole('button', { name: /^Worked/ })).toBe(work)
     expect(work).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.getByRole('button', { name: /^A / })).toBeVisible()
-    expect(screen.getByRole('button', { name: /^B / })).toBeVisible()
+    expect(screen.queryByRole('button', { name: /^A / })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^B / })).not.toBeInTheDocument()
     expect(screen.queryByText('先启动子代理，我来读 README。')).not.toBeInTheDocument()
     fireEvent.click(work)
+    expect(screen.getByRole('button', { name: /^A / })).toBeVisible()
+    expect(screen.getByRole('button', { name: /^B / })).toBeVisible()
     expect(screen.getByText('README 只有 9 字节，再看文档。')).toBeVisible()
     expect(screen.getByText('项目用途已了解，等待子代理。')).toBeVisible()
   })
 
-  it('keeps recorded subagent events in order with the main text and hides the duplicate task status', () => {
+  it('folds recorded subagent events under Worked without changing their order around the answer', () => {
     const before = '开始前 🔎'
     const between = '主助手继续查看文件。'
     const message: ChatMessage = {
@@ -203,7 +205,17 @@ describe('assistant body visibility', () => {
       ],
     }
     render(<MessageBubble message={message} conversationId="root" />)
+    expect(screen.queryByRole('button', { name: 'Atlas 开始工作' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Atlas 已完成' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cedar 失败' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Birch 已完成' })).not.toBeInTheDocument()
+    expect(screen.queryByText(before)).not.toBeInTheDocument()
+    expect(screen.getByText('任务结束。')).toBeVisible()
+    expect(screen.getByText('继续整理。')).toBeVisible()
+    const worked = screen.getByRole('button', { name: /^Worked/ })
+    fireEvent.click(worked)
     const items = [
+      worked,
       screen.getByText(before),
       screen.getByRole('button', { name: 'Atlas 开始工作' }),
       screen.getByText(between),

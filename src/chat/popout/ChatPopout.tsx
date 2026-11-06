@@ -7,6 +7,8 @@ import { AskUserBlock } from '../AskUserBlock'
 import { InputBar } from '../InputBar'
 import { useStreamCoarse } from '../streamingStore'
 import { useBackgroundTaskWait } from '../useBackgroundTaskWait'
+import { SubagentSidebar } from '../AgentHub'
+import { useDockSubagent } from '../hooks/useDockSubagent'
 import { GoalCard } from '../GoalCard'
 import { composerGoal } from '../goalPresentation'
 import { ChatTitlebar } from '../ChatTitlebar'
@@ -131,6 +133,7 @@ function ChatPopoutBody({
   const session = usePopoutSession(conversationId, lang)
   const { streaming, streamFrozen } = useStreamCoarse()
   const stopBackgroundWait = useBackgroundTaskWait(streaming || streamFrozen || !session.conversation ? null : conversationId, lang)
+  const subagent = useDockSubagent(conversationId)
   const visibleGoal = composerGoal(session.conversation?.goal_state ?? session.conversation?.goalState,
     session.conversation?.messages ?? [])
   const titlebar = (
@@ -203,6 +206,9 @@ function ChatPopoutBody({
           {usesNativeTitlebar && titlebar}
           {pane}
         </div>
+        {subagent.selection && <aside className="flex min-h-0 w-[min(48%,24rem)] shrink-0 flex-col border-l border-[var(--color-border)]">
+          <SubagentSidebar key={subagent.selection.agentId} target={subagent.selection} onBack={subagent.close} />
+        </aside>}
       </div>
     </div>
   )

@@ -50,3 +50,15 @@ export function onDockMarkdownPreviewRequest(cb: MarkdownListener): () => void {
 export function requestDockMarkdownPreview(payload: DockMarkdownPayload): void {
   markdownListener?.(payload)
 }
+
+export type DockSubagent = { conversationId: string; agentId: string; entryId?: string }
+let subagentListener: ((target: DockSubagent) => void) | null = null
+
+export function onDockSubagentRequest(listener: (target: DockSubagent) => void): () => void {
+  subagentListener = listener
+  return () => { if (subagentListener === listener) subagentListener = null }
+}
+
+export function requestDockSubagent(target: DockSubagent): void {
+  subagentListener?.(target)
+}

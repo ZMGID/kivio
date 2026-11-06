@@ -1,7 +1,4 @@
-.kv-agent-panel,
-.kv-agent-activity-view,
-.kv-agent-detail { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
-.kv-agent-activity-view[hidden] { display: none; }
+.kv-agent-panel { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
 .kv-modal.kv-subagent-dialog {
   width: min(660px, calc(100vw - 28px));
   max-width: 660px;
@@ -11,10 +8,8 @@
 }
 .kv-subagent-dialog > .kv-agent-panel { height: 100%; }
 .kv-agent-panel { color: var(--text); }
-.kv-agent-panel-bar,
-.kv-agent-detail-heading { display: flex; flex-shrink: 0; align-items: center; gap: 8px; padding: 10px 14px; }
+.kv-agent-panel-bar { display: flex; flex-shrink: 0; align-items: center; gap: 8px; padding: 10px 14px; }
 .kv-agent-panel-bar { min-height: 48px; border-bottom: 1px solid var(--color-border); }
-.kv-agent-detail-heading { justify-content: space-between; padding-block: 12px; }
 .kv-agent-panel-scroll { flex: 1; min-height: 0; overflow: auto; padding: 14px; }
 .kv-agent-task-list { margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--color-border); }
 .kv-agent-group { margin-top: 6px; }
@@ -43,13 +38,11 @@ button.kv-agent-list-row:hover { background: var(--bg-hover); }
 .kv-agent-status:is([data-state="failed"], [data-state="error"]) { color: var(--danger); }
 .kv-agent-status:is([data-state="running"], [data-state="completed"], [data-state="failed"], [data-state="error"]) > span { background: currentColor; }
 .kv-agent-activity-controls { display: flex; flex-wrap: wrap; flex-shrink: 0; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--color-border); }
-.kv-agent-activity { margin-bottom: 14px; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.kv-agent-chat-user { width: fit-content; max-width: 94%; margin-inline-start: auto; padding: 8px 12px; border-radius: 14px; background: var(--bg-hover); overflow-wrap: anywhere; }
 .kv-agent-answer { margin: 0 0 14px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--theme-surface); padding: 12px; font-size: 13px; line-height: 1.55; }
-.kv-agent-answer[data-target="true"] { border-color: var(--accent); }
 .kv-agent-views { display: flex; flex-shrink: 0; gap: 16px; padding-inline: 14px; border-bottom: 1px solid var(--color-border); }
 .kv-agent-views > button { min-height: 34px; border-block-end: 2px solid transparent; font-size: 12px; color: var(--text-muted); }
 .kv-agent-views > button[aria-pressed="true"] { color: var(--text); border-block-end-color: var(--accent); font-weight: 600; }
-.kv-agent-composer { flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--color-border); padding: 12px 14px; }
 .kv-agent-event { display: flex; align-items: center; min-height: 32px; gap: 4px; }
 .kv-agent-event-link {
   display: inline-flex;

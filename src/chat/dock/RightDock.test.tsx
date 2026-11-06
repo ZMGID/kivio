@@ -1,10 +1,11 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type BackgroundTaskInfo } from '../../api/tauri'
 import { subagentsApi } from '../../api/subagents'
 import { useRightDock } from '../hooks/useRightDock'
-import { requestDockDiffPreview, requestDockMarkdownPreview, requestDockPreview } from './dockPreview'
+import { requestDockDiffPreview, requestDockMarkdownPreview, requestDockPreview, requestDockSubagent } from './dockPreview'
+import { SubagentLifecycleEvent } from '../SubagentTimelineEvents'
 import { RightDock } from './RightDock'
 
 const { loadedPanels } = vi.hoisted(() => ({ loadedPanels: [] as string[] }))
@@ -102,6 +103,8 @@ function DockHarness({ mounted = true }: { mounted?: boolean }) {
       <button onClick={dock.openGit}>Open Git externally</button>
       <button onClick={dock.openTasks}>Open tasks externally</button>
       <button onClick={() => dock.revealInTree('src/reveal.ts')}>Reveal in tree</button>
+      <SubagentLifecycleEvent conversationId="conv-1" event={{ agentId: 'Scout', name: 'Review tests',
+        status: 'completed', parentToolCallId: 'task', afterSegmentId: null, afterOrder: null, textChars: null }} />
       {mounted && (
         <RightDock
           {...dockProps({
@@ -113,6 +116,8 @@ function DockHarness({ mounted = true }: { mounted?: boolean }) {
             treeExpanded: dock.treeExpanded,
             revealRequest: dock.reveal,
             previewRequest: dock.preview,
+            subagent: dock.subagent.selection,
+            onBackFromSubagent: dock.subagent.close,
             onToggleTab: dock.setTab,
             onWidthChange: dock.setWidth,
             onClose: dock.close,
@@ -139,8 +144,31 @@ describe('RightDock tabs', () => {
     expect(snapshot).not.toHaveBeenCalled()
     fireEvent.click(screen.getByText('任务'))
     expect(await screen.findByRole('region', { name: '子代理任务' })).toHaveTextContent('Review tests')
-    expect(screen.getByRole('button', { name: /Review tests/ })).toHaveAttribute('aria-haspopup', 'dialog')
+    expect(screen.getByRole('button', { name: /Review tests/ })).not.toHaveAttribute('aria-haspopup')
     expect(snapshot).toHaveBeenCalledWith('conv-1')
+  })
+  it('opens the same read-only sidebar from the chat and task list', async () => {
+    vi.spyOn(subagentsApi, 'snapshot').mockResolvedValue({ runningCount: 0, agents: [{
+      id: 'Scout', displayName: 'Review tests', parentId: 'Main', generation: 1, agentType: 'scout',
+      status: 'idle', depth: 1, lastActivity: 1, activity: null,
+      model: 'hidden/model', progress: null, revivable: true, reviveError: null,
+    }] })
+    vi.spyOn(subagentsApi, 'transcript').mockResolvedValue({
+      id: 'Scout', generation: 1, cursor: { fileId: 'file', offset: 1 }, reset: true, hasMore: false,
+      entries: [{ id: 'reply', kind: 'message', role: 'assistant', content: '**Checked the tests.**', timestamp: null }],
+    })
+    render(<DockHarness />)
+    act(() => requestDockSubagent({ conversationId: 'another', agentId: 'Scout' }))
+    expect(screen.queryByRole('region', { name: 'Review tests' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Review tests 已完成' }))
+    expect(await screen.findByText('Checked the tests.')).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Review tests' }).closest('aside')).not.toBeNull()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: '发送给代理的消息' })).not.toBeInTheDocument()
+    expect(screen.queryByText('hidden/model')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '返回', exact: true }))
+    fireEvent.click(within(await screen.findByRole('region', { name: '子代理任务' })).getByRole('button', { name: /^Review tests/ }))
+    expect(await screen.findByText('Checked the tests.')).toBeVisible()
   })
   it('opens panels from the window toolbar and removes its controls when collapsed', () => {
     const host = document.createElement('div')
