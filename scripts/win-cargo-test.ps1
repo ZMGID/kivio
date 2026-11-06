@@ -22,7 +22,7 @@ $ccManifest = Join-Path $repo 'src-tauri\tests-common-controls.manifest'
 $depsDir = Join-Path $repo 'src-tauri\target\debug\deps'
 
 Write-Host '[win-cargo-test] 1/3 构建测试二进制 (--no-run)...' -ForegroundColor Cyan
-cargo test --manifest-path $manifestPath @args --no-run
+cargo test --no-run --manifest-path $manifestPath @args
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host '[win-cargo-test] 2/3 放置 Common-Controls v6 外部清单...' -ForegroundColor Cyan

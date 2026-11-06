@@ -790,7 +790,7 @@ fn summarize(records: &[UsageRecord]) -> UsageSummary {
     summary
 }
 
-/// 统一「输入 tokens」口径（对齐 context_estimate::anchor_total_tokens，commit
+/// 统一「输入 tokens」口径（对齐 crate::chat::model::context_usage::anchor_total_tokens，commit
 /// 85a3056）：Anthropic 的 input_tokens 是**非缓存**部分，全量输入 = input +
 /// cache_read + cache_creation（三者不相交）；OpenAI 系 input(=prompt_tokens)
 /// 已含 cached，直接用。聚合（summary/trend/分组）一律走这里，缓存命中率
@@ -1529,7 +1529,7 @@ mod tests {
         assert!(today_usage(&not_directory).is_err());
     }
 
-    /// 口径对齐 context_estimate::anchor_total_tokens（85a3056）：Anthropic 的
+    /// 口径对齐 crate::chat::model::context_usage::anchor_total_tokens（85a3056）：Anthropic 的
     /// input 是非缓存部分，全量要显式加 cache_read + cache_creation；OpenAI 的
     /// input 已含 cached，直接用。
     #[test]

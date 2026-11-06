@@ -3,7 +3,10 @@
 //! Runtime code should exchange `GenerateRequest`, `GenerateOutput`, and `StreamPart`.
 //! Provider-specific JSON belongs inside this module's adapters.
 
+pub(crate) mod context_usage;
+
 pub mod anthropic;
+pub(crate) mod agent_runtime;
 mod error;
 pub mod gemini;
 mod legacy;
@@ -124,6 +127,16 @@ pub(crate) async fn stream_with_chat_provider(
     sink: &mut (dyn StreamSink + Send),
 ) -> Result<GenerateOutput, ModelError> {
     call_chat_provider(state, provider, retry_attempts, request, Some(sink)).await
+}
+
+pub(crate) async fn generate_via_stream_collect(
+    state: &AppState,
+    provider: &ModelProvider,
+    retry_attempts: usize,
+    request: GenerateRequest,
+) -> Result<GenerateOutput, ModelError> {
+    let mut sink = |_: StreamPart| Ok(());
+    stream_with_chat_provider(state, provider, retry_attempts, request, &mut sink).await
 }
 
 async fn call_chat_provider(
@@ -417,7 +430,7 @@ mod anonymous_http_tests {
     #[tokio::test]
     async fn no_tools_and_finish_reason_survive_provider_wire_and_message_runtime() {
         use crate::chat::agent::history::RuntimeMessage;
-        use crate::chat::agent::provider_runtime::{MessageRequest, ProviderRuntime};
+        use crate::chat::agent::provider_runtime::{DiscardModelSink, ModelCall, ModelDelivery, ModelRuntime};
         for format in FORMATS {
             for stream in [false, true] {
                 for finish in ["stop", "length", "tool_calls"] {
@@ -429,25 +442,29 @@ mod anonymous_http_tests {
                     );
                     let provider = provider(format, url, Vec::new());
                     let output = if stream {
-                        ProviderRuntime::message(
-                            &state,
-                            MessageRequest {
-                                provider: &provider,
-                                model: "local-model",
-                                messages: vec![RuntimeMessage::text(ModelRole::User, "hello")],
-                                tool_choice: ToolChoice::None,
-                                retry_attempts: 1,
-                                thinking_enabled: false,
-                                thinking_level: None,
-                                builtin_web_search: true,
-                                max_output_tokens: 100,
-                                conversation_id: "conv",
-                                message_id: "msg",
-                                label: "finish regression",
+                        agent_runtime::AppAgentModel::new(&state, &provider, 1).generate(
+                            ModelCall {
+                                provider_id: provider.id.clone(),
+                                model: "local-model".into(),
+                                history: vec![RuntimeMessage::text(ModelRole::User, "hello")],
+                                tools: Vec::new(),
+                                options: GenerateOptions {
+                                    tool_choice: ToolChoice::None,
+                                    thinking_enabled: false,
+                                    builtin_web_search: true,
+                                    max_tokens: 100,
+                                    ..Default::default()
+                                },
+                                metadata: RequestMetadata {
+                                    conversation_id: Some("conv".into()),
+                                    message_id: Some("msg".into()),
+                                    label: "finish regression".into(),
+                                    ..Default::default()
+                                },
+                                delivery: ModelDelivery::Collected,
                             },
-                        )
-                        .await
-                        .unwrap()
+                            &mut DiscardModelSink,
+                        ).await.unwrap()
                     } else {
                         let request = GenerateRequest {
                             model: "local-model".into(),
@@ -495,31 +512,35 @@ mod anonymous_http_tests {
     #[tokio::test]
     async fn message_runtime_preserves_provider_errors() {
         use crate::chat::agent::history::RuntimeMessage;
-        use crate::chat::agent::provider_runtime::{MessageRequest, ProviderRuntime};
+        use crate::chat::agent::provider_runtime::{DiscardModelSink, ModelCall, ModelDelivery, ModelRuntime};
         let (url, server) = endpoint(
             vec![("401 Unauthorized", r#"{"error":{"message":"server requires authentication"}}"#.into())],
             false,
         ).await;
         let state = crate::state::test_app_state();
         let provider = provider("openai_chat", url, Vec::new());
-        let result = ProviderRuntime::message(
-            &state,
-            MessageRequest {
-                provider: &provider,
-                model: "local-model",
-                messages: vec![RuntimeMessage::text(ModelRole::User, "hello")],
-                tool_choice: ToolChoice::None,
-                retry_attempts: 1,
-                thinking_enabled: false,
-                thinking_level: None,
-                builtin_web_search: false,
-                max_output_tokens: 100,
-                conversation_id: "conv",
-                message_id: "msg",
-                label: "error regression",
+        let result = agent_runtime::AppAgentModel::new(&state, &provider, 1).generate(
+            ModelCall {
+                provider_id: provider.id.clone(),
+                model: "local-model".into(),
+                history: vec![RuntimeMessage::text(ModelRole::User, "hello")],
+                tools: Vec::new(),
+                options: GenerateOptions {
+                    tool_choice: ToolChoice::None,
+                    thinking_enabled: false,
+                    max_tokens: 100,
+                    ..Default::default()
+                },
+                metadata: RequestMetadata {
+                    conversation_id: Some("conv".into()),
+                    message_id: Some("msg".into()),
+                    label: "error regression".into(),
+                    ..Default::default()
+                },
+                delivery: ModelDelivery::Collected,
             },
-        )
-        .await;
+            &mut DiscardModelSink,
+        ).await;
         let error = result.unwrap_err();
         assert_eq!(error.kind, ModelErrorKind::Auth);
         assert!(error.message.contains("server requires authentication"));

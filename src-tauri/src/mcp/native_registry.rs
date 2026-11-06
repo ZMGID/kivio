@@ -1406,7 +1406,7 @@ fn call_advisor(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             .and_then(|nc| nc.tool_call_id.clone())
             .unwrap_or_default();
 
-        let output = crate::chat::agent::planning::generate_via_stream_collect(
+        let output = crate::chat::model::generate_via_stream_collect(
             ctx.state,
             &provider,
             retry_attempts,

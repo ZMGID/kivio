@@ -1,0 +1,672 @@
+use crate::chat::agent::host::{AgentHost, AgentHostFuture, SpeculativeTaskScope};
+use crate::chat::agent::{
+    content::{AgentToolCall, AgentToolStatus},
+    execute::{
+        limit_tool_text_for_model, PreparedToolCall, ToolExecutorFuture, ToolFuture,
+        ToolPreparation, ToolProgress,
+    },
+};
+use crate::chat::agent_preparation::{
+    builtin_tool_bypasses_approval, disabled_builtin_tool_feedback,
+};
+pub(crate) use crate::chat::tools::schema::coerce_arguments as coerce_tool_arguments;
+use crate::chat::{ask_user, model::PendingToolCall, tools::ArgumentPolicy};
+use crate::mcp::ChatToolDefinition;
+use crate::settings::Settings;
+use serde_json::Value;
+use std::time::Instant;
+
+pub trait ToolDispatcher: Send + Sync {
+    fn call<'a>(
+        &'a self,
+        ctx: &'a ToolExecutionContext<'a>,
+        tool: &'a ChatToolDefinition,
+        arguments: Value,
+    ) -> ToolExecutorFuture<'a>;
+}
+
+pub struct ToolExecutionContext<'a> {
+    pub conversation_id: &'a str,
+    pub run_id: &'a str,
+    pub message_id: &'a str,
+    /// Provider and model of the run executing this tool, including answer arms.
+    pub provider: &'a crate::settings::ModelProvider,
+    pub model: &'a str,
+    pub generation: u64,
+    pub round: u32,
+    /// Sub-agent nesting depth: 0 for a top-level run; used to limit task recursion.
+    pub depth: u8,
+    /// Conversation used by conversation-scoped tools; it can differ from
+    /// `conversation_id` in a sub-agent run.
+    pub tool_conversation_id: &'a str,
+    pub plan_state: &'a crate::chat::types::AgentPlanState,
+    pub mcp_tool_ids: &'a [(String, String)],
+    pub mcp_server_ids: &'a [String],
+    pub approval_policy: &'a str,
+    pub interactive_host: bool,
+    /// The model-issued tool_call id of the call currently executing. Sub-agent
+    /// progress is reported back onto the parent tool card addressed by this id.
+    pub tool_call_id: &'a str,
+}
+
+pub trait ApplicationHost: AgentHost {
+    fn compaction_threshold(&self, _context_window: usize) -> Option<usize> {
+        None
+    }
+
+    /// Consecutive automatic compaction failures remembered for the conversation, so the
+    /// ZCode circuit breaker outlives one run. Default: nothing is remembered between runs.
+    fn auto_compact_failures(&self, _conversation_id: &str) -> u32 {
+        0
+    }
+
+    fn set_auto_compact_failures(&self, _conversation_id: &str, _failures: u32) {}
+
+    fn tool_execution_hooks_active(&self) -> bool {
+        false
+    }
+    fn supports_interactive_approval(&self) -> bool {
+        true
+    }
+    fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
+        None
+    }
+    fn start_speculation(
+        &self,
+        _settings: &Settings,
+        _tools: &[ChatToolDefinition],
+        _ctx: &ToolExecutionContext<'_>,
+    ) -> Option<Box<dyn SpeculativeTaskScope>> {
+        None
+    }
+    fn request_tool_approval<'a>(
+        &'a self,
+        ctx: &'a ToolExecutionContext<'a>,
+        record: &'a AgentToolCall,
+    ) -> AgentHostFuture<'a, bool>;
+    fn request_session_consent<'a>(
+        &'a self,
+        _ctx: &'a ToolExecutionContext<'a>,
+    ) -> AgentHostFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+    fn request_user_response<'a>(
+        &'a self,
+        ctx: &'a ToolExecutionContext<'a>,
+        record: &'a AgentToolCall,
+        prompt: ask_user::AskUserPromptPayload,
+    ) -> AgentHostFuture<'a, ask_user::AskUserResponseResult>;
+}
+
+struct ApplicationToolContext<'a> {
+    host: &'a dyn ApplicationHost,
+    control: crate::chat::agent::control::AgentRunHandle<'a>,
+    progress: &'a ToolProgress<'a>,
+}
+impl<'a> std::ops::Deref for ApplicationToolContext<'a> {
+    type Target = dyn ApplicationHost + 'a;
+    fn deref(&self) -> &Self::Target {
+        self.host
+    }
+}
+impl ApplicationToolContext<'_> {
+    fn tool_updated(&self, record: &AgentToolCall) {
+        self.progress.updated(record);
+    }
+}
+
+async fn prepare_tool_call(
+    host: &ApplicationToolContext<'_>,
+    settings: &Settings,
+    ctx: &ToolExecutionContext<'_>,
+    tool: &ChatToolDefinition,
+    call: PendingToolCall,
+    mut record: AgentToolCall,
+) -> ToolPreparation {
+    let task_preflight = tool.argument_policy() == ArgumentPolicy::ToolAfterApproval;
+    let mut call = call;
+    if !task_preflight {
+        call.arguments =
+            coerce_tool_arguments(&tool.input_schema, std::mem::take(&mut call.arguments));
+    }
+
+    let mut hook_context = Vec::new();
+    let mut hook_approval_reason = None;
+    if let Some(package_id) = tool
+        .server_id
+        .as_deref()
+        .and_then(|id| id.strip_prefix("plugin-package-"))
+        .and_then(|rest| rest.get(..36))
+    {
+        if !crate::plugins::packages::owner_enabled(package_id) {
+            record.status = AgentToolStatus::Skipped;
+            record.completed_at = Some(chrono::Local::now().timestamp());
+            record.error = Some("Plugin has been disabled".into());
+            host.tool_updated(&record);
+            return ToolPreparation::Complete(
+                record,
+                "Plugin has been disabled".into(),
+                Vec::new(),
+            );
+        }
+    }
+    if let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) {
+        let mut input = runtime.input("PreToolUse", ctx.conversation_id);
+        input["tool_name"] = serde_json::json!(tool.name);
+        input["tool_input"] = call.arguments.clone();
+        input["tool_use_id"] = serde_json::json!(call.id);
+        let outcome = crate::chat::workflow_hooks::run_for_host(
+            host.host,
+            host.control.clone(),
+            "PreToolUse",
+            input,
+        )
+        .await;
+        let failure = match outcome {
+            Ok(out) => {
+                if let Some(updated) = out.updated_input {
+                    call.arguments = updated;
+                    call.arguments_raw = call.arguments.to_string();
+                    record.arguments = call.arguments_raw.clone();
+                }
+                hook_context = out.context;
+                hook_approval_reason = out.ask;
+                out.denied
+            }
+            Err(err) => Some(err),
+        };
+        if let Some(reason) = failure {
+            record.status = if host.control.active() {
+                AgentToolStatus::Skipped
+            } else {
+                AgentToolStatus::Cancelled
+            };
+            record.completed_at = Some(chrono::Local::now().timestamp());
+            record.error = Some(reason.clone());
+            host.tool_updated(&record);
+            return ToolPreparation::Complete(
+                record,
+                format!("Workflow hook: {reason}"),
+                Vec::new(),
+            );
+        }
+    }
+    // The native task handler validates the entire batch after hooks and approval.
+    if let Err(err) = if task_preflight {
+        Ok(())
+    } else {
+        validate_tool_arguments(tool, &call.arguments)
+    } {
+        record.status = AgentToolStatus::Error;
+        record.duration_ms = Some(0);
+        record.completed_at = Some(chrono::Local::now().timestamp());
+        record.error = Some(err.clone());
+        host.tool_updated(&record);
+        return ToolPreparation::Complete(record, format!("Tool arguments failed schema validation: {err}. Retry this tool call with arguments that match the declared JSON schema."), Vec::new());
+    }
+
+    let interactive_approval = host.supports_interactive_approval();
+    let asks_user = tool.source == "native" && ask_user::is_ask_user_tool_name(&tool.name);
+    if !interactive_approval
+        && (hook_approval_reason.is_some() || tool_requires_approval(settings, tool) || asks_user)
+    {
+        let reason = "多答模式无法安全审批；请改用单模型执行，或在设置中显式选择自动授权。Interactive approval is unavailable in parallel answers; use single-model mode or explicitly select automatic authorization.";
+        record.status = AgentToolStatus::Skipped;
+        record.duration_ms = Some(0);
+        record.completed_at = Some(chrono::Local::now().timestamp());
+        record.error = Some(reason.into());
+        host.tool_updated(&record);
+        return ToolPreparation::Complete(record, reason.into(), Vec::new());
+    }
+
+    let hook_approved = if let Some(reason) = hook_approval_reason {
+        record.output = Some(reason);
+        if !host.request_tool_approval(ctx, &record).await {
+            record.status = AgentToolStatus::Skipped;
+            record.completed_at = Some(chrono::Local::now().timestamp());
+            record.error = Some("Workflow hook approval was declined".into());
+            host.tool_updated(&record);
+            return ToolPreparation::Complete(
+                record,
+                "Workflow hook approval was declined".into(),
+                Vec::new(),
+            );
+        }
+        true
+    } else {
+        false
+    };
+    if tool.source == "native" && ask_user::is_ask_user_tool_name(&tool.name) {
+        let (record, content) =
+            execute_ask_user_call(host, settings, ctx, record, call.arguments.clone()).await;
+        return ToolPreparation::Complete(record, content, Vec::new());
+    }
+
+    // Gate. The file/shell tools (read/write/edit/bash/grep/find/ls) are
+    // governed by a single per-conversation **session consent**: prompt once,
+    // then run freely with full-disk access for the rest of the conversation.
+    // `approval_policy`: "auto" implicitly consents (no prompt); "always_confirm"
+    // confirms each call (the per-call prompt IS the gate — no separate session
+    // consent); the legacy read-only policy prompts once per conversation. Everything else (MCP
+    // tools, etc.) keeps the existing per-call approval.
+    let skip = |record: &mut AgentToolCall, reason: &str| {
+        record.status = AgentToolStatus::Skipped;
+        record.completed_at = Some(chrono::Local::now().timestamp());
+        record.error = Some(reason.to_string());
+    };
+
+    if !hook_approved
+        && interactive_approval
+        && crate::chat::agent_preparation::tool_requires_session_consent(tool)
+    {
+        let policy = settings.chat_tools.approval_policy.as_str();
+        if policy == "always_confirm" {
+            if !host.request_tool_approval(ctx, &record).await {
+                skip(&mut record, "Tool call was not approved");
+                host.tool_updated(&record);
+                let content = record.error.clone().unwrap_or_default();
+                return ToolPreparation::Complete(record, content, Vec::new());
+            }
+        } else if policy != "auto" && !host.request_session_consent(ctx).await {
+            skip(&mut record, "用户未授权本会话使用文件 / 命令工具");
+            host.tool_updated(&record);
+            let content = record.error.clone().unwrap_or_default();
+            return ToolPreparation::Complete(record, content, Vec::new());
+        }
+    } else if !hook_approved && tool_requires_approval(settings, tool) {
+        let approved = host.request_tool_approval(ctx, &record).await;
+        if !approved {
+            skip(&mut record, "Tool call was not approved");
+            host.tool_updated(&record);
+            let content = record.error.clone().unwrap_or_default();
+            return ToolPreparation::Complete(record, content, Vec::new());
+        }
+    }
+
+    let timeout_ms = effective_tool_timeout_ms(settings, tool, &call.arguments);
+    ToolPreparation::Ready(PreparedToolCall {
+        record,
+        timeout_ms: (timeout_ms != NO_OUTER_TOOL_TIMEOUT).then_some(timeout_ms),
+        timeout_message: format_tool_timeout_error(tool, timeout_ms, &call.arguments),
+        arguments: call.arguments,
+        output_limit: settings.chat_tools.max_tool_output_chars,
+        drain_on_cancel: host.requires_tool_completion(),
+        feedback: hook_context,
+    })
+}
+
+async fn after_tool_call(
+    host: &ApplicationToolContext<'_>,
+    ctx: &ToolExecutionContext<'_>,
+    tool: &ChatToolDefinition,
+    arguments: Value,
+    content: &str,
+    mut hook_context: Vec<String>,
+) -> String {
+    if let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) {
+        let mut input = runtime.input("PostToolUse", ctx.conversation_id);
+        input["tool_name"] = serde_json::json!(tool.name);
+        input["tool_input"] = arguments;
+        input["tool_response"] = serde_json::json!(content);
+        input["tool_use_id"] = serde_json::json!(ctx.tool_call_id);
+        match crate::chat::workflow_hooks::run_for_host(
+            host.host,
+            host.control.clone(),
+            "PostToolUse",
+            input,
+        )
+        .await
+        {
+            Ok(out) => {
+                hook_context.extend(out.context);
+                if let Some(reason) = out.denied {
+                    hook_context.push(reason);
+                }
+            }
+            Err(err) => hook_context.push(format!("PostToolUse hook failed: {err}")),
+        }
+    }
+    if !hook_context.is_empty() {
+        return format!(
+            "\n\n[Workflow hook feedback]\n{}",
+            hook_context.join("\n\n")
+        );
+    }
+    String::new()
+}
+
+async fn execute_ask_user_call(
+    host: &ApplicationToolContext<'_>,
+    settings: &Settings,
+    ctx: &ToolExecutionContext<'_>,
+    mut record: AgentToolCall,
+    arguments: Value,
+) -> (AgentToolCall, String) {
+    let prompt = match ask_user::normalize_prompt(arguments) {
+        Ok(prompt) => prompt,
+        Err(err) => {
+            record.status = AgentToolStatus::Error;
+            record.duration_ms = Some(0);
+            record.completed_at = Some(chrono::Local::now().timestamp());
+            record.error = Some(err.clone());
+            host.tool_updated(&record);
+            return (
+                record,
+                format!("Invalid ask_user prompt: {err}. Retry with a valid questions payload."),
+            );
+        }
+    };
+
+    record.status = AgentToolStatus::Running;
+    record.structured_content = Some(ask_user::structured_content(
+        &prompt,
+        ask_user::ASK_USER_PHASE_AWAITING,
+        &Default::default(),
+    ));
+    host.tool_updated(&record);
+
+    let started = Instant::now();
+    let response = host
+        .request_user_response(ctx, &record, prompt.clone())
+        .await;
+    record.duration_ms = Some(started.elapsed().as_millis() as u64);
+    record.completed_at = Some(chrono::Local::now().timestamp());
+    record.structured_content = Some(ask_user::structured_content(
+        &prompt,
+        &response.phase,
+        &response.answers,
+    ));
+    let content = ask_user::tool_result_content(&response);
+    match response.phase.as_str() {
+        ask_user::ASK_USER_PHASE_ANSWERED => {
+            record.status = AgentToolStatus::Success;
+            record.output = Some("User answered clarification questions".to_string());
+        }
+        ask_user::ASK_USER_PHASE_SKIPPED => {
+            record.status = AgentToolStatus::Skipped;
+            record.output = Some("User skipped clarification".to_string());
+        }
+        ask_user::ASK_USER_PHASE_TIMEOUT => {
+            record.status = AgentToolStatus::Skipped;
+            record.output = Some("Clarification timed out".to_string());
+        }
+        ask_user::ASK_USER_PHASE_CANCELLED => {
+            record.status = AgentToolStatus::Cancelled;
+            record.error = Some("Clarification cancelled".to_string());
+        }
+        _ => {
+            record.status = AgentToolStatus::Error;
+            record.error = Some(format!(
+                "Invalid ask_user response phase: {}",
+                response.phase
+            ));
+        }
+    }
+    host.tool_updated(&record);
+    (
+        record,
+        limit_tool_text_for_model(&content, settings.chat_tools.max_tool_output_chars),
+    )
+}
+
+pub fn disabled_tool_content(call: &PendingToolCall) -> Option<String> {
+    disabled_builtin_tool_feedback(&call.function_name)
+}
+
+pub fn tool_requires_approval(settings: &Settings, tool: &ChatToolDefinition) -> bool {
+    tool_requires_approval_for_policy(&settings.chat_tools.approval_policy, tool)
+}
+
+pub(crate) fn tool_requires_approval_for_policy(policy: &str, tool: &ChatToolDefinition) -> bool {
+    if builtin_tool_bypasses_approval(tool) {
+        return false;
+    }
+    match policy {
+        "auto" => false,
+        "always_confirm" => true,
+        // MCP annotations are self-reported by the server and cannot weaken approval.
+        // The explicit user-side `auto` policy above remains the trusted opt-out.
+        _ if tool.source == "mcp" => true,
+        _ => tool.sensitive,
+    }
+}
+
+pub fn validate_tool_arguments(tool: &ChatToolDefinition, arguments: &Value) -> Result<(), String> {
+    crate::chat::tools::schema::validate_arguments(&tool.input_schema, arguments)
+}
+
+/// Sentinel for tools that enforce their own wait or timeout.
+const NO_OUTER_TOOL_TIMEOUT: u64 = u64::MAX;
+
+fn effective_tool_timeout_ms(
+    settings: &Settings,
+    tool: &ChatToolDefinition,
+    arguments: &Value,
+) -> u64 {
+    tool.timeout_policy()
+        .milliseconds(settings.chat_tools.tool_timeout_ms, arguments)
+        .unwrap_or(NO_OUTER_TOOL_TIMEOUT)
+}
+
+/// 超时错误给模型用：含工具名、时限、简短参数摘要与可执行建议（避免只回一句「超时」）。
+fn format_tool_timeout_error(
+    tool: &ChatToolDefinition,
+    timeout_ms: u64,
+    arguments: &Value,
+) -> String {
+    let secs = timeout_ms as f64 / 1000.0;
+    let arg_summary = timeout_argument_summary(arguments);
+    let mut msg = format!(
+        "工具调用超时（已中止，限时 {secs:.0}s）。工具：`{}`（source={}）。",
+        tool.name, tool.source
+    );
+    if !arg_summary.is_empty() {
+        msg.push_str(&format!(" 参数摘要：{arg_summary}"));
+    }
+    if tool.source == "native" && tool.name == "bash" {
+        msg.push_str(
+            " 请勿原样重试同一条调用。有限长命令应省略 timeout_ms，让 bash 等到进程退出；\
+不要改成 background:true。只有永不退出的 server 才进后台。需要硬性杀进程时再传更大的 timeout_ms。",
+        );
+    } else {
+        msg.push_str(
+            " 请勿原样重试同一条调用。建议：缩小单次任务（拆成更小的步骤）；\
+核对路径与语法后换一版参数再试。需要更长等待可在设置中提高「工具超时」。",
+        );
+    }
+    msg
+}
+
+fn timeout_argument_summary(arguments: &Value) -> String {
+    // 优先 command 字段（officecli MCP / bash）
+    let raw = arguments
+        .get("command")
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .or_else(|| {
+            arguments
+                .get("cmd")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            let s = arguments.to_string();
+            if s.len() > 240 {
+                format!("{}…", s.chars().take(240).collect::<String>())
+            } else {
+                s
+            }
+        });
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() > 220 {
+        format!("{}…", compact.chars().take(220).collect::<String>())
+    } else {
+        compact
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct ToolAuthority<'a> {
+    pub provider: &'a crate::settings::ModelProvider,
+    pub model: &'a str,
+    pub depth: u8,
+    pub tool_conversation_id: &'a str,
+    pub plan_state: &'a crate::chat::types::AgentPlanState,
+    pub mcp_tool_ids: &'a [(String, String)],
+    pub mcp_server_ids: &'a [String],
+    pub approval_policy: &'a str,
+    pub interactive_host: bool,
+}
+
+impl<'a> ToolAuthority<'a> {
+    pub fn from_context(ctx: &'a ToolExecutionContext<'a>) -> Self {
+        Self {
+            provider: ctx.provider,
+            model: ctx.model,
+            depth: ctx.depth,
+            tool_conversation_id: ctx.tool_conversation_id,
+            plan_state: ctx.plan_state,
+            mcp_tool_ids: ctx.mcp_tool_ids,
+            mcp_server_ids: ctx.mcp_server_ids,
+            approval_policy: ctx.approval_policy,
+            interactive_host: ctx.interactive_host,
+        }
+    }
+
+    fn context<'b>(
+        &'b self,
+        ctx: &'b crate::chat::agent::execute::ToolExecutionContext<'b>,
+    ) -> ToolExecutionContext<'b> {
+        ToolExecutionContext {
+            conversation_id: ctx.conversation_id,
+            run_id: ctx.run_id,
+            message_id: ctx.message_id,
+            generation: ctx.generation,
+            round: ctx.round,
+            tool_call_id: ctx.tool_call_id,
+            provider: self.provider,
+            model: self.model,
+            depth: self.depth,
+            tool_conversation_id: self.tool_conversation_id,
+            plan_state: self.plan_state,
+            mcp_tool_ids: self.mcp_tool_ids,
+            mcp_server_ids: self.mcp_server_ids,
+            approval_policy: self.approval_policy,
+            interactive_host: self.interactive_host,
+        }
+    }
+}
+
+pub struct ApplicationToolExecutor<'a> {
+    pub settings: &'a Settings,
+    pub authority: ToolAuthority<'a>,
+    pub tools: &'a [ChatToolDefinition],
+    pub host: &'a dyn ApplicationHost,
+    pub dispatcher: &'a dyn ToolDispatcher,
+}
+
+impl ApplicationToolExecutor<'_> {
+    fn definition(&self, tool: &crate::chat::tools::ToolDefinition) -> &ChatToolDefinition {
+        self.tools
+            .iter()
+            .find(|candidate| candidate.id == tool.key)
+            .expect("registered tool has application definition")
+    }
+}
+
+impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
+    fn prepare<'a>(
+        &'a self,
+        progress: &'a ToolProgress<'a>,
+        ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
+        tool: &'a crate::chat::tools::ToolDefinition,
+        call: PendingToolCall,
+        record: AgentToolCall,
+    ) -> ToolFuture<'a, ToolPreparation> {
+        Box::pin(async move {
+            let host = ApplicationToolContext {
+                host: self.host,
+                control: progress.control.clone(),
+                progress,
+            };
+            prepare_tool_call(
+                &host,
+                self.settings,
+                &self.authority.context(ctx),
+                self.definition(tool),
+                call,
+                record,
+            )
+            .await
+        })
+    }
+
+    fn call<'a>(
+        &'a self,
+        ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
+        tool: &'a crate::chat::tools::ToolDefinition,
+        arguments: Value,
+    ) -> ToolExecutorFuture<'a> {
+        Box::pin(async move {
+            self.dispatcher
+                .call(
+                    &self.authority.context(ctx),
+                    self.definition(tool),
+                    arguments,
+                )
+                .await
+        })
+    }
+
+    fn after<'a>(
+        &'a self,
+        progress: &'a ToolProgress<'a>,
+        ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
+        tool: &'a crate::chat::tools::ToolDefinition,
+        arguments: Value,
+        content: &'a str,
+        feedback: Vec<String>,
+    ) -> ToolFuture<'a, String> {
+        Box::pin(async move {
+            let host = ApplicationToolContext {
+                host: self.host,
+                control: progress.control.clone(),
+                progress,
+            };
+            after_tool_call(
+                &host,
+                &self.authority.context(ctx),
+                self.definition(tool),
+                arguments,
+                content,
+                feedback,
+            )
+            .await
+        })
+    }
+
+    fn start_speculation(
+        &self,
+        ctx: &crate::chat::agent::execute::ToolExecutionContext<'_>,
+        tools: &[crate::chat::tools::ToolDefinition],
+    ) -> Option<Box<dyn SpeculativeTaskScope>> {
+        let definitions: Vec<_> = tools
+            .iter()
+            .map(|tool| self.definition(tool).clone())
+            .collect();
+        self.host
+            .start_speculation(self.settings, &definitions, &self.authority.context(ctx))
+    }
+
+    fn blocked_feedback(&self, tool: &crate::chat::tools::ToolDefinition) -> String {
+        format!("Tool `{}` is blocked in Plan mode. Switch to Act / execute the plan before using side-effecting tools.", tool.model.name)
+    }
+    fn unknown_feedback(&self, name: &str) -> Option<String> {
+        disabled_builtin_tool_feedback(name)
+    }
+}
+
+#[cfg(test)]
+include!("tool_runtime_tests.rs");

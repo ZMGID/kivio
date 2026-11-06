@@ -220,7 +220,7 @@ pub(super) async fn analyze_chat_images_with_auxiliary_model(
             "content": parts,
         }),
     ];
-    let output = crate::chat::agent::planning::generate_via_stream_collect(
+    let output = crate::chat::model::generate_via_stream_collect(
         state,
         &provider,
         retry_attempts,

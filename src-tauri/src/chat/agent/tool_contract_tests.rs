@@ -1,5 +1,9 @@
 use super::*;
+use crate::chat::agent::content::AgentToolStatus;
+use crate::chat::session_policy::run_session;
+use crate::chat::tool_runtime::{ToolDispatcher, ToolExecutionContext};
 use crate::chat::tools::{call_typed, input_schema, StaticTool, ToolFuture, ToolOutput};
+use crate::mcp::ChatToolDefinition;
 
 #[derive(serde::Deserialize, schemars::JsonSchema)]
 struct CountArgs {
@@ -37,13 +41,12 @@ impl StaticTool for Count {
 #[derive(Default)]
 struct RegisteredExecutor(Mutex<Vec<String>>);
 
-impl ToolExecutor for RegisteredExecutor {
+impl ToolDispatcher for RegisteredExecutor {
     fn call<'a>(
         &'a self,
         _: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        _: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::super::execute::ToolExecutorFuture<'a> {
         Box::pin(async move {
             self.0.lock().unwrap().push(tool.name.clone());
@@ -148,7 +151,15 @@ async fn registered_typed_and_dynamic_tools_share_the_real_loop() {
     ];
     config.settings.chat_tools.tool_timeout_ms = 10;
     let executor = RegisteredExecutor::default();
-    let result = run_agent_loop(config, &TestHost::default(), &executor)
+    let host = TestHost::default();
+    let identity = AgentRunIdentity {
+        conversation_id: "conversation",
+        run_id: "run",
+        message_id: "message",
+        generation: 1,
+    };
+    let handle = AgentRunHandle::new(identity, &host);
+    let result = run_session(config, &host, &executor, &host, handle)
         .await
         .unwrap();
     assert_eq!(result.content, "finished");
@@ -160,14 +171,14 @@ async fn registered_typed_and_dynamic_tools_share_the_real_loop() {
         assert!(result
             .tool_records
             .iter()
-            .any(|record| record.id == id && matches!(record.status, ToolCallStatus::Success)));
+            .any(|record| record.id == id && matches!(record.status, AgentToolStatus::Success)));
     }
     for id in ["invalid", "error", "unknown", "prepare", "timeout"] {
         assert!(
             result
                 .tool_records
                 .iter()
-                .any(|record| record.id == id && matches!(record.status, ToolCallStatus::Error)),
+                .any(|record| record.id == id && matches!(record.status, AgentToolStatus::Error)),
             "{id}"
         );
     }

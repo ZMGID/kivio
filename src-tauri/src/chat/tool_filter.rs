@@ -3,7 +3,7 @@
 use crate::agents::AgentDefinition;
 use crate::mcp::ChatToolDefinition;
 
-use super::prepare::{is_native_skill_tool_name, tool_matches_recommended_name};
+use super::agent_preparation::{is_native_skill_tool_name, tool_matches_recommended_name};
 
 /// Match an automation tool selection, including its existing MCP prefix syntax.
 pub fn entry_matches(tool: &ChatToolDefinition, entry: &str) -> bool {

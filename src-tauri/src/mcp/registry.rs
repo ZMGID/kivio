@@ -45,7 +45,7 @@ pub struct NativeToolContext<'a> {
 }
 
 impl<'a> NativeToolContext<'a> {
-    pub(crate) fn from_execution(ctx: &crate::chat::agent::ToolExecutionContext<'a>) -> Self {
+    pub(crate) fn from_execution(ctx: &crate::chat::tool_runtime::ToolExecutionContext<'a>) -> Self {
         Self {
             conversation_id: ctx.tool_conversation_id.to_string(),
             message_id: ctx.message_id.to_string(),
@@ -809,7 +809,7 @@ pub async fn call_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
-    skill_context: Option<&mut crate::skills::SkillRunContext>,
+    skill_context: Option<&crate::skills::SkillRunContext>,
     native_ctx: Option<NativeToolContext<'_>>,
 ) -> Result<McpToolCallResult, String> {
     if tool.source == "native" {
@@ -1043,7 +1043,7 @@ async fn call_skill_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
-    skill_context: Option<&mut crate::skills::SkillRunContext>,
+    skill_context: Option<&crate::skills::SkillRunContext>,
 ) -> Result<McpToolCallResult, String> {
     let settings = state.settings_read().clone();
     let skill_name = crate::skills::extract_skill_name(&arguments)?;

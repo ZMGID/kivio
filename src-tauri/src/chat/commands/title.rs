@@ -217,7 +217,7 @@ async fn generate_title_with_model(
         "Chat title summary",
         GenerateRequestContext::new(Some(conversation_id), Some("")),
     );
-    let output = crate::chat::agent::planning::generate_via_stream_collect(
+    let output = crate::chat::model::generate_via_stream_collect(
         state,
         &provider,
         retry_attempts,

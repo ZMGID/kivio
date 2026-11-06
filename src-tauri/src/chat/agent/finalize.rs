@@ -9,7 +9,7 @@ use super::stop::{
 };
 use super::stream::ToolCallDraftTracker;
 use super::synthesis::SynthesisCompleted;
-use super::types::{AgentPhase, AgentRunConfig, AgentRunResult};
+use super::types::{AgentPhase, AgentRunResult};
 
 /// Converges the repeated "emit fallback + push api message + build AgentRunResult"
 /// blocks in the agent loop. Emit order is fixed: stream delta (with optional
@@ -26,8 +26,6 @@ pub(crate) struct RunResultBuilder<'a> {
     emit_done_reason: Option<&'static str>,
     push_api_always: bool,
     outcome: super::types::AgentRunStatus,
-    /// 降级兜底的结构化描述（仅降级路径设置）。透传到 `AgentRunResult.degraded`。
-    degraded: Option<crate::chat::agent::recovery::DegradedAnswer>,
 }
 
 impl<'a> RunResultBuilder<'a> {
@@ -43,7 +41,6 @@ impl<'a> RunResultBuilder<'a> {
             emit_done_reason: None,
             push_api_always: false,
             outcome: super::types::AgentRunStatus::Completed,
-            degraded: None,
         }
     }
 
@@ -93,13 +90,6 @@ impl<'a> RunResultBuilder<'a> {
     }
 
     /// 挂上降级兜底的结构化描述，让前端渲染成独立错误卡片。
-    pub(crate) fn degraded(
-        mut self,
-        degraded: Option<crate::chat::agent::recovery::DegradedAnswer>,
-    ) -> Self {
-        self.degraded = degraded;
-        self
-    }
 
     fn emit(&self) {
         if self.emit_done_reason.is_some() {
@@ -158,11 +148,9 @@ impl<'a> RunResultBuilder<'a> {
             usage: None,
             cache_pairs: None,
             last_step_usage: None,
-            compacted_history: None,
-            compaction_boundary: None,
-            compaction_summary: None,
+            history: Vec::new(),
+            compacted: false,
             images: Vec::new(),
-            degraded: self.degraded,
         }
     }
 }
@@ -323,11 +311,9 @@ pub(crate) fn finalize_planning_final(
         usage: None,
         cache_pairs: None,
         last_step_usage: None,
-        compacted_history: None,
-        compaction_boundary: None,
-        compaction_summary: None,
+        history: Vec::new(),
+        compacted: false,
         images: Vec::new(),
-        degraded: state.degraded.take(),
     })
 }
 
@@ -372,41 +358,15 @@ pub(crate) fn finalize_completed(
         usage: None,
         cache_pairs: None,
         last_step_usage: None,
-        compacted_history: None,
-        compaction_boundary: None,
-        compaction_summary: None,
+        history: Vec::new(),
+        compacted: false,
         images: Vec::new(),
-        degraded: state.degraded.take(),
-    }
-}
-
-pub(crate) fn empty_synthesis_fallback_response(language: &str) -> String {
-    if language.starts_with("zh") {
-        "工具调用已经完成，但模型没有返回最终总结。上方工具结果已保存在本轮回复中，你可以继续追问，或让我重新生成总结。".to_string()
-    } else {
-        "The tool calls completed, but the model did not return a final summary. The tool results above were saved with this reply; you can continue from them or regenerate the summary.".to_string()
-    }
-}
-
-pub(crate) fn synthesis_failed_fallback_response(language: &str) -> String {
-    if language.starts_with("zh") {
-        "最终总结生成失败(可能是模型供应商内容审核拦截)。上方工具结果已保存在本轮回复中,你可以继续追问、让我重新生成,或更换聊天模型再试。".to_string()
-    } else {
-        "Final summary generation failed (possibly provider content moderation). The tool results above were saved with this reply; you can continue from them, regenerate, or switch the chat model and retry.".to_string()
-    }
-}
-
-pub(crate) fn tool_planning_failed_fallback_response(language: &str) -> String {
-    if language.starts_with("zh") {
-        "工具调用参数生成失败，这一步还没有真正执行写入。主对话已保留，你可以让我缩小范围、改用补丁，或重新生成。".to_string()
-    } else {
-        "Tool-call argument generation failed before the write actually ran. This conversation was preserved; you can ask me to narrow the scope, use a patch, or regenerate.".to_string()
     }
 }
 
 pub(crate) fn tool_planning_failed_run_result(
     host: &super::context::AgentContext<'_>,
-    config: &AgentRunConfig<'_>,
+    content: String,
     mut segment_builder: SegmentBuilder,
     planning_text_segment: ContentBlock,
     tool_draft_tracker: ToolCallDraftTracker,
@@ -420,7 +380,6 @@ pub(crate) fn tool_planning_failed_run_result(
     }
 
     segment_builder.append_existing_segments(tool_draft_tracker.segments());
-    let content = tool_planning_failed_fallback_response(&config.language);
     let mut final_segment = planning_text_segment;
     final_segment.phase = ContentPhase::Synthesis;
     final_segment.round = None;
@@ -460,11 +419,9 @@ pub(crate) fn cancelled_tool_round_run_result(
         usage: None,
         cache_pairs: None,
         last_step_usage: None,
-        compacted_history: None,
-        compaction_boundary: None,
-        compaction_summary: None,
+        history: Vec::new(),
+        compacted: false,
         images: Vec::new(),
-        degraded: None,
     }
 }
 

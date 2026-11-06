@@ -17,11 +17,13 @@ use crate::chat::{
             EventDelivery,
         },
         history::RuntimeMessage,
-        AgentHost, AgentHostFuture, ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
+        AgentHost, AgentHostFuture, ToolExecutorFuture,
     },
     agent_presentation,
     protocol::ChatRunEvent,
     runtime_state::ChatRunControl,
+    session_policy::run_session,
+    tool_runtime::{ToolDispatcher, ToolExecutionContext},
 };
 use serde_json::json;
 use std::sync::{
@@ -75,32 +77,6 @@ impl AgentEventSink for DesktopHost {
     }
 }
 impl AgentHost for DesktopHost {
-    fn request_tool_approval<'a>(
-        &'a self,
-        _: &'a ToolExecutionContext<'a>,
-        _: &'a AgentToolCall,
-    ) -> AgentHostFuture<'a, bool> {
-        Box::pin(async { self.approve })
-    }
-    fn request_session_consent<'a>(
-        &'a self,
-        _: &'a ToolExecutionContext<'a>,
-    ) -> AgentHostFuture<'a, bool> {
-        Box::pin(async { self.approve })
-    }
-    fn request_user_response<'a>(
-        &'a self,
-        _: &'a ToolExecutionContext<'a>,
-        _: &'a AgentToolCall,
-        _: crate::chat::ask_user::AskUserPromptPayload,
-    ) -> AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
-        Box::pin(async {
-            crate::chat::ask_user::AskUserResponseResult {
-                phase: "cancelled".into(),
-                answers: Default::default(),
-            }
-        })
-    }
     fn persist_partial_assistant<'a>(
         &'a self,
         _: &'a str,
@@ -119,21 +95,51 @@ impl AgentHost for DesktopHost {
         })
     }
 }
+
+impl crate::chat::tool_runtime::ApplicationHost for DesktopHost {
+    fn request_tool_approval<'a>(
+        &'a self,
+        _: &'a ToolExecutionContext<'a>,
+        _: &'a AgentToolCall,
+    ) -> AgentHostFuture<'a, bool> {
+        Box::pin(async { self.approve })
+    }
+
+    fn request_session_consent<'a>(
+        &'a self,
+        _: &'a ToolExecutionContext<'a>,
+    ) -> AgentHostFuture<'a, bool> {
+        Box::pin(async { self.approve })
+    }
+
+    fn request_user_response<'a>(
+        &'a self,
+        _: &'a ToolExecutionContext<'a>,
+        _: &'a AgentToolCall,
+        _: crate::chat::ask_user::AskUserPromptPayload,
+    ) -> AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
+        Box::pin(async {
+            crate::chat::ask_user::AskUserResponseResult {
+                phase: "cancelled".into(),
+                answers: Default::default(),
+            }
+        })
+    }
+}
 #[derive(Default)]
 struct CountingExecutor {
     inner: RecordingExecutor,
     calls: AtomicUsize,
 }
-impl ToolExecutor for CountingExecutor {
+impl ToolDispatcher for CountingExecutor {
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a crate::mcp::ChatToolDefinition,
         arguments: serde_json::Value,
-        skills: Option<&'a mut crate::skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.call(ctx, tool, arguments, skills)
+        self.inner.call(ctx, tool, arguments)
     }
 }
 fn tool_step() -> MockResponse {
@@ -176,7 +182,7 @@ async fn sdk04_desktop_real_loop_projects_checkpoints_and_saved_history() {
     let handle = AgentRunHandle::new(identity(config.generation), &control);
     let host = DesktopHost::new(dir.path().join("draft.jsonl"));
     let executor = CountingExecutor::default();
-    let result = agent::run_agent_loop(config, &host, &executor, &host, handle.clone())
+    let result = run_session(config, &host, &executor, &host, handle.clone())
         .await
         .unwrap();
     assert_eq!(result.content, "完成🙂");
@@ -304,6 +310,8 @@ async fn sdk04_desktop_real_loop_projects_checkpoints_and_saved_history() {
     drop(events);
     drop(reply);
     assert!(!state.chat_runtime().has_active_reply("conversation"));
+    assert_eq!(server.captured_bodies().len(), 3);
+    eprintln!("SDK_CONTRACT {}", json!({"host":"desktop","requests":server.captured_bodies().len(),"tool_calls":executor.calls.load(Ordering::SeqCst),"saved_messages":loaded.messages.len(),"draft_messages":drafts.len(),"released":!state.chat_runtime().has_active_reply("conversation")}));
 }
 
 #[tokio::test]
@@ -320,7 +328,7 @@ async fn sdk04_closed_observation_does_not_authorize_a_tool() {
     host.approve = false;
     host.closed = true;
     let executor = CountingExecutor::default();
-    let result = agent::run_agent_loop(config, &host, &executor, &host, handle.clone())
+    let result = run_session(config, &host, &executor, &host, handle.clone())
         .await
         .unwrap();
     assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
@@ -344,7 +352,7 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
     let handle = AgentRunHandle::new(identity(config.generation), &control);
     let executor = CountingExecutor::default();
-    let mut future = Box::pin(agent::run_agent_loop(
+    let mut future = Box::pin(run_session(
         config,
         &host,
         &executor,
@@ -375,7 +383,7 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
     let handle = AgentRunHandle::new(identity(config.generation), &control);
     assert!(
-        agent::run_agent_loop(config, &host, &executor, &host, handle)
+        run_session(config, &host, &executor, &host, handle)
             .await
             .is_err()
     );

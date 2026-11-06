@@ -23,6 +23,42 @@ use crate::chat::types::{
 use crate::mcp::types::McpToolCallResult;
 use crate::mcp::ChatToolDefinition;
 
+pub struct RunPolicy {
+    initial: AgentTodoState,
+    final_check_sent: bool,
+}
+
+impl RunPolicy {
+    pub fn new(initial: AgentTodoState) -> Self {
+        Self { initial, final_check_sent: false }
+    }
+
+    fn current(&self, run: crate::chat::agent::session::RunSnapshot<'_>) -> AgentTodoState {
+        latest_result_state(run.tool_records.iter().rev()
+            .filter(|record| record.status == crate::chat::agent::content::AgentToolStatus::Success)
+            .filter_map(|record| record.structured_content.as_ref()))
+            .unwrap_or_else(|| self.initial.clone())
+    }
+
+    fn exposed(run: crate::chat::agent::session::RunSnapshot<'_>) -> bool {
+        run.tools.iter().any(|tool| tool.label.source == "native" && is_agent_todo_tool_name(&tool.label.name))
+    }
+}
+
+impl crate::chat::agent::session::SessionPolicy for RunPolicy {
+    fn before_step(&mut self, run: crate::chat::agent::session::RunSnapshot<'_>) -> Vec<RuntimeMessage> {
+        if !Self::exposed(run) { return Vec::new(); }
+        reminder_for_next_step(run.history, &self.current(run)).into_iter().collect()
+    }
+
+    fn before_finish(&mut self, run: crate::chat::agent::session::RunSnapshot<'_>) -> Option<RuntimeMessage> {
+        if self.final_check_sent || !Self::exposed(run) || run.tool_records.is_empty() { return None; }
+        let reminder = final_check_reminder(&self.current(run))?;
+        self.final_check_sent = true;
+        Some(reminder)
+    }
+}
+
 pub const TODO_WRITE_TOOL_NAME: &str = "todo_write";
 
 const MAX_TODO_ITEMS: usize = 50;

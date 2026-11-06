@@ -1,10 +1,5 @@
-use super::content::{ContentBlock, AgentToolCall};
+use super::content::{AgentToolCall, ContentBlock};
 use serde_json::Value;
-
-use super::provider_runtime::ProviderRuntime;
-use crate::chat::types::{ChatAssistantSnapshot, CompactionBoundaryRecord};
-use crate::mcp::ChatToolDefinition;
-use crate::settings::{ChatToolsConfig, ModelProvider, Settings};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRunEntry {
@@ -28,68 +23,60 @@ pub enum AgentStreamPolicy {
 
 #[derive(Clone)]
 pub struct AgentRunConfig<'a> {
-    pub(crate) provider_runtime: &'a dyn ProviderRuntime,
+    pub provider_runtime: &'a dyn super::provider_runtime::ModelRuntime,
     pub conversation_id: String,
-    /// Conversation that conversation-scoped tools (todo / native workspace)
-    /// target. Equals `conversation_id` for a normal chat run; for a sub-agent
-    /// run it is the parent conversation (see `ToolExecutionContext`).
-    pub tool_conversation_id: String,
-    /// Sub-agent nesting depth (0 = top-level chat run).
-    pub depth: u8,
-    /// True only when this run is hosted by the interactive chat UI.
-    pub interactive_host: bool,
     pub run_id: String,
     pub message_id: String,
     pub generation: u64,
-    pub provider: ModelProvider,
+    pub provider_id: String,
+    pub provider_label: String,
+    pub api_format: String,
     pub model: String,
-    pub runtime_messages: Vec<Value>,
-    pub runtime_context: Option<String>,
-    pub tools: Vec<ChatToolDefinition>,
-    pub blocked_tool_calls: Vec<ChatToolDefinition>,
-    /// Delegation inherits the mode and the exact MCP authority exposed by this run.
-    pub plan_state: crate::chat::types::AgentPlanState,
-    /// Exact (server ID, tool ID) pairs; empty means no MCP tools.
-    pub mcp_tool_ids: Vec<(String, String)>,
-    pub mcp_server_ids: Vec<String>,
-    pub settings: Settings,
-    pub effective_chat_tools: ChatToolsConfig,
-    pub language: String,
+    pub runtime_messages: Vec<super::history::RuntimeMessage>,
+    pub tools: Vec<crate::chat::tools::ToolDefinition>,
+    pub blocked_tool_calls: Vec<crate::chat::tools::ToolDefinition>,
     pub thinking_enabled: bool,
-    /// 每对话「思考等级」(`Some("low"|"medium"|"high")`)。`None` = 未设置，维持现状。
-    /// 仅作用于答案生成（planning/synthesis），不作用于压缩摘要。
     pub thinking_level: Option<String>,
-    /// 会话级联网搜索有效模式（任务 07-23）。由 `effective_web_search_mode` 解析后传入。
-    /// 决定本 run 是否暴露 `search_web`（ThirdParty）或请求内置搜索（Builtin，且模型支持）。
-    pub web_search_mode: crate::chat::types::WebSearchMode,
+    pub builtin_web_search: bool,
     pub max_output_tokens: u32,
-    pub retry_attempts: usize,
-    pub assistant_snapshot: Option<ChatAssistantSnapshot>,
-    pub provider_tools_fallback_prompt: super::prepare::PreparedChatPrompt,
-    /// Completed selected-branch main requests: (normalized input, cache-read tokens).
     pub initial_cache_usage: Option<(u64, u64)>,
-    /// 真实用量锚点（来自会话最后一条带 `anchor_usage` 的 assistant 消息，由 commands.rs 解析）：
-    /// run 首次压缩检查前用它把上下文占用锚定到 provider 实报值。值为「上次 prompt + 该次响应」的
-    /// token **总数**（含 output，见 `context_estimate::anchor_total_tokens`）。`None` = 无可用锚点
-    /// （新对话 / 旧数据无 usage / 切换过 provider / 压缩边界之后），回落纯字符估算。
-    pub initial_anchor_total_tokens: Option<u64>,
-    /// 锚点响应**之后**（不含响应本身，响应用 output 计入锚点）新增消息的字符估算，由 commands.rs
-    /// 组装 runtime_messages 时算好。与 `initial_anchor_total_tokens` 配对：`effective = 锚点 + 该 trailing`。
-    pub initial_anchor_trailing_estimate: usize,
-    /// Conversation-owned catalog, reused across turns and explicitly reloaded.
-    pub skill_registry: std::sync::Arc<crate::skills::SkillRegistry>,
-    /// The conversation's todo list when the run starts. Only read when the run
-    /// exposes `todo_write`, to build todo reminders (`chat::todo`).
-    pub todo_state: crate::chat::types::AgentTodoState,
+    pub report_context: bool,
 }
 
 impl AgentRunConfig<'_> {
-    /// 本 run 是否应请求模型**原生内置联网搜索**（任务 07-23）：
-    /// 会话为 `Builtin` 模式且当前 provider 支持（按 `api_format`）。
-    /// 用于答案生成（planning/synthesis）设置 `GenerateOptions.builtin_web_search`。
     pub(crate) fn builtin_web_search_active(&self) -> bool {
-        self.web_search_mode == crate::chat::types::WebSearchMode::Builtin
-            && crate::chat::model_metadata::builtin_web_search_supported(&self.provider)
+        self.builtin_web_search
+    }
+
+    pub(crate) fn model_call(
+        &self,
+        history: Vec<super::history::RuntimeMessage>,
+        tools: Vec<crate::chat::model::ModelTool>,
+        tool_choice: crate::chat::model::ToolChoice,
+        label: &str,
+        delivery: super::provider_runtime::ModelDelivery,
+    ) -> super::provider_runtime::ModelCall {
+        super::provider_runtime::ModelCall {
+            provider_id: self.provider_id.clone(),
+            model: self.model.clone(),
+            history,
+            tools,
+            delivery,
+            options: crate::chat::model::GenerateOptions {
+                thinking_enabled: self.thinking_enabled,
+                thinking_level: self.thinking_level.clone(),
+                builtin_web_search: self.builtin_web_search,
+                tool_choice,
+                max_tokens: self.max_output_tokens,
+                ..Default::default()
+            },
+            metadata: crate::chat::model::RequestMetadata {
+                label: label.into(),
+                conversation_id: Some(self.conversation_id.clone()),
+                message_id: Some(self.message_id.clone()),
+                ..Default::default()
+            },
+        }
     }
 }
 
@@ -119,19 +106,8 @@ pub struct AgentRunResult {
     /// 本轮**最后一次**模型调用的 usage（真实用量锚点，落盘到 `ChatMessage.anchor_usage`）。
     /// 与累计 `usage` 区分——累计是多步之和会虚高，锚点须是单次调用值。None = provider 未报。
     pub last_step_usage: Option<crate::chat::model::ModelUsage>,
-    /// 本轮发生了上下文压缩（L2 摘要）时，这里携带压缩后的**完整历史**
-    /// （system + 摘要 + 受保护尾段 + 本轮后续消息 + 最终 assistant 回答）。
-    /// 跨轮调用方（kivio-code 交互模式）据此**替换**自己累积的 runtime_messages，
-    /// 让压缩真正跨轮生效；为 None 时维持"追加 api_messages"的旧行为。
-    pub compacted_history: Option<Vec<Value>>,
-    /// Agent-loop L2 compaction boundary for timeline UI persistence.
-    pub compaction_boundary: Option<CompactionBoundaryRecord>,
-    /// Agent-loop L2 compaction summary for `context_state.summary` persistence
-    /// (L2 不再只 push boundary，run 结束时由 commands.rs 写回 summary + compression_count）。
-    pub compaction_summary: Option<crate::chat::types::ConversationContextSummary>,
-    /// 本轮降级兜底的结构化描述（模型失败但已产出工具结果）。None = 正常回答。
-    /// 落到 `ChatMessage.degraded`，前端据此渲染错误卡片。
-    pub degraded: Option<crate::chat::agent::recovery::DegradedAnswer>,
+    pub history: Vec<super::history::RuntimeMessage>,
+    pub compacted: bool,
     /// 模型原生生成的图片（Gemini native image gen，任务 07-24）：跨轮累积的
     /// `GenerateOutput.images`，reply 侧落成 assistant 消息级 artifacts。空 = 未出图。
     pub images: Vec<crate::chat::model::GeneratedImageData>,

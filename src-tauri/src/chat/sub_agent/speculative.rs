@@ -8,14 +8,14 @@ use tauri::{AppHandle, Manager};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 use crate::{
-    chat::agent::{host::SpeculativeTaskScope, AgentHost, ToolExecutionContext},
+    chat::{agent::host::SpeculativeTaskScope, tool_runtime::{ApplicationHost, ToolExecutionContext}},
     mcp::{registry::NativeToolContext, ChatToolDefinition},
 };
 use super::task::{self, SpeculativeRun};
 
 pub(crate) fn start(
     app: &AppHandle,
-    host: &dyn AgentHost,
+    host: &dyn ApplicationHost,
     settings: &crate::settings::Settings,
     tools: &[ChatToolDefinition],
     context: &ToolExecutionContext<'_>,
@@ -26,10 +26,7 @@ pub(crate) fn start(
                 .has_session_consent(context.tool_conversation_id));
     if !speculative_task_allowed(settings, tools, host.workflow_hooks(),
         context.approval_policy, root_consent, host.supports_interactive_approval())
-        || host.hooks().is_some_and(|hooks| {
-            hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionStart)
-                || hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionEnd)
-        })
+        || host.tool_execution_hooks_active()
         || !app.state::<crate::state::AppState>().chat_runtime().is_generation_active(context.conversation_id, context.generation)
     {
         return None;
@@ -48,12 +45,12 @@ fn speculative_task_allowed(
     let Some(task) = tools.iter().find(|tool| {
         tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
     }) else { return false; };
-    let requires_approval = crate::chat::agent::execute::tool_requires_approval_for_policy(approval_policy, task);
+    let requires_approval = crate::chat::tool_runtime::tool_requires_approval_for_policy(approval_policy, task);
     settings.chat_tools.task_speculative_launch
         && approval_policy != "always_confirm"
         && (approval_policy == "auto" || root_consent)
         && (interactive || !requires_approval)
-        && (crate::chat::agent::prepare::tool_requires_session_consent(task) || !requires_approval)
+        && (crate::chat::agent_preparation::tool_requires_session_consent(task) || !requires_approval)
         && !workflow.is_some_and(|runtime| runtime.hooks.iter().any(|hook| {
             matches!(hook.event.as_str(), "PreToolUse" | "PostToolUse")
         }))

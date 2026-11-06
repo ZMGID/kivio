@@ -6,7 +6,7 @@ use std::{
     },
 };
 
-use super::agent::context_measure::LiveContextMeasurement;
+use super::context_measure::LiveContextMeasurement;
 use super::agent::SteeringMessage;
 use super::types::ContextUsageSegment;
 
