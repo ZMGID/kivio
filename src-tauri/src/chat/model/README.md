@@ -1,14 +1,17 @@
 # Kivio Chat Runtime Model Contract
 
-The Chat runtime owns orchestration: conversation state, prompt construction, tool loop,
-cancellation, persistence, and Tauri events.
+The shared `kivio-agent-sdk` owns the model/tool loop, cancellation and neutral events.
+The application owns conversation state, prompt construction, product policies,
+persistence and projection into Tauri events.
 
 Provider adapters own provider JSON and wire protocols. `LanguageModelProvider`
 accepts `GenerateRequest` and returns `GenerateOutput` plus `StreamPart` events.
-The application `ProviderRuntime` also coordinates request policy, cancellation,
-and summary calls. It projects typed runtime history into a model request after
-the application has prepared the request. OpenAI Chat, Responses, Anthropic, and
-Gemini use the same model contracts.
+The application `AppAgentModel` implements the SDK's `ModelRuntime`, resolves application
+request policy and owns its shared retry budget. Its history adapter retains Workbench
+prompt normalization. OpenAI Chat, Responses, Anthropic and Gemini use the same SDK
+model contracts. The application and standalone SDK provider also share the OpenAI
+Chat request encoder, SSE decoder and usage parsers. See the
+[SDK consumption guide](../../../../crates/kivio-agent-sdk/README.md) for the standalone scope.
 
 Rules:
 
@@ -21,7 +24,8 @@ Rules:
   without changing the default behavior of existing callers.
 - The loop keeps typed `RuntimeMessage` history and a separate generated-message
   delta. `RuntimeBody` distinguishes system prompts from `ModelMessage` content;
-  `RuntimeSource` carries UI and subagent origins. Sources stay out of provider
+  `RuntimeSource` is an opaque metadata map; the application stores UI and subagent
+  origins there. Sources stay out of provider
   requests. Legacy JSON is imported and exported at application storage and actual
   L2 compression boundaries; existing saved conversations need no format migration.
 - `GenerateOutput::replay_message` is the replay projection. Display reasoning can

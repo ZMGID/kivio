@@ -61,16 +61,10 @@ pub trait AgentHost: Send + Sync {
         Box::pin(async { Ok(Vec::new()) })
     }
 
-    /// Persist a best-effort snapshot of the in-progress assistant message to
-    /// durable storage after a completed tool round. The full assistant message
-    /// is otherwise written only once, after the loop returns; if the process
-    /// dies mid-run (crash / forced exit) that whole turn — including tool work
-    /// already done — is lost. This checkpoint keeps it recoverable on the next
-    /// load. `api_messages` carries the loop's accumulated provider messages
-    /// (assistant tool_calls + tool results) up to this round so the draft is
-    /// replayable on a later "continue" — without them an `interrupted` draft
-    /// loses all tool context and the model restarts from scratch. Default
-    /// no-op for hosts that do not persist assistant drafts.
+    /// Persist a best-effort draft after a completed tool round. `api_messages`
+    /// contains completed assistant tool calls and results for later model context.
+    /// This checkpoint does not make external tool effects transactional or safe
+    /// to execute again. The default does not persist drafts.
     fn persist_partial_assistant<'a>(
         &'a self,
         _conversation_id: &'a str,

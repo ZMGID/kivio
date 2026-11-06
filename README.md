@@ -239,6 +239,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 powershell -File scripts/win-cargo-test.ps1
 ```
 
+[Kivio Agent SDK](crates/kivio-agent-sdk/README.md) 可供独立 Rust 程序使用，桌面、自动化和 OMP 共用同一核心。接入、工具授权、运行控制、可运行示例和独立检查见 SDK 文档。
+
 协议类型由 Rust 生成，改协议后需要：
 
 ```bash
