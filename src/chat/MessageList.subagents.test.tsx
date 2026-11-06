@@ -10,17 +10,31 @@ beforeEach(() => {
 })
 
 describe('sub-agent result receipts in the parent timeline', () => {
-  it('shows the saved agent message directly below its sender and recipient', () => {
+  it('keeps saved IRC bodies out of the chat timeline', () => {
     render(<MessageList conversationId="root" messages={[{ id: 'irc-record', role: 'assistant', content: 'Raw message', timestamp: 1,
       irc_message: { id: 'irc', conversationId: 'root', fromAgent: 'reviewer', toAgent: 'main', content: 'Peer evidence', replyTo: null, progress: false, broadcast: false, observation: false, timestamp: 1 },
     }]} />)
-    const message = within(screen.getByRole('article', { name: '代理消息 · reviewer → main' }))
-    expect(message.getByText('reviewer → main')).toBeVisible()
-    expect(message.getByText('Peer evidence')).toBeVisible()
-    expect(message.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByText('reviewer → main')).not.toBeInTheDocument()
+    expect(screen.queryByText('Peer evidence')).not.toBeInTheDocument()
     expect(screen.queryByText('Raw message')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /重新生成|复制/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('keeps outgoing IRC tool arguments out of Worked while showing ordinary writes', () => {
+    render(<MessageList conversationId="root" messages={[{
+      id: 'answer', role: 'assistant', content: 'Done', timestamp: 1, stream_outcome: 'completed',
+      tool_calls: [
+        { id: 'irc-write', name: 'write', source: 'native', status: 'success',
+          arguments: { path: 'agent://Scout', content: 'Peer evidence' }, argument_preview: 'agent://Scout' },
+        { id: 'file-write', name: 'write', source: 'native', status: 'success',
+          arguments: { path: 'report.txt', content: 'Report' }, argument_preview: 'report.txt' },
+      ],
+    }]} />)
+    const worked = screen.getByRole('button', { name: /^Worked/ })
+    expect(worked).toHaveTextContent('Worked+1-0')
+    fireEvent.click(worked)
+    expect(screen.queryByText(/agent:\/\/Scout|Peer evidence/)).not.toBeInTheDocument()
   })
   it('keeps persisted worker reports out of the timeline while showing the final answer', () => {
     const messages: ChatMessage[] = [
@@ -100,19 +114,57 @@ describe('sub-agent result receipts in the parent timeline', () => {
     ]
     render(<MessageList conversationId="subagent-late-finish" messages={messages} />)
     const worked = screen.getByRole('button', { name: /^Worked/ })
-    const handoff = screen.getByText('I handed off the check.')
     const answer = screen.getByText('Here is the result.')
     expect(screen.queryByRole('button', { name: /^DelayedProbe/ })).not.toBeInTheDocument()
-    expect(handoff).toBeVisible()
+    expect(screen.queryByText('I handed off the check.')).not.toBeInTheDocument()
     expect(answer).toBeVisible()
     fireEvent.click(worked)
     const ordered = [
-      worked, screen.getByRole('button', { name: 'DelayedProbe 开始工作' }), handoff,
+      worked, screen.getByRole('button', { name: 'DelayedProbe 开始工作' }), screen.getByText('I handed off the check.'),
       screen.getByRole('button', { name: 'DelayedProbe 已完成' }), answer,
     ]
     for (let index = 1; index < ordered.length; index += 1) {
       expect(ordered[index - 1].compareDocumentPosition(ordered[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     }
+  })
+
+  it('folds all automatic continuations of one user request and leaves the next request independent', () => {
+    const event = { agentId: 'scout', name: 'Scout', parentToolCallId: 'task', afterSegmentId: null,
+      afterOrder: null, textChars: null }
+    const messages: ChatMessage[] = [
+      { id: 'user-one', role: 'user', content: 'Run the audit', timestamp: 1 },
+      { id: 'dispatch', role: 'assistant', content: 'Audit handed off.', timestamp: 2, stream_outcome: 'completed',
+        segments: [{ id: 'start', kind: { subagent: { ...event, status: 'started' } }, phase: 'auxiliary', order: 1 },
+          { id: 'handoff', kind: 'text', phase: 'plain', order: 2, text: 'Audit handed off.' }] },
+      { id: 'subagent-result-execution-scout', role: 'assistant', content: 'Raw audit result', timestamp: 3 },
+      { id: 'follow-up', role: 'assistant', content: 'One check came back.', timestamp: 4, stream_outcome: 'completed',
+        segments: [{ id: 'finish', kind: { subagent: { ...event, status: 'completed' } }, phase: 'auxiliary', order: 1 },
+          { id: 'update', kind: 'text', phase: 'plain', order: 2, text: 'One check came back.' }] },
+      { id: 'final', role: 'assistant', content: 'Final audit result.', reasoning: 'Reconcile the checks.', timestamp: 5, stream_outcome: 'completed' },
+      { id: 'user-two', role: 'user', content: 'Run another check', timestamp: 6 },
+      { id: 'next', role: 'assistant', content: 'Second result.', reasoning: 'Independent reasoning.', timestamp: 7, stream_outcome: 'completed' },
+    ]
+    const { rerender } = render(<MessageList conversationId="subagent-whole-turn"
+      messages={messages.slice(0, 2)} waitingForBackgroundTasks />)
+    expect(screen.getByRole('button', { name: 'Working' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Audit handed off.')).toBeVisible()
+    rerender(<MessageList conversationId="subagent-whole-turn" messages={messages} />)
+    const [first, second] = screen.getAllByRole('button', { name: /^Worked/ })
+    expect(screen.getAllByRole('button', { name: /^Worked/ })).toHaveLength(2)
+    expect(screen.getByText('Final audit result.')).toBeVisible()
+    expect(screen.getByText('Second result.')).toBeVisible()
+    expect(screen.queryByText('Audit handed off.')).not.toBeInTheDocument()
+    expect(screen.queryByText('One check came back.')).not.toBeInTheDocument()
+    fireEvent.click(first)
+    expect(screen.getByRole('button', { name: 'Scout 开始工作' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Scout 已完成' })).toBeVisible()
+    expect(screen.getByText('Audit handed off.')).toBeVisible()
+    expect(screen.getByText('One check came back.')).toBeVisible()
+    expect(second).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(first)
+    expect(screen.queryByRole('button', { name: 'Scout 已完成' })).not.toBeInTheDocument()
+    expect(screen.queryByText('One check came back.')).not.toBeInTheDocument()
+    expect(screen.getByText('Final audit result.')).toBeVisible()
   })
 
   it('does not hide user or assistant text just because it quotes a worker header', () => {

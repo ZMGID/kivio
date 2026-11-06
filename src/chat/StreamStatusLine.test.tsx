@@ -8,6 +8,7 @@ import { subagentsApi } from '../api/subagents'
 import { api } from '../api/tauri'
 import { chatApi } from './api'
 import { useBackgroundTaskWait } from './useBackgroundTaskWait'
+import type { SubagentIrcMessage } from '../generated/chatProtocol'
 
 vi.mock('./conversationTransitionStore', () => ({
   useConversationTransition: () => ({ loading: false }),
@@ -41,6 +42,46 @@ describe('StreamStatusLine', () => {
     reset()
   })
 
+  it('shows IRC routes one at a time, speeding up and keeping the latest routes during a burst', async () => {
+    vi.spyOn(performance, 'now').mockImplementation(() => Date.now())
+    let deliver: ((message: SubagentIrcMessage) => void) | undefined
+    vi.spyOn(api, 'onChatSubagentIrc').mockImplementation(async handler => {
+      deliver = handler
+      return () => {}
+    })
+    const { rerender } = render(<StreamStatusLine active={false} conversationId="root" lang="zh" />)
+    await act(async () => {})
+    const first: SubagentIrcMessage = { id: 'one', conversationId: 'root', fromAgent: 'Main', toAgent: 'Scout',
+      content: 'Hidden IRC text', observation: true, timestamp: 1, progress: false, broadcast: false, replyTo: null }
+    const second = { ...first, id: 'two', fromAgent: 'Scout', toAgent: 'Main', timestamp: 2 }
+    act(() => {
+      deliver?.({ ...first, conversationId: 'other' })
+      deliver?.(first)
+      deliver?.({ ...first, observation: false })
+      deliver?.(second)
+    })
+    expect(screen.getByRole('status', { name: /Main → Scout/ })).toBeVisible()
+    expect(screen.queryByRole('status', { name: /Scout → Main/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Hidden IRC text')).not.toBeInTheDocument()
+    act(() => { vi.advanceTimersByTime(800) })
+    expect(screen.queryByRole('status', { name: /Main → Scout/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('status', { name: /Scout → Main/ })).toBeVisible()
+
+    act(() => { vi.advanceTimersByTime(250) })
+    act(() => {
+      for (let index = 1; index <= 40; index += 1) {
+        deliver?.({ ...first, id: `burst-${index}`, toAgent: `Worker-${index}` })
+      }
+    })
+    expect(screen.getByRole('status', { name: /Scout → Main/ })).toBeVisible()
+    act(() => { vi.advanceTimersByTime(60) })
+    expect(screen.getByRole('status', { name: /Main → Worker-29/ })).toBeVisible()
+    act(() => { vi.advanceTimersByTime(300) })
+    expect(screen.getByRole('status', { name: /Main → Worker-30/ })).toBeVisible()
+    rerender(<StreamStatusLine active={false} conversationId="other" lang="zh" />)
+    expect(screen.queryByRole('status', { name: /代理通信/ })).not.toBeInTheDocument()
+  })
+
   it('问用户时是 wait 脸，并很快接一句「等你呢」', () => {
     patchSnapshot({
       streaming: true,
@@ -72,11 +113,13 @@ describe('StreamStatusLine', () => {
     expect(screen.queryByText(new RegExp(STATUS_QUIPS.zh.wait[0]))).toBeNull()
   })
 
-  it('shows built-in waits once in the live status and clears them when they settle', () => {
+  it('keeps built-in waits out of the visible live stats and clears the accessible status when they settle', () => {
     const wait: ToolCallRecord = { ...tool('native__wait', 'running'), source: 'native' }
     patchSnapshot({ streaming: true, startedAt: Date.now(), toolCalls: [wait, { ...wait, id: 'second' }] })
     render(<StreamStatusLine active lang="zh" />)
-    expect(screen.getByText('0s · 等待任务结果')).toBeVisible()
+    expect(screen.getByText('0s')).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('等待任务结果')
+    expect(screen.getByRole('status')).toHaveClass('sr-only')
     patchSnapshot({ toolCalls: [{ ...wait, status: 'completed' }] })
     act(() => { vi.advanceTimersByTime(250) })
     expect(screen.queryByText(/等待任务结果/)).not.toBeInTheDocument()
@@ -95,17 +138,18 @@ describe('StreamStatusLine', () => {
     }
     const { rerender } = render(<Status active={false} />)
     await act(async () => {})
-    expect(screen.getByText('等待任务结果')).toBeVisible()
+    expect(screen.getByRole('status')).toHaveTextContent('等待任务结果 · Esc 停止等待')
+    expect(screen.getByRole('status')).toHaveClass('sr-only')
     expect(screen.getByTestId('blob').dataset.mood).toBe('wait')
     waiting.mockResolvedValue(false)
     await act(async () => activity('other'))
-    expect(screen.getByText('等待任务结果')).toBeVisible()
+    expect(screen.getByText(/等待任务结果/)).toBeInTheDocument()
     await act(async () => activity('first'))
-    expect(screen.queryByText('等待任务结果')).not.toBeInTheDocument()
+    expect(screen.queryByText(/等待任务结果/)).not.toBeInTheDocument()
     waiting.mockResolvedValue(true)
     await act(async () => activity('first'))
     rerender(<Status active />)
-    expect(screen.queryByText('等待任务结果')).not.toBeInTheDocument()
+    expect(screen.queryByText(/等待任务结果/)).not.toBeInTheDocument()
   })
 
   it('ends idle waiting for the current conversation', async () => {

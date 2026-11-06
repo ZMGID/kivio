@@ -4,7 +4,8 @@ import { Activity, ArrowLeft, ChevronRight, Users, Wrench, X } from 'lucide-reac
 import { Button, IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
 import { Input } from '../settings/public/controls'
-import { subagentProgress, subagentsApi, type SubagentActivity, type SubagentRoster, type SubagentTranscriptEntry, type SubagentView } from '../api/subagents'
+import { parsedRecord, record, subagentProgress, subagentsApi, text, type SubagentActivity, type SubagentRoster, type SubagentTranscriptEntry, type SubagentView } from '../api/subagents'
+import { AgentAvatar } from './AgentAvatar'
 import { AgentStatus } from './AgentProgress'
 import { useSubagentRoster } from './useSubagentRoster'
 import { ChatMarkdown } from './ChatMarkdown'
@@ -12,6 +13,19 @@ import { requestDockSubagent, type DockSubagent } from './dock/dockPreview'
 import './AgentHub.css'
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
+
+const lifecycleLabels = new Map<string, [string, string]>([
+  ['turn_start', ['开始执行', 'Run started']],
+  ['turn_end', ['运行结束', 'Run ended']],
+  ['completed', ['已完成', 'Completed']],
+  ['failed', ['失败', 'Failed']],
+  ['aborted', ['已停止', 'Stopped']],
+  ['compaction', ['压缩上下文', 'Context compacted']],
+])
+
+function lifecycleLabel(status: string, zh: boolean) {
+  return lifecycleLabels.get(status)?.[zh ? 0 : 1]
+}
 
 export function SubagentTaskList({ conversationId, roster }: { conversationId: string; roster: SubagentRoster }) {
   const zh = useLang() === 'zh'
@@ -32,6 +46,7 @@ export function SubagentTaskList({ conversationId, roster }: { conversationId: s
       <h4>{label}</h4>
       {agents.map(agent =>
         <button key={agent.id} type="button" className="kv-agent-list-row" onClick={() => requestDockSubagent({ conversationId, agentId: agent.id })}>
+          <AgentAvatar agentId={agent.id} />
           <span className="min-w-0 flex-1 truncate font-medium">{agent.displayName || agent.id}</span>
           <AgentStatus state={displayStatus(agent)} zh={zh} />
           <ChevronRight size={14} className="shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
@@ -96,6 +111,7 @@ export function SubagentSidebar({ target, onBack }: { target: DockSubagent; onBa
     <header className="kv-agent-panel-bar">
       {onBack && <IconButton variant="ghost" label={zh ? '返回' : 'Back'} onClick={onBack}><ArrowLeft size={16} /></IconButton>}
       <h2 id={titleId} ref={title} tabIndex={-1} className="min-w-0 flex-1 truncate text-sm font-semibold">{selected?.displayName || agentId}</h2>
+      {selected?.model && <span className="max-w-[45%] truncate text-xs text-[var(--text-muted)]" title={selected.model}>{selected.model}</span>}
       {selected && <AgentStatus state={displayStatus(selected)} zh={zh} />}
     </header>
     {selected
@@ -136,11 +152,6 @@ function SubagentActivityList({ conversationId, roster, onSelect }: {
   const term = query.trim().toLowerCase()
   const visible = rows?.filter(row => (kind === 'all' || row.kind === kind)
     && `${names.get(row.agentId) || row.agentId} ${row.summary}`.toLowerCase().includes(term))
-  const lifecycle: Record<string, string> = {
-    turn_start: zh ? '开始执行' : 'Run started', turn_end: zh ? '运行结束' : 'Run ended',
-    completed: zh ? '已完成' : 'Completed', failed: zh ? '失败' : 'Failed',
-    aborted: zh ? '已停止' : 'Stopped', compaction: zh ? '压缩上下文' : 'Context compacted',
-  }
   return <>
     <div className="kv-agent-activity-controls">
       <Input value={query} onChange={setQuery} placeholder={zh ? '搜索代理或内容' : 'Search agents or activity'} aria-label={zh ? '搜索活动' : 'Search activity'} />
@@ -159,7 +170,7 @@ function SubagentActivityList({ conversationId, roster, onSelect }: {
       {visible?.map(row => <button type="button" key={`${row.agentId}:${row.entryId}`} className="kv-agent-list-row" onClick={() => onSelect(row)}>
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium">{names.get(row.agentId) || row.agentId} · {labels[row.kind]}</span>
-          <span className="block truncate text-xs text-[var(--text-muted)]">{row.kind === 'lifecycle' ? lifecycle[row.summary] || row.summary : row.summary}</span>
+          <span className="block truncate text-xs text-[var(--text-muted)]">{row.kind === 'lifecycle' ? lifecycleLabel(row.summary, zh) || row.summary : row.summary}</span>
         </span>
         {row.timestamp != null && <time className="shrink-0 text-xs text-[var(--text-muted)]">{new Date(row.timestamp).toLocaleTimeString()}</time>}
         <ChevronRight size={14} aria-hidden="true" />
@@ -174,7 +185,7 @@ function displayStatus(agent: SubagentView) {
 }
 
 function isConversationMessage(entry: SubagentTranscriptEntry) {
-  if (entry.kind !== 'message' || !['user', 'assistant', 'irc'].includes(entry.role)) return false
+  if (entry.kind !== 'message' || !['user', 'assistant'].includes(entry.role)) return false
   const content = entry.content.trim()
   return Boolean(content) && (entry.role !== 'user' || !/^(<kivio_runtime_context>|<system-reminder>)/.test(content))
 }
@@ -190,7 +201,11 @@ function AgentTranscript({ conversationId, agent, entryId }: {
   const scroll = useRef<HTMLDivElement>(null)
   const follow = useRef(true)
   const anchor = useRef<HTMLElement>(null)
-  const anchorAvailable = entries.some(entry => entry.id === entryId && (isConversationMessage(entry) || transcriptTool(entry)))
+  const selected = entries.find(entry => entry.id === entryId)
+  const selectedLabel = selected && transcriptLifecycleLabel(selected, zh)
+  const conversation = entries.filter(entry => isConversationMessage(entry) || transcriptTool(entry)
+    || (entry === selected && (entry.role === 'irc' || selectedLabel)))
+  const anchorAvailable = selected !== undefined && conversation.includes(selected)
   const { id, generation } = agent
   useEffect(() => {
     let cancelled = false
@@ -229,7 +244,6 @@ function AgentTranscript({ conversationId, agent, entryId }: {
     if (node && follow.current && !anchorAvailable) node.scrollTop = node.scrollHeight
   }, [entries, anchorAvailable])
 
-  const conversation = entries.filter(entry => isConversationMessage(entry) || transcriptTool(entry))
   const assignment = conversation.some(entry => entry.role === 'user') ? null
     : entries.find(entry => entry.kind === 'init')?.content.split('\n').slice(1).join('\n')
   return <div ref={scroll} className="kv-agent-panel-scroll custom-scrollbar space-y-4" onScroll={event => {
@@ -244,7 +258,9 @@ function AgentTranscript({ conversationId, agent, entryId }: {
         className={tool ? 'flex items-center gap-2 break-all text-xs text-[var(--text-muted)]'
           : entry.role === 'user' ? 'kv-agent-chat-user' : 'min-w-0'}>
         {tool ? <><Wrench size={13} className="shrink-0" aria-hidden="true" />{tool}</>
-          : <ChatMarkdown content={entry.role === 'user' ? entry.content.replace(/^Complete assignment thoroughly:\s+/, '') : entry.content} />}
+          : entry === selected && selectedLabel ? <p className="text-xs text-[var(--text-muted)]">{selectedLabel}</p>
+            : entry.role === 'irc' ? <p className="whitespace-pre-wrap break-words text-sm">{entry.content}</p>
+              : <ChatMarkdown content={entry.role === 'user' ? entry.content.replace(/^Complete assignment thoroughly:\s+/, '') : entry.content} />}
       </article>
     })}
     {!error && (!loaded || (conversation.length === 0 && !assignment?.trim())) && <p role="status" className="text-sm text-[var(--text-muted)]">
@@ -262,4 +278,14 @@ function transcriptTool(entry: SubagentTranscriptEntry): string {
   if (entry.role !== 'tool' || !/-tool-\d+$/.test(entry.id)) return ''
   const name = entry.content.split('\n', 1)[0]
   return /^[\w:.-]+$/.test(name) ? name.replace(/^native__/, '') : ''
+}
+
+function transcriptLifecycleLabel(entry: SubagentTranscriptEntry, zh: boolean) {
+  if (entry.kind === 'compaction') return lifecycleLabel('compaction', zh)
+  if (entry.kind !== 'notice') return
+  const event = parsedRecord(entry.content)
+  if (event.type === 'turn_start') return lifecycleLabel('turn_start', zh)
+  if (event.type === 'turn_end') {
+    return lifecycleLabel(text(record(event.progress).status), zh) ?? lifecycleLabel('turn_end', zh)
+  }
 }

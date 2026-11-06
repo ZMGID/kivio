@@ -437,7 +437,7 @@ fn allocate_id(parent: &str, name: &str, taken: &mut HashSet<String>) -> String 
     let base = if parent == MAIN_AGENT_ID { name.to_string() } else { format!("{parent}.{name}") };
     let mut id = base.clone();
     let mut suffix = 2;
-    while taken.contains(&id.to_lowercase()) {
+    while id.eq_ignore_ascii_case("@user") || taken.contains(&id.to_lowercase()) {
         id = format!("{base}-{suffix}");
         suffix += 1;
     }
@@ -922,6 +922,13 @@ mod tests {
         assert!(valid_agent_id("测试 Agent.child"));
         assert!(!valid_agent_id(&format!("{}.child", "a".repeat(244))));
         assert!(!valid_agent_id("parent.COM¹.txt"));
+    }
+
+    #[test]
+    fn task_ids_cannot_claim_the_human_irc_identity() {
+        let mut taken = HashSet::new();
+        assert_eq!(allocate_id(MAIN_AGENT_ID, "@UsEr", &mut taken), "@UsEr-2");
+        assert_eq!(allocate_id("Scout", "@user", &mut taken), "Scout.@user");
     }
 
     #[tokio::test]

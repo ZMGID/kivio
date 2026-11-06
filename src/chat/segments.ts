@@ -230,6 +230,11 @@ export function isNativeWaitToolCall(toolCall: ToolCallRecord): boolean {
   return toolCall.source === 'native' && canonicalToolName(toolCall) === 'wait'
 }
 
+export function isNativeIrcToolCall(toolCall: ToolCallRecord): boolean {
+  if (toolCall.source !== 'native' || !['write', 'native__write'].includes(toolRecordRawName(toolCall))) return false
+  return recordString(parsedToolArguments(toolCall)?.path).startsWith('agent://')
+}
+
 const IMAGE_READ_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic|heif)$/i
 
 function toolCallArgObject(toolCall: ToolCallRecord): Record<string, unknown> | null {

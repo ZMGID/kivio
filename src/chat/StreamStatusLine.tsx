@@ -6,6 +6,7 @@ import { isAskUserToolName } from './askUserTools'
 import { isNativeWaitToolCall } from './segments'
 import { useStatusQuip } from './blobQuips'
 import { useConversationTransition } from './conversationTransitionStore'
+import { IrcStatus } from './IrcStatus'
 import type { Lang } from '../components/i18n'
 import type { ChatRetryStatusPayload } from '../generated/chatProtocol'
 
@@ -73,6 +74,7 @@ function estimateTokens(text: string): number {
 interface StreamStatusLineProps {
   /** 生成中（按检索/干活/说话/思考切脸 + 实时信息）；false = 闲置或出错脸 */
   active: boolean
+  conversationId?: string | null
   waitingInBackground?: boolean
   lang?: Lang
 }
@@ -96,7 +98,7 @@ interface LiveStats {
  * 读一次，token 从已流出的正文 + 思维链估算 —— 任何运行时（内置 / 外部 CLI）都有数，
  * 且和 Claude 一样随输出平滑上涨；后端的 live 用量事件太稀（每 planning 轮一次）不用。
  */
-export const StreamStatusLine = memo(function StreamStatusLine({ active, waitingInBackground = false, lang = 'en' }: StreamStatusLineProps) {
+export const StreamStatusLine = memo(function StreamStatusLine({ active, conversationId, waitingInBackground = false, lang = 'en' }: StreamStatusLineProps) {
   const { loading } = useConversationTransition()
   const [stats, setStats] = useState<LiveStats | null>(null)
   const doneUntilRef = useRef(0)
@@ -144,8 +146,6 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, waiting
   const quip = useStatusQuip(mood, lang)
 
   const parts: string[] = []
-  const waitLabel = lang === 'zh' ? '等待任务结果' : 'Waiting for task results'
-  if (waitingInBackground) parts.push(waitLabel)
   if (active && stats) {
     parts.push(formatElapsed(stats.elapsedMs))
     if (stats.tokens > 0) parts.push(`${formatTokens(stats.tokens)} tokens`)
@@ -155,7 +155,6 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, waiting
       const seconds = Math.max(0, Math.ceil((retry.retryAtMs - stats.now) / 1000))
       parts.push(`${retry.reason} · retry ${retry.attempt}/${retry.maxRetries} · ${seconds > 0 ? `in ${seconds}s` : 'Retrying…'}`)
     } else if (stats.statusNote) parts.push(stats.statusNote)
-    else if (stats.waitingForJobs) parts.push(waitLabel)
   }
   // 后端的状态一行字优先，墨团别抢话。
   const showQuip = quip && !waitingInBackground && !stats?.statusNote && !stats?.retryStatus && !stats?.waitingForJobs
@@ -165,10 +164,15 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, waiting
       className={`flex items-center gap-2.5 py-2${active ? ' chat-motion-fade-up' : ' kv-stream-status-idle'}`}
     >
       <StreamStatusLogo mood={waitingInBackground ? 'wait' : mood} paused={loading} />
+      {(waitingInBackground || (active && stats?.waitingForJobs)) && (
+        <span className="sr-only" role="status">
+          {lang === 'zh' ? '等待任务结果' : 'Waiting for task results'}
+          {waitingInBackground && (lang === 'zh' ? ' · Esc 停止等待' : ' · Esc to stop waiting')}
+        </span>
+      )}
       {(parts.length > 0 || showQuip) && (
         <span className="min-w-0 break-words text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
           {parts.join(' · ')}
-          {waitingInBackground && <span>{lang === 'zh' ? ' · Esc 停止等待' : ' · Esc to stop waiting'}</span>}
           {showQuip && (
             <span key={quip} className="kv-blob-quip">
               {parts.length > 0 ? ' · ' : ''}
@@ -177,6 +181,7 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, waiting
           )}
         </span>
       )}
+      {conversationId && <IrcStatus key={conversationId} conversationId={conversationId} lang={lang} />}
     </div>
   )
 })

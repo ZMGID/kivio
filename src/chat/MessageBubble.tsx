@@ -34,7 +34,6 @@ import { openChatImageViewer } from './imageViewer'
 import { ChatInlineImage, CHAT_IMAGE_TILE_MAX_PX } from './ChatInlineImage'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
-import { IrcMessageCard } from './IrcMessageCard'
 import { SubagentLifecycleEvent } from './SubagentTimelineEvents'
 import { ModelIcon } from '../components/ModelIcon'
 import { ToolCallBlock, ToolCallCluster, ImageReadCluster } from './ToolCallBlock'
@@ -51,6 +50,7 @@ import {
   isExternalSubagentToolCall,
   isImageReadToolCall,
   isNativeTaskToolCall,
+  isNativeIrcToolCall,
   isNativeWaitToolCall,
   isSubagentTimelineSegment,
   isUserFollowUpToolCall,
@@ -74,6 +74,14 @@ const EMPTY_TOOL_CALLS: ToolCallRecord[] = []
 const handleChatImageClick = (src: string, alt: string, name?: string) =>
   openChatImageViewer({ src, alt, name })
 
+export type TurnWorkDisclosure = {
+  showHeader: boolean
+  active: boolean
+  open: boolean
+  foldAnswer: boolean
+  onOpenChange: (open: boolean) => void
+}
+
 interface MessageBubbleProps {
   readOnly?: boolean
   message: ChatMessage
@@ -94,6 +102,7 @@ interface MessageBubbleProps {
    * 落库 twin 首挂时发生一次。
    */
   markdownStreaming?: boolean
+  turnWork?: TurnWorkDisclosure
   /** R8（多模型一问多答）：本条 user 消息这一问发给了哪些模型；多模型时渲染在气泡顶部。 */
   sentModels?: { providerId: string | null; model: string | null }[]
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
@@ -707,9 +716,7 @@ function renderProcessSegments({
   onReasoningExpand: () => void
 }) {
   const nodes: ReactNode[] = []
-  const renderSegment = (segment: ChatMessageSegment, defaultReasoningOpen = false) => isSubagentTimelineSegment(segment) ? (
-    <SubagentLifecycleEvent event={segment.kind.subagent} conversationId={conversationId} live={messageStreaming} />
-  ) : (
+  const renderSegment = (segment: ChatMessageSegment, defaultReasoningOpen = false) => (
     <TimelineSegmentNode
       segment={segment}
       toolCall={segment.kind === 'tool' ? toolCallById.get(segmentToolCallId(segment)) : undefined}
@@ -739,6 +746,24 @@ function renderProcessSegments({
   }
   for (let index = 0; index < segments.length; ) {
     const segment = segments[index]
+    if (isSubagentTimelineSegment(segment)) {
+      const event = segment.kind.subagent
+      const parallel: typeof event[] = []
+      index += 1
+      if (event.status === 'started' && event.parentToolCallId) {
+        while (index < segments.length) {
+          const next = segments[index]
+          if (!isSubagentTimelineSegment(next)) break
+          const start = next.kind.subagent
+          if (start.status !== 'started' || start.parentToolCallId !== event.parentToolCallId) break
+          parallel.push(start)
+          index += 1
+        }
+      }
+      nodes.push(<SubagentLifecycleEvent key={segment.id} event={event} parallel={parallel}
+        conversationId={conversationId} live={messageStreaming} />)
+      continue
+    }
     if (!canGroup(segment)) {
       nodes.push(<div key={segment.id}>{renderSegment(segment)}</div>)
       index += 1
@@ -784,6 +809,45 @@ function renderProcessSegments({
  * - 用户手动点过开关后以用户操作为准。
  * - 折叠态只留 header，不挂组内 ReasoningBlock / ToolCallBlock / 过程旁白。
  */
+function TimelineWorkHeader({ generating, open, title, onToggle, children }: {
+  generating: boolean
+  open: boolean
+  title: string
+  onToggle: () => void
+  children?: ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      data-chat-disclosure
+      data-tauri-drag-region="false"
+      className="mb-1 flex w-full items-center gap-1.5 text-left text-[15px] leading-6 font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
+    >
+      {generating ? (
+        <TimelineSpinner size={16} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
+      ) : (
+        <ChevronRight
+          size={14}
+          strokeWidth={2}
+          className={`shrink-0 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] ${open ? 'rotate-90' : ''}`}
+        />
+      )}
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={`min-w-0 truncate ${generating ? 'chat-motion-tool-shimmer' : ''}`}>{title}</span>
+        {children}
+      </div>
+    </button>
+  )
+}
+
+function TurnWorkHeader({ work }: { work: TurnWorkDisclosure | undefined }) {
+  if (!work?.showHeader) return null
+  return <TimelineWorkHeader generating={work.active} open={work.open}
+    title={workingGroupTitle(work.active, null)} onToggle={() => work.onOpenChange(!work.open)} />
+}
+
 function TimelineGroupBlock({
   segments,
   allProcessSegments,
@@ -837,33 +901,7 @@ function TimelineGroupBlock({
 
   return (
     <section aria-label="过程分组" className="not-prose">
-      {showHeader && <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={renderDetails}
-        data-chat-disclosure
-        data-tauri-drag-region="false"
-        className="mb-1 flex w-full items-center gap-1.5 text-left text-[15px] leading-6 font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
-      >
-        {generating ? (
-          <TimelineSpinner size={16} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
-        ) : (
-          <ChevronRight
-            size={14}
-            strokeWidth={2}
-            className={`shrink-0 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] ${
-              renderDetails ? 'rotate-90' : ''
-            }`}
-          />
-        )}
-        <div className="flex min-w-0 items-center gap-1.5">
-          <span
-            className={`min-w-0 truncate ${
-              generating ? 'chat-motion-tool-shimmer' : ''
-            }`}
-          >
-            {title}
-          </span>
+      {showHeader && <TimelineWorkHeader generating={generating} open={renderDetails} title={title} onToggle={onToggle}>
           {summary.diffStats && (
             <span className="shrink-0 font-mono text-[13px] tabular-nums">
               <span className="text-emerald-600 dark:text-emerald-400">+{summary.diffStats.additions}</span>
@@ -873,8 +911,7 @@ function TimelineGroupBlock({
           {!renderDetails && summary.stoppedCount > 0 && (
             <span className="shrink-0 text-[var(--text-muted)]">{summary.stoppedCount} 项已停止或跳过</span>
           )}
-        </div>
-      </button>}
+      </TimelineWorkHeader>}
       <ChatDisclosureBody open={renderDetails} animate={userOpen !== null}>
         {() => (
           <div className="space-y-1.5">
@@ -937,6 +974,7 @@ function TimelineSegments({
   outlineEligible = false,
   ownerMessageId,
   onOutlineSourceChange,
+  turnWork,
 }: {
   segments: ChatMessageSegment[]
   toolCalls: ToolCallRecord[]
@@ -951,9 +989,13 @@ function TimelineSegments({
   outlineEligible?: boolean
   ownerMessageId: string
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
+  turnWork?: TurnWorkDisclosure
 }) {
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
-  const handleReasoningExpand = useCallback(() => setUserOpen(true), [])
+  const handleReasoningExpand = useCallback(() => {
+    if (turnWork) turnWork.onOpenChange(true)
+    else setUserOpen(true)
+  }, [turnWork])
   // 过程全部挂载：工具簇默认折叠且组内行懒挂载，不再分页出「显示更早的过程」按钮。
   const defaultOpen = messageStreaming || cancelled
   const toolCallById = useMemo(() => {
@@ -1021,6 +1063,10 @@ function TimelineSegments({
   }, [segments, toolCalls, toolCallById, completed, messageStreaming])
 
   const { reasoningSegmentCount, groupItems, processGroups, allProcessSegments, presentationExclusions, fallbackIds } = prepared
+  const showAnswer = !turnWork?.foldAnswer || turnWork.open
+  const showFallbackFiles = !messageStreaming && completed && fallbackIds.length > 0
+  if (turnWork && !turnWork.open && !showFallbackFiles
+    && groupItems.every(item => item.type === 'group' || (item.type === 'text' && !showAnswer))) return null
   const artifactById = new Map(artifacts.map(artifact => [artifactId(artifact), artifact]))
   return (
     <section aria-label="回答时间线" className="space-y-1.5">
@@ -1036,6 +1082,7 @@ function TimelineSegments({
           />
         }
         if (item.type === 'text') {
+          if (!showAnswer) return null
           if (!segmentText(item.segment).trim()) return null
           // Segments can be regrouped as tools arrive; entrance fades would
           // briefly hide text the user has already read.
@@ -1060,15 +1107,15 @@ function TimelineSegments({
             </div>
           )
         }
-        const showHeader = item === processGroups[0]
-        const groupKey = showHeader ? `work-${ownerMessageId}` : `work-after-${item.segments[0].id}`
+        const firstGroup = item === processGroups[0]
+        const groupKey = firstGroup ? `work-${ownerMessageId}` : `work-after-${item.segments[0].id}`
         return (
           <TimelineGroupBlock
             key={groupKey}
             segments={item.segments}
             allProcessSegments={allProcessSegments}
-            showHeader={showHeader}
-            userOpen={userOpen}
+            showHeader={firstGroup && !turnWork}
+            userOpen={turnWork?.open ?? userOpen}
             defaultOpen={defaultOpen}
             onReasoningExpand={handleReasoningExpand}
             onToggle={() => setUserOpen(current => !(current ?? defaultOpen))}
@@ -1085,7 +1132,7 @@ function TimelineSegments({
           />
         )
       })}
-      {!messageStreaming && completed && fallbackIds.length > 0 && <section aria-label="交付文件" className="not-prose text-xs text-neutral-500">
+      {showFallbackFiles && <section aria-label="交付文件" className="not-prose text-xs text-neutral-500">
         <span>文件</span>
         <GeneratedFileArtifacts artifacts={fallbackIds.flatMap(id => {
           const artifact = artifactById.get(id)
@@ -1108,6 +1155,7 @@ function MessageBubbleComponent({
   reasoningStreaming = false,
   messageStreaming = false,
   markdownStreaming = messageStreaming,
+  turnWork,
   sentModels,
   onUpdateMessage,
   onRegenerateMessage,
@@ -1123,6 +1171,7 @@ function MessageBubbleComponent({
   onOutlineSourceChange,
 }: MessageBubbleProps) {
   const isUser = message.role === 'user'
+  const showAnswer = !turnWork?.foldAnswer || turnWork.open
   const streamOutcome = message.stream_outcome ?? message.streamOutcome
   const cancelled = streamOutcome === 'cancelled'
     || Boolean(message.segments?.some(segment => /^seg_\d+_cancelled_synthesis$/.test(segment.id)))
@@ -1139,9 +1188,9 @@ function MessageBubbleComponent({
   const prepared = useMemo(() => {
     const attachments = message.attachments ?? []
     const recordedCalls = message.tool_calls ?? message.toolCalls ?? EMPTY_TOOL_CALLS
-    const waitCalls = recordedCalls.filter(isNativeWaitToolCall)
-    const hiddenCallIds = new Set(waitCalls.map(toolRecordId).filter(Boolean))
-    const visibleCalls = waitCalls.length ? recordedCalls.filter(tool => !isNativeWaitToolCall(tool)) : recordedCalls
+    const hiddenCalls = new Set(recordedCalls.filter(tool => isNativeWaitToolCall(tool) || isNativeIrcToolCall(tool)))
+    const hiddenCallIds = new Set([...hiddenCalls].map(toolRecordId).filter(Boolean))
+    const visibleCalls = hiddenCalls.size ? recordedCalls.filter(tool => !hiddenCalls.has(tool)) : recordedCalls
     const lifecycleAgentsByCall = new Map<string, string[]>()
     for (const segment of message.segments ?? []) {
       if (!isSubagentTimelineSegment(segment)) continue
@@ -1420,10 +1469,11 @@ function MessageBubbleComponent({
     <MarkdownStreamingContext.Provider value={markdownStreaming}>
     <div
       {...hoverProps}
-      className={`flex justify-start py-3 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}
+      className={`flex justify-start py-3 ${turnWork && !turnWork.open ? 'has-[>div:empty]:py-0' : ''} ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}
       data-chat-outline-owner={outlineEligible ? message.id : undefined}
     >
       <div className="w-full min-w-0">
+        <TurnWorkHeader work={turnWork} />
         {toolCalls.length > 0 && !hasTimelineSegments && (
           <section
             aria-label="工具调用"
@@ -1493,6 +1543,7 @@ function MessageBubbleComponent({
               outlineEligible={outlineEligible}
               ownerMessageId={message.id}
               onOutlineSourceChange={onOutlineSourceChange}
+              turnWork={turnWork}
             />
             {hasGeneratedImages && (
               <GeneratedImageArtifacts
@@ -1503,14 +1554,14 @@ function MessageBubbleComponent({
             {hasGeneratedFiles && <GeneratedFileArtifacts artifacts={generatedFileArtifacts} conversationId={conversationId} />}
           </>
         ) : (
-          (hasAnswerContent || hasGeneratedImages || hasGeneratedFiles) && (
+          ((showAnswer && hasAnswerContent) || hasGeneratedImages || hasGeneratedFiles) && (
             <section aria-label="回答">
               {(toolCalls.length > 0 || message.reasoning) && (
                 <div className="mb-1 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
                   回答
                 </div>
               )}
-              {hasAnswerContent && (
+              {showAnswer && hasAnswerContent && (
                 <ChatMarkdown
                   content={bodyText}
                   artifacts={renderArtifacts}
@@ -1542,7 +1593,7 @@ function MessageBubbleComponent({
           />
         )}
 
-        {bodyText.trim().length > 0 && !isDirectImageGenerationPending && (
+        {showAnswer && bodyText.trim().length > 0 && !isDirectImageGenerationPending && (
           <AssistantMessageMeta
             readOnly={readOnly}
             content={bodyText}
@@ -1598,14 +1649,15 @@ function MessageBubbleComponent({
 // memo：流式生成时历史消息 props 不变 → 跳过重渲染，避免每个 token 重新解析 Markdown
 export const MessageBubble = memo(function MessageBubble(props: MessageBubbleProps) {
   const irc = props.message.irc_message ?? props.message.ircMessage
-  const bubble = irc ? <IrcMessageCard message={irc} /> : <MessageBubbleComponent {...props} />
+  const bubble = irc ? null : <MessageBubbleComponent {...props} />
   if (!irc && props.message.role !== 'user') return bubble
   const events = props.message.segments?.filter(isSubagentTimelineSegment)
   if (!events?.length) return bubble
   return <>
     {bubble}
+    <TurnWorkHeader work={props.turnWork} />
     <TimelineSegments segments={positionSubagentTimeline(events)} toolCalls={EMPTY_TOOL_CALLS} artifacts={[]}
       ownerMessageId={props.message.id} conversationId={props.conversationId}
-      completed cancelled={false} messageStreaming={false} reasoningStreaming={false} />
+      completed cancelled={false} messageStreaming={false} reasoningStreaming={false} turnWork={props.turnWork} />
   </>
 })

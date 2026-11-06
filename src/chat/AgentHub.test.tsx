@@ -17,6 +17,9 @@ const page = (overrides: Partial<SubagentTranscriptPage> = {}): SubagentTranscri
     { id: 'context', kind: 'message', role: 'user', content: '<kivio_runtime_context>\nPrivate runtime configuration\n</kivio_runtime_context>', timestamp: null },
     { id: 'entry', kind: 'message', role: 'assistant', content: 'Retained history', timestamp: null },
     { id: 'line-5-tool-0', kind: 'message', role: 'tool', content: 'read\n{"path":"README.md"}', timestamp: null },
+    { id: 'irc', kind: 'message', role: 'irc', content: '<irc>\nSelected peer message\n</irc>', timestamp: null },
+    { id: 'other-irc', kind: 'message', role: 'irc', content: 'Unselected peer message', timestamp: null },
+    { id: 'run-start', kind: 'notice', role: '', content: '{"type":"turn_start","run":"internal-run-id"}', timestamp: null },
   ], hasMore: false, ...overrides })
 const flush = () => act(async () => { await Promise.resolve() })
 let roster: SubagentRoster
@@ -65,10 +68,23 @@ describe('subagent tasks', () => {
     expect(sidebar.queryByText(/Complete assignment thoroughly|Private runtime configuration/)).not.toBeInTheDocument()
     expect(sidebar.getByText('Retained history')).toBeVisible()
     expect(sidebar.getByText('read').closest('article')).toHaveFocus()
-    expect(sidebar.queryByText(/README.md|provider\/model/)).not.toBeInTheDocument()
+    expect(sidebar.getByText('provider/model')).toBeVisible()
+    expect(sidebar.queryByText(/README.md/)).not.toBeInTheDocument()
+    expect(sidebar.queryByText(/peer message|开始执行/)).not.toBeInTheDocument()
     expect(sidebar.queryByRole('textbox')).not.toBeInTheDocument()
     expect(sidebar.queryByRole('button', { name: /诊断|发送|恢复/ })).not.toBeInTheDocument()
   })
+
+  it.each([['irc', /Selected peer message/], ['run-start', /开始执行/]])(
+    'focuses the activity %s on demand without adding other hidden records',
+    async (entryId, label) => {
+      render(<SubagentSidebar target={{ conversationId: 'root', agentId: 'worker', entryId }} />)
+      await flush()
+      expect(screen.getByText(label).closest('article')).toHaveFocus()
+      expect(screen.queryByText('Unselected peer message')).not.toBeInTheDocument()
+      expect(screen.queryByText(/internal-run-id/)).not.toBeInTheDocument()
+    },
+  )
 
   it('tails append pages and replaces rewritten history without hiding a read failure', async () => {
     const { unmount } = render(<SubagentSidebar target={{ conversationId: 'root', agentId: 'worker' }} />)

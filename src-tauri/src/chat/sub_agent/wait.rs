@@ -125,6 +125,7 @@ where
 {
     let mut incoming = manager.irc.subscribe();
     let mut changed_jobs = manager.jobs.subscribe();
+    let mut changed_awaits = manager.awaits.subscribe();
     let jobs = manager.jobs.running(root, owner);
     let mut has_jobs = !jobs.is_empty() || !manager.jobs.undelivered(root, owner).is_empty();
     let mut asked = manager.irc.pending_replies(root, owner);
@@ -186,6 +187,7 @@ where
             _ = &mut steering => return Ok(steering_result()),
             changed = incoming.changed() => if changed.is_err() { return Err("Agent message bus stopped".into()); },
             changed = changed_jobs.changed() => if changed.is_err() { return Err("Subagent job manager stopped".into()); },
+            changed = changed_awaits.changed() => if changed.is_err() { return Err("Agent wait graph stopped".into()); },
             changed = io.services.changed() => if changed.is_err() { return Err("Background service manager stopped".into()); },
             output = &mut job_wait, if has_jobs => return Ok(output),
             _ = &mut deadline => return Ok(result("No result or reply arrived before the wait limit. Background updates arrive automatically.".into(), &[])),
@@ -614,6 +616,29 @@ mod tests {
         assert_eq!(output.raw["interrupted"], true);
         assert_eq!(output.raw["useless"], false);
         assert_eq!(manager.irc.pending_replies("root", "Main").len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn child_reply_wait_ends_when_main_starts_waiting_on_user() {
+        let manager = SubAgentManager::default();
+        manager.irc.seed_message(peer_message(1, "Peer", "Main", false));
+        let (_services, changed) = tokio::sync::watch::channel(0);
+        let mut waiting = Box::pin(wait_for_events(
+            &manager, "root", "Peer", pending(), pending(), pending(),
+            CoordinationIo {
+                services: changed,
+                service_ids: Vec::new(),
+                completed_services: |_: &[String]| Ok(Vec::new()),
+                persist_message: |_| std::future::ready(Ok(())),
+            },
+        ));
+        assert!(futures::poll!(&mut waiting).is_pending());
+
+        let _hold = manager.awaits.hold("root", "Main", vec!["@user".into()], manager.irc.mark(), false);
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("an asked agent becoming blocked on the user must wake the reply wait");
+        };
+        assert!(output.unwrap().content.contains("Cannot wait for agents blocked on this caller or the user: Main"));
     }
 
     #[test]

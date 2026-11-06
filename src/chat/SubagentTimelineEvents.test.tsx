@@ -11,24 +11,20 @@ beforeEach(() => {
 })
 const receiptDialog = () => within(screen.getByRole('dialog'))
 
-it('shows native task assignments, shared context, and solution spaces before admission', () => {
-  render(<ToolCallBlock toolCall={{
+it('keeps dispatch placeholders out of the timeline before and after admission', () => {
+  const toolCall: ToolCallRecord = {
     id: 'task', source: 'native', name: 'task', status: 'running',
     arguments: JSON.stringify({ context: '共享约束', tasks: [
       { name: '审查前端', agent: 'reviewer', task: '检查卡片', solutionSpace: '只读仓库' },
       { task: '检查协议', solutionSpace: '修改测试' },
     ] }),
-  }} />)
-  expect(screen.getByRole('button', { name: '子代理 正在派工' })).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: '子代理 正在派工' }))
-  expect(screen.getByText('共享约束')).toBeVisible()
-  expect(screen.getByText('审查前端')).toBeVisible()
-  expect(screen.getByText('reviewer')).toBeVisible()
-  expect(screen.getByText('检查卡片')).toBeVisible()
-  expect(screen.getByText(/只读仓库/)).toBeVisible()
-  expect(screen.getByText('任务 2')).toBeVisible()
-  expect(screen.getByText('检查协议')).toBeVisible()
-  expect(screen.getByText(/修改测试/)).toBeVisible()
+  }
+  const { rerender } = render(<ToolCallBlock toolCall={toolCall} />)
+  expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  rerender(<ToolCallBlock toolCall={{ ...toolCall, status: 'success',
+    structured_content: { agents: [{ agentId: 'reviewer', name: '审查前端' }] } }} />)
+  expect(screen.queryByRole('button')).not.toBeInTheDocument()
 })
 
 it('keeps both agents live after asynchronous task admission and displays their results', () => {
@@ -86,17 +82,15 @@ it('keeps progress visible if it arrives before the task receipt', () => {
   expect(screen.getByText('任务: job-worker')).toBeVisible()
 })
 
-it('recognizes queued progress for a native wire task name', () => {
+it('keeps queued children out of the timeline until they start', () => {
   const call: ToolCallRecord = { id: 'call', source: 'native', name: 'native__task', status: 'success' }
   const progress = mergeSubagentProgress(call, {
     parentConversationId: 'conv', parentRunId: 'run', parentToolCallId: 'call',
     taskId: 'queued', name: 'Queued worker', depth: 1, status: 'pending',
   })
   render(<ToolCallBlock toolCall={progress} />)
-  expect(screen.getByRole('button', { name: 'Queued worker 等待运行' })).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: 'Queued worker 等待运行' }))
-  expect(receiptDialog().getByText('等待运行')).toBeVisible()
-  expect(receiptDialog().getByText('Queued worker')).toBeVisible()
+  expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  expect(screen.queryByText(/Queued worker|等待运行/)).not.toBeInTheDocument()
 })
 
 it('distinguishes failed and aborted children from successful scheduling', () => {

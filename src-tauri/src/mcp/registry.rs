@@ -1183,7 +1183,7 @@ async fn call_native_tool(
                 _ = state.chat_runtime().wait_for_generation_inactive(&runtime_conversation, ctx.generation) => return Err("cancelled".into()),
                 receipt = crate::chat::sub_agent::irc::send(app, &ctx.conversation_id, &sender, path, content) => receipt?,
             };
-            return Ok(McpToolCallResult { content: serde_json::to_string(&receipt).map_err(|error| error.to_string())?, structured_content: Some(serde_json::to_value(&receipt).map_err(|error| error.to_string())?), ..Default::default() });
+            return Ok(McpToolCallResult { content: serde_json::to_string(&receipt).map_err(|error| error.to_string())?, structured_content: Some(serde_json::to_value(&receipt).map_err(|error| error.to_string())?), is_error: receipt.status == "failed", ..Default::default() });
         }
     }
     if tool.name == "read" {
