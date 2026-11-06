@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::history::RuntimeMessage;
 use super::loop_::{LoopEnv, RunState};
-use crate::model::{GenerateOutput, ModelRole};
+use crate::model::ModelRole;
 
 /// Maximum Unicode character count retained by `SteeringMessage::new`.
 pub const MAX_STEER_CHARS: usize = 4000;
@@ -148,15 +148,6 @@ fn append_injected_user_turn(
     };
     env.host.content("", None, Some(&block));
     state.segment_builder.append_existing_segments(vec![block]);
-}
-
-/// 把本该收束的终答落成一条**中间** assistant 消息（对齐 pi：终答照常成为历史的一部分，
-/// 随后的插话开启新的一轮）。文本/推理段已由 planning 落进 `segment_builder`（时间线顺序
-/// 正确），这里只补两本历史账；下一轮 planning 的请求即带着这条 assistant + 新注入的插话。
-pub(crate) fn absorb_final_answer(state: &mut RunState, message: GenerateOutput) {
-    let message = RuntimeMessage::model(message.replay_message());
-    state.runtime_messages.push(message.clone());
-    state.generated_api_messages.push(message);
 }
 
 #[cfg(test)]

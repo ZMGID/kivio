@@ -3,7 +3,7 @@ use super::history::RuntimeMessage;
 
 use crate::model::{GenerateOutput, ModelMessage, PendingToolCall};
 
-use super::loop_::{LoopEnv, RunState};
+use super::loop_::RunState;
 use super::stop::{
     final_assistant_message, final_response_from_planning_message_with_images, merge_reasoning,
 };
@@ -110,18 +110,6 @@ impl<'a> RunResultBuilder<'a> {
                 || final_assistant_message(&self.content, self.api_reasoning.as_deref()),
             )));
         }
-    }
-
-    /// Emit + api push only, for fallbacks that flow into the common loop tail
-    /// (segment append and result construction happen there). Returns the
-    /// fallback content.
-    pub(crate) fn emit_and_record(
-        self,
-        generated_api_messages: &mut Vec<RuntimeMessage>,
-    ) -> String {
-        self.emit();
-        self.push_api_message(generated_api_messages);
-        self.content
     }
 
     /// Emit + api push + segment append + AgentRunResult construction, for
@@ -318,10 +306,7 @@ pub(crate) fn finalize_planning_final(
     })
 }
 
-/// Common loop tail: append final segments, push the closing step and build the
-/// completed run result.
 pub(crate) fn finalize_completed(
-    _env: &LoopEnv<'_>,
     state: &mut RunState,
     completed: SynthesisCompleted,
 ) -> AgentRunResult {
@@ -329,24 +314,10 @@ pub(crate) fn finalize_completed(
         replay,
         response,
         reasoning,
-        response_reasoning,
-        response_segment,
-        response_reasoning_segment,
+        generated_message,
+        ..
     } = completed;
-    if !response.trim().is_empty() {
-        state
-            .segment_builder
-            .append_text_from_template(&response_segment, response.clone());
-    }
-    if let Some(reasoning_part) = response_reasoning
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        state
-            .segment_builder
-            .append_text_from_template(&response_reasoning_segment, reasoning_part);
-    }
+    state.generated_api_messages.extend(generated_message);
 
     AgentRunResult {
         final_message: replay,

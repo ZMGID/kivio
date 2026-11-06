@@ -28,7 +28,7 @@ A handle starts at most one core invocation. Reusing a running or finished handl
 
 `steer` and `follow_up` return `InputAdmission::Accepted`, `Inactive`, or `Unsupported`. Accepted means the host queued the input. It does not mean the core consumed or persisted it. Input admitted near completion may remain unconsumed. Finished handles reject new input and stop requests.
 
-Steer is consumed at step boundaries after prior tool work and before the next model step. Follow-up is consumed at an answer boundary after the current answer. Both inject one message per applicable boundary. The host-supplied message ID survives in `ContentKind::Input`. A consumed input appears once in the ordered content blocks and replay history. The constructor `SteeringMessage::new` trims text, rejects empty input, and retains at most 4,000 Unicode characters.
+Steer is consumed at step boundaries after prior tool work and before the next model step. Follow-up is consumed at an answer boundary after the current answer. These boundaries also apply when no tools are registered or the provider rejects tools. Both inject one message per applicable boundary. The host-supplied message ID survives in `ContentKind::Input`. A consumed input appears once in the ordered content blocks and replay history. The constructor `SteeringMessage::new` trims text, rejects empty input, and retains at most 4,000 Unicode characters.
 
 The SDK does not reserve application-wide run capacity. The host prevents conflicting concurrent runs against its session store. `AgentRunHandle::active()` becoming false does not authorize a new run before the host finishes persistence and cleanup.
 
@@ -38,7 +38,7 @@ The SDK does not reserve application-wide run capacity. The host prevents confli
 
 Within one invocation, sequence numbers increase strictly. `RunStarted` precedes step, model message, and tool facts. Step and message events have matching end events. Tool events pair by round and call ID. Concurrent tool work can interleave facts, so consumers use these identities instead of assuming adjacent pairs.
 
-When an adapter retries a visible stream, `AttemptDiscarded` identifies text, reasoning, blocks, and tools withdrawn from the failed attempt. A consumer that renders tentative output must apply that withdrawal before rendering the next attempt. The standalone HTTP provider performs one transport attempt per call and does not implement such transport retries itself.
+When an adapter retries a visible stream, `AttemptDiscarded` identifies text, reasoning, blocks, and tools withdrawn from the failed attempt. A consumer that renders tentative output must apply that withdrawal before rendering the next attempt. The standalone HTTP provider has no SDK-level retry loop. Its supplied HTTP client owns transport retries and redirects.
 
 `RunEnded` is emitted once after paired inner scopes end. No later facts reach the sink. Its outcome is `Completed`, `Cancelled`, `Failed(String)`, or `Dropped`. `Completed` describes core completion and also covers results such as `Recovered` and `CompactionBlocked`. The returned `AgentRunResult.status` carries that more specific status.
 
@@ -68,7 +68,7 @@ Provider calls return `ModelError` with `kind`, an optional HTTP `status`, an op
 
 `run_agent_loop` returns `Result<AgentRunResult, String>`. Its error string is not a stable machine-readable provider error contract. A successful Rust `Result` can still have status `Cancelled`, `Failed(String)`, or `CompactionBlocked`. `Recovered` identifies a policy-assisted recovery. Consumers inspect the status as well as the outer result. Tool failures appear in tool records and feedback, so a model can finish after a failed tool.
 
-The standalone `OpenAiChatProvider` makes one HTTP attempt per provider invocation. It performs no key rotation, cache fallback, or transport retry. The agent loop can issue further requests for tool rounds, queued input, empty-response handling, or policy-directed recovery. One transport attempt is therefore not a limit of one request per agent run. Hosts that add retries own the shared retry budget and output withdrawal, rather than layering independent unbounded retry loops.
+The standalone `OpenAiChatProvider` calls the supplied client's `send()` once per provider invocation. It performs no SDK-level retry, key rotation, or cache fallback. The client can still retry or follow redirects. Reqwest's default retry policy includes safe protocol failures; a host that requires retries to be disabled sets `ClientBuilder::retry(reqwest::retry::never())`. Redirect policy is configured separately. The agent loop can issue further requests for tool rounds, queued input, empty-response handling, or policy-directed recovery. Hosts own the combined retry budget and output withdrawal.
 
 ## Credentials and transport
 

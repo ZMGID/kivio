@@ -67,7 +67,7 @@ $env:KIVIO_SDK_MODEL = 'your-tool-capable-model'
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- minimal --live
 ```
 
-You can also append `--live` to `cancel`, `inputs`, or `continue`. These modes make model requests and depend on the provider's tool behavior. The loop, rather than a fixed request script, decides how many model steps are needed. The example sets a 60-second HTTP client timeout and does not configure transport retries.
+You can also append `--live` to `cancel`, `inputs`, or `continue`. These modes make model requests and depend on the provider's tool behavior. The loop, rather than a fixed request script, decides how many model steps are needed. The example sets a 60-second HTTP client timeout and retains the client's default retry policy. The SDK adds no retry loop. Hosts that need a stricter transport policy configure their client as described in [the retry contract](docs/contracts.md#errors-and-retries).
 
 Only the example reads these environment variables. The SDK receives the resolved endpoint, credentials, headers, and HTTP client. The live example keeps reqwest's client defaults for proxy behavior. Configure `.proxy(...)`, `.no_proxy()`, TLS, and timeouts on your client as needed. The local example explicitly disables proxies for its loopback requests.
 
