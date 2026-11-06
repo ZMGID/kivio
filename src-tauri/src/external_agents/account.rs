@@ -11,8 +11,8 @@ use std::{path::Path, process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 async fn exchange(
-    input: &mut tokio::process::ChildStdin,
-    output: &mut tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    input: &mut super::diagnostics::AgentStdin,
+    output: &mut tokio::io::Lines<BufReader<super::diagnostics::AgentStdout>>,
     request: Value,
     claude: bool,
 ) -> Result<Value, String> {

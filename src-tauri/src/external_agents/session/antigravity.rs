@@ -10,7 +10,7 @@ use std::time::Duration;
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -269,8 +269,8 @@ pub struct AntigravitySession {
     cwd: PathBuf,
     args: Vec<String>,
     child: Child,
-    stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
     stderr_task: tokio::task::JoinHandle<()>,
     stderr_rx: mpsc::Receiver<String>,
     stderr_tail: Arc<Mutex<String>>,
@@ -931,3 +931,7 @@ mod tests {
         assert_eq!(text(&events), "answer");
     }
 }
+
+#[cfg(test)]
+#[path = "antigravity_replay_tests.rs"]
+mod replay_tests;

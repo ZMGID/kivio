@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
@@ -2282,8 +2282,8 @@ where
 /// the in-flight turn task so control commands can still be received during generation.
 pub struct PiRpcSession {
     child: Child,
-    stdin: Arc<Mutex<ChildStdin>>,
-    reader: Arc<Mutex<tokio::io::Lines<BufReader<ChildStdout>>>>,
+    stdin: Arc<Mutex<AgentStdin>>,
+    reader: Arc<Mutex<tokio::io::Lines<BufReader<AgentStdout>>>>,
     session_id: String,
     resumed: bool,
     selection: PiSelection,
@@ -2339,7 +2339,6 @@ impl PiRpcSession {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
-                    eprintln!("[external-agent:pi] {line}");
                     let mut tail = stderr_capture.lock().await;
                     if !tail.is_empty() {
                         tail.push('\n');
@@ -4444,7 +4443,7 @@ mod tests {
             );
         }
         shutdown_rpc_writer(&stdin).await;
-        drop(stdin); // ChildStdin must be dropped to actually close its pipe.
+        drop(stdin); // AgentStdin must be dropped to actually close its pipe.
         let status = timeout(Duration::from_secs(5), child.wait())
             .await
             .unwrap()
@@ -5351,3 +5350,7 @@ mod tests {
         assert!(parse_pi_model_thinking("").is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "pi_rpc_replay_tests.rs"]
+mod replay_tests;
