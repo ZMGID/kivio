@@ -1686,6 +1686,9 @@ mod tests {
     }
     fn test_conversation(messages: Vec<ChatMessage>) -> Conversation {
         Conversation {
+            external_history: None,
+            external_cwd: None,
+            runtime_locked: false,
             id: "conv_test".to_string(),
             revision: 0,
             title: "t".to_string(),

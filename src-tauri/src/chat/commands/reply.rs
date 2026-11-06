@@ -1072,6 +1072,7 @@ pub(super) async fn complete_assistant_reply_inner(
         result.last_step_usage,
         message_plan,
         result.degraded,
+        None,
     )
     .await?;
     if let Some((goal_id, goal_version)) = goal_run {

@@ -1,3 +1,4 @@
+import { conversationRuntimeLocked } from '../conversationFields'
 import { ChatTitlebar } from '../ChatTitlebar'
 import { ModelSelector } from '../ModelSelector'
 import { PermissionPicker } from '../PermissionPicker'
@@ -45,7 +46,7 @@ function TitlebarPills({
   const title = displayConversationTitle(conversation?.title, titleFallback) || 'Kivio'
   const providerId = conversation?.provider_id ?? ''
   const model = conversation?.model ?? ''
-  const locked = Boolean(conversation && (conversation.messages?.length ?? 0) > 0)
+  const locked = conversationRuntimeLocked(conversation)
 
   return (
     <>

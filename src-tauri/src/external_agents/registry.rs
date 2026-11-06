@@ -210,7 +210,7 @@ mod tests {
             ("codex", Native, Fallback, Native, Native, Native, Native),
             ("opencode", Unavailable, Fallback, Native, Fallback, Native, Unavailable),
             ("gemini", Unavailable, Fallback, Native, Fallback, Unavailable, Unavailable),
-            ("kimi", Unavailable, Fallback, Native, Fallback, Fallback, Unavailable),
+            ("kimi", Unavailable, Fallback, Native, Fallback, Native, Unavailable),
             ("pi", Native, Native, Native, Native, Unavailable, Unavailable),
             ("hermes", Unavailable, Fallback, Native, Fallback, Unavailable, Unavailable),
             ("grok", Unavailable, Fallback, Native, Fallback, Native, Native),

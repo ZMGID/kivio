@@ -289,6 +289,7 @@ pub(crate) async fn push_assistant_message(
     agent_plan: Option<AgentPlanState>,
     // 降级兜底的结构化描述；Some 时前端渲染成独立错误卡片。
     degraded: Option<crate::chat::agent::recovery::DegradedAnswer>,
+    history_attempt: Option<&crate::external_agents::session::HistoryAttempt>,
 ) -> Result<(), String> {
     let message = build_assistant_message(
         message_id,
@@ -380,6 +381,15 @@ pub(crate) async fn push_assistant_message(
     let conversation_id = conversation.id.clone();
     let mut persisted = crate::chat::repository::repository(app)
         .mutate(app, &conversation_id, |latest| {
+            if let Some(attempt) = history_attempt {
+                if message.stream_outcome.as_deref() == Some("completed")
+                    && state
+                        .chat_runtime()
+                        .is_generation_active(&conversation_id, attempt.generation)
+                {
+                    crate::external_agents::session::settle_history_delivery(latest, attempt);
+                }
+            }
             adopt_compacted_context(latest, conversation, &message.id);
             upsert_assistant_message(latest, message);
             if let Some(title) = generated_title {

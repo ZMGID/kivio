@@ -10,7 +10,12 @@ export function additionalDirectoriesOf(conversation: Conversation | null | unde
 export function isPlainBlankConversation(conversation: Conversation | null): boolean {
   return Boolean(
     conversation
+    && !conversationRuntimeLocked(conversation)
     && conversation.messages.length === 0
     && !(conversation.assistant_id ?? conversation.assistantId),
   )
+}
+
+export function conversationRuntimeLocked(conversation: Conversation | null): boolean {
+  return Boolean(conversation && (conversation.runtime_locked || conversation.messages.length > 0))
 }

@@ -156,7 +156,25 @@ fn validate_assistant_id(id: &str) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
+static FAIL_WRITE_UNDER: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+
+#[cfg(test)]
+pub(crate) fn fail_write_under_for_test(root: Option<(&Path, &str)>) {
+    *FAIL_WRITE_UNDER.lock().unwrap() =
+        root.map(|(path, label)| (path.to_owned(), label.to_owned()));
+}
+
 pub(crate) fn atomic_write(path: &Path, content: &str, label: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if FAIL_WRITE_UNDER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|(root, failed_label)| path.starts_with(root) && label == failed_label)
+    {
+        return Err(format!("injected {label} write failure"));
+    }
     let parent = path
         .parent()
         .ok_or_else(|| format!("{label} path has no parent"))?;

@@ -612,9 +612,69 @@ impl WebSearchMode {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ExternalHistoryMethod {
+    NativeRewind,
+    Replay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "state")]
+pub enum ExternalHistoryDelivery {
+    Ready,
+    MayHaveSent {
+        native_id: String,
+        attempt_id: String,
+        generation: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExternalHistoryTransition {
+    pub id: String,
+    pub committed_revision: u64,
+    pub through_message_id: Option<String>,
+    pub method: ExternalHistoryMethod,
+    pub delivery: ExternalHistoryDelivery,
+}
+
+impl ExternalHistoryTransition {
+    pub fn new(conversation: &Conversation, method: ExternalHistoryMethod) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            committed_revision: conversation.revision.saturating_add(1),
+            through_message_id: conversation
+                .messages
+                .last()
+                .map(|message| message.id.clone()),
+            method,
+            delivery: ExternalHistoryDelivery::Ready,
+        }
+    }
+
+    pub fn prefix<'a>(&self, conversation: &'a Conversation) -> Result<&'a [ChatMessage], String> {
+        match &self.through_message_id {
+            None => Ok(&[]),
+            Some(id) => conversation
+                .messages
+                .iter()
+                .position(|message| &message.id == id)
+                .map(|index| &conversation.messages[..=index])
+                .ok_or_else(|| "External history boundary no longer exists".into()),
+        }
+    }
+}
+
 /// 完整对话数据（存储在 conversations/{id}.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_history: Option<ExternalHistoryTransition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_cwd: Option<String>,
+    /// Derived at the storage boundary; never accepted from persisted JSON.
+    #[serde(default, skip_deserializing)]
+    pub runtime_locked: bool,
     pub id: String,
     /// Monotonic on-disk revision maintained by `ConversationRepository`.
     /// Legacy conversation files deserialize as revision 0.

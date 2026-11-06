@@ -541,6 +541,7 @@ export interface CliImportResult {
 
 export type { NativeProviderSummary, DetectedExternalAgent } from '../api/externalCliSettings'
 export interface Conversation {
+  runtime_locked?: boolean
   id: string
   revision: number
   title: string

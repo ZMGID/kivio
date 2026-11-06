@@ -42,7 +42,7 @@ pub const KIMI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     context_window: ContextWindowStrategy::Kimi,
     usage_fallback: UsageFallbackStrategy::KimiWireLog,
     error_policy: AgentErrorPolicy::login("kimi"),
-    import: AgentImportPolicy::acp(false),
+    import: AgentImportPolicy::acp(true),
     ..acp_def(
         "kimi",
         "Kimi CLI",

@@ -369,11 +369,6 @@ pub(crate) async fn set_agent_runtime(
     let persist_reasoning = agent_runtime.external_reasoning.clone();
     let conversation = crate::chat::repository::repository(app)
         .mutate(app, conversation_id, |conversation| {
-            check_runtime_switch_allowed(
-                &conversation.agent_runtime,
-                conversation.messages.is_empty(),
-                &agent_runtime,
-            )?;
             conversation.agent_runtime = agent_runtime;
             Ok(())
         })
@@ -394,15 +389,15 @@ pub(crate) async fn set_agent_runtime(
 /// Pure binding rule for `chat_set_agent_runtime` (extracted so it is unit-testable without a Tauri
 /// `AppHandle`). Returns `Err` with a user-facing message when the switch is forbidden.
 ///
-/// Rule: **one agent per conversation**. Empty conversations may switch freely; once any message
-/// exists, `kind` and `external_agent_id` are frozen (covers both local CLI *and* Kivio builtin).
+/// Rule: **one agent per conversation**. Only empty, unbound conversations may switch freely.
+/// Messages, native bindings and pending history freeze `kind` and `external_agent_id`.
 /// Same-agent model / reasoning / sandbox updates remain allowed.
-fn check_runtime_switch_allowed(
+pub(crate) fn check_runtime_switch_allowed(
     current: &AgentRuntimeConfig,
-    messages_is_empty: bool,
+    runtime_is_unbound: bool,
     next: &AgentRuntimeConfig,
 ) -> Result<(), String> {
-    if messages_is_empty {
+    if runtime_is_unbound {
         return Ok(());
     }
     let normalize_id = |id: &Option<String>| {

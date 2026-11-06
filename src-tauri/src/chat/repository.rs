@@ -916,7 +916,14 @@ impl ConversationRepository {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
             .map(|_| latest.goal_state.clone());
+        let previous_runtime = latest.agent_runtime.clone();
+        let runtime_is_unbound = !latest.runtime_locked;
         mutation(&mut latest)?;
+        crate::external_agents::commands::check_runtime_switch_allowed(
+            &previous_runtime,
+            runtime_is_unbound,
+            &latest.agent_runtime,
+        )?;
         if let Some(previous_goal) = previous_goal {
             self.note_goal_change(id, previous_goal.as_ref(), latest.goal_state.as_ref());
         }
@@ -947,25 +954,43 @@ impl ConversationRepository {
         // 读侧的 `load_index_or_scan` 只读不写（否则会绕开这把锁 lost update），所以残缺索引
         // 的落盘自愈只能在这里发生：这一步既拿到了对账过的索引，末尾的 save_index 又把它写回。
         let item = ConversationListItem::from(&persisted);
-        {
-            let app = app.clone();
-            tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-                let mut index = super::storage::load_index_or_scan(&app)?;
-                if let Some(position) = index
-                    .conversations
-                    .iter()
-                    .position(|candidate| candidate.id == item.id)
-                {
-                    index.conversations[position] = item;
-                } else {
-                    index.conversations.insert(0, item);
+        for attempt in 0..2 {
+            let app_for_index = app.clone();
+            let item = item.clone();
+            let result = Self::spawn_storage(
+                move || {
+                    let mut index = super::storage::load_index_or_scan(&app_for_index)?;
+                    if let Some(position) = index
+                        .conversations
+                        .iter()
+                        .position(|candidate| candidate.id == item.id)
+                    {
+                        index.conversations[position] = item;
+                    } else {
+                        index.conversations.insert(0, item);
+                    }
+                    super::storage::save_index(&app_for_index, &index)
+                },
+                "save conversation index",
+            )
+            .await;
+            match result {
+                Ok(()) => return Ok(persisted),
+                Err(error) => {
+                    let path = super::storage::conversation_file_path(app, &persisted.id)?;
+                    let body = super::storage::read_conversation_file(&path, &persisted.id)?;
+                    if body.revision != persisted.revision {
+                        return Err(ConversationRepositoryError::Storage(format!(
+                            "Conversation publication could not be verified: {error}"
+                        )));
+                    }
+                    if attempt == 1 {
+                        return Err(ConversationRepositoryError::Storage(format!(
+                            "Conversation {} committed at revision {}; index repair failed, retry to recover: {error}",
+                            persisted.id, persisted.revision)));
+                    }
                 }
-                super::storage::save_index(&app, &index)
-            })
-            .await
-            .map_err(|error| {
-                ConversationRepositoryError::Storage(format!("save index join: {error}"))
-            })??;
+            }
         }
         Ok(persisted)
     }

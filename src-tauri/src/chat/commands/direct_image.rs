@@ -116,6 +116,7 @@ pub(super) async fn complete_direct_image_generation_reply(
                 None,
                 // 直出图路径不经 agent 循环，没有降级兜底。
                 None,
+                None,
             )
             .await?;
             crate::chat::protocol::finish_run(

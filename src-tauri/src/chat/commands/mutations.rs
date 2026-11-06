@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::chat::agent::execute::truncate_chars;
@@ -329,7 +329,7 @@ fn last_turn_user(messages: &[ChatMessage]) -> Option<&ChatMessage> {
 /// - user + `new_content`：trim 校验非空 → 替换内容（编辑提问；附件保留）→ 保留该条截掉其后。
 ///   摘要失效用 `idx`（内容变了，覆盖到该条的摘要即失效）。
 /// - user 无 `new_content`：孤儿重试，摘要失效用 `idx + 1`，保留该条截掉其后。
-pub(super) fn apply_regenerate_truncation(
+pub(crate) fn apply_regenerate_truncation(
     conversation: &mut Conversation,
     idx: usize,
     new_content: Option<String>,
@@ -361,7 +361,22 @@ pub(super) fn apply_regenerate_truncation(
     };
     let removed = conversation.messages.split_off(keep);
     if current_turn {
-        conversation.messages.extend(removed.into_iter().filter(is_subagent_report));
+        conversation
+            .messages
+            .extend(removed.into_iter().filter(is_subagent_report));
+    }
+    if conversation.external_history.is_some() {
+        let mut history = crate::chat::types::ExternalHistoryTransition::new(
+            conversation,
+            crate::chat::types::ExternalHistoryMethod::Replay,
+        );
+        history.through_message_id = conversation
+            .messages
+            .iter()
+            .rposition(|message| message.role == "user")
+            .and_then(|index| index.checked_sub(1))
+            .map(|index| conversation.messages[index].id.clone());
+        conversation.external_history = Some(history);
     }
     Ok(())
 }
@@ -672,18 +687,16 @@ pub(crate) async fn chat_rewind_to_message(
         .get(&app, &conversation_id)
         .await
         .map_err(crate::chat::repository::repository_error)?;
+    let original_cwd = if snapshot.agent_runtime.is_external() {
+        crate::external_agents::workspace::bound_original_cwd(&app, &conversation_id)?
+    } else {
+        None
+    };
     let mut attempt = 0;
     let (mut conversation, content) = loop {
         let idx = find_message_index(&snapshot, &message_id)?;
         if snapshot.messages[idx].role != "user" {
             return Err("仅支持回到用户提问".to_string());
-        }
-        // 外部 CLI 的历史真身在 CLI 自己的原生会话里，只截 Kivio 这份，下一轮 resume 仍会带上
-        // 被删掉的轮次，所以下一轮发送前要先把原生会话拉回可见历史（ADR-0006）。
-        // 校验通过后、截断之前记下「待回退」：记不下就整体失败、不留半截状态。不能提前到校验
-        // 之前——没有原生回退的 CLI 会据此丢弃会话、改为补历史，一次被拒绝的回退不该触发它。
-        if snapshot.agent_runtime.is_external() {
-            crate::external_agents::session::mark_history_rewound(&app, &conversation_id)?;
         }
         let content = snapshot.messages[idx].content.clone();
         match repository
@@ -694,6 +707,14 @@ pub(crate) async fn chat_rewind_to_message(
                 }
                 mark_summary_stale_if_needed(latest, latest_idx);
                 latest.messages.truncate(latest_idx);
+                if latest.agent_runtime.is_external() {
+                    latest.external_cwd = original_cwd.clone();
+                    latest.external_history =
+                        Some(crate::chat::types::ExternalHistoryTransition::new(
+                            latest,
+                            crate::chat::types::ExternalHistoryMethod::NativeRewind,
+                        ));
+                }
                 let existing_ids: std::collections::HashSet<String> = latest
                     .messages
                     .iter()
@@ -708,6 +729,7 @@ pub(crate) async fn chat_rewind_to_message(
             .await
         {
             Ok(latest) => {
+                crate::external_agents::session::clear_history_rewound(&app, &conversation_id);
                 crate::chat::todo::emit_chat_todo_state(
                     &app,
                     &latest.id,
@@ -796,6 +818,28 @@ pub(crate) async fn chat_fork_conversation(
     message_id: String,
     exclude_anchor: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    drop(state);
+    tauri::async_runtime::spawn(async move {
+        fork_conversation_owned(
+            &app,
+            app.state(),
+            conversation_id,
+            message_id,
+            exclude_anchor,
+        )
+        .await
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+async fn fork_conversation_owned(
+    app: &AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+    message_id: String,
+    exclude_anchor: Option<bool>,
+) -> Result<serde_json::Value, String> {
     let mut source = load_conversation(&app, &conversation_id)?;
     if source
         .goal_state
@@ -832,6 +876,24 @@ pub(crate) async fn chat_fork_conversation(
         build_fork_messages(&source.messages, anchor_idx)
     };
 
+    let _staging = crate::external_agents::import::ConversationStaging {
+        app: app.clone(),
+        id: new_id.clone(),
+    };
+    let external_cwd = if source.agent_runtime.is_external() {
+        Some(
+            crate::external_agents::workspace::resolve_effective_cwd(
+                &app,
+                &source.id,
+                source.project_id.as_deref(),
+            )?
+            .to_string_lossy()
+            .into_owned(),
+        )
+    } else {
+        None
+    };
+
     // 深拷被复制消息引用的附件、artifact 和 HTML render 文件到新对话目录。
     // Missing attachment files are warnings rather than fork blockers. Workbench outputs are not copied when forking.
     copy_forked_conversation_files(&app, &conversation_id, &new_id, &messages);
@@ -854,7 +916,10 @@ pub(crate) async fn chat_fork_conversation(
 
     // The branch keeps the todo list as it stood at the fork point.
     let agent_todo_state = crate::chat::todo::state_from_messages(&messages, &group_selections);
-    let conversation = Conversation {
+    let mut conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: new_id,
         revision: 0,
         title,
@@ -889,6 +954,15 @@ pub(crate) async fn chat_fork_conversation(
             title: source.title.clone(),
         }),
     };
+
+    if source.agent_runtime.is_external() {
+        conversation.external_cwd = external_cwd;
+        conversation.external_history = Some(crate::chat::types::ExternalHistoryTransition::new(
+            &conversation,
+            crate::chat::types::ExternalHistoryMethod::Replay,
+        ));
+        conversation.runtime_locked = true;
+    }
 
     let conversation = crate::chat::repository::repository(&app)
         .create(&app, conversation)

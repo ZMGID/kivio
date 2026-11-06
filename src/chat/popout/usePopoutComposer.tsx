@@ -1,3 +1,4 @@
+import { isPlainBlankConversation } from '../conversationFields'
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import {
   api,
@@ -82,13 +83,6 @@ function normalizeSkill(skill: import('../../api/tauri').SkillMeta): SkillMeta {
   }
 }
 
-function isBlankConversation(conversation: Conversation | null): boolean {
-  return Boolean(
-    conversation
-    && conversation.messages.length === 0
-    && !(conversation.assistant_id ?? conversation.assistantId),
-  )
-}
 
 function applyConversationMeta(
   setConversation: Dispatch<SetStateAction<Conversation | null>>,
@@ -614,7 +608,7 @@ export function usePopoutComposer({
     return ''
   }, [enabledToolCount, recommendedTools.length, toolsDisabledReason, toolsRequested, unavailableRecommendedTools])
 
-  const conversationBlank = isBlankConversation(conversation)
+  const conversationBlank = isPlainBlankConversation(conversation)
   const explicitWebSearch = conversation?.webSearchMode ?? conversation?.web_search_mode
   const webSearchMode: WebSearchMode = explicitWebSearch
     || loadLastWebSearchMode()
