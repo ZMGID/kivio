@@ -1,15 +1,15 @@
 use super::content::{AgentToolCall, AgentToolStatus};
 use super::history::{import_history, RuntimeMessage};
-use crate::chat::model::FinishKind;
+use crate::model::FinishKind;
 use serde_json::Value;
 
-use crate::chat::model::PendingToolCall;
+use crate::model::PendingToolCall;
 
-use crate::chat::tools::ToolDefinition;
+use crate::tools::ToolDefinition;
 
 use super::execute::{
-    execute_tool_call, invalid_tool_arguments_record, match_tool_call,
-    pending_tool_record, unknown_tool_record, ToolExecutionContext, ToolExecutor,
+    execute_tool_call, invalid_tool_arguments_record, match_tool_call, pending_tool_record,
+    unknown_tool_record, ToolExecutionContext, ToolExecutor,
 };
 use super::finalize::cancelled_tool_round_run_result;
 use super::loop_::{LoopEnv, RunState};
@@ -56,7 +56,8 @@ pub(crate) async fn run_tool_round(
             &records,
             state.segment_builder.segments(),
             &state.generated_api_messages[..state.generated_api_messages.len() - 1],
-        ).await;
+        )
+        .await;
     }
     let round_result = execute_tool_round(
         host,
@@ -90,7 +91,7 @@ pub(crate) async fn run_tool_round(
     ToolRoundOutcome::Continue
 }
 
-pub(crate) struct ToolRoundContext<'a> {
+pub struct ToolRoundContext<'a> {
     pub conversation_id: &'a str,
     pub run_id: &'a str,
     pub message_id: &'a str,
@@ -99,10 +100,10 @@ pub(crate) struct ToolRoundContext<'a> {
     pub finish_reason: Option<FinishKind>,
 }
 
-pub(crate) struct ToolRoundResult {
-    pub(crate) response_messages: Vec<Value>,
-    pub(crate) tool_records: Vec<AgentToolCall>,
-    pub(crate) cancelled: bool,
+pub struct ToolRoundResult {
+    pub response_messages: Vec<Value>,
+    pub tool_records: Vec<AgentToolCall>,
+    pub cancelled: bool,
 }
 
 struct ToolExecutionResult {
@@ -119,7 +120,7 @@ struct ExecutableToolCall<'a> {
     tool: &'a ToolDefinition,
 }
 
-pub(crate) fn visible_tool_segment_calls(
+pub fn visible_tool_segment_calls(
     executor: &dyn ToolExecutor,
     tools: &[ToolDefinition],
     blocked_tool_calls: &[ToolDefinition],
@@ -136,7 +137,7 @@ pub(crate) fn visible_tool_segment_calls(
         .collect()
 }
 
-pub(crate) async fn execute_tool_round(
+pub async fn execute_tool_round(
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     ctx: ToolRoundContext<'_>,
@@ -199,8 +200,14 @@ pub(crate) async fn execute_tool_round(
                 );
                 break;
             }
-            let result =
-                unknown_or_disabled_tool_result(host, executor, &ctx, tools, blocked_tool_calls, tool_call);
+            let result = unknown_or_disabled_tool_result(
+                host,
+                executor,
+                &ctx,
+                tools,
+                blocked_tool_calls,
+                tool_call,
+            );
             push_tool_execution_result(result, &mut response_messages, &mut tool_records);
             continue;
         };
@@ -300,14 +307,7 @@ pub(crate) async fn execute_tool_round(
             );
             break;
         }
-        let result = execute_serial_tool_call(
-            host,
-            executor,
-            &ctx,
-            tool,
-            tool_call,
-        )
-        .await;
+        let result = execute_serial_tool_call(host, executor, &ctx, tool, tool_call).await;
         if push_tool_execution_result(result, &mut response_messages, &mut tool_records) {
             cancelled = true;
             push_cancelled_tool_calls(
@@ -416,14 +416,7 @@ async fn execute_parallel_tool_call(
     ctx: &ToolRoundContext<'_>,
     item: &ExecutableToolCall<'_>,
 ) -> ToolExecutionResult {
-    execute_tool_call_result(
-        host,
-        executor,
-        ctx,
-        item.tool,
-        item.call.clone(),
-    )
-    .await
+    execute_tool_call_result(host, executor, ctx, item.tool, item.call.clone()).await
 }
 
 async fn execute_serial_tool_call(
@@ -433,14 +426,7 @@ async fn execute_serial_tool_call(
     tool: &ToolDefinition,
     tool_call: PendingToolCall,
 ) -> ToolExecutionResult {
-    execute_tool_call_result(
-        host,
-        executor,
-        ctx,
-        tool,
-        tool_call,
-    )
-    .await
+    execute_tool_call_result(host, executor, ctx, tool, tool_call).await
 }
 
 async fn execute_tool_call_result(
@@ -461,15 +447,14 @@ async fn execute_tool_call_result(
     };
     // 单点：串行与并行两条路径都经过这里，所以 start/end 一定成对。并行 chunk 里多个
     // 工具的事件会交错——那是真实语义，脚本靠 toolCallId 自己配对，不做重排。
-    let mut lifecycle = super::events::ToolEventGuard::new(&host.events, round_ctx.round, &tool_call_id, &tool.label.name);
-    let (record, tool_content, follow_up_messages) = execute_tool_call(
-        host,
-        executor,
-        &execution_ctx,
-        tool,
-        tool_call,
-    )
-    .await;
+    let mut lifecycle = super::events::ToolEventGuard::new(
+        &host.events,
+        round_ctx.round,
+        &tool_call_id,
+        &tool.label.name,
+    );
+    let (record, tool_content, follow_up_messages) =
+        execute_tool_call(host, executor, &execution_ctx, tool, tool_call).await;
     lifecycle.cancelled = matches!(record.status, AgentToolStatus::Cancelled);
     let cancelled = matches!(record.status, AgentToolStatus::Cancelled);
     ToolExecutionResult {
@@ -525,7 +510,7 @@ fn cancelled_tool_result(
         arguments: tool_call.arguments_raw.clone(),
         status: AgentToolStatus::Cancelled,
         output: None,
-            output_limit: None,
+        output_limit: None,
         error: Some("Tool call cancelled".to_string()),
         duration_ms: Some(0),
         started_at: Some(now),
@@ -608,7 +593,7 @@ fn skipped_tool_record(
         arguments: call.arguments_raw.clone(),
         status: AgentToolStatus::Skipped,
         output: None,
-            output_limit: None,
+        output_limit: None,
         error: Some(error),
         duration_ms: Some(0),
         started_at: Some(now),

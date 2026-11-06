@@ -1,7 +1,7 @@
 use super::{content::AgentToolCall, history::RuntimeMessage};
 use super::{control::AgentRunHandle, events::CompactionFact, host::AgentHostFuture};
-use crate::chat::model::{ModelTool, ModelUsage};
-use crate::chat::tools::ToolDefinition;
+use crate::model::{ModelTool, ModelUsage};
+use crate::tools::ToolDefinition;
 
 pub type PolicyFuture<'a, T> = AgentHostFuture<'a, T>;
 
@@ -77,7 +77,7 @@ pub trait SessionPolicy: Send {
     fn recover(
         &mut self,
         _run: super::recovery::RecoverySnapshot<'_>,
-        _error: &crate::chat::model::ModelError,
+        _error: &crate::model::ModelError,
     ) -> super::recovery::RecoveryDecision {
         super::recovery::RecoveryDecision::Surface
     }

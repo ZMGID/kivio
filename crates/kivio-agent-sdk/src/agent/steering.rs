@@ -5,21 +5,18 @@
 //!
 //! Consumed input is retained as an ordered content block and in both replay histories.
 
-use serde::{Deserialize, Serialize};
 use super::content::{ContentBlock, ContentKind, ContentPhase};
-
-
+use serde::{Deserialize, Serialize};
 
 use super::history::RuntimeMessage;
 use super::loop_::{LoopEnv, RunState};
-use crate::chat::model::{GenerateOutput, ModelRole};
+use crate::model::{GenerateOutput, ModelRole};
 
-/// 单条插话文本上限。与 `ask_user.rs` 那批 `MAX_*_CHARS` 同一取舍：越界截断而不是报错，
-/// 用户已经打完的字不该因为长度被整条丢掉。
+/// Maximum Unicode character count retained by `SteeringMessage::new`.
 pub const MAX_STEER_CHARS: usize = 4000;
 
-/// 一条待注入的用户插话。`id` 由前端生成并原样回到卡片的 `structured_content.steer_id`，
-/// 前端据此把队列里那条标记为「已生效」并出队。
+/// Queued user input. Its host-supplied ID is preserved in `ContentKind::Input`
+/// when the core consumes it; admission alone does not mean it has been consumed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SteeringMessage {
     pub id: String,
@@ -87,10 +84,9 @@ pub(crate) fn steering_pending(env: &LoopEnv<'_>, state: &mut RunState) -> bool 
 
 /// 终答边界才取 follow-up 信箱。轮首不取，避免把「下一轮再问」做成「下一步就插进工具循环」。
 pub(crate) fn follow_up_pending(env: &LoopEnv<'_>, state: &mut RunState) -> bool {
-    state.pending_follow_up.extend(
-        env.host
-            .control.take_follow_up(),
-    );
+    state
+        .pending_follow_up
+        .extend(env.host.control.take_follow_up());
     !state.pending_follow_up.is_empty()
 }
 
@@ -116,7 +112,9 @@ pub(crate) async fn inject_follow_up_messages(
 }
 
 async fn apply_prompt_hooks(
-    env: &LoopEnv<'_>, state: &mut RunState, prompt: &str,
+    env: &LoopEnv<'_>,
+    state: &mut RunState,
+    prompt: &str,
     session: &mut dyn super::session::SessionPolicy,
 ) -> Result<(), String> {
     let inputs = session.input(prompt, env.host.control.clone()).await?;
@@ -138,9 +136,15 @@ fn append_injected_user_turn(
 
     let block = ContentBlock {
         id: state.segment_builder.reserve_order(),
-        kind: ContentKind::Input { kind, message: message.clone() },
+        kind: ContentKind::Input {
+            kind,
+            message: message.clone(),
+        },
         phase: ContentPhase::ToolLoop,
-        step_number: None, round: Some(round), text: None, tool_call_id: None,
+        step_number: None,
+        round: Some(round),
+        text: None,
+        tool_call_id: None,
     };
     env.host.content("", None, Some(&block));
     state.segment_builder.append_existing_segments(vec![block]);
@@ -169,5 +173,4 @@ mod tests {
         let clipped = SteeringMessage::new("b".into(), &long).expect("non-blank");
         assert_eq!(clipped.text.chars().count(), MAX_STEER_CHARS);
     }
-
 }

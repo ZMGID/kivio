@@ -2,8 +2,8 @@ use serde_json::Value;
 
 use super::history::{RuntimeBody, RuntimeMessage};
 #[cfg(test)]
-use crate::chat::model::is_tools_unsupported_error;
-use crate::chat::model::{GenerateOutput, MessagePart, ModelMessage, ModelRole, PendingToolCall};
+use crate::model::is_tools_unsupported_error;
+use crate::model::{GenerateOutput, MessagePart, ModelMessage, ModelRole, PendingToolCall};
 
 pub fn merge_reasoning(
     planning_parts: &[String],
@@ -62,7 +62,7 @@ pub fn final_assistant_message(content: &str, reasoning: Option<&str>) -> ModelM
 }
 
 pub fn pending_tool_calls_from_dsml(content: &str) -> Vec<PendingToolCall> {
-    crate::chat::dsml_tools::extract_dsml_tool_calls(content)
+    crate::dsml_tools::extract_dsml_tool_calls(content)
         .into_iter()
         .map(|call| {
             let arguments = Value::Object(call.arguments);
@@ -81,8 +81,8 @@ pub fn pending_tool_calls_from_dsml(content: &str) -> Vec<PendingToolCall> {
 }
 
 pub fn sanitize_assistant_text_response(content: &str) -> String {
-    let stripped = crate::chat::dsml_tools::strip_dsml_tool_markup(content);
-    if stripped.is_empty() && crate::chat::dsml_tools::contains_dsml_tool_markup(content) {
+    let stripped = crate::dsml_tools::strip_dsml_tool_markup(content);
+    if stripped.is_empty() && crate::dsml_tools::contains_dsml_tool_markup(content) {
         return String::new();
     }
     stripped
@@ -153,7 +153,7 @@ mod tests {
             "Chat tools planning Error: 400 - This model does not support images",
             "Chat tools planning Error: 400 - The `reasoning_text` in the thinking mode must be passed back to the API.",
         ] {
-            assert!(crate::chat::model::extract_status_code(error).is_some(), "fixture must exercise HTTP classification");
+            assert!(crate::model::extract_status_code(error).is_some(), "fixture must exercise HTTP classification");
             assert!(!is_tools_unsupported_error(error), "{error}");
         }
     }

@@ -180,7 +180,55 @@ impl<'a> AgentRunHandle<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::runtime_state::{ChatRunControl, ChatRuntimeState};
+    use std::sync::atomic::AtomicBool;
+    #[derive(Default)]
+    struct TestControl {
+        stopped: AtomicBool,
+        steering: Mutex<Vec<SteeringMessage>>,
+        follow_up: Mutex<Vec<SteeringMessage>>,
+        changed: tokio::sync::Notify,
+    }
+    impl AgentRunControl for TestControl {
+        fn active(&self) -> bool {
+            !self.stopped.load(Ordering::SeqCst)
+        }
+        fn stop(&self) -> StopAdmission {
+            if self.stopped.swap(true, Ordering::SeqCst) {
+                return StopAdmission::Inactive;
+            }
+            self.changed.notify_waiters();
+            StopAdmission::Requested
+        }
+        fn submit(&self, kind: InputKind, message: SteeringMessage) -> InputAdmission {
+            if !self.active() {
+                return InputAdmission::Inactive;
+            }
+            match kind {
+                InputKind::Steer => self.steering.lock().unwrap().push(message),
+                InputKind::FollowUp => self.follow_up.lock().unwrap().push(message),
+            }
+            InputAdmission::Accepted
+        }
+        fn take(&self, kind: InputKind) -> Vec<SteeringMessage> {
+            if !self.active() {
+                return Vec::new();
+            }
+            std::mem::take(&mut *match kind {
+                InputKind::Steer => self.steering.lock().unwrap(),
+                InputKind::FollowUp => self.follow_up.lock().unwrap(),
+            })
+        }
+        fn wait_inactive(&self) -> AgentHostFuture<'_, ()> {
+            Box::pin(async {
+                let changed = self.changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                if self.active() {
+                    changed.await;
+                }
+            })
+        }
+    }
 
     fn message(id: &str) -> SteeringMessage {
         SteeringMessage::new(id.into(), id).unwrap()
@@ -197,9 +245,8 @@ mod tests {
 
     #[test]
     fn handles_for_the_same_run_have_distinct_invocations_and_clones_share_one() {
-        let runtime = ChatRuntimeState::default();
-        let generation = runtime.begin_generation("conversation");
-        let control = ChatRunControl::new(&runtime, "conversation", generation);
+        let generation = 1;
+        let control = TestControl::default();
         let first = AgentRunHandle::new(identity(generation), &control);
         let clone = first.clone();
         let second = AgentRunHandle::new(identity(generation), &control);
@@ -212,11 +259,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn core_completion_closes_clones_and_wakes_waiters_before_capacity_is_released() {
-        let runtime = ChatRuntimeState::default();
-        let generation = runtime.begin_generation("conversation");
-        assert!(runtime.try_begin_reply("conversation", "run"));
-        let control = ChatRunControl::new(&runtime, "conversation", generation);
+    async fn core_completion_closes_clones_and_wakes_waiters_while_host_stays_active() {
+        let generation = 1;
+        let control = TestControl::default();
         let handle = AgentRunHandle::new(identity(generation), &control);
         let clone = handle.clone();
         let waiting = clone.wait_inactive();
@@ -235,17 +280,14 @@ mod tests {
         assert_eq!(clone.follow_up(message("late")), InputAdmission::Inactive);
         assert_eq!(clone.stop(), StopAdmission::Inactive);
         assert!(clone.take_steering().is_empty());
-        assert!(runtime.is_generation_active("conversation", generation));
-        assert!(!runtime.try_reserve_send("conversation", "next"));
-        runtime.finish_reply_generation("conversation", "run", generation);
-        assert!(runtime.try_reserve_send("conversation", "next"));
+        assert!(control.active());
+        assert_eq!(control.take(InputKind::Steer), vec![message("accepted")]);
     }
 
     #[tokio::test]
-    async fn stopped_handle_cannot_reach_replacement_run_or_its_input() {
-        let runtime = ChatRuntimeState::default();
-        let old_generation = runtime.begin_generation("conversation");
-        let old_control = ChatRunControl::new(&runtime, "conversation", old_generation);
+    async fn stopped_handle_cannot_reach_another_control_or_its_input() {
+        let old_generation = 1;
+        let old_control = TestControl::default();
         let old = AgentRunHandle::new(identity(old_generation), &old_control);
         assert_eq!(old.steer(message("old")), InputAdmission::Accepted);
         assert_eq!(old.follow_up(message("old")), InputAdmission::Accepted);
@@ -255,8 +297,8 @@ mod tests {
         assert_eq!(old.stop(), StopAdmission::Requested);
         assert!(futures::poll!(waiting.as_mut()).is_ready());
 
-        let generation = runtime.begin_generation("conversation");
-        let control = ChatRunControl::new(&runtime, "conversation", generation);
+        let generation = 2;
+        let control = TestControl::default();
         let current = AgentRunHandle::new(identity(generation), &control);
         assert!(current.take_steering().is_empty());
         assert!(current.take_follow_up().is_empty());

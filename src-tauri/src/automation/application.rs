@@ -522,7 +522,6 @@ async fn run_builtin_agent_node(
         web_search_mode,
         max_output_tokens,
         retry_attempts,
-        assistant_snapshot: None,
         provider_tools_fallback_prompt: system_prompt,
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,

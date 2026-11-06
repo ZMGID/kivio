@@ -1,8 +1,5 @@
-use super::content::{ContentPhase, ContentKind, ContentBlock};
-use crate::chat::model::{
-    FinishKind, GenerateOutput,
-    ModelError, ModelErrorKind, PendingToolCall,
-};
+use super::content::{ContentBlock, ContentKind, ContentPhase};
+use crate::model::{FinishKind, GenerateOutput, ModelError, ModelErrorKind, PendingToolCall};
 
 use super::session::{SessionPolicy, ToolsRejected};
 
@@ -19,7 +16,7 @@ use super::stream::{
 use super::types::{AgentRunResult, AgentStreamPolicy};
 
 pub(crate) struct PlannedToolRound {
-    pub(crate) message: crate::chat::model::ModelMessage,
+    pub(crate) message: crate::model::ModelMessage,
     pub(crate) finish_kind: Option<FinishKind>,
     pub(crate) tool_calls: Vec<PendingToolCall>,
     pub(crate) drafts: ToolCallDraftTracker,
@@ -148,8 +145,11 @@ pub(crate) async fn planning_step(
             state,
             super::recovery::StreamRequest {
                 call: config.model_call(
-                    send_messages.clone(), model_tools.clone(), crate::chat::model::ToolChoice::Auto,
-                    "Chat tools planning", super::provider_runtime::ModelDelivery::Streamed,
+                    send_messages.clone(),
+                    model_tools.clone(),
+                    crate::model::ToolChoice::Auto,
+                    "Chat tools planning",
+                    super::provider_runtime::ModelDelivery::Streamed,
                 ),
                 policy: stream_policy,
                 text_segment: Some(planning_text_segment.clone()),
@@ -250,7 +250,8 @@ pub(crate) async fn planning_step(
                 overflow_attempted = true;
                 let previous = send_messages.clone();
                 send_messages =
-                    super::compaction::compact_send_view(env, state, true, &model_tools, session).await?;
+                    super::compaction::compact_send_view(env, state, true, &model_tools, session)
+                        .await?;
                 if state.compaction_blocked || previous == send_messages {
                     break Err(err);
                 }
@@ -279,7 +280,8 @@ pub(crate) async fn planning_step(
             // 整轮报错丢弃成果——走与 synthesis 同一条恢复阶梯(去敏重做 → 确定性兜底),
             // 而非直接堆原始结果。
             if !state.tool_records.is_empty() {
-                let recovered = super::synthesis::recover_synthesis(env, state, &err, session).await?;
+                let recovered =
+                    super::synthesis::recover_synthesis(env, state, &err, session).await?;
                 let replay = recovered.replay;
                 let content = recovered.text;
                 if !content.trim().is_empty() {
@@ -372,8 +374,12 @@ pub(crate) async fn planning_step(
         state.planning_reasoning_parts.push(reasoning);
     }
 
-    let visible_tool_calls =
-        visible_tool_segment_calls(env.executor, &state.tools, &state.blocked_tool_calls, &tool_calls);
+    let visible_tool_calls = visible_tool_segment_calls(
+        env.executor,
+        &state.tools,
+        &state.blocked_tool_calls,
+        &tool_calls,
+    );
     let draft_tool_segments = planning_tool_drafts.segments();
     if draft_tool_segments.is_empty() {
         let tool_segments = state.segment_builder.append_tool_calls(
@@ -408,7 +414,10 @@ pub(crate) async fn stream_model_call<'a>(
     reasoning_segment: Option<ContentBlock>,
     tool_draft_tracker: Option<ToolCallDraftTracker>,
     web_search_tracker: Option<WebSearchCardTracker>,
-    speculation: Option<(&'a dyn super::execute::ToolExecutor, &'a super::execute::ToolExecutionContext<'a>)>,
+    speculation: Option<(
+        &'a dyn super::execute::ToolExecutor,
+        &'a super::execute::ToolExecutionContext<'a>,
+    )>,
 ) -> Result<GenerateOutput, ModelError> {
     let max_output_tokens = call.options.max_tokens;
     let label = call.metadata.label.clone();
@@ -419,7 +428,8 @@ pub(crate) async fn stream_model_call<'a>(
         reasoning_segment,
         tool_draft_tracker,
         web_search_tracker,
-    ).with_speculation(speculation);
+    )
+    .with_speculation(speculation);
     let result = {
         let generate = runtime.generate(call, &mut sink);
         tokio::pin!(generate);
@@ -445,13 +455,95 @@ pub(crate) async fn stream_model_call<'a>(
         host.search_updated(&record, false);
     }
     let (snapshot_content, snapshot_reasoning) = sink.snapshot();
-    let stream_output = normalize_stream_output(
-        output, snapshot_content, snapshot_reasoning, policy,
-    );
+    let stream_output =
+        normalize_stream_output(output, snapshot_content, snapshot_reasoning, policy);
     if super::recovery::is_recoverable_text_length(&stream_output, max_output_tokens) {
         sink.discard_attempt();
     }
     validate_stream_output(&label, policy, &stream_output)
         .map_err(|message| ModelError::with_kind(message, ModelErrorKind::EmptyResponse))?;
     Ok(stream_output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::content::InputKind;
+    use crate::agent::context::AgentContext;
+    use crate::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
+    use crate::agent::events::{AgentEvent, AgentRunIdentity};
+    use crate::agent::host::{AgentHost, AgentHostFuture};
+    use crate::agent::provider_runtime::{
+        ModelCall, ModelDelivery, ModelOutputSink, ModelRuntime, ProviderFuture,
+    };
+    use crate::agent::steering::SteeringMessage;
+
+    #[tokio::test]
+    async fn synthetic_model_completion_does_not_enter_stream_normalization() {
+        struct Completed;
+        impl AgentHost for Completed {}
+        impl AgentRunControl for Completed {
+            fn active(&self) -> bool {
+                true
+            }
+            fn stop(&self) -> StopAdmission {
+                StopAdmission::Requested
+            }
+            fn submit(&self, _: InputKind, _: SteeringMessage) -> InputAdmission {
+                InputAdmission::Unsupported
+            }
+            fn take(&self, _: InputKind) -> Vec<SteeringMessage> {
+                Vec::new()
+            }
+            fn wait_inactive(&self) -> AgentHostFuture<'_, ()> {
+                Box::pin(std::future::pending())
+            }
+        }
+        impl ModelRuntime for Completed {
+            fn generate<'a>(
+                &'a self,
+                _: ModelCall,
+                _: &'a mut dyn ModelOutputSink,
+            ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
+                Box::pin(async { Ok(GenerateOutput::text("  completed yield  ".into(), None)) })
+            }
+        }
+        let identity = AgentRunIdentity {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation: 1,
+        };
+        let events = |_event: &AgentEvent<'_>| -> crate::agent::events::EventDelivery {
+            panic!("synthetic completion emits no streaming events")
+        };
+        let context = AgentContext::new(
+            &Completed,
+            &events,
+            AgentRunHandle::new(identity, &Completed),
+        );
+        let output = stream_model_call(
+            &Completed,
+            &context,
+            ModelCall {
+                provider_id: String::new(),
+                model: String::new(),
+                history: Vec::new(),
+                tools: Vec::new(),
+                options: Default::default(),
+                metadata: Default::default(),
+                delivery: ModelDelivery::Streamed,
+            },
+            AgentStreamPolicy::PlanningNoDoneUntilNoTools,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.text, "  completed yield  ");
+        assert!(output.tool_calls.is_empty());
+    }
 }

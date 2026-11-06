@@ -1,0 +1,279 @@
+//! 真实用量锚点：把 provider 实报的 `usage` 作为上下文占用的 ground-truth 锚点，
+//! 只对「锚点响应**之后**新增的消息」做字符估算叠加（对齐 pi/opencode 的分层口径：
+//! API usage 为主，chars 启发式仅兜底）。
+//!
+//! 口径对齐 pi 的 `contextTokens = calculateContextTokens(lastUsage) + Σ estimate(其后消息)`：
+//! - `anchor_total_tokens` = 上次调用「整个 prompt + 该次响应」的真实 token 数（= 下一次请求
+//!   input 的主体，含 output，因为响应已成为历史）；
+//! - trailing 估算只覆盖锚点响应**之后**新增的消息（响应本身用真实 output 计入锚点，不重复估）；
+//! - 有有效实报就使用实报，只估算其后的新增内容；没有有效实报才整体估算。
+
+use super::ModelUsage;
+
+/// provider 实报 `usage` → 「上次整个 prompt + 该次响应」的 token 总数（对齐 pi 的
+/// `calculateContextTokens = totalTokens || input+output+cacheRead+cacheWrite`），按 provider
+/// 家族消歧缓存计数：
+/// - `anthropic_messages`：`input_tokens` 是**非缓存**部分，全量 = `input + output + cache_read +
+///   cache_creation`（四者不相交）。**不**用 Kivio 的 `total_tokens`——它对 Anthropic 只存
+///   `input+output`、漏了 cache（见 `usage::model_usage_from_anthropic_value`）。
+/// - 其它（`openai_*` / responses）：优先 `total_tokens`（= prompt+completion，prompt 已含 cached，
+///   无双算）；缺失则 `input(=prompt,含cached) + output`。**不**再叠加 cached（子集，叠加即双算，
+///   opencode #4416 踩过）。
+///
+/// 所需字段全缺（provider 未报）→ `None`，调用方回落纯估算。
+pub fn anchor_total_tokens(usage: &ModelUsage, api_format: &str) -> Option<u64> {
+    if api_format == "anthropic_messages" {
+        let input = usage.input_tokens?;
+        Some(
+            input
+                .saturating_add(usage.output_tokens.unwrap_or(0))
+                .saturating_add(usage.cached_input_tokens.unwrap_or(0))
+                .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0)),
+        )
+    } else {
+        usage.total_tokens.or_else(|| {
+            usage
+                .input_tokens
+                .map(|input| input.saturating_add(usage.output_tokens.unwrap_or(0)))
+        })
+    }
+}
+
+/// 只算 **prompt 侧**（不含本次输出）的 token —— `anchor_total_tokens` 减掉 output。
+///
+/// 静默超窗检测（pi `isContextOverflow` case 2/3）要比的是「我们发过去多少」和
+/// 「窗口多大」，把响应的 output 算进来会让判定虚高。分家族口径与
+/// `anchor_total_tokens` 一致：
+/// - `anthropic_messages`：`input_tokens` 是**非缓存**部分，全量 prompt =
+///   `input + cache_read + cache_creation`（三者不相交，对齐 pi 的 `input + cacheRead`）。
+/// - 其它（`openai_*` / responses）：`input_tokens`(=prompt) 已含 cached，**不**再叠加。
+pub fn prompt_tokens(usage: &ModelUsage, api_format: &str) -> Option<u64> {
+    let input = usage.input_tokens?;
+    if api_format == "anthropic_messages" {
+        Some(
+            input
+                .saturating_add(usage.cached_input_tokens.unwrap_or(0))
+                .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0)),
+        )
+    } else {
+        Some(input)
+    }
+}
+
+/// Normalized input and cache-read totals. Missing cache telemetry is not a measured zero.
+pub fn cache_usage(usage: &ModelUsage, api_format: &str) -> Option<(u64, u64)> {
+    let input = prompt_tokens(usage, api_format)?;
+    let read = usage.cached_input_tokens?;
+    (input > 0 && read <= input).then_some((input, read))
+}
+
+/// 计算上下文有效占用与是否采用了真实锚点。
+///
+/// - `anchor_total`：`Some` = 有可用锚点（上次「prompt+响应」真实 token 总数）；`None` = 无锚点。
+/// - `trailing_estimate`：锚点响应**之后**新增消息的字符估算。
+/// - `estimate_full`：整段对话的纯字符估算（含工具 schema），仅在无锚点时兜底。
+///
+/// 返回 `(tokens, anchored)`：`anchored` 表示采用了实报锚点。
+/// 若还含 trailing_estimate，调用方须标明是实报加增量估算，而不是纯实报。
+pub fn effective_context_tokens(
+    anchor_total: Option<u64>,
+    trailing_estimate: usize,
+    estimate_full: usize,
+) -> (usize, bool) {
+    match anchor_total {
+        Some(total) => (
+            usize::try_from(total)
+                .unwrap_or(usize::MAX)
+                .saturating_add(trailing_estimate),
+            true,
+        ),
+        None => (estimate_full, false),
+    }
+}
+
+/// Add one request's cache pair. A missing cache or input field is skipped entirely,
+/// so it cannot shrink the denominator the way a zero would.
+pub fn accumulate_cache_pair(total: &mut Option<(u64, u64)>, usage: &ModelUsage, api_format: &str) {
+    let Some(pair) = cache_usage(usage, api_format) else {
+        return;
+    };
+    add_cache_pairs(total, Some(pair));
+}
+
+pub fn add_cache_pairs(total: &mut Option<(u64, u64)>, next: Option<(u64, u64)>) {
+    let Some((input, read)) = next else {
+        return;
+    };
+    if input == 0 || read > input {
+        return;
+    }
+    match total {
+        Some((acc_input, acc_read)) => {
+            *acc_input = acc_input.saturating_add(input);
+            *acc_read = acc_read.saturating_add(read);
+        }
+        None => *total = Some((input, read)),
+    }
+}
+
+pub fn combine_cache(
+    initial: Option<(u64, u64)>,
+    run_pairs: Option<(u64, u64)>,
+) -> Option<(u64, u64)> {
+    let mut total = None;
+    add_cache_pairs(&mut total, initial);
+    add_cache_pairs(&mut total, run_pairs);
+    total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn usage(input: Option<u64>, cached: Option<u64>, cache_create: Option<u64>) -> ModelUsage {
+        ModelUsage {
+            input_tokens: input,
+            output_tokens: Some(100),
+            total_tokens: None,
+            cached_input_tokens: cached,
+            cache_creation_input_tokens: cache_create,
+            reasoning_tokens: None,
+            context_window_tokens: None,
+            context_tokens: None,
+        }
+    }
+
+    #[test]
+    fn anthropic_sums_disjoint_parts_including_output() {
+        // Anthropic: input 非缓存 + output + cache_read + cache_creation = 全量（含响应）。
+        let u = usage(Some(100_000), Some(50_000), Some(20_000));
+        assert_eq!(
+            anchor_total_tokens(&u, "anthropic_messages"),
+            Some(170_100) // 100000 + 100(out) + 50000 + 20000
+        );
+    }
+
+    #[test]
+    fn anthropic_ignores_kivio_total_tokens_missing_cache() {
+        // 即便 total_tokens 存在（Kivio 对 Anthropic 只填 input+output、漏 cache），也不能用它，
+        // 必须显式加 cache。
+        let mut u = usage(Some(100_000), Some(50_000), None);
+        u.total_tokens = Some(100_100); // = input+output，漏了 cache
+        assert_eq!(
+            anchor_total_tokens(&u, "anthropic_messages"),
+            Some(150_100) // 100000 + 100 + 50000（cache 必须算进去）
+        );
+    }
+
+    #[test]
+    fn openai_prefers_total_tokens_no_double_count() {
+        // OpenAI: 有 total_tokens 直接用（prompt 已含 cached，无双算）。
+        let mut u = usage(Some(100_000), Some(50_000), None);
+        u.total_tokens = Some(100_500);
+        assert_eq!(anchor_total_tokens(&u, "openai_chat"), Some(100_500));
+    }
+
+    #[test]
+    fn openai_falls_back_to_input_plus_output() {
+        // 无 total_tokens：input(=prompt,含cached) + output，绝不叠加 cached。
+        let u = usage(Some(100_000), Some(50_000), None);
+        assert_eq!(anchor_total_tokens(&u, "openai_chat"), Some(100_100));
+        assert_eq!(anchor_total_tokens(&u, "openai_responses"), Some(100_100));
+    }
+
+    #[test]
+    fn missing_fields_yield_none() {
+        let mut u = usage(None, Some(10), None);
+        u.total_tokens = None;
+        assert_eq!(anchor_total_tokens(&u, "anthropic_messages"), None);
+        assert_eq!(anchor_total_tokens(&u, "openai_chat"), None);
+    }
+
+    #[test]
+    fn effective_prefers_anchor_when_not_smaller() {
+        assert_eq!(
+            effective_context_tokens(Some(240_000), 2_000, 90_000),
+            (242_000, true)
+        );
+    }
+
+    #[test]
+    fn effective_reported_usage_wins_over_larger_estimate() {
+        assert_eq!(
+            effective_context_tokens(Some(269_150), 0, 339_433),
+            (269_150, true)
+        );
+    }
+
+    #[test]
+    fn effective_estimates_only_messages_after_reported_usage() {
+        assert_eq!(
+            effective_context_tokens(Some(269_150), 200, 339_433),
+            (269_350, true)
+        );
+    }
+
+    #[test]
+    fn effective_no_anchor_uses_estimate() {
+        assert_eq!(effective_context_tokens(None, 0, 42_000), (42_000, false));
+    }
+
+    #[test]
+    fn prompt_tokens_excludes_output_and_sums_anthropic_cache() {
+        // Anthropic: input 是非缓存部分，cache 必须补上；output(100) 不能算进来。
+        let u = usage(Some(100_000), Some(50_000), Some(20_000));
+        assert_eq!(prompt_tokens(&u, "anthropic_messages"), Some(170_000));
+        // OpenAI 系：input 已含 cached，不再叠加，也不含 output。
+        assert_eq!(prompt_tokens(&u, "openai_chat"), Some(100_000));
+        assert_eq!(prompt_tokens(&u, "openai_responses"), Some(100_000));
+    }
+
+    #[test]
+    fn prompt_tokens_needs_input() {
+        let u = usage(None, Some(10), Some(10));
+        assert_eq!(prompt_tokens(&u, "anthropic_messages"), None);
+        assert_eq!(prompt_tokens(&u, "openai_chat"), None);
+    }
+    fn cache_test_usage(input: Option<u64>, cached: Option<u64>) -> ModelUsage {
+        ModelUsage {
+            input_tokens: input,
+            output_tokens: Some(1),
+            cached_input_tokens: cached,
+            ..ModelUsage::default()
+        }
+    }
+
+    #[test]
+    fn incomplete_cache_pair_does_not_change_the_denominator() {
+        let mut one_run = None;
+        accumulate_cache_pair(
+            &mut one_run,
+            &cache_test_usage(Some(100), Some(90)),
+            "openai_chat",
+        );
+        accumulate_cache_pair(
+            &mut one_run,
+            &cache_test_usage(Some(900), None),
+            "openai_chat",
+        );
+
+        let mut first = None;
+        accumulate_cache_pair(
+            &mut first,
+            &cache_test_usage(Some(100), Some(90)),
+            "openai_chat",
+        );
+        let mut second = None;
+        accumulate_cache_pair(
+            &mut second,
+            &cache_test_usage(Some(900), None),
+            "openai_chat",
+        );
+        let mut two_runs = None;
+        add_cache_pairs(&mut two_runs, first);
+        add_cache_pairs(&mut two_runs, second);
+
+        assert_eq!(one_run, Some((100, 90)));
+        assert_eq!(two_runs, one_run);
+    }
+}

@@ -1,4 +1,4 @@
-use crate::chat::model::ModelTool;
+use crate::model::ModelTool;
 
 #[derive(Debug, Clone, Default)]
 pub struct ToolLabel {

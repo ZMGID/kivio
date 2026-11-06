@@ -1,5 +1,4 @@
 use super::content::{AgentToolCall, ContentBlock};
-use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentRunEntry {
@@ -33,8 +32,8 @@ pub struct AgentRunConfig<'a> {
     pub api_format: String,
     pub model: String,
     pub runtime_messages: Vec<super::history::RuntimeMessage>,
-    pub tools: Vec<crate::chat::tools::ToolDefinition>,
-    pub blocked_tool_calls: Vec<crate::chat::tools::ToolDefinition>,
+    pub tools: Vec<crate::tools::ToolDefinition>,
+    pub blocked_tool_calls: Vec<crate::tools::ToolDefinition>,
     pub thinking_enabled: bool,
     pub thinking_level: Option<String>,
     pub builtin_web_search: bool,
@@ -51,8 +50,8 @@ impl AgentRunConfig<'_> {
     pub(crate) fn model_call(
         &self,
         history: Vec<super::history::RuntimeMessage>,
-        tools: Vec<crate::chat::model::ModelTool>,
-        tool_choice: crate::chat::model::ToolChoice,
+        tools: Vec<crate::model::ModelTool>,
+        tool_choice: crate::model::ToolChoice,
         label: &str,
         delivery: super::provider_runtime::ModelDelivery,
     ) -> super::provider_runtime::ModelCall {
@@ -62,7 +61,7 @@ impl AgentRunConfig<'_> {
             history,
             tools,
             delivery,
-            options: crate::chat::model::GenerateOptions {
+            options: crate::model::GenerateOptions {
                 thinking_enabled: self.thinking_enabled,
                 thinking_level: self.thinking_level.clone(),
                 builtin_web_search: self.builtin_web_search,
@@ -70,7 +69,7 @@ impl AgentRunConfig<'_> {
                 max_tokens: self.max_output_tokens,
                 ..Default::default()
             },
-            metadata: crate::chat::model::RequestMetadata {
+            metadata: crate::model::RequestMetadata {
                 label: label.into(),
                 conversation_id: Some(self.conversation_id.clone()),
                 message_id: Some(self.message_id.clone()),
@@ -91,24 +90,21 @@ pub enum AgentRunStatus {
 
 #[derive(Debug, Clone)]
 pub struct AgentRunResult {
-    pub(crate) final_message: Option<crate::chat::model::ModelMessage>,
+    pub(crate) final_message: Option<crate::model::ModelMessage>,
     pub content: String,
     pub reasoning: Option<String>,
     pub tool_records: Vec<AgentToolCall>,
     pub segments: Vec<ContentBlock>,
-    pub api_messages: Vec<Value>,
+    pub generated_history: Vec<super::history::RuntimeMessage>,
     pub status: AgentRunStatus,
-    /// 本轮全部模型调用（规划/合成/压缩摘要）累计的 provider 真实 usage；
-    /// provider 不报告时为 None（前端回落到 chars 估算）。
-    pub usage: Option<crate::chat::model::ModelUsage>,
+    /// Accumulated reported model usage. Absent when no request reports usage.
+    pub usage: Option<crate::model::ModelUsage>,
     /// Sum of complete per-request cache telemetry pairs; independent of billing usage.
     pub cache_pairs: Option<(u64, u64)>,
-    /// 本轮**最后一次**模型调用的 usage（真实用量锚点，落盘到 `ChatMessage.anchor_usage`）。
-    /// 与累计 `usage` 区分——累计是多步之和会虚高，锚点须是单次调用值。None = provider 未报。
-    pub last_step_usage: Option<crate::chat::model::ModelUsage>,
+    /// Usage from the latest model request, separate from accumulated billing usage.
+    pub last_step_usage: Option<crate::model::ModelUsage>,
     pub history: Vec<super::history::RuntimeMessage>,
     pub compacted: bool,
-    /// 模型原生生成的图片（Gemini native image gen，任务 07-24）：跨轮累积的
-    /// `GenerateOutput.images`，reply 侧落成 assistant 消息级 artifacts。空 = 未出图。
-    pub images: Vec<crate::chat::model::GeneratedImageData>,
+    /// Generated image payloads accumulated during this run. The host owns persistence.
+    pub images: Vec<crate::model::GeneratedImageData>,
 }

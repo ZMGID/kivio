@@ -293,6 +293,7 @@ pub(crate) fn is_silent_overflow(prompt_tokens: Option<u64>, window: usize) -> b
     prompt as f64 >= window as f64 * SILENT_OVERFLOW_RATIO
 }
 
+#[cfg(test)]
 pub(crate) fn classify(message: &str) -> FailureKind {
     failure_kind(ModelError::new(message).kind)
 }

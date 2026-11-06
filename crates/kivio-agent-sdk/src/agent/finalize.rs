@@ -1,7 +1,7 @@
-use super::content::{ContentPhase, ContentKind, ContentBlock, AgentToolCall};
-use super::history::{export_history, RuntimeMessage};
+use super::content::{AgentToolCall, ContentBlock, ContentKind, ContentPhase};
+use super::history::RuntimeMessage;
 
-use crate::chat::model::{GenerateOutput, ModelMessage, PendingToolCall};
+use crate::model::{GenerateOutput, ModelMessage, PendingToolCall};
 
 use super::loop_::{LoopEnv, RunState};
 use super::stop::{
@@ -93,7 +93,8 @@ impl<'a> RunResultBuilder<'a> {
 
     fn emit(&self) {
         if self.emit_done_reason.is_some() {
-            self.host.content(&self.content, None, self.emit_segment.as_ref());
+            self.host
+                .content(&self.content, None, self.emit_segment.as_ref());
         }
     }
 
@@ -143,7 +144,7 @@ impl<'a> RunResultBuilder<'a> {
             reasoning: merge_reasoning(planning_reasoning_parts, self.reasoning_tail),
             tool_records,
             segments: segment_builder.all(),
-            api_messages: export_history(&generated_api_messages),
+            generated_history: generated_api_messages,
             status: self.outcome,
             usage: None,
             cache_pairs: None,
@@ -306,7 +307,7 @@ pub(crate) fn finalize_planning_final(
         reasoning,
         tool_records: std::mem::take(&mut state.tool_records),
         segments: std::mem::take(&mut state.segment_builder).all(),
-        api_messages: export_history(&std::mem::take(&mut state.generated_api_messages)),
+        generated_history: std::mem::take(&mut state.generated_api_messages),
         status: super::types::AgentRunStatus::Completed,
         usage: None,
         cache_pairs: None,
@@ -353,7 +354,7 @@ pub(crate) fn finalize_completed(
         reasoning,
         tool_records: std::mem::take(&mut state.tool_records),
         segments: std::mem::take(&mut state.segment_builder).all(),
-        api_messages: export_history(&std::mem::take(&mut state.generated_api_messages)),
+        generated_history: std::mem::take(&mut state.generated_api_messages),
         status: super::types::AgentRunStatus::Completed,
         usage: None,
         cache_pairs: None,
@@ -386,20 +387,17 @@ pub(crate) fn tool_planning_failed_run_result(
     let appended_segment =
         segment_builder.append_text_from_template(&final_segment, content.clone());
 
-    RunResultBuilder::new(
-        host,
-        content,
-    )
-    .emit_segment_opt(appended_segment)
-    .emit_done("done")
-    .push_api_always()
-    .outcome(super::types::AgentRunStatus::Failed(error))
-    .finish(
-        segment_builder,
-        planning_reasoning_parts,
-        failed_records,
-        generated_api_messages,
-    )
+    RunResultBuilder::new(host, content)
+        .emit_segment_opt(appended_segment)
+        .emit_done("done")
+        .push_api_always()
+        .outcome(super::types::AgentRunStatus::Failed(error))
+        .finish(
+            segment_builder,
+            planning_reasoning_parts,
+            failed_records,
+            generated_api_messages,
+        )
 }
 
 pub(crate) fn cancelled_tool_round_run_result(
@@ -414,7 +412,7 @@ pub(crate) fn cancelled_tool_round_run_result(
         reasoning: merge_reasoning(planning_reasoning_parts, None),
         tool_records,
         segments,
-        api_messages: export_history(&generated_api_messages),
+        generated_history: generated_api_messages,
         status: super::types::AgentRunStatus::Cancelled,
         usage: None,
         cache_pairs: None,
@@ -438,4 +436,283 @@ pub(crate) fn cancelled_run_result_from_state(state: &mut RunState) -> AgentRunR
         std::mem::take(&mut state.segment_builder).all(),
         std::mem::take(&mut state.generated_api_messages),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::content::{AgentToolStatus, InputKind};
+    use crate::agent::context::AgentContext;
+    use crate::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
+    use crate::agent::events::{
+        AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery,
+    };
+    use crate::agent::history::{export_history, import_history};
+    use crate::agent::host::{AgentHost, AgentHostFuture};
+    use crate::agent::steering::SteeringMessage;
+    use crate::agent::stream::AgentStreamSink;
+    use crate::model::{StreamPart, StreamSink};
+    use serde_json::Value;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct TestHost {
+        records: Mutex<Vec<AgentToolCall>>,
+        deltas: Mutex<Vec<String>>,
+    }
+    impl AgentHost for TestHost {}
+    impl AgentRunControl for TestHost {
+        fn active(&self) -> bool {
+            true
+        }
+        fn stop(&self) -> StopAdmission {
+            StopAdmission::Requested
+        }
+        fn submit(&self, _: InputKind, _: SteeringMessage) -> InputAdmission {
+            InputAdmission::Unsupported
+        }
+        fn take(&self, _: InputKind) -> Vec<SteeringMessage> {
+            Vec::new()
+        }
+        fn wait_inactive(&self) -> AgentHostFuture<'_, ()> {
+            Box::pin(std::future::pending())
+        }
+    }
+    impl AgentEventSink for TestHost {
+        fn on_event(&self, event: &AgentEvent<'_>) -> EventDelivery {
+            match &event.kind {
+                AgentEventKind::ToolUpdated(call) => {
+                    self.records.lock().unwrap().push((*call).clone())
+                }
+                AgentEventKind::Content { delta, .. } => {
+                    self.deltas.lock().unwrap().push((*delta).into())
+                }
+                _ => {}
+            }
+            EventDelivery::Accepted
+        }
+    }
+    fn test_context(host: &TestHost) -> AgentContext<'_> {
+        let identity = AgentRunIdentity {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation: 1,
+        };
+        AgentContext::new(host, host, AgentRunHandle::new(identity, host))
+    }
+    #[test]
+    fn reasoning_segment_order_precedes_text_in_same_step() {
+        let mut builder = SegmentBuilder::new();
+        let reasoning = builder.reserve(
+            ContentKind::Reasoning,
+            ContentPhase::ToolLoop,
+            Some(1),
+            Some(1),
+            "step_1_reasoning",
+        );
+        let text = builder.reserve(
+            ContentKind::Text,
+            ContentPhase::ToolLoop,
+            Some(1),
+            Some(1),
+            "step_1_text",
+        );
+
+        assert!(reasoning.id < text.id);
+    }
+
+    #[test]
+    fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
+        let tool_record = AgentToolCall {
+            id: "call_read".to_string(),
+            name: "read".to_string(),
+            source: "native".to_string(),
+            server_id: None,
+            arguments: "{}".to_string(),
+            status: AgentToolStatus::Cancelled,
+            output: None,
+            output_limit: None,
+            draft: None,
+            error: Some("Tool call cancelled".to_string()),
+            duration_ms: Some(5),
+            started_at: Some(10),
+            completed_at: Some(11),
+            round: 1,
+            sensitive: false,
+            artifacts: Vec::new(),
+            structured_content: None,
+        };
+        let assistant_message = serde_json::json!({
+            "role": "assistant",
+            "content": Value::Null,
+            "tool_calls": [{
+                "id": "call_read",
+                "type": "function",
+                "function": {
+                    "name": "read",
+                    "arguments": "{}",
+                }
+            }],
+        });
+        let tool_response = serde_json::json!({"role":"tool","tool_call_id":"call_read","content":"Tool call cancelled"});
+        let result = cancelled_tool_round_run_result(
+            &["planning".to_string()],
+            vec![tool_record.clone()],
+            vec![ContentBlock {
+                id: 1000,
+                kind: ContentKind::Tool,
+                phase: ContentPhase::ToolLoop,
+                step_number: Some(1),
+                round: Some(1),
+                text: None,
+                tool_call_id: Some("call_read".to_string()),
+            }],
+            import_history(vec![assistant_message.clone(), tool_response.clone()]),
+        );
+
+        let api_messages = export_history(&result.generated_history);
+        assert!(result.content.is_empty());
+        assert_eq!(
+            result.status,
+            crate::agent::types::AgentRunStatus::Cancelled
+        );
+        assert_eq!(result.reasoning.as_deref(), Some("planning"));
+        assert_eq!(result.tool_records.len(), 1);
+        assert!(result.segments.iter().any(|segment| {
+            segment.kind == ContentKind::Tool
+                && segment.tool_call_id.as_deref() == Some("call_read")
+        }));
+        assert!(!result
+            .segments
+            .iter()
+            .any(|segment| segment.kind == ContentKind::Text));
+        assert!(matches!(
+            result.tool_records[0].status,
+            AgentToolStatus::Cancelled
+        ));
+        assert_eq!(api_messages, vec![assistant_message, tool_response]);
+        assert_eq!(
+            api_messages[0]
+                .get("tool_calls")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            api_messages[1].get("tool_call_id").and_then(Value::as_str),
+            Some("call_read")
+        );
+    }
+
+    #[test]
+    fn tool_planning_failed_run_result_marks_drafts_error_and_emits_fallback() {
+        let host = TestHost::default();
+
+        let mut segment_builder = SegmentBuilder::new();
+        let _reasoning_segment = segment_builder.reserve(
+            ContentKind::Reasoning,
+            ContentPhase::ToolLoop,
+            Some(1),
+            Some(1),
+            "step_1_reasoning",
+        );
+        let planning_text_segment = segment_builder.reserve(
+            ContentKind::Text,
+            ContentPhase::ToolLoop,
+            Some(1),
+            Some(1),
+            "step_1_text",
+        );
+        let tracker = ToolCallDraftTracker::new(
+            vec![crate::tools::ToolDefinition::new(crate::model::ModelTool {
+                name: "write".into(),
+                description: String::new(),
+                input_schema: serde_json::json!({"type":"object"}),
+            })],
+            1,
+            Some(1),
+            segment_builder.next_order(),
+        );
+        let context = test_context(&host);
+        let mut sink =
+            AgentStreamSink::new(&context, true, None, None, Some(tracker.clone()), None);
+        sink.emit(StreamPart::ToolCallStart {
+            id: "call_write".to_string(),
+            name: "write".to_string(),
+        })
+        .expect("tool call start should emit");
+        sink.emit(StreamPart::ToolCallDelta {
+            id: "call_write".to_string(),
+            delta: "{\"path\":\"large.html\",\"content\":\"".to_string(),
+        })
+        .expect("tool call delta should emit");
+        assert!(tracker.has_started());
+
+        let result = tool_planning_failed_run_result(
+            &context,
+            "Planning failed before execution".into(),
+            segment_builder,
+            planning_text_segment,
+            tracker,
+            &["planning thought".to_string()],
+            Vec::new(),
+            "Chat tools planning read body failed".to_string(),
+        );
+
+        let api_messages = export_history(&result.generated_history);
+        let fallback = "Planning failed before execution";
+        assert_eq!(
+            result.status,
+            crate::agent::types::AgentRunStatus::Failed(
+                "Chat tools planning read body failed".into()
+            )
+        );
+        assert_eq!(result.content, fallback);
+        assert_eq!(result.reasoning.as_deref(), Some("planning thought"));
+        assert_eq!(result.tool_records.len(), 1);
+        assert_eq!(result.tool_records[0].id, "call_write");
+        assert!(matches!(
+            result.tool_records[0].status,
+            AgentToolStatus::Error
+        ));
+        assert_eq!(
+            result.tool_records[0].error.as_deref(),
+            Some("Chat tools planning read body failed")
+        );
+        assert!(result.tool_records[0].completed_at.is_some());
+
+        let emitted = host.records.lock().unwrap();
+        let last_emitted = emitted.last().expect("error record emitted");
+        assert_eq!(last_emitted.id, "call_write");
+        assert!(matches!(last_emitted.status, AgentToolStatus::Error));
+
+        assert!(result.segments.iter().any(|segment| {
+            segment.kind == ContentKind::Tool
+                && segment.tool_call_id.as_deref() == Some("call_write")
+        }));
+        let fallback_segment = result
+            .segments
+            .iter()
+            .find(|segment| segment.kind == ContentKind::Text)
+            .expect("fallback text segment");
+        assert_eq!(fallback_segment.phase, ContentPhase::Synthesis);
+        assert_eq!(fallback_segment.round, None);
+        assert_eq!(fallback_segment.text.as_deref(), Some(fallback));
+
+        assert!(host
+            .deltas
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|delta| delta == fallback));
+
+        assert_eq!(api_messages.len(), 1);
+        assert_eq!(
+            api_messages[0].get("content").and_then(Value::as_str),
+            Some(fallback)
+        );
+
+        assert_eq!(result.tool_records.len(), 1);
+    }
 }

@@ -136,8 +136,8 @@ fn report_inputs(
         .iter()
         .flat_map(|message| {
             [
-                message.source.subagent_result_id.as_deref(),
-                message.source.ui_message_id.as_deref(),
+                message.source.get("_subagent_result_id").and_then(serde_json::Value::as_str),
+                message.source.get("_ui_message_id").and_then(serde_json::Value::as_str),
             ]
         })
         .flatten()
@@ -451,7 +451,7 @@ mod tests {
         );
         assert_eq!(inputs.len(), 1);
         assert_eq!(
-            inputs[0].source.subagent_result_id.as_deref(),
+            inputs[0].source.get("_subagent_result_id").and_then(serde_json::Value::as_str),
             Some(new[0].0.as_str())
         );
         assert_eq!(report_inputs(retried_batch.to_vec(), &[]).len(), 2);

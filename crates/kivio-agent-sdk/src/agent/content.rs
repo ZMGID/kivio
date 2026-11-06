@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::chat::model::{ModelArtifact, WebCitation};
+use crate::model::{ModelArtifact, WebCitation};
 
 use super::steering::SteeringMessage;
 

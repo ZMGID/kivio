@@ -8,7 +8,6 @@ use std::{
 
 use chrono::{Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -1027,63 +1026,9 @@ fn finalize_groups(groups: BTreeMap<String, UsageGroupStatsAccumulator>) -> Vec<
     stats
 }
 
-pub fn model_usage_from_openai_value(value: &Value) -> Option<ModelUsage> {
-    let usage = value.get("usage")?;
-    let prompt_details = usage
-        .get("prompt_tokens_details")
-        .or_else(|| usage.get("input_tokens_details"));
-    let completion_details = usage
-        .get("completion_tokens_details")
-        .or_else(|| usage.get("output_tokens_details"));
-    Some(ModelUsage {
-        input_tokens: usage
-            .get("prompt_tokens")
-            .and_then(Value::as_u64)
-            .or_else(|| usage.get("input_tokens").and_then(Value::as_u64)),
-        output_tokens: usage
-            .get("completion_tokens")
-            .and_then(Value::as_u64)
-            .or_else(|| usage.get("output_tokens").and_then(Value::as_u64)),
-        total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
-        cached_input_tokens: prompt_details
-            .and_then(|details| details.get("cached_tokens"))
-            .and_then(Value::as_u64),
-        cache_creation_input_tokens: prompt_details
-            .and_then(|details| details.get("cache_creation_tokens"))
-            .and_then(Value::as_u64),
-        reasoning_tokens: completion_details
-            .and_then(|details| details.get("reasoning_tokens"))
-            .and_then(Value::as_u64),
-        // 内置 provider 路径：窗口来自 model_metadata，不由响应携带。
-        context_window_tokens: None,
-        context_tokens: None,
-    })
-}
-
-pub fn model_usage_from_anthropic_value(value: &Value) -> Option<ModelUsage> {
-    let usage = value.get("usage")?;
-    let input = usage.get("input_tokens").and_then(Value::as_u64);
-    let output = usage.get("output_tokens").and_then(Value::as_u64);
-    let cache_creation = usage
-        .get("cache_creation_input_tokens")
-        .and_then(Value::as_u64);
-    let cache_read = usage.get("cache_read_input_tokens").and_then(Value::as_u64);
-    Some(ModelUsage {
-        input_tokens: input,
-        output_tokens: output,
-        total_tokens: input.zip(output).map(|(a, b)| a.saturating_add(b)),
-        cached_input_tokens: cache_read,
-        cache_creation_input_tokens: cache_creation,
-        reasoning_tokens: None,
-        // 内置 provider 路径：窗口来自 model_metadata，不由响应携带。
-        context_window_tokens: None,
-        context_tokens: None,
-    })
-}
-
-pub fn model_usage_from_stream_value(value: &Value) -> Option<ModelUsage> {
-    model_usage_from_openai_value(value).or_else(|| model_usage_from_anthropic_value(value))
-}
+pub use kivio_agent_sdk::model::usage::{
+    model_usage_from_anthropic_value, model_usage_from_openai_value,
+};
 
 pub fn chat_usage_source_for_label(label: &str) -> String {
     let lower = label.to_ascii_lowercase();

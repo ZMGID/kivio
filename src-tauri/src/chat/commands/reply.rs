@@ -936,7 +936,6 @@ pub(super) async fn complete_assistant_reply_inner(
             web_search_mode,
             max_output_tokens,
             retry_attempts,
-            assistant_snapshot: conversation.assistant_snapshot.clone(),
             provider_tools_fallback_prompt,
             initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
             initial_anchor_total_tokens,

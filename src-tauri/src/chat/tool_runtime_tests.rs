@@ -6,7 +6,7 @@ mod tests {
     use std::time::Duration;
     use crate::chat::types::{ToolCallRecord, ToolCallStatus, ChatMessageSegment};
     use crate::chat::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
-    use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentEvents, AgentRunIdentity, EventDelivery};
+    use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery};
     use crate::chat::agent::content::InputKind;
     use crate::chat::agent::steering::SteeringMessage;
     use crate::chat::agent::context::AgentContext;
@@ -1173,7 +1173,7 @@ impl AgentEventSink for ExecuteTestHost {
 fn test_context(host: &ExecuteTestHost) -> AgentContext<'_> {
     let identity = AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1 };
     let control = AgentRunHandle::new(identity, host);
-    AgentContext { host, events: AgentEvents::new(identity, host, host.hooks().map(|hooks| hooks as &dyn AgentEventSink), control.invocation_id()), control }
+    AgentContext::new(host, host, control)
 }
 
 async fn execute_tool_call(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> (ToolCallRecord, String, Vec<Value>) {

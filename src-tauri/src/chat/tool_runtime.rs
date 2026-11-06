@@ -409,10 +409,6 @@ async fn execute_ask_user_call(
     )
 }
 
-pub fn disabled_tool_content(call: &PendingToolCall) -> Option<String> {
-    disabled_builtin_tool_feedback(&call.function_name)
-}
-
 pub fn tool_requires_approval(settings: &Settings, tool: &ChatToolDefinition) -> bool {
     tool_requires_approval_for_policy(&settings.chat_tools.approval_policy, tool)
 }
@@ -521,6 +517,7 @@ pub struct ToolAuthority<'a> {
 }
 
 impl<'a> ToolAuthority<'a> {
+    #[cfg(test)]
     pub fn from_context(ctx: &'a ToolExecutionContext<'a>) -> Self {
         Self {
             provider: ctx.provider,
