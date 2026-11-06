@@ -201,9 +201,32 @@ it('keeps a rejected task and its error inspectable without claiming it ran', ()
   render(<ToolCallBlock toolCall={{ id: 'task', source: 'native', name: 'task', status: 'error', arguments: { tasks: [{ name: '调查', task: 'Read package.json', solutionSpace: 'Read only' }] }, error: 'Task rejected' }} />)
   expect(screen.getByRole('button', { name: '调查 派工失败' })).toBeVisible()
   expect(screen.queryByRole('button', { name: '调查 开始工作' })).toBeNull()
+  expect(screen.queryByText('Task rejected')).not.toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: /调查/ }))
   expect(screen.getByRole('alert')).toHaveTextContent('Task rejected')
   expect(screen.getByText('Read package.json')).toBeVisible()
+})
+
+it('shows individual failures without duplicating them or exposing the raw task receipt', () => {
+  const structured = {
+    agents: [{ agentId: 'inline', name: 'Inline' }, { agentId: 'background', name: 'Background' }],
+    subagentProgressByTask: { inline: { status: 'failed' }, background: { status: 'running' } },
+  }
+  const tool: ToolCallRecord = {
+    id: 'mixed', source: 'native', name: 'task', status: 'error',
+    error: '<task-result>Worker failed</task-result> Spawned 1 background agent.',
+    structured_content: structured,
+  }
+  const { rerender } = render(<ToolCallBlock toolCall={tool} />)
+  expect(screen.getByRole('button', { name: 'Inline 失败' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Background 开始工作' })).toBeVisible()
+  expect(screen.queryByText(/<task-result>/)).not.toBeInTheDocument()
+
+  rerender(<ToolCallBlock toolCall={{ ...tool, structured_content: {
+    ...structured, timelineAgentIds: ['inline', 'background'],
+  } }} />)
+  expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  expect(screen.queryByText(/<task-result>/)).not.toBeInTheDocument()
 })
 
 it('renders mixed inline results once while keeping rich asynchronous progress and current context separate', () => {

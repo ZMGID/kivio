@@ -118,7 +118,7 @@ export function SubagentTimelineEvents({ toolCall, conversationId }: { toolCall:
           : state === 'aborted' || state === 'cancelled' ? t('已中断', 'was interrupted') : ''
     return action ? [{ id: row.id, key: row.id || row.index, name: row.name || t('子代理', 'Subagent'), action }] : []
   })
-  if (events.length === 0 && (dispatchStatus || issue)) events.push({
+  if (rows.length === 0 && timelineAgentIds.size === 0 && (dispatchStatus || issue)) events.push({
     id: '', key: 'dispatch', name: tasks.length === 1
       ? text(tasks[0].name) || text(tasks[0].agent) || t('子代理', 'Subagents')
       : t('子代理', 'Subagents'),
@@ -142,7 +142,6 @@ export function SubagentTimelineEvents({ toolCall, conversationId }: { toolCall:
         </IconButton>}
       </div>
     })}
-    {issue && !inspection && <p role="alert" className="break-words pl-6 text-xs text-[var(--danger)]">{issue}</p>}
     {inspection === 'receipt' && <SubagentDialog title={label} onClose={close}>
       <div className="kv-agent-panel-scroll space-y-4 text-[13px] leading-6 custom-scrollbar">
         {issue && <p role="alert" className="whitespace-pre-wrap break-words text-[var(--danger)]">{issue}</p>}
