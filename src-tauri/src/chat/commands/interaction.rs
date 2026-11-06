@@ -122,21 +122,48 @@ pub(crate) async fn chat_execute_agent_plan(
     .await
 }
 
-/// 取消指定对话的当前 Chat 生成或工具执行。
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum UserStopScope {
+    #[default]
+    Generation,
+    BackgroundWait,
+}
+
+/// 取消指定对话的生成，或停止等待仍在后台运行的任务。
 #[tauri::command]
 pub(crate) async fn chat_cancel_stream(
     app: AppHandle,
     state: State<'_, AppState>,
     conversation_id: String,
+    scope: Option<UserStopScope>,
 ) -> Result<(), String> {
-    cancel_user_generation(state.inner(), &conversation_id);
-    pause_goal_after_cancel(&app, &conversation_id).await
+    let persisted = cancel_user_generation(state.inner(), &conversation_id, scope.unwrap_or_default(), || {
+        let last_user_id = crate::chat::storage::load_conversation(&app, &conversation_id)
+            .ok()
+            .filter(|conversation| conversation.agent_runtime.kind == crate::chat::types::AgentRuntimeKind::Builtin)
+            .and_then(|conversation| conversation.messages.into_iter().rev()
+                .find(|message| message.role == "user")
+                .map(|message| message.id));
+        last_user_id.map_or(Ok(()), |id| {
+            let path = crate::chat::draft_journal::stop_fence_path(&app, &conversation_id)?;
+            crate::chat::storage::atomic_write(&path, &id, "conversation stop marker")
+        })
+    });
+    pause_goal_after_cancel(&app, &conversation_id).await?;
+    persisted
 }
 
-pub(super) fn cancel_user_generation(state: &AppState, conversation_id: &str) {
+pub(super) fn cancel_user_generation<R>(
+    state: &AppState, conversation_id: &str, scope: UserStopScope, persist_stop: impl FnOnce() -> R,
+) -> R {
     state.sub_agents.interrupt_user_turn(conversation_id, || {
-        state.cancel_chat_generation(conversation_id);
-    });
+        match scope {
+            UserStopScope::Generation => state.cancel_chat_generation(conversation_id),
+            UserStopScope::BackgroundWait => state.chat_runtime().cancel_conversation(conversation_id),
+        }
+        persist_stop()
+    })
 }
 
 pub(crate) async fn cancel_stream(

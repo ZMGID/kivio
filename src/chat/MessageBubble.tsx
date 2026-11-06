@@ -14,6 +14,7 @@ import {
 import { Button, IconButton } from '../components/Button'
 import { notifyError } from '../components/appNoticeStore'
 import { api } from '../api/tauri'
+import { record } from '../api/subagents'
 import { copyToClipboard } from '../utils/clipboard'
 import { messageBodySegments, messageBodyText } from './messageBody'
 import { AssistantMessageMeta } from './AssistantMessageMeta'
@@ -34,6 +35,7 @@ import { ChatInlineImage, CHAT_IMAGE_TILE_MAX_PX } from './ChatInlineImage'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { IrcMessageCard } from './IrcMessageCard'
+import { SubagentLifecycleEvent } from './SubagentTimelineEvents'
 import { ModelIcon } from '../components/ModelIcon'
 import { ToolCallBlock, ToolCallCluster, ImageReadCluster } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
@@ -49,8 +51,11 @@ import {
   isExternalSubagentToolCall,
   isImageReadToolCall,
   isNativeTaskToolCall,
+  isNativeWaitToolCall,
+  isSubagentTimelineSegment,
   isUserFollowUpToolCall,
   isUserSteerToolCall,
+  positionSubagentTimeline,
   segmentToolCallId,
   summarizeToolGroup,
   toolRecordId,
@@ -990,7 +995,8 @@ function TimelineSegments({
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
         return Boolean(tool && (isVisiblePresentation(tool) || isUserInjectedToolCall(tool)
-          || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)))
+          || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)
+          || isNativeTaskToolCall(tool)))
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')
@@ -1018,6 +1024,10 @@ function TimelineSegments({
   return (
     <section aria-label="回答时间线" className="space-y-1.5">
       {groupItems.map((item: TimelineGroupItem) => {
+        if (item.type === 'subagent') {
+          return <SubagentLifecycleEvent key={item.segment.id}
+            event={item.segment.kind.subagent} conversationId={conversationId} live={messageStreaming} />
+        }
         if (item.type === 'presentation') {
           return <TimelineToolSegment
             key={item.segment.id}
@@ -1131,29 +1141,56 @@ function MessageBubbleComponent({
   const canMutate = Boolean(onUpdateMessage && onDeleteMessage && onRegenerateMessage)
   const prepared = useMemo(() => {
     const attachments = message.attachments ?? []
-    const toolCalls = message.tool_calls ?? message.toolCalls ?? EMPTY_TOOL_CALLS
+    const recordedCalls = message.tool_calls ?? message.toolCalls ?? EMPTY_TOOL_CALLS
+    const waitCalls = recordedCalls.filter(isNativeWaitToolCall)
+    const hiddenCallIds = new Set(waitCalls.map(toolRecordId).filter(Boolean))
+    const visibleCalls = waitCalls.length ? recordedCalls.filter(tool => !isNativeWaitToolCall(tool)) : recordedCalls
+    const lifecycleAgentsByCall = new Map<string, string[]>()
+    for (const segment of message.segments ?? []) {
+      if (!isSubagentTimelineSegment(segment)) continue
+      const { parentToolCallId, agentId } = segment.kind.subagent
+      const agentIds = lifecycleAgentsByCall.get(parentToolCallId)
+      if (agentIds) agentIds.push(agentId)
+      else lifecycleAgentsByCall.set(parentToolCallId, [agentId])
+    }
+    const toolCalls = lifecycleAgentsByCall.size ? visibleCalls.map(tool => {
+      if (!isNativeTaskToolCall(tool)) return tool
+      const agentIds = lifecycleAgentsByCall.get(toolRecordId(tool))
+      if (!agentIds) return tool
+      const structured = record(tool.structured_content ?? tool.structuredContent)
+      const savedIds = Array.isArray(structured.timelineAgentIds) ? structured.timelineAgentIds : []
+      return { ...tool, structured_content: { ...structured, timelineAgentIds: [...savedIds, ...agentIds] } }
+    }) : visibleCalls
     // 后端 recovery.rs 产出的降级描述；旧会话无此字段 → null → 不渲染卡片。
     const degraded = message.degraded ?? null
     // 降级文案同时走三条路：content、时间线 text 分段、以及这张卡片。卡片已完整表达，
     // 另外两条都要按文本相等剔掉，否则同一段话在气泡里出现两遍（正是用户看到的样子）。
     const degradedText = degraded?.text.trim() ?? ''
-    const timelineSegments = messageBodySegments(message).filter(
-      (segment) =>
-        !degradedText || segment.kind !== 'text' || segmentText(segment).trim() !== degradedText,
+    const bodySegments = messageBodySegments(message).filter(
+      segment => !degradedText || segment.kind !== 'text' || segmentText(segment).trim() !== degradedText,
     )
     // 旧消息只有 reasoning/tool_calls/content 时也投影为同一个 Work。
-    if (!isUser && !timelineSegments.length && (message.reasoning?.trim() || toolCalls.length)) {
-      if (message.reasoning?.trim()) timelineSegments.push({
+    const visibleBody = bodySegments.some(segment => !isSubagentTimelineSegment(segment)
+      && (segment.kind !== 'tool' || !hiddenCallIds.has(segmentToolCallId(segment))))
+    if (!isUser && (!visibleBody || message.segments?.every(isSubagentTimelineSegment))
+      && (message.reasoning?.trim() || toolCalls.length)) {
+      const lifecycleSegments = bodySegments.filter(isSubagentTimelineSegment)
+      bodySegments.length = 0
+      if (message.reasoning?.trim()) bodySegments.push({
         id: 'legacy-reasoning', kind: 'reasoning', phase: 'tool_loop', order: 0, text: message.reasoning,
       })
-      toolCalls.forEach((tool, index) => timelineSegments.push({
+      toolCalls.forEach((tool, index) => bodySegments.push({
         id: `legacy-tool-${toolRecordId(tool) || index}`, kind: 'tool', phase: 'tool_loop',
         order: index + 1, tool_call_id: toolRecordId(tool),
       }))
-      if (bodyText.trim() && bodyText.trim() !== degradedText) timelineSegments.push({
+      if (bodyText.trim() && bodyText.trim() !== degradedText) bodySegments.push({
         id: 'legacy-answer', kind: 'text', phase: 'plain', order: toolCalls.length + 1, text: bodyText,
       })
+      bodySegments.push(...lifecycleSegments)
     }
+    const timelineSegments = positionSubagentTimeline(bodySegments).filter(
+      segment => segment.kind !== 'tool' || !hiddenCallIds.has(segmentToolCallId(segment)),
+    )
     const hasTimelineSegments = timelineSegments.length > 0
     const messageArtifacts = message.artifacts ?? []
     const toolArtifacts = toolCalls.flatMap((toolCall) => toolCall.artifacts ?? [])
@@ -1564,5 +1601,14 @@ function MessageBubbleComponent({
 // memo：流式生成时历史消息 props 不变 → 跳过重渲染，避免每个 token 重新解析 Markdown
 export const MessageBubble = memo(function MessageBubble(props: MessageBubbleProps) {
   const irc = props.message.irc_message ?? props.message.ircMessage
-  return irc ? <IrcMessageCard message={irc} /> : <MessageBubbleComponent {...props} />
+  const bubble = irc ? <IrcMessageCard message={irc} /> : <MessageBubbleComponent {...props} />
+  if (!irc && props.message.role !== 'user') return bubble
+  const events = props.message.segments?.filter(isSubagentTimelineSegment).sort((left, right) => left.order - right.order)
+  if (!events?.length) return bubble
+  return <>
+    {bubble}
+    {events.map(segment => (
+      <SubagentLifecycleEvent key={segment.id} event={segment.kind.subagent} conversationId={props.conversationId} />
+    ))}
+  </>
 })

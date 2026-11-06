@@ -358,13 +358,19 @@ impl Host {
         let steps = progress["recentTools"].as_array().map(|tools| tools.iter().filter_map(|tool| {
             tool["tool"].as_str().map(str::to_string)
         }).collect()).unwrap_or_default();
-        Some(crate::chat::protocol::ChatRunEvent::SubagentUpdated {
+        let status = progress["status"].as_str().unwrap_or("running").to_string();
+        Some(self.subagent_event(status, Some(progress), Some(output), steps))
+    }
+
+    fn subagent_event(
+        &self, status: String, progress: Option<Value>, preview: Option<String>, steps: Vec<String>,
+    ) -> crate::chat::protocol::ChatRunEvent {
+        crate::chat::protocol::ChatRunEvent::SubagentUpdated {
             parent_tool_call_id: self.parent_tool_call_id.clone(), task_id: self.record.id.clone(),
-            generation: Some(self.record.generation), child_run_id: self.record.run_id.clone(), progress: Some(progress.clone()),
+            generation: Some(self.record.generation), child_run_id: self.record.run_id.clone(), progress,
             name: self.record.display_name.clone(), model: Some(self.model.lock().unwrap_or_else(|e| e.into_inner()).clone()),
-            depth: self.record.depth, status: progress["status"].as_str().unwrap_or("running").to_string(),
-            preview: Some(output), steps,
-        })
+            depth: self.record.depth, status, preview, steps,
+        }
     }
 
     fn emit_progress(&self, force: bool) {
@@ -373,11 +379,11 @@ impl Host {
         }
     }
 
-    async fn emit_terminal_progress(&self) {
+    async fn emit_terminal_progress(&self, placement: Option<crate::chat::protocol::SubagentActivityPlacement>) {
         if let Some(event) = self.progress_event(true) {
             if self.parent_tool_call_id.is_empty() { return; }
-            if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable(
-                &self.app, &self.record.root, &self.parent_run_id, event,
+            if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable_at(
+                &self.app, &self.record.root, &self.parent_run_id, event, placement,
             ).await {
                 eprintln!("Cannot persist subagent terminal progress: {error}");
             }
@@ -1411,6 +1417,7 @@ async fn prepare(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
     let state = app.state::<AppState>();
     let state: &AppState = &state;
     let mut settings = state.settings_read().clone();
+    settings.chat_tools.ensure_subagent_role_enabled(&definition.name)?;
     settings.chat_tools.approval_policy = host.approval_policy.clone();
     let mut definition = worker_definition(definition, &host.plan_state);
     if let Some(saved) = &worker.contract { definition.spawns = Some(clamp_spawns(&saved.spawns, definition.spawns.as_deref())); }
@@ -1505,7 +1512,7 @@ async fn prepare(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
     retain_mcp_grants(&mut tools, &host.mcp_tool_ids, &host.mcp_server_ids);
     super::append_tool_definitions(&mut tools, &settings, &resources.agents);
     if let Some(tool) = tools.iter_mut().find(|tool| tool.name == super::TASK_TOOL_NAME) {
-        *tool = task::tool_definition_with_policy(&resources.agents, &settings, definition.spawns.as_deref());
+        *tool = task::tool_definition_with_policy(&resources.agents, &settings, definition.spawns.as_deref(), false);
     }
     crate::chat::agent::filter::filter_tools_for_agent(&mut tools, &definition, host.record.depth, settings.chat_tools.task_max_recursion_depth);
     if seance { tools.retain(|tool| tool.source != "mcp" && tool.is_read_only_tool() && tool.name != super::TASK_TOOL_NAME); }
@@ -1581,6 +1588,7 @@ async fn prepare(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
 async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition, context: &str, parent_provider: &str, parent_model: &str, generation: u64, worker: &mut session::WorkerSession) -> Result<String, String> {
     let state = app.state::<AppState>();
     let state: &AppState = &state;
+    state.settings_read().chat_tools.ensure_subagent_role_enabled(&definition.name)?;
     let prepared = match worker.prepared.take() {
         Some(prepared) => prepared,
         None => prepare(app, host, definition, context, parent_provider, parent_model, generation, worker).await?,
@@ -1899,7 +1907,8 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
                 &app, &req.record.root, &req.parent_run_id,
                 crate::chat::protocol::ChatRunEvent::SubagentUpdated {
                     parent_tool_call_id: req.parent_tool_call_id.clone(), task_id: req.record.id.clone(),
-                    generation: Some(req.record.generation), child_run_id: req.record.run_id.clone(), progress: None,
+                    generation: Some(req.record.generation),
+                    child_run_id: Some(format!("subrun-{}-{}", req.record.generation, req.job_id)), progress: None,
                     name: req.record.display_name.clone(), model: None, depth: req.record.depth,
                     status: "aborted".into(), preview: Some("Cancelled by caller".into()), steps: Vec::new(),
                 },
@@ -1972,12 +1981,7 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
             }
         }))
     } else { None };
-    host.emit_progress(true);
-    let progress_host = host.clone();
-    let updates = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_millis(150));
-        loop { interval.tick().await; progress_host.emit_progress(false); }
-    });
+    let mut updates = None;
     let initial_file = if continuing { Ok(()) } else { create_transcript(&host.record.session_file, &host.record.output_file).await };
     let transcript_created = initial_file.is_ok();
     let label = (transcript_created && !continuing).then(|| tokio::spawn(generate_task_label(
@@ -1989,9 +1993,20 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
                 "type": "turn_start", "jobId": host.job_id, "ownerId": host.record.parent_id,
                 "runId": host.record.run_id, "parentRunId": host.parent_run_id,
                 "parentToolCallId": host.parent_tool_call_id,
+                "timestamp": registry::now_ms(),
             });
             match host.append_journal(&[start]).await {
-                Ok(()) => execute(&app, &host, &req.definition, &req.context, &req.parent_provider_id, &req.parent_model, generation, worker).await,
+                Ok(()) => {
+                    state.sub_agents.jobs.mark_execution_started(&host.job_id);
+                    crate::chat::protocol::record_subagent_started(&app, &host.record, &host.parent_run_id, &host.parent_tool_call_id).await;
+                    host.emit_progress(true);
+                    let progress_host = host.clone();
+                    updates = Some(tokio::spawn(async move {
+                        let mut interval = tokio::time::interval(Duration::from_millis(150));
+                        loop { interval.tick().await; progress_host.emit_progress(false); }
+                    }));
+                    execute(&app, &host, &req.definition, &req.context, &req.parent_provider_id, &req.parent_model, generation, worker).await
+                },
                 Err(error) => Err(error),
             }
         },
@@ -2023,8 +2038,10 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
     if let Some(timer) = timer { timer.abort(); let _ = timer.await; }
     drop(deadline_tx);
     if let Some(label) = label { label.abort(); let _ = label.await; }
-    updates.abort();
-    let _ = updates.await;
+    if let Some(updates) = updates {
+        updates.abort();
+        let _ = updates.await;
+    }
     let (requests, tokens, hard, wrapping, tail, history) = {
         let p = host.lock();
         let tail = if p.text.trim().is_empty() { p.last_assistant.clone() } else { p.text.clone() };
@@ -2083,7 +2100,7 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
     if let Some(progress) = host.snapshot(true) {
         if transcript_created && host.owns_turn() {
             match host.append_journal(&[json!({"type":"turn_end", "runId":host.record.run_id, "progress":progress,
-                "model":host.model.lock().unwrap_or_else(|error| error.into_inner()).clone(), "outputFile":turn_output})]).await {
+                "model":host.model.lock().unwrap_or_else(|error| error.into_inner()).clone(), "outputFile":turn_output, "timestamp":registry::now_ms()})]).await {
                 Ok(()) => journal_closed = true,
                 Err(failure) => { add_failure(&mut error, failure); worker.prepared = None; }
             }
@@ -2094,8 +2111,18 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
     let summary = result_summary(&host.record.id, &host.agent, status, &output, error.as_deref(), host.started.elapsed().as_millis() as u64, requests, transcript_available, output_available);
     let state = app.state::<AppState>();
     state.chat_runtime().cancel_conversation(&host.record.child_conversation_id);
-    if error.is_some() || aborted { state.sub_agents.jobs.settle(&host.job_id, Err(summary)); }
-    else { state.sub_agents.jobs.settle(&host.job_id, Ok(summary)); }
+    use crate::chat::protocol::SubagentTimelineStatus;
+    let activity_status = if aborted { SubagentTimelineStatus::Interrupted }
+        else if error.is_some() { SubagentTimelineStatus::Failed } else { SubagentTimelineStatus::Completed };
+    let job_result = if error.is_some() || aborted { Err(summary) } else { Ok(summary) };
+    let mut placement = None;
+    state.sub_agents.jobs.settle_before_notification(&host.job_id, job_result, || {
+        let status = host.lock().status.into();
+        let event = host.subagent_event(status, None, None, Vec::new());
+        placement = crate::chat::protocol::capture_subagent_activity(
+            &app, &host.record.root, &host.parent_run_id, &event, activity_status,
+        );
+    });
     if !aborted && state.sub_agents.jobs.get(&host.job_id)
         .is_some_and(|job| job.status == super::jobs::JobStatus::Cancelled)
     {
@@ -2116,11 +2143,11 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
         p.terminal_preview = Some(terminal_preview(&host.record.id, &output, error.as_deref(), output_available));
         p.dirty = true;
     }
-    host.emit_terminal_progress().await;
+    host.emit_terminal_progress(placement).await;
     let terminal = host.snapshot(true).unwrap_or_default();
     if transcript_created && host.owns_turn() {
         if !journal_closed || closed_as_aborted != aborted {
-            if let Err(error) = host.append_journal(&[json!({"type":"turn_end", "runId":host.record.run_id, "progress":terminal, "model":host.model.lock().unwrap_or_else(|error| error.into_inner()).clone(),"outputFile":turn_output})]).await {
+            if let Err(error) = host.append_journal(&[json!({"type":"turn_end", "runId":host.record.run_id, "progress":terminal, "model":host.model.lock().unwrap_or_else(|error| error.into_inner()).clone(),"outputFile":turn_output,"timestamp":registry::now_ms()})]).await {
                 eprintln!("Cannot finalize subagent transcript: {error}");
                 worker.prepared = None;
             }

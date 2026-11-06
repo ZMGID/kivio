@@ -269,6 +269,11 @@ mod tests {
         }));
         assert!(async_text.contains("BLOCKING agents return inline"));
         assert!(async_text.contains("Call `wait`"));
+        assert!(!async_text.contains("automatically resume the conversation"));
+        let main_guidance = render(TASK_ASYNC_CONTRACT, &json!({"mainAgent": true, "waitTool": true}));
+        assert!(main_guidance.contains("automatically resume the conversation"));
+        assert!(main_guidance.contains("need the result within this same turn"));
+        assert!(!main_guidance.contains("Completely blocked? Call `wait`"));
         assert!(!async_text.contains("proc://"));
         assert!(!async_text.contains("write agent://"));
         assert!(!async_text.contains("local://"));

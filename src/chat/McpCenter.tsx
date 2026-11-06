@@ -21,6 +21,7 @@ import { peekSettings, refreshSettings, subscribeSettings, updateSettingsCached 
 import { Toggle, Select, Input } from '../settings/public/controls'
 import { Button, IconButton } from '../components/Button'
 import { McpRegistryBrowser } from './McpRegistryBrowser'
+import { SubagentRoleSettings } from './SubagentRoleSettings'
 import {
   argsToText,
   CHAT_TOOL_TIMEOUT_PRESETS_MS,
@@ -67,7 +68,7 @@ function StatusDot({ state }: { state?: McpServerState }) {
 const TEXTAREA_CLASS =
   'w-full rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-2 font-mono text-[12px] text-neutral-800 outline-none focus:border-neutral-300'
 
-export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
+export function McpCenter({ heading, conversationId }: { heading?: ReactNode; conversationId?: string } = {}) {
   const t = useT()
   const lang = useLang()
   const { connect: connectOAuth, prompt: devicePrompt, cancel: cancelOAuth } = useConnectorOAuth()
@@ -176,10 +177,14 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
         if (!prev) return fresh
         const prevServers = prev.chatTools.servers
         const nextServers = adoptFreshPluginManagedServers(prevServers, fresh.chatTools.servers)
-        if (nextServers === prevServers) return prev
+        const { taskDisabledAgents, taskAgentModelOverrides, taskAgentPrewalk, taskAgentAdvisor } = fresh.chatTools
+        if (nextServers === prevServers && prev.providers === fresh.providers
+          && prev.chatTools.taskDisabledAgents === taskDisabledAgents && prev.chatTools.taskAgentModelOverrides === taskAgentModelOverrides
+          && prev.chatTools.taskAgentPrewalk === taskAgentPrewalk && prev.chatTools.taskAgentAdvisor === taskAgentAdvisor) return prev
         const next = {
           ...prev,
-          chatTools: { ...prev.chatTools, servers: nextServers },
+          providers: fresh.providers,
+          chatTools: { ...prev.chatTools, servers: nextServers, taskDisabledAgents, taskAgentModelOverrides, taskAgentPrewalk, taskAgentAdvisor },
         }
         settingsRef.current = next
         return next
@@ -234,6 +239,19 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
     if (!base) return
     persistChatTools({ nativeTools: { ...base, ...updates } })
   }, [persistChatTools])
+
+  function acceptRoleSettings(saved: Settings) {
+    setSettings(current => {
+      if (!current) { settingsRef.current = saved; return saved }
+      const { taskDisabledAgents, taskAgentModelOverrides, taskAgentPrewalk, taskAgentAdvisor } = saved.chatTools
+      const next = {
+        ...current,
+        chatTools: { ...current.chatTools, taskDisabledAgents, taskAgentModelOverrides, taskAgentPrewalk, taskAgentAdvisor },
+      }
+      settingsRef.current = next
+      return next
+    })
+  }
 
   // 变更服务器：先读后端 fresh（保住后端 OAuth 刷新过的 token），再按 id 施加改动后整存。
   const mutateServers = useCallback(async (fn: (servers: ChatMcpServer[]) => ChatMcpServer[]) => {
@@ -850,6 +868,7 @@ export function McpCenter({ heading }: { heading?: ReactNode } = {}) {
                       onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur() }}
                     />
                   </div>
+                  {settings && <SubagentRoleSettings key={conversationId} conversationId={conversationId} settings={settings} onSaved={acceptRoleSettings} />}
                 </div>
               </section>
             </div>

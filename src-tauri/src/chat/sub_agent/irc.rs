@@ -817,6 +817,7 @@ pub(crate) fn schedule_restored(
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
         let result = async {
+            if *cancel.borrow() { return Err("Interrupted restore cancelled".into()); }
             let live =
                 lifecycle::ensure_live(&app, &record.root, &record.id, record.generation).await?;
             let slot = state.sub_agents.sessions.slot(&live)?;

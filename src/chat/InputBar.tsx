@@ -32,7 +32,6 @@ import { MultiModelSelector } from './MultiModelSelector'
 import { GitStatusPill } from './dock/GitStatusPill'
 import { GitDiffChip } from './dock/GitDiffChip'
 import { AgentTodoIndicator } from './AgentTodoIndicator'
-import { AgentHubEntry } from './AgentHub'
 import { Button, IconButton } from '../components/Button'
 import { useT, type I18n, type Lang } from '../components/i18n'
 import { api, type ChatToolDefinition, type ChatMcpServer } from '../api/tauri'
@@ -343,6 +342,7 @@ export interface InputBarProps {
    */
   onSendWhileRunning?: (content: string, attachments: PendingAttachment[]) => void
   onCancel?: () => void
+  onStopBackgroundWait?: () => void
   cancelVisible?: boolean
   cancelling?: boolean
   onOpenSettings?: () => void
@@ -438,6 +438,7 @@ export const InputBar = memo(function InputBar({
   disabled,
   onSendWhileRunning,
   onCancel,
+  onStopBackgroundWait,
   cancelVisible,
   cancelling,
   onOpenSettings,
@@ -1396,6 +1397,11 @@ export const InputBar = memo(function InputBar({
       onCancel()
       return
     }
+    if (e.key === 'Escape' && onStopBackgroundWait && !e.repeat) {
+      e.preventDefault()
+      onStopBackgroundWait()
+      return
+    }
 
     if (e.key !== 'Enter' || e.shiftKey) return
     e.preventDefault()
@@ -2275,7 +2281,6 @@ export const InputBar = memo(function InputBar({
                 />
               </div>
             )}
-            {!usesExternalRuntime && !usesChatRuntime && conversationId && <AgentHubEntry key={conversationId} conversationId={conversationId} />}
 
             <IconButton
               size="sm"

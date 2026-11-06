@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;
 
@@ -74,6 +74,22 @@ fn append_line(path: &Path, line: &str) -> Result<(), String> {
 pub(crate) fn clear_draft(app: &AppHandle, conversation_id: &str) {
     if let Ok(path) = storage::draft_journal_path(app, conversation_id) {
         let _ = fs::remove_file(path);
+    }
+}
+
+pub(crate) fn stop_fence_path(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
+    Ok(storage::draft_journal_path(app, conversation_id)?.with_extension("stopped"))
+}
+
+pub(super) fn stop_fences_user_turn(
+    app: &AppHandle,
+    conversation_id: &str,
+    user_message_id: &str,
+) -> Result<bool, String> {
+    match fs::read_to_string(stop_fence_path(app, conversation_id)?) {
+        Ok(stopped_user) => Ok(stopped_user.trim() == user_message_id),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("Cannot read conversation stop marker: {error}")),
     }
 }
 

@@ -78,7 +78,7 @@ pub fn format_prompt(state: &AgentPlanState, task_available: bool) -> String {
         )
     } else if state.mode == AgentPlanMode::Orchestrate {
         let delegation = if task_available {
-            "Delegation preferred. Once design settles, SHOULD fan substantial work to `task`; multi-file changes, refactors, features, tests, investigations strong candidates. Judge small single-file/interactive work. Fan genuine slices in one `tasks[]` batch. NEVER pad, serialize independent work, or spawn then idle. Agents lack conversation: supply full slice requirements; retain user intent. NEVER babysit. Spawn → keep working → read the auto-delivered result; use `wait` only when completely blocked. Use their actual outputs as information, distinguish sources and uncertainties, and decide the next steps and final answer yourself."
+            "Delegation preferred. Once design settles, SHOULD fan substantial work to `task`; multi-file changes, refactors, features, tests, investigations strong candidates. Judge small single-file/interactive work. Fan genuine slices in one `tasks[]` batch. NEVER pad or serialize independent work. Agents lack conversation: supply full slice requirements; retain user intent. NEVER babysit. Continue independent work and read auto-delivered results. Follow the task tool's handoff guidance when blocked. Use their actual outputs as information, distinguish sources and uncertainties, and decide the next steps and final answer yourself."
         } else {
             "Work directly with the available tools."
         };
@@ -156,7 +156,7 @@ mod tests {
         let prompt = format_prompt(&state, true);
         assert!(prompt.contains(current_plan_text(&draft).unwrap()));
         assert!(prompt.contains("fan substantial work to `task`"));
-        assert!(prompt.contains("use `wait` only when completely blocked"));
+        assert!(prompt.contains("Follow the task tool's handoff guidance when blocked"));
         assert!(prompt.contains("Agents lack conversation"));
         assert!(!prompt.contains("Plan mode is read-only"));
         assert!(!prompt.contains("Required flow"));

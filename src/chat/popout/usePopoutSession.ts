@@ -270,14 +270,17 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     }).catch((error) => console.error('Failed to refresh generated title:', error))
   }, [acceptPersistedConversation])
 
-  useTauriEvent(api.onChatSubagentIrc, (message) => {
-    const id = message.conversationId
-    if (message.observation || id !== conversationIdRef.current) return
+  const refreshAgentMessages = useCallback((id: string) => {
+    if (id !== conversationIdRef.current) return
     const epoch = incomingReadEpoch.current
     void chatApi.getConversation(id).then(updated => {
       if (epoch === incomingReadEpoch.current && id === conversationIdRef.current && viewActiveRef.current) acceptPersistedConversation(updated)
-    }).catch(error => console.error('Failed to refresh incoming agent message:', error))
+    }).catch(error => console.error('Failed to refresh agent messages:', error))
   }, [acceptPersistedConversation])
+  useTauriEvent(api.onChatSubagentIrc, message => {
+    if (!message.observation) refreshAgentMessages(message.conversationId)
+  }, [refreshAgentMessages])
+  useTauriEvent(api.onChatSubagentActivity, refreshAgentMessages, [refreshAgentMessages])
 
   const settlementPorts = useMemo<Parameters<typeof executionOwner.finish>[2]>(() => ({
     completeWithConversation: (id, persisted) => {

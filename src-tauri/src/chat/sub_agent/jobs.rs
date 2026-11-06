@@ -38,6 +38,8 @@ pub struct JobSnapshot {
     pub status: JobStatus,
     pub label: String,
     pub started_at: i64,
+    #[serde(skip)]
+    pub execution_started: bool,
     pub finished_at: Option<i64>,
     /// Settled result text (`<task-result>` + follow-up); `None` once consumed.
     pub result: Option<String>,
@@ -244,6 +246,7 @@ impl JobManager {
                     status: JobStatus::Running,
                     label: label.into(),
                     started_at: now_ms(),
+                    execution_started: false,
                     finished_at: None,
                     result: None,
                     progress: None,
@@ -261,6 +264,12 @@ impl JobManager {
         drop(jobs);
         self.bump();
         Some((id, cancelled))
+    }
+
+    pub fn mark_execution_started(&self, job_id: &str) {
+        if let Some(job) = self.lock().get_mut(job_id) {
+            job.snapshot.execution_started = true;
+        }
     }
 
     pub fn report_progress(&self, job_id: &str, mut progress: Value) {
@@ -318,6 +327,10 @@ impl JobManager {
 
     /// Settle a running job. A cancelled job keeps `cancelled` and is not delivered.
     pub fn settle(&self, job_id: &str, outcome: Result<String, String>) {
+        self.settle_before_notification(job_id, outcome, || {});
+    }
+
+    pub fn settle_before_notification(&self, job_id: &str, outcome: Result<String, String>, before_notify: impl FnOnce()) {
         let (notify, eviction) = {
             let mut jobs = self.lock();
             let Some(job) = jobs.get_mut(job_id) else { return };
@@ -342,6 +355,7 @@ impl JobManager {
                 .then(|| (job.snapshot.root.clone(), job.snapshot.owner_id.clone()));
             (notify, eviction)
         };
+        before_notify();
         if let Some((execution_id, deadline)) = eviction {
             self.schedule_eviction(job_id, &execution_id, deadline);
         }

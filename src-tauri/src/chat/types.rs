@@ -393,6 +393,7 @@ pub enum ChatMessageSegmentKind {
     Text,
     Reasoning,
     Tool,
+    Subagent(super::protocol::SubagentTimelineEntry),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

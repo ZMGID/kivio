@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react'
 import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type BackgroundTaskInfo } from '../../api/tauri'
+import { subagentsApi } from '../../api/subagents'
 import { useRightDock } from '../hooks/useRightDock'
 import { requestDockDiffPreview, requestDockMarkdownPreview, requestDockPreview } from './dockPreview'
 import { RightDock } from './RightDock'
@@ -125,6 +126,22 @@ function DockHarness({ mounted = true }: { mounted?: boolean }) {
 }
 
 describe('RightDock tabs', () => {
+  it('lists subagents in the existing Tasks tab', async () => {
+    const snapshot = vi.spyOn(subagentsApi, 'snapshot').mockResolvedValue({
+      runningCount: 1,
+      agents: [{
+        id: 'Scout', displayName: 'Review tests', parentId: 'Main', generation: 1, agentType: 'scout',
+        status: 'running', depth: 1, lastActivity: 1, activity: 'Reading logs',
+        model: null, progress: null, revivable: true, reviveError: null,
+      }],
+    })
+    render(<RightDock {...dockProps({ activeTab: 'tasks' })} />)
+    expect(snapshot).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('任务'))
+    expect(await screen.findByRole('region', { name: '子代理任务' })).toHaveTextContent('Review tests')
+    expect(screen.getByRole('button', { name: /Review tests/ })).toHaveAttribute('aria-haspopup', 'dialog')
+    expect(snapshot).toHaveBeenCalledWith('conv-1')
+  })
   it('opens panels from the window toolbar and removes its controls when collapsed', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

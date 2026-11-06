@@ -54,6 +54,7 @@ pub(super) async fn complete_assistant_reply(
     last_user_image_paths: &[PathBuf],
     active_skill_id: Option<&str>,
     entry: crate::chat::agent::AgentRunEntry,
+    resumed_jobs: Option<&[String]>,
 ) -> Result<(), String> {
     let mut outcome = complete_assistant_reply_inner(
         app,
@@ -66,6 +67,7 @@ pub(super) async fn complete_assistant_reply(
         entry,
         None,
         false,
+        resumed_jobs,
     )
     .await;
     while outcome.is_ok() {
@@ -94,6 +96,7 @@ pub(super) async fn complete_assistant_reply(
             crate::chat::agent::AgentRunEntry::Send,
             None,
             false,
+            None,
         )
         .await;
         outcome = next;
@@ -147,6 +150,7 @@ pub(super) async fn complete_assistant_reply_inner(
     entry: crate::chat::agent::AgentRunEntry,
     arm: Option<&ReplyArm>,
     probe: bool,
+    resumed_jobs: Option<&[String]>,
 ) -> Result<ArmReplyOutcome, String> {
     if conversation.agent_runtime.is_external() {
         // 外部 CLI 路径在 run.rs 内自带 generation；这里登记一条 per-run 回复槽位，
@@ -696,6 +700,19 @@ pub(super) async fn complete_assistant_reply_inner(
     {
         conversation_context.push_str(&format!("\n\n{note}"));
     }
+    if let Some(jobs) = resumed_jobs {
+        conversation_context.push_str(
+            "\n\nThe previous process ended mid-turn. Continue the original user request from \
+             the recorded tool results. Do not repeat recorded tool effects. If an effect has no \
+             saved result, verify its state before attempting it again.",
+        );
+        if !jobs.is_empty() {
+            conversation_context.push_str(&format!(
+                " Restored subagent jobs: {}. Use wait for those assignments rather than dispatching them again.",
+                jobs.join(", ")
+            ));
+        }
+    }
 
     prepared_prompt.context.push_str(&conversation_context);
     // Goal tools are absent from the provider-tools fallback, so only the tool run gets this.
@@ -773,7 +790,7 @@ pub(super) async fn complete_assistant_reply_inner(
         workflow_hooks: if chat_mode {
             Default::default()
         } else {
-            crate::plugins::packages::hook_runtime(
+            let mut runtime = crate::plugins::packages::hook_runtime(
                 &resources.hooks,
                 workbench_dir
                     .as_deref()
@@ -783,7 +800,11 @@ pub(super) async fn complete_assistant_reply_inner(
                 last_user_idx
                     .and_then(|index| conversation.messages.get(index))
                     .map(|m| m.content.clone()),
-            )
+            );
+            if resumed_jobs.is_some() {
+                runtime.hooks.retain(|hook| hook.event != "UserPromptSubmit");
+            }
+            runtime
         },
         app: app.clone(),
         state: state.inner(),

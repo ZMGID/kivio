@@ -63,6 +63,7 @@ pub(super) async fn run_reply_fan_out(
                     crate::chat::agent::AgentRunEntry::Send,
                     Some(&arm),
                     false,
+                    None,
                 )
                 .await;
                 (outcome, provider_id, model)

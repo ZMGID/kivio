@@ -124,7 +124,7 @@ describe('assistant body visibility', () => {
     expect(screen.queryByText('正在检查日志。')).not.toBeInTheDocument()
   })
 
-  it('uses one stable Work for subagents, waiting, final answer and history', () => {
+  it('keeps delegation visible and shares one Work control across the remaining activity', () => {
     const message: ChatMessage = {
       id: 'live-subagents', role: 'assistant', timestamp: 1, content: '',
       segments: [
@@ -147,7 +147,7 @@ describe('assistant body visibility', () => {
     }
     const { rerender } = render(<MessageBubble message={message} messageStreaming />)
     const work = screen.getByRole('button', { name: 'Working' })
-    expect(screen.getAllByLabelText('过程分组')).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: 'Working' })).toHaveLength(1)
     expect(screen.getByText('先启动子代理，我来读 README。')).toBeVisible()
     rerender(<MessageBubble message={{ ...message, segments: [...message.segments!,
       { id: 'final', kind: 'text', phase: 'plain', order: 9, text: '最终项目汇总' },
@@ -156,10 +156,67 @@ describe('assistant body visibility', () => {
     expect(screen.getAllByLabelText('过程分组')).toHaveLength(1)
     expect(screen.getByRole('button', { name: /^Worked/ })).toBe(work)
     expect(work).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByRole('button', { name: /^A / })).toBeVisible()
+    expect(screen.getByRole('button', { name: /^B / })).toBeVisible()
     expect(screen.queryByText('先启动子代理，我来读 README。')).not.toBeInTheDocument()
     fireEvent.click(work)
     expect(screen.getByText('README 只有 9 字节，再看文档。')).toBeVisible()
     expect(screen.getByText('项目用途已了解，等待子代理。')).toBeVisible()
+  })
+
+  it('keeps recorded subagent events in order with the main text and hides the duplicate task status', () => {
+    const before = '开始前 🔎'
+    const between = '主助手继续查看文件。'
+    const message: ChatMessage = {
+      id: 'chronological-subagents', role: 'assistant', timestamp: 1, content: '任务结束。继续整理。',
+      segments: [
+        { id: 'start', kind: { subagent: {
+          agentId: 'atlas', name: 'Atlas', status: 'started', parentToolCallId: 'task',
+          afterSegmentId: 'update', afterOrder: 2, textChars: Array.from(before).length,
+        } }, phase: 'auxiliary', order: 50 },
+        { id: 'task-segment', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'task' },
+        { id: 'update', kind: 'text', phase: 'tool_loop', order: 2, text: `${before}${between}` },
+        { id: 'wait-segment', kind: 'tool', phase: 'tool_loop', order: 3, tool_call_id: 'wait' },
+        { id: 'answer', kind: 'text', phase: 'synthesis', order: 4, text: '任务结束。继续整理。' },
+        { id: 'finish', kind: { subagent: {
+          agentId: 'atlas', name: 'Atlas', status: 'completed', parentToolCallId: 'task',
+          afterSegmentId: 'update', afterOrder: 2, textChars: Array.from(before + between).length,
+        } }, phase: 'auxiliary', order: 90 },
+        { id: 'later', kind: { subagent: {
+          agentId: 'birch', name: 'Birch', status: 'completed', parentToolCallId: 'other',
+          afterSegmentId: null, afterOrder: 0xffff_ffff, textChars: null,
+        } }, phase: 'auxiliary', order: 0 },
+        { id: 'within-answer', kind: { subagent: {
+          agentId: 'cedar', name: 'Cedar', status: 'failed', parentToolCallId: 'other',
+          afterSegmentId: 'answer', afterOrder: 4, textChars: 5,
+        } }, phase: 'auxiliary', order: 100 },
+      ],
+      tool_calls: [
+        {
+          id: 'task', name: 'task', source: 'native', status: 'completed',
+          structured_content: {
+            agents: [{ agentId: 'atlas', name: 'Atlas' }],
+            subagentProgressByTask: { atlas: { status: 'completed' } },
+          },
+        },
+        { id: 'wait', name: 'wait', source: 'native', status: 'completed' },
+      ],
+    }
+    render(<MessageBubble message={message} conversationId="root" />)
+    const items = [
+      screen.getByText(before),
+      screen.getByRole('button', { name: 'Atlas 开始工作' }),
+      screen.getByText(between),
+      screen.getByRole('button', { name: 'Atlas 已完成' }),
+      screen.getByText('任务结束。'),
+      screen.getByRole('button', { name: 'Cedar 失败' }),
+      screen.getByText('继续整理。'),
+      screen.getByRole('button', { name: 'Birch 已完成' }),
+    ]
+    for (let index = 0; index < items.length - 1; index += 1) {
+      expect(items[index].compareDocumentPosition(items[index + 1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    expect(screen.queryByRole('button', { name: /查看派工回执|wait/i })).not.toBeInTheDocument()
   })
 
   it.each(['error', 'interrupted', 'recovered'])('folds progress after a %s outcome', outcome => {

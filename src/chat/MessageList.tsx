@@ -13,7 +13,6 @@ import type { AgentPlanState, ChatMessage, ChatToolArtifact, Conversation, Conve
 import { isQueuedSubmitted, type QueuedMessage } from './hooks/useMessageQueue'
 import { userSteerId, userFollowUpId } from './segments'
 import { MessageBubble } from './MessageBubble'
-import { IrcObservations } from './IrcMessageCard'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { MessageGroup } from './MessageGroup'
 import { useMultiAnswerViewMode } from './multiAnswerViewMode'
@@ -95,6 +94,7 @@ function sameOutlineItems(a: readonly MarkdownHeadingOutlineItem[], b: readonly 
 }
 
 export interface MessageListProps {
+  waitingForBackgroundTasks?: boolean
   density?: 'default' | 'compact'
   conversationId?: string | null
   messages: ChatMessage[]
@@ -233,6 +233,7 @@ type GroupModelLabel = { providerId: string | null; model: string | null }
 
 function MessageListBase({
   density = 'default',
+  waitingForBackgroundTasks = false,
   conversationId,
   messages: storedMessages,
   pendingInjections,
@@ -2599,7 +2600,7 @@ function MessageListBase({
       )}
       {(messages.length > 0 || streaming) && (
         <div className="chat-reading-content">
-          <StreamStatusLine active={streaming && !streamFrozen && !liveGroup} />
+          <StreamStatusLine active={streaming && !streamFrozen && !liveGroup} waitingInBackground={!streaming && !streamFrozen && waitingForBackgroundTasks} lang={lang} />
         </div>
       )}
       {visibleInjections.map(message => (
@@ -2610,7 +2611,6 @@ function MessageListBase({
           }} />
         </div>
       ))}
-      <div className="chat-reading-content"><IrcObservations conversationId={conversationId} /></div>
       <div ref={tailSpacerRef} aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />
     </div>
   )

@@ -1,4 +1,6 @@
 import type { ChatMessageSegment, ToolCallRecord } from './types'
+import remarkParse from 'remark-parse'
+import { unified } from 'unified'
 import { foldToolName } from './askUserTools'
 import { normalizeToolCallStatus } from './toolStatus'
 import { isImageArtifact } from './artifacts'
@@ -221,7 +223,11 @@ export function isExternalSubagentToolCall(toolCall: ToolCallRecord): boolean {
 }
 
 export function isNativeTaskToolCall(toolCall: ToolCallRecord): boolean {
-  return toolCall.source === 'native' && ['task', 'wait'].includes(canonicalToolName(toolCall))
+  return toolCall.source === 'native' && canonicalToolName(toolCall) === 'task'
+}
+
+export function isNativeWaitToolCall(toolCall: ToolCallRecord): boolean {
+  return toolCall.source === 'native' && canonicalToolName(toolCall) === 'wait'
 }
 
 const IMAGE_READ_EXT = /\.(png|jpe?g|gif|webp|bmp|tiff?|heic|heif)$/i
@@ -370,16 +376,96 @@ export function compareTimelineSegments(
   return a.order - b.order
 }
 
+type SubagentSegment = ChatMessageSegment & { kind: Exclude<ChatMessageSegment['kind'], string> }
+const SUBAGENT_TIMELINE_TAIL_ORDER = 0xffff_ffff
+const timelineMarkdownParser = unified().use(remarkParse)
+
+export function isSubagentTimelineSegment(segment: ChatMessageSegment): segment is SubagentSegment {
+  return segment.kind !== null && typeof segment.kind === 'object' && 'subagent' in segment.kind
+}
+
+export function positionSubagentTimeline(segments: ChatMessageSegment[]): ChatMessageSegment[] {
+  const events = segments.filter(isSubagentTimelineSegment).sort((left, right) => {
+    const tailOrder = Number(left.kind.subagent.afterOrder === SUBAGENT_TIMELINE_TAIL_ORDER)
+      - Number(right.kind.subagent.afterOrder === SUBAGENT_TIMELINE_TAIL_ORDER)
+    return tailOrder || left.order - right.order
+  })
+  if (events.length === 0) return segments
+
+  const content = segments.filter(segment => !isSubagentTimelineSegment(segment))
+  const indexById = new Map(content.map((segment, index) => [segment.id, index]))
+  const eventsByAnchor = new Map<number, SubagentSegment[]>()
+  for (const event of events) {
+    const { afterSegmentId, afterOrder } = event.kind.subagent
+    let index = afterSegmentId === null ? undefined : indexById.get(afterSegmentId)
+    if (index === undefined) {
+      index = afterOrder === null ? -1 : content.length - 1
+      if (afterOrder !== null && afterOrder !== SUBAGENT_TIMELINE_TAIL_ORDER) {
+        while (index >= 0 && content[index].order > afterOrder) index -= 1
+      }
+    }
+    const anchored = eventsByAnchor.get(index)
+    if (anchored) anchored.push(event)
+    else eventsByAnchor.set(index, [event])
+  }
+
+  const result: ChatMessageSegment[] = [...(eventsByAnchor.get(-1) ?? [])]
+  content.forEach((segment, index) => {
+    const anchored = eventsByAnchor.get(index)
+    const text = segment.text ?? ''
+    if (!anchored || segment.kind !== 'text' || !text) {
+      result.push(segment, ...(anchored ?? []))
+      return
+    }
+
+    const chars = Array.from(text)
+    const rich = /[\r\n`*_~[\]<>\\|$#@]|^\s*(?:[+-]\s|\d+[.)]\s)|https?:\/\/|www\./i.test(text)
+    const blocks = rich && anchored.some(event => {
+      const count = event.kind.subagent.textChars
+      return count !== null && count < chars.length
+    })
+      ? timelineMarkdownParser.parse(text).children
+      : []
+    const hasDefinitions = blocks.some(block => block.type === 'definition')
+    let offset = 0
+    let partId = segment.id
+    for (const event of anchored) {
+      const marker = event.kind.subagent
+      let end = text.length
+      if (!hasDefinitions && marker.afterSegmentId === segment.id && marker.textChars !== null) {
+        end = Math.max(offset, chars.slice(0, marker.textChars).join('').length)
+        for (const block of blocks) {
+          const start = block.position?.start.offset
+          const blockEnd = block.position?.end.offset
+          if (start != null && blockEnd != null && start < end && end < blockEnd) {
+            end = blockEnd
+            break
+          }
+        }
+      }
+      if (end > offset) result.push({
+        ...segment, id: partId, text: text.slice(offset, end),
+      })
+      result.push(event)
+      offset = end
+      partId = `${segment.id}-after-${event.id}`
+    }
+    if (offset < text.length) result.push({ ...segment, id: partId, text: text.slice(offset) })
+  })
+  return result
+}
+
 /** 渲染前的「有内容」判定：reasoning/text 段空白则不渲染，也不应单独成组/打断分组。
  *  tool 段始终保留（其记录可能缺失，交由 UI 兜底）。 */
 function segmentHasContent(segment: ChatMessageSegment): boolean {
-  if (segment.kind === 'tool') return true
+  if (segment.kind === 'tool' || isSubagentTimelineSegment(segment)) return true
   return Boolean((segment.text ?? '').trim())
 }
 
 export type TimelineGroupItem =
   | { type: 'text'; segment: ChatMessageSegment }
   | { type: 'presentation'; segment: ChatMessageSegment }
+  | { type: 'subagent'; segment: SubagentSegment }
   | { type: 'group'; segments: ChatMessageSegment[] }
 
 /** 过程按交付位置分段展示，各段共享同一个 Work 开关。
@@ -394,10 +480,12 @@ export function groupTimelineSegments(
   // 交付卡属于结果，不应切分 Work，也不应成为隐藏前面正文的过程边界。
   const presentations = new Set(orderedSegments.filter(segment =>
     segment.kind === 'tool' && isPresentation?.(segment)))
+  const hasInlineSubagentTimeline = orderedSegments.some(segment =>
+    isSubagentTimelineSegment(segment) && segment.kind.subagent.afterOrder !== SUBAGENT_TIMELINE_TAIL_ORDER)
   let lastProcessIndex = -1
   let lastActivityIndex = -1
   orderedSegments.forEach((segment, index) => {
-    if (presentations.has(segment)) return
+    if (presentations.has(segment) || isSubagentTimelineSegment(segment)) return
     if (segmentHasContent(segment) && segment.kind !== 'text') {
       lastActivityIndex = index
     }
@@ -422,6 +510,11 @@ export function groupTimelineSegments(
   }
   orderedSegments.forEach((segment, index) => {
     if (!segmentHasContent(segment)) return
+    if (isSubagentTimelineSegment(segment)) {
+      flushProcess()
+      body.push({ type: 'subagent', segment })
+      return
+    }
     if (presentations.has(segment)) {
       flushProcess()
       body.push({ type: 'presentation', segment })
@@ -437,7 +530,7 @@ export function groupTimelineSegments(
       : ((segment.phase === 'tool_loop' || segment.phase === 'auxiliary')
           && (state === 'stopped' || hasCancellationNotice || hasFinalAnswer || index <= lastActivityIndex))
         || (hasFinalAnswer && index <= lastProcessIndex)
-    if (segment.kind === 'text' && !foldText) {
+    if (segment.kind === 'text' && (hasInlineSubagentTimeline || !foldText)) {
       flushProcess()
       body.push({ type: 'text', segment })
     } else {

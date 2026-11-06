@@ -85,7 +85,7 @@ describe('tool activity in the message timeline', () => {
     expect(screen.getByText('deploy').closest('[data-tool-call-cluster]')).toBeNull()
   })
 
-  it('keeps native task and wait and external Task cards out of activity clusters', () => {
+  it('keeps dispatch cards out of activity clusters and hides built-in wait', () => {
     const task: ToolCallRecord = { id: 'task', source: 'native', name: 'task', status: 'success',
       arguments: { context: 'Shared', tasks: [{ name: 'Research', task: 'Inspect', solutionSpace: 'Read' }] } }
     const wait: ToolCallRecord = { id: 'wait', source: 'native', name: 'wait', status: 'running', arguments: {} }
@@ -93,11 +93,24 @@ describe('tool activity in the message timeline', () => {
     const externalMessage: ToolCallRecord = { id: 'external-message', source: 'external_cli', name: 'SendMessage', status: 'completed' }
     const mcpTask: ToolCallRecord = { id: 'mcp', source: 'mcp', name: 'task', status: 'completed' }
     const { container } = render(<MessageBubble message={message([read, task, wait, external, externalMessage, mcpTask, command])} messageStreaming />)
-    expect(screen.getByRole('button', { name: /子代理 · Research/ }).closest('[data-tool-call-cluster]')).toBeNull()
-    expect(screen.getByRole('button', { name: /等待子代理/ }).closest('[data-tool-call-cluster]')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Research 已派工' }).closest('[data-tool-call-cluster]')).toBeNull()
+    expect(screen.queryByRole('button', { name: /等待子代理/ })).not.toBeInTheDocument()
     expect(screen.getByText('SUBAGENT').closest('[data-tool-call-cluster]')).toBeNull()
     expect(screen.getByText('SendMessage').closest('[data-tool-call-cluster]')).toBeNull()
     expect(container.querySelectorAll('[data-tool-call-cluster]')).toHaveLength(2)
+  })
+
+  it('keeps only the answer in a history entry containing built-in waits', () => {
+    const receipt: ToolCallRecord = { id: 'poll', source: 'native', name: 'native__wait', status: 'success', result_preview: 'Poll result' }
+    const legacy: ToolCallRecord = { ...receipt, id: 'unlinked', name: 'wait', status: 'error', error: 'Poll error' }
+    const history = message([receipt])
+    const { rerender } = render(<MessageBubble message={{ ...history, tool_calls: [receipt, legacy], content: 'Final answer' }} />)
+    expect(screen.getByText('Final answer')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /^Work/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Poll (result|error)/)).not.toBeInTheDocument()
+    const external: ToolCallRecord = { ...receipt, source: 'mcp', name: 'wait', status: 'running' }
+    rerender(<MessageBubble message={message([external])} messageStreaming />)
+    expect(screen.getByRole('button', { name: /wait/i })).toBeVisible()
   })
 
   it('keeps a single activity anchor as thinking and tools append', () => {

@@ -1980,9 +1980,9 @@ export const chatApi = {
     return result.conversation
   },
 
-  async cancelStream(conversationId: string): Promise<void> {
+  async cancelStream(conversationId: string, scope?: 'backgroundWait'): Promise<void> {
     if (!isTauriRuntime()) return
-    await invoke<void>('chat_cancel_stream', { conversationId })
+    await invoke<void>('chat_cancel_stream', { conversationId, scope })
   },
 
   ...externalCliSettingsApi,

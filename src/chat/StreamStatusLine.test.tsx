@@ -1,9 +1,13 @@
-import { act, render, screen } from '@testing-library/react'
+import { act, render, renderHook, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BLOB_DONE_MS, StreamStatusLine } from './StreamStatusLine'
 import { STATUS_QUIPS, quipPlan } from './blobQuips'
 import { patchSnapshot, reset, setCoarse } from './streamingStore'
 import type { ToolCallRecord } from './types'
+import { subagentsApi } from '../api/subagents'
+import { api } from '../api/tauri'
+import { chatApi } from './api'
+import { useBackgroundTaskWait } from './useBackgroundTaskWait'
 
 vi.mock('./conversationTransitionStore', () => ({
   useConversationTransition: () => ({ loading: false }),
@@ -66,6 +70,56 @@ describe('StreamStatusLine', () => {
     })
     expect(screen.getByText(/上游重试中/)).toBeTruthy()
     expect(screen.queryByText(new RegExp(STATUS_QUIPS.zh.wait[0]))).toBeNull()
+  })
+
+  it('shows built-in waits once in the live status and clears them when they settle', () => {
+    const wait: ToolCallRecord = { ...tool('native__wait', 'running'), source: 'native' }
+    patchSnapshot({ streaming: true, startedAt: Date.now(), toolCalls: [wait, { ...wait, id: 'second' }] })
+    render(<StreamStatusLine active lang="zh" />)
+    expect(screen.getByText('0s · 等待任务结果')).toBeVisible()
+    patchSnapshot({ toolCalls: [{ ...wait, status: 'completed' }] })
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(screen.queryByText(/等待任务结果/)).not.toBeInTheDocument()
+  })
+
+  it('shows idle background waiting only for the current conversation', async () => {
+    let activity: (id: string) => void = () => {}
+    vi.spyOn(api, 'onChatSubagentActivity').mockImplementation(async listener => {
+      activity = listener
+      return () => {}
+    })
+    const waiting = vi.spyOn(subagentsApi, 'waiting').mockResolvedValue(true)
+    function Status({ active }: { active: boolean }) {
+      const stop = useBackgroundTaskWait(active ? null : 'first', 'zh')
+      return <StreamStatusLine active={active} waitingInBackground={Boolean(stop)} lang="zh" />
+    }
+    const { rerender } = render(<Status active={false} />)
+    await act(async () => {})
+    expect(screen.getByText('等待任务结果')).toBeVisible()
+    expect(screen.getByTestId('blob').dataset.mood).toBe('wait')
+    waiting.mockResolvedValue(false)
+    await act(async () => activity('other'))
+    expect(screen.getByText('等待任务结果')).toBeVisible()
+    await act(async () => activity('first'))
+    expect(screen.queryByText('等待任务结果')).not.toBeInTheDocument()
+    waiting.mockResolvedValue(true)
+    await act(async () => activity('first'))
+    rerender(<Status active />)
+    expect(screen.queryByText('等待任务结果')).not.toBeInTheDocument()
+  })
+
+  it('ends idle waiting for the current conversation', async () => {
+    const waiting = vi.spyOn(subagentsApi, 'waiting').mockResolvedValue(true)
+    const stop = vi.spyOn(chatApi, 'cancelStream').mockImplementation(async () => {
+      waiting.mockResolvedValue(false)
+    })
+    const { result } = renderHook(() => useBackgroundTaskWait('first', 'zh'))
+    await act(async () => {})
+    expect(result.current).toBeDefined()
+    await act(async () => { await result.current?.() })
+    expect(stop).toHaveBeenCalledTimes(1)
+    expect(stop).toHaveBeenCalledWith('first', 'backgroundWait')
+    expect(result.current).toBeUndefined()
   })
 
   it('shows an English retry countdown and clears it when output resumes', () => {

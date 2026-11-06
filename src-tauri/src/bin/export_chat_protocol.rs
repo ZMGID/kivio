@@ -18,7 +18,7 @@ use kivio::chat::protocol::{
 use schemars::schema_for;
 use serde_json::Value;
 use ts_rs::{Config, TS};
-use kivio::chat::sub_agent::{registry::AgentStatus, view::{SubagentView, SubagentRoster, SubagentTranscriptCursor, SubagentTranscriptKind, SubagentTranscriptEntry, SubagentTranscriptPage, SubagentSendReceipt, SubagentIrcMessage}};
+use kivio::chat::sub_agent::{registry::AgentStatus, view::{SubagentView, SubagentRoster, SubagentTranscriptCursor, SubagentTranscriptKind, SubagentTranscriptEntry, SubagentTranscriptPage, SubagentSendReceipt, SubagentIrcMessage, SubagentActivity, SubagentActivityKind}};
 
 fn generated_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -39,7 +39,11 @@ fn typescript() -> String {
         SubagentTranscriptPage::decl(&config),
         SubagentSendReceipt::decl(&config),
         SubagentIrcMessage::decl(&config),
+        SubagentActivityKind::decl(&config),
+        SubagentActivity::decl(&config),
         ChatProtocolScope::decl(&config),
+        kivio::chat::protocol::SubagentTimelineStatus::decl(&config),
+        kivio::chat::protocol::SubagentTimelineEntry::decl(&config),
         ChatSegmentKind::decl(&config),
         ChatSegmentPhase::decl(&config),
         ChatSegmentPayload::decl(&config),

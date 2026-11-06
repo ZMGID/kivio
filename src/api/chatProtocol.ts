@@ -244,8 +244,8 @@ function isSemanticallyValidSnapshot(conversationId: string, snapshot: ChatRunSn
 function applyEvent(event: ChatProtocolEvent) {
   if (event.scope === 'conversation') {
     const current = conversationRevisions.get(event.conversationId) ?? 0
-    if (event.revision < current) return
-    conversationRevisions.set(event.conversationId, event.revision)
+    if (event.revision < current && event.type !== 'subagent_activity_added') return
+    conversationRevisions.set(event.conversationId, Math.max(current, event.revision))
     dispatch(event)
     return
   }

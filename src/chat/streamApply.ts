@@ -6,7 +6,7 @@ import type {
 } from '../api/tauri'
 import { mergeSubagentEntry, mergeToolRecord, type ConversationStreamSnapshot } from './conversationRuns'
 import { record } from '../api/subagents'
-import { canonicalToolName, compareTimelineSegments, isExternalSubagentToolCall, segmentStepNumber, segmentToolCallId } from './segments'
+import { canonicalToolName, compareTimelineSegments, isExternalSubagentToolCall, isSubagentTimelineSegment, segmentStepNumber, segmentToolCallId } from './segments'
 import { normalizeToolCallStatus } from './toolStatus'
 import type { ChatMessage, ChatMessageSegment, ToolCallRecord } from './types'
 
@@ -160,8 +160,8 @@ export function upsertStreamSegment(
 }
 
 export function nextSegmentOrder(segments: ChatMessageSegment[]): number {
-  if (segments.length === 0) return 1
-  return Math.max(...segments.map((segment) => segment.order ?? 0)) + 1
+  return segments.reduce((order, segment) => isSubagentTimelineSegment(segment)
+    ? order : Math.max(order, segment.order), 0) + 1
 }
 
 export function upsertToolStreamSegment(

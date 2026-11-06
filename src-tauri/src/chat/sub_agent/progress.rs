@@ -8,7 +8,9 @@ use tauri::AppHandle;
 use crate::chat::Conversation;
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct TerminalProgress {
+pub(crate) struct TaskProgressRecord {
+    #[serde(default)]
+    pub timeline: Option<(String, crate::chat::ChatMessageSegment)>,
     #[serde(default)]
     pub generation: Option<u64>,
     #[serde(default)]
@@ -30,21 +32,21 @@ fn directory(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> 
     Ok(super::registry::artifacts_dir(app, conversation_id)?.join("task-progress"))
 }
 
-pub(crate) fn append(app: &AppHandle, conversation_id: &str, progress: &TerminalProgress) -> Result<(), String> {
+pub(crate) fn append(app: &AppHandle, conversation_id: &str, progress: &TaskProgressRecord) -> Result<(), String> {
     append_in(&directory(app, conversation_id)?, progress)
 }
 
-fn append_in(dir: &Path, progress: &TerminalProgress) -> Result<(), String> {
+fn append_in(dir: &Path, progress: &TaskProgressRecord) -> Result<(), String> {
     let data = serde_json::to_string(progress).map_err(|error| format!("serialize task progress: {error}"))?;
     let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
     crate::chat::storage::atomic_write(&path, &data, "task progress")
 }
 
-pub(crate) fn pending(app: &AppHandle, conversation_id: &str) -> Result<Vec<(PathBuf, TerminalProgress)>, String> {
+pub(crate) fn pending(app: &AppHandle, conversation_id: &str) -> Result<Vec<(PathBuf, TaskProgressRecord)>, String> {
     pending_in(&directory(app, conversation_id)?)
 }
 
-fn pending_in(dir: &Path) -> Result<Vec<(PathBuf, TerminalProgress)>, String> {
+fn pending_in(dir: &Path) -> Result<Vec<(PathBuf, TaskProgressRecord)>, String> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -93,10 +95,24 @@ fn update_async_state(structured: &mut serde_json::Map<String, Value>) {
     }
 }
 
-pub(crate) fn apply(conversation: &mut Conversation, pending: &[(PathBuf, TerminalProgress)]) -> Vec<PathBuf> {
+pub(crate) fn apply(conversation: &mut Conversation, pending: &[(PathBuf, TaskProgressRecord)]) -> Vec<PathBuf> {
     let mut applied = Vec::new();
+    if pending.is_empty() { return applied; }
+    let mut activity_ids: std::collections::HashSet<_> = conversation.messages.iter()
+        .flat_map(|message| &message.segments)
+        .filter(|segment| matches!(segment.kind, crate::chat::ChatMessageSegmentKind::Subagent(_)))
+        .map(|segment| segment.id.clone())
+        .collect();
     for (path, progress) in pending {
-        if !is_terminal(&progress.status) { continue; }
+        let timeline_applied = progress.timeline.as_ref().is_none_or(|(message_id, segment)| {
+            if activity_ids.contains(&segment.id) { return true; }
+            let Some(message) = conversation.messages.iter_mut().find(|message| &message.id == message_id) else { return false; };
+            activity_ids.insert(segment.id.clone());
+            message.segments.push(segment.clone());
+            true
+        });
+        let terminal = is_terminal(&progress.status);
+        let mut matched = false;
         for message in &mut conversation.messages {
             if progress.message_id.as_ref().is_some_and(|id| id != &message.id) { continue; }
             for tool in &mut message.tool_calls {
@@ -109,6 +125,16 @@ pub(crate) fn apply(conversation: &mut Conversation, pending: &[(PathBuf, Termin
                     agent.get("agentId").and_then(Value::as_str) == Some(progress.task_id.as_str())
                 }));
                 if !has_agent && (progress.message_id.is_none() || agents.is_some_and(|agents| !agents.is_empty())) { continue; }
+                if progress.timeline.is_some() {
+                    let ids = structured.entry("timelineAgentIds").or_insert_with(|| json!([]));
+                    if let Some(ids) = ids.as_array_mut() {
+                        if !ids.iter().any(|id| id.as_str() == Some(progress.task_id.as_str())) {
+                            ids.push(json!(progress.task_id));
+                        }
+                    }
+                }
+                matched = true;
+                if !terminal { break; }
                 let map = structured.entry("subagentProgressByTask").or_insert_with(|| json!({}));
                 let Some(map) = map.as_object_mut() else { continue; };
                 let existing = map.get(&progress.task_id);
@@ -130,19 +156,30 @@ pub(crate) fn apply(conversation: &mut Conversation, pending: &[(PathBuf, Termin
                 }
                 update_async_state(structured);
 
-                applied.push(path.clone());
                 break;
             }
         }
+        if timeline_applied && (matched || !terminal) { applied.push(path.clone()); }
     }
     applied
 }
 pub(crate) fn merge_message(previous: &crate::chat::ChatMessage, next: &mut crate::chat::ChatMessage) {
+    for segment in &previous.segments {
+        if matches!(segment.kind, crate::chat::ChatMessageSegmentKind::Subagent(_))
+            && !next.segments.iter().any(|item| item.id == segment.id) {
+            next.segments.push(segment.clone());
+        }
+    }
     for tool in &mut next.tool_calls {
         if tool.source != "native" || !matches!(tool.name.as_str(), "task" | "native__task") { continue; }
         let Some(old) = previous.tool_calls.iter().find(|old| {
             old.id == tool.id && old.source == "native" && matches!(old.name.as_str(), "task" | "native__task")
         }) else { continue; };
+        if let Some(ids) = old.structured_content.as_ref().and_then(|value| value.get("timelineAgentIds")) {
+            if let Some(structured) = tool.structured_content.get_or_insert_with(|| json!({})).as_object_mut() {
+                structured.insert("timelineAgentIds".into(), ids.clone());
+            }
+        }
         let Some(old_map) = old.structured_content.as_ref()
             .and_then(|value| value.get("subagentProgressByTask"))
             .and_then(Value::as_object) else { continue; };
@@ -178,8 +215,9 @@ pub(crate) fn clear_applied(paths: &[PathBuf]) {
 mod tests {
     use super::*;
 
-    fn progress(id: &str, status: &str, preview: &str) -> TerminalProgress {
-        TerminalProgress {
+    fn progress(id: &str, status: &str, preview: &str) -> TaskProgressRecord {
+        TaskProgressRecord {
+            timeline: None,
             generation: Some(1), run_id: Some("child-run".into()), progress: Some(json!({"requests":2,"cost":0.1})),
             message_id: Some("message".into()), tool_call_id: "call".into(), task_id: id.into(),
             name: id.into(), model: None, depth: 1, status: status.into(),
@@ -212,6 +250,37 @@ mod tests {
                 }
             }]
         })).unwrap()
+    }
+
+    #[test]
+    fn timeline_preserves_both_events_when_a_child_finishes_in_a_later_message() {
+        let mut saved = conversation();
+        saved.messages.push(receipt());
+        saved.messages.push(serde_json::from_value(json!({
+            "id": "later", "role": "assistant", "content": "More work", "timestamp": 3
+        })).unwrap());
+        let marker = |id: &str, status: &str| -> crate::chat::ChatMessageSegment {
+            serde_json::from_value(json!({
+                "id": id, "kind": {"subagent": {
+                    "agentId": "async", "name": "async", "status": status,
+                    "parentToolCallId": "call", "afterSegmentId": null, "afterOrder": null,
+                    "textChars": null
+                }}, "phase": "auxiliary", "order": 2
+            })).unwrap()
+        };
+        let mut start = progress("async", "running", "");
+        start.timeline = Some(("message".into(), marker("start", "started")));
+        let mut finish = progress("async", "completed", "result");
+        finish.timeline = Some(("later".into(), marker("finish", "completed")));
+        let pending = [(PathBuf::from("finish.json"), finish), (PathBuf::from("start.json"), start)];
+        assert_eq!(apply(&mut saved, &pending).len(), 2);
+        apply(&mut saved, &pending);
+        let read: Conversation = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(read.messages[0].segments.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["start"]);
+        assert_eq!(read.messages[1].segments.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["finish"]);
+        let structured = read.messages[0].tool_calls[0].structured_content.as_ref().unwrap();
+        assert_eq!(structured["timelineAgentIds"], json!(["async"]));
+        assert_eq!(structured["subagentProgressByTask"]["async"]["status"], "completed");
     }
 
     #[test]

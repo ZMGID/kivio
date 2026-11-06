@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -81,12 +82,14 @@ pub async fn ensure_live(
     if record.status == AgentStatus::Running {
         return Ok(record);
     }
+    state.settings_read().chat_tools.ensure_subagent_role_enabled(&record.agent_type)?;
     let mut guard = slot.worker.lock().await;
     record = expected(manager, root, id, expected_generation)?;
     require_accepted(manager, &record)?;
     if record.status == AgentStatus::Running {
         return Ok(record);
     }
+    state.settings_read().chat_tools.ensure_subagent_role_enabled(&record.agent_type)?;
     if guard.is_none() {
         *guard = Some(read_worker(&record).await?);
     }
@@ -456,6 +459,9 @@ pub async fn inspect(
 
 pub async fn revival_error(app: &AppHandle, record: &AgentRecord) -> Option<String> {
     let state = app.state::<AppState>();
+    if let Err(error) = state.settings_read().chat_tools.ensure_subagent_role_enabled(&record.agent_type) {
+        return Some(error);
+    }
     let retained = state.sub_agents.sessions.existing(&record.root, &record.id).and_then(|slot| {
         let worker = slot.worker.try_lock().ok()?;
         let worker = worker.as_ref()?;
@@ -494,40 +500,67 @@ pub async fn revival_error(app: &AppHandle, record: &AgentRecord) -> Option<Stri
     }
 }
 
-pub async fn restore_interrupted(app: &AppHandle, root: &str) -> Result<Vec<String>, String> {
-    let records = discover(app, root).await?;
-    let mut pending = Vec::new();
-    for record in records
-        .into_iter()
-        .filter(|record| !matches!(record.status, AgentStatus::Aborted | AgentStatus::Running))
+fn belongs_to_recovery(
+    record: &AgentRecord,
+    saved: &session::SavedTurn,
+    main_calls: &[(String, String)],
+    parent_runs: &HashMap<String, String>,
+) -> bool {
+    if saved.owner_id != record.parent_id || saved.parent_tool_call_id.is_empty()
+        || saved.parent_run_id.is_empty() || !super::task::valid_agent_id(&saved.job_id)
     {
-        match read_worker(&record).await {
-            Ok(worker) if worker.interrupted.is_some() => pending.push((record, worker)),
-            Ok(_) => {}
-            Err(error) => eprintln!("Cannot restore subagent {}: {error}", record.id),
-        }
+        return false;
     }
-    pending.sort_by_key(|(record, _)| record.depth);
+    if record.parent_id == super::MAIN_AGENT_ID {
+        main_calls.iter().any(|(run, call)| run == &saved.parent_run_id && call == &saved.parent_tool_call_id)
+    } else {
+        parent_runs.get(&record.parent_id) == Some(&saved.parent_run_id)
+    }
+}
+
+pub(crate) async fn restore_interrupted(
+    app: &AppHandle,
+    root: &str,
+    main_calls: &[(String, String)],
+    epoch: u64,
+) -> Result<Vec<String>, String> {
+    if main_calls.is_empty() { return Ok(Vec::new()); }
     let state = app.state::<AppState>();
-    let mut restored = Vec::new();
+    let manager = &state.sub_agents;
+    if !state.settings_read().chat_tools.task_async_enabled { return Ok(Vec::new()); }
+    let mut records = discover(app, root).await?;
+    records.sort_by_key(|record| record.depth);
+    let mut parent_runs = HashMap::new();
     let mut starts = Vec::new();
-    for (record, worker) in pending {
-        let saved = worker
-            .interrupted
-            .clone()
-            .ok_or("Missing interrupted turn")?;
-        let Some((job, cancel)) = state.sub_agents.jobs.register_restored(
-            root,
-            &saved.owner_id,
-            &record.id,
-            &saved.job_id,
-            "Restored interrupted assignment",
-        ) else { continue; };
-        let slot = state.sub_agents.sessions.slot(&record)?;
-        *slot.worker.lock().await = Some(worker);
-        restored.push(job.clone());
+    for record in records.into_iter().filter(|record| record.status == AgentStatus::Parked) {
+        if state.settings_read().chat_tools.ensure_subagent_role_enabled(&record.agent_type).is_err() { continue; }
+        let worker = match read_worker(&record).await {
+            Ok(worker) => worker,
+            Err(error) => { eprintln!("Cannot restore subagent {}: {error}", record.id); continue; }
+        };
+        let Some(saved) = worker.interrupted.clone() else { continue; };
+        if !belongs_to_recovery(&record, &saved, main_calls, &parent_runs) { continue; }
+        let Ok(slot) = manager.sessions.slot(&record) else { break; };
+        let Ok(mut retained) = slot.worker.try_lock() else { continue; };
+        if retained.is_some() { continue; }
+        let Some((job, cancel)) = manager.with_interruption_epoch(root, |current_epoch| {
+            if current_epoch != epoch { return None; }
+            let control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+            if control.killed || control.generation != record.generation
+                || control.active_run.is_some() || control.wake_reserved
+            { return None; }
+            let registration = manager.jobs.register_restored(
+                root, &saved.owner_id, &record.id, &saved.job_id, "Restored interrupted assignment",
+            )?;
+            *retained = Some(worker);
+            Some(registration)
+        }) else { continue; };
+        parent_runs.insert(record.id.clone(), saved.run_id.clone());
         starts.push((record, job, cancel, saved));
     }
+    let restored = starts.iter()
+        .filter(|(record, _, _, _)| record.parent_id == super::MAIN_AGENT_ID)
+        .map(|(_, job, _, _)| job.clone()).collect();
     for (record, job, cancel, saved) in starts {
         super::irc::schedule_restored(app, record, job, cancel, saved);
     }
@@ -556,6 +589,29 @@ mod tests {
             activity: None,
             published: true,
         }
+    }
+
+    #[test]
+    fn recovery_requires_the_exact_parent_run_and_task_call() {
+        let mut child = record(AgentStatus::Parked);
+        let mut saved = session::SavedTurn {
+            job_id: "job".into(), owner_id: super::super::MAIN_AGENT_ID.into(), run_id: "child-run".into(),
+            parent_run_id: "current".into(), parent_tool_call_id: "dispatch".into(),
+        };
+        let calls = vec![("current".into(), "dispatch".into())];
+        let mut parents = HashMap::new();
+        assert!(belongs_to_recovery(&child, &saved, &calls, &parents));
+        saved.parent_run_id = "old".into();
+        assert!(!belongs_to_recovery(&child, &saved, &calls, &parents));
+        child.parent_id = "parent".into();
+        saved.owner_id = "parent".into();
+        assert!(!belongs_to_recovery(&child, &saved, &calls, &parents));
+        parents.insert("parent".into(), "current".into());
+        assert!(!belongs_to_recovery(&child, &saved, &calls, &parents));
+        saved.parent_run_id = "current".into();
+        assert!(belongs_to_recovery(&child, &saved, &calls, &parents));
+        saved.parent_tool_call_id.clear();
+        assert!(!belongs_to_recovery(&child, &saved, &calls, &parents));
     }
 
     #[tokio::test]

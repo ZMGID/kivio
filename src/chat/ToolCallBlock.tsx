@@ -1,6 +1,6 @@
 import { type ComponentType, type ReactNode, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
-import { SubAgentToolCard } from './SubAgentToolCard'
+import { SubagentTimelineEvents } from './SubagentTimelineEvents'
 import {
   AlertCircle,
   Bot,
@@ -41,7 +41,7 @@ import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessageSegment
 import { normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { hasAskUserStructuredContent, isAskUserToolName } from './askUserTools'
-import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, isNativeTaskToolCall, imageReadCount, imageReadItems, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
+import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, isNativeTaskToolCall, isNativeWaitToolCall, imageReadCount, imageReadItems, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
 import { requestDockDiffPreview, requestDockPreview } from './dock/dockPreview'
 import { DiffView } from './dock/DiffView'
 import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
@@ -2305,8 +2305,9 @@ export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = fals
 }
 
 function ToolCallBlockComponent(props: ToolCallBlockProps) {
+  if (isNativeWaitToolCall(props.toolCall)) return null
   if (isNativeTaskToolCall(props.toolCall)) {
-    return <SubAgentToolCard toolCall={props.toolCall} conversationId={props.conversationId} />
+    return <SubagentTimelineEvents toolCall={props.toolCall} conversationId={props.conversationId} />
   }
   if (isAskUserTool(props.toolCall)) {
     return <AskUserBlock toolCall={props.toolCall} />
