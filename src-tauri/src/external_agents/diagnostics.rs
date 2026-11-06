@@ -20,6 +20,8 @@ use super::types::StreamFormat;
 
 const FRAME_LIMIT: usize = 16 * 1024;
 const RECORD_LIMIT: usize = 1024;
+// shortcut: IDs over 256 bytes are omitted, add bounded hashing if attribution is needed.
+const CONVERSATION_ID_LIMIT: usize = 256;
 const QUEUE_LIMIT: usize = 128;
 const FILE_LIMIT: u64 = 2 * 1024 * 1024;
 const RETAINED_TAIL: &[u8] = b"{\"event\":\"retained_tail\",\"incomplete\":true}\n";
@@ -48,7 +50,8 @@ impl NativeDiagnostics {
             sender: OnceLock::from(sender),
             lost: Arc::new(AtomicU64::new(0)),
         }));
-        let capture = diagnostics.connection(protocol, Some(Uuid::new_v4()));
+        let capture =
+            diagnostics.connection(protocol, Some("conv_550e8400-e29b-41d4-a716-446655440000"));
         (diagnostics, capture, receiver)
     }
     pub(crate) fn new(usage_dir: &Path, enabled: bool) -> Self {
@@ -107,12 +110,17 @@ impl NativeDiagnostics {
     pub(crate) fn connection(
         &self,
         protocol: StreamFormat,
-        conversation: Option<Uuid>,
+        conversation: Option<&str>,
     ) -> ConnectionCapture {
         ConnectionCapture(Arc::new(Connection {
             sink: self.0.clone(),
             protocol,
-            conversation,
+            conversation: conversation
+                .filter(|id| {
+                    id.len() <= CONVERSATION_ID_LIMIT
+                        && crate::chat::storage::validate_conversation_id(id).is_ok()
+                })
+                .map(str::to_owned),
             id: Uuid::new_v4(),
             salt: Uuid::new_v4(),
             order: Mutex::new(0),
@@ -172,7 +180,7 @@ struct Connection {
     id: Uuid,
     salt: Uuid,
     protocol: StreamFormat,
-    conversation: Option<Uuid>,
+    conversation: Option<String>,
     order: Mutex<u64>,
     observation: Mutex<Observation>,
 }
@@ -243,7 +251,7 @@ impl ConnectionCapture {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
-            conversation: self.0.conversation.map(|id| id.to_string()),
+            conversation: self.0.conversation.as_deref(),
             sequence: *sequence,
             observed_during_generation: observation.and_then(|o| o.generation),
             observation_boundary: boundary,
@@ -435,13 +443,13 @@ pub(crate) enum Direction {
     Stderr,
 }
 #[derive(Serialize)]
-struct Record {
+struct Record<'a> {
     schema: u8,
     observed_at_ms: u64,
     connection: String,
     protocol: StreamFormat,
     #[serde(skip_serializing_if = "Option::is_none")]
-    conversation: Option<String>,
+    conversation: Option<&'a str>,
     sequence: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     observed_during_generation: Option<u64>,
@@ -709,6 +717,40 @@ mod tests {
                 serde_json::from_slice(&bytes).unwrap()
             })
             .collect()
+    }
+
+    #[test]
+    fn conversation_ids_are_validated_and_bounded_before_recording() {
+        let normal = "conv_550e8400-e29b-41d4-a716-446655440000";
+        let automation = "conv_auto_auto-1_n-2";
+        let at_limit = format!("conv_{}", "x".repeat(251));
+        let over_limit = format!("conv_{}", "x".repeat(252));
+        for (id, expected) in [
+            (Some(normal), Some(normal)),
+            (Some(automation), Some(automation)),
+            (Some(at_limit.as_str()), Some(at_limit.as_str())),
+            (Some(over_limit.as_str()), None),
+            (Some("conv_"), None),
+            (Some("unrelated"), None),
+            (Some("conv_../SECRET"), None),
+            (Some("conv_x\nSECRET"), None),
+            (None, None),
+        ] {
+            let (diagnostics, _, receiver) =
+                NativeDiagnostics::test_capture(StreamFormat::AcpJsonRpc);
+            let capture = diagnostics.connection(StreamFormat::AcpJsonRpc, id);
+            let mut pipe = AgentPipe::new((), Direction::Stdout, Some(capture));
+            pipe.accept(b"{}\n");
+
+            let records = records(&receiver);
+            assert!(records.iter().any(|record| record["event"] == "frame"));
+            for record in records {
+                assert_eq!(record.get("conversation").and_then(Value::as_str), expected);
+                if expected.is_none() {
+                    assert!(record.get("conversation").is_none());
+                }
+            }
+        }
     }
 
     struct ShortIo {

@@ -195,10 +195,14 @@ pub(super) async fn complete_assistant_reply_inner(
             entry,
         )
         .await
-        .map(|_| ArmReplyOutcome {
-            message: None,
-            run_id: None,
-            error: None,
+        .map(|outcome| match outcome {
+            crate::external_agents::ExternalCliTurnOutcome::Completed
+            | crate::external_agents::ExternalCliTurnOutcome::Failed(_)
+            | crate::external_agents::ExternalCliTurnOutcome::Cancelled => ArmReplyOutcome {
+                message: None,
+                run_id: None,
+                error: None,
+            },
         });
     }
 
