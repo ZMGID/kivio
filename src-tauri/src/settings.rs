@@ -3534,6 +3534,10 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
         serde_json::to_value(&to_persist).map_err(|e| e.to_string())?,
     );
     let external_agents_changed = external_cli_agents_changed(&previous_settings, &canonical);
+    let _launch_update = crate::external_agents::overrides::begin_launch_update(
+        &previous_settings,
+        &canonical,
+    );
     persist_then_apply_with_rollback(
         || write_settings_document(&path, &next),
         || Ok(()),
@@ -3649,9 +3653,7 @@ pub fn load_settings(app: &AppHandle) -> Settings {
         .and_then(|mut document| document.remove("settings"))
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
-    let settings = sanitize_settings(settings);
-    crate::external_agents::overrides::sync_from_settings(&settings);
-    settings
+    sanitize_settings(settings)
 }
 
 // ========== 默认提示词生成 ==========

@@ -125,7 +125,7 @@ pub enum HistoryTitleStrategy {
 pub enum ImportDiscoveryStrategy {
     None,
     FileHistory,
-    Acp,
+    Acp { replays_history: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,6 +141,43 @@ impl AgentImportPolicy {
         history_source: HistorySourceStrategy::None,
         history_title: HistoryTitleStrategy::None,
     };
+
+    pub const fn acp(replays_history: bool) -> Self {
+        Self {
+            discovery: ImportDiscoveryStrategy::Acp { replays_history },
+            ..Self::NONE
+        }
+    }
+
+    pub fn history_support(self) -> CapabilitySupport {
+        match self.discovery {
+            ImportDiscoveryStrategy::None => CapabilitySupport::Unavailable,
+            ImportDiscoveryStrategy::Acp { replays_history: false } => CapabilitySupport::Fallback,
+            ImportDiscoveryStrategy::FileHistory
+            | ImportDiscoveryStrategy::Acp { replays_history: true } => CapabilitySupport::Native,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewindStrategy {
+    Replay,
+    ClaudeTranscript,
+    CodexRevert,
+    PiFork,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountProtocol {
+    ClaudeControl,
+    CodexAppServer,
+    GrokBilling,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AccountProbe {
+    pub args: &'static [&'static str],
+    pub protocol: AccountProtocol,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -414,14 +451,35 @@ pub struct DetectedAgent {
     /// 否则改一次开关要等 `AVAILABILITY_CACHE_TTL`（600s）才生效。
     #[serde(default)]
     pub disabled: bool,
-    /// 协议是否支持运行中注入（见 `RuntimeAgentDef::supports_steering`）。
-    /// 前端据此决定排队条上给不给「立刻引导」。
     #[serde(default)]
-    pub supports_steering: bool,
-    /// 协议是否支持把消息排到当前运行之后继续处理。
-    /// 当前：Pi RPC `follow_up`，dsh 官方 `session/prompt`。
-    #[serde(default)]
-    pub supports_follow_up: bool,
+    pub capabilities: ProviderCapabilities,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CapabilitySupport {
+    Native,
+    Fallback,
+    #[default]
+    Unavailable,
+}
+
+/// Kivio's integration policy. A running CLI still negotiates and acknowledges its own operations.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCapabilities {
+    pub steering: CapabilitySupport,
+    /// Fallback sends a normal next turn from Kivio's queue.
+    pub follow_up: CapabilitySupport,
+    /// Fallback adds the attachment path to the prompt.
+    pub image_input: CapabilitySupport,
+    /// A native attempt may fall back to a fresh session with visible history replayed.
+    pub rewind: CapabilitySupport,
+    /// Fallback copies the visible Kivio snapshot and opens an independent CLI context.
+    pub conversation_branch: CapabilitySupport,
+    /// Fallback binds the native session without replaying its history.
+    pub import_history: CapabilitySupport,
+    pub account: CapabilitySupport,
 }
 
 #[derive(Debug, Clone)]
@@ -478,24 +536,38 @@ pub struct RuntimeAgentDef {
     pub prompt_input_format: PromptInputFormat,
     pub stream_format: StreamFormat,
     pub resumes_session_via_cli: bool,
-    /// 该 CLI 是否能通过其协议原生接收图片（Claude/Pi base64 / ACP image / Codex localImage）。
-    /// false（当前主要是 kimi）时图片降级为在 prompt 文本里写出路径。
-    pub supports_native_image: bool,
-    /// 该 CLI 的协议能否往**在飞的轮次**里追加一条用户输入（「立刻引导」）。
-    ///
-    /// Codex 使用 `turn/steer`，Pi 使用 RPC `steer`，dsh 使用 bridge `session/steer`
-    ///（`agent.steer()`，next-step inbox）。都只在对端成功响应后确认。
-    /// Claude 使用带 priority="now" 的 stream-json 用户消息，并等待输入回显；
-    /// ACP 只有 `session/prompt` 与 `session/cancel`，不声明该能力。
-    pub supports_steering: bool,
-    /// 该 CLI 的协议能否把一条用户消息排到当前运行完成后继续处理。
-    /// Pi 使用 RPC `follow_up`；dsh 使用官方 `session/prompt` → `agent.followup()`。
-    /// 其余协议仍由 Kivio 在轮末发起普通新轮次。
-    pub supports_follow_up: bool,
+    pub steering: CapabilitySupport,
+    pub follow_up: CapabilitySupport,
+    pub image_input: CapabilitySupport,
+    pub rewind: RewindStrategy,
+    pub account: Option<AccountProbe>,
     /// 允许原生注入的图片 MIME 白名单；空 = 不限。Claude stream-json 仅认 jpeg/png/gif/webp，
     /// 超出的图片降级为路径文本（不静默丢弃）。
     pub image_mime_whitelist: &'static [&'static str],
     pub build_args: fn(&RuntimeContext, &RuntimeBuildOptions, Option<&str>) -> Vec<String>,
+}
+
+impl RuntimeAgentDef {
+    pub fn capabilities(&self) -> ProviderCapabilities {
+        use CapabilitySupport::{Fallback, Native, Unavailable};
+
+        ProviderCapabilities {
+            steering: self.steering,
+            follow_up: self.follow_up,
+            image_input: self.image_input,
+            rewind: match self.rewind {
+                RewindStrategy::Replay => Fallback,
+                _ => Native,
+            },
+            conversation_branch: Fallback,
+            import_history: self.import.history_support(),
+            account: if self.account.is_some() {
+                Native
+            } else {
+                Unavailable
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

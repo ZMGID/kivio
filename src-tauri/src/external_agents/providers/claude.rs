@@ -1,3 +1,4 @@
+use super::super::types::{AccountProbe, AccountProtocol, CapabilitySupport, RewindStrategy};
 use super::super::types::{
     ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
     StreamFormat,
@@ -507,9 +508,22 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     prompt_input_format: PromptInputFormat::StreamJson,
     stream_format: StreamFormat::ClaudeStreamJson,
     resumes_session_via_cli: true,
-    supports_native_image: true,
-    supports_steering: true,
-    supports_follow_up: false,
+    image_input: CapabilitySupport::Native,
+    steering: CapabilitySupport::Native,
+    follow_up: CapabilitySupport::Fallback,
+    rewind: RewindStrategy::ClaudeTranscript,
+    account: Some(AccountProbe {
+        args: &[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--replay-user-messages",
+        ],
+        protocol: AccountProtocol::ClaudeControl,
+    }),
     image_mime_whitelist: &["image/jpeg", "image/png", "image/gif", "image/webp"],
     build_args: build_claude_args,
 };

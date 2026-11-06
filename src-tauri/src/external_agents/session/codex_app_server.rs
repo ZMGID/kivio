@@ -1594,7 +1594,7 @@ impl CodexAppServerSession {
         let approval_policy = codex_approval_policy(Some(sandbox_mode));
         let mut command = codex_cli_command(resolved_bin);
         crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
-        let mut child = command
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(command
             .args(args)
             // Resume must stay narrow, but its config must use the selected capsule rather
             // than the previous rollout's sandbox. Let Codex resolve network/roots itself.
@@ -1604,9 +1604,7 @@ impl CodexAppServerSession {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .no_console_window()
-            .kill_on_drop(true)
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
+            .kill_on_drop(true))
             .map_err(|e| format!("spawn: {e}"))?;
         // N1: drain stderr for the process lifetime.
         let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
@@ -1836,6 +1834,7 @@ impl CodexAppServerSession {
         events: &mpsc::Sender<UnifiedAgentEvent>,
         control: &mut mpsc::Receiver<SessionCommand>,
         mut approvals: Option<&mut ApprovalBridge>,
+        turn_cancelled: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<(), String> {
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
         let chosen_effort = normalize_codex_effort(reasoning);
@@ -1866,6 +1865,7 @@ impl CodexAppServerSession {
         } else {
             vec![json!({"type":"text", "text":prompt})]
         };
+        if turn_cancelled.is_some_and(|token| token.is_cancelled()) { return Err("cancelled".into()); }
         let turn_id = self.next_id;
         self.next_id += 1;
 
@@ -2775,16 +2775,14 @@ pub async fn detect_codex_models(
     cwd: &Path,
     timeout_secs: u64,
 ) -> Option<CodexModelsProbe> {
-    let mut child = codex_cli_command(resolved_bin)
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(codex_cli_command(resolved_bin)
         .arg("app-server")
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .no_console_window()
-        .kill_on_drop(true)
-        .spawn()
-        .map(crate::external_agents::spawn::AgentChild::from)
+        .kill_on_drop(true))
         .ok()?;
     let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
     let (mut stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
@@ -3081,16 +3079,14 @@ pub async fn detect_codex_commands(
         .collect();
 
     // Best-effort: pull skills via the app-server. Failure leaves just the built-ins.
-    if let Ok(mut child) = codex_cli_command(resolved_bin)
+    if let Ok(mut child) = crate::external_agents::spawn::AgentChild::spawn(codex_cli_command(resolved_bin)
         .arg("app-server")
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .no_console_window()
-        .kill_on_drop(true)
-        .spawn()
-        .map(crate::external_agents::spawn::AgentChild::from)
+        .kill_on_drop(true))
     {
         if let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) {
             let mut reader = BufReader::new(stdout).lines();
@@ -3148,12 +3144,17 @@ pub async fn detect_codex_commands(
 /// Spawn the actor task that owns a connected session and serves `SessionCommand`s.
 pub fn spawn_codex_session_actor(
     mut session: CodexAppServerSession,
-) -> mpsc::Sender<SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
-    tokio::spawn(async move {
-        while let Some(cmd) = rx.recv().await {
+    crate::external_agents::session::live::SessionControl::spawn(tx, async move {
+        loop {
+            let cmd = tokio::select! {
+                command = rx.recv() => match command { Some(command) => command, None => break },
+                _ = session.child.wait() => break,
+            };
             match cmd {
                 SessionCommand::RunTurn {
+                    cancelled,
                     prompt,
                     model,
                     reasoning,
@@ -3163,6 +3164,7 @@ pub fn spawn_codex_session_actor(
                     done,
                     mut approvals,
                 } => {
+                    if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
                     // Invariant (A4): `run_turn` sends every `event` before returning, and mpsc
                     // preserves order, so the caller's post-`done` drain sees them all. `done.send`
                     // stays LAST.
@@ -3176,6 +3178,7 @@ pub fn spawn_codex_session_actor(
                             &events,
                             &mut rx,
                             approvals.as_mut(),
+                            cancelled.as_ref(),
                         )
                         .await;
                     let closed = result.as_ref().err().is_some_and(|error| error == "closed");
@@ -3200,8 +3203,7 @@ pub fn spawn_codex_session_actor(
             }
         }
         session.close().await;
-    });
-    tx
+    })
 }
 
 #[cfg(test)]
@@ -3271,7 +3273,7 @@ mod tests {
         println!(
             "{}",
             json!({"id":list["id"], "result":{"data":[{"skills":[{
-                "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md", "enabled":mode == "enabled"
+                "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md", "enabled":mode != "disabled"
             }]}]}})
         );
         std::io::stdout().flush().unwrap();
@@ -3305,9 +3307,9 @@ mod tests {
 
     #[tokio::test]
     async fn skill_slash_runtime_resolves_before_dispatch_and_blocks_disabled_skills() {
-        for mode in ["enabled", "disabled"] {
+        for mode in ["enabled", "disabled", "cancelled"] {
             let exe = std::env::current_exe().unwrap();
-            let mut child = tokio::process::Command::new(&exe)
+            let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
                 .args([
                     "--exact",
                     "external_agents::session::codex_app_server::tests::skill_slash_protocol_peer",
@@ -3318,9 +3320,7 @@ mod tests {
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .no_console_window()
-                .kill_on_drop(true)
-                .spawn()
-                .map(crate::external_agents::spawn::AgentChild::from)
+                .kill_on_drop(true))
                 .unwrap();
             let mut session = CodexAppServerSession {
                 stdin: child.stdin.take().unwrap(),
@@ -3341,6 +3341,8 @@ mod tests {
             };
             let (events, mut event_rx) = mpsc::channel(32);
             let (_control_tx, mut control) = mpsc::channel(8);
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            if mode == "cancelled" { cancellation.cancel(); }
             let result = timeout(
                 Duration::from_secs(5),
                 session.run_turn(
@@ -3352,6 +3354,7 @@ mod tests {
                     &events,
                     &mut control,
                     None,
+                    Some(&cancellation),
                 ),
             )
             .await
@@ -3368,6 +3371,8 @@ mod tests {
                     text, "root answer",
                     "child events must not finish or pollute the root turn"
                 );
+            } else if mode == "cancelled" {
+                assert_eq!(result.unwrap_err(), "cancelled");
             } else {
                 assert!(result.unwrap_err().contains("无法明确加载"));
             }
@@ -3545,7 +3550,7 @@ mod tests {
         use crate::external_agents::session::live::ApprovalDecision;
         for mode in ["resolved", "decisions", "auto"] {
             let exe = std::env::current_exe().unwrap();
-            let mut child = tokio::process::Command::new(&exe)
+            let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
                 .args([
                     "--exact",
                     "external_agents::session::codex_app_server::tests::interaction_protocol_peer",
@@ -3555,9 +3560,7 @@ mod tests {
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()
-                .map(crate::external_agents::spawn::AgentChild::from)
+                .kill_on_drop(true))
                 .unwrap();
             let mut session = CodexAppServerSession {
                 stdin: child.stdin.take().unwrap(),
@@ -3613,8 +3616,9 @@ mod tests {
                         &[],
                         &events,
                         &mut control,
-                        Some(&mut bridge)
-                    ),
+                        Some(&mut bridge),
+                        None,
+                ),
                     host
                 )
             })
@@ -4079,6 +4083,7 @@ mod tests {
             let (dtx, drx) = oneshot::channel();
             control
                 .send(SessionCommand::RunTurn {
+                cancelled: None,
                     prompt: prompt.to_string(),
                     model: None,
                     reasoning: None,
@@ -4560,7 +4565,7 @@ mod tests {
     /// 一次性驱动，即同一协议的第二份实现。改成驱动生产代码后那份实现被删掉了。
     async fn live_codex_turn(prompt: &str, wall_clock: Duration) -> Option<Vec<UnifiedAgentEvent>> {
         let bin = match crate::external_agents::spawn::resolve_binary(
-            &crate::external_agents::defs::codex::CODEX_AGENT_DEF,
+            &crate::external_agents::providers::codex::CODEX_AGENT_DEF,
         )
         .await
         {
@@ -4593,6 +4598,7 @@ mod tests {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                cancelled: None,
                 prompt: prompt.to_string(),
                 model: None,
                 reasoning: None,
@@ -4632,7 +4638,7 @@ mod tests {
     #[ignore = "requires live codex login + network"]
     async fn codex_turn_steer_injects_into_the_running_turn() {
         let bin = match crate::external_agents::spawn::resolve_binary(
-            &crate::external_agents::defs::codex::CODEX_AGENT_DEF,
+            &crate::external_agents::providers::codex::CODEX_AGENT_DEF,
         )
         .await
         {
@@ -4665,6 +4671,7 @@ mod tests {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                cancelled: None,
                 // 让这一轮够长，好在它跑着的时候插话（数到 5 会连着出好几段 reasoning/text）。
                 prompt: "Count slowly from 1 to 5, one number per line, then say COUNT_DONE."
                     .to_string(),

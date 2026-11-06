@@ -1,3 +1,4 @@
+use super::super::types::{CapabilitySupport, RewindStrategy};
 use super::super::types::{
     PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, StreamFormat,
 };
@@ -111,9 +112,11 @@ pub const PI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     prompt_input_format: PromptInputFormat::Text,
     stream_format: StreamFormat::PiRpc,
     resumes_session_via_cli: true,
-    supports_native_image: true,
-    supports_steering: true,
-    supports_follow_up: true,
+    image_input: CapabilitySupport::Native,
+    steering: CapabilitySupport::Native,
+    follow_up: CapabilitySupport::Native,
+    rewind: RewindStrategy::PiFork,
+    account: None,
     image_mime_whitelist: &["image/jpeg", "image/png", "image/gif", "image/webp"],
     build_args: build_pi_args,
 };
@@ -216,9 +219,9 @@ mod tests {
 
     #[test]
     fn pi_advertises_rpc_steering_and_native_images() {
-        assert!(PI_AGENT_DEF.supports_steering);
-        assert!(PI_AGENT_DEF.supports_follow_up);
-        assert!(PI_AGENT_DEF.supports_native_image);
+        assert_eq!(PI_AGENT_DEF.steering, CapabilitySupport::Native);
+        assert_eq!(PI_AGENT_DEF.follow_up, CapabilitySupport::Native);
+        assert_eq!(PI_AGENT_DEF.image_input, CapabilitySupport::Native);
         assert_eq!(
             PI_AGENT_DEF.image_mime_whitelist,
             &["image/jpeg", "image/png", "image/gif", "image/webp"]

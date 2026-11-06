@@ -205,7 +205,7 @@ pub async fn list_external_cli_slash_commands(
         }
         return Ok((
             true,
-            crate::external_agents::defs::dsh::builtin_slash_commands(),
+            crate::external_agents::providers::dsh::builtin_slash_commands(),
             None,
         ));
     }
@@ -249,7 +249,7 @@ pub async fn list_external_cli_slash_commands(
             let resolved_bin = resolve_binary(def)
                 .await
                 .ok_or_else(|| format!("无法定位 {} 可执行文件", def.bin))?;
-            let args = crate::external_agents::defs::claude::ephemeral_probe_args(&(def
+            let args = crate::external_agents::providers::claude::ephemeral_probe_args(&(def
                 .build_args)(
                 &runtime_ctx,
                 &build_options,

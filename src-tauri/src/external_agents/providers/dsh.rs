@@ -25,6 +25,7 @@
 //! 模型 / 推理档位不是启动 flag，而是 `initialize` 的 RPC 参数（模型）与 Kivio profile
 //! `cordis.patch.yml` 中的 `llm-deepseek.reasoningEffort`（档位）—— 见 `dsh_profile.rs`。
 
+use super::super::types::{CapabilitySupport, RewindStrategy};
 use super::super::types::{
     ExternalCliSlashCommand, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions,
     RuntimeContext, SlashStrategy, StreamFormat,
@@ -174,18 +175,99 @@ pub const DSH_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     resumes_session_via_cli: false,
     // `session/prompt` 的官方 image 块是 `{type:"image", attachment:{attachmentId,…}}`。
     // Kivio 先发 base64，bridge 经 `ctx.attachments.saveImage` 落库后再改写成引用。
-    supports_native_image: true,
+    image_input: CapabilitySupport::Native,
     // Bridge 补 `session/steer` → `agent.steer()`（next-step inbox，当前轮下一步）。
     // 官方 `session/prompt` → `agent.followup()`（下一轮 FIFO）。两套都接。
-    supports_steering: true,
-    supports_follow_up: true,
+    steering: CapabilitySupport::Native,
+    follow_up: CapabilitySupport::Native,
+    rewind: RewindStrategy::Replay,
+    account: None,
     image_mime_whitelist: &["image/jpeg", "image/png", "image/gif", "image/webp"],
     build_args: build_dsh_args,
 };
 
+fn dsh_provider_fingerprint_for(
+    config: Option<&crate::settings::ExternalCliAgentConfig>,
+) -> String {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    match config {
+        Some(config) => serde_json::to_string(&(&config.current_provider, &config.providers))
+            .unwrap_or_else(|_| config.current_provider.clone())
+            .hash(&mut hasher),
+        None => "cli-default".hash(&mut hasher),
+    }
+    format!("{:016x}", hasher.finish())
+}
+
+fn dsh_provider_fingerprint() -> String {
+    let config = crate::external_agents::overrides::agent_config("dsh");
+    dsh_provider_fingerprint_for(config.as_ref())
+}
+
+pub(crate) fn launch_config(
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    sandbox: Option<&str>,
+    preset: Option<&str>,
+) -> crate::external_agents::session::live::LaunchConfig {
+    use crate::external_agents::session::live::LaunchConfig;
+
+    LaunchConfig {
+        identity: None,
+        flags: format!(
+            "{}|{}|{}|{}|{}",
+            model.unwrap_or_default(),
+            reasoning.unwrap_or_default(),
+            sandbox.unwrap_or_default(),
+            crate::external_agents::dsh_profile::normalize_agent_preset(preset),
+            dsh_provider_fingerprint()
+        ),
+        // dsh 的会话级指令在首轮正文里，不是启动配置；指令变化不需要为了它单独重连。
+        instructions: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_fingerprint_tracks_provider_settings() {
+        let config_a = crate::settings::ExternalCliAgentConfig {
+            providers: vec![crate::settings::ExternalCliProvider {
+                id: "provider-a".to_string(),
+                config_json: "{\"baseURL\":\"https://a.example/v1\"}".to_string(),
+                ..Default::default()
+            }],
+            current_provider: "provider-a".to_string(),
+            ..Default::default()
+        };
+        let config_b = crate::settings::ExternalCliAgentConfig {
+            providers: vec![crate::settings::ExternalCliProvider {
+                id: "provider-b".to_string(),
+                config_json: "{\"baseURL\":\"https://b.example/v1\"}".to_string(),
+                ..Default::default()
+            }],
+            current_provider: "provider-b".to_string(),
+            ..Default::default()
+        };
+        assert_ne!(
+            dsh_provider_fingerprint_for(Some(&config_a)),
+            dsh_provider_fingerprint_for(Some(&config_b))
+        );
+        let mut config_disabled = config_a.clone();
+        config_disabled.providers[0].disabled = true;
+        assert_ne!(
+            dsh_provider_fingerprint_for(Some(&config_a)),
+            dsh_provider_fingerprint_for(Some(&config_disabled))
+        );
+        assert_ne!(
+            dsh_provider_fingerprint_for(None),
+            dsh_provider_fingerprint_for(Some(&config_a))
+        );
+    }
 
     fn ctx() -> RuntimeContext {
         RuntimeContext {
@@ -221,9 +303,9 @@ mod tests {
             StreamFormat::DshJsonRpc
         ));
         assert!(matches!(DSH_AGENT_DEF.slash_strategy, SlashStrategy::Dsh));
-        assert!(DSH_AGENT_DEF.supports_steering);
-        assert!(DSH_AGENT_DEF.supports_follow_up);
-        assert!(DSH_AGENT_DEF.supports_native_image);
+        assert_eq!(DSH_AGENT_DEF.steering, CapabilitySupport::Native);
+        assert_eq!(DSH_AGENT_DEF.follow_up, CapabilitySupport::Native);
+        assert_eq!(DSH_AGENT_DEF.image_input, CapabilitySupport::Native);
         assert_eq!(
             DSH_AGENT_DEF.image_mime_whitelist,
             &["image/jpeg", "image/png", "image/gif", "image/webp"] as &[&str]

@@ -7,6 +7,7 @@ use tokio::time::timeout;
 use crate::chat::agent::execute::truncate_chars;
 use crate::chat::attachments::{compose_text_attachments_for_api, TextAttachmentInput};
 use crate::chat::{AgentPlanState, ChatMessageSegment, ToolCallRecord};
+use crate::external_agents::types::CapabilitySupport;
 use crate::state::AppState;
 
 use super::catalog::strip_transcripts_for_frontend;
@@ -438,7 +439,13 @@ pub(crate) async fn chat_steer_message(
         return Ok(false);
     };
     // 常驻 CLI 会话优先：这条对话由外部 CLI 在跑时，内置信箱根本没人来取。
-    if let Some(control) = state.external_live_sessions().control_any(&conversation_id) {
+    if let Some((control, definition)) = state
+        .external_live_sessions()
+        .injection_control(&conversation_id)
+    {
+        if definition.steering != CapabilitySupport::Native {
+            return Ok(false);
+        }
         let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
         let sent = control
             .send(
@@ -538,14 +545,21 @@ pub(crate) async fn chat_follow_up_message(
     let (image_paths, file_paths): (Vec<_>, Vec<_>) = paths
         .into_iter()
         .partition(|path| crate::external_agents::attachments::image_mime_for_path(path).is_some());
-    if let Some((control, image_mime_whitelist)) = state
+    if let Some((control, definition)) = state
         .external_live_sessions()
-        .follow_up_control(&conversation_id)
+        .injection_control(&conversation_id)
     {
-        let (images, degraded_images) = crate::external_agents::attachments::load_image_blocks(
-            &image_paths,
-            image_mime_whitelist,
-        );
+        if definition.follow_up != CapabilitySupport::Native {
+            return Ok(false);
+        }
+        let (images, degraded_images) = if definition.image_input == CapabilitySupport::Native {
+            crate::external_agents::attachments::load_image_blocks(
+                &image_paths,
+                definition.image_mime_whitelist,
+            )
+        } else {
+            (Vec::new(), image_paths)
+        };
         content.push_str(&crate::external_agents::attachments::image_paths_note(
             &degraded_images,
         ));

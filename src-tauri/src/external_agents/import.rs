@@ -12,7 +12,8 @@ use serde::Serialize;
 
 use crate::external_agents::registry::{get_agent_def, AGENT_DEFS};
 use crate::external_agents::types::{
-    HistorySourceStrategy, HistoryTitleStrategy, ImportDiscoveryStrategy, RuntimeAgentDef,
+    CapabilitySupport, HistorySourceStrategy, HistoryTitleStrategy, ImportDiscoveryStrategy,
+    RuntimeAgentDef,
 };
 
 /// 一条可导入的原生会话。
@@ -21,6 +22,7 @@ use crate::external_agents::types::{
 pub struct ImportableSession {
     /// `RuntimeAgentDef.id`：`claude` / `codex` / `grok` / `kimi` / `opencode`。
     pub agent_id: String,
+    pub import_history: CapabilitySupport,
     /// 该 CLI 自己的会话 id——`session/load` / `--resume` 认的就是这个。
     pub session_id: String,
     pub title: Option<String>,
@@ -334,6 +336,7 @@ pub fn list_claude_sessions(project_root: &str) -> Vec<ImportableSession> {
             }
             out.push(ImportableSession {
                 agent_id: "claude".to_string(),
+                import_history: CapabilitySupport::Native,
                 session_id,
                 title,
                 cwd,
@@ -453,6 +456,7 @@ fn grok_session_from_summary(
         .map(truncate_title);
     Some(ImportableSession {
         agent_id: "grok".to_string(),
+        import_history: CapabilitySupport::Native,
         session_id,
         title,
         cwd,
@@ -620,6 +624,7 @@ fn collect_codex_in_dir(dir: &Path, project_root: &str, out: &mut Vec<Importable
         }
         out.push(ImportableSession {
             agent_id: "codex".to_string(),
+            import_history: CapabilitySupport::Native,
             session_id,
             title,
             cwd,
@@ -701,6 +706,7 @@ pub async fn list_acp_sessions(
             .filter(|s| paths_match(&s.cwd, project_root))
             .map(|s| ImportableSession {
                 agent_id: agent_id.to_string(),
+                import_history: def.import.history_support(),
                 session_id: s.session_id,
                 title: s.title.as_deref().map(truncate_title),
                 cwd: s.cwd,
@@ -1007,7 +1013,7 @@ async fn load_import_history(
             let mtime = file_mtime_ms(&path);
             Ok((messages, Some(path), mtime))
         }
-        ImportDiscoveryStrategy::Acp => {
+        ImportDiscoveryStrategy::Acp { .. } => {
             let messages = load_acp_history(def.id, project_root, session_id)
                 .await
                 .ok_or_else(|| "该代理当前不支持读取原生会话历史".to_string())?;
@@ -1046,7 +1052,7 @@ pub async fn list_importable_for_project(
     let mut sessions = list_file_based_sessions(&root);
     for def in AGENT_DEFS
         .iter()
-        .filter(|def| def.import.discovery == ImportDiscoveryStrategy::Acp)
+        .filter(|def| matches!(def.import.discovery, ImportDiscoveryStrategy::Acp { .. }))
     {
         if let Some(list) = list_acp_sessions(def.id, &root).await {
             sessions.extend(list);
@@ -1644,7 +1650,7 @@ mod tests {
             .unwrap_or_else(|_| std::env::current_dir().unwrap().display().to_string());
         for def in AGENT_DEFS
             .iter()
-            .filter(|def| def.import.discovery == ImportDiscoveryStrategy::Acp)
+            .filter(|def| matches!(def.import.discovery, ImportDiscoveryStrategy::Acp { .. }))
         {
             match list_acp_sessions(def.id, &root).await {
                 None => println!(

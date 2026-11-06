@@ -46,7 +46,12 @@ vi.mock('../../api/settingsCache', () => ({
   updateSettingsCached: vi.fn(),
 }))
 vi.mock('../api', () => ({
-  chatApi: { getConversation: vi.fn(), sendMessage: vi.fn(), cancelStream: vi.fn() },
+  chatApi: {
+    getConversation: vi.fn(),
+    sendMessage: vi.fn(),
+    cancelStream: vi.fn(),
+    detectExternalAgents: vi.fn().mockResolvedValue([]),
+  },
   agentRuntimesEqual: () => true,
   normalizeAgentRuntime: () => ({ kind: 'builtin' }),
 }))

@@ -836,17 +836,17 @@ impl Rpc {
         command
             .env("NO_PROXY", &no_proxy)
             .env("no_proxy", &no_proxy);
-        let mut child = command
-            .arg("app-server")
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .no_console_window()
-            .kill_on_drop(true)
-            .spawn()
-            .map(AgentChild::from)
-            .map_err(|_| "Could not start the Codex app-server".to_string())?;
+        let mut child = AgentChild::spawn(
+            command
+                .arg("app-server")
+                .current_dir(cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .no_console_window()
+                .kill_on_drop(true),
+        )
+        .map_err(|_| "Could not start the Codex app-server".to_string())?;
         let input = child
             .stdin
             .take()

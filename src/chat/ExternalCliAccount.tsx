@@ -1,16 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { RefreshCw } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
-import { externalCliSettingsApi, type ExternalCliAccount as Account } from '../api/externalCliSettings'
+import { externalCliSettingsApi, type DetectedExternalAgent, type ExternalCliAccount as Account } from '../api/externalCliSettings'
 import { usePopoverMenu } from './usePopoverMenu'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
 
-const SUPPORTED: Record<string, true> = { codex: true, claude: true, grok: true }
-
 /** One read-only account view shared by the main and independent chat titlebars. */
-export function ExternalCliAccount({ agentId, conversationId }: { agentId: string; conversationId?: string | null }) {
+export function ExternalCliAccount({ agent, conversationId }: {
+  agent: Pick<DetectedExternalAgent, 'id' | 'name' | 'capabilities'> | undefined
+  conversationId?: string | null
+}) {
+  const agentId = agent?.capabilities.account === 'native' ? agent.id : undefined
   const zh = useLang() === 'zh'
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<Account | null>(null)
@@ -30,7 +32,8 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
     setOpen(false)
     return () => { tracker.version++ }
   }, [agentId, conversationId])
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    if (!agentId) return
     const id = ++request.current.version
     setLoading(true)
     setError('')
@@ -42,13 +45,12 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
     } finally {
       if (request.current.version === id) setLoading(false)
     }
-  }
+  }, [agentId, conversationId])
   // 圆环要有数据才能画：进会话 / 换 CLI 就读一次，不等用户点开。
   useEffect(() => {
-    if (SUPPORTED[agentId]) void refresh()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId, conversationId])
-  if (!SUPPORTED[agentId]) return null
+    void refresh()
+  }, [refresh])
+  if (!agentId) return null
   // 非账号登录（API key 等）读不到额度：圆环没有可画的数据，整个不显示。
   if (!status?.windows.length) return null
   const resetLabel = (value: string | number | null) => {
@@ -88,7 +90,7 @@ export function ExternalCliAccount({ agentId, conversationId }: { agentId: strin
       className="kv-menu custom-scrollbar fixed z-[1001] flex max-h-[70vh] w-[248px] max-w-[calc(100vw-32px)] flex-col gap-2.5 overflow-y-auto p-2.5 text-xs">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
-          <strong className="text-[13px]">{agentId === 'codex' ? 'Codex' : agentId === 'grok' ? 'Grok' : 'Claude Code'}</strong>
+          <strong className="text-[13px]">{agent?.name}</strong>
           <p className="truncate text-neutral-500 dark:text-neutral-400" title={status.account?.email ?? undefined}>
             {[status.account?.email, status.account?.plan].filter(Boolean).join(' · ') || (zh ? '账号信息未知' : 'Account unavailable')}
           </p>

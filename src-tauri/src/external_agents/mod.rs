@@ -8,7 +8,7 @@ pub mod claude_todo;
 pub mod commands;
 pub mod compact;
 pub mod context;
-pub mod defs;
+pub mod providers;
 pub mod detection;
 pub(crate) mod discovery_state;
 pub mod dsh_plugins;

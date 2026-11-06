@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::external_agents::types::UnifiedAgentEvent;
+use crate::external_agents::types::{RuntimeAgentDef, UnifiedAgentEvent};
 
 /// How long an unused live CLI **process** may sit before the sweeper drops it.
 ///
@@ -102,6 +102,7 @@ pub enum SessionCommand {
     /// Run one turn: write the prompt, stream `UnifiedAgentEvent`s into `events`, and report the
     /// terminal result through `done`. The actor processes exactly one turn at a time.
     RunTurn {
+        cancelled: Option<tokio_util::sync::CancellationToken>,
         prompt: String,
         model: Option<String>,
         reasoning: Option<String>,
@@ -170,12 +171,13 @@ pub struct LaunchConfig {
     /// 不带 `--append-system-prompt-file`），**不参与判定**——否则一条斜杠命令会把常驻进程
     /// 重启一次、紧跟的普通消息再重启一次，来回抖。
     pub instructions: Option<String>,
+    pub(crate) identity: Option<crate::external_agents::overrides::LaunchIdentity>,
 }
 
 impl LaunchConfig {
     /// 已建立的会话（`self`，注册时的配置）能否服务配置为 `incoming` 的这一轮。
     pub fn accepts(&self, incoming: &LaunchConfig) -> bool {
-        if self.flags != incoming.flags {
+        if self.flags != incoming.flags || self.identity != incoming.identity {
             return false;
         }
         match incoming.instructions.as_deref() {
@@ -189,9 +191,114 @@ impl LaunchConfig {
     }
 }
 
+/// Clones retain actor ownership; the final owner aborts a forgotten actor.
+#[derive(Clone)]
+pub struct SessionControl {
+    sender: mpsc::Sender<SessionCommand>,
+    owner: Option<Arc<ActorOwner>>,
+}
+#[derive(Clone, Default)]
+pub(crate) struct SessionIdentity(Arc<Mutex<Option<mpsc::WeakSender<SessionCommand>>>>);
+impl SessionIdentity {
+    pub(crate) async fn closed(&self) {
+        let sender = self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|sender| sender.upgrade());
+        if let Some(sender) = sender {
+            sender.closed().await;
+        }
+    }
+    pub(crate) fn bind(&self, control: &SessionControl) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.sender.downgrade());
+    }
+}
+struct ActorOwner {
+    abort: tokio::task::AbortHandle,
+    finished: tokio::sync::watch::Receiver<bool>,
+}
+impl Drop for ActorOwner {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+impl std::ops::Deref for SessionControl {
+    type Target = mpsc::Sender<SessionCommand>;
+    fn deref(&self) -> &Self::Target {
+        &self.sender
+    }
+}
+impl SessionControl {
+    pub fn spawn(
+        sender: mpsc::Sender<SessionCommand>,
+        task: impl std::future::Future<Output = ()> + Send + 'static,
+    ) -> Self {
+        let task = tokio::spawn(task);
+        let abort = task.abort_handle();
+        let (finished, receipt) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            let _ = task.await;
+            let _ = finished.send(true);
+        });
+        Self {
+            sender,
+            owner: Some(Arc::new(ActorOwner {
+                abort,
+                finished: receipt,
+            })),
+        }
+    }
+    pub(crate) fn abort(&self) {
+        if let Some(owner) = &self.owner {
+            owner.abort.abort();
+        }
+    }
+    pub async fn finished(&self) {
+        if let Some(owner) = &self.owner {
+            let mut receipt = owner.finished.clone();
+            let _ = receipt.wait_for(|done| *done).await;
+        } else {
+            self.sender.closed().await;
+        }
+    }
+    pub async fn close(&self) -> Result<(), String> {
+        let graceful = async {
+            let _ = self.sender.send(SessionCommand::Close).await;
+            self.finished().await;
+        };
+        if tokio::time::timeout(Duration::from_millis(1_500), graceful)
+            .await
+            .is_err()
+        {
+            if let Some(owner) = &self.owner {
+                owner.abort.abort();
+                tokio::time::timeout(Duration::from_secs(1), self.finished())
+                    .await
+                    .map_err(|_| "external CLI actor cleanup timed out".to_string())?;
+            }
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    fn untracked(sender: mpsc::Sender<SessionCommand>) -> Self {
+        Self {
+            sender,
+            owner: None,
+        }
+    }
+}
+pub(crate) struct AbortOnDrop(pub tokio::task::AbortHandle);
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Registry entry: the control channel plus metadata used to decide reuse.
 pub struct LiveSession {
-    pub control: mpsc::Sender<SessionCommand>,
+    pub control: SessionControl,
     pub(crate) _chat_credential: Option<crate::app_mcp::McpCredential>,
     pub agent_id: String,
     pub cwd: String,
@@ -213,6 +320,12 @@ pub struct LiveSession {
     /// 关掉进程 ⇒ 下一轮白付一次冷启动。结果是**越重度使用的会话越吃不到常驻**，而且
     /// 没有任何可观测信号。
     pub busy: Arc<AtomicBool>,
+}
+
+impl Drop for LiveSession {
+    fn drop(&mut self) {
+        self.control.abort();
+    }
 }
 
 /// 轮次期间把会话标成 busy，任何退出路径（含 `?` 与 panic）都会清掉。
@@ -267,7 +380,142 @@ impl LiveSession {
 /// always happen after the guard has been dropped.
 #[derive(Default)]
 pub(crate) struct LiveSessionRegistry {
-    sessions: Mutex<HashMap<String, LiveSession>>,
+    sessions: Mutex<RegistryState>,
+}
+
+#[derive(Default)]
+struct RegistryState {
+    live: HashMap<String, LiveSession>,
+    pending: HashMap<String, Arc<PendingState>>,
+    shutting_down: bool,
+    deleting: std::collections::HashSet<String>,
+}
+impl std::ops::Deref for RegistryState {
+    type Target = HashMap<String, LiveSession>;
+    fn deref(&self) -> &Self::Target {
+        &self.live
+    }
+}
+impl std::ops::DerefMut for RegistryState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.live
+    }
+}
+struct PendingState {
+    cancel: tokio_util::sync::CancellationToken,
+    finished: tokio_util::sync::CancellationToken,
+}
+pub(crate) struct ConversationRetirement<'a> {
+    registry: &'a LiveSessionRegistry,
+    conversation_id: String,
+}
+impl Drop for ConversationRetirement<'_> {
+    fn drop(&mut self) {
+        let mut registry = self
+            .registry
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        registry.deleting.remove(&self.conversation_id);
+        if registry
+            .pending
+            .get(&self.conversation_id)
+            .is_some_and(|entry| entry.finished.is_cancelled())
+        {
+            registry.pending.remove(&self.conversation_id);
+        }
+    }
+}
+pub(crate) struct SessionLease<'a> {
+    registry: &'a LiveSessionRegistry,
+    conversation_id: String,
+    state: Arc<PendingState>,
+    published: Mutex<Option<SessionControl>>,
+    completed: AtomicBool,
+}
+impl SessionLease<'_> {
+    pub(crate) fn track(&self, control: &SessionControl) {
+        *self.published.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
+    }
+    pub(crate) fn cancel(&self) {
+        self.state.cancel.cancel();
+    }
+    pub(crate) fn complete(&self) {
+        self.completed.store(true, Ordering::Release);
+    }
+    pub(crate) async fn cancelled(&self) {
+        self.state.cancel.cancelled().await;
+    }
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.state.cancel.is_cancelled()
+    }
+    pub(crate) fn publish(
+        &self,
+        session: LiveSession,
+        commit: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut state = self
+            .registry
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if state.shutting_down
+            || self.is_cancelled()
+            || !state
+                .pending
+                .get(&self.conversation_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &self.state))
+        {
+            return Err("cancelled".into());
+        }
+        commit()?;
+        *self.published.lock().unwrap_or_else(|e| e.into_inner()) = Some(session.control.clone());
+        LiveSessionRegistry::register_locked(&mut state, self.conversation_id.clone(), session);
+        Ok(())
+    }
+}
+impl Drop for SessionLease<'_> {
+    fn drop(&mut self) {
+        let mut registry = self
+            .registry
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let control = self
+            .published
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let keep_live = self.completed.load(Ordering::Acquire)
+            && control.as_ref().is_some_and(|control| {
+                registry
+                    .get(&self.conversation_id)
+                    .is_some_and(|entry| entry.control.same_channel(control))
+            });
+        if let Some(control) = control.filter(|_| !keep_live) {
+            control.abort();
+            if registry
+                .get(&self.conversation_id)
+                .is_some_and(|entry| entry.control.same_channel(&control))
+            {
+                registry.remove(&self.conversation_id);
+            }
+            let state = self.state.clone();
+            tokio::spawn(async move {
+                control.finished().await;
+                state.finished.cancel();
+            });
+        } else {
+            if registry
+                .pending
+                .get(&self.conversation_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &self.state))
+            {
+                registry.pending.remove(&self.conversation_id);
+            }
+            self.state.finished.cancel();
+        }
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -280,6 +528,102 @@ pub(crate) struct LiveSessionDiagnostic {
 }
 
 impl LiveSessionRegistry {
+    pub(crate) fn reserve(&self, conversation_id: &str) -> Result<SessionLease<'_>, String> {
+        let mut registry = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if registry
+            .pending
+            .get(conversation_id)
+            .is_some_and(|entry| entry.finished.is_cancelled())
+        {
+            registry.pending.remove(conversation_id);
+        }
+        if registry.shutting_down
+            || registry.deleting.contains(conversation_id)
+            || registry.pending.contains_key(conversation_id)
+        {
+            return Err("external CLI session is busy or shutting down".into());
+        }
+        let state = Arc::new(PendingState {
+            cancel: tokio_util::sync::CancellationToken::new(),
+            finished: tokio_util::sync::CancellationToken::new(),
+        });
+        registry
+            .pending
+            .insert(conversation_id.into(), state.clone());
+        Ok(SessionLease {
+            registry: self,
+            conversation_id: conversation_id.into(),
+            state,
+            published: Mutex::new(None),
+            completed: AtomicBool::new(false),
+        })
+    }
+
+    pub(crate) fn with_current<T>(
+        &self,
+        conversation_id: &str,
+        identity: &SessionIdentity,
+        operation: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let registry = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let identity = identity.0.lock().unwrap_or_else(|e| e.into_inner());
+        let sender = identity.as_ref()?.upgrade()?;
+        registry
+            .get(conversation_id)
+            .filter(|entry| entry.control.same_channel(&sender))
+            .map(|_| operation())
+    }
+    pub(crate) fn is_identity_current(
+        &self,
+        conversation_id: &str,
+        identity: &SessionIdentity,
+    ) -> bool {
+        self.with_current(conversation_id, identity, || ())
+            .is_some()
+    }
+    pub(crate) fn is_current(&self, conversation_id: &str, control: &SessionControl) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(conversation_id)
+            .is_some_and(|entry| entry.control.same_channel(control))
+    }
+
+    pub(crate) fn remove_exact(&self, conversation_id: &str, control: &SessionControl) -> bool {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if sessions
+            .get(conversation_id)
+            .is_some_and(|entry| entry.control.same_channel(control))
+        {
+            sessions.remove(conversation_id);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn claim_control(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+        cwd: &str,
+        config: &LaunchConfig,
+    ) -> Result<Option<(SessionControl, TurnBusyGuard, bool)>, String> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(session) = sessions.get_mut(conversation_id) else {
+            return Ok(None);
+        };
+        if session.busy.load(Ordering::Acquire) {
+            return Err("external CLI session is busy".into());
+        }
+        let reusable = session.is_reusable(agent_id, cwd, config);
+        let busy =
+            TurnBusyGuard::try_new(session.busy.clone()).ok_or("external CLI session is busy")?;
+        session.last_activity = Instant::now();
+        session.turns_served = session.turns_served.saturating_add(1);
+        Ok(Some((session.control.clone(), busy, reusable)))
+    }
+
     #[cfg(debug_assertions)]
     pub(crate) fn diagnostic(&self, conversation_id: &str) -> LiveSessionDiagnostic {
         let sessions = self
@@ -305,54 +649,22 @@ impl LiveSessionRegistry {
         }
     }
 
-    pub(crate) fn reusable_control(
+    pub(crate) fn mark_busy_exact(
         &self,
         conversation_id: &str,
-        agent_id: &str,
-        cwd: &str,
-        launch_config: &LaunchConfig,
-    ) -> Option<mpsc::Sender<SessionCommand>> {
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(session) = sessions.get_mut(conversation_id) {
-            if session.is_reusable(agent_id, cwd, launch_config) {
-                session.last_activity = Instant::now();
-                session.turns_served = session.turns_served.saturating_add(1);
-                return Some(session.control.clone());
-            }
-        }
-        sessions.remove(conversation_id);
-        None
-    }
-
-    pub(crate) fn mark_busy(&self, conversation_id: &str) -> Option<TurnBusyGuard> {
+        control: &SessionControl,
+    ) -> Option<TurnBusyGuard> {
         let sessions = self
             .sessions
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         sessions
             .get(conversation_id)
+            .filter(|session| session.control.same_channel(control))
             .map(|session| TurnBusyGuard::new(session.busy.clone()))
     }
 
-    pub(crate) fn try_mark_busy(&self, conversation_id: &str) -> Result<TurnBusyGuard, String> {
-        let sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        let session = sessions
-            .get(conversation_id)
-            .ok_or_else(|| "external live session is unavailable".to_string())?;
-        TurnBusyGuard::try_new(session.busy.clone())
-            .ok_or_else(|| "Pi session is busy; wait for the current run to finish".to_string())
-    }
-
-    pub(crate) fn control_any(
-        &self,
-        conversation_id: &str,
-    ) -> Option<mpsc::Sender<SessionCommand>> {
+    pub(crate) fn control_any(&self, conversation_id: &str) -> Option<SessionControl> {
         self.sessions
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -360,36 +672,32 @@ impl LiveSessionRegistry {
             .map(|session| session.control.clone())
     }
 
-    pub(crate) fn follow_up_control(
+    pub(crate) fn injection_control(
         &self,
         conversation_id: &str,
-    ) -> Option<(mpsc::Sender<SessionCommand>, &'static [&'static str])> {
+    ) -> Option<(SessionControl, &'static RuntimeAgentDef)> {
         let sessions = self
             .sessions
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let session = sessions.get(conversation_id)?;
         let definition = crate::external_agents::registry::get_agent_def(&session.agent_id)?;
-        definition
-            .supports_follow_up
-            .then(|| (session.control.clone(), definition.image_mime_whitelist))
-    }
-
-    pub(crate) fn pi_control(&self, conversation_id: &str) -> Option<mpsc::Sender<SessionCommand>> {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(conversation_id)
-            .filter(|session| session.agent_id == "pi")
-            .map(|session| session.control.clone())
+        Some((session.control.clone(), definition))
     }
 
     pub(crate) fn register(&self, conversation_id: String, session: LiveSession) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        Self::register_locked(&mut sessions, conversation_id, session);
+    }
+    fn register_locked(
+        sessions: &mut RegistryState,
+        conversation_id: String,
+        session: LiveSession,
+    ) {
         const MAX_LIVE_SESSIONS: usize = 6;
-        let mut sessions = self
-            .sessions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
+        if sessions.shutting_down {
+            return;
+        }
         sessions.retain(|_, existing| !existing.is_idle(LIVE_SESSION_IDLE_TTL));
         while sessions.len() >= MAX_LIVE_SESSIONS {
             let Some(oldest) = sessions
@@ -405,12 +713,64 @@ impl LiveSessionRegistry {
         sessions.insert(conversation_id, session);
     }
 
+    pub(crate) async fn retire_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> Result<ConversationRetirement<'_>, String> {
+        let (retirement, session, pending) = {
+            let mut registry = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            if !registry.deleting.insert(conversation_id.into()) {
+                return Err("external CLI conversation is already being deleted".into());
+            }
+            let retirement = ConversationRetirement {
+                registry: self,
+                conversation_id: conversation_id.into(),
+            };
+            let session = registry.remove(conversation_id);
+            let mut pending = registry
+                .pending
+                .get(conversation_id)
+                .filter(|entry| !entry.finished.is_cancelled())
+                .cloned();
+            if pending.is_none() {
+                if let Some(session) = &session {
+                    let state = Arc::new(PendingState {
+                        cancel: tokio_util::sync::CancellationToken::new(),
+                        finished: tokio_util::sync::CancellationToken::new(),
+                    });
+                    registry
+                        .pending
+                        .insert(conversation_id.into(), state.clone());
+                    pending = Some(state.clone());
+                    let control = session.control.clone();
+                    tokio::spawn(async move {
+                        control.finished().await;
+                        state.finished.cancel();
+                    });
+                }
+            }
+            if let Some(pending) = &pending {
+                pending.cancel.cancel();
+            }
+            (retirement, session, pending)
+        };
+        if let Some(session) = session {
+            session.control.close().await?;
+        }
+        if let Some(pending) = pending {
+            tokio::time::timeout(Duration::from_secs(5), pending.finished.cancelled())
+                .await
+                .map_err(|_| "external CLI connection cleanup timed out".to_string())?;
+        }
+        Ok(retirement)
+    }
+
     pub(crate) fn remove(&self, conversation_id: &str) -> bool {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .remove(conversation_id)
-            .is_some()
+        let mut state = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pending) = state.pending.get(conversation_id) {
+            pending.cancel.cancel();
+        }
+        state.remove(conversation_id).is_some()
     }
 
     pub(crate) fn move_session(
@@ -445,31 +805,32 @@ impl LiveSessionRegistry {
 
     /// Drain under the lock, then await actor shutdown without holding it.
     pub(crate) async fn close_all(&self) {
-        const PER_SESSION_CLOSE_TIMEOUT: Duration = Duration::from_millis(1_500);
-        let sessions: Vec<LiveSession> = {
+        let (sessions, pending) = {
             let mut sessions = self
                 .sessions
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            sessions.drain().map(|(_, session)| session).collect()
+            sessions.shutting_down = true;
+            let pending: Vec<_> = sessions.pending.values().cloned().collect();
+            for entry in &pending {
+                entry.cancel.cancel();
+            }
+            (
+                sessions
+                    .drain()
+                    .map(|(_, session)| session)
+                    .collect::<Vec<_>>(),
+                pending,
+            )
         };
         futures::future::join_all(sessions.into_iter().map(|session| async move {
-            // A full control queue can block send itself when the actor is stuck.
-            // Keep the PID until both the send and actor shutdown have either
-            // completed or exhausted the same bounded grace period.
-            let graceful = async {
-                let _ = session.control.send(SessionCommand::Close).await;
-                session.control.closed().await;
-            };
-            if tokio::time::timeout(PER_SESSION_CLOSE_TIMEOUT, graceful)
-                .await
-                .is_err()
-            {
-                if let Some(pid) = session.child_pid {
-                    crate::native_tools::kill_process_group(pid);
-                }
-            }
+            let _ = session.control.close().await;
         }))
+        .await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            futures::future::join_all(pending.iter().map(|entry| entry.finished.cancelled())),
+        )
         .await;
     }
 }
@@ -482,7 +843,7 @@ mod tests {
         let (tx, rx) = mpsc::channel(1);
         (
             LiveSession {
-                control: tx,
+                control: SessionControl::untracked(tx),
                 _chat_credential: None,
                 agent_id: agent.to_string(),
                 cwd: cwd.to_string(),
@@ -494,6 +855,157 @@ mod tests {
             },
             rx,
         )
+    }
+
+    #[tokio::test]
+    async fn pending_delete_revokes_publish_and_waits_for_scope_drop() {
+        let registry = Arc::new(LiveSessionRegistry::default());
+        let lease = registry.reserve("conversation").unwrap();
+        let retirement = registry.retire_conversation("conversation");
+        tokio::pin!(retirement);
+        assert!(futures::poll!(retirement.as_mut()).is_pending());
+        assert!(lease.is_cancelled());
+        let (session, _receiver) = make("codex", "/project");
+        let wrote = AtomicBool::new(false);
+        assert!(lease
+            .publish(session, || {
+                wrote.store(true, Ordering::Release);
+                Ok(())
+            })
+            .is_err());
+        assert!(!wrote.load(Ordering::Acquire));
+        drop(lease);
+        let retirement = retirement.await.unwrap();
+        assert!(registry.reserve("conversation").is_err());
+        drop(retirement);
+        assert!(registry.reserve("conversation").is_ok());
+    }
+
+    #[tokio::test]
+    async fn failed_delete_releases_its_retirement_guard() {
+        let registry = LiveSessionRegistry::default();
+        let deletion: Result<(), &str> = async {
+            let _retirement = registry.retire_conversation("conversation").await.unwrap();
+            assert!(registry.reserve("conversation").is_err());
+            assert!(registry.retire_conversation("conversation").await.is_err());
+            assert!(registry.reserve("conversation").is_err());
+            Err("repository delete failed")
+        }
+        .await;
+        assert!(deletion.is_err());
+        assert!(registry.reserve("conversation").is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retirement_timeout_releases_delete_but_keeps_pending_connection() {
+        let registry = LiveSessionRegistry::default();
+        let lease = registry.reserve("conversation").unwrap();
+        assert!(registry.retire_conversation("conversation").await.is_err());
+        assert!(lease.is_cancelled());
+        assert!(registry.reserve("conversation").is_err());
+        drop(lease);
+        assert!(registry.reserve("conversation").is_ok());
+    }
+
+    #[tokio::test]
+    async fn dropped_retirement_keeps_idle_actor_owned_until_receipt() {
+        let registry = LiveSessionRegistry::default();
+        let (session, receiver) = make("codex", "/project");
+        registry.register("conversation".into(), session);
+        let mut retirement = Box::pin(registry.retire_conversation("conversation"));
+        assert!(futures::poll!(retirement.as_mut()).is_pending());
+        drop(retirement);
+        assert!(registry.reserve("conversation").is_err());
+        drop(receiver);
+        tokio::task::yield_now().await;
+        assert!(registry.reserve("conversation").is_ok());
+    }
+
+    #[test]
+    fn stale_completion_cannot_remove_or_claim_a_replacement() {
+        let registry = LiveSessionRegistry::default();
+        let (old, _old_receiver) = make("codex", "/project");
+        let old_control = old.control.clone();
+        registry.register("conversation".into(), old);
+        let (new, _new_receiver) = make("codex", "/project");
+        let new_control = new.control.clone();
+        registry.register("conversation".into(), new);
+        assert!(!registry.remove_exact("conversation", &old_control));
+        let (_, busy, reusable) = registry
+            .claim_control(
+                "conversation",
+                "codex",
+                "/project",
+                &LaunchConfig::default(),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(reusable);
+        assert!(registry
+            .claim_control(
+                "conversation",
+                "codex",
+                "/project",
+                &LaunchConfig::default()
+            )
+            .is_err());
+        assert!(registry.is_current("conversation", &new_control));
+        drop(busy);
+        assert!(registry
+            .claim_control(
+                "conversation",
+                "codex",
+                "/project",
+                &LaunchConfig::default()
+            )
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn full_queue_shutdown_waits_for_actor_resources_to_drop() {
+        struct Resource(Arc<AtomicBool>);
+        impl Drop for Resource {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let registry = LiveSessionRegistry::default();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let resource = Resource(dropped.clone());
+        let (sender, receiver) = mpsc::channel(1);
+        sender.send(SessionCommand::Cancel).await.unwrap();
+        let control = SessionControl::spawn(sender, async move {
+            let _resource = resource;
+            let _receiver = receiver;
+            std::future::pending::<()>().await;
+        });
+        let (mut session, _) = make("codex", "/project");
+        session.control = control;
+        registry.register("conversation".into(), session);
+        registry.close_all().await;
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(registry.reserve("after-shutdown").is_err());
+    }
+
+    #[tokio::test]
+    async fn dropped_run_releases_its_exact_actor() {
+        let registry = LiveSessionRegistry::default();
+        let lease = registry.reserve("conversation").unwrap();
+        let (sender, receiver) = mpsc::channel(1);
+        let control = SessionControl::spawn(sender, async move {
+            let _receiver = receiver;
+            std::future::pending::<()>().await;
+        });
+        let (mut session, _) = make("codex", "/project");
+        session.control = control.clone();
+        lease.publish(session, || Ok(())).unwrap();
+        drop(lease);
+        tokio::time::timeout(Duration::from_secs(1), control.finished())
+            .await
+            .unwrap();
+        assert!(registry.control_any("conversation").is_none());
+        assert!(registry.reserve("conversation").is_ok());
     }
 
     #[test]
@@ -512,12 +1024,35 @@ mod tests {
         assert!(!session.is_reusable("codex", "/proj", &LaunchConfig::default()));
     }
 
+    #[test]
+    fn live_injection_uses_the_active_providers_input_support() {
+        use crate::external_agents::types::CapabilitySupport::{Fallback, Native, Unavailable};
+
+        let registry = LiveSessionRegistry::default();
+        for (id, steering, follow_up) in [
+            ("pi", Native, Native),
+            ("codex", Native, Fallback),
+            ("opencode", Unavailable, Fallback),
+        ] {
+            let (session, _actor) = make(id, "/project");
+            let sender = session.control.clone();
+            registry.register("conversation".into(), session);
+            let (active_control, active_definition) =
+                registry.injection_control("conversation").unwrap();
+            assert!(active_control.same_channel(&sender));
+            assert_eq!(active_definition.steering, steering);
+            assert_eq!(active_definition.follow_up, follow_up);
+        }
+        assert!(registry.injection_control("another-conversation").is_none());
+    }
+
     // ---- B1: 启动配置变更必须换进程（spec 第 8 条）----
 
     fn cfg(flags: &str, instructions: Option<&str>) -> LaunchConfig {
         LaunchConfig {
             flags: flags.to_string(),
             instructions: instructions.map(str::to_string),
+            identity: None,
         }
     }
 
@@ -612,22 +1147,19 @@ mod tests {
     }
 
     #[test]
-    fn registry_reuse_rejects_changed_configuration_and_releases_old_actor() {
+    fn registry_reuse_rejects_changed_configuration_and_keeps_retirement_owned() {
         let registry = LiveSessionRegistry::default();
         let (session, receiver) = make("codex", "/project");
-        registry.register("conversation".to_string(), session);
-        assert!(registry
-            .reusable_control(
-                "conversation",
-                "codex",
-                "/project",
-                &LaunchConfig::default()
-            )
-            .is_some());
-        assert!(registry
-            .reusable_control("conversation", "codex", "/other", &LaunchConfig::default())
-            .is_none());
-        assert!(registry.control_any("conversation").is_none());
+        registry.register("conversation".into(), session);
+        let (control, busy, reusable) = registry
+            .claim_control("conversation", "codex", "/other", &LaunchConfig::default())
+            .unwrap()
+            .unwrap();
+        assert!(!reusable);
+        assert!(!receiver.is_closed());
+        assert!(registry.is_current("conversation", &control));
+        assert!(registry.remove_exact("conversation", &control));
+        drop((control, busy));
         assert!(receiver.is_closed());
     }
 
@@ -640,7 +1172,7 @@ mod tests {
         registry.register("conversation".to_string(), session);
         assert!(probe.is_active());
         let control = registry
-            .reusable_control(
+            .claim_control(
                 "conversation",
                 "claude",
                 "/project",
@@ -688,7 +1220,10 @@ mod tests {
         let registry = LiveSessionRegistry::default();
         let (busy, _busy_receiver) = make("codex", "/project");
         registry.register("busy".to_string(), busy);
-        let guard = registry.mark_busy("busy").expect("registered session");
+        let control = registry.control_any("busy").unwrap();
+        let guard = registry
+            .mark_busy_exact("busy", &control)
+            .expect("registered session");
         assert_eq!(registry.sweep_idle(Duration::ZERO), 0);
         for index in 0..7 {
             let (session, _receiver) = make("pi", "/project");
@@ -737,11 +1272,9 @@ mod tests {
         assert!(!session.is_idle(Duration::from_secs(600)));
 
         // Aged past ttl → idle.
-        let (mut aged, _rx2) = make("codex", "/proj");
-        aged.last_activity = Instant::now()
-            .checked_sub(Duration::from_secs(700))
-            .expect("instant in range");
-        assert!(aged.is_idle(Duration::from_secs(600)));
+        let (aged, _rx2) = make("codex", "/proj");
+        std::thread::sleep(Duration::from_millis(2));
+        assert!(aged.is_idle(Duration::from_millis(1)));
         assert!(!aged.is_idle(Duration::from_secs(3600)));
 
         // Closed actor → idle regardless of age.

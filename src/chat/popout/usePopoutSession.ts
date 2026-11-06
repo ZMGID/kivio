@@ -25,6 +25,7 @@ import type { MessageListProps } from '../MessageList'
 import type { AgentPlanState, AgentTodoState, Conversation, GoalState, PendingAttachment, ThinkingLevel } from '../types'
 import { insertTextIntoComposer } from '../composerInsert'
 import { usePopoutComposer } from './usePopoutComposer'
+import { useDetectedExternalAgents } from '../permissionModes'
 import type {
   ChatSessionConsentPayload,
   ChatToolConfirmPayload,
@@ -460,6 +461,8 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const runtime = normalizeAgentRuntime(conversation)
   const usesChatRuntime = runtime.kind === 'chat'
   const usesExternalRuntime = runtime.kind === 'external'
+  const detectedExternalAgents = useDetectedExternalAgents(conversationId)
+  const externalAgent = detectedExternalAgents.find((agent) => agent.id === runtime.externalAgentId)
 
   const runGoalMutation = useCallback(async (
     mutation: (id: string) => Promise<Conversation>,
@@ -487,6 +490,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     usesChatRuntime,
     usesExternalRuntime,
     runtime,
+    detectedExternalAgents,
     onSend: handleSend,
     onCancel: handleCancel,
     cancelVisible: streamCoarse.streaming,
@@ -506,6 +510,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     conversation,
     loadError,
     runtime,
+    externalAgent,
     usesChatRuntime,
     usesExternalRuntime,
     approvalPolicy,

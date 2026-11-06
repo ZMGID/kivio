@@ -1,7 +1,7 @@
 //! Read-only native account/usage discovery. Never starts a conversation or returns credentials.
 use crate::{
     external_agents::{
-        registry::get_agent_def,
+        types::{AccountProbe, AccountProtocol, RuntimeAgentDef},
         spawn::{agent_cli_command, join_stderr_tail, spawn_stderr_tail, AgentChild},
     },
     proc::NoConsoleWindow,
@@ -64,40 +64,27 @@ async fn exchange(
     Err("CLI 在账号查询期间退出".into())
 }
 
-pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, String> {
-    if !matches!(agent_id, "codex" | "claude" | "grok") {
-        return Err("此 CLI 未提供账号额度查询".into());
-    }
-    let def = get_agent_def(agent_id).ok_or("未知 CLI")?;
-    let claude = agent_id == "claude";
-    let grok = agent_id == "grok";
+pub async fn probe(
+    def: &RuntimeAgentDef,
+    probe: AccountProbe,
+    bin: &Path,
+    cwd: &Path,
+) -> Result<Value, String> {
+    let protocol = probe.protocol;
+    let claude = protocol == AccountProtocol::ClaudeControl;
+    let grok = protocol == AccountProtocol::GrokBilling;
     let mut command = agent_cli_command(def, bin);
-    if claude {
-        command.args([
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--replay-user-messages",
-        ]);
-    } else if grok {
-        command.args(["--no-auto-update", "agent", "--no-leader", "stdio"]);
-    } else {
-        command.arg("app-server");
-    }
-    let mut child = AgentChild::from(
+    command.args(probe.args);
+    let mut child = AgentChild::spawn(
         command
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .no_console_window()
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| e.to_string())?,
-    );
+            .kill_on_drop(true),
+    )
+    .map_err(|e| e.to_string())?;
     let tail = spawn_stderr_tail(child.stderr.take());
     let result = tokio::time::timeout(Duration::from_secs(25), async {
         let mut input = child.stdin.take().ok_or("CLI stdin unavailable")?;
@@ -124,7 +111,7 @@ pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, Stri
             Ok(Err(error)) => (Value::Null, Some(error)),
             Err(_) => (Value::Null, Some("额度查询超时，可稍后刷新".to_string())),
         };
-        Ok(normalize(agent_id, &account, &usage, unavailable))
+        Ok(normalize(def.id, protocol, &account, &usage, unavailable))
     }).await.unwrap_or_else(|_| Err("账号查询超时，请确认 CLI 可正常启动".into()));
     let _ = join_stderr_tail(&mut child, tail).await;
     let _ = child.wait().await;
@@ -133,11 +120,12 @@ pub async fn probe(agent_id: &str, bin: &Path, cwd: &Path) -> Result<Value, Stri
 
 fn normalize(
     agent: &str,
+    protocol: AccountProtocol,
     account: &Value,
     usage: &Value,
     mut unavailable: Option<String>,
 ) -> Value {
-    let account = if agent == "grok" {
+    let account = if protocol == AccountProtocol::GrokBilling {
         json!({"planType": usage["subscription_tier"]})
     } else {
         account.clone()
@@ -153,7 +141,7 @@ fn normalize(
                 "windowDurationMins":window["windowDurationMins"].as_u64()}));
         }
     };
-    if agent == "grok" {
+    if protocol == AccountProtocol::GrokBilling {
         let config = &usage["config"];
         let mins = |key: &str| {
             chrono::DateTime::parse_from_rfc3339(config[key].as_str().unwrap_or("")).ok()
@@ -166,7 +154,7 @@ fn normalize(
             &json!({"usedPercent":config["creditUsagePercent"],"resetsAt":config["billingPeriodEnd"],"windowDurationMins":duration}),
             false,
         );
-    } else if agent == "claude" {
+    } else if protocol == AccountProtocol::ClaudeControl {
         if let Some(limits) = usage["rate_limits"].as_object() {
             for (name, window) in limits {
                 if name != "extra_usage" {
@@ -218,6 +206,7 @@ mod tests {
         let account = json!({"type":"chatgpt","email":"a@example.test","planType":"pro","accessToken":"SECRET"});
         let status = normalize(
             "codex",
+            AccountProtocol::CodexAppServer,
             &account,
             &json!({"rateLimits":{"primary":{"usedPercent":99}},
             "rateLimitsByLimitId":{
@@ -233,6 +222,7 @@ mod tests {
         assert!(status["unavailable"].is_null());
         let status = normalize(
             "claude",
+            AccountProtocol::ClaudeControl,
             &json!({"subscriptionType":"max"}),
             &json!({
                 "rate_limits_available":true,"rate_limits":{"five_hour":{"utilization":80,"resets_at":"2026-10-23T00:00:00Z"},
@@ -244,6 +234,7 @@ mod tests {
         assert_eq!(status["credits"]["used"], 7.0);
         let grok = normalize(
             "grok",
+            AccountProtocol::GrokBilling,
             &Value::Null,
             &json!({"config":{"creditUsagePercent":12.5,"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"},
                 "billingPeriodStart":"2026-11-01T00:00:00+00:00","billingPeriodEnd":"2026-11-08T00:00:00+00:00"},
@@ -253,7 +244,7 @@ mod tests {
         assert_eq!(grok["windows"][0]["usedPercent"], 12.5);
         assert_eq!(grok["windows"][0]["windowDurationMins"], 7 * 24 * 60);
         assert_eq!(grok["account"]["plan"], "SuperGrok Plus");
-        let unavailable = normalize("claude", &Value::Null, &Value::Null, None);
+        let unavailable = normalize("claude", AccountProtocol::ClaudeControl, &Value::Null, &Value::Null, None);
         assert!(unavailable["windows"].as_array().unwrap().is_empty());
         assert!(unavailable["unavailable"].is_string());
     }

@@ -140,6 +140,7 @@ function ChatPopoutBody({
     <PopoutTitlebar
       conversation={session.conversation}
       runtime={session.runtime}
+      externalAgent={session.externalAgent}
       usesExternalRuntime={session.usesExternalRuntime}
       approvalPolicy={session.approvalPolicy}
       onRuntimeChange={session.handleRuntimeChange}
