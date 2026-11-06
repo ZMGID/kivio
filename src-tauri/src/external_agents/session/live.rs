@@ -29,8 +29,8 @@ pub const LIVE_SESSION_IDLE_TTL: Duration = Duration::from_secs(600);
 /// 「弹卡片给谁看」是宿主（app 层）的事，会话里没有 `AppHandle` 也不该有。
 #[derive(Debug, Clone)]
 pub struct ApprovalAsk {
-    /// CLI 的 `control_request.request_id`。**回复时必须原样回显**，否则对端匹配不到。
-    pub request_id: String,
+    /// 这次交互的宿主标识。原生请求标识由会话持有。
+    pub interaction_id: String,
     /// claude 的 `toolu_…`。用作 Kivio 侧的 `toolCallId`，这样审批卡和工具卡指向同一个 id。
     /// CLI 偶尔不给（schema 里是 optional），缺失时回落到 `request_id`。
     pub tool_call_id: String,
@@ -53,10 +53,10 @@ pub struct ApprovalAsk {
     pub permission_suggestions: Option<serde_json::Value>,
 }
 
-/// 用户对某条询问的答复。`request_id` 是路由键，与 `ApprovalAsk` 一一对应。
+/// 用户对某条询问的答复。`interaction_id` 与 `ApprovalAsk` 一一对应。
 #[derive(Debug, Clone)]
 pub struct ApprovalDecision {
-    pub request_id: String,
+    pub interaction_id: String,
     pub approved: bool,
     /// 批准时要**改写**给 CLI 的工具入参（官方 `PermissionResult.updatedInput`）。
     ///
@@ -80,10 +80,6 @@ pub struct ApprovalDecision {
 }
 
 /// 一轮的权限审批通道。宿主持 `requests` 的接收端与 `decisions` 的发送端；会话持另一半。
-///
-/// 为什么不用 `oneshot` 挂在 `ApprovalAsk` 里：一轮里可以有**多条**并发的询问
-/// （claude 会并行调工具），共用一条回程通道比给每条询问单独管一个 future 简单得多，
-/// 而 `request_id` 已经是天然的路由键。
 pub struct ApprovalBridge {
     /// 会话 → 宿主。
     pub requests: mpsc::Sender<ApprovalAsk>,
@@ -97,11 +93,26 @@ pub enum MessageInjectionKind {
     FollowUp,
 }
 
+/// Shared evidence for one dispatch attempt, advanced by the actor before the user operation write.
+#[derive(Clone, Default)]
+pub struct TurnDelivery(Arc<AtomicBool>);
+
+impl TurnDelivery {
+    pub fn mark_possibly_sent(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn possibly_sent(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// A command sent to a live session's actor task.
 pub enum SessionCommand {
     /// Run one turn: write the prompt, stream `UnifiedAgentEvent`s into `events`, and report the
     /// terminal result through `done`. The actor processes exactly one turn at a time.
     RunTurn {
+        delivery: TurnDelivery,
         cancelled: Option<tokio_util::sync::CancellationToken>,
         prompt: String,
         model: Option<String>,
@@ -196,23 +207,46 @@ impl LaunchConfig {
 pub struct SessionControl {
     sender: mpsc::Sender<SessionCommand>,
     owner: Option<Arc<ActorOwner>>,
+    instance_id: uuid::Uuid,
 }
-#[derive(Clone, Default)]
-pub(crate) struct SessionIdentity(Arc<Mutex<Option<mpsc::WeakSender<SessionCommand>>>>);
+#[derive(Debug, Clone, Default)]
+pub(crate) struct SessionIdentity(Arc<Mutex<Option<SessionInstance>>>);
+
+#[derive(Debug)]
+struct SessionInstance {
+    id: uuid::Uuid,
+    sender: mpsc::WeakSender<SessionCommand>,
+}
+
 impl SessionIdentity {
-    pub(crate) async fn closed(&self) {
-        let sender = self
-            .0
+    pub(crate) fn from_control(control: &SessionControl) -> Self {
+        let identity = Self::default();
+        identity.bind(control);
+        identity
+    }
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        matches!((self.instance_id(), other.instance_id()), (Some(a), Some(b)) if a == b)
+    }
+    pub(crate) fn instance_id(&self) -> Option<uuid::Uuid> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|instance| instance.id)
+    }
+    pub(crate) fn sender(&self) -> Option<mpsc::Sender<SessionCommand>> {
+        self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .and_then(|sender| sender.upgrade());
-        if let Some(sender) = sender {
+            .and_then(|instance| instance.sender.upgrade())
+    }
+    pub(crate) async fn closed(&self) {
+        if let Some(sender) = self.sender() {
             sender.closed().await;
         }
     }
     pub(crate) fn bind(&self, control: &SessionControl) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.sender.downgrade());
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(SessionInstance {
+            id: control.instance_id,
+            sender: control.sender.downgrade(),
+        });
     }
 }
 struct ActorOwner {
@@ -244,6 +278,7 @@ impl SessionControl {
         });
         Self {
             sender,
+            instance_id: uuid::Uuid::new_v4(),
             owner: Some(Arc::new(ActorOwner {
                 abort,
                 finished: receipt,
@@ -285,6 +320,7 @@ impl SessionControl {
     fn untracked(sender: mpsc::Sender<SessionCommand>) -> Self {
         Self {
             sender,
+            instance_id: uuid::Uuid::new_v4(),
             owner: None,
         }
     }
@@ -566,11 +602,10 @@ impl LiveSessionRegistry {
         operation: impl FnOnce() -> T,
     ) -> Option<T> {
         let registry = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
-        let identity = identity.0.lock().unwrap_or_else(|e| e.into_inner());
-        let sender = identity.as_ref()?.upgrade()?;
+        let sender = identity.sender()?;
         registry
             .get(conversation_id)
-            .filter(|entry| entry.control.same_channel(&sender))
+            .filter(|entry| !sender.is_closed() && entry.control.same_channel(&sender))
             .map(|_| operation())
     }
     pub(crate) fn is_identity_current(

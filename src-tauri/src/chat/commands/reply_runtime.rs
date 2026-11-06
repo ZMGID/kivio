@@ -134,6 +134,7 @@ impl<'a> ChatReplyGuard<'a> {
 
 impl Drop for ChatReplyGuard<'_> {
     fn drop(&mut self) {
+        self.state.chat_interactions().forget_answered_ask_user(&self.run_id);
         self.state.chat_runtime().finish_reply_generation(
             &self.conversation_id,
             &self.run_id,

@@ -1529,7 +1529,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         let changed = false
         const messages = prev.messages.map((message) => {
           const tools = messageToolCalls(message)
-          const index = payload.parentToolCallId
+          const index = payload.parentToolCallId && payload.externalSessionId === undefined
             ? tools.findIndex(item => item.id === payload.parentToolCallId)
             : inFlight ? -1 : findSubagentToolIndex(tools, payload)
           if (index < 0) return message
@@ -1560,16 +1560,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [interactionInbox])
 
   /** 本地答复成功后立即收起；上游撤回也经同一个队列入口清理。 */
-  const dismissPendingUserPrompt = useCallback((conversationId: string, runId: string, toolCallId: string) => {
-    interactionInbox.observe({ kind: 'userAnswered', conversationId, runId, toolCallId })
+  const dismissPendingUserPrompt = useCallback((conversationId: string, runId: string, interactionId: string) => {
+    interactionInbox.observe({ kind: 'userAnswered', conversationId, runId, interactionId })
   }, [interactionInbox])
 
   useTauriEvent(api.onChatToolConfirm, (payload) => {
     if (popoutOwner.owns(payload.conversationId)) return
     if (!executionOwner.allowsStreamPayload(payload)) return
     if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
-    // 排队而不是覆盖：一条消息里并行调多个工具时，后端会同时挂着多条询问等答复
-    // （按 request_id 路由）。覆盖会让用户没看见的那条静默超时 ⇒ 模型收到「用户拒绝」。
     const queued = interactionInbox.observe({ kind: 'toolRequested', payload })
     if (queued && currentConversationIdRef.current === payload.conversationId) {
       // 计划卡一出现就在右侧栏摊开整份计划 —— 卡片上那块小灰框读不完。
@@ -1581,17 +1579,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useTauriEvent(api.onChatToolConfirmWithdraw, (payload) => {
     if (popoutOwner.owns(payload.conversationId)) return
-    // 旧适配器只暴露 conversationId + toolCallId，没有 runId；撤销是清理事件，
-    // 取消栅栏不能阻断它，否则已经超时的卡片会留在界面。run 身份由 inbox 的
-    // request_id 队列定位；协议迁移时应补回 runId。
     interactionInbox.observe({ kind: 'toolWithdrawn', ...payload })
   }, [interactionInbox])
 
   const resolvePendingToolConfirm = useCallback(async (
+    interactionId: string,
     approved: boolean,
     always = false,
     permissionMode: string | null = null,
-  ): Promise<boolean> => interactionInbox.respondTool({ approved, always, permissionMode }), [interactionInbox])
+  ): Promise<boolean> => interactionInbox.respondTool({ interactionId, approved, always, permissionMode }), [interactionInbox])
 
   useTauriEvent(api.onChatSessionConsent, (payload) => {
     if (popoutOwner.owns(payload.conversationId)) return

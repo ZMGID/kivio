@@ -815,7 +815,7 @@ async fn run_external_cli_reply_owned(
     // `claude-sonnet-5` ⇒ 200K、答完跳回 1M」。前端 `contextPanel.ts::applyLiveContextUsage`
     // 对 `null` 分母保留已知旧窗口，所以不下发就是「沿用上一轮的分母」——正是要的语义。
 
-    let mut emit_event = |event: UnifiedAgentEvent| {
+    let mut emit_event = |event: UnifiedAgentEvent, actor_id: Option<Uuid>| {
         if let Some(commands) = slash::slash_commands_from_event(&event) {
             state
                 .external_discovery()
@@ -838,6 +838,7 @@ async fn run_external_cli_reply_owned(
             &mut segment_tracker,
             &mut cli_compactions,
             &mut todo_state,
+            actor_id.filter(|_| def.stream_format == StreamFormat::DshJsonRpc),
             event,
         );
     };
@@ -961,7 +962,7 @@ async fn run_external_cli_reply_owned(
                     &mut spawned.child,
                     &composed.full_prompt,
                     model,
-                    |event| emit_event(event),
+                    |event| emit_event(event, None),
                     cancel_check,
                 )
                 .await
@@ -1475,7 +1476,7 @@ async fn run_persistent_turn<E, C>(
     approvals: Option<&ApprovalHost<'_>>,
 ) -> Result<(), String>
 where
-    E: FnMut(UnifiedAgentEvent),
+    E: FnMut(UnifiedAgentEvent, Option<Uuid>),
     C: Fn() -> bool,
 {
     use crate::external_agents::session::live::LiveSession;
@@ -1672,7 +1673,7 @@ where
                 // 新会话继续 —— 用户该看到的正是这条**已有的**「上下文已重置」提示，
                 // 而不是 claude 那句英文原文（别为它新写一条文案，spec 第 2 条）。
                 if !resumed && (intended_resume || dropped_resume) {
-                    emit(context_reset_notice_event());
+                    emit(context_reset_notice_event(), None);
                 }
                 (control, prompt)
             }
@@ -1696,8 +1697,10 @@ where
     let mut retried_after_failure = false;
     let mut reconnected_for_config = false;
     loop {
+        let delivery = crate::external_agents::session::live::TurnDelivery::default();
         let outcome = drive_persistent_turn(
             &control,
+            &delivery,
             &|| launch_config.identity.as_ref().is_none_or(|identity| {
                 get_agent_def(agent_id).is_some_and(|def| identity.still_current(def, resolved_bin))
             }),
@@ -1725,6 +1728,9 @@ where
         if !cancel_keeps_live_session(&err, protocol) {
             state.external_live_sessions().remove_exact(conversation_id, &control);
         }
+        if cancel() && !is_cancellation(&err) {
+            return Err("cancelled".into());
+        }
 
         match persistent_failure_action(
             &err,
@@ -1732,6 +1738,7 @@ where
             retried_after_failure,
             reconnected_for_config,
             dropped_resume,
+            delivery.possibly_sent(),
         ) {
             // Cancelled keeps the persisted handle so a later turn can resume the native session.
             PersistentFailureAction::Cancelled => return Err(err),
@@ -1767,7 +1774,7 @@ where
                 retried_after_failure = true;
                 emit(UnifiedAgentEvent::StatusNote {
                     text: "reconnect".to_string(),
-                });
+                }, None);
             }
         }
 
@@ -1813,7 +1820,7 @@ where
         // 但**真的续上了**原生会话时不能发这条（claude 的 argv 仍带 `--resume` 就属于这种）：
         // 一条假的「上下文已重置」本身就是 bug。
         if !resumed {
-            emit(context_reset_notice_event());
+            emit(context_reset_notice_event(), None);
         }
     }
 }
@@ -2131,9 +2138,13 @@ fn persistent_failure_action(
     retried_after_failure: bool,
     reconnected_for_config: bool,
     dropped_resume: bool,
+    possibly_sent: bool,
 ) -> PersistentFailureAction {
     if is_cancellation(err) {
         return PersistentFailureAction::Cancelled;
+    }
+    if possibly_sent {
+        return PersistentFailureAction::Fatal;
     }
     if err == crate::external_agents::session::acp::NEEDS_RECONNECT {
         // Only relaunch once for a config change; a repeat means the relaunch didn't help.
@@ -2304,6 +2315,7 @@ fn permission_mode_from_args(args: &[String]) -> Option<&str> {
 /// Send one turn and pump events; the caller bounds cancellation and finalizes the reply.
 async fn drive_persistent_turn<E, C>(
     control: &crate::external_agents::session::live::SessionControl,
+    delivery: &crate::external_agents::session::live::TurnDelivery,
     launch_is_current: &impl Fn() -> bool,
     cancelled: Option<tokio_util::sync::CancellationToken>,
     state: &AppState,
@@ -2319,10 +2331,10 @@ async fn drive_persistent_turn<E, C>(
     approvals: Option<&ApprovalHost<'_>>,
 ) -> Result<(), String>
 where
-    E: FnMut(UnifiedAgentEvent),
+    E: FnMut(UnifiedAgentEvent, Option<Uuid>),
     C: Fn() -> bool,
 {
-    use crate::external_agents::session::live::{ApprovalBridge, SessionCommand};
+    use crate::external_agents::session::live::{ApprovalBridge, SessionCommand, SessionIdentity};
     use futures::stream::{FuturesUnordered, StreamExt};
     use tokio::sync::{mpsc, oneshot};
 
@@ -2364,6 +2376,7 @@ where
         .chat_runtime()
         .while_generation_active(conversation_id, run_generation, || {
             permit.send(SessionCommand::RunTurn {
+                delivery: delivery.clone(),
                 cancelled,
                 prompt,
                 model,
@@ -2380,8 +2393,6 @@ where
     // 在飞的审批（可以有多条：claude 会并行调工具）。放 `FuturesUnordered` 而不是 spawn：
     // 借用 `app`/`state` 就够，不需要 `'static`，而且本函数返回时它们自然被丢弃。
     let mut in_flight = FuturesUnordered::new();
-    // 本轮问过的 toolCallId。返回前必须把 `pending_chat_tool_approvals` 里可能残留的条目扫掉
-    // ——那张表按 id 存 oneshot sender，走了异常出口（EOF / 硬 Close）不扫就是一条永久泄漏。
     let mut pending_approvals = PendingApprovals {
         ids: Vec::new(),
         forget: |ids: &[String]| {
@@ -2391,6 +2402,36 @@ where
         },
     };
     let mut resolved_interactions = std::collections::HashSet::new();
+    let identity = SessionIdentity::from_control(control);
+    let actor_id = identity.instance_id();
+    let mut handle_event = |event, resolved: &mut std::collections::HashSet<String>| {
+        match event {
+            UnifiedAgentEvent::InteractionResolved { interaction_id } => {
+                resolved.insert(interaction_id.clone());
+                if let Some(host) = approvals {
+                    host.forget(&[interaction_id]);
+                }
+                return;
+            }
+            UnifiedAgentEvent::BackgroundTask {
+                ref task_id,
+                ref status,
+                ref kind,
+                ref description,
+                ref summary,
+            } => state.external_background_tasks().upsert_external_background_task(
+                conversation_id,
+                &identity,
+                task_id,
+                status,
+                kind.as_deref(),
+                description.as_deref(),
+                summary.as_deref(),
+            ),
+            _ => {}
+        }
+        emit(event, actor_id);
+    };
 
     let mut done_rx = done_rx;
     let mut events_open = true;
@@ -2402,17 +2443,16 @@ where
                 // Invariant (A4): the actor sends every `event` before `done`, and mpsc preserves
                 // order, so all remaining events are already queued — drain them before returning.
                 while let Ok(event) = events_rx.try_recv() {
-                    emit(event);
+                    handle_event(event, &mut resolved_interactions);
                 }
-                break result.unwrap_or_else(|_| Err("session actor dropped".to_string()));
+                break result.unwrap_or_else(|_| {
+                    delivery.mark_possibly_sent();
+                    Err("session actor dropped".to_string())
+                });
             }
             maybe_event = events_rx.recv(), if events_open => {
                 match maybe_event {
-                    Some(UnifiedAgentEvent::InteractionResolved { tool_call_id }) => {
-                        resolved_interactions.insert(tool_call_id.clone());
-                        if let Some(host) = approvals { host.forget(&[tool_call_id]); }
-                    }
-                    Some(event) => emit(event),
+                    Some(event) => handle_event(event, &mut resolved_interactions),
                     None => events_open = false,
                 }
             }
@@ -2426,8 +2466,8 @@ where
                 }
             }, if ask_rx.is_some() => {
                 if let Some(host) = approvals {
-                    if resolved_interactions.contains(&ask.tool_call_id) { continue; }
-                    pending_approvals.ids.push(ask.tool_call_id.clone());
+                    if resolved_interactions.contains(&ask.interaction_id) { continue; }
+                    pending_approvals.ids.push(ask.interaction_id.clone());
                     in_flight.push(host.ask(ask));
                 }
             }
@@ -2471,14 +2511,6 @@ impl<F: Fn(&[String])> Drop for PendingApprovals<F> {
 /// 但语义不同（那个是「新会话的默认档」，这个是「计划批准后要不要继续弹卡」的判据）。
 const FULL_ACCESS_PERMISSION_MODE: &str = "bypassPermissions";
 
-/// 宿主侧回答工具审批询问所需的一切。
-///
-/// 存在的意义只有一个：**把外部 CLI 的权限询问接到 Kivio 已有的那条审批链路上**
-/// （typed approval event → 前端确认卡 → `chat_confirm_tool_call` → 同一张
-/// `pending_chat_tool_approvals` 挂起表）。内置 agent 用的就是这一套，不许再造第二套
-/// （spec 第 2 条）。唯一需要的适配是 **id 映射**：Kivio 那侧按「工具调用 id」寻址，
-/// 而 CLI 给的是它自己的 `request_id` —— 所以卡片用 claude 的 `tool_use_id`（与工具卡同一个
-/// id），回程按 `request_id` 路由，两者在 `ApprovalAsk` 里成对携带。
 struct ApprovalHost<'a> {
     app: &'a AppHandle,
     state: &'a AppState,
@@ -2496,8 +2528,6 @@ struct ApprovalHost<'a> {
 }
 
 impl ApprovalHost<'_> {
-    /// 问用户一次。返回的 `ApprovalDecision` 带回 `request_id`，会话据它回 `control_response`。
-    ///
     /// 用户点停止 / 通道断开时 `request_tool_approval` 返回 false 并清掉挂起条目
     /// —— **默认拒**。不设墙钟超时：60s 会把晚到的「允许」变成 Codex 的
     /// `Rejected("rejected by user")`，原生 CLI 不会这样。
@@ -2560,6 +2590,7 @@ impl ApprovalHost<'_> {
                     self.run_id,
                     self.generation,
                     &record,
+                    &ask.interaction_id,
                 )
                 .await;
                 let opened = approved && {
@@ -2569,7 +2600,7 @@ impl ApprovalHost<'_> {
                     result.is_ok()
                 };
                 return crate::external_agents::session::live::ApprovalDecision {
-                    request_id: ask.request_id,
+                    interaction_id: ask.interaction_id,
                     approved: opened,
                     updated_input: opened.then(|| serde_json::json!({ "action": "accept" })),
                     set_permission_mode: None,
@@ -2583,7 +2614,7 @@ impl ApprovalHost<'_> {
             ) {
                 // 形状不认识：回拒。退审批卡没有意义（这条 CLI 等的不是 allow/deny）。
                 return crate::external_agents::session::live::ApprovalDecision {
-                    request_id: ask.request_id,
+                    interaction_id: ask.interaction_id,
                     approved: false,
                     updated_input: None,
                     set_permission_mode: None,
@@ -2612,6 +2643,7 @@ impl ApprovalHost<'_> {
                 self.run_id,
                 self.generation,
                 &record,
+                &ask.interaction_id,
             )
             .await;
             let mode = outcome.approved.then(|| {
@@ -2628,7 +2660,7 @@ impl ApprovalHost<'_> {
                     .store(true, std::sync::atomic::Ordering::Relaxed);
             }
             return crate::external_agents::session::live::ApprovalDecision {
-                request_id: ask.request_id,
+                interaction_id: ask.interaction_id,
                 approved: outcome.approved,
                 updated_input: None,
                 set_permission_mode: mode,
@@ -2650,10 +2682,11 @@ impl ApprovalHost<'_> {
                 self.run_id,
                 self.generation,
                 &record,
+                &ask.interaction_id,
             )
             .await;
             return crate::external_agents::session::live::ApprovalDecision {
-                request_id: ask.request_id,
+                interaction_id: ask.interaction_id,
                 approved,
                 updated_input: None,
                 set_permission_mode: None,
@@ -2671,7 +2704,7 @@ impl ApprovalHost<'_> {
                 .load(std::sync::atomic::Ordering::Relaxed)
         {
             return crate::external_agents::session::live::ApprovalDecision {
-                request_id: ask.request_id,
+                interaction_id: ask.interaction_id,
                 approved: true,
                 updated_input: None,
                 set_permission_mode: None,
@@ -2686,6 +2719,7 @@ impl ApprovalHost<'_> {
             self.run_id,
             self.generation,
             &record,
+            &ask.interaction_id,
         )
         .await;
         // 「总是允许」也告诉 claude 自己（t3code 同款），否则它在本会话里照样每次都来问，
@@ -2698,7 +2732,7 @@ impl ApprovalHost<'_> {
                 )
             });
         crate::external_agents::session::live::ApprovalDecision {
-            request_id: ask.request_id,
+            interaction_id: ask.interaction_id,
             approved: outcome.approved,
             updated_input: None,
             set_permission_mode: None,
@@ -2732,6 +2766,7 @@ impl ApprovalHost<'_> {
             self.run_id,
             self.generation,
             &record,
+            &ask.interaction_id,
             prompt.clone(),
         )
         .await;
@@ -2752,11 +2787,11 @@ impl ApprovalHost<'_> {
         if let Some(content) = answered_record.structured_content.clone() {
             self.state
                 .chat_interactions()
-                .remember_answered_ask_user(answered_record.id.clone(), content);
+                .remember_answered_ask_user(self.run_id, answered_record.id.clone(), content);
         }
         let approved = answered.phase == crate::chat::ask_user::ASK_USER_PHASE_ANSWERED;
         crate::external_agents::session::live::ApprovalDecision {
-            request_id: ask.request_id.clone(),
+            interaction_id: ask.interaction_id.clone(),
             approved,
             updated_input: approved.then(|| encode(&prompt, &answered)),
             set_permission_mode: None,
@@ -2771,14 +2806,14 @@ impl ApprovalHost<'_> {
     /// **同时要撤掉前端卡片**：`request_tool_approval` 只在自己的超时 / 取消分支里发撤回，
     /// 而 future 被丢弃时那两条分支根本不执行。少了这一手，卡片会留在屏幕上，用户点
     /// 「允许」是静默空操作（挂起条目已经被下面删掉了）—— 正是撤回事件本来要消灭的那个现象。
-    fn forget(&self, tool_call_ids: &[String]) {
-        if tool_call_ids.is_empty() {
+    fn forget(&self, interaction_ids: &[String]) {
+        if interaction_ids.is_empty() {
             return;
         }
         self.state
             .chat_interactions()
-            .forget_tool_interactions(tool_call_ids);
-        for id in tool_call_ids {
+            .forget_tool_interactions(interaction_ids);
+        for id in interaction_ids {
             crate::chat::commands::interaction::withdraw_tool_confirm(self.app, id);
             crate::chat::protocol::resolve_user_prompt(self.app, self.run_id, id);
         }
@@ -2841,6 +2876,7 @@ fn background_task_sink(
                         .external_background_tasks()
                         .upsert_external_background_task(
                             &conversation_id,
+                            &identity,
                             &task_id,
                             &status,
                             kind.as_deref(),
@@ -2961,6 +2997,7 @@ async fn present_dsh_idle_ask(
         generation,
     );
     let message_id = format!("msg_{}", Uuid::new_v4());
+    let tool_call_id = ask.tool_call_id.clone();
     let arguments = serde_json::to_string(&ask.input).unwrap_or_else(|_| "{}".to_string());
     let persisted = persist_dsh_idle_ask_message(
         &app,
@@ -2995,7 +3032,7 @@ async fn present_dsh_idle_ask(
         auto_allow_tools: std::sync::atomic::AtomicBool::new(true),
     };
     let denied = crate::external_agents::session::live::ApprovalDecision {
-        request_id: ask.request_id.clone(),
+        interaction_id: ask.interaction_id.clone(),
         approved: false,
         updated_input: None,
         set_permission_mode: None,
@@ -3003,7 +3040,7 @@ async fn present_dsh_idle_ask(
         always: false,
     };
     let _pending_approval = PendingApprovals {
-        ids: vec![ask.tool_call_id.clone()],
+        ids: vec![ask.interaction_id.clone()],
         forget: |ids: &[String]| host.forget(ids),
     };
     let current = state
@@ -3018,7 +3055,26 @@ async fn present_dsh_idle_ask(
     } else {
         denied
     };
-    if let Some(revision) = persisted {
+    if let Some(mut revision) = persisted {
+        if let Some(content) = state.chat_interactions().take_answered_ask_user(&run_id, &tool_call_id) {
+            match crate::chat::repository::repository(&app)
+                .mutate(&app, &conversation_id, |conversation| {
+                    let record = conversation.messages.iter_mut()
+                        .find(|message| message.id == message_id)
+                        .and_then(|message| message.tool_calls.iter_mut().find(|record| record.id == tool_call_id))
+                        .ok_or_else(|| "dsh idle question no longer exists".to_string())?;
+                    record.status = ToolCallStatus::Success;
+                    record.completed_at = Some(Local::now().timestamp());
+                    record.sensitive = false;
+                    record.structured_content = Some(content);
+                    Ok(())
+                })
+                .await
+            {
+                Ok(conversation) => revision = conversation.revision,
+                Err(err) => eprintln!("[external-agent] dsh idle answer persist failed: {err:?}"),
+            }
+        }
         crate::chat::protocol::finish_run(&app, &run_id, "done", "", revision);
     }
     decision
@@ -3079,6 +3135,7 @@ fn apply_idle_dsh_event(
     event: UnifiedAgentEvent,
     identity: &crate::external_agents::session::live::SessionIdentity,
 ) {
+    let Some(actor_id) = identity.instance_id() else { return; };
     match event {
         UnifiedAgentEvent::BackgroundTask {
             task_id,
@@ -3091,6 +3148,7 @@ fn apply_idle_dsh_event(
                 .external_background_tasks()
                 .upsert_external_background_task(
                     conversation_id,
+                    identity,
                     &task_id,
                     &status,
                     kind.as_deref(),
@@ -3104,6 +3162,7 @@ fn apply_idle_dsh_event(
             emit_live_subagent_progress(
                 app,
                 conversation_id,
+                actor_id,
                 &task_id,
                 &status,
                 preview.clone(),
@@ -3129,6 +3188,7 @@ fn apply_idle_dsh_event(
             emit_live_subagent_progress(
                 app,
                 conversation_id,
+                actor_id,
                 &task_id,
                 &status,
                 preview.clone(),
@@ -3163,6 +3223,7 @@ fn apply_idle_dsh_event(
 fn emit_live_subagent_progress(
     app: &AppHandle,
     conversation_id: &str,
+    actor_id: Uuid,
     task_id: &str,
     status: &str,
     preview: String,
@@ -3173,6 +3234,7 @@ fn emit_live_subagent_progress(
         conversation_id,
         crate::chat::protocol::ChatRunEvent::SubagentUpdated {
             parent_tool_call_id: String::new(),
+            external_session_id: Some(actor_id.to_string()),
             task_id: task_id.to_string(),
             name: "subagent".to_string(),
             model: None,
@@ -3197,6 +3259,8 @@ fn persist_dsh_subagent_card(
     summary: Option<String>,
     identity: crate::external_agents::session::live::SessionIdentity,
 ) {
+    let Some(actor_id) = identity.instance_id() else { return; };
+    let actor_id = actor_id.to_string();
     tauri::async_runtime::spawn(async move {
         let now = Local::now().timestamp();
         if let Err(err) = crate::chat::repository::repository(&app)
@@ -3206,7 +3270,7 @@ fn persist_dsh_subagent_card(
                     .with_current(&conversation.id.clone(), &identity, || {
                         for message in conversation.messages.iter_mut().rev() {
                             let Some(record) =
-                                find_dsh_subagent_record(&mut message.tool_calls, &task_id)
+                                find_dsh_subagent_record(&mut message.tool_calls, &task_id, Some(&actor_id))
                             else {
                                 continue;
                             };
@@ -3813,6 +3877,7 @@ fn apply_unified_event(
     segment_tracker: &mut StreamSegmentTracker,
     cli_compactions: &mut Vec<CompactionBoundaryRecord>,
     todo_state: &mut AgentTodoState,
+    dsh_actor_id: Option<Uuid>,
     event: UnifiedAgentEvent,
 ) {
     let now = Local::now().timestamp();
@@ -3902,7 +3967,7 @@ fn apply_unified_event(
             );
             emit_chat_stream_delta(app, run_id, "", Some(&delta), Some(&segment));
         }
-        UnifiedAgentEvent::ToolUse { id, name, input } => {
+        UnifiedAgentEvent::ToolUse { id, name, mut input } => {
             if let Some(record) = tool_map.get(&id).and_then(|idx| tool_calls.get_mut(*idx)) {
                 if update_existing_acp_tool(record, &name, &input) {
                     emit_chat_tool_record(app, run_id, record);
@@ -3913,12 +3978,18 @@ fn apply_unified_event(
             segment_tracker.reset_reasoning();
             let segment = push_tool_segment(segments, segment_order, &id);
             emit_chat_stream_delta(app, run_id, "", None, Some(&segment));
+            let arguments = input.to_string();
+            if crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&name) {
+                if let (Some(actor_id), Some(input)) = (dsh_actor_id, input.as_object_mut()) {
+                    input.insert("externalSessionId".to_string(), serde_json::Value::String(actor_id.to_string()));
+                }
+            }
             let record = ToolCallRecord {
                 id: id.clone(),
                 name: name.clone(),
                 source: "external_cli".to_string(),
                 server_id: None,
-                arguments: input.to_string(),
+                arguments,
                 status: ToolCallStatus::Running,
                 result_preview: None,
                 error: None,
@@ -3963,7 +4034,7 @@ fn apply_unified_event(
                     if let Some(answered) = app
                         .state::<AppState>()
                         .chat_interactions()
-                        .take_answered_ask_user(&tool_use_id)
+                        .take_answered_ask_user(run_id, &tool_use_id)
                     {
                         record.structured_content = Some(answered);
                     }
@@ -4125,27 +4196,11 @@ fn apply_unified_event(
         }
         // CLI 侧后台任务（后台 Bash / 后台子代理）→ AppState 注册表，
         // Background tasks 面板轮询读取。不进消息流：任务跨轮存活，run 级事件装不下它。
-        UnifiedAgentEvent::BackgroundTask {
-            task_id,
-            status,
-            kind,
-            description,
-            summary,
-        } => {
-            app.state::<AppState>()
-                .external_background_tasks()
-                .upsert_external_background_task(
-                    conversation_id,
-                    &task_id,
-                    &status,
-                    kind.as_deref(),
-                    description.as_deref(),
-                    summary.as_deref(),
-                );
+        UnifiedAgentEvent::BackgroundTask { task_id, status, summary, .. } => {
             // dsh 后台子代理的 tool/result 只是派出回执。终态走 BackgroundTask，
             // 同一轮里把对应工具卡从 Running 收掉（跨轮要靠空闲读，目前 dsh 没有）。
             if status != "running" {
-                if let Some(record) = find_dsh_subagent_record(tool_calls, &task_id) {
+                if let Some(record) = find_dsh_subagent_record(tool_calls, &task_id, None) {
                     record.status = match status.as_str() {
                         "failed" => ToolCallStatus::Error,
                         "stopped" => ToolCallStatus::Cancelled,
@@ -4165,7 +4220,7 @@ fn apply_unified_event(
             preview,
             steps,
         } => {
-            if let Some(record) = find_dsh_subagent_record(tool_calls, &task_id) {
+            if let Some(record) = find_dsh_subagent_record(tool_calls, &task_id, None) {
                 merge_subagent_progress(record, &preview, &steps, &status, &task_id);
                 emit_chat_tool_record(app, run_id, record);
                 crate::chat::protocol::emit_run_event(
@@ -4173,6 +4228,7 @@ fn apply_unified_event(
                     run_id,
                     crate::chat::protocol::ChatRunEvent::SubagentUpdated {
                         parent_tool_call_id: record.id.clone(),
+                        external_session_id: dsh_actor_id.map(|id| id.to_string()),
                         task_id,
                         name: record.name.clone(),
                         model: None,
@@ -4481,12 +4537,16 @@ fn attach_child_session_id(record: &mut ToolCallRecord, task_id: &str) {
 fn find_dsh_subagent_record<'a>(
     tool_calls: &'a mut [ToolCallRecord],
     task_id: &str,
+    actor_id: Option<&str>,
 ) -> Option<&'a mut ToolCallRecord> {
+    let owns = |record: &ToolCallRecord| actor_id.is_none_or(|id| {
+        structured_string_field(record, "externalSessionId").as_deref() == Some(id)
+    });
     if !task_id.is_empty() {
         if let Some(index) = tool_calls.iter().rposition(|record| {
-            record.id == task_id
+            owns(record) && (record.id == task_id
                 || background_task_id(record).as_deref() == Some(task_id)
-                || child_session_id(record).as_deref() == Some(task_id)
+                || child_session_id(record).as_deref() == Some(task_id))
         }) {
             return tool_calls.get_mut(index);
         }
@@ -4496,7 +4556,7 @@ fn find_dsh_subagent_record<'a>(
         .iter()
         .enumerate()
         .filter(|(_, record)| {
-            record.status == ToolCallStatus::Running
+            owns(record) && record.status == ToolCallStatus::Running
                 && crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&record.name)
         })
         .map(|(index, _)| index)
@@ -4692,6 +4752,34 @@ mod tests {
             span_id: None,
             structured_content: Some(input),
         }
+    }
+
+    #[test]
+    fn dsh_idle_progress_only_matches_cards_from_its_actor() {
+        let mut old = render_test_record("subagents", serde_json::json!({}));
+        old.structured_content = Some(serde_json::json!({
+            "externalSessionId": "old-actor",
+            "backgroundTaskId": "native-task"
+        }));
+        let mut historical = old.clone();
+        historical.structured_content = Some(serde_json::json!({
+            "backgroundTaskId": "native-task"
+        }));
+        let mut current = old.clone();
+        current.structured_content = Some(serde_json::json!({
+            "externalSessionId": "current-actor",
+            "backgroundTaskId": "native-task"
+        }));
+        assert!(find_dsh_subagent_record(
+            &mut [old.clone(), historical.clone()], "native-task", Some("current-actor")
+        ).is_none());
+        let mut records = [current, old, historical];
+        let matched = find_dsh_subagent_record(&mut records, "native-task", Some("current-actor"))
+            .expect("the current actor's card");
+        assert_eq!(
+            structured_string_field(matched, "externalSessionId").as_deref(),
+            Some("current-actor")
+        );
     }
 
     fn queue_render(conversation_id: &str) -> serde_json::Value {
@@ -4966,7 +5054,8 @@ mod tests {
                 "antigravity",
                 false,
                 false,
-                false
+                false,
+                true,
             ),
             PersistentFailureAction::Fatal
         );
@@ -4976,7 +5065,8 @@ mod tests {
                 "antigravity",
                 false,
                 false,
-                false
+                false,
+                true,
             ),
             PersistentFailureAction::Cancelled
         );
@@ -5163,7 +5253,7 @@ mod tests {
                 "prompt": "查 A"
             })),
         }];
-        let record = find_dsh_subagent_record(&mut tools, "toolu-task-a").expect("claude task");
+        let record = find_dsh_subagent_record(&mut tools, "toolu-task-a", None).expect("claude task");
         merge_subagent_progress(
             record,
             "子 agent A，先读一下文件。",
@@ -5208,7 +5298,7 @@ mod tests {
             })),
         }];
         {
-            let record = find_dsh_subagent_record(&mut tools, "018b08fc-session").expect("bind");
+            let record = find_dsh_subagent_record(&mut tools, "018b08fc-session", None).expect("bind");
             merge_subagent_progress(
                 record,
                 "正在检索",
@@ -5226,7 +5316,7 @@ mod tests {
             "web_search 最新AI"
         );
         assert!(
-            find_dsh_subagent_record(&mut tools, "018b08fc-session").is_some(),
+            find_dsh_subagent_record(&mut tools, "018b08fc-session", None).is_some(),
             "later events must exact-match the stored child session id"
         );
     }
@@ -5468,7 +5558,7 @@ mod tests {
     #[test]
     fn claude_elicitation_url_only_opens_http_links() {
         let ask = |input: serde_json::Value| crate::external_agents::session::live::ApprovalAsk {
-            request_id: "e".to_string(),
+            interaction_id: "e".to_string(),
             tool_call_id: "e".to_string(),
             tool_name: "elicitation".to_string(),
             input,
@@ -5738,7 +5828,7 @@ mod tests {
     #[test]
     fn cancelled_failure_is_surfaced_as_is() {
         assert_eq!(
-            persistent_failure_action("cancelled", "grok", false, false, false),
+            persistent_failure_action("cancelled", "grok", false, false, false, false),
             PersistentFailureAction::Cancelled
         );
     }
@@ -5746,7 +5836,7 @@ mod tests {
     #[test]
     fn auth_failure_is_never_retried() {
         assert_eq!(
-            persistent_failure_action("Authentication required", "grok", false, false, false),
+            persistent_failure_action("Authentication required", "grok", false, false, false, false),
             PersistentFailureAction::Fatal
         );
     }
@@ -5759,7 +5849,7 @@ mod tests {
                 "opencode",
                 false,
                 false,
-                false
+                false, false
             ),
             PersistentFailureAction::RetryFresh
         );
@@ -5770,7 +5860,7 @@ mod tests {
                 "opencode",
                 true,
                 false,
-                false
+                false, false
             ),
             PersistentFailureAction::Fatal
         );
@@ -5779,13 +5869,57 @@ mod tests {
     #[test]
     fn needs_reconnect_relaunches_once_then_gives_up() {
         assert_eq!(
-            persistent_failure_action(NEEDS_RECONNECT, "grok", false, false, false),
+            persistent_failure_action(NEEDS_RECONNECT, "grok", false, false, false, false),
             PersistentFailureAction::ReconnectConfig
         );
         assert_eq!(
-            persistent_failure_action(NEEDS_RECONNECT, "grok", false, true, false),
+            persistent_failure_action(NEEDS_RECONNECT, "grok", false, true, false, false),
             PersistentFailureAction::Fatal
         );
+    }
+
+    #[tokio::test]
+    async fn persistent_dispatch_only_retries_when_actor_reports_unsent_failure() {
+        use crate::external_agents::session::live::{SessionCommand, SessionControl, TurnDelivery};
+
+        let state = crate::state::test_app_state();
+        let generation = state.chat_runtime().begin_generation("conversation");
+        for (write_prompt, report_outcome, expected) in [
+            (false, true, PersistentFailureAction::ReconnectConfig),
+            (true, true, PersistentFailureAction::Fatal),
+            (false, false, PersistentFailureAction::Fatal),
+        ] {
+            let (sender, mut commands) = tokio::sync::mpsc::channel(1);
+            let control = SessionControl::spawn(sender, async move {
+                let Some(SessionCommand::RunTurn { delivery, events, done, prompt, .. }) = commands.recv().await else {
+                    panic!("expected a user turn");
+                };
+                assert_eq!(prompt, "execute this prompt once");
+                if write_prompt {
+                    delivery.mark_possibly_sent();
+                }
+                if report_outcome {
+                    events.try_send(UnifiedAgentEvent::InteractionResolved {
+                        interaction_id: "retired-interaction".into(),
+                    }).unwrap();
+                    done.send(Err(NEEDS_RECONNECT.to_string())).unwrap();
+                }
+            });
+            let delivery = TurnDelivery::default();
+            let mut emitted = Vec::new();
+            let error = drive_persistent_turn(
+                &control, &delivery, &|| true, None, &state, "conversation", generation,
+                "execute this prompt once".into(), None, None, &[], &[], &mut |event, _| emitted.push(event),
+                &|| false, None,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(
+                persistent_failure_action(&error, "opencode", false, false, false, delivery.possibly_sent()),
+                expected,
+            );
+            assert!(emitted.is_empty(), "resolved interactions must be consumed even during done drain");
+        }
     }
 
     #[tokio::test]
@@ -5815,12 +5949,12 @@ mod tests {
     #[test]
     fn a_missing_resume_target_reconnects_without_resume_exactly_once() {
         assert_eq!(
-            persistent_failure_action(REAL_MISSING_SESSION_ERROR, "claude", false, false, false),
+            persistent_failure_action(REAL_MISSING_SESSION_ERROR, "claude", false, false, false, false),
             PersistentFailureAction::ReconnectWithoutResume
         );
         // 已经降级过一次还失败 ⇒ 原因不是 resume，别再兜圈子。
         assert_eq!(
-            persistent_failure_action(REAL_MISSING_SESSION_ERROR, "claude", false, false, true),
+            persistent_failure_action(REAL_MISSING_SESSION_ERROR, "claude", false, false, true, false),
             PersistentFailureAction::Fatal
         );
     }
@@ -5831,16 +5965,16 @@ mod tests {
     #[test]
     fn a_missing_dsh_resume_target_reconnects_without_resume_exactly_once() {
         assert_eq!(
-            persistent_failure_action(REAL_DSH_MISSING_SESSION_ERROR, "dsh", false, false, false),
+            persistent_failure_action(REAL_DSH_MISSING_SESSION_ERROR, "dsh", false, false, false, false),
             PersistentFailureAction::ReconnectWithoutResume
         );
         assert_eq!(
-            persistent_failure_action(REAL_DSH_MISSING_SESSION_ERROR, "dsh", false, false, true),
+            persistent_failure_action(REAL_DSH_MISSING_SESSION_ERROR, "dsh", false, false, true, false),
             PersistentFailureAction::Fatal
         );
         // 宽到 "Session not found" 会把无关失败拽进降级；dsh 必须带 session/open 前缀。
         assert_ne!(
-            persistent_failure_action("Session not found: abc", "dsh", false, false, false),
+            persistent_failure_action("Session not found: abc", "dsh", false, false, false, false),
             PersistentFailureAction::ReconnectWithoutResume
         );
     }
@@ -5850,15 +5984,15 @@ mod tests {
     #[test]
     fn a_missing_pi_resume_target_reconnects_without_resume_exactly_once() {
         assert_eq!(
-            persistent_failure_action(REAL_PI_MISSING_SESSION_ERROR, "pi", false, false, false),
+            persistent_failure_action(REAL_PI_MISSING_SESSION_ERROR, "pi", false, false, false, false),
             PersistentFailureAction::ReconnectWithoutResume
         );
         assert_eq!(
-            persistent_failure_action(REAL_PI_MISSING_SESSION_ERROR, "pi", false, false, true),
+            persistent_failure_action(REAL_PI_MISSING_SESSION_ERROR, "pi", false, false, true, false),
             PersistentFailureAction::Fatal
         );
         assert_ne!(
-            persistent_failure_action("Pi RPC timed out", "pi", false, false, false),
+            persistent_failure_action("Pi RPC timed out", "pi", false, false, false, false),
             PersistentFailureAction::ReconnectWithoutResume
         );
     }
@@ -5866,11 +6000,11 @@ mod tests {
     #[test]
     fn a_missing_codex_thread_reconnects_without_resume_exactly_once() {
         assert_eq!(
-            persistent_failure_action("thread not found: thr_abc", "codex", false, false, false),
+            persistent_failure_action("thread not found: thr_abc", "codex", false, false, false, false),
             PersistentFailureAction::ReconnectWithoutResume
         );
         assert_eq!(
-            persistent_failure_action("thread not found: thr_abc", "codex", false, false, true),
+            persistent_failure_action("thread not found: thr_abc", "codex", false, false, true, false),
             PersistentFailureAction::Fatal
         );
     }
@@ -5883,7 +6017,7 @@ mod tests {
                 "grok",
                 false,
                 false,
-                false
+                false, false
             ),
             PersistentFailureAction::ReconnectWithoutResume
         );
@@ -5893,12 +6027,12 @@ mod tests {
                 "opencode",
                 false,
                 false,
-                true
+                true, false
             ),
             PersistentFailureAction::Fatal
         );
         assert_ne!(
-            persistent_failure_action("ACP handshake timeout", "grok", false, false, false),
+            persistent_failure_action("ACP handshake timeout", "grok", false, false, false, false),
             PersistentFailureAction::ReconnectWithoutResume
         );
     }
@@ -5906,7 +6040,7 @@ mod tests {
     #[test]
     fn codex_usage_and_window_errors_are_fatal() {
         assert_eq!(
-            persistent_failure_action("UsageLimitExceeded: quota", "codex", false, false, false),
+            persistent_failure_action("UsageLimitExceeded: quota", "codex", false, false, false, false),
             PersistentFailureAction::Fatal
         );
         assert_eq!(
@@ -5915,12 +6049,12 @@ mod tests {
                 "codex",
                 false,
                 false,
-                false
+                false, false
             ),
             PersistentFailureAction::Fatal
         );
         assert_eq!(
-            persistent_failure_action("ResponseStreamDisconnected", "codex", false, false, false),
+            persistent_failure_action("ResponseStreamDisconnected", "codex", false, false, false, false),
             PersistentFailureAction::RetryFresh
         );
         assert_eq!(
@@ -5929,7 +6063,7 @@ mod tests {
                 "codex",
                 false,
                 false,
-                false
+                false, false
             ),
             PersistentFailureAction::Fatal
         );
@@ -5943,7 +6077,7 @@ mod tests {
             "claude-init: 进程启动后立刻退出（exit code: 1）\n\n<details>\n{REAL_MISSING_SESSION_ERROR}\n</details>"
         );
         assert_eq!(
-            persistent_failure_action(&from_connect, "claude", false, false, false),
+            persistent_failure_action(&from_connect, "claude", false, false, false, false),
             PersistentFailureAction::ReconnectWithoutResume
         );
     }
@@ -5959,7 +6093,7 @@ mod tests {
             "",
         ] {
             assert_ne!(
-                persistent_failure_action(err, "claude", false, false, false),
+                persistent_failure_action(err, "claude", false, false, false, false),
                 PersistentFailureAction::ReconnectWithoutResume,
                 "{err:?} 被误判成 resume 失效"
             );
@@ -5970,7 +6104,7 @@ mod tests {
     #[test]
     fn cancellation_still_wins_over_the_resume_downgrade() {
         assert_eq!(
-            persistent_failure_action("cancelled", "claude", false, false, false),
+            persistent_failure_action("cancelled", "claude", false, false, false, false),
             PersistentFailureAction::Cancelled
         );
     }
@@ -6063,7 +6197,7 @@ mod tests {
         assert!(!is_cancellation("ACP session exited mid-turn"));
         assert!(!is_cancellation(""));
         assert_eq!(
-            persistent_failure_action(CANCELLED_SESSION_LOST, "claude", false, false, false),
+            persistent_failure_action(CANCELLED_SESSION_LOST, "claude", false, false, false, false),
             PersistentFailureAction::Cancelled
         );
     }

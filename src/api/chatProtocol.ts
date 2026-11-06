@@ -103,6 +103,7 @@ function isExclusiveSparseLifecycle(type: ChatRunEventEnvelope['type']): boolean
     || type === 'tool_approval_requested'
     || type === 'tool_approval_withdrawn'
     || type === 'user_prompt_requested'
+    || type === 'user_prompt_resolved'
 }
 
 function advanceTerminalRevision(event: ChatRunEventEnvelope) {

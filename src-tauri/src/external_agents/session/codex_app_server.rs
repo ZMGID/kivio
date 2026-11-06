@@ -1,3 +1,4 @@
+use crate::external_agents::session::live::TurnDelivery;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -377,7 +378,7 @@ fn approval_ask_from_params(method: &str, id: &Value, params: &Value) -> Approva
         _ => ("Bash", params.clone()),
     };
     ApprovalAsk {
-        request_id,
+        interaction_id: uuid::Uuid::new_v4().to_string(),
         tool_call_id,
         tool_name: tool_name.to_string(),
         input,
@@ -586,17 +587,14 @@ fn map_codex_notification(
             }
         }
         "turn/completed" => {
-            if let Some(turn) = params.get("turn").and_then(|v| v.as_object()) {
-                if turn.get("status").and_then(Value::as_str) == Some("interrupted") {
-                    return CodexMapResult::TurnFailed("cancelled".to_string());
-                }
-                if turn.get("status").and_then(|v| v.as_str()) == Some("failed") {
-                    return CodexMapResult::TurnFailed(codex_error_message(
-                        turn.get("error").unwrap_or(&Value::Null),
-                    ));
-                }
-            }
-            return CodexMapResult::TurnEnded;
+            return match params.pointer("/turn/status").and_then(Value::as_str) {
+                Some("completed") => CodexMapResult::TurnEnded,
+                Some("interrupted") => CodexMapResult::TurnFailed("cancelled".into()),
+                Some("failed") => CodexMapResult::TurnFailed(codex_error_message(
+                    params.pointer("/turn/error").unwrap_or(&Value::Null),
+                )),
+                _ => CodexMapResult::TurnFailed("invalid Codex terminal status".into()),
+            };
         }
         // Mid-turn `error` / `thread/realtime/error` **precedes** `turn/completed` (app-server
         // README). Codex uses this for stream reconnect (`Reconnecting... 7/50`); the TUI
@@ -789,12 +787,6 @@ fn mid_turn_error_status_note(raw: &str) -> String {
     } else {
         format!("retry · {cause}")
     }
-}
-
-fn is_codex_reconnect_progress(raw: &str) -> bool {
-    parse_reconnect_progress(raw).is_some()
-        || raw.to_ascii_lowercase().contains("reconnecting")
-        || raw.contains("正在重新连接")
 }
 
 /// `account/rateLimits/updated` (sparse snapshot): only speaks up once a limit is actually
@@ -1525,6 +1517,7 @@ pub struct CodexAppServerSession {
     /// 服务端当前活跃轮次的 turn id（取自任意一条带 `turnId` 的通知）。
     /// `turn/steer` 的 `expectedTurnId` 前置条件要用它；轮末清空。
     active_turn_id: Option<String>,
+    seen_turn_ids: HashSet<String>,
     /// Ring-buffered stderr tail (N1), joined on close / error for diagnostics.
     stderr_tail: tokio::task::JoinHandle<String>,
     /// `on-request` (workspace-write / read-only) asks the host; `never` (完全) auto-allows.
@@ -1594,18 +1587,20 @@ impl CodexAppServerSession {
         let approval_policy = codex_approval_policy(Some(sandbox_mode));
         let mut command = codex_cli_command(resolved_bin);
         crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
-        let mut child = crate::external_agents::spawn::AgentChild::spawn(command
-            .args(args)
-            // Resume must stay narrow, but its config must use the selected capsule rather
-            // than the previous rollout's sandbox. Let Codex resolve network/roots itself.
-            .args(["-c", &format!("sandbox_mode=\"{sandbox_mode}\"")])
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .no_console_window()
-            .kill_on_drop(true))
-            .map_err(|e| format!("spawn: {e}"))?;
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(
+            command
+                .args(args)
+                // Resume must stay narrow, but its config must use the selected capsule rather
+                // than the previous rollout's sandbox. Let Codex resolve network/roots itself.
+                .args(["-c", &format!("sandbox_mode=\"{sandbox_mode}\"")])
+                .current_dir(cwd)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .no_console_window()
+                .kill_on_drop(true),
+        )
+        .map_err(|e| format!("spawn: {e}"))?;
         // N1: drain stderr for the process lifetime.
         let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
         let mut stdin = match child.stdin.take() {
@@ -1728,6 +1723,7 @@ impl CodexAppServerSession {
                 next_id,
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
+                seen_turn_ids: HashSet::new(),
                 stderr_tail,
                 approval_policy,
                 sandbox_policy,
@@ -1826,6 +1822,7 @@ impl CodexAppServerSession {
     /// incoming `Cancel` sends `turn/interrupt` (without killing the process). Does NOT close stdin.
     pub async fn run_turn(
         &mut self,
+        delivery: &TurnDelivery,
         prompt: &str,
         model: Option<&str>,
         reasoning: Option<&str>,
@@ -1836,6 +1833,7 @@ impl CodexAppServerSession {
         mut approvals: Option<&mut ApprovalBridge>,
         turn_cancelled: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<(), String> {
+        self.active_turn_id = None;
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
         let chosen_effort = normalize_codex_effort(reasoning);
         // 本轮计费基线：由本轮第一条 tokenUsage 定下，轮次之间不复用。
@@ -1865,13 +1863,16 @@ impl CodexAppServerSession {
         } else {
             vec![json!({"type":"text", "text":prompt})]
         };
-        if turn_cancelled.is_some_and(|token| token.is_cancelled()) { return Err("cancelled".into()); }
+        if turn_cancelled.is_some_and(|token| token.is_cancelled()) {
+            return Err("cancelled".into());
+        }
         let turn_id = self.next_id;
         self.next_id += 1;
 
         if is_compact_slash(prompt) {
             // Real compaction RPC; the server runs it as a turn (contextCompaction item +
             // turn/completed), so the read loop below works unchanged.
+            delivery.mark_possibly_sent();
             write_rpc(
                 &mut self.stdin,
                 turn_id,
@@ -1903,6 +1904,7 @@ impl CodexAppServerSession {
             if let Some(tier) = &self.service_tier {
                 turn_params["serviceTier"] = json!(tier);
             }
+            delivery.mark_possibly_sent();
             write_rpc(&mut self.stdin, turn_id, "turn/start", turn_params).await?;
         }
 
@@ -1987,7 +1989,8 @@ impl CodexAppServerSession {
                 loop {
                     match bridge.decisions.try_recv() {
                         Ok(decision) => {
-                            if let Some(request) = pending_requests.remove(&decision.request_id) {
+                            if let Some(request) = pending_requests.remove(&decision.interaction_id)
+                            {
                                 answer_pending_codex_request(
                                     &mut self.stdin,
                                     &request,
@@ -1998,13 +2001,11 @@ impl CodexAppServerSession {
                         }
                         Err(mpsc::error::TryRecvError::Empty) => break,
                         Err(mpsc::error::TryRecvError::Disconnected) => {
-                            for (_, request) in pending_requests.drain() {
+                            for (interaction_id, request) in pending_requests.drain() {
                                 answer_pending_codex_request(&mut self.stdin, &request, None)
                                     .await?;
                                 let _ = events
-                                    .send(UnifiedAgentEvent::InteractionResolved {
-                                        tool_call_id: request.tool_call_id,
-                                    })
+                                    .send(UnifiedAgentEvent::InteractionResolved { interaction_id })
                                     .await;
                             }
                             break;
@@ -2021,15 +2022,13 @@ impl CodexAppServerSession {
                 })
                 .map(|(id, _)| id.clone())
                 .collect();
-            for id in expired {
-                if let Some(request) = pending_requests.remove(&id) {
+            for interaction_id in expired {
+                if let Some(request) = pending_requests.remove(&interaction_id) {
                     // autoResolutionMs belongs to requestUserInput only. An unanswered
                     // question returns no answers; it never grants command/file permissions.
                     write_rpc_result(&mut self.stdin, &request.id, json!({"answers":{}})).await?;
                     let _ = events
-                        .send(UnifiedAgentEvent::InteractionResolved {
-                            tool_call_id: request.tool_call_id,
-                        })
+                        .send(UnifiedAgentEvent::InteractionResolved { interaction_id })
                         .await;
                 }
             }
@@ -2043,16 +2042,10 @@ impl CodexAppServerSession {
             if line.trim().is_empty() {
                 continue;
             }
-            let value: Value = match serde_json::from_str(line.trim()) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            if let (Some(method), Some(id)) = (
-                value.get("method").and_then(|v| v.as_str()),
-                value.get("id"),
-            ) {
-                let params = value.get("params").cloned().unwrap_or(Value::Null);
+            let value: Value = serde_json::from_str(line.trim())
+                .map_err(|error| format!("invalid Codex JSON: {error}"))?;
+            let frame = decode_codex_frame(&value)?;
+            if let CodexFrame::Request { method, id, params } = frame {
                 queue_codex_server_request(
                     &mut self.stdin,
                     method,
@@ -2065,18 +2058,20 @@ impl CodexAppServerSession {
                 .await?;
                 continue;
             }
-            if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
-                let params = value.get("params").cloned().unwrap_or(Value::Null);
+            if let CodexFrame::Notification { method, params } = frame {
                 // 服务端给的活跃 turn id：每条 turn 相关通知的 params 都带 turnId。
                 // `turn/steer` 的 `expectedTurnId` 只能取自这里。子代理线程的通知也带 turnId，
                 // 只认本线程的，否则中断 / 引导会打到子线程的轮次上。
                 if method == "serverRequest/resolved" {
                     if let Some(id) = params.get("requestId") {
-                        if let Some(request) = pending_requests.remove(&rpc_id_key(id)) {
+                        let interaction_id = pending_requests
+                            .iter()
+                            .find(|(_, request)| &request.id == id)
+                            .map(|(interaction_id, _)| interaction_id.clone());
+                        if let Some(interaction_id) = interaction_id {
+                            pending_requests.remove(&interaction_id);
                             let _ = events
-                                .send(UnifiedAgentEvent::InteractionResolved {
-                                    tool_call_id: request.tool_call_id,
-                                })
+                                .send(UnifiedAgentEvent::InteractionResolved { interaction_id })
                                 .await;
                         }
                     }
@@ -2085,26 +2080,52 @@ impl CodexAppServerSession {
                 let own_thread = params
                     .get("threadId")
                     .and_then(|v| v.as_str())
-                    .is_none_or(|t| t == self.thread_id);
+                    .is_some_and(|t| t == self.thread_id);
                 // Child threads share this connection. Their text/usage/terminal events
                 // must not enter the root answer or complete its pending run_turn.
                 // The root collabAgentToolCall item already projects child activity.
-                if !own_thread {
+                let connection_notice = params.get("threadId").is_none()
+                    && matches!(
+                        method,
+                        "configWarning" | "deprecationNotice" | "account/rateLimits/updated"
+                    );
+                if !own_thread && !connection_notice {
                     continue;
+                }
+                if method == "turn/completed"
+                    && (params
+                        .pointer("/turn/id")
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                        || !matches!(
+                            params.pointer("/turn/status").and_then(Value::as_str),
+                            Some("completed" | "failed" | "interrupted")
+                        ))
+                {
+                    return Err("invalid Codex turn/completed payload".into());
                 }
                 let notification_turn = params
                     .get("turnId")
                     .and_then(|v| v.as_str())
                     .or_else(|| params.pointer("/turn/id").and_then(Value::as_str));
-                if let (Some(active), Some(incoming)) =
-                    (self.active_turn_id.as_deref(), notification_turn)
-                {
-                    if active != incoming {
+                if method == "turn/started" && self.active_turn_id.is_none() {
+                    let turn = notification_turn
+                        .filter(|turn| !turn.is_empty())
+                        .ok_or("Codex turn/started is missing turn identity")?;
+                    if !self.seen_turn_ids.insert(turn.to_string()) {
                         continue;
                     }
-                }
-                if let Some(turn) = notification_turn {
                     self.active_turn_id = Some(turn.to_string());
+                }
+                if matches!(method, "turn/completed" | "error" | "thread/realtime/error")
+                    && (notification_turn.is_none() || self.active_turn_id.is_none())
+                {
+                    continue;
+                }
+                if let Some(incoming) = notification_turn {
+                    if self.active_turn_id.as_deref() != Some(incoming) {
+                        continue;
+                    }
                 }
                 let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
                 let mapped = map_codex_notification(
@@ -2130,15 +2151,14 @@ impl CodexAppServerSession {
                 }
                 continue;
             }
-            // `turn/steer` 的响应。**必须排在下面那条通用 error 分支之前**：被拒的 steer
-            // （review / compact 轮次不可 steer、expectedTurnId 已过期）回的是带 id 的
-            // error，落到通用分支会把整轮判死 —— 用户只是插话没插上，不该赔掉这一轮。
-            if let Some(rpc_id) = value.get("id").and_then(Value::as_u64) {
+            let CodexFrame::Response { id, outcome } = frame else {
+                unreachable!()
+            };
+            if let Some(rpc_id) = id.as_u64() {
                 if let Some((steer_id, steer_text, accepted)) = pending_steers.remove(&rpc_id) {
-                    let ok = value.get("result").is_some();
+                    let ok = outcome.is_ok();
                     let _ = accepted.send(ok);
                     if ok {
-                        // 受理了才在时间线上留卡（卡的语义是「这句话确实进了模型输入」）。
                         let _ = events
                             .send(UnifiedAgentEvent::UserSteer {
                                 id: steer_id,
@@ -2148,30 +2168,30 @@ impl CodexAppServerSession {
                     }
                     continue;
                 }
-                if rpc_id == turn_id {
-                    if let Some(turn) = value.pointer("/result/turn/id").and_then(Value::as_str) {
+            }
+            if id != &json!(turn_id) {
+                continue;
+            }
+            let result = outcome.map_err(|error| codex_error_message(error))?;
+            if let Some(turn) = result
+                .pointer("/turn/id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                match self.active_turn_id.as_deref() {
+                    Some(active) if active != turn => {
+                        return Err("Codex turn/start returned a different active turn".into())
+                    }
+                    Some(_) => {}
+                    None => {
+                        if !self.seen_turn_ids.insert(turn.to_string()) {
+                            return Err("Codex turn/start reused an earlier turn id".into());
+                        }
                         self.active_turn_id = Some(turn.to_string());
                     }
                 }
-            }
-            if let Some(err) = value.get("error") {
-                let message = err
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .unwrap_or_else(|| err.to_string());
-                // Same as the `error` notification: Codex may surface reconnect progress as a
-                // JSON-RPC error object while the turn is still running. Killing the reader
-                // here is the "掐线" the TUI never does.
-                if is_codex_reconnect_progress(&message) {
-                    let _ = events
-                        .send(UnifiedAgentEvent::StatusNote {
-                            text: mid_turn_error_status_note(&message),
-                        })
-                        .await;
-                    continue;
-                }
-                return Err(message);
+            } else if !is_compact_slash(prompt) || !result.is_object() {
+                return Err("Codex turn/start response is missing turn identity".into());
             }
             // Response to turn/start (or a stale id): the turn is now running — keep reading.
         }
@@ -2195,7 +2215,6 @@ struct CodexPendingRequest {
     id: Value,
     method: String,
     params: Value,
-    tool_call_id: String,
     deadline: Option<tokio::time::Instant>,
 }
 
@@ -2222,14 +2241,14 @@ async fn queue_codex_server_request(
         .await;
     }
     let request_id = rpc_id_key(id);
-    if pending.contains_key(&request_id) {
-        return write_rpc_error(stdin, id, -32600, "duplicate pending request id").await;
+    if pending.values().any(|request| &request.id == id) {
+        return Ok(());
     }
     let ask = if approval {
         approval_ask_from_params(method, id, params)
     } else {
         ApprovalAsk {
-            request_id: request_id.clone(),
+            interaction_id: uuid::Uuid::new_v4().to_string(),
             tool_call_id: json_str(params, "itemId")
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("codex-ask-{request_id}")),
@@ -2248,15 +2267,15 @@ async fn queue_codex_server_request(
         .then(|| params.get("autoResolutionMs").and_then(Value::as_u64))
         .flatten()
         .and_then(|ms| tokio::time::Instant::now().checked_add(Duration::from_millis(ms)));
+    let interaction_id = ask.interaction_id.clone();
     let request = CodexPendingRequest {
         id: id.clone(),
         method: method.to_string(),
         params: params.clone(),
-        tool_call_id: ask.tool_call_id.clone(),
         deadline,
     };
     if approvals.is_some_and(|bridge| bridge.requests.try_send(ask).is_ok()) {
-        pending.insert(request_id, request);
+        pending.insert(interaction_id, request);
         Ok(())
     } else {
         // A missing/closed/full host is never an implicit permission grant.
@@ -2335,6 +2354,64 @@ fn unknown_server_request_result() -> Value {
     json!({ "decision": "decline" })
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CodexFrame<'a> {
+    Request {
+        method: &'a str,
+        id: &'a Value,
+        params: &'a Value,
+    },
+    Notification {
+        method: &'a str,
+        params: &'a Value,
+    },
+    Response {
+        id: &'a Value,
+        outcome: Result<&'a Value, &'a Value>,
+    },
+}
+
+fn decode_codex_frame(value: &Value) -> Result<CodexFrame<'_>, String> {
+    let invalid = || "invalid Codex RPC envelope".to_string();
+    let object = value.as_object().ok_or_else(invalid)?;
+    if object
+        .get("jsonrpc")
+        .is_some_and(|version| version != "2.0")
+    {
+        return Err(invalid());
+    }
+    let id = object.get("id");
+    if id.is_some_and(|id| !id.is_string() && id.as_i64().is_none() && id.as_u64().is_none()) {
+        return Err(invalid());
+    }
+    if let Some(method) = object.get("method") {
+        let method = method
+            .as_str()
+            .filter(|method| !method.is_empty())
+            .ok_or_else(invalid)?;
+        if object.contains_key("result") || object.contains_key("error") {
+            return Err(invalid());
+        }
+        let params = object.get("params").unwrap_or(&Value::Null);
+        return Ok(match id {
+            Some(id) => CodexFrame::Request { method, id, params },
+            None => CodexFrame::Notification { method, params },
+        });
+    }
+    let id = id.ok_or_else(invalid)?;
+    let outcome = match (object.get("result"), object.get("error")) {
+        (Some(result), None) => Ok(result),
+        (None, Some(error))
+            if error.get("code").and_then(Value::as_i64).is_some()
+                && error.get("message").and_then(Value::as_str).is_some() =>
+        {
+            Err(error)
+        }
+        _ => return Err(invalid()),
+    };
+    Ok(CodexFrame::Response { id, outcome })
+}
+
 /// Read JSON-RPC lines until the response with `target_id` arrives, auto-answering any
 /// server→client approval requests and skipping notifications. Unknown requests are
 /// fail-closed so handshake cannot hang.
@@ -2358,30 +2435,16 @@ async fn read_until_response(
         if line.trim().is_empty() {
             continue;
         }
-        let value: Value = match serde_json::from_str(line.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if let (Some(method), Some(id)) = (
-            value.get("method").and_then(|v| v.as_str()),
-            value.get("id"),
-        ) {
-            let params = value.get("params").cloned().unwrap_or(Value::Null);
-            answer_handshake_request(stdin, method, id, &params).await?;
-            continue;
-        }
-        if value.get("method").is_some() {
-            continue; // notification
-        }
-        if let Some(err) = value.get("error") {
-            return Err(err
-                .get("message")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| err.to_string()));
-        }
-        if value.get("id").and_then(|v| v.as_u64()) == Some(target_id) {
-            return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+        let value: Value = serde_json::from_str(line.trim())
+            .map_err(|error| format!("invalid Codex JSON: {error}"))?;
+        match decode_codex_frame(&value)? {
+            CodexFrame::Request { method, id, params } => {
+                answer_handshake_request(stdin, method, id, params).await?;
+            }
+            CodexFrame::Response { id, outcome } if id == &json!(target_id) => {
+                return outcome.cloned().map_err(codex_error_message);
+            }
+            _ => {}
         }
     }
 }
@@ -2775,15 +2838,17 @@ pub async fn detect_codex_models(
     cwd: &Path,
     timeout_secs: u64,
 ) -> Option<CodexModelsProbe> {
-    let mut child = crate::external_agents::spawn::AgentChild::spawn(codex_cli_command(resolved_bin)
-        .arg("app-server")
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .no_console_window()
-        .kill_on_drop(true))
-        .ok()?;
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(
+        codex_cli_command(resolved_bin)
+            .arg("app-server")
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .no_console_window()
+            .kill_on_drop(true),
+    )
+    .ok()?;
     let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
     let (mut stdin, stdout) = (child.stdin.take()?, child.stdout.take()?);
     let mut reader = BufReader::new(stdout).lines();
@@ -3079,15 +3144,16 @@ pub async fn detect_codex_commands(
         .collect();
 
     // Best-effort: pull skills via the app-server. Failure leaves just the built-ins.
-    if let Ok(mut child) = crate::external_agents::spawn::AgentChild::spawn(codex_cli_command(resolved_bin)
-        .arg("app-server")
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .no_console_window()
-        .kill_on_drop(true))
-    {
+    if let Ok(mut child) = crate::external_agents::spawn::AgentChild::spawn(
+        codex_cli_command(resolved_bin)
+            .arg("app-server")
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .no_console_window()
+            .kill_on_drop(true),
+    ) {
         if let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) {
             let mut reader = BufReader::new(stdout).lines();
             let overall = Duration::from_secs(timeout_secs);
@@ -3154,6 +3220,7 @@ pub fn spawn_codex_session_actor(
             };
             match cmd {
                 SessionCommand::RunTurn {
+                    delivery,
                     cancelled,
                     prompt,
                     model,
@@ -3164,12 +3231,18 @@ pub fn spawn_codex_session_actor(
                     done,
                     mut approvals,
                 } => {
-                    if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
+                    if done.is_closed()
+                        || cancelled.as_ref().is_some_and(|token| token.is_cancelled())
+                    {
+                        let _ = done.send(Err("cancelled".into()));
+                        continue;
+                    }
                     // Invariant (A4): `run_turn` sends every `event` before returning, and mpsc
                     // preserves order, so the caller's post-`done` drain sees them all. `done.send`
                     // stays LAST.
                     let result = session
                         .run_turn(
+                            &delivery,
                             &prompt,
                             model.as_deref(),
                             reasoning.as_deref(),
@@ -3257,6 +3330,251 @@ mod tests {
         );
     }
 
+    async fn protocol_peer_reader(stdout: ChildStdout) -> Lines<BufReader<ChildStdout>> {
+        let mut reader = BufReader::new(stdout).lines();
+        loop {
+            let line = timeout(Duration::from_secs(5), reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if line.ends_with("KIVIO_PEER_READY") {
+                return reader;
+            }
+        }
+    }
+
+    #[test]
+    fn envelope_validation_preserves_rpc_id_types_and_rejects_damage() {
+        for value in [
+            Value::Null,
+            json!([]),
+            json!({"id":1}),
+            json!({"id":1,"result":{},"error":{"code":1,"message":"bad"}}),
+            json!({"id":1,"method":"reverse","result":{}}),
+            json!({"id":1,"error":{"message":"bad"}}),
+        ] {
+            assert!(decode_codex_frame(&value).is_err(), "{value}");
+        }
+        for id in [json!(1), json!("1")] {
+            let value = json!({"id":id,"result":{}});
+            let CodexFrame::Response { id: decoded, .. } = decode_codex_frame(&value).unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(decoded, &id);
+        }
+        assert!(matches!(
+            decode_codex_frame(&json!({"method":"future/event","params":{}})).unwrap(),
+            CodexFrame::Notification { .. }
+        ));
+    }
+
+    #[test]
+    fn turn_identity_protocol_peer() {
+        let Ok(mode) = std::env::var("KIVIO_TURN_IDENTITY_PEER") else {
+            return;
+        };
+        use std::io::{BufRead, Write};
+        let emit = |value: Value| {
+            println!("{value}");
+            std::io::stdout().flush().unwrap();
+        };
+        println!("KIVIO_PEER_READY");
+        std::io::stdout().flush().unwrap();
+        let mut input = std::io::stdin().lock().lines();
+        let initialize: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+        emit(json!({"id":999,"error":{"code":-1,"message":"foreign handshake error"}}));
+        emit(
+            json!({"id":initialize["id"].to_string(),"error":{"code":-1,"message":"string handshake error"}}),
+        );
+        emit(json!({"method":"future/event","params":{}}));
+        emit(json!({"id":initialize["id"],"result":{}}));
+        for number in 1..=2 {
+            let prompt: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+            assert_eq!(
+                prompt["method"],
+                if mode == "compact" && number == 2 {
+                    "thread/compact/start"
+                } else {
+                    "turn/start"
+                }
+            );
+            if number == 2 {
+                emit(
+                    json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}),
+                );
+                emit(
+                    json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":"turn-1"}}}),
+                );
+                emit(
+                    json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","delta":"stale"}}),
+                );
+            }
+            if mode == "drop" {
+                std::fs::write(std::env::var("KIVIO_PROMPT_RECEIPT").unwrap(), "prompt\n").unwrap();
+                std::process::exit(0);
+            }
+            if mode == "rejected" {
+                emit(json!({"id":prompt["id"],"error":{"code":-1,"message":"own rejection"}}));
+                return;
+            }
+            if mode == "malformed" {
+                emit(json!({"id":prompt["id"]}));
+                return;
+            }
+            emit(json!({"id":999,"error":{"code":-1,"message":"foreign turn error"}}));
+            emit(
+                json!({"method":"configWarning","params":{"summary":"peer configuration warning"}}),
+            );
+            emit(
+                json!({"method":"deprecationNotice","params":{"summary":"peer deprecation warning"}}),
+            );
+            emit(
+                json!({"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"credits_depleted"}}}),
+            );
+            emit(
+                json!({"id":prompt["id"].to_string(),"error":{"code":-1,"message":"string turn error"}}),
+            );
+            let turn = format!("turn-{number}");
+            let start = json!({"method":"turn/started","params":{"threadId":"thread-1","turn":{"id":turn}}});
+            let result = if mode == "compact" && number == 2 {
+                json!({})
+            } else {
+                json!({"turn":{"id":turn}})
+            };
+            if mode == "notification-first" || mode == "compact" {
+                emit(start.clone());
+            }
+            emit(json!({"id":prompt["id"],"result":result}));
+            if mode != "notification-first" && mode != "compact" {
+                emit(start);
+            }
+            emit(
+                json!({"method":"turn/completed","params":{"threadId":"child","turn":{"id":"child-turn","status":"completed"}}}),
+            );
+            emit(
+                json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}}),
+            );
+            emit(
+                json!({"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":turn,"delta":turn}}),
+            );
+            emit(
+                json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":turn,"status":"completed"}}}),
+            );
+        }
+        let finish: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
+        assert_eq!(finish["method"], "test/finish");
+    }
+
+    #[tokio::test]
+    async fn runtime_correlates_exact_replies_and_native_turns_and_marks_uncertain_delivery() {
+        for mode in [
+            "response-first",
+            "notification-first",
+            "compact",
+            "drop",
+            "rejected",
+            "malformed",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let receipt = dir.path().join("receipt");
+            let exe = std::env::current_exe().unwrap();
+            let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
+                .args(["--exact", "external_agents::session::codex_app_server::tests::turn_identity_protocol_peer", "--nocapture"])
+                .env("KIVIO_TURN_IDENTITY_PEER", mode).env("KIVIO_PROMPT_RECEIPT", &receipt)
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+                .no_console_window().kill_on_drop(true)).unwrap();
+            let mut session = CodexAppServerSession {
+                stdin: child.stdin.take().unwrap(),
+                reader: protocol_peer_reader(child.stdout.take().unwrap()).await,
+                stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
+                child,
+                thread_id: "thread-1".into(),
+                cwd: "/work".into(),
+                cli_bin: exe,
+                next_id: 1,
+                emitted_tools: HashSet::new(),
+                active_turn_id: None,
+                seen_turn_ids: HashSet::new(),
+                approval_policy: "never",
+                sandbox_policy: json!({"type":"dangerFullAccess"}),
+                plan_mode: false,
+                thread_model: None,
+                service_tier: None,
+            };
+            session.request("initialize", json!({})).await.unwrap();
+            let (events, mut output) = mpsc::channel(32);
+            let (_control_tx, mut control) = mpsc::channel(8);
+            for number in 1..=2 {
+                let delivery = TurnDelivery::default();
+                let result = timeout(
+                    Duration::from_secs(5),
+                    session.run_turn(
+                        &delivery,
+                        if mode == "compact" && number == 2 {
+                            "/compact"
+                        } else {
+                            "test"
+                        },
+                        None,
+                        None,
+                        &[],
+                        &[],
+                        &events,
+                        &mut control,
+                        None,
+                        None,
+                    ),
+                )
+                .await
+                .unwrap();
+                assert!(delivery.possibly_sent());
+                match mode {
+                    "drop" => {
+                        assert!(result.is_err());
+                        assert_eq!(std::fs::read_to_string(&receipt).unwrap(), "prompt\n");
+                        break;
+                    }
+                    "rejected" => {
+                        assert_eq!(result.unwrap_err(), "own rejection");
+                        break;
+                    }
+                    "malformed" => {
+                        assert!(result.unwrap_err().contains("invalid Codex"));
+                        break;
+                    }
+                    _ => assert!(result.is_ok(), "{mode}: {result:?}"),
+                }
+                let mut text = String::new();
+                let mut notices = Vec::new();
+                while let Ok(event) = output.try_recv() {
+                    match event {
+                        UnifiedAgentEvent::TextDelta { delta } => text.push_str(&delta),
+                        UnifiedAgentEvent::StatusNote { text } => notices.push(text),
+                        _ => {}
+                    }
+                }
+                assert_eq!(text, format!("turn-{number}"), "{mode}");
+                assert_eq!(
+                    notices,
+                    [
+                        "peer configuration warning",
+                        "peer deprecation warning",
+                        "credits depleted"
+                    ],
+                    "{mode}"
+                );
+            }
+            if !matches!(mode, "drop" | "rejected" | "malformed") {
+                write_rpc_notification(&mut session.stdin, "test/finish", json!({}))
+                    .await
+                    .unwrap();
+            }
+            session.close().await;
+        }
+    }
+
     // A real pipe peer exercises serialization and the production run_turn path
     // without invoking a paid model or requiring an installed Codex binary.
     #[test]
@@ -3265,6 +3583,8 @@ mod tests {
             return;
         };
         use std::io::{BufRead, Write};
+        println!("KIVIO_PEER_READY");
+        std::io::stdout().flush().unwrap();
         let stdin = std::io::stdin();
         let mut lines = stdin.lock().lines();
         let list: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
@@ -3324,7 +3644,7 @@ mod tests {
                 .unwrap();
             let mut session = CodexAppServerSession {
                 stdin: child.stdin.take().unwrap(),
-                reader: BufReader::new(child.stdout.take().unwrap()).lines(),
+                reader: protocol_peer_reader(child.stdout.take().unwrap()).await,
                 stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
                 child,
                 thread_id: "thread-1".into(),
@@ -3333,6 +3653,7 @@ mod tests {
                 next_id: 1,
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
+                seen_turn_ids: HashSet::new(),
                 approval_policy: "never",
                 sandbox_policy: json!({"type": "dangerFullAccess"}),
                 plan_mode: false,
@@ -3342,10 +3663,13 @@ mod tests {
             let (events, mut event_rx) = mpsc::channel(32);
             let (_control_tx, mut control) = mpsc::channel(8);
             let cancellation = tokio_util::sync::CancellationToken::new();
-            if mode == "cancelled" { cancellation.cancel(); }
+            if mode == "cancelled" {
+                cancellation.cancel();
+            }
             let result = timeout(
                 Duration::from_secs(5),
                 session.run_turn(
+                    &TurnDelivery::default(),
                     "/wizard配置环境",
                     None,
                     None,
@@ -3496,6 +3820,8 @@ mod tests {
             return;
         };
         use std::io::{BufRead, Write};
+        println!("KIVIO_PEER_READY");
+        std::io::stdout().flush().unwrap();
         let mut lines = std::io::stdin().lock().lines();
         let turn: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
         assert_eq!(turn["method"], "turn/start");
@@ -3503,6 +3829,27 @@ mod tests {
             "{}",
             json!({"method":"turn/started", "params":{"threadId":"thread-1","turn":{"id":"turn-1"}}})
         );
+        if mode == "reuse" {
+            for round in 1..=2 {
+                let ask = json!({"id":7,"method":"item/tool/requestUserInput","params":{
+                    "threadId":"thread-1","turnId":"turn-1","itemId":"same-tool",
+                    "questions":[{"id":"q","header":"Choice","question":"Continue?","options":[]}]}});
+                println!("{ask}");
+                println!("{ask}");
+                std::io::stdout().flush().unwrap();
+                let reply: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+                assert_eq!(reply["id"], 7);
+                assert_eq!(reply["result"]["round"], round);
+            }
+            println!(
+                "{}",
+                json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}})
+            );
+            std::io::stdout().flush().unwrap();
+            let finish: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            assert_eq!(finish["method"], "test/finish");
+            return;
+        }
         for id in ["ask-a", "ask-b"] {
             println!(
                 "{}",
@@ -3548,7 +3895,7 @@ mod tests {
     #[tokio::test]
     async fn interactions_keep_reading_and_resolve_concurrent_or_expired_requests() {
         use crate::external_agents::session::live::ApprovalDecision;
-        for mode in ["resolved", "decisions", "auto"] {
+        for mode in ["resolved", "decisions", "auto", "reuse"] {
             let exe = std::env::current_exe().unwrap();
             let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
                 .args([
@@ -3564,7 +3911,7 @@ mod tests {
                 .unwrap();
             let mut session = CodexAppServerSession {
                 stdin: child.stdin.take().unwrap(),
-                reader: BufReader::new(child.stdout.take().unwrap()).lines(),
+                reader: protocol_peer_reader(child.stdout.take().unwrap()).await,
                 stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
                 child,
                 thread_id: "thread-1".into(),
@@ -3573,6 +3920,7 @@ mod tests {
                 next_id: 1,
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
+                seen_turn_ids: HashSet::new(),
                 approval_policy: "on-request",
                 sandbox_policy: json!({"type":"workspaceWrite"}),
                 plan_mode: false,
@@ -3589,12 +3937,32 @@ mod tests {
             };
             let host = async {
                 let first = request_rx.recv().await.unwrap();
+                if mode == "reuse" {
+                    let decide = |interaction_id, round| ApprovalDecision {
+                        interaction_id,
+                        approved: true,
+                        updated_input: Some(json!({"round":round})),
+                        set_permission_mode: None,
+                        updated_permissions: None,
+                        always: false,
+                    };
+                    let first_id = first.interaction_id;
+                    decision_tx.send(decide(first_id.clone(), 1)).await.unwrap();
+                    let second = request_rx.recv().await.unwrap();
+                    assert_ne!(first_id, second.interaction_id);
+                    decision_tx.send(decide(first_id, 999)).await.unwrap();
+                    decision_tx
+                        .send(decide(second.interaction_id, 2))
+                        .await
+                        .unwrap();
+                    return;
+                }
                 let second = request_rx.recv().await.unwrap();
                 if mode == "decisions" {
                     for ask in [second, first] {
                         decision_tx
                             .send(ApprovalDecision {
-                                request_id: ask.request_id,
+                                interaction_id: ask.interaction_id,
                                 approved: true,
                                 updated_input: Some(json!({"answers":{}})),
                                 set_permission_mode: None,
@@ -3606,9 +3974,11 @@ mod tests {
                     }
                 }
             };
+            let delivery = TurnDelivery::default();
             let (result, ()) = timeout(Duration::from_secs(2), async {
                 tokio::join!(
                     session.run_turn(
+                        &delivery,
                         "test",
                         None,
                         None,
@@ -3618,7 +3988,7 @@ mod tests {
                         &mut control,
                         Some(&mut bridge),
                         None,
-                ),
+                    ),
                     host
                 )
             })
@@ -3695,7 +4065,7 @@ mod tests {
         let exe = std::env::current_exe().unwrap();
         let exe = exe.to_string_lossy().replace('\'', "'\\''");
         for mode in ["complete", "cycle"] {
-            std::fs::write(&bin, format!("#!/bin/sh\nKIVIO_MODEL_CATALOG_PEER={mode} exec '{exe}' --exact external_agents::session::codex_app_server::tests::model_catalog_protocol_peer --nocapture\n")).unwrap();
+            std::fs::write(&bin, format!("#!/bin/sh\nKIVIO_MODEL_CATALOG_PEER={mode} exec '{exe}' --exact external_agents::session::codex_app_server::tests::model_catalog_protocol_peer --nocapture | awk '/^\\{{/ {{ print; fflush(); }}'\n")).unwrap();
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o700)).unwrap();
             let probe = detect_codex_models(&bin, dir.path(), 5).await;
             if mode == "cycle" {
@@ -4083,7 +4453,8 @@ mod tests {
             let (dtx, drx) = oneshot::channel();
             control
                 .send(SessionCommand::RunTurn {
-                cancelled: None,
+                    delivery: TurnDelivery::default(),
+                    cancelled: None,
                     prompt: prompt.to_string(),
                     model: None,
                     reasoning: None,
@@ -4598,6 +4969,7 @@ mod tests {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
                 cancelled: None,
                 prompt: prompt.to_string(),
                 model: None,
@@ -4671,6 +5043,7 @@ mod tests {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
                 cancelled: None,
                 // 让这一轮够长，好在它跑着的时候插话（数到 5 会连着出好几段 reasoning/text）。
                 prompt: "Count slowly from 1 to 5, one number per line, then say COUNT_DONE."
@@ -5085,7 +5458,7 @@ mod tests {
     fn user_decision_maps_allow_once_and_always_to_codex_scopes() {
         use crate::external_agents::session::live::ApprovalDecision;
         let decide = |approved, always| ApprovalDecision {
-            request_id: "1".into(),
+            interaction_id: "1".into(),
             approved,
             updated_input: None,
             set_permission_mode: None,

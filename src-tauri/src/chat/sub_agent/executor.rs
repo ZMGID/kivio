@@ -366,6 +366,7 @@ impl Host {
         &self, status: String, progress: Option<Value>, preview: Option<String>, steps: Vec<String>,
     ) -> crate::chat::protocol::ChatRunEvent {
         crate::chat::protocol::ChatRunEvent::SubagentUpdated {
+            external_session_id: None,
             parent_tool_call_id: self.parent_tool_call_id.clone(), task_id: self.record.id.clone(),
             generation: Some(self.record.generation), child_run_id: self.record.run_id.clone(), progress,
             name: self.record.display_name.clone(), model: Some(self.model.lock().unwrap_or_else(|e| e.into_inner()).clone()),
@@ -1921,6 +1922,7 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
             if let Err(error) = crate::chat::protocol::emit_run_event_or_live_durable(
                 &app, &req.record.root, &req.parent_run_id,
                 crate::chat::protocol::ChatRunEvent::SubagentUpdated {
+                    external_session_id: None,
                     parent_tool_call_id: req.parent_tool_call_id.clone(), task_id: req.record.id.clone(),
                     generation: Some(req.record.generation),
                     child_run_id: Some(format!("subrun-{}-{}", req.record.generation, req.job_id)), progress: None,

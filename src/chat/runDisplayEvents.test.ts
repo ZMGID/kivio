@@ -51,13 +51,36 @@ describe('run display events', () => {
   it('adds a user prompt only to its run preview', () => {
     const snapshot = createEmptyStreamSnapshot()
     const payload = {
-      conversationId: 'c1', runId: 'run-a', messageId: 'm1', toolCallId: 'ask-1',
+      conversationId: 'c1', runId: 'run-a', messageId: 'm1', interactionId: 'interaction-1', toolCallId: 'ask-1',
       name: 'ask_user', source: 'native', prompt: { title: 'Choose', questions: [] },
-    } as ChatUserPromptPayload
+    } satisfies ChatUserPromptPayload
     applyRunDisplayEvent(snapshot, { kind: 'userPrompt', payload })
     applyRunDisplayEvent(snapshot, { kind: 'userPrompt', payload })
     expect(snapshot.toolCalls).toHaveLength(1)
     expect(snapshot.toolCalls[0].structuredContent).toMatchObject({ askUser: { title: 'Choose' } })
+  })
+
+  it('attaches dsh progress only to the actor that owns the card', () => {
+    const snapshot = createEmptyStreamSnapshot()
+    snapshot.runId = 'r1'
+    for (const [id, actor] of [['old', 'old-actor'], ['current', 'current-actor']]) {
+      applyRunDisplayEvent(snapshot, {
+        kind: 'tool',
+        payload: {
+          conversationId: 'c1', runId: 'r1', toolCallId: id, name: 'subagents',
+          source: 'external_cli', status: 'running',
+          structuredContent: { backgroundTaskId: 'native-task', externalSessionId: actor },
+        },
+      })
+    }
+    const event = {
+      parentConversationId: 'c1', parentRunId: 'r1', parentToolCallId: '',
+      taskId: 'native-task', name: 'subagents', depth: 1, status: 'completed',
+      preview: 'current result', externalSessionId: 'current-actor',
+    } satisfies ChatSubagentPayload
+    expect(applyRunDisplayEvent(snapshot, { kind: 'subagent', payload: event }).accepted).toBe(true)
+    expect(snapshot.toolCalls[0].structuredContent).not.toHaveProperty('subagentProgress')
+    expect(snapshot.toolCalls[1].structuredContent).toMatchObject({ subagentProgress: { preview: 'current result' } })
   })
 
   it('updates only the matched parent subagent tool card', () => {

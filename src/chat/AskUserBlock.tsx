@@ -27,11 +27,12 @@ import type {
 
 interface AskUserBlockProps {
   toolCall: ToolCallRecord
+  interactionId?: string
   /** `docked` = 吊在输入框上方的那张主面板（用户在这里作答）；
    *  `inline` = 消息流里的痕迹，待答时只留一行「等待你回答」，答完显示答案摘要。
    *  两处同时渲染整张卡会出现两个可作答的副本。 */
   variant?: 'docked' | 'inline'
-  /** 作答/跳过成功后通知宿主收起这张面板（后端没有「已答复」事件，见 Chat.tsx 的注释）。 */
+  /** 作答/跳过成功后通知宿主收起这张面板。 */
   onResolved?: () => void
 }
 
@@ -298,7 +299,7 @@ function preventMouseFocus(event: ReactMouseEvent<HTMLButtonElement>) {
   event.preventDefault()
 }
 
-export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUserBlockProps) {
+export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onResolved }: AskUserBlockProps) {
   const asyncQuestions = useContext(AsyncQuestionsContext)
   const parsed = useMemo(() => parseAskUser(toolCall), [toolCall])
   const parsedRef = useRef(parsed)
@@ -364,7 +365,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
 
   // 消息流里的痕迹：待答时只留一行。整张可作答的卡片吊在输入框上方（docked），
   // 两处都渲染整张会出现两个能点的副本、焦点也会打架。
-  if (!docked && parsed.phase === 'awaiting' && !parsed.async) {
+  if ((!docked || !interactionId) && parsed.phase === 'awaiting' && !parsed.async) {
     return (
       <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[11.5px] leading-5 text-neutral-400 dark:text-neutral-500">
         <MessageSquareMore size={12} strokeWidth={1.9} className="shrink-0" />
@@ -488,8 +489,7 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
   }
 
   const submit = async (skipped: boolean, draftOverride?: Record<string, DraftAnswer>) => {
-    const toolCallId = toolCall.toolCallId || toolCall.id
-    if (!toolCallId || submittingRef.current) return
+    if (submittingRef.current || (!parsed.async && !interactionId)) return
     // 用镜像而不是 `draft`：自定义输入框按 Enter 时，那一次 onChange 的值还没进渲染。
     const source = draftOverride ?? draftRef.current
     submittingRef.current = true
@@ -522,8 +522,8 @@ export function AskUserBlock({ toolCall, variant = 'inline', onResolved }: AskUs
         const text = codexAsyncReplyEnvelope(toolCall.id, replies)
           ?? replies.map((reply) => `${reply.question}\n${reply.answer}`).join('\n\n')
         await asyncQuestions.reply(toolCall.id, skipped ? null : text)
-      } else {
-        await api.chatSubmitUserChoice(toolCallId, answers, skipped)
+      } else if (interactionId) {
+        await api.chatSubmitUserChoice(interactionId, answers, skipped)
       }
       // 答复成功后立即通知宿主收起面板；失败则保留面板供用户重试。
       onResolved?.()

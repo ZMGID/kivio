@@ -297,6 +297,9 @@
             "argumentsPreview": {
               "type": "string"
             },
+            "interactionId": {
+              "type": "string"
+            },
             "name": {
               "type": "string"
             },
@@ -328,6 +331,7 @@
           },
           "required": [
             "type",
+            "interactionId",
             "toolCallId",
             "name",
             "source",
@@ -339,6 +343,9 @@
         {
           "additionalProperties": false,
           "properties": {
+            "interactionId": {
+              "type": "string"
+            },
             "name": {
               "type": "string"
             },
@@ -359,6 +366,7 @@
           },
           "required": [
             "type",
+            "interactionId",
             "toolCallId",
             "name",
             "source",
@@ -848,6 +856,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "externalSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "generation": {
               "format": "uint64",
               "minimum": 0,
@@ -1210,6 +1224,9 @@
             "conversationId": {
               "type": "string"
             },
+            "interactionId": {
+              "type": "string"
+            },
             "messageId": {
               "type": "string"
             },
@@ -1260,6 +1277,7 @@
           },
           "required": [
             "type",
+            "interactionId",
             "toolCallId",
             "name",
             "source",
@@ -1286,6 +1304,9 @@
             "conversationId": {
               "type": "string"
             },
+            "interactionId": {
+              "type": "string"
+            },
             "messageId": {
               "type": "string"
             },
@@ -1304,9 +1325,6 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
-            },
-            "toolCallId": {
-              "type": "string"
             },
             "type": {
               "const": "tool_approval_withdrawn",
@@ -1315,7 +1333,7 @@
           },
           "required": [
             "type",
-            "toolCallId",
+            "interactionId",
             "protocolVersion",
             "scope",
             "conversationId",
@@ -1335,6 +1353,9 @@
               "type": "integer"
             },
             "conversationId": {
+              "type": "string"
+            },
+            "interactionId": {
               "type": "string"
             },
             "messageId": {
@@ -1356,9 +1377,6 @@
               "minimum": 0,
               "type": "integer"
             },
-            "toolCallId": {
-              "type": "string"
-            },
             "type": {
               "const": "user_prompt_resolved",
               "type": "string"
@@ -1366,7 +1384,7 @@
           },
           "required": [
             "type",
-            "toolCallId",
+            "interactionId",
             "protocolVersion",
             "scope",
             "conversationId",
@@ -1386,6 +1404,9 @@
               "type": "integer"
             },
             "conversationId": {
+              "type": "string"
+            },
+            "interactionId": {
               "type": "string"
             },
             "messageId": {
@@ -1427,6 +1448,7 @@
           },
           "required": [
             "type",
+            "interactionId",
             "toolCallId",
             "name",
             "source",
@@ -2159,6 +2181,12 @@
               "maximum": 255,
               "minimum": 0,
               "type": "integer"
+            },
+            "externalSessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "generation": {
               "format": "uint64",

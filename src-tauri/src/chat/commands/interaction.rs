@@ -205,7 +205,7 @@ async fn pause_goal_after_cancel(app: &AppHandle, conversation_id: &str) -> Resu
 pub(crate) fn chat_confirm_tool_call(
     app: AppHandle,
     state: State<AppState>,
-    tool_call_id: String,
+    interaction_id: String,
     approved: bool,
     always: Option<bool>,
     // 计划批准（`ExitPlanMode`）三选一里用户选的那一档，决定批准后把 CLI 切到哪个权限
@@ -213,7 +213,7 @@ pub(crate) fn chat_confirm_tool_call(
     permission_mode: Option<String>,
 ) -> Result<(), String> {
     if state.chat_interactions().respond_tool_approval(
-        &tool_call_id,
+        &interaction_id,
         crate::chat::interaction_state::ToolApprovalOutcome {
             approved,
             permission_mode: permission_mode
@@ -223,7 +223,7 @@ pub(crate) fn chat_confirm_tool_call(
         },
         always.unwrap_or(false),
     ) {
-        crate::chat::protocol::withdraw_tool_approval(&app, &tool_call_id);
+        crate::chat::protocol::withdraw_tool_approval(&app, &interaction_id);
         return Ok(());
     }
     Err("这条审批已经失效".to_string())
@@ -292,8 +292,8 @@ pub(crate) fn chat_list_background_tasks(
     {
         for t in state
             .external_background_tasks()
-            .snapshot_reconciled(wanted, |id| {
-                state.external_live_sessions().control_any(id).is_some()
+            .snapshot_reconciled(wanted, |id, owner| {
+                state.external_live_sessions().is_identity_current(id, owner)
             })
         {
             let value = serde_json::json!({
@@ -343,19 +343,23 @@ pub(crate) async fn chat_stop_external_background_task(
     conversation_id: String,
     task_id: String,
 ) -> Result<(), String> {
-    if let Some(control) = state.external_live_sessions().control_any(&conversation_id) {
-        let _ = control
-            .send(
-                crate::external_agents::session::live::SessionCommand::StopTask {
-                    task_id: task_id.clone(),
-                },
-            )
-            .await;
+    let tasks = state.external_background_tasks();
+    let Some(target) = tasks.lookup_stop(&conversation_id, &task_id) else {
+        return Ok(());
+    };
+    if target.status != "running" {
+        return Ok(());
     }
-    // 会话已没了 ⇒ 任务随进程消失，同样落到 stopped。
-    state
-        .external_background_tasks()
-        .upsert_external_background_task(&conversation_id, &task_id, "stopped", None, None, None);
+    if state.external_live_sessions().is_identity_current(&conversation_id, &target.owner) {
+        if let Some(control) = target.owner.sender() {
+            let _ = control.send(
+                crate::external_agents::session::live::SessionCommand::StopTask {
+                    task_id: target.native_task_id,
+                },
+            ).await;
+        }
+    }
+    tasks.mark_stopped(&conversation_id, &task_id);
     Ok(())
 }
 
@@ -392,7 +396,7 @@ pub(crate) fn chat_respond_session_consent(
 pub(crate) fn chat_submit_user_choice(
     app: AppHandle,
     state: State<AppState>,
-    tool_call_id: String,
+    interaction_id: String,
     answers: HashMap<String, crate::chat::ask_user::AskUserAnswer>,
     skipped: bool,
 ) -> Result<(), String> {
@@ -406,8 +410,8 @@ pub(crate) fn chat_submit_user_choice(
     };
     let run_id = state
         .chat_interactions()
-        .respond_user_prompt(&tool_call_id, response)?;
-    crate::chat::protocol::resolve_user_prompt(&app, &run_id, &tool_call_id);
+        .respond_user_prompt(&interaction_id, response)?;
+    crate::chat::protocol::resolve_user_prompt(&app, &run_id, &interaction_id);
     Ok(())
 }
 
@@ -683,8 +687,9 @@ pub(crate) async fn request_tool_approval(
     run_id: &str,
     generation: u64,
     record: &ToolCallRecord,
+    interaction_id: &str,
 ) -> bool {
-    request_tool_approval_outcome(app, state, conversation_id, run_id, generation, record)
+    request_tool_approval_outcome(app, state, conversation_id, run_id, generation, record, interaction_id)
         .await
         .approved
 }
@@ -697,6 +702,7 @@ pub(crate) async fn request_tool_approval_outcome(
     run_id: &str,
     generation: u64,
     record: &ToolCallRecord,
+    interaction_id: &str,
 ) -> crate::chat::interaction_state::ToolApprovalOutcome {
     // 用户此前对该工具按过「总是允许」→ 本对话内直接放行，不弹卡、不占挂起表。
     // 内置 agent 与外部 CLI 都走这个函数，所以一处判断两条路同时生效。
@@ -713,12 +719,13 @@ pub(crate) async fn request_tool_approval_outcome(
     let rx =
         state
             .chat_interactions()
-            .begin_tool_approval(&record.id, conversation_id, &record.name);
+            .begin_tool_approval(interaction_id, conversation_id, &record.name);
     let summary = format_tool_approval_summary(record);
     crate::chat::protocol::emit_run_event(
         app,
         run_id,
         crate::chat::protocol::ChatRunEvent::ToolApprovalRequested {
+            interaction_id: interaction_id.to_string(),
             tool_call_id: record.id.clone(),
             name: record.name.clone(),
             source: record.source.clone(),
@@ -733,24 +740,24 @@ pub(crate) async fn request_tool_approval_outcome(
     let result = tokio::select! {
         result = rx => result,
         _ = wait_for_chat_cancel(state, conversation_id, generation) => {
-            state.chat_interactions().cancel_tool_approval(&record.id);
-            withdraw_tool_confirm(app, &record.id);
+            state.chat_interactions().cancel_tool_approval(interaction_id);
+            withdraw_tool_confirm(app, interaction_id);
             return crate::chat::interaction_state::ToolApprovalOutcome::default();
         }
     };
     match result {
         Ok(value) => value,
         Err(_) => {
-            state.chat_interactions().cancel_tool_approval(&record.id);
-            withdraw_tool_confirm(app, &record.id);
+            state.chat_interactions().cancel_tool_approval(interaction_id);
+            withdraw_tool_confirm(app, interaction_id);
             crate::chat::interaction_state::ToolApprovalOutcome::default()
         }
     }
 }
 
 /// 通知前端撤掉某条审批卡（已超时 / 已取消 / 询问方已经不在了，答复不再有意义）。
-pub(crate) fn withdraw_tool_confirm(app: &AppHandle, tool_call_id: &str) {
-    crate::chat::protocol::withdraw_tool_approval(app, tool_call_id);
+pub(crate) fn withdraw_tool_confirm(app: &AppHandle, interaction_id: &str) {
+    crate::chat::protocol::withdraw_tool_approval(app, interaction_id);
 }
 
 pub(crate) async fn request_user_response(
@@ -760,11 +767,12 @@ pub(crate) async fn request_user_response(
     run_id: &str,
     generation: u64,
     record: &ToolCallRecord,
+    interaction_id: &str,
     prompt: crate::chat::ask_user::AskUserPromptPayload,
 ) -> crate::chat::ask_user::AskUserResponseResult {
     let rx = state
         .chat_interactions()
-        .begin_user_prompt(&record.id, run_id, prompt.clone());
+        .begin_user_prompt(interaction_id, run_id, prompt.clone());
 
     let empty_answers = HashMap::new();
     let structured_content = crate::chat::ask_user::structured_content(
@@ -776,6 +784,7 @@ pub(crate) async fn request_user_response(
         app,
         run_id,
         crate::chat::protocol::ChatRunEvent::UserPromptRequested {
+            interaction_id: interaction_id.to_string(),
             tool_call_id: record.id.clone(),
             name: record.name.clone(),
             source: record.source.clone(),
@@ -787,23 +796,23 @@ pub(crate) async fn request_user_response(
     let result = tokio::select! {
         result = timeout(Duration::from_secs(600), rx) => result,
         _ = wait_for_chat_cancel(state, conversation_id, generation) => {
-            state.chat_interactions().cancel_user_prompt(&record.id);
-            crate::chat::protocol::resolve_user_prompt(app, run_id, &record.id);
+            state.chat_interactions().cancel_user_prompt(interaction_id);
+            crate::chat::protocol::resolve_user_prompt(app, run_id, interaction_id);
             return crate::chat::ask_user::cancelled_response();
         }
     };
     let response = match result {
         Ok(Ok(response)) => response,
         Ok(Err(_)) => {
-            state.chat_interactions().cancel_user_prompt(&record.id);
+            state.chat_interactions().cancel_user_prompt(interaction_id);
             crate::chat::ask_user::cancelled_response()
         }
         Err(_) => {
-            state.chat_interactions().cancel_user_prompt(&record.id);
+            state.chat_interactions().cancel_user_prompt(interaction_id);
             crate::chat::ask_user::timeout_response()
         }
     };
-    crate::chat::protocol::resolve_user_prompt(app, run_id, &record.id);
+    crate::chat::protocol::resolve_user_prompt(app, run_id, interaction_id);
     response
 }
 

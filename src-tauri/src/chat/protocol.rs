@@ -778,6 +778,9 @@ pub enum ChatRunEvent {
     },
     SubagentUpdated {
         parent_tool_call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        external_session_id: Option<String>,
         task_id: String,
         name: String,
         model: Option<String>,
@@ -811,6 +814,7 @@ pub enum ChatRunEvent {
     },
     SessionConsentRequested,
     ToolApprovalRequested {
+        interaction_id: String,
         tool_call_id: String,
         name: String,
         source: String,
@@ -820,12 +824,13 @@ pub enum ChatRunEvent {
         sensitivity: String,
     },
     ToolApprovalWithdrawn {
-        tool_call_id: String,
+        interaction_id: String,
     },
     UserPromptResolved {
-        tool_call_id: String,
+        interaction_id: String,
     },
     UserPromptRequested {
+        interaction_id: String,
         tool_call_id: String,
         name: String,
         source: String,
@@ -1189,6 +1194,9 @@ pub enum ChatRunStatus {
 pub enum ChatSubagentSnapshot {
     SubagentUpdated {
         parent_tool_call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        external_session_id: Option<String>,
         task_id: String,
         name: String,
         model: Option<String>,
@@ -1233,6 +1241,7 @@ pub enum ChatCompactionSnapshot {
 pub enum ChatPendingInteractionSnapshot {
     SessionConsentRequested,
     ToolApprovalRequested {
+        interaction_id: String,
         tool_call_id: String,
         name: String,
         source: String,
@@ -1242,6 +1251,7 @@ pub enum ChatPendingInteractionSnapshot {
         sensitivity: String,
     },
     UserPromptRequested {
+        interaction_id: String,
         tool_call_id: String,
         name: String,
         source: String,
@@ -1683,7 +1693,7 @@ impl ChatProtocolHub {
         }
     }
 
-    fn withdraw_tool_approval(&mut self, tool_call_id: &str) -> Option<ChatRunEventEnvelope> {
+    fn withdraw_tool_approval(&mut self, interaction_id: &str) -> Option<ChatRunEventEnvelope> {
         let run_id = self.runs.iter().find_map(|(run_id, run)| {
             run.snapshot
                 .pending_interactions
@@ -1692,9 +1702,9 @@ impl ChatProtocolHub {
                     matches!(
                         event,
                         ChatPendingInteractionSnapshot::ToolApprovalRequested {
-                            tool_call_id: pending_id,
+                            interaction_id: pending_id,
                             ..
-                        } if pending_id == tool_call_id
+                        } if pending_id == interaction_id
                     )
                 })
                 .then(|| run_id.clone())
@@ -1702,7 +1712,7 @@ impl ChatProtocolHub {
         self.push(
             &run_id,
             ChatRunEvent::ToolApprovalWithdrawn {
-                tool_call_id: tool_call_id.to_string(),
+                interaction_id: interaction_id.to_string(),
             },
         )
         .ok()
@@ -1723,7 +1733,7 @@ impl ChatProtocolHub {
     fn resolve_user_prompt(
         &mut self,
         run_id: &str,
-        tool_call_id: &str,
+        interaction_id: &str,
     ) -> Option<ChatRunEventEnvelope> {
         let pending = self
             .runs
@@ -1733,8 +1743,8 @@ impl ChatProtocolHub {
             .iter()
             .any(|pending| {
                 matches!(pending, ChatPendingInteractionSnapshot::UserPromptRequested {
-                tool_call_id: pending_id, ..
-            } if pending_id == tool_call_id)
+                interaction_id: pending_id, ..
+            } if pending_id == interaction_id)
             });
         if !pending {
             return None;
@@ -1742,7 +1752,7 @@ impl ChatProtocolHub {
         self.push(
             run_id,
             ChatRunEvent::UserPromptResolved {
-                tool_call_id: tool_call_id.to_string(),
+                interaction_id: interaction_id.to_string(),
             },
         )
         .ok()
@@ -1813,22 +1823,10 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
             } else {
                 snapshot.tools.push(tool.clone());
             }
-            snapshot
-                .pending_interactions
-                .retain(|pending| match pending {
-                    ChatPendingInteractionSnapshot::UserPromptRequested {
-                        tool_call_id, ..
-                    } => tool_call_id != &tool.id,
-                    // 会话级授权不带 tool_call_id，无法按工具匹配，所以这里一条都不能清：
-                    // 一轮最多 12 个并行工具，B 完成时 A 可能还在等授权，无条件清会把 A 的
-                    // 授权卡从快照里抹掉（live 流没事，但重开窗口/sync 恢复出来就没卡可答，
-                    // A 干等 60s 超时按拒绝处理）。清理统一交给 resolve_session_consent，
-                    // request_session_consent 的三条出口（应答/取消/超时）都会调它。
-                    _ => true,
-                });
         }
         ChatRunEvent::SubagentUpdated {
             parent_tool_call_id,
+            external_session_id,
             task_id,
             name,
             model,
@@ -1842,6 +1840,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
         } => {
             let update = ChatSubagentSnapshot::SubagentUpdated {
                 parent_tool_call_id: parent_tool_call_id.clone(),
+                external_session_id: external_session_id.clone(),
                 task_id: task_id.clone(),
                 name: name.clone(),
                 model: model.clone(),
@@ -1893,6 +1892,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
             .pending_interactions
             .push(ChatPendingInteractionSnapshot::SessionConsentRequested),
         ChatRunEvent::ToolApprovalRequested {
+            interaction_id,
             tool_call_id,
             name,
             source,
@@ -1903,6 +1903,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
         } => {
             snapshot.pending_interactions.push(
                 ChatPendingInteractionSnapshot::ToolApprovalRequested {
+                    interaction_id: interaction_id.clone(),
                     tool_call_id: tool_call_id.clone(),
                     name: name.clone(),
                     source: source.clone(),
@@ -1914,6 +1915,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
             );
         }
         ChatRunEvent::UserPromptRequested {
+            interaction_id,
             tool_call_id,
             name,
             source,
@@ -1922,6 +1924,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
         } => {
             snapshot.pending_interactions.push(
                 ChatPendingInteractionSnapshot::UserPromptRequested {
+                    interaction_id: interaction_id.clone(),
                     tool_call_id: tool_call_id.clone(),
                     name: name.clone(),
                     source: source.clone(),
@@ -1930,20 +1933,20 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 },
             );
         }
-        ChatRunEvent::UserPromptResolved { tool_call_id } => {
+        ChatRunEvent::UserPromptResolved { interaction_id } => {
             snapshot.pending_interactions.retain(|pending| !matches!(pending,
-                ChatPendingInteractionSnapshot::UserPromptRequested { tool_call_id: pending_id, .. }
-                if pending_id == tool_call_id
+                ChatPendingInteractionSnapshot::UserPromptRequested { interaction_id: pending_id, .. }
+                if pending_id == interaction_id
             ));
         }
-        ChatRunEvent::ToolApprovalWithdrawn { tool_call_id } => {
+        ChatRunEvent::ToolApprovalWithdrawn { interaction_id } => {
             snapshot
                 .pending_interactions
                 .retain(|pending| match pending {
                     ChatPendingInteractionSnapshot::ToolApprovalRequested {
-                        tool_call_id: pending_id,
+                        interaction_id: pending_id,
                         ..
-                    } => pending_id != tool_call_id,
+                    } => pending_id != interaction_id,
                     _ => true,
                 });
         }
@@ -2456,6 +2459,7 @@ pub(crate) async fn record_subagent_started(
     tool_call_id: &str,
 ) {
     let event = ChatRunEvent::SubagentUpdated {
+        external_session_id: None,
         parent_tool_call_id: tool_call_id.into(), task_id: record.id.clone(), name: record.display_name.clone(),
         generation: Some(record.generation), child_run_id: record.run_id.clone(), depth: record.depth,
         model: None, progress: None, status: "running".into(), preview: None, steps: Vec::new(),
@@ -2490,7 +2494,7 @@ pub(crate) async fn emit_run_event_or_live_durable_at(
     placement: Option<SubagentActivityPlacement>,
 ) -> Result<(), String> {
     let progress = if let ChatRunEvent::SubagentUpdated {
-        parent_tool_call_id, task_id, name, model, generation, child_run_id, progress: detail, depth, status, preview, steps,
+        parent_tool_call_id, task_id, name, model, generation, child_run_id, progress: detail, depth, status, preview, steps, ..
     } = &event {
         let state = app.state::<AppState>();
         match state.sub_agents.registry.get(conversation_id, task_id) {
@@ -2673,12 +2677,12 @@ impl Drop for RegisteredRunGuard {
     }
 }
 
-pub fn withdraw_tool_approval(app: &AppHandle, tool_call_id: &str) {
+pub fn withdraw_tool_approval(app: &AppHandle, interaction_id: &str) {
     let state = app.state::<AppState>();
     let event = state
         .chat_protocol()
         .hub()
-        .withdraw_tool_approval(tool_call_id);
+        .withdraw_tool_approval(interaction_id);
     if let Some(event) = event {
         emit_protocol(app, ChatProtocolEvent::Run(event));
     }
@@ -2692,16 +2696,16 @@ pub fn resolve_session_consent(app: &AppHandle, run_id: &str) {
     crate::desktop_pet::resolve_interaction(app, run_id, None);
 }
 
-pub fn resolve_user_prompt(app: &AppHandle, run_id: &str, tool_call_id: &str) {
+pub fn resolve_user_prompt(app: &AppHandle, run_id: &str, interaction_id: &str) {
     let event = app
         .state::<AppState>()
         .chat_protocol()
         .hub()
-        .resolve_user_prompt(run_id, tool_call_id);
+        .resolve_user_prompt(run_id, interaction_id);
     if let Some(event) = event {
         emit_protocol(app, ChatProtocolEvent::Run(event));
     }
-    crate::desktop_pet::resolve_interaction(app, run_id, Some(tool_call_id));
+    crate::desktop_pet::resolve_interaction(app, run_id, Some(interaction_id));
 }
 
 pub fn emit_conversation_event(
@@ -2859,13 +2863,13 @@ mod tests {
             }),
             serde_json::json!({"type": "session_consent_requested"}),
             serde_json::json!({
-                "type": "tool_approval_requested", "toolCallId": "tool", "name": "shell",
+                "type": "tool_approval_requested", "interactionId": "approve-1", "toolCallId": "tool", "name": "shell",
                 "source": "native", "serverId": null, "target": "repo",
                 "argumentsPreview": "cmd", "sensitivity": "sensitive"
             }),
-            serde_json::json!({"type": "tool_approval_withdrawn", "toolCallId": "tool"}),
+            serde_json::json!({"type": "tool_approval_withdrawn", "interactionId": "approve-1"}),
             serde_json::json!({
-                "type": "user_prompt_requested", "toolCallId": "ask", "name": "ask_user",
+                "type": "user_prompt_requested", "interactionId": "ask-1", "toolCallId": "ask", "name": "ask_user",
                 "source": "native", "prompt": {"title": null, "questions": []},
                 "structuredContent": null
             }),
@@ -3589,31 +3593,35 @@ mod tests {
         hub.register("conv", "run", "message", 0).unwrap();
         hub.push("run", ChatRunEvent::SessionConsentRequested)
             .unwrap();
-        hub.push(
-            "run",
-            ChatRunEvent::UserPromptRequested {
-                tool_call_id: "ask-1".to_string(),
-                name: "ask_user".to_string(),
-                source: "native".to_string(),
-                prompt: ChatAskUserPromptPayload {
-                    title: None,
-                    questions: Vec::new(),
+        for id in ["interaction-1", "interaction-2"] {
+            hub.push(
+                "run",
+                ChatRunEvent::UserPromptRequested {
+                    interaction_id: id.into(),
+                    tool_call_id: "same-tool".into(),
+                    name: "ask_user".into(),
+                    source: "native".into(),
+                    prompt: ChatAskUserPromptPayload {
+                        title: None,
+                        questions: Vec::new(),
+                    },
+                    structured_content: None,
                 },
-                structured_content: None,
-            },
-        )
-        .unwrap();
+            )
+            .unwrap();
+        }
 
         hub.resolve_session_consent("run");
         let resolved = hub
-            .resolve_user_prompt("run", "ask-1")
+            .resolve_user_prompt("run", "interaction-1")
             .expect("resolution must reach live clients");
         assert!(matches!(
             resolved.event,
             ChatRunEvent::UserPromptResolved { .. }
         ));
-        assert!(hub.resolve_user_prompt("run", "ask-1").is_none());
-
+        assert!(hub.resolve_user_prompt("run", "interaction-1").is_none());
+        assert_eq!(hub.runs["run"].snapshot.pending_interactions.len(), 1);
+        assert!(hub.resolve_user_prompt("run", "interaction-2").is_some());
         assert!(hub.runs["run"].snapshot.pending_interactions.is_empty());
     }
 
