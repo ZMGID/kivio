@@ -329,9 +329,7 @@ impl DshJsonRpcSession {
             .stderr(std::process::Stdio::piped())
             .no_console_window()
             .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(&mut command)
             .map_err(|e| format!("spawn dsh: {e}"))?;
         let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
         let mut stdin = match child.stdin.take() {
@@ -927,6 +925,7 @@ impl DshJsonRpcSession {
 
     /// 轮间空闲读一步：只读 + 分类，不写。写回（fail-closed 的 ask 回复）交给 actor。
     async fn read_idle_frame(&mut self) -> DshIdlePump {
+        if matches!(self.child.try_wait(), Ok(Some(_))) { return DshIdlePump::Dead; }
         let line = match self.next_line().await {
             ReadStep::Line(line) => line,
             ReadStep::Idle => return DshIdlePump::Quiet,
@@ -1008,7 +1007,7 @@ impl DshJsonRpcSession {
 }
 
 /// actor 与其他常驻协议同契约：所有 event 先入队，`done` 最后发。
-pub fn spawn_dsh_session_actor(session: DshJsonRpcSession) -> mpsc::Sender<SessionCommand> {
+pub fn spawn_dsh_session_actor(session: DshJsonRpcSession) -> crate::external_agents::session::live::SessionControl {
     spawn_dsh_session_actor_with_sink(session, None, None)
 }
 
@@ -1021,14 +1020,14 @@ pub fn spawn_dsh_session_actor_with_sink(
     mut session: DshJsonRpcSession,
     sink: Option<DshIdleSink>,
     mut idle_approvals: Option<ApprovalBridge>,
-) -> mpsc::Sender<SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     enum ActorStep {
         Cmd(Option<SessionCommand>),
         Idle(DshIdlePump),
         IdleDecision(Option<ApprovalDecision>),
     }
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
-    tokio::spawn(async move {
+    crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         let mut idle_dead = false;
         let mut idle_hiccups = 0u32;
         let mut idle_pending_asks: HashMap<String, Value> = HashMap::new();
@@ -1078,14 +1077,8 @@ pub fn spawn_dsh_session_actor_with_sink(
                             }
                         }
                         DshIdlePump::Dead => {
-                            idle_dead = true;
-                            reject_pending_asks(
-                                &mut session.stdin,
-                                &mut idle_pending_asks,
-                                "ASK_ABORTED",
-                                "ask_user_question was aborted before the user answered",
-                            )
-                            .await;
+                            session.close().await;
+                            return;
                         }
                         DshIdlePump::Reply(line) => {
                             idle_hiccups = 0;
@@ -1133,6 +1126,7 @@ pub fn spawn_dsh_session_actor_with_sink(
             };
             match command {
                 SessionCommand::RunTurn {
+                    cancelled,
                     prompt,
                     model,
                     reasoning: _,
@@ -1142,6 +1136,7 @@ pub fn spawn_dsh_session_actor_with_sink(
                     mut approvals,
                     extra_writable_roots: _,
                 } => {
+                    if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
                     let result = session
                         .run_turn(
                             &prompt,
@@ -1175,8 +1170,7 @@ pub fn spawn_dsh_session_actor_with_sink(
                 }
             }
         }
-    });
-    tx
+    })
 }
 
 const SESSION_ASK_METHOD: &str = "session/ask";
@@ -4018,7 +4012,7 @@ mod tests {
     #[ignore = "requires installed dsh; no model turn or account quota"]
     async fn live_dsh_profile_handshake_without_model_turn() {
         let bin = crate::external_agents::spawn::resolve_binary(
-            &crate::external_agents::defs::dsh::DSH_AGENT_DEF,
+            &crate::external_agents::providers::dsh::DSH_AGENT_DEF,
         )
         .await
         .expect("dsh binary");

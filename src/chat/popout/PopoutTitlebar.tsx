@@ -6,11 +6,12 @@ import { ExternalModelSelector, RuntimePicker } from '../RuntimePicker'
 import { ThinkingLevelSelector } from '../ThinkingLevelSelector'
 import { conversationTitleSource, displayConversationTitle } from '../conversationTitle'
 import { chatTitlebarMacInsetClass, chatTitlebarRowClass, usesNativeTitlebar } from '../platform'
-import type { AgentRuntimeConfig, Conversation, ThinkingLevel } from '../types'
+import type { AgentRuntimeConfig, Conversation, DetectedExternalAgent, ThinkingLevel } from '../types'
 
 type PopoutTitlebarProps = {
   conversation: Conversation | null
   runtime: AgentRuntimeConfig
+  externalAgent?: DetectedExternalAgent
   usesExternalRuntime: boolean
   approvalPolicy: string
   onRuntimeChange: (runtime: AgentRuntimeConfig) => void | Promise<void>
@@ -25,6 +26,7 @@ type PopoutTitlebarProps = {
 function TitlebarPills({
   conversation,
   runtime,
+  externalAgent,
   usesExternalRuntime,
   approvalPolicy,
   onRuntimeChange,
@@ -93,7 +95,7 @@ function TitlebarPills({
         </div>
         {usesExternalRuntime && (
           <div className="shrink-0" data-tauri-drag-region="false">
-            <ExternalCliAccount agentId={runtime.externalAgentId ?? ''} conversationId={conversation?.id} />
+            <ExternalCliAccount agent={externalAgent} conversationId={conversation?.id} />
           </div>
         )}
       </div>

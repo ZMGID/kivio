@@ -168,8 +168,8 @@ pub async fn probe_claude_init(
     };
     // 探测是一次性子进程，只为读 `system/init`。不加 `--no-session-persistence` 的话
     // claude 会把它记成一个真实会话，用户的会话列表里就多一个只含 `"."` 的空壳
-    // （真机核实见 `defs::claude::ephemeral_probe_args` 的注释）。
-    let args = crate::external_agents::defs::claude::ephemeral_probe_args(&(def.build_args)(
+    // （真机核实见 `providers::claude::ephemeral_probe_args` 的注释）。
+    let args = crate::external_agents::providers::claude::ephemeral_probe_args(&(def.build_args)(
         &runtime_ctx,
         &build_options,
         None,
@@ -580,7 +580,7 @@ pub fn parse_claude_init_info(value: &Value) -> Option<ClaudeInitInfo> {
 }
 
 async fn read_claude_init_value(
-    child: &mut tokio::process::Child,
+    child: &mut crate::external_agents::spawn::AgentChild,
     timeout: Duration,
 ) -> Option<Value> {
     let stdout = child.stdout.as_mut()?;
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn builtin_catalog_matches_supported_claude_tiers() {
         assert_eq!(
-            &crate::external_agents::defs::claude::CLAUDE_AGENT_DEF.fallback_models[1..],
+            &crate::external_agents::providers::claude::CLAUDE_AGENT_DEF.fallback_models[1..],
             CLAUDE_BUILTIN_TIERS,
             "fallback and configured model catalogs must stay aligned",
         );
@@ -1085,7 +1085,7 @@ mod live_probe_hygiene_tests {
             None,
         );
         let args = if ephemeral {
-            crate::external_agents::defs::claude::ephemeral_probe_args(&base)
+            crate::external_agents::providers::claude::ephemeral_probe_args(&base)
         } else {
             base
         };
@@ -1170,7 +1170,7 @@ mod live_probe_hygiene_tests {
         use tokio::io::AsyncBufReadExt;
 
         let def = get_agent_def("claude").expect("claude def");
-        let args = crate::external_agents::defs::claude::ephemeral_probe_args(&(def.build_args)(
+        let args = crate::external_agents::providers::claude::ephemeral_probe_args(&(def.build_args)(
             &RuntimeContext {
                 extra_allowed_dirs: Vec::new(),
                 resume_session_id: None,

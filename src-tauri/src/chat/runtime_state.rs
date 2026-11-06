@@ -32,7 +32,7 @@ pub(crate) struct ChatRuntimeState {
 
 #[derive(Default)]
 struct ChatRunIndexes {
-    active_generations: HashMap<String, HashSet<u64>>,
+    active_generations: HashMap<String, HashMap<u64, tokio_util::sync::CancellationToken>>,
     active_replies: HashMap<String, HashSet<String>>,
     send_reservations: HashMap<String, (String, bool)>,
     pending_steering: HashMap<String, Vec<SteeringMessage>>,
@@ -87,7 +87,7 @@ impl ChatRuntimeState {
             .active_generations
             .entry(conversation_id.to_string())
             .or_default()
-            .insert(generation);
+            .insert(generation, tokio_util::sync::CancellationToken::new());
         generation
     }
 
@@ -98,7 +98,8 @@ impl ChatRuntimeState {
             return None;
         }
         let generation = self.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
-        indexes.active_generations.entry(conversation_id.to_string()).or_default().insert(generation);
+        indexes.active_generations.entry(conversation_id.to_string()).or_default()
+            .insert(generation, tokio_util::sync::CancellationToken::new());
         Some(generation)
     }
 
@@ -107,10 +108,35 @@ impl ChatRuntimeState {
         if let Some((_, cancelled)) = indexes.send_reservations.get_mut(conversation_id) {
             *cancelled = true;
         }
-        indexes.active_generations.remove(conversation_id);
+        cancel_generations(&mut indexes, conversation_id);
         indexes.pending_steering.remove(conversation_id);
         indexes.pending_follow_up.remove(conversation_id);
         self.generation_retired.notify_waiters();
+    }
+
+    pub(crate) fn while_generation_active<T>(
+        &self,
+        conversation_id: &str,
+        generation: u64,
+        operation: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let indexes = self.indexes();
+        if !indexes
+            .active_generations
+            .get(conversation_id)
+            .is_some_and(|active| active.contains_key(&generation))
+        {
+            return None;
+        }
+        Some(operation())
+    }
+
+    pub(crate) fn generation_cancellation(
+        &self,
+        conversation_id: &str,
+        generation: u64,
+    ) -> Option<tokio_util::sync::CancellationToken> {
+        self.indexes().active_generations.get(conversation_id)?.get(&generation).cloned()
     }
 
     pub(crate) fn end_generation(&self, conversation_id: &str, generation: u64) {
@@ -143,7 +169,7 @@ impl ChatRuntimeState {
         self.indexes()
             .active_generations
             .get(conversation_id)
-            .is_some_and(|active| active.contains(&generation))
+            .is_some_and(|active| active.contains_key(&generation))
     }
 
     pub(crate) fn has_active_generation(&self, conversation_id: &str) -> bool {
@@ -258,7 +284,7 @@ impl ChatRuntimeState {
         self.resources.forget(conversation_id);
         {
             let mut indexes = self.indexes();
-            indexes.active_generations.remove(conversation_id);
+            cancel_generations(&mut indexes, conversation_id);
             indexes.active_replies.remove(conversation_id);
             indexes.send_reservations.remove(conversation_id);
             indexes.pending_steering.remove(conversation_id);
@@ -523,9 +549,19 @@ fn has_active_generation(indexes: &ChatRunIndexes, conversation_id: &str) -> boo
         .is_some_and(|active| !active.is_empty())
 }
 
+fn cancel_generations(indexes: &mut ChatRunIndexes, conversation_id: &str) {
+    if let Some(active) = indexes.active_generations.remove(conversation_id) {
+        for token in active.into_values() {
+            token.cancel();
+        }
+    }
+}
+
 fn retire_generation(indexes: &mut ChatRunIndexes, conversation_id: &str, generation: u64) {
     if let Some(active) = indexes.active_generations.get_mut(conversation_id) {
-        active.remove(&generation);
+        if let Some(token) = active.remove(&generation) {
+            token.cancel();
+        }
         if active.is_empty() {
             indexes.active_generations.remove(conversation_id);
             indexes.pending_steering.remove(conversation_id);
@@ -556,11 +592,33 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn stopped_generation_cannot_deliver_a_previously_reserved_prompt() {
+        let runtime = ChatRuntimeState::default();
+        let generation = runtime.begin_generation("conversation");
+        let (control, mut peer) = tokio::sync::mpsc::channel(1);
+        let permit = control.reserve().await.unwrap();
+        runtime.cancel_conversation("conversation");
+        assert!(runtime
+            .while_generation_active("conversation", generation, || permit.send("stale prompt"))
+            .is_none());
+        assert!(peer.try_recv().is_err());
+
+        let next = runtime.begin_generation("conversation");
+        let permit = control.reserve().await.unwrap();
+        assert!(runtime
+            .while_generation_active("conversation", next, || permit.send("new prompt"))
+            .is_some());
+        assert_eq!(peer.recv().await, Some("new prompt"));
+    }
+
+    #[tokio::test]
     async fn generation_waiters_wake_on_every_retirement_and_keep_siblings_active() {
         for retirement in ["end", "finish", "cancel", "forget"] {
             let runtime = ChatRuntimeState::default();
             let generation = runtime.begin_generation("a");
             let other = runtime.begin_generation("b");
+            let actor_cancellation = runtime.generation_cancellation("a", generation).unwrap();
+            let sibling_cancellation = runtime.generation_cancellation("b", other).unwrap();
             let done = runtime.wait_for_generation_inactive("a", generation);
             let sibling = runtime.wait_for_generation_inactive("b", other);
             tokio::pin!(done, sibling);
@@ -573,6 +631,8 @@ mod tests {
                 "forget" => runtime.forget_conversation("a"),
                 _ => unreachable!(),
             }
+            assert!(actor_cancellation.is_cancelled(), "{retirement}");
+            assert!(!sibling_cancellation.is_cancelled(), "{retirement}");
             assert!(futures::poll!(done.as_mut()).is_ready(), "{retirement}");
             assert!(
                 futures::poll!(sibling.as_mut()).is_pending(),

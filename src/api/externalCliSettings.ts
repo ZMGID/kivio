@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { ProviderCapabilities } from '../generated/chatProtocol'
 import { isTauriRuntime } from './tauri'
 
 export interface NativeProviderSummary {
@@ -25,10 +26,7 @@ export interface DetectedExternalAgent {
   authStatus?: string | null
   auth_status?: string | null
   disabled?: boolean
-  supportsSteering?: boolean
-  supports_steering?: boolean
-  supportsFollowUp?: boolean
-  supports_follow_up?: boolean
+  capabilities: ProviderCapabilities
 }
 
 /** `chat_external_cli_scan_cc_switch` response; secret keys are never returned. */
@@ -205,7 +203,21 @@ export const externalCliSettingsApi = {
   },
   async detectExternalAgents(forceRefresh = false, conversationId?: string | null): Promise<DetectedExternalAgent[]> {
     if (!isTauriRuntime()) {
-      return [{ id: 'claude', name: 'Claude Code', available: false, models: [{ id: 'default', label: 'Default' }] }]
+      return [{
+        id: 'claude',
+        name: 'Claude Code',
+        available: false,
+        models: [{ id: 'default', label: 'Default' }],
+        capabilities: {
+          steering: 'unavailable',
+          followUp: 'unavailable',
+          imageInput: 'unavailable',
+          rewind: 'unavailable',
+          conversationBranch: 'unavailable',
+          importHistory: 'unavailable',
+          account: 'unavailable',
+        },
+      }]
     }
     const result = await invoke<{ success: boolean; agents: DetectedExternalAgent[] }>(
       'chat_detect_external_agents',

@@ -831,9 +831,7 @@ async fn dump_kivio_config() -> Result<String, String> {
     if let Some(dir) = profile_dir() {
         command.current_dir(dir);
     }
-    let child = command
-        .spawn()
-        .map(crate::external_agents::spawn::AgentChild::from)
+    let child = crate::external_agents::spawn::AgentChild::spawn(&mut command)
         .map_err(|err| format!("启动 dsh --dump-config 失败：{err}"))?;
     let output = timeout(DUMP_TIMEOUT, child.wait_with_output())
         .await

@@ -260,15 +260,6 @@ pub fn is_non_retryable_error(raw: &str, agent_id: &str) -> bool {
         || hay.contains("toomanydenials")
 }
 
-/// `thread/resume` 的目标 thread 在 Codex 那边已经不存在。
-pub fn is_missing_codex_thread_error(raw: &str) -> bool {
-    let hay = raw.to_ascii_lowercase();
-    hay.contains("thread not found")
-        || hay.contains("unknown thread")
-        || hay.contains("no such thread")
-        || hay.contains("thread does not exist")
-}
-
 /// `thread/resume` 撞上已归档的 rollout（Codex 桌面版 / `codex archive`）：
 /// 0.164 原文 `session <id> is archived. Run \`codex unarchive <id>\``。可以先 `thread/unarchive` 再续。
 pub fn is_archived_codex_thread_error(raw: &str) -> bool {
@@ -279,6 +270,14 @@ pub fn is_archived_codex_thread_error(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn archived_codex_thread_is_recognized() {
+        assert!(is_archived_codex_thread_error(
+            "session 019a-thr is archived. Run `codex unarchive 019a-thr`"
+        ));
+        assert!(!is_archived_codex_thread_error("thread not found: thr_abc"));
+    }
 
     #[test]
     fn antigravity_failures_distinguish_transport_expired_auth_and_quota() {
@@ -508,19 +507,4 @@ mod tests {
             .contains("Flex"));
     }
 
-    #[test]
-    fn missing_codex_thread_is_recognized() {
-        assert!(is_missing_codex_thread_error("thread not found: thr_abc"));
-        assert!(is_missing_codex_thread_error("Unknown thread"));
-        assert!(!is_missing_codex_thread_error(
-            "codex app-server handshake timeout"
-        ));
-        assert!(!is_missing_codex_thread_error(
-            "codex app-server exited mid-turn"
-        ));
-        assert!(is_archived_codex_thread_error(
-            "session 019a-thr is archived. Run `codex unarchive 019a-thr`"
-        ));
-        assert!(!is_archived_codex_thread_error("thread not found: thr_abc"));
-    }
 }

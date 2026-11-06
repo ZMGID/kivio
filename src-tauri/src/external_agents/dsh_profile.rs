@@ -647,8 +647,7 @@ async fn install_packages(bin: &Path, core_version: &str) -> Result<(), String> 
         .stderr(std::process::Stdio::piped())
         .no_console_window();
 
-    let mut child = command
-        .spawn()
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(&mut command)
         .map_err(|e| format!("无法执行 dsh plugin：{e}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();

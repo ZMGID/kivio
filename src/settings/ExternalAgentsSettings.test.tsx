@@ -4,6 +4,7 @@ import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { externalCliSettingsApi, onExternalCliInstallLog } from '../api/externalCliSettings'
 import { resetCliInstallJobsForTests } from './cliInstallJobs'
 import type { Settings as SettingsData } from '../api/tauri'
+import type { ProviderCapabilities } from '../generated/chatProtocol'
 
 vi.mock('../api/externalCliSettings', () => ({
   externalCliSettingsApi: {
@@ -73,6 +74,16 @@ const mockOfficialKeySave = vi.mocked(externalCliSettingsApi.dshOfficialCredenti
 const mockNativeGet = vi.mocked(externalCliSettingsApi.dshNativeProviderGet)
 const mockNativeDelete = vi.mocked(externalCliSettingsApi.dshNativeProviderDelete)
 
+const capabilities: ProviderCapabilities = {
+  steering: 'unavailable',
+  followUp: 'fallback',
+  imageInput: 'native',
+  rewind: 'fallback',
+  conversationBranch: 'fallback',
+  importHistory: 'unavailable',
+  account: 'unavailable',
+}
+
 function renderPanel(
   chat: Partial<NonNullable<SettingsData['chat']>> = {},
   updateChat = vi.fn(),
@@ -108,6 +119,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'claude',
         name: 'Claude Code',
         available: true,
+        capabilities,
         path: '/usr/local/bin/claude',
         version: '1.0.0',
         models: [{ id: 'default', label: 'Default' }],
@@ -117,6 +129,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'codex',
         name: 'Codex',
         available: false,
+        capabilities,
         models: [],
       },
     ])
@@ -236,6 +249,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         version: '0.1.0-rc.6',
         models: [],
@@ -265,6 +279,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         version: '0.1.0-rc.6',
         models: [],
@@ -297,6 +312,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         version: '0.1.0-rc.7',
         models: [],
@@ -347,6 +363,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         models: [],
         authStatus: 'ok',
@@ -450,6 +467,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'pi',
         name: 'Pi',
         available: true,
+        capabilities,
         path: '/usr/local/bin/pi',
         version: '0.50.2',
         models: [],
@@ -522,6 +540,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         version: '0.1.0-rc.6',
         models: [],
@@ -555,6 +574,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         version: '0.1.0-rc.6',
         models: [],
@@ -622,6 +642,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         version: '0.1.0-rc.6',
         models: [],
@@ -677,6 +698,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         version: '0.1.0-rc.6',
         models: [],
@@ -716,6 +738,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'pi',
         name: 'Pi',
         available: true,
+        capabilities,
         path: '/usr/local/bin/pi',
         version: '0.50.2',
         models: [],
@@ -751,6 +774,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'pi',
         name: 'Pi',
         available: true,
+        capabilities,
         path: '/usr/local/bin/pi',
         version: '0.50.2',
         models: [],
@@ -786,6 +810,7 @@ describe('ExternalAgentsSettings', () => {
         id: 'dsh',
         name: 'DeepSeek Harness',
         available: true,
+        capabilities,
         path: 'C:\\npm\\dsh.cmd',
         version: '0.1.0-rc.6',
         models: [],

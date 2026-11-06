@@ -9,10 +9,11 @@ import { PermissionPicker } from './PermissionPicker'
 import { ExternalCliAccount } from './ExternalCliAccount'
 import { ThinkingLevelSelector } from './ThinkingLevelSelector'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
-import type { AgentRuntimeConfig, ThinkingLevel } from './types'
+import type { AgentRuntimeConfig, DetectedExternalAgent, ThinkingLevel } from './types'
 
 export interface ConversationTitlebarControlsProps {
   activeAgentRuntime: AgentRuntimeConfig
+  externalAgent?: DetectedExternalAgent
   conversationId: string | null
   /** 有消息、或主窗已被弹出占住：锁死 kind / agent。 */
   runtimeLocked: boolean
@@ -40,6 +41,7 @@ export interface ConversationTitlebarControlsProps {
 /** 会话页顶栏控件。非 mac 渲染进全宽标题栏带，mac 仍留在主区 52px 顶栏。 */
 export const ConversationTitlebarControls = memo(function ConversationTitlebarControls({
   activeAgentRuntime,
+  externalAgent,
   conversationId,
   runtimeLocked,
   usesExternalRuntime,
@@ -117,7 +119,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
         )}
         {usesExternalRuntime && (
           <div className="shrink-0" data-tauri-drag-region="false">
-            <ExternalCliAccount agentId={activeAgentRuntime.externalAgentId ?? ''} conversationId={conversationId} />
+            <ExternalCliAccount agent={externalAgent} conversationId={conversationId} />
           </div>
         )}
       </div>

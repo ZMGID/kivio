@@ -16,6 +16,7 @@
 //! 进程（取消杀树、会话隔离），所以 argv 里永远带 `--no-leader`；受管进程还带
 //! `--no-auto-update`，避免运行中替换二进制。
 
+use super::super::types::{AccountProbe, AccountProtocol, CapabilitySupport, RewindStrategy};
 use super::super::types::{
     ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
     SlashStrategy, StreamFormat,
@@ -147,9 +148,14 @@ pub const GROK_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     // Cross-turn resume goes through the ACP live-session registry (session/load;
     // grok advertises loadSession: true), same as the other ACP agents.
     resumes_session_via_cli: false,
-    supports_native_image: true,
-    supports_steering: false,
-    supports_follow_up: false,
+    image_input: CapabilitySupport::Native,
+    steering: CapabilitySupport::Unavailable,
+    follow_up: CapabilitySupport::Fallback,
+    rewind: RewindStrategy::Replay,
+    account: Some(AccountProbe {
+        args: &["--no-auto-update", "agent", "--no-leader", "stdio"],
+        protocol: AccountProtocol::GrokBilling,
+    }),
     image_mime_whitelist: &[],
     build_args: build_grok_args,
 };
@@ -366,6 +372,7 @@ mod tests {
         let (done_tx, done_rx) = oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                cancelled: None,
                 prompt: "Reply with exactly the token GROK_SMOKE_OK and nothing else.".to_string(),
                 model: None,
                 // 必须与 connect 时的 reasoning 一致：grok 的 reasoning 是启动参数，

@@ -3,6 +3,30 @@ export const CHAT_PROTOCOL_VERSION = 1 as const
 
 export type JsonValue = unknown
 
+export type CapabilitySupport = "native" | "fallback" | "unavailable";
+
+export type ProviderCapabilities = { steering: CapabilitySupport,
+/**
+ * Fallback sends a normal next turn from Kivio's queue.
+ */
+followUp: CapabilitySupport,
+/**
+ * Fallback adds the attachment path to the prompt.
+ */
+imageInput: CapabilitySupport,
+/**
+ * A native attempt may fall back to a fresh session with visible history replayed.
+ */
+rewind: CapabilitySupport,
+/**
+ * Fallback copies the visible Kivio snapshot and opens an independent CLI context.
+ */
+conversationBranch: CapabilitySupport,
+/**
+ * Fallback binds the native session without replaying its history.
+ */
+importHistory: CapabilitySupport, account: CapabilitySupport, };
+
 export type AgentStatus = "running" | "idle" | "parked" | "aborted";
 
 export type SubagentView = { id: string, parentId: string, generation: number, displayName: string, agentType: string, status: AgentStatus, depth: number, lastActivity: number, activity: string | null, model: string | null, progress: JsonValue | null, revivable: boolean, reviveError: string | null, };
@@ -41,15 +65,15 @@ export type ChatToolArtifactPayload = { id: string | null, name: string, mimeTyp
 
 export type ChatToolPayload = { id: string, name: string, source: string, serverId: string | null, status: string, argumentsPreview: string, resultPreview: string | null, error: string | null, startedAt: number | null, completedAt: number | null, durationMs: number | null, round: number, sensitive: boolean, artifacts: Array<ChatToolArtifactPayload>, traceId: string | null, spanId: string | null, structuredContent: unknown, };
 
-export type ChatContextUsagePayload = { usedTokens: number, contextWindowTokens: number | null, tokenCountSource: string | null, cacheInputTokens: number | null, cacheReadTokens: number | null, 
+export type ChatContextUsagePayload = { usedTokens: number, contextWindowTokens: number | null, tokenCountSource: string | null, cacheInputTokens: number | null, cacheReadTokens: number | null,
 /**
  * Monotonic per conversation. A lower value must not replace a newer meter.
  */
-measurementSeq: number, 
+measurementSeq: number,
 /**
  * Bumped on model change, compaction, and context clear.
  */
-lifecycleId: number, 
+lifecycleId: number,
 /**
  * Request-bound categories. Null leaves the previous categories; an empty array clears them.
  */
@@ -117,7 +141,7 @@ export type ChatWarningSnapshot = { "type": "hook_failed", hookName: string, eve
 
 export type ChatTerminalSnapshot = { "type": "run_completed", full: string, conversationRevision: number, } | { "type": "run_failed", error: string, full: string, conversationRevision: number, } | { "type": "run_cancelled", full: string, conversationRevision: number, };
 
-export type ChatRunSnapshot = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, conversationId: string, runId: string, messageId: string, lastSeq: number, baseRevision: number, recovery: ChatRunRecoveryMetadata | null, status: ChatRunStatus, content: string, reasoning: string, segments: Array<ChatSegmentPayload>, tools: Array<ChatToolPayload>, contextUsage: ChatContextUsagePayload | null, subagents: Array<ChatSubagentSnapshot>, compaction: ChatCompactionSnapshot | null, todoState: ChatTodoStatePayload | null, planState: ChatPlanStatePayload | null, pendingInteractions: Array<ChatPendingInteractionSnapshot>, warnings: Array<ChatWarningSnapshot>, 
+export type ChatRunSnapshot = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, conversationId: string, runId: string, messageId: string, lastSeq: number, baseRevision: number, recovery: ChatRunRecoveryMetadata | null, status: ChatRunStatus, content: string, reasoning: string, segments: Array<ChatSegmentPayload>, tools: Array<ChatToolPayload>, contextUsage: ChatContextUsagePayload | null, subagents: Array<ChatSubagentSnapshot>, compaction: ChatCompactionSnapshot | null, todoState: ChatTodoStatePayload | null, planState: ChatPlanStatePayload | null, pendingInteractions: Array<ChatPendingInteractionSnapshot>, warnings: Array<ChatWarningSnapshot>,
 /**
  * 流状态行上的瞬态一行字（上游重试等）。见 `ChatRunEvent::StatusNoteUpdated`。
  */

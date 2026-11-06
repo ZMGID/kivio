@@ -530,7 +530,7 @@ fn classify_inbound_frame(value: &Value, can_ask: bool) -> InboundFrame {
         // 工具调用永远不返回 ⇒ 本轮的 `result` 永远不来 ⇒ 轮次读循环永久挂死。
         //
         // **`can_use_tool` 是我们唯一实现的子型**：它只在 argv 带
-        // `--permission-prompt-tool stdio` 时才会到达（见 `defs::claude::claude_permission_prompt_args`；
+        // `--permission-prompt-tool stdio` 时才会到达（见 `providers::claude::claude_permission_prompt_args`；
         // 本机 2.1.220 实测：带这个 flag + `--permission-mode default` 让它写文件 ⇒ 收到
         // `can_use_tool`；不带 flag 的对照组一条都没有，权限被 CLI 直接拒）。
         // 二进制侧同一结论：`ekm(mode)` 里 `if(mode==="stdio") return createCanUseTool(...)`，
@@ -718,16 +718,14 @@ impl ClaudeStreamJsonSession {
         // 否则 Kivio 从某个 CLI 会话里启动时子进程会拒绝启动或报「未登录」。
         let mut command = cli_command(resolved_bin);
         crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
-        let mut child = command
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(command
             .args(args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .no_console_window()
-            .kill_on_drop(true)
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
+            .kill_on_drop(true))
             .map_err(|e| format!("spawn: {e}"))?;
         let stderr_tail = spawn_stderr_tail(child.stderr.take());
 
@@ -758,9 +756,9 @@ impl ClaudeStreamJsonSession {
                 reader: BufReader::new(stdout).lines(),
                 chat_mcp_config: None,
                 handler: create_stream_handler(StreamFormat::ClaudeStreamJson),
-                session_id: crate::external_agents::defs::claude::claude_session_id_from_args(args)
+                session_id: crate::external_agents::providers::claude::claude_session_id_from_args(args)
                     .unwrap_or_default(),
-                active_model: crate::external_agents::defs::claude::claude_model_from_args(args),
+                active_model: crate::external_agents::providers::claude::claude_model_from_args(args),
                 stderr_tail: Some(stderr_tail),
                 stale_frames_left: 0,
                 idle_handler: None,
@@ -920,11 +918,13 @@ impl ClaudeStreamJsonSession {
         events: &mpsc::Sender<UnifiedAgentEvent>,
         control: &mut mpsc::Receiver<SessionCommand>,
         approvals: Option<ApprovalBridge>,
+        turn_cancelled: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<(), String> {
         // 换模型：先在**会话内**试一次 `set_model`，不行才退回换进程。
         // 必须排在写 prompt 之前 —— 否则这一轮的问题已经喂给旧模型了。
         self.apply_model_change(model, control).await?;
 
+        if turn_cancelled.is_some_and(|token| token.is_cancelled()) { return Err("cancelled".into()); }
         let mut user: Value = serde_json::from_str(&stream_json_user_line(prompt, images)?)
             .map_err(|e| e.to_string())?;
         let mut active_input_uuid = Uuid::new_v4().to_string();
@@ -1507,6 +1507,7 @@ impl ClaudeStreamJsonSession {
     /// 交给 sink 落成一条助手消息。窗口外的杂帧（取消残留等）直接丢弃——它们属于
     /// 已收尾的轮次，攒进正文会污染唤醒消息。
     async fn read_idle_frame(&mut self) -> IdlePump {
+        if matches!(self.child.try_wait(), Ok(Some(_))) { return IdlePump::Dead; }
         let line = match self.next_line().await {
             ReadStep::Line(line) => line,
             ReadStep::Idle => return IdlePump::Quiet,
@@ -1668,7 +1669,7 @@ pub type BackgroundTaskSink = std::sync::Arc<dyn Fn(IdleSideEffect) + Send + Syn
 /// Spawn the actor task that owns a connected session and serves `SessionCommand`s.
 pub fn spawn_claude_stream_session_actor(
     session: ClaudeStreamJsonSession,
-) -> mpsc::Sender<SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     spawn_claude_stream_session_actor_with_sink(session, None)
 }
 
@@ -1684,13 +1685,13 @@ pub fn spawn_claude_stream_session_actor(
 pub fn spawn_claude_stream_session_actor_with_sink(
     mut session: ClaudeStreamJsonSession,
     sink: Option<BackgroundTaskSink>,
-) -> mpsc::Sender<SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     enum ActorStep {
         Cmd(Option<SessionCommand>),
         Idle(IdlePump),
     }
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
-    tokio::spawn(async move {
+    crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         // stdout 死了就停止空闲读（别对着死管道忙等）；会话的真实死因留给下一轮
         // RunTurn 的既有失败路径去发现和上报，这里不重复造报错出口。
         let mut idle_dead = false;
@@ -1716,7 +1717,7 @@ pub fn spawn_claude_stream_session_actor_with_sink(
                                 idle_dead = true;
                             }
                         }
-                        IdlePump::Dead => idle_dead = true,
+                        IdlePump::Dead => break,
                         IdlePump::Reply(line) => {
                             idle_hiccups = 0;
                             session.write_control_line(&line).await;
@@ -1735,6 +1736,7 @@ pub fn spawn_claude_stream_session_actor_with_sink(
             let Some(cmd) = cmd else { break };
             match cmd {
                 SessionCommand::RunTurn {
+                    cancelled,
                     prompt,
                     model,
                     images,
@@ -1743,6 +1745,7 @@ pub fn spawn_claude_stream_session_actor_with_sink(
                     approvals,
                     ..
                 } => {
+                    if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
                     // Invariant (A4)：`run_turn` 在返回前发完所有 `event`，mpsc 保序，
                     // 所以调用方在 `done` 之后的 drain 能看到全部事件。`done.send` 永远最后。
                     // 半截的唤醒轮收集先清掉：prompt 一写入，后续帧都属于新轮次。
@@ -1755,6 +1758,7 @@ pub fn spawn_claude_stream_session_actor_with_sink(
                             &events,
                             &mut rx,
                             approvals,
+                            cancelled.as_ref(),
                         )
                         .await;
                     let _ = done.send(result);
@@ -1775,8 +1779,7 @@ pub fn spawn_claude_stream_session_actor_with_sink(
             }
         }
         session.close().await;
-    });
-    tx
+    })
 }
 
 #[cfg(test)]
@@ -1891,7 +1894,7 @@ mod tests {
         let mut session = ClaudeStreamJsonSession::connect(&exe, &args, dir.path())
             .await
             .unwrap();
-        let config = crate::external_agents::defs::claude::append_chat_mcp_args(
+        let config = crate::external_agents::providers::claude::append_chat_mcp_args(
             &mut Vec::new(),
             "http://127.0.0.1:1234/mcp",
             "Bearer secret",
@@ -1909,6 +1912,7 @@ mod tests {
         let (done, completion) = oneshot::channel();
         actor
             .send(SessionCommand::RunTurn {
+                cancelled: None,
                 prompt: "first".into(),
                 model: None,
                 reasoning: None,
@@ -1988,6 +1992,7 @@ mod tests {
         let (done, completion) = oneshot::channel();
         actor
             .send(SessionCommand::RunTurn {
+                cancelled: None,
                 prompt: "next".into(),
                 model: None,
                 reasoning: None,
@@ -2788,7 +2793,7 @@ mod tests {
 #[cfg(test)]
 mod live_tests {
     use super::*;
-    use crate::external_agents::defs::claude::{build_claude_args, CLAUDE_AGENT_DEF};
+    use crate::external_agents::providers::claude::{build_claude_args, CLAUDE_AGENT_DEF};
     use crate::external_agents::spawn::resolve_binary;
     use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext};
     use tokio::sync::oneshot;
@@ -2800,7 +2805,7 @@ mod live_tests {
 
     /// 同上，但指定权限档位。`Some("default")` = 用户在权限胶囊里选了「每次确认」，
     /// argv 会带上 `--permission-prompt-tool stdio`（见
-    /// `defs::claude::claude_permission_prompt_args`）。
+    /// `providers::claude::claude_permission_prompt_args`）。
     fn live_args_with_sandbox(
         session_id: &str,
         model: Option<&str>,
@@ -2824,7 +2829,7 @@ mod live_tests {
 
     /// 同上，但把会话 flag 换成 `--resume <session_id>`（用来构造「resume 一个不存在的会话」）。
     fn live_resume_args(session_id: &str) -> Vec<String> {
-        crate::external_agents::defs::claude::claude_args_resuming(
+        crate::external_agents::providers::claude::claude_args_resuming(
             &live_args(session_id, None),
             session_id,
         )
@@ -2855,6 +2860,7 @@ mod live_tests {
         let (dtx, drx) = oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                cancelled: None,
                 prompt: prompt.to_string(),
                 model: None,
                 reasoning: None,
@@ -2898,7 +2904,7 @@ mod live_tests {
     async fn connect_live(
         session_id: &str,
         model: Option<&str>,
-    ) -> Option<(mpsc::Sender<SessionCommand>, std::path::PathBuf)> {
+    ) -> Option<(crate::external_agents::session::live::SessionControl, std::path::PathBuf)> {
         let Some(bin) = resolve_binary(&CLAUDE_AGENT_DEF).await else {
             eprintln!("SKIP: 本机没有可用的 claude CLI");
             return None;
@@ -2924,7 +2930,7 @@ mod live_tests {
     /// 就会让每次关停白等满 `CLAUDE_SHUTDOWN_TIMEOUT` 再被杀。那个 bug 犯过一次，当初是靠
     /// 「测试耗时 53s → 169s」发现的 —— 被删掉的 `claude_persist_probe_tests` 里有条真断言，
     /// 搬过来时退化成了 `let _ =`，回归会重新变成静默通过。
-    async fn close_and_cleanup(control: mpsc::Sender<SessionCommand>, workdir: &std::path::Path) {
+    async fn close_and_cleanup(control: crate::external_agents::session::live::SessionControl, workdir: &std::path::Path) {
         let _ = control.send(SessionCommand::Close).await;
         let closed = timeout(CLAUDE_SHUTDOWN_TIMEOUT, control.closed()).await;
         let _ = std::fs::remove_dir_all(workdir);
@@ -2945,6 +2951,7 @@ mod live_tests {
         let (dtx, drx) = oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                cancelled: None,
                 prompt: prompt.to_string(),
                 model: Some(model.to_string()),
                 reasoning: None,
@@ -2982,14 +2989,14 @@ mod live_tests {
     /// 同一条往返，跑在**默认档**（「完全」= `bypassPermissions`）上。
     ///
     /// 单测只能证明 argv 带上了 flag、以及带 flag 的 init 里有 `AskUserQuestion`
-    /// （`defs::claude::claude_permission_prompt_args` 的实测矩阵）。**它证明不了**这一档下
+    /// （`providers::claude::claude_permission_prompt_args` 的实测矩阵）。**它证明不了**这一档下
     /// CLI 真的会为 `AskUserQuestion` 发 `can_use_tool` —— bypass 的语义是「咨询回调之前就
     /// 放行」，若它对这个工具也照样短路，模型拿到的就是一份没有 answers 的原始入参。
     /// 那正是这条测试要证伪的东西：跑绿了才说明默认档的问用户是真的通的。
     #[tokio::test]
     #[ignore = "requires live claude login + network"]
     async fn live_ask_user_question_works_in_the_default_full_access_mode() {
-        live_ask_user_round_trip(crate::external_agents::defs::claude::DEFAULT_PERMISSION_MODE)
+        live_ask_user_round_trip(crate::external_agents::providers::claude::DEFAULT_PERMISSION_MODE)
             .await;
     }
 
@@ -3003,7 +3010,7 @@ mod live_tests {
         std::fs::create_dir_all(&workdir).expect("create workdir");
 
         // `AskUserQuestion` 只在带 `--permission-prompt-tool stdio` 时才出现在工具表里
-        // （档位无关，见 `defs::claude::claude_permission_prompt_args` 的实测矩阵）。
+        // （档位无关，见 `providers::claude::claude_permission_prompt_args` 的实测矩阵）。
         let args = live_args_with_sandbox(&session_id, None, Some(sandbox));
         let Ok(session) = ClaudeStreamJsonSession::connect(&bin, &args, &workdir).await else {
             eprintln!("SKIP: 连接失败（未登录 / 网络？）");
@@ -3566,7 +3573,7 @@ text={}",
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "real-machine: spawns the installed claude CLI, needs login, costs tokens"]
     async fn live_reconnect_with_resume_keeps_answering_and_keeps_context() {
-        use crate::external_agents::defs::claude::claude_args_resuming;
+        use crate::external_agents::providers::claude::claude_args_resuming;
 
         let Some(bin) = resolve_binary(&CLAUDE_AGENT_DEF).await else {
             eprintln!("SKIP: 本机没有可用的 claude CLI");
@@ -3646,7 +3653,7 @@ text={}",
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "real-machine: spawns the installed claude CLI"]
     async fn live_resuming_a_missing_session_degrades_to_a_fresh_session() {
-        use crate::external_agents::defs::claude::claude_args_fresh_session;
+        use crate::external_agents::providers::claude::claude_args_fresh_session;
         use crate::external_agents::stream::claude::is_missing_session_error;
 
         let Some(bin) = resolve_binary(&CLAUDE_AGENT_DEF).await else {

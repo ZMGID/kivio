@@ -18,7 +18,7 @@ use crate::chat::types::{
     CompactionBoundaryRecord, ToolCallRecord, ToolCallStatus,
 };
 use crate::chat::Conversation;
-use crate::external_agents::defs::claude::append_system_prompt_file_args;
+use crate::external_agents::providers::claude::append_system_prompt_file_args;
 use crate::external_agents::prompt::{
     build_external_daemon_instructions, compose_external_prompt,
     compose_external_prompt_passthrough, instructions_via_launch_flag, is_cli_slash_input,
@@ -35,9 +35,9 @@ use crate::external_agents::spawn::{
     drain_stderr, kill_agent_process_tree, resolve_binary, spawn_agent, tail_chars,
 };
 use crate::external_agents::types::{
-    AdditionalDirsStrategy, ApprovalStrategy, ModelSelectionStrategy, RegenerateStrategy,
-    RetryStrategy, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, StreamFormat,
-    UnifiedAgentEvent,
+    AdditionalDirsStrategy, ApprovalStrategy, CapabilitySupport, ModelSelectionStrategy,
+    RegenerateStrategy, RetryStrategy, RewindStrategy, RuntimeAgentDef, RuntimeBuildOptions,
+    RuntimeContext, StreamFormat, UnifiedAgentEvent,
 };
 use crate::external_agents::workspace::{ensure_effective_cwd, extra_allowed_dirs_for_agent};
 use crate::state::AppState;
@@ -160,6 +160,79 @@ pub(crate) async fn run_external_cli_reply_in(
     entry: AgentRunEntry,
     working_directory: Option<&std::path::Path>,
 ) -> Result<(), String> {
+    let run_generation = state
+        .chat_runtime()
+        .begin_reply_generation(&conversation.id)
+        .ok_or_else(|| "cancelled".to_string())?;
+    let run_id = format!("ext-run-{}-{}", run_generation, Uuid::new_v4());
+    let _reply_guard = crate::chat::commands::ChatReplyGuard::try_new(
+        state,
+        &conversation.id,
+        &run_id,
+        run_generation,
+    )
+    .ok_or_else(|| "external CLI reply is busy".to_string())?;
+    let lease = crate::chat::repository::repository(app)
+        .with_existing_conversation(app, &conversation.id, || {
+            state.external_live_sessions().reserve(&conversation.id)
+        })
+        .await?;
+    let conversation_id = conversation.id.clone();
+    let finalizes_reply = std::sync::atomic::AtomicBool::new(false);
+    let run = run_external_cli_reply_owned(
+        app,
+        state,
+        conversation,
+        title_from_first_user,
+        latest_user_message,
+        image_paths,
+        file_paths,
+        active_skill_id,
+        entry,
+        working_directory,
+        run_generation,
+        &run_id,
+        &lease,
+        &finalizes_reply,
+    );
+    tokio::pin!(run);
+    let result = tokio::select! {
+        result = &mut run => result,
+        _ = async {
+            tokio::select! {
+                _ = state.chat_runtime().wait_for_generation_inactive(&conversation_id, run_generation) => {},
+                _ = lease.cancelled() => {},
+            }
+        } => {
+            lease.cancel();
+            state.chat_runtime().end_generation(&conversation_id, run_generation);
+            if !finalizes_reply.load(std::sync::atomic::Ordering::Acquire) {
+                return Err("cancelled".into());
+            }
+            run.await
+        }
+    };
+    lease.complete();
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_external_cli_reply_owned(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    conversation: &mut Conversation,
+    title_from_first_user: Option<&str>,
+    latest_user_message: &str,
+    image_paths: &[std::path::PathBuf],
+    file_paths: &[std::path::PathBuf],
+    active_skill_id: Option<&str>,
+    entry: AgentRunEntry,
+    working_directory: Option<&std::path::Path>,
+    run_generation: u64,
+    run_id: &str,
+    lease: &crate::external_agents::session::live::SessionLease<'_>,
+    finalizes_reply: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
     let settings = state.settings_read().clone();
     let agent_id = conversation
         .agent_runtime
@@ -181,6 +254,8 @@ pub(crate) async fn run_external_cli_reply_in(
     };
     // N2：回复路径不再跑完整检测（version/auth/模型探测可达 10-25s）。可用性/auth 的展示
     // 交给列表阶段；这里只解析二进制（唯一必需项），把第 2+ 轮的前置开销压到 <500ms。
+    let launch_revision = crate::external_agents::overrides::launch_revision(def.id)
+        .ok_or_else(|| "external CLI configuration is updating; retry".to_string())?;
     let probe_start = Instant::now();
     let resolved_bin = resolve_binary(def).await.ok_or_else(|| {
         format!(
@@ -188,6 +263,10 @@ pub(crate) async fn run_external_cli_reply_in(
             def.name
         )
     })?;
+    let launch_identity = crate::external_agents::overrides::LaunchIdentity::capture(def, &resolved_bin);
+    if crate::external_agents::overrides::launch_revision(def.id) != Some(launch_revision) {
+        return Err("external CLI configuration changed; retry".into());
+    }
     // 计时日志仅 debug 构建输出（供 <500ms 验收测量），release 不刷 stderr。
     if cfg!(debug_assertions) {
         eprintln!(
@@ -290,7 +369,7 @@ pub(crate) async fn run_external_cli_reply_in(
     // 用户配置的系统提示与 Memory 静默失效，没有任何可观测信号。
     // 启动 flag 每次进程启动都重新注入，与对话历史无关，压缩影响不到。
     // （2.1.267 起 CLI 默认把首轮系统提示录下来复用；指令变了的续接轮要额外关掉快照，
-    // 见 `defs::claude::system_prompt_snapshot_off_args`。）
+    // 见 `providers::claude::system_prompt_snapshot_off_args`。）
     let instructions_via_flag = instructions_via_launch_flag(def);
     let system_prompt_file = if instructions_via_flag && !is_slash {
         match write_system_prompt_file(&conversation.id, daemon_instructions.trim()) {
@@ -439,7 +518,7 @@ pub(crate) async fn run_external_cli_reply_in(
     // retain their existing passthrough behavior. 图片：支持原生图片块的协议按白名单
     // 加载为 base64 块，其余（不支持 / 超白名单 / 读失败）降级为路径文本；文件：一律路径说明块。
     // Catalog input types are authoritative; older catalogs retain native protocol support.
-    let accepts_images = if def.supports_native_image && !image_paths.is_empty() {
+    let accepts_images = if def.image_input == CapabilitySupport::Native && !image_paths.is_empty() {
         let key = crate::external_agents::slash::cache_key(&agent_id, &cwd.to_string_lossy());
         let cached = state.external_discovery().get_cached_external_agent_models(
             &key,
@@ -465,7 +544,7 @@ pub(crate) async fn run_external_cli_reply_in(
             .and_then(|model| model.capabilities.as_ref())
             .is_none_or(|capabilities| capabilities.accepts_images())
     } else {
-        def.supports_native_image
+        def.image_input == CapabilitySupport::Native
     };
     let mut attachment_note = String::new();
     let include_attachments = accepts_prompt_attachments(def.stream_format, latest_user_message);
@@ -594,21 +673,13 @@ pub(crate) async fn run_external_cli_reply_in(
         Some(composed.full_prompt.as_str())
     };
     let mut args = (def.build_args)(&runtime_ctx, &build_options, prompt_for_args);
-    if agent_id == "codex" {
-        if let Some(tier) = conversation
-            .agent_runtime
-            .external_service_tier
-            .as_deref()
-            .filter(|tier| !tier.is_empty())
-        {
-            args.extend([
-                "-c".to_string(),
-                format!("service_tier={}", serde_json::to_string(tier).unwrap()),
-            ]);
-        }
+    if def.stream_format == StreamFormat::CodexAppServer {
+        args.extend(crate::external_agents::providers::codex::service_tier_args(
+            conversation.agent_runtime.external_service_tier.as_deref(),
+        ));
     }
     if agent_id == "claude" {
-        args.extend(crate::external_agents::defs::claude::thinking_display_args(
+        args.extend(crate::external_agents::providers::claude::thinking_display_args(
             conversation.agent_runtime.external_reasoning.as_deref(),
             crate::external_agents::spawn::cached_cli_version(&resolved_bin).as_deref(),
         ));
@@ -624,7 +695,7 @@ pub(crate) async fn run_external_cli_reply_in(
             // 录的那份」判断而不是「上一轮」：快照只录首个请求，改过一次之后的每次重连都得关。
             if resume_ctx.is_resuming && resume_ctx.recorded_prompt_stale {
                 args.extend(
-                    crate::external_agents::defs::claude::system_prompt_snapshot_off_args(
+                    crate::external_agents::providers::claude::system_prompt_snapshot_off_args(
                         crate::external_agents::spawn::cached_cli_version(&resolved_bin).as_deref(),
                     ),
                 );
@@ -637,7 +708,7 @@ pub(crate) async fn run_external_cli_reply_in(
     // leaves the original transcript intact; its id is persisted once the turn completes.
     let args = match &rewind {
         Some(NativeRewind::ClaudeResumeAt(entry_id)) => {
-            crate::external_agents::defs::claude::claude_args_rewound_fork(
+            crate::external_agents::providers::claude::claude_args_rewound_fork(
                 &args,
                 entry_id,
                 &Uuid::new_v4().to_string(),
@@ -666,9 +737,6 @@ pub(crate) async fn run_external_cli_reply_in(
             .unwrap_or_else(|| composed.full_prompt.clone()),
     });
 
-    let run_generation = state.chat_runtime().begin_reply_generation(&conversation.id)
-        .ok_or_else(|| "cancelled".to_string())?;
-    let run_id = format!("ext-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
     crate::chat::protocol::register_run(
         app,
@@ -691,6 +759,8 @@ pub(crate) async fn run_external_cli_reply_in(
             | StreamFormat::PiRpc
             | StreamFormat::AntigravityStreamJson
     );
+    if lease.is_cancelled() || !state.chat_runtime().is_generation_active(&conversation.id, run_generation) { return Err("cancelled".into()); }
+    if !launch_identity.still_current(def, &resolved_bin) { return Err("external CLI configuration changed; retry".into()); }
     let mut spawned_opt = if persistent {
         None
     } else {
@@ -773,7 +843,7 @@ pub(crate) async fn run_external_cli_reply_in(
     };
 
     let cancel_check = || {
-        !state
+        lease.is_cancelled() || !state
             .chat_runtime()
             .is_generation_active(&conversation_id, run_generation)
     };
@@ -791,7 +861,7 @@ pub(crate) async fn run_external_cli_reply_in(
         agent_id: &agent_id,
         auto_allow_tools: std::sync::atomic::AtomicBool::new(
             permission_mode_from_args(&args)
-                .is_some_and(crate::external_agents::defs::claude::claude_mode_auto_allows_tools)
+                .is_some_and(crate::external_agents::providers::claude::claude_mode_auto_allows_tools)
                 || (matches!(def.run.approval, ApprovalStrategy::GrokAlwaysApprove)
                     && args.iter().any(|arg| arg == "--always-approve"))
                 || crate::external_agents::ask_user::auto_allow_ordinary_tools(&agent_id),
@@ -805,95 +875,111 @@ pub(crate) async fn run_external_cli_reply_in(
         .as_mut()
         .map(|spawned| drain_stderr(&mut spawned.child));
 
-    let read_result = if persistent {
-        // 本轮的启动配置指纹：变了就换进程（spec 第 8 条）。指令哈希只在**真的注入了**
-        // `--append-system-prompt-file` 时才有值——斜杠命令那一轮不注入，不参与判定。
-        let mut launch_config = launch_config_for_turn(
-            def.stream_format,
-            conversation.agent_runtime.external_model.as_deref(),
-            conversation.agent_runtime.external_reasoning.as_deref(),
-            conversation.agent_runtime.external_sandbox.as_deref(),
-            conversation.agent_runtime.external_agent_preset.as_deref(),
-            system_prompt_file
-                .as_ref()
-                .map(|_| stable_prompt_hash(daemon_instructions.trim()))
-                .as_deref(),
-            &additional_dirs_key,
-        );
-        if agent_id == "codex" {
-            launch_config.flags.push_str(&format!(
-                "|service-tier:{}",
-                conversation
-                    .agent_runtime
-                    .external_service_tier
-                    .as_deref()
-                    .unwrap_or_default()
-            ));
-        }
-        run_persistent_turn(
-            app,
-            state,
-            &conversation_id,
-            &agent_id,
-            def.stream_format,
-            &resolved_bin,
-            &args,
-            &cwd,
-            // Claude: already resolved to runtime id above; other agents keep external_model.
-            wire_model.clone(),
-            conversation.agent_runtime.external_reasoning.clone(),
-            conversation.agent_runtime.external_sandbox.clone(),
-            conversation.agent_runtime.external_agent_preset.clone(),
-            &launch_config,
-            rewind_first_prompt
-                .as_ref()
-                .map_or(composed.full_prompt.as_str(), |prompt| {
-                    prompt.full_prompt.as_str()
-                }),
-            &persistent_turn_prompt(
-                def.stream_format,
-                &composed.full_prompt,
-                latest_user_message,
-                &attachment_note,
-            ),
-            &image_blocks,
-            &extra_writable_roots,
-            &additional_cli_dirs,
-            pi_regenerate.as_ref(),
-            PersistentRewind {
-                // The live process still holds the removed turns in memory.
-                reconnect: matches!(
-                    rewind,
-                    Some(
-                        NativeRewind::Replay
-                            | NativeRewind::ClaudeResumeAt(_)
-                            | NativeRewind::CodexRevert
-                    )
-                ),
-                codex_visible_users: (rewind == Some(NativeRewind::CodexRevert))
-                    .then(|| visible_user_prompts(conversation)),
-            },
-            &mut emit_event,
-            &cancel_check,
-            approval_host.as_ref(),
-        )
-        .await
-    } else {
-        // Defensive fallback for any future protocol intentionally left outside the live registry.
-        debug_assert_eq!(def.stream_format, StreamFormat::PiRpc);
-        let spawned = spawned_opt
-            .as_mut()
-            .expect("non-persistent path spawns a child");
-        let model = conversation.agent_runtime.external_model.as_deref();
-        crate::external_agents::session::pi_rpc::run_pi_rpc_session(
-            &mut spawned.child,
-            &composed.full_prompt,
-            model,
-            |event| emit_event(event),
-            cancel_check,
-        )
-        .await
-    };
+    finalizes_reply.store(true, std::sync::atomic::Ordering::Release);
+    let read_result = finish_turn_after_cancel(
+        async {
+            if persistent {
+                // 本轮的启动配置指纹：变了就换进程（spec 第 8 条）。指令哈希只在**真的注入了**
+                // `--append-system-prompt-file` 时才有值——斜杠命令那一轮不注入，不参与判定。
+                let mut launch_config = launch_config_for_turn(
+                    def.stream_format,
+                    conversation.agent_runtime.external_model.as_deref(),
+                    conversation.agent_runtime.external_reasoning.as_deref(),
+                    conversation.agent_runtime.external_sandbox.as_deref(),
+                    conversation.agent_runtime.external_agent_preset.as_deref(),
+                    system_prompt_file
+                        .as_ref()
+                        .map(|_| stable_prompt_hash(daemon_instructions.trim()))
+                        .as_deref(),
+                    &additional_dirs_key,
+                );
+                launch_config.identity = Some(launch_identity.clone());
+                if def.stream_format == StreamFormat::CodexAppServer {
+                    crate::external_agents::providers::codex::append_service_tier_fingerprint(
+                        &mut launch_config.flags,
+                        conversation.agent_runtime.external_service_tier.as_deref(),
+                    );
+                }
+                run_persistent_turn(
+                    app,
+                    state,
+                    lease,
+                    run_generation,
+                    &conversation_id,
+                    &agent_id,
+                    def.stream_format,
+                    &resolved_bin,
+                    &args,
+                    &cwd,
+                    // Claude: already resolved to runtime id above; other agents keep external_model.
+                    wire_model.clone(),
+                    conversation.agent_runtime.external_reasoning.clone(),
+                    conversation.agent_runtime.external_sandbox.clone(),
+                    conversation.agent_runtime.external_agent_preset.clone(),
+                    &launch_config,
+                    rewind_first_prompt
+                        .as_ref()
+                        .map_or(composed.full_prompt.as_str(), |prompt| {
+                            prompt.full_prompt.as_str()
+                        }),
+                    &persistent_turn_prompt(
+                        def.stream_format,
+                        &composed.full_prompt,
+                        latest_user_message,
+                        &attachment_note,
+                    ),
+                    &image_blocks,
+                    &extra_writable_roots,
+                    &additional_cli_dirs,
+                    pi_regenerate.as_ref(),
+                    PersistentRewind {
+                        // The live process still holds the removed turns in memory.
+                        reconnect: matches!(
+                            rewind,
+                            Some(
+                                NativeRewind::Replay
+                                    | NativeRewind::ClaudeResumeAt(_)
+                                    | NativeRewind::CodexRevert
+                            )
+                        ),
+                        codex_visible_users: (rewind == Some(NativeRewind::CodexRevert))
+                            .then(|| visible_user_prompts(conversation)),
+                    },
+                    &mut emit_event,
+                    &cancel_check,
+                    approval_host.as_ref(),
+                )
+                .await
+            } else {
+                // Defensive fallback for any future protocol intentionally left outside the live registry.
+                debug_assert_eq!(def.stream_format, StreamFormat::PiRpc);
+                let spawned = spawned_opt
+                    .as_mut()
+                    .expect("non-persistent path spawns a child");
+                let model = conversation.agent_runtime.external_model.as_deref();
+                crate::external_agents::session::pi_rpc::run_pi_rpc_session(
+                    &mut spawned.child,
+                    &composed.full_prompt,
+                    model,
+                    |event| emit_event(event),
+                    cancel_check,
+                )
+                .await
+            }
+        },
+        async {
+            tokio::select! {
+                _ = state.chat_runtime().wait_for_generation_inactive(&conversation_id, run_generation) => {},
+                _ = lease.cancelled() => {},
+            }
+        },
+    )
+    .await;
+    if read_result.as_ref().err().map(String::as_str)
+        == Some(crate::external_agents::session::live::CANCELLED_SESSION_LOST)
+    {
+        state.external_live_sessions().remove(&conversation_id);
+    }
 
     // Non-persistent path waits on (and drops/kills) the per-turn child. Persistent sessions
     // keep their process alive in the registry, so there is nothing to wait on here.
@@ -1025,29 +1111,47 @@ pub(crate) async fn run_external_cli_reply_in(
         .then(|| crate::external_agents::session::load_live_handle(app, &conversation_id))
         .flatten()
         .map(|handle| handle.native_id);
-    persist_delivered_session(
-        app,
-        &conversation_id,
-        def.id,
-        &resume_ctx,
-        actual_native_session_id.as_deref(),
-        // 哈希只覆盖**会话级常量**（系统提示 + Memory + cwd 提示）。skill 正文是 per-turn 的，
-        // 不进哈希——否则换 skill 会被当成「instructions 变了」而重发一遍会话级指令。
-        &daemon_instructions,
-        is_slash,
-    )?;
-    // Only a completed turn proves the native history now matches; otherwise retry next send.
-    // A failed native attempt is not retried as is: the next send replays instead. (Codex
-    // already falls back to a fresh thread within the turn.)
-    if rewind_settled {
-        crate::external_agents::session::clear_history_rewound(app, &conversation_id);
-    } else if stream_outcome == "error"
-        && matches!(
-            rewind,
-            Some(NativeRewind::PiFork | NativeRewind::ClaudeResumeAt(_))
-        )
+    if state
+        .chat_runtime()
+        .is_generation_active(&conversation_id, run_generation)
     {
-        crate::external_agents::session::require_rewind_replay(app, &conversation_id);
+        crate::chat::repository::repository(app)
+            .with_existing_conversation(app, &conversation_id, || {
+                state
+                    .chat_runtime()
+                    .while_generation_active(&conversation_id, run_generation, || {
+                        persist_delivered_session(
+                            app,
+                            &conversation_id,
+                            def.id,
+                            &resume_ctx,
+                            actual_native_session_id.as_deref(),
+                            // Skill content is per-turn; only session constants belong in this hash.
+                            &daemon_instructions,
+                            is_slash,
+                        )?;
+                        // Only a completed turn proves the native history now matches.
+                        if rewind_settled {
+                            crate::external_agents::session::clear_history_rewound(
+                                app,
+                                &conversation_id,
+                            );
+                        } else if stream_outcome == "error"
+                            && matches!(
+                                rewind,
+                                Some(NativeRewind::PiFork | NativeRewind::ClaudeResumeAt(_))
+                            )
+                        {
+                            crate::external_agents::session::require_rewind_replay(
+                                app,
+                                &conversation_id,
+                            );
+                        }
+                        Ok(())
+                    })
+                    .unwrap_or(Ok(()))
+            })
+            .await?;
     }
 
     // A7：把 CLI 自压的边界落到会话上。此前只发了实时压缩更新、从不落盘，
@@ -1250,24 +1354,17 @@ fn plan_native_rewind(
 ) -> NativeRewind {
     let stored = crate::external_agents::session::load_session(app, conversation_id)
         .filter(|stored| stored.agent_id == def.id);
-    if matches!(def.run.regenerate, RegenerateStrategy::PiRpc) {
-        // Without a native session there is nothing to fork; a fresh one carries the history.
-        return if stored.is_some() {
-            NativeRewind::PiFork
-        } else {
-            NativeRewind::Replay
-        };
-    }
-    match def.stream_format {
-        StreamFormat::CodexAppServer => NativeRewind::CodexRevert,
-        StreamFormat::ClaudeStreamJson => stored
+    match def.rewind {
+        RewindStrategy::PiFork if stored.is_some() => NativeRewind::PiFork,
+        RewindStrategy::CodexRevert => NativeRewind::CodexRevert,
+        RewindStrategy::ClaudeTranscript => stored
             .and_then(|stored| {
                 crate::external_agents::import::claude_transcript_prompts(&stored.session_id)
             })
             .map_or(NativeRewind::Replay, |prompts| {
                 claude_rewind_from_prompts(&prompts, visible_users)
             }),
-        _ => NativeRewind::Replay,
+        RewindStrategy::PiFork | RewindStrategy::Replay => NativeRewind::Replay,
     }
 }
 
@@ -1351,6 +1448,8 @@ struct PiRegenerateRequest {
 async fn run_persistent_turn<E, C>(
     app: &AppHandle,
     state: &State<'_, AppState>,
+    lease: &crate::external_agents::session::live::SessionLease<'_>,
+    run_generation: u64,
     conversation_id: &str,
     agent_id: &str,
     protocol: StreamFormat,
@@ -1380,7 +1479,7 @@ where
     C: Fn() -> bool,
 {
     use crate::external_agents::session::live::LiveSession;
-    use crate::external_agents::session::{load_live_handle, save_live_handle, LiveSessionHandle};
+    use crate::external_agents::session::{load_live_handle, LiveSessionHandle};
 
     let cwd_str = cwd.to_string_lossy().to_string();
     let protocol_tag = persistent_protocol_tag(protocol);
@@ -1409,27 +1508,21 @@ where
     // 生效而上下文不丢（spec 第 8 条：UI 所见必须与会话实际配置一致）。
     let force_pi_fork = matches!(protocol, StreamFormat::PiRpc) && pi_regenerate.is_some();
     let force_reconnect = force_pi_fork || rewind.reconnect;
-    let previous_control = state.external_live_sessions().control_any(conversation_id);
-    let reusable_control = if force_reconnect {
-        None
-    } else {
-        state.external_live_sessions().reusable_control(
-            conversation_id,
-            agent_id,
-            &cwd_str,
-            launch_config,
-        )
-    };
-    if reusable_control.is_none() {
-        if let Some(stale) = previous_control {
-            // A new dsh process must not resume while the old process can still write the same
-            // native session log. Close the actor and wait for its receiver to disappear first.
+    if cancel() { return Err("cancelled".into()); }
+    let mut _busy = None;
+    let reusable_control = match state.external_live_sessions().claim_control(conversation_id, agent_id, &cwd_str, launch_config)? {
+        Some((control, claimed, true)) if !force_reconnect => {
+            _busy = Some(claimed);
+            Some(control)
+        }
+        Some((stale, claimed, _)) => {
             close_live_control(&stale).await?;
+            state.external_live_sessions().remove_exact(conversation_id, &stale);
+            drop(claimed);
+            None
         }
-        if force_reconnect {
-            state.external_live_sessions().remove(conversation_id);
-        }
-    }
+        None => None,
+    };
     let (mut control, mut prompt) = if let Some(regenerate) =
         pi_regenerate.filter(|_| matches!(protocol, StreamFormat::PiRpc))
     {
@@ -1450,38 +1543,17 @@ where
         let native_id = forked.session_id.clone();
         let child_pid = session.child_pid();
         let control = crate::external_agents::session::pi_rpc::spawn_pi_rpc_session_actor(session);
-        save_live_handle(
-            app,
-            conversation_id,
-            &LiveSessionHandle {
-                agent_id: agent_id.to_string(),
-                protocol: protocol_tag.to_string(),
-                native_id: native_id.clone(),
-                native_path: forked.session_path,
-                cwd: cwd_str.clone(),
-            },
-        )?;
-        let _ = crate::external_agents::session::update_stored_session_id(
-            app,
-            conversation_id,
-            agent_id,
-            &native_id,
-        );
-        resumable_native = Some(native_id);
-        state.external_live_sessions().register(
-            conversation_id.to_string(),
+        publish_live_session(app, lease, conversation_id, cancel, resolved_bin,
             LiveSession {
-                control: control.clone(),
-                _chat_credential: None,
-                agent_id: agent_id.to_string(),
-                cwd: cwd_str.clone(),
-                launch_config: launch_config.clone(),
-                last_activity: std::time::Instant::now(),
-                child_pid,
-                turns_served: 1,
-                busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                control: control.clone(), _chat_credential: None,
+                agent_id: agent_id.into(), cwd: cwd_str.clone(), launch_config: launch_config.clone(),
+                last_activity: Instant::now(), child_pid, turns_served: 1,
+                busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
-        );
+            LiveSessionHandle { agent_id: agent_id.into(), protocol: protocol_tag.into(),
+                native_id: native_id.clone(), native_path: forked.session_path, cwd: cwd_str.clone() },
+        ).await?;
+        resumable_native = Some(native_id);
         let prompt = if forked.needs_root_prompt {
             regenerate.root_prompt.clone()
         } else {
@@ -1510,9 +1582,6 @@ where
                     preset.as_deref(),
                     resume_native.clone(),
                     additional_directories,
-                    Some(background_task_sink(app, conversation_id)),
-                    Some(dsh_idle_sink(app, conversation_id)),
-                    dsh_idle_approvals_for(protocol, app, conversation_id),
                     rewind.codex_visible_users.as_deref(),
                 )
                 .await
@@ -1543,9 +1612,6 @@ where
                             preset.as_deref(),
                             None,
                             additional_directories,
-                            Some(background_task_sink(app, conversation_id)),
-                            Some(dsh_idle_sink(app, conversation_id)),
-                            dsh_idle_approvals_for(protocol, app, conversation_id),
                             None,
                         )
                         .await?
@@ -1570,9 +1636,6 @@ where
                             preset.as_deref(),
                             None,
                             additional_directories,
-                            Some(background_task_sink(app, conversation_id)),
-                            Some(dsh_idle_sink(app, conversation_id)),
-                            dsh_idle_approvals_for(protocol, app, conversation_id),
                             None,
                         )
                         .await?
@@ -1588,31 +1651,16 @@ where
                 } = connected;
                 // 轮内重连要续的是**这个**会话，不是 handle 里那个（首连开了新会话时两者不同）。
                 resumable_native = Some(native_id.clone()).filter(|id| !id.trim().is_empty());
-                let _ = save_live_handle(
-                    app,
-                    conversation_id,
-                    &LiveSessionHandle {
-                        agent_id: agent_id.to_string(),
-                        protocol: protocol_tag.to_string(),
-                        native_id,
-                        native_path: None,
-                        cwd: cwd_str.clone(),
-                    },
-                );
-                state.external_live_sessions().register(
-                    conversation_id.to_string(),
+                publish_live_session(app, lease, conversation_id, cancel, resolved_bin,
                     LiveSession {
-                        control: control.clone(),
-                        _chat_credential: chat_credential,
-                        agent_id: agent_id.to_string(),
-                        cwd: cwd_str.clone(),
-                        launch_config: launch_config.clone(),
-                        last_activity: std::time::Instant::now(),
-                        child_pid,
-                        turns_served: 1,
-                        busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                        control: control.clone(), _chat_credential: chat_credential,
+                        agent_id: agent_id.into(), cwd: cwd_str.clone(), launch_config: launch_config.clone(),
+                        last_activity: Instant::now(), child_pid, turns_served: 1,
+                        busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     },
-                );
+                    LiveSessionHandle { agent_id: agent_id.into(), protocol: protocol_tag.into(),
+                        native_id, native_path: None, cwd: cwd_str.clone() },
+                ).await?;
                 // A resumed session already holds history → send only the latest message.
                 let prompt = if resumed {
                     reuse_prompt.to_string()
@@ -1639,7 +1687,8 @@ where
     // 会往注册表塞一条全新的 `LiveSession`（`busy: false`），旧 guard 还指着旧会话的 Arc
     // —— 不重挂的话，恰好是刚付过冷启动的那条路反而不受保护。
     // 下划线名字是必要的：这个值只靠 Drop 起作用，没有任何读取点。
-    let mut _busy = state.external_live_sessions().mark_busy(conversation_id);
+    if _busy.is_none() { _busy = state.external_live_sessions().mark_busy_exact(conversation_id, &control); }
+    lease.track(&control);
 
     // At most one automatic fresh reconnect after a non-cancel / non-auth failure (R3), plus one
     // reconnect for a config change that only a relaunch can apply (R4 NeedsReconnect). Each is
@@ -1649,6 +1698,11 @@ where
     loop {
         let outcome = drive_persistent_turn(
             &control,
+            &|| launch_config.identity.as_ref().is_none_or(|identity| {
+                get_agent_def(agent_id).is_some_and(|def| identity.still_current(def, resolved_bin))
+            }),
+            state.chat_runtime().generation_cancellation(conversation_id, run_generation),
+            state, conversation_id, run_generation,
             prompt.clone(),
             model.clone(),
             reasoning.clone(),
@@ -1669,7 +1723,7 @@ where
         // 子进程）；只有「协议级取消之后会话仍可用」的协议例外 —— 否则用户点一次「停止」
         // 就把常驻进程连带杀掉，上下文延续与 0.1s 冷启动全部作废（见 `cancel_keeps_live_session`）。
         if !cancel_keeps_live_session(&err, protocol) {
-            state.external_live_sessions().remove(conversation_id);
+            state.external_live_sessions().remove_exact(conversation_id, &control);
         }
 
         match persistent_failure_action(
@@ -1721,9 +1775,11 @@ where
         // exists. dsh now enforces one writer per native session, so wait for the old process
         // before reopening that same id after a failed turn.
         close_live_control(&control).await?;
+        if cancel() { return Err("cancelled".into()); }
         let (next_control, resumed, reconnect_native) = reconnect_fresh(
             app,
-            state,
+            lease,
+            cancel,
             conversation_id,
             agent_id,
             protocol,
@@ -1744,7 +1800,8 @@ where
         // 又重连一次时续的是这条会话（续接成功 ⇒ 同一个 id；失败降级成新会话 ⇒ 新 id）。
         resumable_native = reconnect_native.filter(|id| !id.trim().is_empty());
         // 新会话进了注册表 ⇒ 旧 guard 已经指不到它了，重挂一个（旧的在赋值时落地）。
-        _busy = state.external_live_sessions().mark_busy(conversation_id);
+        _busy = state.external_live_sessions().mark_busy_exact(conversation_id, &next_control);
+        lease.track(&next_control);
         control = next_control;
         prompt = if resumed {
             reuse_prompt.to_string()
@@ -1761,20 +1818,40 @@ where
     }
 }
 
-async fn close_live_control(
-    control: &tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>,
+async fn publish_live_session(
+    app: &AppHandle,
+    lease: &crate::external_agents::session::live::SessionLease<'_>,
+    conversation_id: &str,
+    cancel: &impl Fn() -> bool,
+    resolved_bin: &Path,
+    session: crate::external_agents::session::live::LiveSession,
+    handle: crate::external_agents::session::LiveSessionHandle,
 ) -> Result<(), String> {
-    use crate::external_agents::session::live::SessionCommand;
+    let control = session.control.clone();
+    lease.track(&control);
+    crate::chat::repository::repository(app).with_existing_conversation(app, conversation_id, || {
+        if cancel() { return Err("cancelled".into()); }
+        if session.launch_config.identity.as_ref().is_some_and(|identity| {
+            get_agent_def(&session.agent_id).is_none_or(|def| !identity.still_current(def, resolved_bin))
+        }) { return Err("external CLI launch configuration changed; retry".into()); }
+        lease.publish(session, || {
+            crate::external_agents::session::save_live_handle(app, conversation_id, &handle)?;
+            crate::external_agents::session::update_stored_session_id(app, conversation_id, &handle.agent_id, &handle.native_id)
+        })
+    }).await?;
+    let app = app.clone();
+    let conversation_id = conversation_id.to_string();
+    tokio::spawn(async move {
+        control.finished().await;
+        app.state::<AppState>().external_live_sessions().remove_exact(&conversation_id, &control);
+    });
+    Ok(())
+}
 
-    let close = async {
-        if !control.is_closed() {
-            let _ = control.send(SessionCommand::Close).await;
-            control.closed().await;
-        }
-    };
-    tokio::time::timeout(std::time::Duration::from_secs(5), close)
-        .await
-        .map_err(|_| "旧外部 CLI 会话关闭超时，请重试".to_string())
+async fn close_live_control(
+    control: &crate::external_agents::session::live::SessionControl,
+) -> Result<(), String> {
+    control.close().await
 }
 
 /// Connect a persistent session for the reconnect paths, persist its handle, and register it.
@@ -1786,9 +1863,10 @@ async fn close_live_control(
 /// `resume_native` 是 ACP / codex 的续接凭据（claude 的在 argv 里）。**不传 = 保证开新会话**，
 /// 也就保证了一条「上下文已重置」；而走到这里的原因常常只是上游 503 或改了 reasoning 档位。
 #[allow(clippy::too_many_arguments)]
-async fn reconnect_fresh(
+async fn reconnect_fresh<C: Fn() -> bool>(
     app: &AppHandle,
-    state: &State<'_, AppState>,
+    lease: &crate::external_agents::session::live::SessionLease<'_>,
+    cancel: &C,
     conversation_id: &str,
     agent_id: &str,
     protocol: StreamFormat,
@@ -1806,14 +1884,14 @@ async fn reconnect_fresh(
     additional_directories: &[String],
 ) -> Result<
     (
-        tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>,
+        crate::external_agents::session::live::SessionControl,
         bool,
         Option<String>,
     ),
     String,
 > {
     use crate::external_agents::session::live::LiveSession;
-    use crate::external_agents::session::{save_live_handle, LiveSessionHandle};
+    use crate::external_agents::session::LiveSessionHandle;
 
     let PersistentConnection {
         control,
@@ -1834,37 +1912,19 @@ async fn reconnect_fresh(
         preset,
         resume_native,
         additional_directories,
-        Some(background_task_sink(app, conversation_id)),
-        Some(dsh_idle_sink(app, conversation_id)),
-        dsh_idle_approvals_for(protocol, app, conversation_id),
         None,
     )
     .await?;
-    let _ = save_live_handle(
-        app,
-        conversation_id,
-        &LiveSessionHandle {
-            agent_id: agent_id.to_string(),
-            protocol: protocol_tag.to_string(),
-            native_id: native_id.clone(),
-            native_path: None,
-            cwd: cwd_str.to_string(),
-        },
-    );
-    state.external_live_sessions().register(
-        conversation_id.to_string(),
+    publish_live_session(app, lease, conversation_id, cancel, resolved_bin,
         LiveSession {
-            control: control.clone(),
-            _chat_credential: chat_credential,
-            agent_id: agent_id.to_string(),
-            cwd: cwd_str.to_string(),
-            launch_config: launch_config.clone(),
-            last_activity: std::time::Instant::now(),
-            child_pid,
-            turns_served: 1,
-            busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            control: control.clone(), _chat_credential: chat_credential,
+            agent_id: agent_id.into(), cwd: cwd_str.into(), launch_config: launch_config.clone(),
+            last_activity: Instant::now(), child_pid, turns_served: 1,
+            busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         },
-    );
+        LiveSessionHandle { agent_id: agent_id.into(), protocol: protocol_tag.into(),
+            native_id: native_id.clone(), native_path: None, cwd: cwd_str.into() },
+    ).await?;
     Ok((control, resumed, Some(native_id)))
 }
 
@@ -1880,26 +1940,6 @@ async fn reconnect_fresh(
 /// dsh 相反：model 是进程级 `initialize` 后创建 agent 时固定的，reasoning 是 profile patch，
 /// sandbox 是进程环境变量；三者都没有 session 级修改 RPC。任一变化都必须换进程，但 Kivio
 /// bridge 会用同一个 native session id 调 `agents.resume()`，所以历史上下文继续保留。
-fn dsh_provider_fingerprint_for(
-    config: Option<&crate::settings::ExternalCliAgentConfig>,
-) -> String {
-    use std::hash::{Hash, Hasher};
-
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    match config {
-        Some(config) => serde_json::to_string(&(&config.current_provider, &config.providers))
-            .unwrap_or_else(|_| config.current_provider.clone())
-            .hash(&mut hasher),
-        None => "cli-default".hash(&mut hasher),
-    }
-    format!("{:016x}", hasher.finish())
-}
-
-fn dsh_provider_fingerprint() -> String {
-    let config = crate::external_agents::overrides::agent_config("dsh");
-    dsh_provider_fingerprint_for(config.as_ref())
-}
-
 fn launch_config_for_turn(
     protocol: StreamFormat,
     model: Option<&str>,
@@ -1910,18 +1950,9 @@ fn launch_config_for_turn(
     additional_dirs_key: &str,
 ) -> LaunchConfig {
     if matches!(protocol, StreamFormat::DshJsonRpc) {
-        return LaunchConfig {
-            flags: format!(
-                "{}|{}|{}|{}|{}",
-                model.unwrap_or_default(),
-                reasoning.unwrap_or_default(),
-                sandbox.unwrap_or_default(),
-                crate::external_agents::dsh_profile::normalize_agent_preset(preset),
-                dsh_provider_fingerprint()
-            ),
-            // dsh 的会话级指令在首轮正文里，不是启动配置；指令变化不需要为了它单独重连。
-            instructions: None,
-        };
+        return crate::external_agents::providers::dsh::launch_config(
+            model, reasoning, sandbox, preset,
+        );
     }
     if matches!(protocol, StreamFormat::AntigravityStreamJson) {
         let env: std::collections::BTreeMap<_, _> =
@@ -1932,6 +1963,7 @@ fn launch_config_for_turn(
             &serde_json::to_string(&env).unwrap_or_default(),
         );
         return LaunchConfig {
+        identity: None,
             flags: serde_json::json!([model, reasoning, sandbox, additional_dirs_key, env_hash])
                 .to_string(),
             instructions: None,
@@ -1941,19 +1973,11 @@ fn launch_config_for_turn(
         return LaunchConfig::default();
     }
     if matches!(protocol, StreamFormat::CodexAppServer) {
-        // sandbox 进入进程配置，握手解析出的 sandboxPolicy 每轮显式发送。
-        // 切档必须重连并续接同一原生会话，重新解析配置中的网络权限和可写目录。
-        // model / effort 每轮都能带，不进指纹。
-        return LaunchConfig {
-            flags: crate::external_agents::session::codex_app_server::normalize_codex_sandbox(
-                sandbox,
-            )
-            .to_string(),
-            instructions: None,
-        };
+        return crate::external_agents::providers::codex::launch_config(sandbox);
     }
     if matches!(protocol, StreamFormat::AcpJsonRpc) {
         return LaunchConfig {
+        identity: None,
             // Process-bound ACP choices: grok's ask / strict change argv, OpenCode's build /
             // plan is applied once at session setup. Switching relaunches and resumes the same
             // native session. `full` is grok's default argv, so it fingerprints like unset.
@@ -1968,6 +1992,7 @@ fn launch_config_for_turn(
         return LaunchConfig::default();
     }
     LaunchConfig {
+        identity: None,
         // **model 不在指纹里**：它能在会话内换（`claude_stream::apply_model_change` 发
         // `set_model` 控制请求，官方 `Query.setModel()` 在 streaming input mode 下可用）。
         // 换模型是用户最频繁的操作，把它留在指纹里等于每换一次就付一次 3.2s 冷启动 +
@@ -1977,7 +2002,7 @@ fn launch_config_for_turn(
         // reasoning / sandbox 仍在指纹里：`--effort` 对应的官方入口是
         // `applyFlagSettings({effortLevel})`，wire 形状**没有核实过**；`--permission-mode`
         // 更换还会改变要不要带 `--permission-prompt-tool stdio`（见
-        // `defs::claude::claude_permission_prompt_args`），那是启动参数的事，会话内切不了。
+        // `providers::claude::claude_permission_prompt_args`），那是启动参数的事，会话内切不了。
         flags: if additional_dirs_key.is_empty() {
             format!(
                 "{}|{}",
@@ -2164,7 +2189,7 @@ fn is_missing_resume_target(err: &str, agent_id: &str) -> bool {
             crate::external_agents::session::pi_rpc::is_missing_pi_session_error(err)
         }
         Some(StreamFormat::CodexAppServer) => {
-            crate::external_agents::errors::is_missing_codex_thread_error(err)
+            crate::external_agents::providers::codex::is_missing_codex_thread_error(err)
         }
         Some(StreamFormat::AcpJsonRpc) => {
             crate::external_agents::session::acp::is_missing_acp_session_error(err)
@@ -2202,7 +2227,7 @@ fn drop_resume_for_fresh_session(
         let fresh_id = uuid::Uuid::new_v4().to_string();
         replace_stored_session_id(app, conversation_id, agent_id, &fresh_id);
         clear_live_handle(app, conversation_id);
-        return crate::external_agents::defs::pi::pi_args_fresh_session(args, &fresh_id);
+        return crate::external_agents::providers::pi::pi_args_fresh_session(args, &fresh_id);
     }
     if !matches!(protocol, StreamFormat::ClaudeStreamJson) {
         return args.to_vec();
@@ -2210,17 +2235,26 @@ fn drop_resume_for_fresh_session(
     let fresh_id = uuid::Uuid::new_v4().to_string();
     replace_stored_session_id(app, conversation_id, agent_id, &fresh_id);
     clear_live_handle(app, conversation_id);
-    crate::external_agents::defs::claude::claude_args_fresh_session(args, &fresh_id)
+    crate::external_agents::providers::claude::claude_args_fresh_session(args, &fresh_id)
 }
 
-/// True when a cancel was requested (`cancel_at` set) and the grace period has elapsed without the
-/// turn winding down — the caller escalates to `Close` (A5). Pure for unit testing.
-fn cancel_should_escalate(
-    cancel_at: Option<std::time::Instant>,
-    now: std::time::Instant,
-    grace: std::time::Duration,
-) -> bool {
-    matches!(cancel_at, Some(t) if now.saturating_duration_since(t) >= grace)
+/// Bound protocol cancellation without dropping the caller's accumulated reply or persistence.
+async fn finish_turn_after_cancel(
+    turn: impl std::future::Future<Output = Result<(), String>>,
+    cancelled: impl std::future::Future<Output = ()>,
+) -> Result<(), String> {
+    tokio::pin!(turn);
+    tokio::select! {
+        biased;
+        result = &mut turn => result,
+        _ = cancelled => {
+            tokio::time::timeout(std::time::Duration::from_millis(1_500), turn)
+                .await
+                .unwrap_or_else(|_| Err(
+                    crate::external_agents::session::live::CANCELLED_SESSION_LOST.to_string()
+                ))
+        }
+    }
 }
 
 /// 本轮的 argv 是否让 CLI 走「问宿主要权限」那条路。
@@ -2228,7 +2262,7 @@ fn cancel_should_escalate(
 /// 判据只有一条：argv 里带 `--permission-prompt-tool`。这是**真正**决定 CLI 会不会发
 /// `can_use_tool` 的那个开关（本机 2.1.220 对照实测：带 ⇒ 收到询问；不带 ⇒ 一条都没有、
 /// 权限被 CLI 直接拒），所以从 argv 读回来比在这里重抄一份「哪些权限档位会询问」的规则
-/// 更不容易分叉 —— 那份规则的唯一副本在 `defs::claude::claude_permission_prompt_args`。
+/// 更不容易分叉 —— 那份规则的唯一副本在 `providers::claude::claude_permission_prompt_args`。
 fn turn_asks_for_permission(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--permission-prompt-tool")
 }
@@ -2267,11 +2301,14 @@ fn permission_mode_from_args(args: &[String]) -> Option<&str> {
         .map(|w| w[1].as_str())
 }
 
-/// Send one `RunTurn` on `control` and pump its events/terminal result. On user cancel, send a
-/// protocol-level `Cancel`; if the turn doesn't wind down within `CANCEL_ESCALATE_GRACE`, escalate
-/// to `Close` (A5) so a hung session can't block cancellation indefinitely.
+/// Send one turn and pump events; the caller bounds cancellation and finalizes the reply.
 async fn drive_persistent_turn<E, C>(
-    control: &tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>,
+    control: &crate::external_agents::session::live::SessionControl,
+    launch_is_current: &impl Fn() -> bool,
+    cancelled: Option<tokio_util::sync::CancellationToken>,
+    state: &AppState,
+    conversation_id: &str,
+    run_generation: u64,
     prompt: String,
     model: Option<String>,
     reasoning: Option<String>,
@@ -2288,8 +2325,6 @@ where
     use crate::external_agents::session::live::{ApprovalBridge, SessionCommand};
     use futures::stream::{FuturesUnordered, StreamExt};
     use tokio::sync::{mpsc, oneshot};
-
-    const CANCEL_ESCALATE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
     let (events_tx, mut events_rx) = mpsc::channel::<UnifiedAgentEvent>(64);
     let (done_tx, done_rx) = oneshot::channel::<Result<(), String>>();
@@ -2310,35 +2345,56 @@ where
         }
         None => (None, None, None),
     };
-    if control
-        .send(SessionCommand::RunTurn {
-            prompt,
-            model,
-            reasoning,
-            images: images.to_vec(),
-            extra_writable_roots: extra_writable_roots.to_vec(),
-            events: events_tx,
-            done: done_tx,
-            approvals: bridge,
-        })
-        .await
-        .is_err()
-    {
-        return Err("外部 CLI 会话已结束，请重试".to_string());
+    let permit = tokio::select! {
+        permit = control.reserve() => permit.map_err(|_| "external CLI session ended".to_string())?,
+        _ = async {
+            match &cancelled {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending().await,
+            }
+        } => return Err("cancelled".into()),
+    };
+    if cancel() {
+        return Err("cancelled".into());
     }
+    if !launch_is_current() {
+        return Err("external CLI launch configuration changed; retry".into());
+    }
+    state
+        .chat_runtime()
+        .while_generation_active(conversation_id, run_generation, || {
+            permit.send(SessionCommand::RunTurn {
+                cancelled,
+                prompt,
+                model,
+                reasoning,
+                images: images.to_vec(),
+                extra_writable_roots: extra_writable_roots.to_vec(),
+                events: events_tx,
+                done: done_tx,
+                approvals: bridge,
+            })
+        })
+        .ok_or_else(|| "cancelled".to_string())?;
 
     // 在飞的审批（可以有多条：claude 会并行调工具）。放 `FuturesUnordered` 而不是 spawn：
     // 借用 `app`/`state` 就够，不需要 `'static`，而且本函数返回时它们自然被丢弃。
     let mut in_flight = FuturesUnordered::new();
     // 本轮问过的 toolCallId。返回前必须把 `pending_chat_tool_approvals` 里可能残留的条目扫掉
     // ——那张表按 id 存 oneshot sender，走了异常出口（EOF / 硬 Close）不扫就是一条永久泄漏。
-    let mut asked_ids: Vec<String> = Vec::new();
+    let mut pending_approvals = PendingApprovals {
+        ids: Vec::new(),
+        forget: |ids: &[String]| {
+            if let Some(host) = approvals {
+                host.forget(ids);
+            }
+        },
+    };
     let mut resolved_interactions = std::collections::HashSet::new();
 
     let mut done_rx = done_rx;
     let mut events_open = true;
     let mut cancel_sent = false;
-    let mut cancel_at: Option<std::time::Instant> = None;
     let outcome = loop {
         tokio::select! {
             biased;
@@ -2371,7 +2427,7 @@ where
             }, if ask_rx.is_some() => {
                 if let Some(host) = approvals {
                     if resolved_interactions.contains(&ask.tool_call_id) { continue; }
-                    asked_ids.push(ask.tool_call_id.clone());
+                    pending_approvals.ids.push(ask.tool_call_id.clone());
                     in_flight.push(host.ask(ask));
                 }
             }
@@ -2385,23 +2441,9 @@ where
         }
         if !cancel_sent && cancel() {
             cancel_sent = true;
-            cancel_at = Some(std::time::Instant::now());
             let _ = control.send(SessionCommand::Cancel).await;
         }
-        // A5: protocol-level cancel didn't wind the turn down in time → escalate to a hard Close.
-        if cancel_should_escalate(cancel_at, std::time::Instant::now(), CANCEL_ESCALATE_GRACE) {
-            let _ = control.send(SessionCommand::Close).await;
-            // 用 `CANCELLED_SESSION_LOST` 而不是 `"cancelled"`：出口仍按取消呈现，但会话
-            // 已经被硬 Close 掉了，注册表条目**必须**丢弃 —— 否则 claude 的「取消后保留常驻
-            // 会话」会把一个死 actor 留到下一轮才发现。
-            break Err(crate::external_agents::session::live::CANCELLED_SESSION_LOST.to_string());
-        }
     };
-    // 会话侧那张挂起表由 `claude_stream::reject_pending` 负责整批拒掉（它才是欠 CLI 响应的
-    // 一方）；这里只扫宿主侧的残留条目 + 让在飞的 future 随本函数一起丢弃。
-    if let Some(host) = approvals {
-        host.forget(&asked_ids);
-    }
     // 未消费的答复对应的询问已经被会话侧拒掉了，丢弃即可。
     drop(decision_tx);
     outcome
@@ -2414,7 +2456,18 @@ where
 /// （见 `Chat.tsx` 的 `PLAN_APPROVAL_ACTIONS`）。
 const PLAN_APPROVED_PERMISSION_MODE: &str = "acceptEdits";
 
-/// 「批准并自动放行」那一档的值。与 `defs::claude::DEFAULT_PERMISSION_MODE` 同值，
+struct PendingApprovals<F: Fn(&[String])> {
+    ids: Vec<String>,
+    forget: F,
+}
+
+impl<F: Fn(&[String])> Drop for PendingApprovals<F> {
+    fn drop(&mut self) {
+        (self.forget)(&self.ids);
+    }
+}
+
+/// 「批准并自动放行」那一档的值。与 `providers::claude::DEFAULT_PERMISSION_MODE` 同值，
 /// 但语义不同（那个是「新会话的默认档」，这个是「计划批准后要不要继续弹卡」的判据）。
 const FULL_ACCESS_PERMISSION_MODE: &str = "bypassPermissions";
 
@@ -2748,11 +2801,18 @@ fn persistent_protocol_tag(protocol: StreamFormat) -> &'static str {
 /// `child_pid` 是纯元数据（写进注册表条目供诊断 / 判定「两轮是不是同一个进程」），
 /// 任何关停路径都走 actor 的 `Close`，绝不按 pid 杀。
 struct PersistentConnection {
-    control: tokio::sync::mpsc::Sender<crate::external_agents::session::live::SessionCommand>,
+    control: crate::external_agents::session::live::SessionControl,
     native_id: String,
     resumed: bool,
     child_pid: Option<u32>,
     chat_credential: Option<crate::app_mcp::McpCredential>,
+}
+
+impl PersistentConnection {
+    fn identified(self, identity: &crate::external_agents::session::live::SessionIdentity) -> Self {
+        identity.bind(&self.control);
+        self
+    }
 }
 
 /// claude 轮间空闲读的副作用旁路：会话层没有（也不该有）`AppHandle`，
@@ -2761,58 +2821,88 @@ struct PersistentConnection {
 fn background_task_sink(
     app: &AppHandle,
     conversation_id: &str,
+    identity: crate::external_agents::session::live::SessionIdentity,
 ) -> crate::external_agents::session::claude_stream::BackgroundTaskSink {
     use crate::external_agents::session::claude_stream::IdleSideEffect;
     let app = app.clone();
     let conversation_id = conversation_id.to_string();
-    std::sync::Arc::new(move |effect| match effect {
-        IdleSideEffect::Task(UnifiedAgentEvent::BackgroundTask {
-            task_id,
-            status,
-            kind,
-            description,
-            summary,
-        }) => {
-            app.state::<AppState>()
-                .external_background_tasks()
-                .upsert_external_background_task(
-                    &conversation_id,
-                    &task_id,
-                    &status,
-                    kind.as_deref(),
-                    description.as_deref(),
-                    summary.as_deref(),
-                );
-        }
-        IdleSideEffect::Task(_) => {}
-        // sink 是同步闭包，持久化是 async —— 甩给运行时，失败只打日志（唤醒消息
-        // 是锦上添花，不能因为它把会话 actor 拖死）。
-        IdleSideEffect::WakeMessage { text, model, usage } => {
-            let app = app.clone();
-            let conversation_id = conversation_id.clone();
-            tauri::async_runtime::spawn(async move {
-                append_wake_turn_message(app, conversation_id, text, model, usage).await;
+    std::sync::Arc::new(move |effect| {
+        app.state::<AppState>()
+            .external_live_sessions()
+            .with_current(&conversation_id, &identity, || match effect {
+                IdleSideEffect::Task(UnifiedAgentEvent::BackgroundTask {
+                    task_id,
+                    status,
+                    kind,
+                    description,
+                    summary,
+                }) => {
+                    app.state::<AppState>()
+                        .external_background_tasks()
+                        .upsert_external_background_task(
+                            &conversation_id,
+                            &task_id,
+                            &status,
+                            kind.as_deref(),
+                            description.as_deref(),
+                            summary.as_deref(),
+                        );
+                }
+                IdleSideEffect::Task(_) => {}
+                // sink 是同步闭包，持久化是 async —— 甩给运行时，失败只打日志（唤醒消息
+                // 是锦上添花，不能因为它把会话 actor 拖死）。
+                IdleSideEffect::WakeMessage { text, model, usage } => {
+                    let app = app.clone();
+                    let conversation_id = conversation_id.clone();
+                    let identity = identity.clone();
+                    tauri::async_runtime::spawn(async move {
+                        append_wake_turn_message(
+                            app,
+                            conversation_id,
+                            text,
+                            model,
+                            usage,
+                            identity,
+                        )
+                        .await;
+                    });
+                }
             });
-        }
     })
 }
 
 fn dsh_idle_sink(
     app: &AppHandle,
     conversation_id: &str,
+    identity: crate::external_agents::session::live::SessionIdentity,
 ) -> crate::external_agents::session::dsh_jsonrpc::DshIdleSink {
     use crate::external_agents::session::dsh_jsonrpc::DshIdleEffect;
     let app = app.clone();
     let conversation_id = conversation_id.to_string();
-    std::sync::Arc::new(move |effect| match effect {
-        DshIdleEffect::Event(event) => apply_idle_dsh_event(&app, &conversation_id, event),
-        DshIdleEffect::Wake { text, model, usage } => {
-            let app = app.clone();
-            let conversation_id = conversation_id.clone();
-            tauri::async_runtime::spawn(async move {
-                append_wake_turn_message(app, conversation_id, text, model, usage).await;
+    std::sync::Arc::new(move |effect| {
+        app.state::<AppState>()
+            .external_live_sessions()
+            .with_current(&conversation_id, &identity, || match effect {
+                DshIdleEffect::Event(event) => {
+                    apply_idle_dsh_event(&app, &conversation_id, event, &identity)
+                }
+                DshIdleEffect::Wake { text, model, usage } => {
+                    let app = app.clone();
+                    let conversation_id = conversation_id.clone();
+                    let identity = identity.clone();
+                    tauri::async_runtime::spawn(async move {
+                        append_wake_turn_message(
+                            app,
+                            conversation_id,
+                            text,
+                            model,
+                            usage,
+                            identity,
+                        )
+                        .await;
+                    });
+                }
             });
-        }
     })
 }
 
@@ -2820,14 +2910,16 @@ fn dsh_idle_approvals_for(
     protocol: StreamFormat,
     app: &AppHandle,
     conversation_id: &str,
+    identity: crate::external_agents::session::live::SessionIdentity,
 ) -> Option<crate::external_agents::session::live::ApprovalBridge> {
     matches!(protocol, StreamFormat::DshJsonRpc)
-        .then(|| spawn_dsh_idle_approval_bridge(app, conversation_id))
+        .then(|| spawn_dsh_idle_approval_bridge(app, conversation_id, identity))
 }
 
 fn spawn_dsh_idle_approval_bridge(
     app: &AppHandle,
     conversation_id: &str,
+    identity: crate::external_agents::session::live::SessionIdentity,
 ) -> crate::external_agents::session::live::ApprovalBridge {
     use crate::external_agents::session::live::{ApprovalAsk, ApprovalBridge, ApprovalDecision};
     let (request_tx, mut request_rx) = tokio::sync::mpsc::channel::<ApprovalAsk>(8);
@@ -2836,7 +2928,9 @@ fn spawn_dsh_idle_approval_bridge(
     let conversation_id = conversation_id.to_string();
     tauri::async_runtime::spawn(async move {
         while let Some(ask) = request_rx.recv().await {
-            let decision = present_dsh_idle_ask(app.clone(), conversation_id.clone(), ask).await;
+            let decision =
+                present_dsh_idle_ask(app.clone(), conversation_id.clone(), ask, identity.clone())
+                    .await;
             if decision_tx.send(decision).await.is_err() {
                 break;
             }
@@ -2855,10 +2949,17 @@ async fn present_dsh_idle_ask(
     app: AppHandle,
     conversation_id: String,
     ask: crate::external_agents::session::live::ApprovalAsk,
+    identity: crate::external_agents::session::live::SessionIdentity,
 ) -> crate::external_agents::session::live::ApprovalDecision {
     let state = app.state::<AppState>();
     let generation = state.chat_runtime().begin_generation(&conversation_id);
     let run_id = format!("dsh-ask-{}", Uuid::new_v4());
+    let _generation_guard = crate::chat::commands::ChatReplyGuard::try_new(
+        &state,
+        &conversation_id,
+        &run_id,
+        generation,
+    );
     let message_id = format!("msg_{}", Uuid::new_v4());
     let arguments = serde_json::to_string(&ask.input).unwrap_or_else(|_| "{}".to_string());
     let persisted = persist_dsh_idle_ask_message(
@@ -2868,16 +2969,21 @@ async fn present_dsh_idle_ask(
         &ask.tool_call_id,
         &ask.tool_name,
         &arguments,
+        &identity,
     )
     .await;
     if let Some(revision) = persisted {
-        crate::chat::protocol::register_run(
-            &app,
-            &conversation_id,
-            &run_id,
-            &message_id,
-            revision.saturating_sub(1),
-        );
+        state
+            .external_live_sessions()
+            .with_current(&conversation_id, &identity, || {
+                crate::chat::protocol::register_run(
+                    &app,
+                    &conversation_id,
+                    &run_id,
+                    &message_id,
+                    revision.saturating_sub(1),
+                );
+            });
     }
     let host = ApprovalHost {
         app: &app,
@@ -2888,10 +2994,30 @@ async fn present_dsh_idle_ask(
         agent_id: "dsh",
         auto_allow_tools: std::sync::atomic::AtomicBool::new(true),
     };
-    let decision = host.ask(ask).await;
-    state
-        .chat_runtime()
-        .end_generation(&conversation_id, generation);
+    let denied = crate::external_agents::session::live::ApprovalDecision {
+        request_id: ask.request_id.clone(),
+        approved: false,
+        updated_input: None,
+        set_permission_mode: None,
+        updated_permissions: None,
+        always: false,
+    };
+    let _pending_approval = PendingApprovals {
+        ids: vec![ask.tool_call_id.clone()],
+        forget: |ids: &[String]| host.forget(ids),
+    };
+    let current = state
+        .external_live_sessions()
+        .is_identity_current(&conversation_id, &identity);
+    let decision = if persisted.is_some() && current {
+        tokio::select! {
+            biased;
+            _ = identity.closed() => denied,
+            decision = host.ask(ask) => decision,
+        }
+    } else {
+        denied
+    };
     if let Some(revision) = persisted {
         crate::chat::protocol::finish_run(&app, &run_id, "done", "", revision);
     }
@@ -2905,6 +3031,7 @@ async fn persist_dsh_idle_ask_message(
     tool_call_id: &str,
     tool_name: &str,
     arguments: &str,
+    identity: &crate::external_agents::session::live::SessionIdentity,
 ) -> Option<u64> {
     let message: crate::chat::types::ChatMessage = match serde_json::from_value(serde_json::json!({
         "id": message_id,
@@ -2928,7 +3055,14 @@ async fn persist_dsh_idle_ask_message(
         }
     };
     match crate::chat::repository::repository(app)
-        .append_message(app, conversation_id, message)
+        .mutate(app, conversation_id, |conversation| {
+            app.state::<AppState>()
+                .external_live_sessions()
+                .with_current(conversation_id, identity, || {
+                    conversation.messages.push(message)
+                })
+                .ok_or_else(|| "external CLI session retired".to_string())
+        })
         .await
     {
         Ok(conversation) => Some(conversation.revision),
@@ -2939,7 +3073,12 @@ async fn persist_dsh_idle_ask_message(
     }
 }
 
-fn apply_idle_dsh_event(app: &AppHandle, conversation_id: &str, event: UnifiedAgentEvent) {
+fn apply_idle_dsh_event(
+    app: &AppHandle,
+    conversation_id: &str,
+    event: UnifiedAgentEvent,
+    identity: &crate::external_agents::session::live::SessionIdentity,
+) {
     match event {
         UnifiedAgentEvent::BackgroundTask {
             task_id,
@@ -2978,6 +3117,7 @@ fn apply_idle_dsh_event(app: &AppHandle, conversation_id: &str, event: UnifiedAg
                 preview,
                 Vec::new(),
                 summary,
+                identity.clone(),
             );
         }
         UnifiedAgentEvent::SubagentProgress {
@@ -3002,6 +3142,7 @@ fn apply_idle_dsh_event(app: &AppHandle, conversation_id: &str, event: UnifiedAg
                 preview,
                 steps,
                 None,
+                identity.clone(),
             );
         }
         UnifiedAgentEvent::SlashCommands { commands } => {
@@ -3035,7 +3176,9 @@ fn emit_live_subagent_progress(
             task_id: task_id.to_string(),
             name: "subagent".to_string(),
             model: None,
-            generation: None, child_run_id: None, progress: None,
+            generation: None,
+            child_run_id: None,
+            progress: None,
             depth: 1,
             status: status.to_string(),
             preview: (!preview.is_empty()).then_some(preview),
@@ -3052,35 +3195,47 @@ fn persist_dsh_subagent_card(
     preview: String,
     steps: Vec<String>,
     summary: Option<String>,
+    identity: crate::external_agents::session::live::SessionIdentity,
 ) {
     tauri::async_runtime::spawn(async move {
         let now = Local::now().timestamp();
         if let Err(err) = crate::chat::repository::repository(&app)
-            .mutate(&app, &conversation_id, move |conversation| {
-                for message in conversation.messages.iter_mut().rev() {
-                    let Some(record) = find_dsh_subagent_record(&mut message.tool_calls, &task_id)
-                    else {
-                        continue;
-                    };
-                    if !steps.is_empty() || !preview.is_empty() {
-                        merge_subagent_progress(record, &preview, &steps, &status, &task_id);
-                    } else {
-                        attach_child_session_id(record, &task_id);
-                    }
-                    if status != "running" {
-                        record.status = match status.as_str() {
-                            "failed" => ToolCallStatus::Error,
-                            "stopped" | "cancelled" => ToolCallStatus::Cancelled,
-                            _ => ToolCallStatus::Success,
-                        };
-                        if let Some(summary) = summary.as_ref().filter(|text| !text.is_empty()) {
-                            record.result_preview = Some(truncate_for_preview(summary, 800));
+            .mutate(&app, &conversation_id, |conversation| {
+                app.state::<AppState>()
+                    .external_live_sessions()
+                    .with_current(&conversation.id.clone(), &identity, || {
+                        for message in conversation.messages.iter_mut().rev() {
+                            let Some(record) =
+                                find_dsh_subagent_record(&mut message.tool_calls, &task_id)
+                            else {
+                                continue;
+                            };
+                            if !steps.is_empty() || !preview.is_empty() {
+                                merge_subagent_progress(
+                                    record, &preview, &steps, &status, &task_id,
+                                );
+                            } else {
+                                attach_child_session_id(record, &task_id);
+                            }
+                            if status != "running" {
+                                record.status = match status.as_str() {
+                                    "failed" => ToolCallStatus::Error,
+                                    "stopped" | "cancelled" => ToolCallStatus::Cancelled,
+                                    _ => ToolCallStatus::Success,
+                                };
+                                if let Some(summary) =
+                                    summary.as_ref().filter(|text| !text.is_empty())
+                                {
+                                    record.result_preview =
+                                        Some(truncate_for_preview(summary, 800));
+                                }
+                                record.completed_at = Some(now);
+                            }
+                            return Ok(());
                         }
-                        record.completed_at = Some(now);
-                    }
-                    return Ok(());
-                }
-                Ok(())
+                        Ok(())
+                    })
+                    .unwrap_or_else(|| Err("external CLI session retired".to_string()))
             })
             .await
         {
@@ -3102,6 +3257,7 @@ async fn append_wake_turn_message(
     text: String,
     model: Option<String>,
     usage: Option<ModelUsage>,
+    identity: crate::external_agents::session::live::SessionIdentity,
 ) {
     let message_id = format!("msg_{}", Uuid::new_v4());
     // ChatMessage 字段全有 serde 默认值，走最小 JSON 构造（与 repository 单测同款），
@@ -3122,7 +3278,14 @@ async fn append_wake_turn_message(
         }
     };
     let persisted = match crate::chat::repository::repository(&app)
-        .append_message(&app, &conversation_id, message)
+        .mutate(&app, &conversation_id, |conversation| {
+            app.state::<AppState>()
+                .external_live_sessions()
+                .with_current(&conversation_id, &identity, || {
+                    conversation.messages.push(message)
+                })
+                .ok_or_else(|| "external CLI session retired".to_string())
+        })
         .await
     {
         Ok(conversation) => conversation,
@@ -3132,22 +3295,27 @@ async fn append_wake_turn_message(
         }
     };
     let run_id = format!("ext-wake-{}", Uuid::new_v4());
-    crate::chat::protocol::register_run(
-        &app,
-        &conversation_id,
-        &run_id,
-        &message_id,
-        persisted.revision.saturating_sub(1),
-    );
-    crate::chat::protocol::emit_run_event(
-        &app,
-        &run_id,
-        crate::chat::protocol::ChatRunEvent::TextDelta {
-            delta: text.clone(),
-            segment: None,
-        },
-    );
-    crate::chat::protocol::finish_run(&app, &run_id, "done", &text, persisted.revision);
+    let state = app.state::<AppState>();
+    state
+        .external_live_sessions()
+        .with_current(&conversation_id, &identity, || {
+            crate::chat::protocol::register_run(
+                &app,
+                &conversation_id,
+                &run_id,
+                &message_id,
+                persisted.revision.saturating_sub(1),
+            );
+            crate::chat::protocol::emit_run_event(
+                &app,
+                &run_id,
+                crate::chat::protocol::ChatRunEvent::TextDelta {
+                    delta: text.clone(),
+                    segment: None,
+                },
+            );
+            crate::chat::protocol::finish_run(&app, &run_id, "done", &text, persisted.revision);
+        });
 }
 
 /// Connect (or resume) a persistent protocol session, returning its control channel, native id,
@@ -3170,11 +3338,6 @@ async fn connect_persistent_session(
     preset: Option<&str>,
     resume_native: Option<String>,
     additional_directories: &[String],
-    background_task_sink: Option<
-        crate::external_agents::session::claude_stream::BackgroundTaskSink,
-    >,
-    dsh_idle_sink: Option<crate::external_agents::session::dsh_jsonrpc::DshIdleSink>,
-    dsh_idle_approvals: Option<crate::external_agents::session::live::ApprovalBridge>,
     // Codex only: after resuming, revert the thread to these visible prompts (see
     // `CODEX_REWIND_UNAVAILABLE`).
     codex_rewind: Option<&[String]>,
@@ -3190,6 +3353,10 @@ async fn connect_persistent_session(
         spawn_dsh_session_actor_with_sink, DshJsonRpcSession,
     };
 
+    let identity = crate::external_agents::session::live::SessionIdentity::default();
+    let background_task_sink = Some(background_task_sink(app, conversation_id, identity.clone()));
+    let dsh_idle_sink = Some(dsh_idle_sink(app, conversation_id, identity.clone()));
+    let dsh_idle_approvals = dsh_idle_approvals_for(protocol, app, conversation_id, identity.clone());
     // WSL loopback may not reach the Windows-hosted MCP server.
     let chat_credential = if matches!(
         protocol,
@@ -3217,7 +3384,7 @@ async fn connect_persistent_session(
                 resumed: resume_native.is_some(),
                 child_pid,
                 chat_credential,
-            })
+            }.identified(&identity))
         }
         StreamFormat::ClaudeStreamJson => {
             // claude 的会话 id 走**启动参数**，不像 codex / ACP 在握手 RPC 里传 ——
@@ -3245,14 +3412,14 @@ async fn connect_persistent_session(
                 .filter(|id| !id.is_empty())
             {
                 (
-                    crate::external_agents::defs::claude::claude_args_resuming(args, id),
+                    crate::external_agents::providers::claude::claude_args_resuming(args, id),
                     true,
                 )
             } else {
                 (args.to_vec(), false)
             };
             let chat_mcp_config = if let Some(credential) = &chat_credential {
-                Some(crate::external_agents::defs::claude::append_chat_mcp_args(
+                Some(crate::external_agents::providers::claude::append_chat_mcp_args(
                     &mut effective_args,
                     &credential.url,
                     &credential.authorization,
@@ -3273,7 +3440,7 @@ async fn connect_persistent_session(
                 resumed,
                 child_pid,
                 chat_credential,
-            })
+            }.identified(&identity))
         }
         StreamFormat::CodexAppServer => {
             let mcp = chat_credential
@@ -3318,7 +3485,7 @@ async fn connect_persistent_session(
                     resumed: true,
                     child_pid,
                     chat_credential,
-                });
+                }.identified(&identity));
             }
             let session =
                 CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None, mcp)
@@ -3331,7 +3498,7 @@ async fn connect_persistent_session(
                 resumed: false,
                 child_pid,
                 chat_credential,
-            })
+            }.identified(&identity))
         }
         StreamFormat::AcpJsonRpc => {
             let mcp_servers: Vec<AcpMcpServer> = chat_credential
@@ -3377,7 +3544,7 @@ async fn connect_persistent_session(
                     resumed: true,
                     child_pid,
                     chat_credential,
-                });
+                }.identified(&identity));
             }
             let session = AcpSession::connect(
                 resolved_bin,
@@ -3399,7 +3566,7 @@ async fn connect_persistent_session(
                 resumed: false,
                 child_pid,
                 chat_credential,
-            })
+            }.identified(&identity))
         }
         StreamFormat::DshJsonRpc => {
             if let Some(sid) = resume_native
@@ -3437,7 +3604,7 @@ async fn connect_persistent_session(
                     resumed: true,
                     child_pid,
                     chat_credential,
-                });
+                }.identified(&identity));
             }
             let session = DshJsonRpcSession::connect(
                 resolved_bin,
@@ -3463,7 +3630,7 @@ async fn connect_persistent_session(
                 resumed,
                 child_pid,
                 chat_credential,
-            })
+            }.identified(&identity))
         }
         StreamFormat::PiRpc => {
             let session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
@@ -3484,7 +3651,7 @@ async fn connect_persistent_session(
                 resumed,
                 child_pid,
                 chat_credential,
-            })
+            }.identified(&identity))
         }
     }
 }
@@ -4486,6 +4653,25 @@ fn truncate_for_preview(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn dropping_an_approval_wait_removes_the_pending_request() {
+        let state = crate::state::test_app_state();
+        let mut reply = state.chat_interactions().begin_tool_approval("tool", "conversation", "Bash");
+        let waiting = async {
+            let _pending = PendingApprovals {
+                ids: vec!["tool".to_string()],
+                forget: |ids: &[String]| state.chat_interactions().forget_tool_interactions(ids),
+            };
+            std::future::pending::<()>().await;
+        };
+        let mut waiting = Box::pin(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        assert!(matches!(reply.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        drop(waiting);
+        assert!(matches!(reply.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)));
+        assert!(!state.chat_interactions().cancel_tool_approval("tool"));
+    }
+
     fn render_test_record(name: &str, input: serde_json::Value) -> ToolCallRecord {
         ToolCallRecord {
             id: "tool-1".into(),
@@ -5226,10 +5412,10 @@ mod tests {
     // ---- 工具审批：本轮接不接询问 ----
 
     /// 判据取自 argv 本身：带 `--permission-prompt-tool` 才建审批通道。
-    /// 这样就不可能与 `defs::claude::claude_permission_prompt_args` 的决定分叉。
+    /// 这样就不可能与 `providers::claude::claude_permission_prompt_args` 的决定分叉。
     #[test]
     fn the_approval_bridge_follows_the_launch_flag() {
-        let asking = crate::external_agents::defs::claude::build_claude_args(
+        let asking = crate::external_agents::providers::claude::build_claude_args(
             &RuntimeContext {
                 extra_allowed_dirs: vec![],
                 resume_session_id: None,
@@ -5246,7 +5432,7 @@ mod tests {
         assert!(turn_asks_for_permission(&asking));
 
         // 默认档现在也接通道（`AskUserQuestion` 的唯一开关），但普通工具就地放行。
-        let silent = crate::external_agents::defs::claude::build_claude_args(
+        let silent = crate::external_agents::providers::claude::build_claude_args(
             &RuntimeContext {
                 extra_allowed_dirs: vec![],
                 resume_session_id: None,
@@ -5314,7 +5500,7 @@ mod tests {
     #[test]
     fn the_full_access_mode_auto_allows_ordinary_tools() {
         let mk = |sandbox: Option<&str>| {
-            crate::external_agents::defs::claude::build_claude_args(
+            crate::external_agents::providers::claude::build_claude_args(
                 &RuntimeContext {
                     extra_allowed_dirs: vec![],
                     resume_session_id: None,
@@ -5331,7 +5517,7 @@ mod tests {
         };
         let auto_allows = |args: &[String]| {
             permission_mode_from_args(args)
-                .is_some_and(crate::external_agents::defs::claude::claude_mode_auto_allows_tools)
+                .is_some_and(crate::external_agents::providers::claude::claude_mode_auto_allows_tools)
         };
         assert!(auto_allows(&mk(None)), "默认档（完全）必须就地放行");
         assert!(auto_allows(&mk(Some("bypassPermissions"))));
@@ -5607,12 +5793,11 @@ mod tests {
         use crate::external_agents::session::live::SessionCommand;
 
         let (control, mut commands) = tokio::sync::mpsc::channel(1);
-        let actor = tokio::spawn(async move {
+        let control = crate::external_agents::session::live::SessionControl::spawn(control, async move {
             assert!(matches!(commands.recv().await, Some(SessionCommand::Close)));
         });
 
         close_live_control(&control).await.unwrap();
-        actor.await.unwrap();
         assert!(control.is_closed());
     }
 
@@ -5794,7 +5979,7 @@ mod tests {
     /// 死会话的 id 不存在，`--resume` 无论换成谁都续不上。
     #[test]
     fn the_downgraded_args_open_a_brand_new_session() {
-        use crate::external_agents::defs::claude::{
+        use crate::external_agents::providers::claude::{
             claude_args_fresh_session, claude_session_id_from_args,
         };
         let dead = vec![
@@ -5826,19 +6011,43 @@ mod tests {
             .any(|w| w == ["--permission-mode", "bypassPermissions"]));
     }
 
-    #[test]
-    fn cancel_escalates_only_after_grace() {
-        let now = std::time::Instant::now();
-        let grace = std::time::Duration::from_secs(10);
-        // No cancel requested → never escalate.
-        assert!(!cancel_should_escalate(None, now, grace));
-        // Cancel just now → within grace, don't escalate.
-        assert!(!cancel_should_escalate(Some(now), now, grace));
-        // Cancel 11s ago → escalate to Close.
-        let past = now
-            .checked_sub(std::time::Duration::from_secs(11))
-            .expect("instant in range");
-        assert!(cancel_should_escalate(Some(past), now, grace));
+    #[tokio::test(start_paused = true)]
+    async fn slow_cancel_keeps_partial_reply_for_finalization() {
+        let stopped = tokio_util::sync::CancellationToken::new();
+        let mut content = String::new();
+        let result = finish_turn_after_cancel(
+            async {
+                content.push_str("partial answer");
+                stopped.cancel();
+                std::future::pending::<Result<(), String>>().await
+            },
+            stopped.cancelled(),
+        )
+        .await;
+        assert_eq!(
+            result.as_ref().err().map(String::as_str),
+            Some(CANCELLED_SESSION_LOST)
+        );
+        assert_eq!(content, "partial answer");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acknowledged_cancel_keeps_final_protocol_events() {
+        let stopped = tokio_util::sync::CancellationToken::new();
+        let mut content = String::new();
+        let result = finish_turn_after_cancel(
+            async {
+                content.push_str("partial");
+                stopped.cancel();
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                content.push_str(" final");
+                Err("cancelled".into())
+            },
+            stopped.cancelled(),
+        )
+        .await;
+        assert_eq!(result, Err("cancelled".into()));
+        assert_eq!(content, "partial final");
     }
 
     // ---- B1：常驻 claude（取消存活 / 配置变更重连 / 每轮正文）----
@@ -5892,8 +6101,6 @@ mod tests {
         ));
     }
 
-    /// Claude fingerprints reasoning/sandbox/instructions; dsh fingerprints
-    /// model/reasoning/sandbox/provider; Codex fingerprints sandbox only; ACP stays default.
     #[test]
     fn launch_config_fingerprints_process_bound_protocols() {
         let grok = |sandbox| {
@@ -5980,38 +6187,6 @@ mod tests {
                 Some("minimal")
             )
         );
-        let config_a = crate::settings::ExternalCliAgentConfig {
-            providers: vec![crate::settings::ExternalCliProvider {
-                id: "provider-a".to_string(),
-                config_json: "{\"baseURL\":\"https://a.example/v1\"}".to_string(),
-                ..Default::default()
-            }],
-            current_provider: "provider-a".to_string(),
-            ..Default::default()
-        };
-        let config_b = crate::settings::ExternalCliAgentConfig {
-            providers: vec![crate::settings::ExternalCliProvider {
-                id: "provider-b".to_string(),
-                config_json: "{\"baseURL\":\"https://b.example/v1\"}".to_string(),
-                ..Default::default()
-            }],
-            current_provider: "provider-b".to_string(),
-            ..Default::default()
-        };
-        assert_ne!(
-            dsh_provider_fingerprint_for(Some(&config_a)),
-            dsh_provider_fingerprint_for(Some(&config_b))
-        );
-        let mut config_disabled = config_a.clone();
-        config_disabled.providers[0].disabled = true;
-        assert_ne!(
-            dsh_provider_fingerprint_for(Some(&config_a)),
-            dsh_provider_fingerprint_for(Some(&config_disabled))
-        );
-        assert_ne!(
-            dsh_provider_fingerprint_for(None),
-            dsh_provider_fingerprint_for(Some(&config_a))
-        );
         assert_eq!(
             launch_config_for_turn(
                 StreamFormat::AcpJsonRpc,
@@ -6051,7 +6226,7 @@ mod tests {
         );
     }
 
-    /// 真正的启动 flag 任一变化都要触发重连（`accepts` 为 false）；全都没变则复用。
+/// 真正的启动 flag 任一变化都要触发重连（`accepts` 为 false）；全都没变则复用。
     /// **换模型是例外** —— 见下一条测试。
     #[test]
     fn every_launch_flag_change_forces_a_reconnect() {

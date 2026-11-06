@@ -58,17 +58,15 @@ fn pi_model_reasoning(model: &Value) -> Vec<RuntimeModelOption> {
 
 /// Read-only RPC discovery. No set_model (which persists settings), no prompt or session file.
 pub async fn detect_pi_models(bin: &Path, cwd: &Path, timeout_secs: u64) -> Option<PiModelsProbe> {
-    let def = &crate::external_agents::defs::pi::PI_AGENT_DEF;
-    let mut child = crate::external_agents::spawn::agent_probe_command(def, bin)
+    let def = &crate::external_agents::providers::pi::PI_AGENT_DEF;
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::agent_probe_command(def, bin)
         .args(["--mode", "rpc", "--no-session"])
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .no_console_window()
-        .kill_on_drop(true)
-        .spawn()
-        .map(crate::external_agents::spawn::AgentChild::from)
+        .kill_on_drop(true))
         .ok()?;
     let result = timeout(Duration::from_secs(timeout_secs), async {
         let mut stdin = child.stdin.take()?;
@@ -268,16 +266,14 @@ pub async fn detect_pi_commands(
     cwd: &Path,
     timeout_secs: u64,
 ) -> Option<Vec<ExternalCliSlashCommand>> {
-    let mut child = crate::external_agents::spawn::cli_command(bin)
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command(bin)
         .args(args)
         .current_dir(cwd)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .no_console_window()
-        .kill_on_drop(true)
-        .spawn()
-        .map(crate::external_agents::spawn::AgentChild::from)
+        .kill_on_drop(true))
         .ok()?;
     let mut stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;
@@ -2257,6 +2253,10 @@ pub struct PiRpcSession {
     _stderr_task: tokio::task::JoinHandle<()>,
 }
 
+impl Drop for PiRpcSession {
+    fn drop(&mut self) { self._stderr_task.abort(); }
+}
+
 impl PiRpcSession {
     pub async fn connect(
         bin: &Path,
@@ -2270,16 +2270,14 @@ impl PiRpcSession {
             persistent_session_args(args, resume_native)?;
         let resumed = claimed_resume && pi_resume_is_live(bin, &session_id, cwd);
 
-        let mut child = crate::external_agents::spawn::cli_command(bin)
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command(bin)
             .args(&effective_args)
             .current_dir(cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .no_console_window()
-            .kill_on_drop(true)
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
+            .kill_on_drop(true))
             .map_err(|error| format!("start Pi RPC: {error}"))?;
         let stdin = child
             .stdin
@@ -2357,15 +2355,20 @@ impl PiRpcSession {
 /// Spawn the actor that serializes Pi turns while keeping one RPC process alive across turns.
 pub fn spawn_pi_rpc_session_actor(
     mut session: PiRpcSession,
-) -> mpsc::Sender<crate::external_agents::session::live::SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     use crate::external_agents::session::live::SessionCommand;
 
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
-    tokio::spawn(async move {
+    crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         let mut next_control_id = 2_u64;
-        while let Some(command) = rx.recv().await {
+        loop {
+            let command = tokio::select! {
+                command = rx.recv() => match command { Some(command) => command, None => break },
+                _ = session.child.wait() => break,
+            };
             match command {
                 SessionCommand::RunTurn {
+                    cancelled,
                     prompt,
                     images,
                     events,
@@ -2375,6 +2378,7 @@ pub fn spawn_pi_rpc_session_actor(
                     reasoning,
                     extra_writable_roots: _,
                 } => {
+                    if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
                     let commands = pi_selection_commands(
                         &session.selection,
                         model.as_deref(),
@@ -2389,6 +2393,7 @@ pub fn spawn_pi_rpc_session_actor(
                         commands
                     });
                     let mut selection = std::mem::take(&mut session.selection);
+                    let generation_cancelled = cancelled;
                     let cancelled = Arc::new(AtomicBool::new(false));
                     let turn_cancelled = cancelled.clone();
                     let reader = session.reader.clone();
@@ -2404,6 +2409,7 @@ pub fn spawn_pi_rpc_session_actor(
                             }
                         }
                     });
+                    let _forward_owner = crate::external_agents::session::live::AbortOnDrop(forward.abort_handle());
                     let mut approvals = approvals;
                     let mut turn = tokio::spawn(async move {
                         let mut reader = reader.lock().await;
@@ -2419,7 +2425,7 @@ pub fn spawn_pi_rpc_session_actor(
                                     &mut sink,
                                     approvals.as_mut(),
                                     &turn_pending_controls,
-                                    &|| turn_cancelled.load(Ordering::Acquire),
+                                    &|| turn_cancelled.load(Ordering::Acquire) || generation_cancelled.as_ref().is_some_and(|token| token.is_cancelled()),
                                 )
                                 .await?;
                                 match command.get("type").and_then(Value::as_str) {
@@ -2436,7 +2442,7 @@ pub fn spawn_pi_rpc_session_actor(
                                 }
                             }
                             // An abort may already be in flight even though no prompt was sent.
-                            if turn_cancelled.load(Ordering::Acquire) {
+                            if turn_cancelled.load(Ordering::Acquire) || generation_cancelled.as_ref().is_some_and(|token| token.is_cancelled()) {
                                 return Err(
                                     crate::external_agents::session::live::CANCELLED_SESSION_LOST
                                         .to_string(),
@@ -2450,7 +2456,7 @@ pub fn spawn_pi_rpc_session_actor(
                                 &mut sink,
                                 approvals.as_mut(),
                                 Some(&turn_pending_controls),
-                                || turn_cancelled.load(Ordering::Acquire),
+                                || turn_cancelled.load(Ordering::Acquire) || generation_cancelled.as_ref().is_some_and(|token| token.is_cancelled()),
                                 true,
                             )
                             .await
@@ -2475,6 +2481,7 @@ pub fn spawn_pi_rpc_session_actor(
                         (result, selection)
                     });
 
+                    let _turn_owner = crate::external_agents::session::live::AbortOnDrop(turn.abort_handle());
                     let mut close_after_turn = false;
                     let (turn_result, updated_selection) = loop {
                         tokio::select! {
@@ -2581,8 +2588,7 @@ pub fn spawn_pi_rpc_session_actor(
             }
         }
         session.close().await;
-    });
-    tx
+    })
 }
 
 #[cfg(test)]
@@ -3062,15 +3068,13 @@ mod tests {
         use tokio::time::{timeout, Duration};
 
         let cwd = std::env::temp_dir();
-        let mut child = crate::external_agents::spawn::cli_command("pi")
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command("pi")
             .args(["--mode", "rpc"])
             .current_dir(&cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
+            .kill_on_drop(true))
             .expect("spawn pi --mode rpc");
 
         let events = std::cell::RefCell::new(Vec::<UnifiedAgentEvent>::new());
@@ -4294,7 +4298,7 @@ mod tests {
         }"#,
         )
         .unwrap();
-        let mut child = crate::external_agents::spawn::cli_command("pi")
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command("pi")
             .args([
                 "--mode",
                 "rpc",
@@ -4311,9 +4315,7 @@ mod tests {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
+            .kill_on_drop(true))
             .expect("spawn Pi RPC");
         let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
         let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();

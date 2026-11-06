@@ -39,8 +39,10 @@
 //! 不是每轮。ccgui 用的是 per-turn 临时目录 + `Drop` 删除，那套在 Kivio 会把常驻 claude
 //! 会话中途要读的文件删掉。代价是文件长期留在 app data 里（0600，与 settings.json 里
 //! 本来就明文存 key 同一威胁模型）。
-use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
+use std::hash::BuildHasher;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -48,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::external_agents::registry::get_agent_def;
-use crate::external_agents::types::ProviderProfileStrategy;
+use crate::external_agents::types::{ProviderProfileStrategy, RuntimeAgentDef};
 use crate::settings::{ExternalCliAgentConfig, ExternalCliProvider};
 
 /// 设置保存与删除命令可能并发触发；三份原生文件必须作为一个逻辑事务串行合并。
@@ -138,10 +140,20 @@ fn nonempty_env_path(key: &str) -> Option<PathBuf> {
 }
 
 fn opencode_paths() -> Option<NativePaths> {
+    opencode_paths_in(
+        nonempty_env_path("XDG_CONFIG_HOME"),
+        nonempty_env_path("XDG_DATA_HOME"),
+    )
+}
+
+fn opencode_paths_in(
+    config_home: Option<PathBuf>,
+    data_home: Option<PathBuf>,
+) -> Option<NativePaths> {
     let base = directories::BaseDirs::new()?;
     let home = base.home_dir();
-    let config_home = nonempty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
-    let data_home = nonempty_env_path("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share"));
+    let config_home = config_home.unwrap_or_else(|| home.join(".config"));
+    let data_home = data_home.unwrap_or_else(|| home.join(".local/share"));
     let config_dir = config_home.join("opencode");
     let candidates: Vec<PathBuf> = ["config.json", "opencode.json", "opencode.jsonc"]
         .into_iter()
@@ -175,7 +187,10 @@ pub fn pi_agent_dir() -> Option<PathBuf> {
 }
 
 fn pi_paths() -> Option<NativePaths> {
-    let agent = pi_agent_dir()?;
+    pi_paths_in(pi_agent_dir()?)
+}
+
+fn pi_paths_in(agent: PathBuf) -> Option<NativePaths> {
     Some(NativePaths {
         config: agent.join("models.json"),
         alternate_configs: Vec::new(),
@@ -276,16 +291,23 @@ fn dsh_provider_env(config: &ExternalCliAgentConfig) -> HashMap<String, String> 
 
 /// 要注入这个 CLI 子进程的供应商环境变量。dsh 合并全部并存供应商，其余 CLI 只用默认项。
 pub fn provider_env(agent_id: &str) -> HashMap<String, String> {
+    super::overrides::agent_config(agent_id)
+        .map(|config| provider_env_for(agent_id, &config))
+        .unwrap_or_default()
+}
+
+pub(super) fn provider_env_for(
+    agent_id: &str,
+    config: &ExternalCliAgentConfig,
+) -> HashMap<String, String> {
     let Some(def) = get_agent_def(agent_id) else {
         return HashMap::new();
     };
     if matches!(def.provider_profile, ProviderProfileStrategy::Dsh) {
-        return super::overrides::agent_config(agent_id)
-            .map(|config| dsh_provider_env(&config))
-            .unwrap_or_default();
+        return dsh_provider_env(config);
     }
 
-    let Some(provider) = super::overrides::active_provider(agent_id) else {
+    let Some(provider) = super::overrides::selected_provider(config) else {
         return HashMap::new();
     };
     if matches!(def.provider_profile, ProviderProfileStrategy::Codex) {
@@ -300,9 +322,194 @@ pub fn provider_env(agent_id: &str) -> HashMap<String, String> {
     }
     provider
         .env
-        .into_iter()
-        .map(|pair| (pair.key, pair.value))
+        .iter()
+        .map(|pair| (pair.key.clone(), pair.value.clone()))
         .collect()
+}
+
+pub(super) fn launch_profile_changed(
+    strategy: ProviderProfileStrategy,
+    before: &ExternalCliAgentConfig,
+    after: &ExternalCliAgentConfig,
+) -> bool {
+    use ProviderProfileStrategy::*;
+
+    let selected = super::overrides::selected_provider;
+    if matches!(strategy, OpenCode | Pi | Dsh) {
+        if selected(before).map(|provider| &provider.id)
+            != selected(after).map(|provider| &provider.id)
+        {
+            return true;
+        }
+        let before = before
+            .providers
+            .iter()
+            .filter(|provider| !provider.disabled);
+        let after = after.providers.iter().filter(|provider| !provider.disabled);
+        return before.clone().count() != after.clone().count()
+            || before.zip(after).any(|(before, after)| {
+                before.id != after.id
+                    || before.native_provider_id != after.native_provider_id
+                    || before.config_json != after.config_json
+                    || before.default_model != after.default_model
+                    || (strategy != Dsh
+                        && (before.auth_json != after.auth_json
+                            || resolve_native_provider_id(before).ok()
+                                != resolve_native_provider_id(after).ok()))
+                    || (strategy == Pi && before.default_reasoning != after.default_reasoning)
+            });
+    }
+    match (selected(before), selected(after)) {
+        (Some(before), Some(after)) => match strategy {
+            Claude => before.id != after.id || before.env != after.env,
+            Codex => {
+                before.id != after.id
+                    || before.config_toml != after.config_toml
+                    || before.auth_json != after.auth_json
+            }
+            Grok | Kimi => before.config_toml != after.config_toml,
+            _ => false,
+        },
+        (None, None) => false,
+        _ => strategy != Environment,
+    }
+}
+
+pub(super) fn launch_file_revision(
+    def: &RuntimeAgentDef,
+    bin: &Path,
+    config: Option<&ExternalCliAgentConfig>,
+    env: &BTreeMap<OsString, OsString>,
+    hasher: &impl BuildHasher,
+) -> u64 {
+    use ProviderProfileStrategy::*;
+
+    let env_path = |key| {
+        env.get(OsStr::new(key))
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let wsl = super::wsl::is_wsl_target(bin);
+    let mut files = Vec::new();
+    match def.provider_profile {
+        Codex => {
+            if let Some(home) = env_path("CODEX_HOME")
+                .or_else(native_codex_home)
+                .filter(|home| !wsl || (home.is_absolute() && !super::wsl::is_wsl_target(home)))
+            {
+                files.extend([home.join("config.toml"), home.join("auth.json")]);
+            }
+        }
+        Claude => {
+            if let Some(path) = config
+                .and_then(super::overrides::selected_provider)
+                .and_then(|provider| claude_settings_path_for(&provider.id))
+            {
+                files.push(path);
+            }
+            if !wsl {
+                let settings = env_path("CLAUDE_CONFIG_DIR")
+                    .map(claude_settings_path_in)
+                    .or_else(claude_native_settings_path);
+                if let Some(settings) = settings {
+                    files.push(settings.with_file_name(".credentials.json"));
+                    files.push(settings);
+                }
+            }
+        }
+        OpenCode | Pi if !wsl => {
+            let paths = if def.provider_profile == Pi {
+                env_path("PI_CODING_AGENT_DIR")
+                    .or_else(pi_agent_dir)
+                    .and_then(pi_paths_in)
+            } else {
+                opencode_paths_in(env_path("XDG_CONFIG_HOME"), env_path("XDG_DATA_HOME"))
+            };
+            if let Some(paths) = paths {
+                files.extend([paths.config, paths.auth]);
+                files.extend(paths.alternate_configs);
+                files.extend(paths.settings);
+            }
+        }
+        Grok if !wsl => files.extend(
+            env_path("GROK_HOME")
+                .map(|home| home.join("config.toml"))
+                .or_else(grok_config_path),
+        ),
+        Kimi if !wsl => files.extend(
+            env_path("KIMI_CODE_HOME")
+                .map(|home| home.join("config.toml"))
+                .or_else(kimi_config_path),
+        ),
+        Dsh if !wsl => {
+            if let Some(home) = env_path("DSH_HOME").or_else(super::dsh_profile::dsh_home) {
+                files.extend([home.join(".credentials.yaml"), home.join(".env")]);
+            }
+        }
+        _ => {}
+    }
+
+    let revisions: Vec<_> = files
+        .into_iter()
+        .filter_map(|path| {
+            let revision = launch_config_file_revision(&path, def.provider_profile, hasher)?;
+            Some((path, revision))
+        })
+        .collect();
+    hasher.hash_one(revisions)
+}
+
+fn launch_config_file_revision(
+    path: &Path,
+    strategy: ProviderProfileStrategy,
+    hasher: &impl BuildHasher,
+) -> Option<u64> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    // shortcut: use metadata for large files. Stream a digest if a CLI starts storing large credential files.
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    let metadata_revision = || hasher.hash_one((metadata.len(), metadata.modified().ok()));
+    if metadata.len() > LIMIT {
+        return Some(metadata_revision());
+    }
+    let mut content = Vec::new();
+    if std::fs::File::open(path)
+        .and_then(|file| file.take(LIMIT + 1).read_to_end(&mut content))
+        .is_err()
+        || content.len() as u64 > LIMIT
+    {
+        return Some(metadata_revision());
+    }
+    match (strategy, path.file_name().and_then(OsStr::to_str)) {
+        (ProviderProfileStrategy::Codex, Some("config.toml")) => {
+            if let Some(mut config) = std::str::from_utf8(&content)
+                .ok()
+                .and_then(|text| toml::from_str::<toml::Table>(text).ok())
+            {
+                config.remove("model");
+                config.remove("model_reasoning_effort");
+                return (!config.is_empty())
+                    .then(|| hasher.hash_one(toml::Value::Table(config).to_string()));
+            }
+        }
+        (ProviderProfileStrategy::Claude, Some(name)) if name != ".credentials.json" => {
+            if let Ok(mut config) = serde_json::from_slice::<Map<String, Value>>(&content) {
+                config.remove("model");
+                if let Some(env) = config.get_mut("env").and_then(Value::as_object_mut) {
+                    env.retain(|key, _| !CLAUDE_CHAT_MODEL_ENV_KEYS.contains(&key.as_str()));
+                    if env.is_empty() {
+                        config.remove("env");
+                    }
+                }
+                return (!config.is_empty())
+                    .then(|| hasher.hash_one(Value::Object(config).to_string()));
+            }
+        }
+        _ => {}
+    }
+    Some(hasher.hash_one(content))
 }
 
 /// claude 启动时要追加的 `--settings <path>`；无供应商 / 文件没物化成功时返回 None。
@@ -694,15 +901,19 @@ fn persist_codex_model(model: &str, reasoning: Option<&str>) -> Result<(), Strin
 fn claude_native_settings_path() -> Option<PathBuf> {
     let dir = nonempty_env_path("CLAUDE_CONFIG_DIR")
         .or_else(|| directories::BaseDirs::new().map(|base| base.home_dir().join(".claude")))?;
+    Some(claude_settings_path_in(dir))
+}
+
+fn claude_settings_path_in(dir: PathBuf) -> PathBuf {
     let settings = dir.join("settings.json");
     if settings.is_file() {
-        return Some(settings);
+        return settings;
     }
     let legacy = dir.join("claude.json");
     if legacy.is_file() {
-        return Some(legacy);
+        return legacy;
     }
-    Some(settings)
+    settings
 }
 
 fn codex_native_config_path() -> Option<PathBuf> {

@@ -340,6 +340,7 @@ pub fn run() {
             }
 
             let mut settings = load_settings(&app.handle());
+            external_agents::overrides::sync_from_settings(&settings);
             // 旧版本随应用附带的内置专家已全部下线：启动时清理残留条目，并清空集里
             // 指向已不存在助手的默认助手。用户自建专家不受影响；清理幂等，旧备份恢复后
             // 再次出现的条目也会在下次启动被移除。

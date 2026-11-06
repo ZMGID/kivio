@@ -21,7 +21,6 @@ import type { InputBarProps } from '../InputBar'
 import {
   deriveDshPresetModes,
   derivePermissionModes,
-  useDetectedExternalAgents,
   useDshCustomPresets,
 } from '../permissionModes'
 import { SessionUsageStrip } from '../SessionUsageStrip'
@@ -35,6 +34,7 @@ import type {
   ChatSet,
   Conversation,
   ConversationContextState,
+  DetectedExternalAgent,
   ModelRef,
   PendingAttachment,
   SkillMeta,
@@ -114,6 +114,7 @@ type UsePopoutComposerArgs = {
   usesChatRuntime: boolean
   usesExternalRuntime: boolean
   runtime: AgentRuntimeConfig
+  detectedExternalAgents: DetectedExternalAgent[]
   onSend: (
     content: string,
     attachments: PendingAttachment[],
@@ -135,6 +136,7 @@ export function usePopoutComposer({
   usesChatRuntime,
   usesExternalRuntime,
   runtime,
+  detectedExternalAgents,
   onSend,
   onCancel,
   cancelVisible,
@@ -165,7 +167,6 @@ export function usePopoutComposer({
   const [boundSet, setBoundSet] = useState<ChatSet | null>(null)
   const [gitWorkdir, setGitWorkdir] = useState('')
 
-  const detectedExternalAgents = useDetectedExternalAgents(conversationId)
   const dshCustomPresets = useDshCustomPresets(runtime)
   const activeAgentPlanMode = conversation?.agent_plan_state?.mode
     ?? conversation?.agentPlanState?.mode

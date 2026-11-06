@@ -401,6 +401,21 @@ impl ConversationRepository {
         .await
     }
 
+    pub(crate) async fn with_existing_conversation<T>(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let _barrier = self.barrier.read().await;
+        let lock = self.conversation_lock(id);
+        let _conversation = lock.lock().await;
+        if !super::storage::conversation_file_path(app, id)?.is_file() {
+            return Err("conversation no longer exists".to_string());
+        }
+        operation()
+    }
+
     pub async fn get(&self, app: &AppHandle, id: &str) -> RepositoryResult<Conversation> {
         let _barrier = self.barrier.read().await;
         let lock = self.conversation_lock(id);

@@ -26,10 +26,6 @@ const AGENT_LABELS: Record<string, string> = {
   cursor: 'Cursor',
 }
 
-/// kimi 的 `session/load` 能绑定但不重放历史，本地 wire 也没有稳定可读的 assistant 正文，
-/// 所以导进来消息区是空的。这条必须在勾选前就说清楚，不能等导完让用户以为丢数据了。
-const NO_HISTORY_AGENTS = new Set(['kimi'])
-
 interface CliImportDialogProps {
   project: ChatProject
   onClose: () => void
@@ -255,7 +251,7 @@ export function CliImportDialog({
                     {AGENT_LABELS[agentId] ?? agentId}
                   </span>
                   <span className="text-[11px] text-neutral-400">{t.chatSkillCliCount.replace('{n}', String(list.length))}</span>
-                  {NO_HISTORY_AGENTS.has(agentId) && (
+                  {list.some((session) => session.importHistory === 'fallback') && (
                     <span className="text-[11px] text-amber-600 dark:text-amber-500">
                       {t.chatSkillCliNoHistoryHint}
                     </span>

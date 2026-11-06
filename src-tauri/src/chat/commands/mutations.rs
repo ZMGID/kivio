@@ -1224,7 +1224,11 @@ pub(crate) async fn chat_delete_conversation(
         crate::chat::sub_agent::registry::artifacts_dir(&app, &conversation_id)
     })?;
     // 删对话即终止其持久外部 CLI 会话（actor 关闭子进程）并清掉跨重启 resume 句柄。
-    state.external_live_sessions().remove(&conversation_id);
+    state.cancel_chat_generation(&conversation_id);
+    let _retirement = state
+        .external_live_sessions()
+        .retire_conversation(&conversation_id)
+        .await?;
     crate::external_agents::session::clear_live_handle(&app, &conversation_id);
     // 该对话起的后台命令也一并收掉。它们本来只在退出应用时统一清（跨轮存活是有意的），
     // 但一个还在跑的 dev server 会把 cwd 钉在对话工作区里，Windows 上直接导致工作区
@@ -1595,7 +1599,18 @@ pub(crate) async fn chat_bulk_delete_conversations(
         }
         // 与单条删除一致：外部 CLI 会话 / 后台命令 / 运行态小 map 都先清，
         // 否则工作区被占着时副产物清理会失败，用户体感「删不掉」。
-        state.external_live_sessions().remove(&conversation_id);
+        state.cancel_chat_generation(&conversation_id);
+        let _retirement = match state
+            .external_live_sessions()
+            .retire_conversation(&conversation_id)
+            .await
+        {
+            Ok(retirement) => retirement,
+            Err(error) => {
+                warnings.push(format!("{conversation_id}: {error}"));
+                continue;
+            }
+        };
         crate::external_agents::session::clear_live_handle(&app, &conversation_id);
         let killed = state
             .background_commands_handle()
