@@ -274,22 +274,6 @@ struct WorkflowToolExecutor {
 }
 
 impl ToolExecutor for WorkflowToolExecutor {
-    fn prepare_result<'a>(
-        &'a self,
-        ctx: &ToolExecutionContext<'_>,
-        tool: &ChatToolDefinition,
-        arguments: &Value,
-        output: crate::mcp::types::McpToolCallResult,
-    ) -> ToolExecutorFuture<'a> {
-        crate::chat::artifacts::prepare_output(
-            &self.app,
-            ctx.tool_conversation_id,
-            ctx.message_id,
-            tool,
-            arguments,
-            output,
-        )
-    }
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
@@ -298,14 +282,27 @@ impl ToolExecutor for WorkflowToolExecutor {
         skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
-            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
-            crate::mcp::registry::call_tool(
+            let result_arguments = arguments.clone();
+            let output: crate::mcp::types::McpToolCallResult = async {
+                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                crate::mcp::registry::call_tool(
+                    &self.app,
+                    &self.app.state::<AppState>(),
+                    tool,
+                    arguments,
+                    skill_context,
+                    Some(native_ctx),
+                )
+                .await
+            }
+            .await?;
+            crate::chat::tool_output::prepare(
                 &self.app,
-                &self.app.state::<AppState>(),
+                ctx.tool_conversation_id,
+                ctx.message_id,
                 tool,
-                arguments,
-                skill_context,
-                Some(native_ctx),
+                &result_arguments,
+                output,
             )
             .await
         })

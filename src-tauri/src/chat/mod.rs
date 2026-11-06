@@ -40,6 +40,8 @@ pub(crate) mod slash_commands;
 pub mod storage;
 pub mod sub_agent;
 pub mod todo;
+pub mod tools;
+pub(crate) mod tool_output;
 pub mod types;
 pub(crate) mod video;
 mod video_analysis;

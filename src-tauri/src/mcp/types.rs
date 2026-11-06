@@ -1,5 +1,6 @@
 pub use crate::chat::model::ModelArtifact as ChatToolArtifact;
 use crate::chat::model::ModelTool;
+use crate::chat::tools::{ArgumentPolicy, ToolTimeout};
 
 use serde::{Deserialize, Serialize};
 
@@ -108,6 +109,38 @@ impl ChatToolDefinition {
                 "parameters": self.input_schema,
             }
         })
+    }
+
+    pub fn timeout_policy(&self) -> ToolTimeout {
+        match self.source.as_str() {
+            "native" => super::native_registry::find_entry(&self.name)
+                .map_or(ToolTimeout::Default, |entry| entry.timeout),
+            "mixer" => match self.name.as_str() {
+                "mixer_video_analysis" => ToolTimeout::AtLeast(300_000),
+                "mixer_generate_image" => ToolTimeout::AtLeast(
+                    crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS,
+                ),
+                _ => ToolTimeout::Default,
+            },
+            _ => ToolTimeout::Default,
+        }
+    }
+
+    pub fn argument_policy(&self) -> ArgumentPolicy {
+        if self.source == "native" {
+            return super::native_registry::find_entry(&self.name)
+                .map_or(ArgumentPolicy::Schema, |entry| entry.arguments);
+        }
+        ArgumentPolicy::Schema
+    }
+
+    pub fn parallel_safe(&self) -> bool {
+        match self.source.as_str() {
+            "native" => super::native_registry::find_entry(&self.name)
+                .is_some_and(|entry| entry.parallel_safe),
+            "mcp" => self.is_read_only_tool(),
+            _ => false,
+        }
     }
 
     pub fn read_only_hint(&self) -> Option<bool> {
@@ -396,14 +429,7 @@ pub fn native_write_file_tool() -> ChatToolDefinition {
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "Target file path. Relative paths use the current working directory (project root or conversation workbench). Explicit absolute and ~/ paths can point outside it; normal OS permissions and tool approvals apply." },
-                "content": { "type": "string", "description": "Full text content to save" }
-            },
-            "required": ["path", "content"]
-        }),
+        input_schema: crate::chat::tools::input_schema::<crate::native_tools::WriteFile>(),
         sensitive: true,
         annotations: None,
         output_schema: None,
@@ -1683,6 +1709,7 @@ mod tests {
         assert_eq!(tool.output_schema.as_ref(), Some(&output_schema));
         assert_eq!(tool.read_only_hint(), Some(true));
         assert!(tool.is_read_only_tool());
+        assert!(tool.parallel_safe());
         assert!(tool.sensitive);
     }
 
@@ -1757,6 +1784,7 @@ mod tests {
 
         assert!(tool.sensitive);
         assert!(!tool.is_read_only_tool());
+        assert!(!tool.parallel_safe());
     }
 
     #[test]

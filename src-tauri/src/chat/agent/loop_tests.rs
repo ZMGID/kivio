@@ -16,13 +16,15 @@ use crate::chat::model::{StreamPart, StreamSink as _};
 use crate::chat::types::ToolCallStatus;
 use crate::mcp::types::{
     native_read_file_tool, native_run_command_tool, native_web_fetch_tool, native_write_file_tool,
-    McpToolCallResult,
 };
 use crate::settings::{ChatToolsConfig, ModelProvider};
 use crate::state::AppState;
 
 #[path = "compaction_live_tests.rs"]
 mod compaction_live_tests;
+
+#[path = "tool_contract_tests.rs"]
+mod tool_contract_tests;
 
 #[derive(Clone, Debug)]
 struct RecordedDelta {
@@ -438,7 +440,7 @@ impl ToolExecutor for RecordingExecutor {
                 .unwrap_or_else(|err| err.into_inner())
                 .push(format!("finish:{name}"));
             self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(McpToolCallResult {
+            crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult {
                 content: format!("result:{name}"),
                 is_error: false,
                 raw: Value::Null,
@@ -470,7 +472,7 @@ impl ToolExecutor for PreviewFeedbackExecutor<'_> {
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
-        _tool: &'a ChatToolDefinition,
+        tool: &'a ChatToolDefinition,
         _arguments: Value,
         _skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
@@ -493,7 +495,7 @@ impl ToolExecutor for PreviewFeedbackExecutor<'_> {
                 || Ok(self.conversation.clone()),
             )
             .await;
-            Ok(result)
+            crate::chat::tool_output::from_mcp(tool, result)
         })
     }
 }
@@ -518,7 +520,7 @@ impl ToolExecutor for CancelAfterToolExecutor {
         let cancel_flag = self.cancel_flag.clone();
         Box::pin(async move {
             cancel_flag.store(true, Ordering::SeqCst);
-            Ok(McpToolCallResult {
+            crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult {
                 content: format!("result:{name}"),
                 is_error: false,
                 raw: Value::Null,
@@ -989,7 +991,7 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
                 assert_eq!(native.mcp_server_ids[0], "allowed");
                 assert_eq!(native.approval_policy, "readonly_auto_sensitive_confirm");
                 assert!(native.interactive_host);
-                Ok(McpToolCallResult::default())
+                Ok(super::super::execute::AgentToolOutput::default())
             })
         }
     }
@@ -2716,12 +2718,12 @@ impl ToolExecutor for HugeResultExecutor {
     fn call<'a>(
         &'a self,
         _ctx: &'a ToolExecutionContext<'a>,
-        _tool: &'a ChatToolDefinition,
+        tool: &'a ChatToolDefinition,
         _arguments: Value,
         _skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         Box::pin(async move {
-            Ok(McpToolCallResult {
+            crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult {
                 content: "A".repeat(self.chars),
                 is_error: false,
                 raw: Value::Null,
@@ -3132,7 +3134,7 @@ async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provid
         ) -> super::super::execute::ToolExecutorFuture<'a> {
             Box::pin(async move {
                 if tool.name != "task" {
-                    return Ok(McpToolCallResult { content: "Read result".into(), ..Default::default() });
+                    return crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult { content: "Read result".into(), ..Default::default() });
                 }
                 let drafts = self.host.persisted_drafts.lock().unwrap();
                 let (records, messages) = drafts.last().expect("checkpoint precedes task execution");
@@ -3144,7 +3146,7 @@ async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provid
                 assert!(messages.len() >= 2, "completed prior tool work remains replayable");
                 assert!(!serde_json::to_string(messages).unwrap().contains("call_task"),
                     "the incomplete tool-call message must not enter replay");
-                Ok(McpToolCallResult { content: "Task result".into(), ..Default::default() })
+                crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult { content: "Task result".into(), ..Default::default() })
             })
         }
     }

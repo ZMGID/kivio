@@ -972,7 +972,7 @@ mod delete_side_artifact_tests {
         );
         crate::native_tools::write_file(
             &workspace,
-            &serde_json::json!({"path":"report.txt","content":"keep"}),
+            &crate::native_tools::WriteArgs { path: "report.txt".into(), content: "keep".into() },
         )
         .unwrap();
         let attachments = dir.path().join("conv_one_attachments");
