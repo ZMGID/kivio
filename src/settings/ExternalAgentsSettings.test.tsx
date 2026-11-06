@@ -6,6 +6,15 @@ import { resetCliInstallJobsForTests } from './cliInstallJobs'
 import type { Settings as SettingsData } from '../api/tauri'
 import type { ProviderCapabilities } from '../generated/chatProtocol'
 
+const preparedInstall = vi.hoisted(() => ({
+  planId: 'prepared-plan',
+  manualReason: null,
+  binaryPath: '/prefix/bin/cli',
+  targetVersion: '1.1.0',
+  environment: 'host',
+  source: 'npm',
+}))
+
 vi.mock('../api/externalCliSettings', () => ({
   externalCliSettingsApi: {
     detectExternalAgents: vi.fn(),
@@ -17,10 +26,11 @@ vi.mock('../api/externalCliSettings', () => ({
       updateAvailable: true,
       command: 'npm install -g @anthropic-ai/claude-code@latest',
       docsUrl: 'https://docs.claude.com',
+      ...preparedInstall,
       configDir: '/home/u/.claude',
     }),
     externalCliInstall: vi.fn(),
-    externalCliProviderCleanup: vi.fn(),
+    externalCliImportCcSwitch: vi.fn(),
     externalCliScanCcSwitch: vi.fn().mockResolvedValue({ providers: [], skipped: 0 }),
     externalCliFetchRelayModels: vi.fn().mockResolvedValue([]),
     dshPluginSettingsGet: vi.fn().mockResolvedValue(null),
@@ -140,6 +150,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: true,
       command: 'npm install -g @anthropic-ai/claude-code@latest',
       docsUrl: 'https://docs.claude.com',
+      ...preparedInstall,
       configDir: '/home/u/.claude',
     })
     mockInstall.mockResolvedValue()
@@ -163,6 +174,23 @@ describe('ExternalAgentsSettings', () => {
     expect(mockDetect).toHaveBeenCalled()
   })
 
+  it('removes an adopted provider through the settings draft without deleting native files early', async () => {
+    mockDetect.mockResolvedValue([{
+      id: 'dsh', name: 'DeepSeek Harness', available: true, capabilities, models: [],
+      nativeProviders: [{ id: 'relay', name: 'Relay', modelCount: 1, isDefault: true }],
+    }])
+    const { updateChat } = renderPanel({ externalCliAgents: { dsh: {
+      currentProvider: 'managed',
+      providers: [{ id: 'managed', name: 'Relay', nativeProviderId: 'relay', env: [], configToml: '', authJson: '' }],
+    } } })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    fireEvent.click(await screen.findByRole('button', { name: '删除' }))
+    await waitFor(() => expect(updateChat).toHaveBeenCalledWith(expect.objectContaining({
+      externalCliAgents: { dsh: { currentProvider: '', providers: [] } },
+    })))
+    expect(mockNativeDelete).not.toHaveBeenCalled()
+  })
+
   it('shows an explicit update status and update action only when a newer version exists', async () => {
     renderPanel()
 
@@ -170,6 +198,7 @@ describe('ExternalAgentsSettings', () => {
       expect(screen.getByText('可更新到 1.1.0')).toBeInTheDocument()
     })
     expect(screen.getByRole('button', { name: '更新' })).toBeInTheDocument()
+    expect(screen.getByText([preparedInstall.source, preparedInstall.environment, preparedInstall.targetVersion, preparedInstall.binaryPath].join(' · '))).toBeInTheDocument()
   })
 
   it('rescans all agents after an update command finishes', async () => {
@@ -179,7 +208,7 @@ describe('ExternalAgentsSettings', () => {
     fireEvent.click(update)
 
     await waitFor(() => {
-      expect(mockInstall).toHaveBeenCalledWith('claude')
+      expect(mockInstall).toHaveBeenCalledWith('claude', 'prepared-plan')
       expect(mockDetect).toHaveBeenCalledWith(true)
     })
     expect(screen.getByRole('status')).toHaveTextContent('安装完成')
@@ -198,6 +227,7 @@ describe('ExternalAgentsSettings', () => {
     let emit:
       | ((event: {
           agentId: string
+          planId: string
           line: string | null
           done: boolean
           success: boolean
@@ -223,6 +253,7 @@ describe('ExternalAgentsSettings', () => {
 
     emit?.({
       agentId: 'claude',
+      planId: 'prepared-plan',
       line: '$ npm install -g @anthropic-ai/claude-code@latest',
       done: false,
       success: false,
@@ -263,6 +294,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: true,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/deepseek-harness',
+      ...preparedInstall,
       configDir: 'C:\\Users\\u\\.dsh',
     })
 
@@ -293,6 +325,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: true,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/deepseek-harness',
+      ...preparedInstall,
       configDir: 'C:\\Users\\u\\.dsh',
     })
 
@@ -326,6 +359,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/deepseek-harness',
+      ...preparedInstall,
       configDir: 'C:\\Users\\u\\.dsh',
     })
 
@@ -346,6 +380,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @anthropic-ai/claude-code@latest',
       docsUrl: 'https://docs.claude.com',
+      ...preparedInstall,
       configDir: '/home/u/.claude',
     })
 
@@ -376,6 +411,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/deepseek-harness',
+      ...preparedInstall,
       configDir: null,
     })
 
@@ -396,6 +432,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @anthropic-ai/claude-code@latest',
       docsUrl: 'https://docs.claude.com',
+      ...preparedInstall,
       configDir: '/home/u/.claude',
     })
 
@@ -415,7 +452,10 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: true,
       command: null,
       docsUrl: 'https://www.geminicli.com/docs/get-started/installation',
+      ...preparedInstall,
       configDir: '/home/u/.gemini',
+      planId: null,
+      manualReason: '无法确认此安装的 npm 来源，请按官方文档维护',
     })
 
     renderPanel()
@@ -423,6 +463,7 @@ describe('ExternalAgentsSettings', () => {
     await waitFor(() => {
       expect(screen.getByText('可更新到 1.1.0，请按官方文档手动更新')).toBeInTheDocument()
     })
+    expect(screen.getByText('无法确认此安装的 npm 来源，请按官方文档维护')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '更新' })).not.toBeInTheDocument()
   })
 
@@ -481,6 +522,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @mariozechner/pi-coding-agent@latest',
       docsUrl: 'https://github.com/badlogic/pi-mono',
+      ...preparedInstall,
       configDir: '/home/u/.pi/agent',
     })
 
@@ -554,6 +596,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/dsh',
+      ...preparedInstall,
       configDir: 'C:\\Users\\u\\.dsh',
     })
 
@@ -598,6 +641,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/dsh',
+      ...preparedInstall,
       configDir: 'C:\\Users\\u\\.dsh',
     })
     mockNativeGet.mockResolvedValue({
@@ -666,6 +710,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/dsh',
+      ...preparedInstall,
       configDir: 'C:\\Users\\u\\.dsh',
     })
 
@@ -712,6 +757,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/dsh',
+      ...preparedInstall,
       configDir: 'C:\\Users\\u\\.dsh',
     })
 
@@ -752,6 +798,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @earendil-works/pi-coding-agent@latest',
       docsUrl: 'https://github.com/badlogic/pi-mono',
+      ...preparedInstall,
       configDir: '/home/u/.pi/agent',
     })
 
@@ -788,6 +835,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @earendil-works/pi-coding-agent@latest',
       docsUrl: 'https://github.com/badlogic/pi-mono',
+      ...preparedInstall,
       configDir: '/home/u/.pi/agent',
     })
 
@@ -824,6 +872,7 @@ describe('ExternalAgentsSettings', () => {
       updateAvailable: false,
       command: 'npm install -g @deepseek-ai/dsh@latest',
       docsUrl: 'https://github.com/deepseek-ai/dsh',
+      ...preparedInstall,
       configDir: 'C:\\Users\\u\\.dsh',
     })
 

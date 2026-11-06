@@ -276,7 +276,10 @@ pub fn env_for(id: &str) -> HashMap<String, String> {
     env_for_config(id, get(id).as_ref())
 }
 
-fn env_for_config(id: &str, config: Option<&ExternalCliAgentConfig>) -> HashMap<String, String> {
+pub(crate) fn env_for_config(
+    id: &str,
+    config: Option<&ExternalCliAgentConfig>,
+) -> HashMap<String, String> {
     match config {
         Some(cfg) => merge_env(provider_profile::provider_env_for(id, cfg), &cfg.env),
         None => HashMap::new(),

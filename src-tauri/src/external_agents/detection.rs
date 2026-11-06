@@ -770,13 +770,9 @@ fn unquote_toml_scalar(value: &str) -> Option<String> {
 
 /// 读 pi settings.json 的当前模型与默认思考档。缺文件/键 → None。
 fn read_pi_current_config() -> (Option<String>, Option<String>) {
-    let Some(base) = directories::BaseDirs::new() else {
+    let Some(agent_dir) = super::provider_profile::pi_agent_dir() else {
         return (None, None);
     };
-    let agent_dir = std::env::var_os("PI_CODING_AGENT_DIR")
-        .filter(|value| !value.is_empty())
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| base.home_dir().join(".pi").join("agent"));
     let path = agent_dir.join("settings.json");
     match std::fs::read_to_string(&path) {
         Ok(text) => parse_pi_config(&text),

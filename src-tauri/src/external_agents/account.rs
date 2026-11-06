@@ -70,11 +70,15 @@ pub async fn probe(
     bin: &Path,
     cwd: &Path,
 ) -> Result<Value, String> {
+    let identity = super::overrides::LaunchIdentity::capture(def, bin);
     let protocol = probe.protocol;
     let claude = protocol == AccountProtocol::ClaudeControl;
     let grok = protocol == AccountProtocol::GrokBilling;
     let mut command = agent_cli_command(def, bin);
     command.args(probe.args);
+    if claude {
+        command.args(super::provider_profile::claude_overlay_args());
+    }
     let mut child = AgentChild::spawn(
         command
             .current_dir(cwd)
@@ -115,6 +119,9 @@ pub async fn probe(
     }).await.unwrap_or_else(|_| Err("账号查询超时，请确认 CLI 可正常启动".into()));
     let _ = join_stderr_tail(&mut child, tail).await;
     let _ = child.wait().await;
+    if !identity.still_current(def, bin) {
+        return Err("Account settings changed; retry".into());
+    }
     result
 }
 

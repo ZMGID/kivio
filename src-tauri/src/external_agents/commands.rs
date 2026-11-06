@@ -121,26 +121,6 @@ fn spawn_availability_refresh(app: AppHandle) {
     });
 }
 
-/// 删除供应商时清掉它物化出来的文件（不影响任何设置，纯清理）。
-///
-/// 「保存设置 → 物化 + 清缓存」那条路在 `settings::persist_settings` 里，不需要前端调命令；
-/// 删除是唯一一个保存后**没有任何东西会去动那些文件**的操作，所以单独留一个口。
-#[tauri::command]
-pub async fn chat_external_cli_provider_cleanup(
-    agent_id: String,
-    provider_id: String,
-    native_provider_id: Option<String>,
-    provider_name: Option<String>,
-) -> Result<(), String> {
-    crate::external_agents::provider_profile::cleanup(
-        &agent_id,
-        &provider_id,
-        native_provider_id.as_deref(),
-        provider_name.as_deref(),
-    );
-    Ok(())
-}
-
 /// 解析 Pi 实际使用的 agent 目录（认 `PI_CODING_AGENT_DIR`）。
 #[tauri::command]
 pub fn chat_external_cli_pi_agent_dir() -> Option<String> {
@@ -164,6 +144,12 @@ pub async fn chat_external_cli_fetch_relay_models(
 pub async fn chat_external_cli_scan_cc_switch() -> Result<serde_json::Value, String> {
     let scan = crate::external_agents::cc_switch::scan()?;
     serde_json::to_value(scan).map_err(|e| e.to_string())
+}
+#[tauri::command]
+pub async fn chat_external_cli_import_cc_switch(
+    selections: Vec<super::cc_switch::ImportSelection>,
+) -> Result<Vec<super::cc_switch::ImportedProvider>, String> {
+    super::cc_switch::import_selected(&selections)
 }
 
 /// dsh 的供应商摘要只是读 `settings.yaml`，跟 binary/auth 探测无关，缓存命中也重读，
@@ -649,6 +635,7 @@ pub async fn chat_external_cli_account(
 ) -> Result<serde_json::Value, String> {
     let def = get_agent_def(&agent_id).ok_or("未知 CLI")?;
     let probe = def.account.ok_or("此 CLI 未提供账号额度查询")?;
+    let _resource = super::session::live::ResourceLease::pending(def.id)?;
     let cwd = resolve_detection_cwd(&app, conversation_id.as_deref())?;
     let bin = crate::external_agents::spawn::resolve_binary(def)
         .await

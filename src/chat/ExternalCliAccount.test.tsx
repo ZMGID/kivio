@@ -3,7 +3,10 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { ExternalCliAccount } from './ExternalCliAccount'
 import { externalCliSettingsApi, type ExternalCliAccount as Account } from '../api/externalCliSettings'
 import type { ProviderCapabilities } from '../generated/chatProtocol'
+import { peekSettings, subscribeSettings } from '../api/settingsCache'
+import { makeSettings } from '../settings/tabs/testFixtures'
 vi.mock('../api/externalCliSettings', () => ({ externalCliSettingsApi: { getExternalCliAccount: vi.fn() } }))
+vi.mock('../api/settingsCache', () => ({ peekSettings: vi.fn(), subscribeSettings: vi.fn(() => () => {}) }))
 
 const capabilities: ProviderCapabilities = {
   steering: 'unavailable',
@@ -16,7 +19,11 @@ const capabilities: ProviderCapabilities = {
 }
 
 const get = vi.mocked(externalCliSettingsApi.getExternalCliAccount)
-beforeEach(() => get.mockReset())
+beforeEach(() => {
+  get.mockReset()
+  vi.mocked(peekSettings).mockReset().mockReturnValue(null)
+  vi.mocked(subscribeSettings).mockClear()
+})
 
 it.each(['fallback', 'unavailable'] as const)('skips the quota request when account support is %s', (account) => {
   render(<ExternalCliAccount agent={{ id: 'codex', name: 'Codex', capabilities: { ...capabilities, account } }} />)
@@ -43,4 +50,26 @@ it('reads quota on mount and ignores identity responses from a previous CLI', as
   await act(async () => { oldReply({ agentId: 'codex', account: { email: 'stale@example.test', type: null, plan: null }, windows: [], credits: null, unavailable: null, checkedAt: 1 }) })
   expect(screen.queryByText('stale@example.test')).not.toBeInTheDocument()
   expect(screen.getByText(/current@example\.test/)).toBeInTheDocument()
+})
+
+it('refreshes changed CLI settings and discards the previous account response', async () => {
+  let stale!: (value: Account) => void
+  get.mockReturnValueOnce(new Promise<Account>((resolve) => { stale = resolve }))
+  const current: Account = {
+    agentId: 'codex', account: null,
+    windows: [{ name: 'five_hour', usedPercent: 20, resetsAt: null, windowDurationMins: null }],
+    credits: null, unavailable: null, checkedAt: 1,
+  }
+  get.mockResolvedValue(current)
+  render(<ExternalCliAccount agent={{ id: 'codex', name: 'Codex', capabilities }} conversationId="c1" />)
+  const listener = vi.mocked(subscribeSettings).mock.calls[0][0]
+  const settings = makeSettings()
+  act(() => listener(settings))
+  expect(get).toHaveBeenCalledTimes(1)
+  settings.chat = { ...settings.chat, externalCliAgents: { codex: { path: '/new/codex' } } }
+  act(() => listener(settings))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 80%'))
+  expect(get).toHaveBeenCalledTimes(2)
+  await act(async () => { stale({ ...current, windows: [{ ...current.windows[0], usedPercent: 99 }] }) })
+  expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 80%')
 })

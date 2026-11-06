@@ -196,6 +196,17 @@ async fn apply_settings(
     if preserve_oauth {
         crate::mcp::manager::preserve_live_oauth(&mut sanitized, &previous_settings);
     }
+    crate::external_agents::provider_profile::retry_profile_recovery()?;
+    let profile_agents =
+        crate::external_agents::provider_profile::changed_agents(&previous_settings, &sanitized);
+    let profile_keys = crate::external_agents::provider_profile::settings_resource_keys(
+        &previous_settings,
+        &sanitized,
+    );
+    let profile_lease = state
+        .external_live_sessions()
+        .prepare_settings_change(&profile_agents, profile_keys)
+        .await?;
     if should_apply_launch_at_startup(
         Some(previous_settings.launch_at_startup),
         sanitized.launch_at_startup,
@@ -230,7 +241,13 @@ async fn apply_settings(
         }
     }
 
-    let committed = match commit_settings(app, state, snapshot.version, sanitized) {
+    let commit = || commit_settings(app, state, snapshot.version, sanitized);
+    let result = match profile_lease.as_ref() {
+        Some(lease) => crate::external_agents::session::live::MAINTENANCE_OWNER
+            .sync_scope(lease.clone(), commit),
+        None => commit(),
+    };
+    let committed = match result {
         Ok(committed) => committed,
         Err(err) => {
             eprintln!("Failed to save settings: {err}");
@@ -260,6 +277,8 @@ async fn apply_settings(
             return Err(err);
         }
     };
+
+    drop(profile_lease);
 
     state
         .provider_runtime()

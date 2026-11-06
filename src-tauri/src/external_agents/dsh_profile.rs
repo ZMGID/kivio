@@ -102,13 +102,11 @@ const HOST_PLANE_TOOL_IDS: &[&str] = &[
 
 /// `$DSH_HOME`，未设时 `~/.dsh`（与上游 `resolveDshHome` 同序）。
 pub(crate) fn dsh_home() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("DSH_HOME") {
-        let path = PathBuf::from(home);
-        if !path.as_os_str().is_empty() {
-            return Some(path);
-        }
-    }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".dsh"))
+    super::provider_profile::effective_dsh_path(
+        &super::overrides::agent_config("dsh").unwrap_or_default(),
+    )
+    .and_then(|path| path.parent().map(Path::to_path_buf))
+    .filter(|path| path.is_absolute())
 }
 
 /// `$DSH_HOME/profiles/kivio/`。

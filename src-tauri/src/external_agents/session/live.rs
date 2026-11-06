@@ -16,6 +16,160 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::external_agents::types::{RuntimeAgentDef, UnifiedAgentEvent};
 
+tokio::task_local! {
+    pub(crate) static PROCESS_CONVERSATION: String;
+    pub(crate) static MAINTENANCE_OWNER: ResourceLease;
+}
+
+#[derive(Default)]
+struct ResourceState {
+    uses: HashMap<uuid::Uuid, ResourceEntry>,
+}
+struct ResourceEntry {
+    keys: Vec<String>,
+    exclusive: bool,
+    conversation: Option<String>,
+    pending: bool,
+}
+static RESOURCE_STATE: std::sync::LazyLock<Mutex<ResourceState>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) fn resource_path(path: &std::path::Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let components: Vec<_> = absolute.components().collect();
+    let mut normalized = absolute.clone();
+    for count in (1..=components.len()).rev() {
+        let ancestor: std::path::PathBuf = components[..count].iter().collect();
+        if let Ok(mut resolved) = std::fs::canonicalize(ancestor) {
+            for component in &components[count..] {
+                match component {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        resolved.pop();
+                    }
+                    other => resolved.push(other.as_os_str()),
+                }
+            }
+            normalized = resolved;
+            break;
+        }
+    }
+    let value = crate::utils::strip_windows_verbatim_prefix(normalized)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if cfg!(windows) {
+        value.to_lowercase()
+    } else {
+        value
+    }
+}
+
+pub(crate) fn runtime_resources(agent: Option<&str>, binary: &std::path::Path) -> Vec<String> {
+    let mut keys = vec![format!("binary:{}", resource_path(binary))];
+    if let Some(agent) = agent {
+        keys.push(format!("agent:{agent}"));
+        if let Some(def) = crate::external_agents::registry::get_agent_def(agent) {
+            keys.extend(
+                crate::external_agents::provider_profile::config_resource_keys(
+                    def,
+                    &crate::external_agents::overrides::agent_config(agent).unwrap_or_default(),
+                ),
+            );
+            if let Some(package) = def.install.npm_package {
+                if let Some(prefix) =
+                    crate::external_agents::installer::proven_npm_prefix(binary, package)
+                {
+                    keys.push(format!("prefix:{}", resource_path(&prefix)));
+                }
+            }
+        }
+    }
+    keys
+}
+
+#[derive(Clone)]
+pub(crate) struct ResourceLease(Arc<ResourceLeaseOwner>);
+struct ResourceLeaseOwner {
+    id: uuid::Uuid,
+}
+impl ResourceLease {
+    pub(crate) fn acquire(keys: Vec<String>, exclusive: bool) -> Result<Self, String> {
+        Self::acquire_allowing(keys, exclusive, &Default::default(), false)
+    }
+    fn acquire_allowing(
+        keys: Vec<String>,
+        exclusive: bool,
+        idle: &std::collections::HashSet<String>,
+        pending: bool,
+    ) -> Result<Self, String> {
+        let mut state = RESOURCE_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        let owner = MAINTENANCE_OWNER.try_with(|lease| lease.id()).ok();
+        if exclusive {
+            if let Some(owner_id) = owner {
+                if state.uses.get(&owner_id).is_some_and(|entry| {
+                    entry.exclusive && keys.iter().all(|key| entry.keys.contains(key))
+                }) {
+                    return MAINTENANCE_OWNER
+                        .try_with(Clone::clone)
+                        .map_err(|_| "维护授权已失效".into());
+                }
+            }
+        }
+        for (id, entry) in &state.uses {
+            if Some(*id) == owner {
+                continue;
+            }
+            if (exclusive || entry.exclusive) && keys.iter().any(|key| entry.keys.contains(key)) {
+                if !entry.exclusive
+                    && !entry.pending
+                    && entry
+                        .conversation
+                        .as_ref()
+                        .is_some_and(|id| idle.contains(id))
+                {
+                    continue;
+                }
+                return Err("外部 CLI 正在使用或维护中，请稍后重试".into());
+            }
+        }
+        let id = uuid::Uuid::new_v4();
+        state.uses.insert(
+            id,
+            ResourceEntry {
+                keys,
+                exclusive,
+                conversation: PROCESS_CONVERSATION.try_with(Clone::clone).ok(),
+                pending,
+            },
+        );
+        Ok(Self(Arc::new(ResourceLeaseOwner { id })))
+    }
+    pub(crate) fn pending(agent: &str) -> Result<Self, String> {
+        Self::acquire_allowing(
+            vec![format!("agent:{agent}")],
+            false,
+            &Default::default(),
+            true,
+        )
+    }
+    pub(crate) fn id(&self) -> uuid::Uuid {
+        self.0.id
+    }
+}
+impl Drop for ResourceLeaseOwner {
+    fn drop(&mut self) {
+        RESOURCE_STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .uses
+            .remove(&self.id);
+    }
+}
+
 /// How long an unused live CLI **process** may sit before the sweeper drops it.
 ///
 /// This is only a memory cap. The native session id stays on disk (`live-*.json`) and
@@ -564,6 +718,61 @@ pub(crate) struct LiveSessionDiagnostic {
 }
 
 impl LiveSessionRegistry {
+    pub(crate) async fn prepare_settings_change(
+        &self,
+        agents: &[String],
+        keys: Vec<String>,
+    ) -> Result<Option<ResourceLease>, String> {
+        if agents.is_empty() {
+            return Ok(None);
+        }
+        let (lease, controls, idle) = {
+            let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+            let affected: Vec<_> = sessions
+                .iter()
+                .filter(|(_, session)| agents.contains(&session.agent_id))
+                .map(|(id, session)| (id.clone(), session.busy.load(Ordering::Acquire)))
+                .collect();
+            if affected.iter().any(|(_, busy)| *busy) {
+                return Err("外部 CLI 正在回复，请结束后重试".into());
+            }
+            let idle: std::collections::HashSet<String> =
+                affected.iter().map(|(id, _)| id.clone()).collect();
+            let lease = ResourceLease::acquire_allowing(keys, true, &idle, false)?;
+            let controls: Vec<_> = affected
+                .into_iter()
+                .filter_map(|(id, _)| sessions.remove(&id))
+                .collect();
+            (lease, controls, idle)
+        };
+        for session in &controls {
+            session.control.close().await?;
+        }
+        drop(controls);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let alive = RESOURCE_STATE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .uses
+                    .values()
+                    .any(|entry| {
+                        entry
+                            .conversation
+                            .as_ref()
+                            .is_some_and(|id| idle.contains(id))
+                    });
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| "CLI 进程尚未退出，请稍后重试".to_string())?;
+        Ok(Some(lease))
+    }
+
     pub(crate) fn reserve(&self, conversation_id: &str) -> Result<SessionLease<'_>, String> {
         let mut registry = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if registry
@@ -890,6 +1099,145 @@ mod tests {
             },
             rx,
         )
+    }
+
+    #[test]
+    fn resource_key_survives_nested_path_creation_and_windows_prefixes() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("new").join("nested").join("settings.json");
+        let before = resource_path(&target);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"{}").unwrap();
+        assert_eq!(before, resource_path(&target));
+        assert_eq!(
+            before,
+            resource_path(
+                &target
+                    .parent()
+                    .unwrap()
+                    .join("..")
+                    .join("nested")
+                    .join("settings.json")
+            )
+        );
+        assert_eq!(
+            before,
+            resource_path(&std::fs::canonicalize(&target).unwrap())
+        );
+    }
+    #[tokio::test]
+    async fn settings_preparation_rejects_busy_and_pending_then_retires_idle_actor() {
+        let registry = LiveSessionRegistry::default();
+        let agent = format!("test-{}", uuid::Uuid::new_v4());
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let keys = vec![format!("agent:{agent}")];
+        let (mut session, _) = make(&agent, "/project");
+        let (tx, mut rx) = mpsc::channel(1);
+        let runtime = PROCESS_CONVERSATION
+            .sync_scope(conversation.clone(), || {
+                ResourceLease::acquire(keys.clone(), false)
+            })
+            .unwrap();
+        let control = SessionControl::spawn(tx, async move {
+            let _runtime = runtime;
+            while let Some(command) = rx.recv().await {
+                if matches!(command, SessionCommand::Close) {
+                    break;
+                }
+            }
+        });
+        session.control = control.clone();
+        session.busy.store(true, Ordering::Release);
+        let busy = session.busy.clone();
+        registry.register(conversation.clone(), session);
+        assert!(registry
+            .prepare_settings_change(&[agent.clone()], keys.clone())
+            .await
+            .is_err());
+        assert!(!control.is_closed());
+        busy.store(false, Ordering::Release);
+        let pending = ResourceLease::pending(&agent).unwrap();
+        assert!(registry
+            .prepare_settings_change(&[agent.clone()], keys.clone())
+            .await
+            .is_err());
+        drop(pending);
+        let guard = registry
+            .prepare_settings_change(&[agent.clone()], keys)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(control.is_closed());
+        assert!(registry.control_any(&conversation).is_none());
+        assert!(ResourceLease::pending(&agent).is_err());
+        drop(guard);
+        assert!(ResourceLease::pending(&agent).is_ok());
+    }
+
+    #[tokio::test]
+    async fn maintenance_excludes_real_probe_and_alias_until_child_reaped() {
+        use crate::external_agents::spawn::{cli_command, AgentChild};
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join(if cfg!(windows) {
+            "fixture.cmd"
+        } else {
+            "fixture"
+        });
+        std::fs::write(
+            &binary,
+            if cfg!(windows) {
+                "@echo off\n:spin\ngoto spin\n"
+            } else {
+                "#!/bin/sh\nwhile :; do :; done\n"
+            },
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let keys = runtime_resources(None, &binary);
+        let mut child = AgentChild::spawn(&mut cli_command(&binary)).unwrap();
+        assert!(ResourceLease::acquire(keys.clone(), true).is_err());
+        child.start_kill().unwrap();
+        child.wait().await.unwrap();
+        drop(child);
+        let lease = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match ResourceLease::acquire(keys.clone(), true) {
+                    Ok(lease) => break lease,
+                    Err(_) => tokio::task::yield_now().await,
+                }
+            }
+        })
+        .await
+        .expect("child resources reaped");
+        assert!(AgentChild::spawn(&mut cli_command(&binary)).is_err());
+        let alias = root.path().join(".").join(binary.file_name().unwrap());
+        assert!(AgentChild::spawn(&mut cli_command(&alias)).is_err());
+        drop(lease);
+        let mut retry = AgentChild::spawn(&mut cli_command(&binary)).unwrap();
+        retry.start_kill().unwrap();
+        retry.wait().await.unwrap();
+    }
+    #[test]
+    fn maintenance_excludes_pending_start_and_shared_prefix() {
+        let id = format!("fixture-{}", uuid::Uuid::new_v4());
+        let pending = ResourceLease::pending(&id).unwrap();
+        assert!(ResourceLease::acquire(vec![format!("agent:{id}")], true).is_err());
+        drop(pending);
+        let maintenance =
+            ResourceLease::acquire(vec![format!("agent:{id}"), format!("prefix:{id}")], true)
+                .unwrap();
+        assert!(ResourceLease::pending(&id).is_err());
+        assert!(ResourceLease::acquire(
+            vec![format!("agent:other-{id}"), format!("prefix:{id}")],
+            false
+        )
+        .is_err());
+        drop(maintenance);
+        assert!(ResourceLease::pending(&id).is_ok());
     }
 
     #[tokio::test]
