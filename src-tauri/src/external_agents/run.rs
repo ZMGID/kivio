@@ -4822,6 +4822,10 @@ fn truncate_for_preview(value: &str, max_chars: usize) -> String {
     out
 }
 
+#[cfg(all(test, windows))]
+#[path = "run_regression_tests.rs"]
+pub(crate) mod regression_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
