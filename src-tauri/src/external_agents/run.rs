@@ -1411,7 +1411,7 @@ pub(crate) async fn prepare_history_transition(
             .external_history
             .as_ref()
             .is_some_and(|history| {
-                matches!(
+                history.prefix(conversation).is_err() || matches!(
                     history.delivery,
                     ExternalHistoryDelivery::MayHaveSent { .. }
                 )

@@ -645,7 +645,8 @@ fn apply_settings_profiles(
                         | ProviderProfileStrategy::Dsh
                 )
             {
-                let environment = super::overrides::env_for_config(id, Some(config));
+                let names: std::collections::HashSet<_> =
+                    config.env.iter().map(|pair| &pair.key).collect();
                 for key in [
                     "HOME",
                     "USERPROFILE",
@@ -656,8 +657,8 @@ fn apply_settings_profiles(
                     "KIMI_CODE_HOME",
                     "DSH_HOME",
                 ] {
-                    if environment
-                        .keys()
+                    if names
+                        .iter()
                         .filter(|name| name.eq_ignore_ascii_case(key))
                         .count()
                         > 1
@@ -1012,8 +1013,14 @@ pub(super) fn launch_file_revision(
 ) -> u64 {
     use ProviderProfileStrategy::*;
 
-    let env_path = |key| {
-        env.get(OsStr::new(key))
+    let env_path = |key: &str| {
+        env.iter().find(|(name, _)| {
+            if cfg!(windows) {
+                name.to_string_lossy().eq_ignore_ascii_case(key)
+            } else {
+                name.as_os_str() == OsStr::new(key)
+            }
+        }).map(|(_, value)| value)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     };
@@ -2911,6 +2918,23 @@ mod tests {
     fn isolated_profiles(root: &Path) -> ProfileRoot {
         TEST_PROFILE_ROOT.with(|value| *value.borrow_mut() = Some(root.to_owned()));
         ProfileRoot
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn maintenance_review_lowercase_home_tracks_changed_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(temp.path());
+        let home = temp.path().join("custom");
+        std::fs::create_dir(&home).unwrap();
+        let auth = home.join("auth.json");
+        std::fs::write(&auth, "first account").unwrap();
+        let env = [(OsString::from("codex_home"), home.into_os_string())].into();
+        let def = super::super::registry::get_agent_def("codex").unwrap();
+        let hasher = std::collections::hash_map::RandomState::new();
+        let first = launch_file_revision(def, Path::new("codex.exe"), None, &env, &hasher);
+        std::fs::write(&auth, "second account").unwrap();
+        assert_ne!(first, launch_file_revision(def, Path::new("codex.exe"), None, &env, &hasher));
     }
     fn codex_settings(
         providers: Vec<ExternalCliProvider>,
