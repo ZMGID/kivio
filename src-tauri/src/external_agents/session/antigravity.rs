@@ -1,6 +1,7 @@
 //! Official agy NDJSON protocol (1.3.3 flags/error output; documented stream contract).
 //! https://antigravity.google/docs/cli/headless/
 //! One init per process, one result per turn. No control RPCs or native image blocks.
+use crate::external_agents::session::live::TurnDelivery;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -398,6 +399,7 @@ impl AntigravitySession {
 
     async fn run_turn(
         &mut self,
+        delivery: &TurnDelivery,
         prompt: &str,
         events: &mpsc::Sender<UnifiedAgentEvent>,
         commands: &mut mpsc::Receiver<SessionCommand>,
@@ -460,6 +462,7 @@ impl AntigravitySession {
             // and the existing conversation. Do not prepend Kivio instructions.
         }
         let line = format!("{}\n", json!({"event":"user","message":{"content":prompt}}));
+        delivery.mark_possibly_sent();
         self.stdin
             .write_all(line.as_bytes())
             .await
@@ -526,6 +529,7 @@ pub fn spawn_antigravity_session_actor(
             };
             match command {
                 SessionCommand::RunTurn {
+                    delivery,
                     cancelled,
                     prompt,
                     images,
@@ -533,9 +537,14 @@ pub fn spawn_antigravity_session_actor(
                     done,
                     ..
                 } => {
-                    if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
+                    if done.is_closed()
+                        || cancelled.as_ref().is_some_and(|token| token.is_cancelled())
+                    {
+                        let _ = done.send(Err("cancelled".into()));
+                        continue;
+                    }
                     let result = if images.is_empty() {
-                        session.run_turn(&prompt, &events, &mut rx).await
+                        session.run_turn(&delivery, &prompt, &events, &mut rx).await
                     } else {
                         Err("Antigravity stream accepts text only; images must be supplied as file paths".into())
                     };
@@ -593,6 +602,7 @@ mod tests {
         let (done, completion) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
                 cancelled: None,
                 prompt: prompt.into(),
                 model: None,
@@ -741,6 +751,7 @@ mod tests {
         let (done, completion) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
                 cancelled: None,
                 prompt: "Do not use tools. Explain the first 100 prime numbers in detail.".into(),
                 model: None,

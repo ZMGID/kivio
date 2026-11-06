@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatStreamPayload, ChatSubagentPayload } from '../../api/tauri'
+import { api } from '../../api/tauri'
 import { chatApi } from '../api'
 import { getCoarse, getSnapshot, reset as resetStreamStore, subscribeSnapshot } from '../streamingStore'
 import type { Conversation } from '../types'
@@ -140,6 +141,7 @@ describe('usePopoutSession run settle', () => {
     const { result } = await setupStreamedAnswer()
     const prompt = (runId: string, toolCallId: string) => ({
       conversationId: CONVERSATION_ID, runId, messageId: TWIN_ID, toolCallId,
+      interactionId: toolCallId,
       id: toolCallId, name: 'ask_user', source: 'native', prompt: { questions: [] },
     })
     await act(async () => {
@@ -153,6 +155,28 @@ describe('usePopoutSession run settle', () => {
     await act(async () => { handlers.get('userPromptResolved')?.(prompt('run-1', 'second')) })
     expect(result.current.pendingUserPrompt).toBeNull()
     expect(getCoarse().streaming).toBe(true)
+  })
+
+  it('ignores a popout click and withdrawal from an older approval for the same tool', async () => {
+    const { result } = await setupStreamedAnswer()
+    const approval = (interactionId: string) => ({
+      conversationId: CONVERSATION_ID, runId: 'run-1', toolCallId: 'shared-tool',
+      name: 'Write', source: 'external_cli', interactionId,
+    })
+    const old = approval('old-interaction')
+    const fresh = approval('new-interaction')
+    await act(async () => { handlers.get('toolConfirm')?.(old) })
+    const staleClick = result.current.resolveToolConfirm
+    await act(async () => {
+      handlers.get('toolConfirmWithdraw')?.(old)
+      handlers.get('toolConfirm')?.(fresh)
+      handlers.get('toolConfirmWithdraw')?.(old)
+      await staleClick(true)
+    })
+    expect(result.current.pendingToolConfirm?.interactionId).toBe(fresh.interactionId)
+    expect(api.chatConfirmToolCall).not.toHaveBeenCalled()
+    await act(async () => { await result.current.resolveToolConfirm(false) })
+    expect(api.chatConfirmToolCall).toHaveBeenCalledWith(fresh.interactionId, false, false, null)
   })
 
   beforeEach(() => {

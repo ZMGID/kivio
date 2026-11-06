@@ -318,8 +318,9 @@ function toolStructured(tool: ToolCallRecord): Record<string, unknown> {
 }
 
 function matchesSubagentTool(tool: ToolCallRecord, payload: ChatSubagentPayload): boolean {
-  if (payload.parentToolCallId && tool.id === payload.parentToolCallId) return true
   const structured = toolStructured(tool)
+  if (payload.externalSessionId !== undefined && structured.externalSessionId !== payload.externalSessionId) return false
+  if (payload.parentToolCallId && tool.id === payload.parentToolCallId) return true
   if (structured.backgroundTaskId === payload.taskId) return true
   if (structured.childSessionId === payload.taskId) return true
   if (tool.source === 'native' && canonicalToolName(tool) === 'task' && Array.isArray(structured.agents)
@@ -339,7 +340,8 @@ export function findSubagentToolIndex(tools: ToolCallRecord[], payload: ChatSuba
   if (exact >= 0) return exact
   const running = tools
     .map((item, index) => ({ item, index }))
-    .filter(({ item }) => item.status === 'running' && isExternalSubagentToolCall(item))
+    .filter(({ item }) => item.status === 'running' && isExternalSubagentToolCall(item)
+      && (payload.externalSessionId === undefined || toolStructured(item).externalSessionId === payload.externalSessionId))
   return running.length === 1 ? running[0].index : -1
 }
 

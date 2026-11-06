@@ -1,3 +1,4 @@
+use crate::external_agents::session::live::TurnDelivery;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,15 +60,17 @@ fn pi_model_reasoning(model: &Value) -> Vec<RuntimeModelOption> {
 /// Read-only RPC discovery. No set_model (which persists settings), no prompt or session file.
 pub async fn detect_pi_models(bin: &Path, cwd: &Path, timeout_secs: u64) -> Option<PiModelsProbe> {
     let def = &crate::external_agents::providers::pi::PI_AGENT_DEF;
-    let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::agent_probe_command(def, bin)
-        .args(["--mode", "rpc", "--no-session"])
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .no_console_window()
-        .kill_on_drop(true))
-        .ok()?;
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(
+        crate::external_agents::spawn::agent_probe_command(def, bin)
+            .args(["--mode", "rpc", "--no-session"])
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .no_console_window()
+            .kill_on_drop(true),
+    )
+    .ok()?;
     let result = timeout(Duration::from_secs(timeout_secs), async {
         let mut stdin = child.stdin.take()?;
         let mut reader = BufReader::new(child.stdout.take()?).lines();
@@ -266,15 +269,17 @@ pub async fn detect_pi_commands(
     cwd: &Path,
     timeout_secs: u64,
 ) -> Option<Vec<ExternalCliSlashCommand>> {
-    let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command(bin)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .no_console_window()
-        .kill_on_drop(true))
-        .ok()?;
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(
+        crate::external_agents::spawn::cli_command(bin)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .no_console_window()
+            .kill_on_drop(true),
+    )
+    .ok()?;
     let mut stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;
     let mut reader = BufReader::new(stdout).lines();
@@ -945,8 +950,9 @@ where
         return reject_extension_ui(stdin, raw).await;
     };
 
+    let interaction_id = uuid::Uuid::new_v4().to_string();
     let ask = crate::external_agents::session::live::ApprovalAsk {
-        request_id: request_id.clone(),
+        interaction_id: interaction_id.clone(),
         tool_call_id: format!("pi-extension-ui-{request_id}"),
         tool_name: tool_name.to_string(),
         input: raw.clone(),
@@ -966,7 +972,7 @@ where
             break json!({ "cancelled": true });
         }
         match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
-            Ok(Some(decision)) if decision.request_id == request_id => {
+            Ok(Some(decision)) if decision.interaction_id == interaction_id => {
                 break if decision.approved {
                     decision
                         .updated_input
@@ -1166,9 +1172,10 @@ where
                 Ok(_) => return Err(reconnect()),
                 Err(_) => continue,
             };
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            if line.trim().is_empty() {
                 continue;
-            };
+            }
+            let value = decode_pi_frame(line.trim())?;
             if value.get("type").and_then(Value::as_str) == Some("response")
                 && value.get("id") == payload.get("id")
             {
@@ -1304,7 +1311,31 @@ where
     }
 }
 
+fn decode_pi_frame(line: &str) -> Result<Value, String> {
+    let value: Value =
+        serde_json::from_str(line).map_err(|error| format!("invalid Pi JSON: {error}"))?;
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|kind| !kind.is_empty())
+        .ok_or("invalid Pi stream envelope")?;
+    if kind == "response"
+        && (value
+            .get("command")
+            .and_then(Value::as_str)
+            .is_none_or(str::is_empty)
+            || value.get("success").and_then(Value::as_bool).is_none())
+    {
+        return Err("invalid Pi response envelope".into());
+    }
+    if kind == "agent_settled" && value.get("aborted").is_some_and(|flag| !flag.is_boolean()) {
+        return Err("invalid Pi terminal event".into());
+    }
+    Ok(value)
+}
+
 async fn run_pi_rpc_io<R, W>(
+    delivery: &TurnDelivery,
     reader: &mut tokio::io::Lines<BufReader<R>>,
     stdin: &SharedPiWriter<W>,
     prompt: &str,
@@ -1349,6 +1380,7 @@ where
         }
         payload
     };
+    delivery.mark_possibly_sent();
     write_rpc_value(stdin, &payload).await?;
 
     drain_pi_rpc_lines(
@@ -1384,6 +1416,7 @@ pub async fn run_pi_rpc_session(
         .ok_or_else(|| "stdout unavailable".to_string())?;
     let mut reader = BufReader::new(stdout).lines();
     let result = run_pi_rpc_io(
+        &TurnDelivery::default(),
         &mut reader,
         &stdin,
         prompt,
@@ -1524,10 +1557,7 @@ where
         if line.trim().is_empty() {
             continue;
         }
-        let value: Value = match serde_json::from_str(line.trim()) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
+        let value = decode_pi_frame(line.trim())?;
 
         // One-shot callers only drain shutdown events after `agent_end`, but Pi 1.1's
         // final settlement still carries the authoritative cancellation result.
@@ -1671,6 +1701,14 @@ where
                 if prompt_handled && !run_started {
                     break;
                 }
+                continue;
+            }
+            if value.get("id").is_some_and(|id| id != &json!(1))
+                || !matches!(
+                    value.get("command").and_then(Value::as_str),
+                    Some("prompt" | "compact")
+                )
+            {
                 continue;
             }
             if value.get("success").and_then(|v| v.as_bool()) == Some(false) {
@@ -2254,7 +2292,9 @@ pub struct PiRpcSession {
 }
 
 impl Drop for PiRpcSession {
-    fn drop(&mut self) { self._stderr_task.abort(); }
+    fn drop(&mut self) {
+        self._stderr_task.abort();
+    }
 }
 
 impl PiRpcSession {
@@ -2270,15 +2310,17 @@ impl PiRpcSession {
             persistent_session_args(args, resume_native)?;
         let resumed = claimed_resume && pi_resume_is_live(bin, &session_id, cwd);
 
-        let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command(bin)
-            .args(&effective_args)
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .no_console_window()
-            .kill_on_drop(true))
-            .map_err(|error| format!("start Pi RPC: {error}"))?;
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(
+            crate::external_agents::spawn::cli_command(bin)
+                .args(&effective_args)
+                .current_dir(cwd)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .no_console_window()
+                .kill_on_drop(true),
+        )
+        .map_err(|error| format!("start Pi RPC: {error}"))?;
         let stdin = child
             .stdin
             .take()
@@ -2368,6 +2410,7 @@ pub fn spawn_pi_rpc_session_actor(
             };
             match command {
                 SessionCommand::RunTurn {
+                    delivery,
                     cancelled,
                     prompt,
                     images,
@@ -2378,7 +2421,12 @@ pub fn spawn_pi_rpc_session_actor(
                     reasoning,
                     extra_writable_roots: _,
                 } => {
-                    if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
+                    if done.is_closed()
+                        || cancelled.as_ref().is_some_and(|token| token.is_cancelled())
+                    {
+                        let _ = done.send(Err("cancelled".into()));
+                        continue;
+                    }
                     let commands = pi_selection_commands(
                         &session.selection,
                         model.as_deref(),
@@ -2409,7 +2457,8 @@ pub fn spawn_pi_rpc_session_actor(
                             }
                         }
                     });
-                    let _forward_owner = crate::external_agents::session::live::AbortOnDrop(forward.abort_handle());
+                    let _forward_owner =
+                        crate::external_agents::session::live::AbortOnDrop(forward.abort_handle());
                     let mut approvals = approvals;
                     let mut turn = tokio::spawn(async move {
                         let mut reader = reader.lock().await;
@@ -2425,7 +2474,12 @@ pub fn spawn_pi_rpc_session_actor(
                                     &mut sink,
                                     approvals.as_mut(),
                                     &turn_pending_controls,
-                                    &|| turn_cancelled.load(Ordering::Acquire) || generation_cancelled.as_ref().is_some_and(|token| token.is_cancelled()),
+                                    &|| {
+                                        turn_cancelled.load(Ordering::Acquire)
+                                            || generation_cancelled
+                                                .as_ref()
+                                                .is_some_and(|token| token.is_cancelled())
+                                    },
                                 )
                                 .await?;
                                 match command.get("type").and_then(Value::as_str) {
@@ -2442,13 +2496,18 @@ pub fn spawn_pi_rpc_session_actor(
                                 }
                             }
                             // An abort may already be in flight even though no prompt was sent.
-                            if turn_cancelled.load(Ordering::Acquire) || generation_cancelled.as_ref().is_some_and(|token| token.is_cancelled()) {
+                            if turn_cancelled.load(Ordering::Acquire)
+                                || generation_cancelled
+                                    .as_ref()
+                                    .is_some_and(|token| token.is_cancelled())
+                            {
                                 return Err(
                                     crate::external_agents::session::live::CANCELLED_SESSION_LOST
                                         .to_string(),
                                 );
                             }
                             run_pi_rpc_io(
+                                &delivery,
                                 &mut reader,
                                 &stdin,
                                 &prompt,
@@ -2456,7 +2515,12 @@ pub fn spawn_pi_rpc_session_actor(
                                 &mut sink,
                                 approvals.as_mut(),
                                 Some(&turn_pending_controls),
-                                || turn_cancelled.load(Ordering::Acquire) || generation_cancelled.as_ref().is_some_and(|token| token.is_cancelled()),
+                                || {
+                                    turn_cancelled.load(Ordering::Acquire)
+                                        || generation_cancelled
+                                            .as_ref()
+                                            .is_some_and(|token| token.is_cancelled())
+                                },
                                 true,
                             )
                             .await
@@ -2481,7 +2545,8 @@ pub fn spawn_pi_rpc_session_actor(
                         (result, selection)
                     });
 
-                    let _turn_owner = crate::external_agents::session::live::AbortOnDrop(turn.abort_handle());
+                    let _turn_owner =
+                        crate::external_agents::session::live::AbortOnDrop(turn.abort_handle());
                     let mut close_after_turn = false;
                     let (turn_result, updated_selection) = loop {
                         tokio::select! {
@@ -2593,6 +2658,23 @@ pub fn spawn_pi_rpc_session_actor(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stream_boundary_rejects_corruption_and_malformed_responses() {
+        for line in [
+            "{",
+            "null",
+            "[]",
+            "{}",
+            r#"{"type":"response","command":"compact"}"#,
+            r#"{"type":"response","command":"compact","success":"true"}"#,
+            r#"{"type":"agent_settled","aborted":"false"}"#,
+        ] {
+            assert!(decode_pi_frame(line).is_err(), "{line}");
+        }
+        assert!(decode_pi_frame(r#"{"type":"future_optional_event"}"#).is_ok());
+        assert!(decode_pi_frame(r#"{"type":"agent_settled"}"#).is_ok());
+    }
+
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -2723,7 +2805,7 @@ mod tests {
                 json!({"type":"response","id":"kivio-control-2","command":"steer","success":true}),
                 json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"notice"}}),
                 json!({"type":"turn_end","message":{"usage":{"input":999,"output":1}}}),
-                json!({"type":"response","id":setting["id"],"success":true}),
+                json!({"type":"response","id":setting["id"],"command":setting["type"],"success":true}),
             ] {
                 server_stdout
                     .write_all(format!("{response}\n").as_bytes())
@@ -2765,7 +2847,7 @@ mod tests {
             let mut commands = BufReader::new(server_stdin).lines();
             let setting: Value =
                 serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
-            let response = json!({"type":"response","id":setting["id"],"success":false});
+            let response = json!({"type":"response","id":setting["id"],"command":setting["type"],"success":false});
             server_stdout
                 .write_all(format!("{response}\n").as_bytes())
                 .await
@@ -2843,7 +2925,7 @@ mod tests {
             assert_eq!(stats["type"], "get_session_stats");
             assert!(stats["id"].as_str().unwrap().starts_with("kivio-stats-"));
             let response = json!({
-                "type":"response","id":stats["id"],"success":true,
+                "type":"response","id":stats["id"],"command":stats["type"],"success":true,
                 "data":{"contextUsage":{"tokens":321,"contextWindow":1000},
                         "tokens":{"input":999,"output":888}}
             });
@@ -2856,6 +2938,7 @@ mod tests {
         let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
         let mut events = Vec::new();
         run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut BufReader::new(client_stdout).lines(),
             &stdin,
             "hi",
@@ -2901,7 +2984,7 @@ mod tests {
                 serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
             for event in [
                 json!({"type":"agent_start"}),
-                json!({"type":"response","id":first["id"],"success":false}),
+                json!({"type":"response","id":first["id"],"command":first["type"],"success":false}),
                 json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"continued"}}),
                 json!({"type":"turn_start"}),
                 json!({"type":"turn_end","message":{"usage":{"input":20,"output":2}}}),
@@ -2916,7 +2999,7 @@ mod tests {
             let second: Value =
                 serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
             assert_ne!(first["id"], second["id"]);
-            let response = json!({"type":"response","id":second["id"],"success":true,
+            let response = json!({"type":"response","id":second["id"],"command":second["type"],"success":true,
                 "data":{"contextUsage":{"tokens":55,"contextWindow":1000}}});
             server_stdout
                 .write_all(format!("{response}\n").as_bytes())
@@ -2927,6 +3010,7 @@ mod tests {
         let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
         let mut events = Vec::new();
         run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut BufReader::new(client_stdout).lines(),
             &stdin,
             "hi",
@@ -2970,7 +3054,7 @@ mod tests {
             assert_eq!(entries["type"], "get_entries");
             for event in [
                 json!({"type":"agent_settled","aborted":false}),
-                json!({"type":"response","id":entries["id"],"success":true,
+                json!({"type":"response","id":entries["id"],"command":entries["type"],"success":true,
                     "data":{"entries":[{"type":"custom","id":"e1","customType":BTW_ENTRY_TYPE,
                         "data":{"question":"side question","answer":"answer"}}]}}),
             ] {
@@ -2982,7 +3066,7 @@ mod tests {
             let stats: Value =
                 serde_json::from_str(&commands.next_line().await.unwrap().unwrap()).unwrap();
             assert_eq!(stats["type"], "get_session_stats");
-            let response = json!({"type":"response","id":stats["id"],"success":true,
+            let response = json!({"type":"response","id":stats["id"],"command":stats["type"],"success":true,
                 "data":{"contextUsage":{"tokens":123,"contextWindow":1000}}});
             server_stdout
                 .write_all(format!("{response}\n").as_bytes())
@@ -2993,6 +3077,7 @@ mod tests {
         let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
         let mut events = Vec::new();
         run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut BufReader::new(client_stdout).lines(),
             &stdin,
             "/btw side question",
@@ -3068,14 +3153,16 @@ mod tests {
         use tokio::time::{timeout, Duration};
 
         let cwd = std::env::temp_dir();
-        let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command("pi")
-            .args(["--mode", "rpc"])
-            .current_dir(&cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true))
-            .expect("spawn pi --mode rpc");
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(
+            crate::external_agents::spawn::cli_command("pi")
+                .args(["--mode", "rpc"])
+                .current_dir(&cwd)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true),
+        )
+        .expect("spawn pi --mode rpc");
 
         let events = std::cell::RefCell::new(Vec::<UnifiedAgentEvent>::new());
         let result = timeout(
@@ -3467,6 +3554,7 @@ mod tests {
         let mut events = Vec::new();
 
         let result = run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut BufReader::new(stdout_reader).lines(),
             &stdin_writer,
             "/btw side question",
@@ -3764,7 +3852,7 @@ mod tests {
                 assert_eq!(stats["type"], "get_session_stats");
                 let context = if turn == 0 { 302 } else { 17 };
                 let response = json!({
-                    "type":"response","id":stats["id"],"success":true,
+                    "type":"response","id":stats["id"],"command":stats["type"],"success":true,
                     "data":{"contextUsage":{"tokens":context,"contextWindow":1000},
                             "tokens":{"input":9999,"output":8888}}
                 });
@@ -3782,6 +3870,7 @@ mod tests {
             timeout(
                 Duration::from_secs(5),
                 run_pi_rpc_io(
+                    &TurnDelivery::default(),
                     &mut reader,
                     &stdin,
                     "prompt",
@@ -3976,11 +4065,11 @@ mod tests {
         };
         let host = async move {
             let ask = ask_rx.recv().await.expect("extension ask");
-            assert_eq!(ask.request_id, "ui-1");
+            assert!(uuid::Uuid::parse_str(&ask.interaction_id).is_ok());
             assert_eq!(ask.tool_name, "PiExtensionConfirm");
             decision_tx
                 .send(crate::external_agents::session::live::ApprovalDecision {
-                    request_id: ask.request_id,
+                    interaction_id: ask.interaction_id,
                     approved: true,
                     updated_input: Some(json!({ "confirmed": false })),
                     set_permission_mode: None,
@@ -4298,25 +4387,27 @@ mod tests {
         }"#,
         )
         .unwrap();
-        let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command("pi")
-            .args([
-                "--mode",
-                "rpc",
-                "--no-session",
-                "--no-context-files",
-                "--no-skills",
-                "--no-extensions",
-                "-e",
-            ])
-            .arg(&extension)
-            .env("PI_OFFLINE", "1")
-            .env("PI_TELEMETRY", "0")
-            .current_dir(dir.path())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true))
-            .expect("spawn Pi RPC");
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(
+            crate::external_agents::spawn::cli_command("pi")
+                .args([
+                    "--mode",
+                    "rpc",
+                    "--no-session",
+                    "--no-context-files",
+                    "--no-skills",
+                    "--no-extensions",
+                    "-e",
+                ])
+                .arg(&extension)
+                .env("PI_OFFLINE", "1")
+                .env("PI_TELEMETRY", "0")
+                .current_dir(dir.path())
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true),
+        )
+        .expect("spawn Pi RPC");
         let stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
         let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
         for prompt in ["first handled input", "second handled input"] {
@@ -4324,6 +4415,7 @@ mod tests {
             timeout(
                 Duration::from_secs(20),
                 run_pi_rpc_io(
+                    &TurnDelivery::default(),
                     &mut reader,
                     &stdin,
                     prompt,
@@ -4412,6 +4504,7 @@ mod tests {
                 timeout(
                     Duration::from_secs(1),
                     run_pi_rpc_io(
+                        &TurnDelivery::default(),
                         &mut reader,
                         &stdin,
                         &format!("prompt {turn}"),
@@ -4482,6 +4575,7 @@ mod tests {
             };
             for expected in outcomes {
                 let result = run_pi_rpc_io(
+                    &TurnDelivery::default(),
                     &mut reader,
                     &stdin,
                     "prompt",
@@ -4591,6 +4685,7 @@ mod tests {
             path: std::path::PathBuf::from("image.png"),
         };
         run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut reader,
             &stdin,
             "inspect",
@@ -4686,6 +4781,7 @@ mod tests {
         let mut deltas = Vec::new();
         for prompt in ["first", "second"] {
             run_pi_rpc_io(
+                &TurnDelivery::default(),
                 &mut reader,
                 &stdin,
                 prompt,
@@ -5034,6 +5130,7 @@ mod tests {
         let mut reader = BufReader::new(client_stdout).lines();
         let stdin = Arc::new(Mutex::new(client_stdin));
         run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut reader,
             &stdin,
             "/compact",
@@ -5048,6 +5145,7 @@ mod tests {
         .expect("compact turn");
         let mut text = String::new();
         run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut reader,
             &stdin,
             "after compact",
@@ -5125,6 +5223,7 @@ mod tests {
         let mut reader = BufReader::new(client_stdout).lines();
         let stdin = Arc::new(Mutex::new(client_stdin));
         run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut reader,
             &stdin,
             "/btw leftover",
@@ -5139,6 +5238,7 @@ mod tests {
         .expect("btw turn");
         let mut text = String::new();
         run_pi_rpc_io(
+            &TurnDelivery::default(),
             &mut reader,
             &stdin,
             "follow up",

@@ -372,6 +372,7 @@ mod tests {
         let (done_tx, done_rx) = oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: Default::default(),
                 cancelled: None,
                 prompt: "Reply with exactly the token GROK_SMOKE_OK and nothing else.".to_string(),
                 model: None,

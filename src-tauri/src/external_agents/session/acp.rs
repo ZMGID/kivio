@@ -11,7 +11,7 @@ use tokio::time::timeout;
 
 use super::acp_terminal::{AcpTerminalHost, TerminalReply};
 use crate::external_agents::session::live::{
-    ApprovalAsk, ApprovalBridge, ApprovalDecision, SessionCommand,
+    ApprovalAsk, ApprovalBridge, ApprovalDecision, SessionCommand, TurnDelivery,
 };
 use crate::external_agents::stream::{usage_from_parts, CliUsageParts};
 use crate::external_agents::types::{
@@ -144,18 +144,16 @@ async fn write_rpc(
     method: &str,
     params: Value,
 ) -> Result<(), String> {
-    let payload = json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    line.push('\n');
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| e.to_string())
+    write_rpc_line(
+        stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        }),
+    )
+    .await
 }
 
 async fn write_rpc_result(
@@ -163,17 +161,15 @@ async fn write_rpc_result(
     id: &Value,
     result: Value,
 ) -> Result<(), String> {
-    let payload = json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": result,
-    });
-    let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    line.push('\n');
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .map_err(|e| e.to_string())
+    write_rpc_line(
+        stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        }),
+    )
+    .await
 }
 
 async fn write_rpc_error(
@@ -182,11 +178,36 @@ async fn write_rpc_error(
     code: i64,
     message: &str,
 ) -> Result<(), String> {
-    let payload = json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "error": { "code": code, "message": message },
-    });
+    write_rpc_line(
+        stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": code, "message": message },
+        }),
+    )
+    .await
+}
+
+async fn write_session_cancel(
+    stdin: &mut (impl AsyncWrite + Unpin),
+    session_id: &str,
+) -> Result<(), String> {
+    write_rpc_line(
+        stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "session/cancel",
+            "params": { "sessionId": session_id },
+        }),
+    )
+    .await
+}
+
+async fn write_rpc_line(
+    stdin: &mut (impl AsyncWrite + Unpin),
+    payload: Value,
+) -> Result<(), String> {
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
     stdin
@@ -235,6 +256,87 @@ fn rpc_error_message(value: &Value) -> Option<String> {
         return Some(message.to_string());
     }
     error.get("code").map(|c| c.to_string())
+}
+
+enum AcpFrame {
+    Request {
+        id: Value,
+        method: String,
+        params: Value,
+    },
+    Notification {
+        method: String,
+        params: Value,
+    },
+    Response {
+        id: Value,
+        result: Result<Value, String>,
+    },
+}
+
+fn decode_acp_frame(line: &str) -> Result<AcpFrame, String> {
+    let invalid = || "ACP protocol error: invalid JSON-RPC envelope".to_string();
+    let Value::Object(mut fields) = serde_json::from_str(line)
+        .map_err(|e| format!("ACP protocol error: invalid JSON-RPC line ({e})"))?
+    else {
+        return Err(invalid());
+    };
+    if fields.remove("jsonrpc").as_ref().and_then(Value::as_str) != Some("2.0") {
+        return Err(invalid());
+    }
+    let id = fields.remove("id");
+    let valid_id = |id: &Value| id.is_string() || id.is_number();
+    let result = fields.remove("result");
+    let error = fields.remove("error");
+    let params = fields.remove("params");
+    if let Some(method) = fields.remove("method") {
+        if result.is_some()
+            || error.is_some()
+            || params
+                .as_ref()
+                .is_some_and(|p| !p.is_object() && !p.is_array())
+        {
+            return Err(invalid());
+        }
+        let Value::String(method) = method else {
+            return Err(invalid());
+        };
+        let params = params.unwrap_or(Value::Null);
+        return match id {
+            Some(id) if valid_id(&id) => Ok(AcpFrame::Request { id, method, params }),
+            None => Ok(AcpFrame::Notification { method, params }),
+            _ => Err(invalid()),
+        };
+    }
+    if params.is_some() {
+        return Err(invalid());
+    }
+    let id = id.ok_or_else(invalid)?;
+    let result = match (result, error) {
+        (Some(result), None) if valid_id(&id) => Ok(result),
+        (None, Some(error)) if valid_id(&id) || id.is_null() => {
+            let code = error
+                .get("code")
+                .filter(|code| code.is_i64() || code.is_u64());
+            let message = error.get("message").and_then(Value::as_str);
+            match (code, message) {
+                (Some(_), Some(message)) => Err(message.to_owned()),
+                _ => return Err(invalid()),
+            }
+        }
+        _ => return Err(invalid()),
+    };
+    Ok(AcpFrame::Response { id, result })
+}
+
+fn acp_session_update<'a>(
+    params: &'a Value,
+    session_id: &str,
+) -> Option<&'a serde_json::Map<String, Value>> {
+    if params.get("sessionId").and_then(Value::as_str) != Some(session_id) {
+        return None;
+    }
+    params.get("update")?.as_object()
 }
 
 /// 从 ACP modelId 的方括号参数里抠出上下文窗口提示。
@@ -1674,12 +1776,14 @@ impl AcpSession {
             let init_result = acp_read_until_id(
                 &mut reader,
                 &mut stdin,
-                &mut terminals,
+                Some(&mut terminals),
                 1,
                 ACP_INITIALIZE_TIMEOUT,
             )
             .await
+            .and_then(AcpHandshakeReply::into_result)
             .map_err(|e| format!("initialize: {e}"))?;
+            validate_initialize_result(&init_result)?;
             let mcp_servers = supported_mcp_servers(
                 mcp_servers,
                 &init_result,
@@ -1711,22 +1815,31 @@ impl AcpSession {
                         match acp_read_until_id(
                             &mut reader,
                             &mut stdin,
-                            &mut terminals,
+                            Some(&mut terminals),
                             next_id,
                             ACP_SESSION_NEW_TIMEOUT,
                         )
                         .await
                         {
-                            Ok(result) => {
+                            Ok(AcpHandshakeReply::Response(Ok(result))) => {
+                                if !result.is_object() {
+                                    return Err("ACP protocol error: invalid session/load result"
+                                        .to_string());
+                                }
                                 loaded = Some(result);
                                 next_id += 1;
                                 break;
                             }
-                            Err(err) if is_missing_acp_session_error(&err) => {
+                            Ok(AcpHandshakeReply::Response(Err(err)))
+                                if is_missing_acp_session_error(&err) =>
+                            {
                                 last_err = Some(format!("session/load: {err}"));
                                 next_id += 1;
                             }
-                            Err(err) => {
+                            Ok(AcpHandshakeReply::TimedOut) => {
+                                return Err("session/load: ACP handshake timeout".to_string());
+                            }
+                            Ok(AcpHandshakeReply::Response(Err(err))) | Err(err) => {
                                 return Err(format!("session/load: {err}"));
                             }
                         }
@@ -1752,16 +1865,18 @@ impl AcpSession {
                     let result = acp_read_until_id(
                         &mut reader,
                         &mut stdin,
-                        &mut terminals,
+                        Some(&mut terminals),
                         next_id,
                         ACP_SESSION_NEW_TIMEOUT,
                     )
                     .await
+                    .and_then(AcpHandshakeReply::into_result)
                     .map_err(|e| format!("session-new: {e}"))?;
                     next_id += 1;
                     let session_id = result
                         .get("sessionId")
                         .and_then(|v| v.as_str())
+                        .filter(|id| !id.is_empty())
                         .map(str::to_string)
                         .ok_or_else(|| "session-new: invalid session/new response".to_string())?;
                     (result, session_id)
@@ -1784,11 +1899,11 @@ impl AcpSession {
                 let _ = acp_read_until_id(
                     &mut reader,
                     &mut stdin,
-                    &mut terminals,
+                    Some(&mut terminals),
                     next_id,
                     Duration::from_secs(10),
                 )
-                .await;
+                .await?;
                 next_id += 1;
             }
             if let Some((set_method, set_params)) = mode_set_rpc(&session_id, &result, mode) {
@@ -1799,11 +1914,11 @@ impl AcpSession {
                 let _ = acp_read_until_id(
                     &mut reader,
                     &mut stdin,
-                    &mut terminals,
+                    Some(&mut terminals),
                     next_id,
                     Duration::from_secs(10),
                 )
-                .await;
+                .await?;
                 next_id += 1;
             }
 
@@ -1876,6 +1991,7 @@ impl AcpSession {
         control: &mut mpsc::Receiver<SessionCommand>,
         approvals: &mut Option<ApprovalBridge>,
         turn_cancelled: Option<&tokio_util::sync::CancellationToken>,
+        delivery: &TurnDelivery,
     ) -> Result<(), String> {
         self.terminals.set_extra_roots(extra_writable_roots);
         // Apply mid-session config changes before sending the prompt (N3).
@@ -1889,21 +2005,21 @@ impl AcpSession {
             ReasoningAction::SetConfig { config_id, value } => {
                 let id = self.next_id;
                 self.next_id += 1;
-                let _ = write_rpc(
+                write_rpc(
                     &mut self.stdin,
                     id,
                     "session/set_config_option",
                     json!({ "sessionId": self.session_id, "configId": config_id, "value": value }),
                 )
-                .await;
+                .await?;
                 let _ = acp_read_until_id(
                     &mut self.reader,
                     &mut self.stdin,
-                    &mut self.terminals,
+                    Some(&mut self.terminals),
                     id,
                     Duration::from_secs(10),
                 )
-                .await;
+                .await?;
                 self.current_reasoning = desired_reasoning;
             }
             // Reasoning is a launch flag (grok) — only a relaunch with new args applies it.
@@ -1917,15 +2033,15 @@ impl AcpSession {
                 self.next_id += 1;
                 let (method, params) =
                     model_set_rpc(&self.session_id, self.model_config_id.as_deref(), chosen);
-                let _ = write_rpc(&mut self.stdin, id, method, params).await;
+                write_rpc(&mut self.stdin, id, method, params).await?;
                 let _ = acp_read_until_id(
                     &mut self.reader,
                     &mut self.stdin,
-                    &mut self.terminals,
+                    Some(&mut self.terminals),
                     id,
                     Duration::from_secs(10),
                 )
-                .await;
+                .await?;
             }
             self.current_model = desired_model;
         }
@@ -1933,135 +2049,24 @@ impl AcpSession {
         if turn_cancelled.is_some_and(|token| token.is_cancelled()) { return Err("cancelled".into()); }
         let prompt_id = self.next_id;
         self.next_id += 1;
-        write_rpc(
+        let params = json!({
+            "sessionId": self.session_id,
+            "prompt": acp_prompt_blocks(prompt, images),
+        });
+        delivery.mark_possibly_sent();
+        write_rpc(&mut self.stdin, prompt_id, "session/prompt", params).await?;
+
+        acp_read_prompt(
+            &mut self.reader,
             &mut self.stdin,
+            &mut self.terminals,
             prompt_id,
-            "session/prompt",
-            json!({
-                "sessionId": self.session_id,
-                "prompt": acp_prompt_blocks(prompt, images),
-            }),
+            &self.session_id,
+            events,
+            control,
+            approvals.as_mut(),
         )
-        .await?;
-
-        let mut update_state = AcpUpdateState::default();
-
-        loop {
-            match control.try_recv() {
-                Ok(SessionCommand::Cancel) => {
-                    let cid = self.next_id;
-                    self.next_id += 1;
-                    let _ = write_rpc(
-                        &mut self.stdin,
-                        cid,
-                        "session/cancel",
-                        json!({ "sessionId": self.session_id }),
-                    )
-                    .await;
-                    return Err("cancelled".to_string());
-                }
-                Ok(SessionCommand::Close) => return Err("closed".to_string()),
-                // ACP 没有「往在飞的 prompt 追加输入」的原语 —— 全部动作只有 `session/prompt`
-                // 与 `session/cancel`。回 false，这条消息留在前端队列里等轮末自动发送。
-                Ok(SessionCommand::Steer { accepted, .. }) => {
-                    let _ = accepted.send(false);
-                }
-                Ok(SessionCommand::RunTurn { done, .. }) => {
-                    let _ = done.send(Err("session busy".to_string()));
-                }
-                // ACP 无后台任务协议（stop_task 是 claude 专属），忽略。
-                Ok(SessionCommand::StopTask { .. }) => {}
-                Err(mpsc::error::TryRecvError::Empty) => {}
-                Err(mpsc::error::TryRecvError::Disconnected) => {
-                    return Err("control channel closed".to_string())
-                }
-            }
-
-            let value = match acp_next_message(
-                &mut self.reader,
-                &mut self.stdin,
-                &mut self.terminals,
-                Duration::from_millis(200),
-                approvals.is_some(),
-            )
-            .await?
-            {
-                AcpNext::Value(value) => value,
-                AcpNext::Eof => return Err("ACP session exited mid-turn".to_string()),
-                AcpNext::Idle => continue,
-            };
-
-            if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
-                if method == "session/update" {
-                    if let Some(update) = value
-                        .get("params")
-                        .and_then(|p| p.get("update"))
-                        .and_then(|v| v.as_object())
-                    {
-                        let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
-                        acp_apply_session_update_ex(
-                            update,
-                            &mut update_state,
-                            Some(&self.terminals),
-                            &mut |e| buf.push(e),
-                        );
-                        for e in buf {
-                            let _ = events.send(e).await;
-                        }
-                    }
-                    continue;
-                }
-                // 厂商私有通知。目前只取 grok 的 `retry_state`：上游 503/429 的静默重试是
-                // 「怎么卡住了」的头号成因，不接的话界面在整个重试期（可达数分钟）毫无输出。
-                // 其余 `_x.ai/*`（mcp 进度 / 队列 / 会话列表变更）与本轮回答无关，继续忽略。
-                if method == "_x.ai/session_notification" {
-                    if let Some(update) = value
-                        .get("params")
-                        .and_then(|p| p.get("update"))
-                        .and_then(|v| v.as_object())
-                    {
-                        if let Some(text) = acp_retry_state_note(update) {
-                            let _ = events.send(UnifiedAgentEvent::StatusNote { text }).await;
-                        }
-                    }
-                    continue;
-                }
-                if method.starts_with("cursor/")
-                    || method == "session/request_permission"
-                    || method == "elicitation/create"
-                {
-                    handle_cursor_extension(
-                        &mut self.stdin,
-                        &value,
-                        method,
-                        events,
-                        control,
-                        approvals.as_mut(),
-                        &mut self.next_id,
-                        &self.session_id,
-                    )
-                    .await?;
-                    continue;
-                }
-                continue;
-            }
-
-            if let Some(err) = rpc_error_message(&value) {
-                if value.get("id").and_then(|v| v.as_u64()) == Some(prompt_id) {
-                    return Err(err);
-                }
-                continue;
-            }
-
-            if value.get("id").and_then(|v| v.as_u64()) == Some(prompt_id) {
-                if let Some(usage) = value.get("result").and_then(|result| {
-                    usage_from_prompt_result(result, update_state.context_tokens)
-                }) {
-                    let _ = events.send(UnifiedAgentEvent::Usage { usage }).await;
-                }
-                return Ok(());
-            }
-        }
+        .await
     }
 
     pub async fn close(mut self) {
@@ -2075,88 +2080,181 @@ impl AcpSession {
     }
 }
 
-/// Read ACP JSON-RPC lines until the response for `target_id`, auto-answering permission
-/// and `terminal/*` requests and skipping notifications.
-async fn acp_read_until_id(
+async fn acp_read_prompt(
     reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
     stdin: &mut (impl AsyncWrite + Unpin),
     terminals: &mut AcpTerminalHost,
+    prompt_id: u64,
+    session_id: &str,
+    events: &mpsc::Sender<UnifiedAgentEvent>,
+    control: &mut mpsc::Receiver<SessionCommand>,
+    mut approvals: Option<&mut ApprovalBridge>,
+) -> Result<(), String> {
+    let mut update_state = AcpUpdateState::default();
+    loop {
+        match control.try_recv() {
+            Ok(SessionCommand::Cancel) => {
+                let _ = write_session_cancel(stdin, session_id).await;
+                return Err("cancelled".to_string());
+            }
+            Ok(SessionCommand::Close) => return Err("closed".to_string()),
+            Ok(SessionCommand::Steer { accepted, .. }) => {
+                let _ = accepted.send(false);
+            }
+            Ok(SessionCommand::RunTurn { done, .. }) => {
+                let _ = done.send(Err("session busy".to_string()));
+            }
+            Ok(SessionCommand::StopTask { .. }) | Err(mpsc::error::TryRecvError::Empty) => {}
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                return Err("control channel closed".to_string());
+            }
+        }
+        flush_terminal_side_effects(stdin, terminals).await?;
+        match acp_next_message(reader).await? {
+            AcpNext::Frame(AcpFrame::Request { id, method, params }) => {
+                if method.starts_with("cursor/")
+                    || (approvals.is_some() && cursor_extension_is_blocking(&method))
+                {
+                    handle_cursor_extension(
+                        stdin,
+                        &id,
+                        &method,
+                        &params,
+                        events,
+                        control,
+                        approvals.as_deref_mut(),
+                        session_id,
+                    )
+                    .await?;
+                } else {
+                    handle_agent_to_client_request(stdin, Some(terminals), &id, &method, &params)
+                        .await?;
+                }
+            }
+            AcpNext::Frame(AcpFrame::Notification { method, params }) => match method.as_str() {
+                "session/update" => {
+                    if let Some(update) = acp_session_update(&params, session_id) {
+                        let mut buffer = Vec::new();
+                        acp_apply_session_update_ex(
+                            update,
+                            &mut update_state,
+                            Some(terminals),
+                            &mut |event| buffer.push(event),
+                        );
+                        for event in buffer {
+                            let _ = events.send(event).await;
+                        }
+                    }
+                }
+                "_x.ai/session_notification" => {
+                    if let Some(text) =
+                        acp_session_update(&params, session_id).and_then(acp_retry_state_note)
+                    {
+                        let _ = events.send(UnifiedAgentEvent::StatusNote { text }).await;
+                    }
+                }
+                method if method.starts_with("cursor/") => {
+                    for event in cursor_extension_events(method, &params) {
+                        let _ = events.send(event).await;
+                    }
+                }
+                _ => {}
+            },
+            AcpNext::Frame(AcpFrame::Response { id, result }) if id.as_u64() == Some(prompt_id) => {
+                let result = result?;
+                let outcome = match result.get("stopReason").and_then(Value::as_str) {
+                    Some("cancelled") => Err("cancelled".to_string()),
+                    Some("end_turn" | "max_tokens" | "max_turn_requests" | "refusal") => Ok(()),
+                    _ => {
+                        return Err(
+                            "ACP protocol error: invalid session/prompt stopReason".to_string()
+                        )
+                    }
+                };
+                if let Some(usage) = usage_from_prompt_result(&result, update_state.context_tokens)
+                {
+                    let _ = events.send(UnifiedAgentEvent::Usage { usage }).await;
+                }
+                return outcome;
+            }
+            AcpNext::Frame(AcpFrame::Response { .. }) | AcpNext::Idle => {}
+            AcpNext::Eof => return Err("ACP session exited mid-turn".to_string()),
+        }
+    }
+}
+
+enum AcpHandshakeReply {
+    Response(Result<Value, String>),
+    TimedOut,
+}
+
+impl AcpHandshakeReply {
+    fn into_result(self) -> Result<Value, String> {
+        match self {
+            Self::Response(result) => result,
+            Self::TimedOut => Err("ACP handshake timeout".to_string()),
+        }
+    }
+}
+
+fn validate_initialize_result(result: &Value) -> Result<(), String> {
+    if result.get("protocolVersion").and_then(Value::as_i64) != Some(ACP_PROTOCOL_VERSION) {
+        return Err("ACP protocol error: unsupported or missing protocolVersion".to_string());
+    }
+    Ok(())
+}
+
+async fn acp_read_until_id(
+    reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
+    stdin: &mut (impl AsyncWrite + Unpin),
+    mut terminals: Option<&mut AcpTerminalHost>,
     target_id: u64,
     overall: Duration,
-) -> Result<Value, String> {
+) -> Result<AcpHandshakeReply, String> {
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > overall {
-            return Err("ACP handshake timeout".to_string());
+            return Ok(AcpHandshakeReply::TimedOut);
         }
-        match acp_next_message(reader, stdin, terminals, Duration::from_millis(200), false).await? {
-            AcpNext::Value(value) => {
-                if let Some(method) = value.get("method").and_then(Value::as_str) {
-                    if method.starts_with("cursor/") {
-                        if let Some(id) = value.get("id") {
-                            let params = value.get("params").unwrap_or(&Value::Null);
-                            write_rpc_result(stdin, id, cursor_handshake_result(method, params))
-                                .await?;
-                        }
-                        continue;
-                    }
-                }
-                if let Some(err) = rpc_error_message(&value) {
-                    if value.get("id").and_then(|v| v.as_u64()) == Some(target_id) {
-                        return Err(err);
-                    }
-                    continue;
-                }
-                if value.get("id").and_then(|v| v.as_u64()) == Some(target_id) {
-                    return Ok(value.get("result").cloned().unwrap_or(Value::Null));
-                }
+        if let Some(terminals) = terminals.as_deref_mut() {
+            flush_terminal_side_effects(stdin, terminals).await?;
+        }
+        match acp_next_message(reader).await? {
+            AcpNext::Frame(AcpFrame::Request { id, method, params }) => {
+                handle_agent_to_client_request(
+                    stdin,
+                    terminals.as_deref_mut(),
+                    &id,
+                    &method,
+                    &params,
+                )
+                .await?;
+            }
+            AcpNext::Frame(AcpFrame::Response { id, result }) if id.as_u64() == Some(target_id) => {
+                return Ok(AcpHandshakeReply::Response(result));
             }
             AcpNext::Eof => return Err("ACP agent exited during handshake".to_string()),
-            AcpNext::Idle => {}
+            _ => {}
         }
     }
 }
 
 enum AcpNext {
-    Value(Value),
+    Frame(AcpFrame),
     Idle,
     Eof,
 }
 
 async fn acp_next_message(
     reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
-    stdin: &mut (impl AsyncWrite + Unpin),
-    terminals: &mut AcpTerminalHost,
-    slice: Duration,
-    host_permissions: bool,
 ) -> Result<AcpNext, String> {
-    flush_terminal_side_effects(stdin, terminals).await?;
-    let line = match timeout(slice, reader.next_line()).await {
-        Ok(Ok(Some(raw))) => raw,
-        Ok(Ok(None)) => return Ok(AcpNext::Eof),
-        Ok(Err(e)) => return Err(e.to_string()),
-        Err(_) => return Ok(AcpNext::Idle),
-    };
-    if line.trim().is_empty() {
-        return Ok(AcpNext::Idle);
+    match timeout(Duration::from_millis(200), reader.next_line()).await {
+        Ok(Ok(Some(line))) if line.trim().is_empty() => Ok(AcpNext::Idle),
+        Ok(Ok(Some(line))) => decode_acp_frame(&line).map(AcpNext::Frame),
+        Ok(Ok(None)) => Ok(AcpNext::Eof),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Ok(AcpNext::Idle),
     }
-    let value: Value = match serde_json::from_str(line.trim()) {
-        Ok(v) => v,
-        Err(_) => return Ok(AcpNext::Idle),
-    };
-    if host_permissions {
-        let method = value.get("method").and_then(Value::as_str);
-        if matches!(
-            method,
-            Some("session/request_permission" | "elicitation/create")
-        ) {
-            return Ok(AcpNext::Value(value));
-        }
-    }
-    if handle_agent_to_client_request(&value, stdin, terminals).await? {
-        return Ok(AcpNext::Idle);
-    }
-    Ok(AcpNext::Value(value))
 }
 
 async fn flush_terminal_side_effects(
@@ -2385,36 +2483,32 @@ fn acp_permission_result(params: &Value, approved: bool, always: bool) -> Value 
 
 async fn handle_cursor_extension(
     stdin: &mut (impl AsyncWrite + Unpin),
-    value: &Value,
+    id: &Value,
     method: &str,
+    params: &Value,
     events: &mpsc::Sender<UnifiedAgentEvent>,
     control: &mut mpsc::Receiver<SessionCommand>,
     approvals: Option<&mut ApprovalBridge>,
-    next_id: &mut u64,
     session_id: &str,
 ) -> Result<(), String> {
-    let params = value.get("params").cloned().unwrap_or(Value::Null);
-    for event in cursor_extension_events(method, &params) {
+    for event in cursor_extension_events(method, params) {
         let _ = events.send(event).await;
     }
-    let Some(id) = value.get("id") else {
-        return Ok(());
-    };
     if !cursor_extension_is_blocking(method) {
-        return write_rpc_result(stdin, id, cursor_notification_ack(method, &params)).await;
+        return write_rpc_result(stdin, id, cursor_notification_ack(method, params)).await;
     }
 
     let Some(bridge) = approvals else {
         return write_rpc_result(stdin, id, host_request_declined_result(method)).await;
     };
-    let request_id = jsonrpc_id_key(id);
+    let interaction_id = uuid::Uuid::new_v4().to_string();
     let permission = method == "session/request_permission";
-    let tool = params.get("toolCall").unwrap_or(&params);
+    let tool = params.get("toolCall").unwrap_or(params);
     let tool_call_id = acp_json_str(tool, "toolCallId")
-        .or_else(|| acp_json_str(&params, "elicitationId"))
-        .or_else(|| acp_json_str(&params, "elicitation_id"))
+        .or_else(|| acp_json_str(params, "elicitationId"))
+        .or_else(|| acp_json_str(params, "elicitation_id"))
         .map(str::to_string)
-        .unwrap_or_else(|| format!("cursor-{request_id}"));
+        .unwrap_or_else(|| format!("cursor-{}", jsonrpc_id_key(id)));
     let tool_name = if method == "elicitation/create" {
         "elicitation/create"
     } else if permission {
@@ -2425,7 +2519,7 @@ async fn handle_cursor_extension(
         "cursor/ask_question"
     };
     let ask = ApprovalAsk {
-        request_id: request_id.clone(),
+        interaction_id: interaction_id.clone(),
         tool_call_id,
         tool_name: tool_name.to_string(),
         input: if permission {
@@ -2445,15 +2539,7 @@ async fn handle_cursor_extension(
         match control.try_recv() {
             Ok(SessionCommand::Cancel) => {
                 let _ = write_rpc_result(stdin, id, host_request_cancelled_result(method)).await;
-                let cid = *next_id;
-                *next_id += 1;
-                let _ = write_rpc(
-                    stdin,
-                    cid,
-                    "session/cancel",
-                    json!({ "sessionId": session_id }),
-                )
-                .await;
+                let _ = write_session_cancel(stdin, session_id).await;
                 return Err("cancelled".to_string());
             }
             Ok(SessionCommand::Close) => {
@@ -2474,9 +2560,9 @@ async fn handle_cursor_extension(
             }
         }
         match timeout(Duration::from_millis(200), bridge.decisions.recv()).await {
-            Ok(Some(decision)) if decision.request_id == request_id => {
+            Ok(Some(decision)) if decision.interaction_id == interaction_id => {
                 let result = if permission {
-                    acp_permission_result(&params, decision.approved, decision.always)
+                    acp_permission_result(params, decision.approved, decision.always)
                 } else {
                     cursor_decision_result(method, &decision)
                 };
@@ -2491,59 +2577,39 @@ async fn handle_cursor_extension(
 }
 
 async fn handle_agent_to_client_request(
-    value: &Value,
     stdin: &mut (impl AsyncWrite + Unpin),
-    terminals: &mut AcpTerminalHost,
-) -> Result<bool, String> {
-    let Some(method) = value.get("method").and_then(|v| v.as_str()) else {
-        return Ok(false);
-    };
-    if method == "session/request_permission" {
-        let option_id =
-            choose_permission_outcome(value.get("params").and_then(|p| p.get("options")));
-        if let Some(id) = value.get("id") {
-            let result = match option_id {
-                Some(option_id) => {
-                    json!({ "outcome": { "outcome": "selected", "optionId": option_id } })
-                }
-                None => cursor_cancelled_result(),
-            };
-            write_rpc_result(stdin, id, result).await?;
-        }
-        return Ok(true);
-    }
-    if method == "elicitation/create" {
-        if let Some(id) = value.get("id") {
-            write_rpc_result(stdin, id, host_request_declined_result(method)).await?;
-        }
-        return Ok(true);
-    }
+    terminals: Option<&mut AcpTerminalHost>,
+    id: &Value,
+    method: &str,
+    params: &Value,
+) -> Result<(), String> {
     if method.starts_with("terminal/") {
-        let Some(id) = value.get("id") else {
-            return Ok(true);
+        let Some(terminals) = terminals else {
+            return write_rpc_error(stdin, id, -32601, "Method not found").await;
         };
-        let params = value.get("params").cloned().unwrap_or(Value::Null);
-        match terminals.handle(method, &params, id).await {
+        match terminals.handle(method, params, id).await {
             TerminalReply::Result(result) => write_rpc_result(stdin, id, result).await?,
             TerminalReply::Pending => {}
             TerminalReply::Error { code, message } => {
                 write_rpc_error(stdin, id, code, &message).await?;
             }
         }
-        flush_terminal_side_effects(stdin, terminals).await?;
-        return Ok(true);
+        return flush_terminal_side_effects(stdin, terminals).await;
     }
-    if method == "session/update"
-        || method == "_x.ai/session_notification"
-        || method.starts_with("cursor/")
-    {
-        return Ok(false);
-    }
-    if let Some(id) = value.get("id") {
-        write_rpc_result(stdin, id, unknown_blocking_rpc_result()).await?;
-        return Ok(true);
-    }
-    Ok(true)
+    let result = match method {
+        "session/request_permission" if terminals.is_some() => {
+            match choose_permission_outcome(params.get("options")) {
+                Some(option_id) => {
+                    json!({ "outcome": { "outcome": "selected", "optionId": option_id } })
+                }
+                None => cursor_cancelled_result(),
+            }
+        }
+        "session/request_permission" | "elicitation/create" => host_request_declined_result(method),
+        method if method.starts_with("cursor/") => cursor_handshake_result(method, params),
+        _ => unknown_blocking_rpc_result(),
+    };
+    write_rpc_result(stdin, id, result).await
 }
 
 /// Build the ACP `session/prompt` content array: text block first, then a native image block
@@ -2586,6 +2652,7 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> crate::external_agent
                     // 打开；其它 ACP CLI 仍是 `None`。
                     mut approvals,
                     extra_writable_roots,
+                    delivery,
                 } => {
                     if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
                     // Invariant (A4): `run_turn` sends all its `events` before returning, and mpsc
@@ -2602,6 +2669,7 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> crate::external_agent
                             &mut rx,
                             &mut approvals,
                             cancelled.as_ref(),
+                            &delivery,
                         )
                         .await;
                     let _ = done.send(result);
@@ -2628,12 +2696,33 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> crate::external_agent
 mod tests {
     use super::*;
 
+    fn session_update_frame(session_id: &str, text: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": text}
+                }
+            }
+        })
+    }
+
+    fn permission_decision(interaction_id: String, approved: bool) -> ApprovalDecision {
+        ApprovalDecision {
+            interaction_id,
+            approved,
+            updated_input: None,
+            set_permission_mode: None,
+            updated_permissions: None,
+            always: false,
+        }
+    }
+
     #[tokio::test]
     async fn handshake_declines_elicitation_before_reading_its_target_response() {
-        // Exercise the production dispatch chain, not cursor_handshake_result:
-        // acp_read_until_id -> acp_next_message(host_permissions=false)
-        // -> handle_agent_to_client_request. A peer may reuse our numeric id
-        // for its request; that request must not be mistaken for our response.
         for request_id in [json!(7), json!("elicitation-7")] {
             let (host, agent) = tokio::io::duplex(4096);
             let (host_read, mut host_write) = tokio::io::split(host);
@@ -2644,11 +2733,25 @@ mod tests {
             let handshake = acp_read_until_id(
                 &mut reader,
                 &mut host_write,
-                &mut terminals,
+                Some(&mut terminals),
                 7,
                 Duration::from_secs(2),
             );
             let peer = async {
+                write_rpc_line(
+                    &mut agent_write,
+                    json!({
+                        "jsonrpc": "2.0", "method": "_future/ready"
+                    }),
+                )
+                .await
+                .unwrap();
+                write_rpc_error(&mut agent_write, &json!(6), -32601, "stale")
+                    .await
+                    .unwrap();
+                write_rpc_result(&mut agent_write, &json!("7"), json!({}))
+                    .await
+                    .unwrap();
                 let request = json!({
                     "jsonrpc": "2.0", "id": request_id, "method": "elicitation/create",
                     "params": {
@@ -2668,7 +2771,6 @@ mod tests {
                         "jsonrpc": "2.0", "id": request_id, "result": {"action": "decline"}
                     })
                 );
-                // The agent only completes initialize after receiving decline.
                 write_rpc_result(&mut agent_write, &json!(7), json!({"protocolVersion": 1}))
                     .await
                     .unwrap();
@@ -2678,7 +2780,10 @@ mod tests {
             })
             .await
             .expect("handshake must answer elicitation without an interaction host");
-            assert_eq!(result.unwrap(), json!({"protocolVersion": 1}));
+            assert_eq!(
+                result.unwrap().into_result().unwrap(),
+                json!({"protocolVersion": 1})
+            );
             drop(reader);
             drop(host_write);
             assert!(
@@ -2689,100 +2794,356 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn live_elicitation_dispatch_reaches_host_without_handshake_decline() {
+    async fn live_prompt_ignores_other_sessions_and_only_finishes_on_its_response() {
         let (host, mut agent) = tokio::io::duplex(4096);
         let (host_read, mut host_write) = tokio::io::split(host);
         let mut reader = BufReader::new(host_read).lines();
         let mut terminals = AcpTerminalHost::new(std::env::temp_dir());
-        let request = json!({
-            "jsonrpc": "2.0", "id": "elicitation-live", "method": "elicitation/create",
-            "params": {"mode": "form", "requestedSchema": {"type": "object", "properties": {}}}
-        });
-        agent
-            .write_all(format!("{request}\n").as_bytes())
-            .await
-            .unwrap();
-        let message = acp_next_message(
+        let (commands, mut control) = mpsc::channel(1);
+        let (events, mut output) = mpsc::channel(16);
+        let (asks, mut requests) = mpsc::channel(1);
+        let (decisions, replies) = mpsc::channel(1);
+        let mut bridge = ApprovalBridge {
+            requests: asks,
+            decisions: replies,
+        };
+        let live = acp_read_prompt(
             &mut reader,
             &mut host_write,
             &mut terminals,
-            Duration::from_secs(1),
-            true,
-        )
-        .await
-        .unwrap();
-        assert!(matches!(message, AcpNext::Value(value) if value == request));
-        drop(reader);
-        drop(host_write);
-        assert!(BufReader::new(agent)
-            .lines()
-            .next_line()
+            7,
+            "ours",
+            &events,
+            &mut control,
+            Some(&mut bridge),
+        );
+        let peer = async {
+            let (agent_read, mut agent_write) = tokio::io::split(&mut agent);
+            let mut responses = BufReader::new(agent_read).lines();
+            write_rpc_error(&mut agent_write, &json!(6), -32601, "stale")
+                .await
+                .unwrap();
+            write_rpc_result(
+                &mut agent_write,
+                &json!("7"),
+                json!({"stopReason": "end_turn"}),
+            )
             .await
-            .unwrap()
-            .is_none());
+            .unwrap();
+            write_rpc_line(
+                &mut agent_write,
+                json!({
+                    "jsonrpc": "2.0", "method": "_future/status"
+                }),
+            )
+            .await
+            .unwrap();
+            let update = session_update_frame("other", "foreign");
+            write_rpc_line(&mut agent_write, update.clone())
+                .await
+                .unwrap();
+            let mut missing_session = update;
+            missing_session["params"]
+                .as_object_mut()
+                .unwrap()
+                .remove("sessionId");
+            write_rpc_line(&mut agent_write, missing_session)
+                .await
+                .unwrap();
+            let mut previous_interaction = None;
+            for approved in [true, false] {
+                write_rpc_line(
+                    &mut agent_write,
+                    json!({
+                        "jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+                        "params": {
+                            "sessionId": "ours",
+                            "toolCall": {"toolCallId": "same-tool", "title": "Write file"},
+                            "options": [{"kind": "allow_once", "optionId": "approve"}]
+                        }
+                    }),
+                )
+                .await
+                .unwrap();
+                let ask = requests.recv().await.unwrap();
+                assert_eq!(ask.tool_call_id, "same-tool");
+                assert_eq!(ask.tool_name, "Write file");
+                if let Some(previous) = previous_interaction {
+                    assert_ne!(ask.interaction_id, previous);
+                    decisions
+                        .send(permission_decision(previous, true))
+                        .await
+                        .unwrap();
+                }
+                previous_interaction = Some(ask.interaction_id.clone());
+                decisions
+                    .send(permission_decision(ask.interaction_id, approved))
+                    .await
+                    .unwrap();
+                let response: Value =
+                    serde_json::from_str(&responses.next_line().await.unwrap().unwrap()).unwrap();
+                assert_eq!(response["id"], 7);
+                assert_eq!(
+                    response["result"]["outcome"]["outcome"],
+                    if approved { "selected" } else { "cancelled" }
+                );
+            }
+            write_rpc_line(&mut agent_write, session_update_frame("ours", "visible"))
+                .await
+                .unwrap();
+            write_rpc_result(
+                &mut agent_write,
+                &json!(7),
+                json!({"stopReason": "end_turn"}),
+            )
+            .await
+            .unwrap();
+        };
+        let (result, ()) = timeout(Duration::from_secs(3), async { tokio::join!(live, peer) })
+            .await
+            .unwrap();
+        drop(commands);
+        result.unwrap();
+        assert!(
+            matches!(output.try_recv().unwrap(), UnifiedAgentEvent::TextDelta { delta } if delta == "visible")
+        );
+        assert!(output.try_recv().is_err());
     }
 
     #[tokio::test]
-    async fn permission_request_waits_for_host_and_echoes_wire_id() {
-        for approved in [true, false] {
-            let (mut writer, reader) = tokio::io::duplex(4096);
-            let (asks, mut requests) = mpsc::channel(1);
-            let (decisions, replies) = mpsc::channel(1);
-            let mut bridge = ApprovalBridge {
-                requests: asks,
-                decisions: replies,
-            };
+    async fn live_prompt_requires_a_valid_terminal_response() {
+        for (frame, expected) in [
+            ("{", "ACP protocol error"),
+            (
+                r#"{"id":7,"result":{"stopReason":"end_turn"}}"#,
+                "ACP protocol error",
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"method":"unknown","result":{}}"#,
+                "ACP protocol error",
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"error":{"message":"oops"}}"#,
+                "ACP protocol error",
+            ),
+            (r#"{"jsonrpc":"2.0","id":7}"#, "ACP protocol error"),
+            (r#"{"jsonrpc":"2.0","id":7,"result":null}"#, "stopReason"),
+            (r#"{"jsonrpc":"2.0","id":7,"result":{}}"#, "stopReason"),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":1}}"#,
+                "stopReason",
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"done"}}"#,
+                "stopReason",
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":7,"result":{"stopReason":"cancelled"}}"#,
+                "cancelled",
+            ),
+        ] {
+            let (host, mut agent) = tokio::io::duplex(4096);
+            let (host_read, mut host_write) = tokio::io::split(host);
+            let mut reader = BufReader::new(host_read).lines();
+            let mut terminals = AcpTerminalHost::new(std::env::temp_dir());
             let (_commands, mut control) = mpsc::channel(1);
-            let (events, _events_rx) = mpsc::channel(1);
-            let value = json!({"id": 42, "method": "session/request_permission", "params": {
-                "toolCall": {"toolCallId": "tool-7", "title": "Write file", "rawInput": {"path": "a.txt"}},
-                "options": [{"kind": "allow_once", "optionId": "approve"}]
-            }});
-            let mut next_id = 50;
-            let handler = handle_cursor_extension(
-                &mut writer,
-                &value,
-                "session/request_permission",
+            let (events, mut output) = mpsc::channel(1);
+            agent
+                .write_all(format!("{frame}\n").as_bytes())
+                .await
+                .unwrap();
+            let error = timeout(
+                Duration::from_secs(2),
+                acp_read_prompt(
+                    &mut reader,
+                    &mut host_write,
+                    &mut terminals,
+                    7,
+                    "ours",
+                    &events,
+                    &mut control,
+                    None,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(error.contains(expected), "{frame}: {error}");
+            assert!(output.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn live_cancel_sends_a_notification() {
+        let (host, agent) = tokio::io::duplex(4096);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let mut reader = BufReader::new(host_read).lines();
+        let mut terminals = AcpTerminalHost::new(std::env::temp_dir());
+        let (commands, mut control) = mpsc::channel(1);
+        let (events, _output) = mpsc::channel(1);
+        commands.send(SessionCommand::Cancel).await.unwrap();
+        assert_eq!(
+            acp_read_prompt(
+                &mut reader,
+                &mut host_write,
+                &mut terminals,
+                7,
+                "ours",
                 &events,
                 &mut control,
-                Some(&mut bridge),
-                &mut next_id,
-                "session-1",
+                None,
+            )
+            .await,
+            Err("cancelled".to_string())
+        );
+        let mut wire = BufReader::new(agent).lines();
+        assert_eq!(
+            read_peer_frame(&mut wire).await,
+            json!({
+                "jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "ours"}
+            })
+        );
+    }
+
+    async fn read_peer_frame(reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>) -> Value {
+        serde_json::from_str(&reader.next_line().await.unwrap().unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn imported_replay_ignores_foreign_updates_before_and_after_load_reply() {
+        let (host, agent) = tokio::io::duplex(4096);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let (agent_read, mut agent_write) = tokio::io::split(agent);
+        let mut reader = BufReader::new(host_read).lines();
+        let mut wire = BufReader::new(agent_read).lines();
+        let cwd = std::env::temp_dir();
+        let import = read_acp_session_history(
+            &mut reader,
+            &mut host_write,
+            &cwd,
+            "ours",
+            Duration::from_secs(2),
+        );
+        let peer = async {
+            assert_eq!(read_peer_frame(&mut wire).await["method"], "initialize");
+            write_rpc_result(
+                &mut agent_write,
+                &json!(1),
+                json!({
+                    "protocolVersion": 1, "agentCapabilities": {"loadSession": true}
+                }),
+            )
+            .await
+            .unwrap();
+            let load = read_peer_frame(&mut wire).await;
+            assert_eq!(load["method"], "session/load");
+            assert_eq!(load["params"]["cwd"], json!(cwd.to_string_lossy()));
+            assert_eq!(load["params"]["sessionId"], "ours");
+            write_rpc_line(
+                &mut agent_write,
+                json!({
+                    "jsonrpc": "2.0", "id": 2, "method": "elicitation/create"
+                }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                read_peer_frame(&mut wire).await,
+                json!({
+                    "jsonrpc": "2.0", "id": 2, "result": {"action": "decline"}
+                })
             );
-            let user = async {
-                let ask = requests.recv().await.expect("host request");
-                assert_eq!(ask.tool_call_id, "tool-7");
-                assert_eq!(ask.tool_name, "Write file");
-                decisions
-                    .send(ApprovalDecision {
-                        request_id: ask.request_id,
-                        approved,
-                        updated_input: None,
-                        set_permission_mode: None,
-                        updated_permissions: None,
-                        always: false,
-                    })
+            write_rpc_error(&mut agent_write, &json!(1), -32601, "stale")
+                .await
+                .unwrap();
+            for (session, text) in [("other", "foreign before"), ("ours", "before")] {
+                write_rpc_line(&mut agent_write, session_update_frame(session, text))
                     .await
                     .unwrap();
-            };
-            let (result, ()) = timeout(Duration::from_secs(2), async {
-                tokio::join!(handler, user)
-            })
-            .await
-            .expect("approval must settle");
-            result.unwrap();
-            let line = BufReader::new(reader)
-                .lines()
-                .next_line()
+            }
+            write_rpc_result(&mut agent_write, &json!(2), json!({}))
                 .await
-                .unwrap()
                 .unwrap();
-            let response: Value = serde_json::from_str(&line).unwrap();
-            assert_eq!(response["id"], 42);
-            assert_eq!(
-                response["result"]["outcome"]["outcome"],
-                if approved { "selected" } else { "cancelled" }
-            );
+            for (session, text) in [("other", "foreign after"), ("ours", "after")] {
+                write_rpc_line(&mut agent_write, session_update_frame(session, text))
+                    .await
+                    .unwrap();
+            }
+            agent_write.shutdown().await.unwrap();
+        };
+        let (updates, ()) = timeout(Duration::from_secs(3), async { tokio::join!(import, peer) })
+            .await
+            .unwrap();
+        let updates = updates.unwrap();
+        let text: Vec<_> = updates
+            .iter()
+            .map(|update| update["content"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(text, ["before", "after"]);
+    }
+
+    #[tokio::test]
+    async fn import_distinguishes_failed_handshake_load_and_empty_replay() {
+        let init = json!({
+            "jsonrpc": "2.0", "id": 1, "result": {
+                "protocolVersion": 1, "agentCapabilities": {"loadSession": true}
+            }
+        });
+        for (initialize, load, expected) in [
+            (
+                json!({"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"failed"}}),
+                None,
+                None,
+            ),
+            (
+                init.clone(),
+                Some(json!({"jsonrpc":"2.0","id":2,"result":null})),
+                None,
+            ),
+            (
+                init.clone(),
+                Some(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"failed"}})),
+                None,
+            ),
+            (
+                init,
+                Some(json!({"jsonrpc":"2.0","id":2,"result":{}})),
+                Some(vec![]),
+            ),
+        ] {
+            let (host, agent) = tokio::io::duplex(4096);
+            let (host_read, mut host_write) = tokio::io::split(host);
+            let (agent_read, mut agent_write) = tokio::io::split(agent);
+            let mut reader = BufReader::new(host_read).lines();
+            let mut wire = BufReader::new(agent_read).lines();
+            let cwd = std::env::temp_dir();
+            let import = async {
+                let result = read_acp_session_history(
+                    &mut reader,
+                    &mut host_write,
+                    &cwd,
+                    "ours",
+                    Duration::from_secs(2),
+                )
+                .await;
+                host_write.shutdown().await.unwrap();
+                result
+            };
+            let peer = async {
+                assert_eq!(read_peer_frame(&mut wire).await["method"], "initialize");
+                write_rpc_line(&mut agent_write, initialize).await.unwrap();
+                if let Some(load) = load {
+                    assert_eq!(read_peer_frame(&mut wire).await["method"], "session/load");
+                    write_rpc_line(&mut agent_write, load).await.unwrap();
+                }
+                agent_write.shutdown().await.unwrap();
+                assert!(wire.next_line().await.unwrap().is_none());
+            };
+            let (result, ()) =
+                timeout(Duration::from_secs(3), async { tokio::join!(import, peer) })
+                    .await
+                    .unwrap();
+            assert_eq!(result, expected);
         }
     }
 
@@ -2803,17 +3164,16 @@ mod tests {
             }
             let value =
                 json!({"id": "req-1", "method": "session/request_permission", "params": {}});
-            let mut next_id = 50;
             let result = timeout(
                 Duration::from_secs(2),
                 handle_cursor_extension(
                     &mut writer,
-                    &value,
+                    &value["id"],
                     "session/request_permission",
+                    &value["params"],
                     &events,
                     &mut control,
                     cancel.then_some(&mut bridge),
-                    &mut next_id,
                     "session-1",
                 ),
             )
@@ -2828,7 +3188,12 @@ mod tests {
             if cancel {
                 let response: Value =
                     serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-                assert_eq!(response["method"], "session/cancel");
+                assert_eq!(
+                    response,
+                    json!({
+                        "jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "session-1"}
+                    })
+                );
             }
         }
     }
@@ -3095,7 +3460,7 @@ mod tests {
             cursor_decision_result(
                 "cursor/create_plan",
                 &ApprovalDecision {
-                    request_id: "1".to_string(),
+                    interaction_id: "1".to_string(),
                     approved: true,
                     updated_input: None,
                     set_permission_mode: None,
@@ -3113,7 +3478,7 @@ mod tests {
             cursor_decision_result(
                 "elicitation/create",
                 &ApprovalDecision {
-                    request_id: "e1".to_string(),
+                    interaction_id: "e1".to_string(),
                     approved: true,
                     updated_input: Some(json!({
                         "action": "accept",
@@ -3448,7 +3813,8 @@ mod tests {
             let (dtx, drx) = oneshot::channel();
             control
                 .send(SessionCommand::RunTurn {
-                cancelled: None,
+                    delivery: TurnDelivery::default(),
+                    cancelled: None,
                     prompt: prompt.to_string(),
                     model: None,
                     reasoning: None,
@@ -4589,6 +4955,7 @@ mod tests {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
                 cancelled: None,
                 prompt: prompt.to_string(),
                 model: None,
@@ -4698,6 +5065,7 @@ mod tests {
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
                 cancelled: None,
                 prompt: "Reply with exactly the token USAGE_OK and nothing else.".to_string(),
                 model: None,
@@ -4876,10 +5244,10 @@ pub async fn probe_acp_sessions(
         .await
         .ok()?;
 
-    let init = read_rpc_response(&mut reader, 1, started, deadline).await?;
+    let init = read_rpc_response(&mut reader, &mut stdin, 1, started, deadline).await?;
+    validate_initialize_result(&init).ok()?;
     let supports_load = init
-        .get("result")
-        .and_then(|r| r.get("agentCapabilities"))
+        .get("agentCapabilities")
         .and_then(|c| c.get("loadSession"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
@@ -4900,48 +5268,34 @@ pub async fn probe_acp_sessions(
         }
         let id = next_id;
         next_id += 1;
-        if write_rpc(&mut stdin, id, "session/list", params)
+        write_rpc(&mut stdin, id, "session/list", params)
             .await
-            .is_err()
-        {
-            break;
-        }
-        let Some(response) = read_rpc_response(&mut reader, id, started, deadline).await else {
-            break;
-        };
-        if response.get("error").is_some() {
-            // `Method not found` ⇒ 这个 agent 根本没有会话枚举，按"不支持导入"处理。
-            let _ = child.start_kill();
-            return None;
-        }
-        let Some(result) = response.get("result") else {
-            break;
-        };
-        if let Some(items) = result.get("sessions").and_then(|v| v.as_array()) {
-            for item in items {
-                let Some(session_id) = item.get("sessionId").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                sessions.push(AcpSessionSummary {
-                    session_id: session_id.to_string(),
-                    cwd: item
-                        .get("cwd")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&cwd_text)
-                        .to_string(),
-                    title: item
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string),
-                });
+            .ok()?;
+        let result = read_rpc_response(&mut reader, &mut stdin, id, started, deadline).await?;
+        for item in result.get("sessions")?.as_array()? {
+            let session_id = item.get("sessionId")?.as_str()?;
+            if session_id.is_empty() {
+                return None;
             }
+            sessions.push(AcpSessionSummary {
+                session_id: session_id.to_string(),
+                cwd: item
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&cwd_text)
+                    .to_string(),
+                title: item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string),
+            });
         }
-        cursor = result
-            .get("nextCursor")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+        cursor = match result.get("nextCursor") {
+            None | Some(Value::Null) => None,
+            Some(cursor) => Some(cursor.as_str()?.to_owned()),
+        };
         if cursor.is_none() {
             break;
         }
@@ -4953,30 +5307,22 @@ pub async fn probe_acp_sessions(
 
 /// 读到指定 id 的 JSON-RPC 响应为止，途中的通知一律丢弃。超时或流结束返回 `None`。
 async fn read_rpc_response(
-    reader: &mut Lines<BufReader<ChildStdout>>,
+    reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
+    stdin: &mut (impl AsyncWrite + Unpin),
     want_id: u64,
     started: std::time::Instant,
     deadline: Duration,
 ) -> Option<Value> {
-    loop {
-        if started.elapsed() > deadline {
-            return None;
-        }
-        let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
-            Ok(Ok(Some(line))) => line,
-            Ok(Ok(None)) | Ok(Err(_)) => return None,
-            Err(_) => continue,
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
-            continue;
-        };
-        if value.get("id").and_then(|v| v.as_u64()) == Some(want_id) {
-            return Some(value);
-        }
-    }
+    acp_read_until_id(
+        reader,
+        stdin,
+        None,
+        want_id,
+        deadline.saturating_sub(started.elapsed()),
+    )
+    .await
+    .and_then(AcpHandshakeReply::into_result)
+    .ok()
 }
 
 /// 用 ACP `session/load` 把一条既有会话的历史重放出来，收集期间推送的 `session/update`。
@@ -5007,21 +5353,40 @@ pub async fn probe_acp_session_history(
     let stdout = child.stdout.take()?;
     let mut reader = BufReader::new(stdout).lines();
 
-    let deadline = Duration::from_secs(timeout_secs);
+    let result = read_acp_session_history(
+        &mut reader,
+        &mut stdin,
+        &cli_protocol_cwd(bin, cwd),
+        session_id,
+        Duration::from_secs(timeout_secs),
+    )
+    .await;
+    let _ = child.start_kill();
+    result
+}
+
+async fn read_acp_session_history(
+    reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
+    stdin: &mut (impl AsyncWrite + Unpin),
+    cwd: &Path,
+    session_id: &str,
+    deadline: Duration,
+) -> Option<Vec<Value>> {
     let started = std::time::Instant::now();
 
-    write_rpc(&mut stdin, 1, "initialize", acp_initialize_params(false))
+    write_rpc(stdin, 1, "initialize", acp_initialize_params(false))
         .await
         .ok()?;
-    read_rpc_response(&mut reader, 1, started, deadline).await?;
+    let init = read_rpc_response(reader, stdin, 1, started, deadline).await?;
+    validate_initialize_result(&init).ok()?;
 
     write_rpc(
-        &mut stdin,
+        stdin,
         2,
         "session/load",
         json!({
             "sessionId": session_id,
-            "cwd": cli_protocol_cwd(bin, cwd).to_string_lossy(),
+            "cwd": cwd.to_string_lossy(),
             "mcpServers": [],
         }),
     )
@@ -5031,44 +5396,35 @@ pub async fn probe_acp_session_history(
     // 重放的通知**大部分在响应之前**到达，但不能只读到响应就停——实测部分 agent 会在
     // 响应之后再补推。所以收到响应后再多听一小段（tail window），否则会漏掉尾巴上的消息。
     let mut updates = Vec::new();
-    let mut got_response = false;
     let mut tail_deadline: Option<std::time::Instant> = None;
-    loop {
-        if started.elapsed() > deadline {
-            break;
-        }
-        if let Some(tail) = tail_deadline {
-            if std::time::Instant::now() > tail {
-                break;
+    while started.elapsed() < deadline
+        && tail_deadline.is_none_or(|tail| std::time::Instant::now() < tail)
+    {
+        match acp_next_message(reader).await.ok()? {
+            AcpNext::Frame(AcpFrame::Request { id, method, params }) => {
+                handle_agent_to_client_request(stdin, None, &id, &method, &params)
+                    .await
+                    .ok()?;
             }
-        }
-        let line = match timeout(Duration::from_millis(200), reader.next_line()).await {
-            Ok(Ok(Some(line))) => line,
-            Ok(Ok(None)) | Ok(Err(_)) => break,
-            Err(_) => continue,
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
-            continue;
-        };
-        if value.get("id").and_then(|v| v.as_u64()) == Some(2) {
-            if value.get("error").is_some() {
-                let _ = child.start_kill();
-                return None;
+            AcpNext::Frame(AcpFrame::Response { id, result })
+                if id.as_u64() == Some(2) && tail_deadline.is_none() =>
+            {
+                if !result.ok()?.is_object() {
+                    return None;
+                }
+                tail_deadline = Some(std::time::Instant::now() + Duration::from_secs(3));
             }
-            got_response = true;
-            tail_deadline = Some(std::time::Instant::now() + Duration::from_secs(3));
-            continue;
-        }
-        if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
-            if let Some(update) = value.get("params").and_then(|p| p.get("update")) {
-                updates.push(update.clone());
+            AcpNext::Frame(AcpFrame::Notification { method, params })
+                if method == "session/update" =>
+            {
+                if let Some(update) = acp_session_update(&params, session_id) {
+                    updates.push(Value::Object(update.clone()));
+                }
             }
+            AcpNext::Eof => break,
+            _ => {}
         }
     }
 
-    let _ = child.start_kill();
-    got_response.then_some(updates)
+    tail_deadline.map(|_| updates)
 }

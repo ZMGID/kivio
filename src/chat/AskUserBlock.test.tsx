@@ -37,16 +37,16 @@ describe('AskUserBlock', () => {
   it('submits an unchanged camelCase prefill from the user prompt event verbatim', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
     const toolCall = userPromptEventToRecord({
-      conversationId: 'conversation-1', runId: 'run-1', toolCallId: 'tool-1',
+      conversationId: 'conversation-1', runId: 'run-1', interactionId: 'interaction-1', toolCallId: 'tool-1',
       name: 'PiExtensionInput', source: 'external_cli',
       prompt: { questions: [{
         id: '0', prompt: 'Branch', options: [], allowCustom: true, defaultValue: '  feature/pi  ',
       }] },
     })
-    render(<AskUserBlock variant="docked" toolCall={toolCall} />)
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={toolCall} />)
     expect(screen.getByPlaceholderText('自己写一个…')).toHaveValue('  feature/pi  ')
     fireEvent.click(screen.getByText('提交'))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       '0': { selected_option_ids: [], custom_text: '  feature/pi  ' },
     }, false))
   })
@@ -59,14 +59,14 @@ describe('AskUserBlock', () => {
         default_value: '  subject\n\nbody\n', valueSchema: { type: 'string' },
       }], answers: {},
     }), toolName: 'PiExtensionEditor' }
-    render(<AskUserBlock variant="docked" toolCall={toolCall} />)
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={toolCall} />)
     const input = screen.getByPlaceholderText('自己写一个…')
     expect(input.tagName).toBe('TEXTAREA')
     expect(input).toHaveValue('  subject\n\nbody\n')
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(submit).not.toHaveBeenCalled()
     fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true })
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       '0': { selected_option_ids: [], custom_text: '  subject\n\nbody\n' },
     }, false))
   })
@@ -77,23 +77,23 @@ describe('AskUserBlock', () => {
       id: '0', prompt: 'Message', options: [], allowCustom: true,
       valueSchema: { type: 'string' }, defaultValue: 'initial',
     }
-    const { rerender } = render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    const { rerender } = render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [question], answers: {},
     })} />)
     fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '' } })
-    rerender(<AskUserBlock variant="docked" toolCall={askUserCall({
+    rerender(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [{ ...question, defaultValue: 'updated' }], answers: {},
     })} />)
     expect(screen.getByPlaceholderText('自己写一个…')).toHaveValue('')
     fireEvent.click(screen.getByText('提交'))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       '0': { selected_option_ids: [], custom_text: '' },
     }, false))
   })
 
   it('allows submitting an unchanged empty editor prefill', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={{ ...askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={{ ...askUserCall({
       phase: 'awaiting', questions: [{
         id: '0', prompt: 'Message', options: [], allowCustom: true,
         valueSchema: { type: 'string' }, defaultValue: '',
@@ -101,27 +101,27 @@ describe('AskUserBlock', () => {
     }), toolName: 'PiExtensionEditor' }} />)
     expect(screen.getByText('提交')).toBeEnabled()
     fireEvent.click(screen.getByText('提交'))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       '0': { selected_option_ids: [], custom_text: '' },
     }, false))
   })
 
   it('replaces a prefilled custom answer when the user picks a single option', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [{
         ...RETRY_QUESTION, valueSchema: { type: 'string' }, defaultValue: 'custom',
       }], answers: {},
     })} />)
     fireEvent.click(screen.getByRole('option', { name: /立即重试/ }))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       '0': { selected_option_ids: ['1'], custom_text: null },
     }, false))
   })
 
   it('round-trips the Rust MCP contract fixture through the form without losing optional or typed values', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: mcpContract.expectedQuestions, answers: {},
     })} />)
     fireEvent.click(screen.getByRole('option', { name: /否/ }))
@@ -133,19 +133,19 @@ describe('AskUserBlock', () => {
     fireEvent.click(screen.getByLabelText('下一题'))
     fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '0' } })
     fireEvent.click(screen.getByText('提交'))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', mcpContract.answers, false))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', mcpContract.answers, false))
   })
 
   it('renders a schema enum with only one legal choice', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [{
         id: 'mode', prompt: '工作模式', options: [{ id: '0', label: '只读' }], required: true,
         valueSchema: { type: 'string', enum: ['readonly'] },
       }], answers: {},
     })} />)
     fireEvent.click(screen.getByRole('option', { name: /只读/ }))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       mode: { selected_option_ids: ['0'], custom_text: null },
     }, false))
   })
@@ -161,20 +161,20 @@ describe('AskUserBlock', () => {
         { id: 'enabled', prompt: '是否启用', required: true, options: [{ id: 'true', label: '是' }, { id: 'false', label: '否' }], valueSchema: { type: 'boolean' } },
       ], answers: {},
     }
-    const { rerender } = render(<AskUserBlock variant="docked" toolCall={askUserCall(payload)} onResolved={resolved} />)
+    const { rerender } = render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall(payload)} onResolved={resolved} />)
     fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: 'invalid' } })
     fireEvent.click(screen.getByLabelText('下一题'))
     fireEvent.click(screen.getByText('否'))
     fireEvent.click(screen.getByText('提交'))
     await screen.findByText('count: expected a finite number')
     expect(resolved).not.toHaveBeenCalled()
-    rerender(<AskUserBlock variant="docked" toolCall={askUserCall({ ...payload })} onResolved={resolved} />)
+    rerender(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({ ...payload })} onResolved={resolved} />)
     expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true')
     fireEvent.click(screen.getByLabelText('上一题'))
     expect(screen.getByPlaceholderText('自己写一个…')).toHaveValue('invalid')
     fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '0' } })
     fireEvent.click(screen.getByText('提交'))
-    await waitFor(() => expect(submit).toHaveBeenLastCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenLastCalledWith('interaction-1', {
       count: { selected_option_ids: [], custom_text: '0' },
       enabled: { selected_option_ids: ['false'], custom_text: null },
     }, false))
@@ -182,7 +182,7 @@ describe('AskUserBlock', () => {
   })
 
   it('keeps historical questions without required mandatory', () => {
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [RETRY_QUESTION, { ...RETRY_QUESTION, id: 'next' }], answers: {},
     })} />)
     expect(screen.getByLabelText('下一题')).toBeDisabled()
@@ -192,7 +192,7 @@ describe('AskUserBlock', () => {
   it('sends only one response when an answer and cancellation arrive in the same render batch', async () => {
     let finish: (() => void) | undefined
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockImplementation(() => new Promise<void>((resolve) => { finish = resolve }))
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
     })} />)
     act(() => {
@@ -206,7 +206,7 @@ describe('AskUserBlock', () => {
 
   it('distinguishes an explicitly edited empty string from an omitted optional string', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [{
         id: 'note', prompt: '补充说明', options: [], allow_custom: true, required: false,
         value_schema: { type: 'string' },
@@ -216,7 +216,7 @@ describe('AskUserBlock', () => {
     fireEvent.change(input, { target: { value: 'draft' } })
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.click(screen.getByText('提交'))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       note: { selected_option_ids: [], custom_text: '' },
     }, false))
     submit.mockRestore()
@@ -224,7 +224,7 @@ describe('AskUserBlock', () => {
 
   it('explicitly accepts an all-optional form with an empty object without applying schema defaults', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting',
       questions: [{
         id: 'note', prompt: '补充说明', options: [], allow_custom: true, required: false,
@@ -235,13 +235,13 @@ describe('AskUserBlock', () => {
     expect(screen.getByPlaceholderText('自己写一个…')).toHaveValue('')
     expect(submit).not.toHaveBeenCalled()
     fireEvent.click(screen.getByText('提交'))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {}, false))
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {}, false))
     submit.mockRestore()
   })
 
   it('allows skipping an optional middle question and omits it from the submitted answers', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting',
       questions: [
         RETRY_QUESTION,
@@ -256,7 +256,7 @@ describe('AskUserBlock', () => {
     fireEvent.click(screen.getByLabelText('下一题'))
     fireEvent.click(screen.getAllByRole('option')[1])
     fireEvent.click(screen.getByText('提交'))
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       '0': { selected_option_ids: ['0'], custom_text: null },
       last: { selected_option_ids: ['1'], custom_text: null },
     }, false))
@@ -328,7 +328,7 @@ describe('AskUserBlock', () => {
   })
 
   it('renders the question as the title with numbered options', () => {
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting',
       questions: [RETRY_QUESTION],
       answers: {},
@@ -346,7 +346,7 @@ describe('AskUserBlock', () => {
   })
 
   it('shows the pager and a submit button only when there are several questions', () => {
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting',
       questions: [
         RETRY_QUESTION,
@@ -362,7 +362,7 @@ describe('AskUserBlock', () => {
   // 多选时同一批次连点两项：React 会把两次点击合成一次渲染，若从 state 里读草稿，
   // 第二下会拿着旧值把第一下覆盖掉（实测只剩后一项）。
   it('keeps both picks when two multi-select options are clicked in one batch', () => {
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting',
       questions: [{
         id: '0',
@@ -384,7 +384,7 @@ describe('AskUserBlock', () => {
   })
 
   it('renders a free-text question when there are no options', () => {
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting',
       questions: [{
         id: 'note',
@@ -402,7 +402,7 @@ describe('AskUserBlock', () => {
 
   it('custom input: IME composition Enter does not submit, digits are typed instead of picking an option', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
     })} />)
     const input = screen.getByPlaceholderText('自己写一个…')
@@ -412,12 +412,12 @@ describe('AskUserBlock', () => {
     expect(submit).not.toHaveBeenCalled()
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(submit).toHaveBeenCalledWith(
-      'tool-1', { '0': { selected_option_ids: [], custom_text: 'ni' } }, false,
+      'interaction-1', { '0': { selected_option_ids: [], custom_text: 'ni' } }, false,
     ))
   })
 
   it('custom input: shows a visible submit button once text is typed on a single-select question', () => {
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
     })} />)
     expect(screen.queryByText('提交')).not.toBeInTheDocument()
@@ -428,7 +428,7 @@ describe('AskUserBlock', () => {
   it('custom input: Enter on a multi-question card advances, and submits on the last one', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
     const question = (id: string) => ({ ...RETRY_QUESTION, id, prompt: `题${id}` })
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [question('1'), question('2')], answers: {},
     })} />)
     fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '甲' } })
@@ -437,7 +437,7 @@ describe('AskUserBlock', () => {
     expect(submit).not.toHaveBeenCalled()
     fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '乙' } })
     fireEvent.keyDown(screen.getByPlaceholderText('自己写一个…'), { key: 'Enter' })
-    await waitFor(() => expect(submit).toHaveBeenCalledWith('tool-1', {
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('interaction-1', {
       '1': { selected_option_ids: [], custom_text: '甲' },
       '2': { selected_option_ids: [], custom_text: '乙' },
     }, false))
@@ -445,20 +445,20 @@ describe('AskUserBlock', () => {
 
   it('single-select: option and custom text are mutually exclusive', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [{ ...RETRY_QUESTION, required: false }], answers: {},
     })} />)
     const input = screen.getByPlaceholderText('自己写一个…')
     fireEvent.change(input, { target: { value: '自己的想法' } })
     fireEvent.click(screen.getByRole('option', { name: /立即重试/ }))
     await waitFor(() => expect(submit).toHaveBeenCalledWith(
-      'tool-1', { '0': { selected_option_ids: ['1'], custom_text: null } }, false,
+      'interaction-1', { '0': { selected_option_ids: ['1'], custom_text: null } }, false,
     ))
   })
 
   it('multi-question: focus returns to the list after Enter in the custom input advances', () => {
     const question = (id: string) => ({ ...RETRY_QUESTION, id, prompt: `题${id}` })
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'awaiting', questions: [question('1'), question('2')], answers: {},
     })} />)
     fireEvent.change(screen.getByPlaceholderText('自己写一个…'), { target: { value: '甲' } })
@@ -467,7 +467,7 @@ describe('AskUserBlock', () => {
   })
 
   it('renders answers read-only once the phase is answered', () => {
-    render(<AskUserBlock variant="docked" toolCall={askUserCall({
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
       phase: 'answered',
       questions: [RETRY_QUESTION],
       answers: { '0': { selected_option_ids: ['1'], custom_text: null } },

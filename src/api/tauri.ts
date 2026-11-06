@@ -326,6 +326,7 @@ export type ChatSubagentPayload = {
   parentConversationId: string
   parentRunId: string
   parentToolCallId: string
+  externalSessionId?: string
   taskId: string
   name: string
   /** 子代理实际运行的模型（含全局 Subagent 模型覆盖后的结果）。 */
@@ -378,6 +379,7 @@ export type ChatUserPromptPayload = {
   conversationId: string
   runId: string
   messageId?: string
+  interactionId: string
   toolCallId: string
   id?: string
   name: string
@@ -390,6 +392,7 @@ export type ChatToolConfirmPayload = {
   conversationId: string
   runId: string
   messageId?: string
+  interactionId: string
   toolCallId: string
   name: string
   source: string
@@ -2265,6 +2268,7 @@ export const api = {
         parentConversationId: event.conversationId,
         parentRunId: event.runId,
         parentToolCallId: event.parentToolCallId,
+        externalSessionId: event.externalSessionId,
         taskId: event.taskId,
         name: event.name,
         model: event.model ?? undefined,
@@ -2296,6 +2300,7 @@ export const api = {
         conversationId: event.conversationId,
         runId: event.runId,
         messageId: event.messageId,
+        interactionId: event.interactionId,
         toolCallId: event.toolCallId,
         id: event.toolCallId,
         name: event.name,
@@ -2306,12 +2311,12 @@ export const api = {
     })
   },
   onChatUserPromptResolved: (
-    listener: (payload: { conversationId: string; runId: string; toolCallId: string }) => void,
+    listener: (payload: { conversationId: string; runId: string; interactionId: string }) => void,
   ) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return onChatProtocol((event) => {
       if (event.scope !== 'run' || event.type !== 'user_prompt_resolved') return
-      listener({ conversationId: event.conversationId, runId: event.runId, toolCallId: event.toolCallId })
+      listener({ conversationId: event.conversationId, runId: event.runId, interactionId: event.interactionId })
     })
   },
   onChatToolConfirm: (listener: (payload: ChatToolConfirmPayload) => void) => {
@@ -2322,6 +2327,7 @@ export const api = {
         conversationId: event.conversationId,
         runId: event.runId,
         messageId: event.messageId,
+        interactionId: event.interactionId,
         toolCallId: event.toolCallId,
         name: event.name,
         source: event.source,
@@ -2334,12 +2340,12 @@ export const api = {
   },
   /** 后端已按超时/取消处理掉某条审批 ⇒ 撤掉卡片，别让用户答一个没人听的问题。 */
   onChatToolConfirmWithdraw: (
-    listener: (payload: { conversationId: string; toolCallId: string }) => void,
+    listener: (payload: { conversationId: string; interactionId: string }) => void,
   ) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return onChatProtocol((event) => {
       if (event.scope === 'run' && event.type === 'tool_approval_withdrawn') {
-        listener({ conversationId: event.conversationId, toolCallId: event.toolCallId })
+        listener({ conversationId: event.conversationId, interactionId: event.interactionId })
       }
     })
   },
@@ -2506,20 +2512,20 @@ export const api = {
   // permissionMode 只有计划批准卡会传（三选一里用户选的那一档），决定批准后把 CLI 切到
   // 哪个权限模式。普通审批传 null。
   chatConfirmToolCall: (
-    toolCallId: string,
+    interactionId: string,
     approved: boolean,
     always = false,
     permissionMode: string | null = null,
   ) =>
-    invoke<void>('chat_confirm_tool_call', { toolCallId, approved, always, permissionMode }),
+    invoke<void>('chat_confirm_tool_call', { interactionId, approved, always, permissionMode }),
   chatRespondSessionConsent: (conversationId: string, granted: boolean) =>
     invoke<void>('chat_respond_session_consent', { conversationId, granted }),
   chatSubmitUserChoice: (
-    toolCallId: string,
+    interactionId: string,
     answers: Record<string, AskUserAnswer>,
     skipped = false,
   ) =>
-    invoke<void>('chat_submit_user_choice', { toolCallId, answers, skipped }),
+    invoke<void>('chat_submit_user_choice', { interactionId, answers, skipped }),
   onChatAssistantsChanged: (listener: (assistantId: string) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<string>('chat-assistants-changed', (payload) => listener(payload))

@@ -598,7 +598,7 @@ pub enum UnifiedAgentEvent {
     },
     /// The CLI has cleared this request; withdraw its existing host card and waiter.
     InteractionResolved {
-        tool_call_id: String,
+        interaction_id: String,
     },
     ThinkingDelta {
         delta: String,

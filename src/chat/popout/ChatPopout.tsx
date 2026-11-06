@@ -71,12 +71,15 @@ function PopoutPendingSlot({
         {pendingUserPrompt && pendingUserPromptRecord && (
           <AskUserBlock
             variant="docked"
+            key={pendingUserPrompt.interactionId}
             toolCall={pendingUserPromptRecord}
+            interactionId={pendingUserPrompt.interactionId}
             onResolved={dismissUserPrompt}
           />
         )}
         {pendingToolConfirm && (
           <ApprovalCard
+            key={pendingToolConfirm.interactionId}
             title={toolApprovalTitle(pendingToolConfirm)}
             subtitle={`${pendingToolConfirm.source}${pendingToolConfirm.serverId ? ` · ${pendingToolConfirm.serverId}` : ''}`}
             detail={pendingToolConfirm.argumentsPreview}

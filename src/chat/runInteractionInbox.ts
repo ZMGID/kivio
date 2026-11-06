@@ -6,10 +6,10 @@ import type {
 
 export type RunInteractionEvent =
   | { kind: 'toolRequested'; payload: ChatToolConfirmPayload }
-  | { kind: 'toolWithdrawn'; conversationId: string; toolCallId: string }
+  | { kind: 'toolWithdrawn'; conversationId: string; interactionId: string }
   | { kind: 'consentRequested'; payload: ChatSessionConsentPayload }
   | { kind: 'userPromptRequested'; payload: ChatUserPromptPayload }
-  | { kind: 'userAnswered'; conversationId: string; runId: string; toolCallId: string }
+  | { kind: 'userAnswered'; conversationId: string; runId: string; interactionId: string }
   | { kind: 'runStarted' | 'runTerminal'; conversationId: string; runId: string }
   | { kind: 'drop'; conversationId: string }
 
@@ -27,7 +27,7 @@ export interface RunInteractionSnapshot {
 
 interface RunInteractionTransport {
   confirmTool: (
-    toolCallId: string,
+    interactionId: string,
     approved: boolean,
     always: boolean,
     permissionMode: string | null,
@@ -83,7 +83,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
 
   const hasTool = (prompt: ChatToolConfirmPayload) =>
     (tools.get(prompt.conversationId) ?? []).some((item) =>
-      item.runId === prompt.runId && item.toolCallId === prompt.toolCallId)
+      item.runId === prompt.runId && item.interactionId === prompt.interactionId)
 
   const publish = () => {
     const conversationId = activeConversationId
@@ -94,8 +94,8 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
     const next: RunInteractionSnapshot = {
       activeConversationId: conversationId,
       toolConfirm: tool,
-      toolConfirmSubmitting: tool ? toolSubmitting.has(requestKey(tool.conversationId, tool.runId, tool.toolCallId)) : false,
-      toolConfirmError: tool ? toolErrors.get(requestKey(tool.conversationId, tool.runId, tool.toolCallId)) ?? '' : '',
+      toolConfirmSubmitting: tool ? toolSubmitting.has(requestKey(tool.conversationId, tool.runId, tool.interactionId)) : false,
+      toolConfirmError: tool ? toolErrors.get(requestKey(tool.conversationId, tool.runId, tool.interactionId)) ?? '' : '',
       sessionConsent: consent,
       sessionConsentSubmitting: consent ? consentSubmitting.has(consent.conversationId) : false,
       sessionConsentError: consent ? consentErrors.get(runKey(consent.conversationId, consent.runId)) ?? '' : '',
@@ -120,7 +120,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
 
   const clearRun = (conversationId: string, runId: string) => {
     for (const item of tools.get(conversationId) ?? []) {
-      if (item.runId === runId) toolErrors.delete(requestKey(item.conversationId, item.runId, item.toolCallId))
+      if (item.runId === runId) toolErrors.delete(requestKey(item.conversationId, item.runId, item.interactionId))
     }
     const remainingTools = (tools.get(conversationId) ?? []).filter((item) => item.runId !== runId)
     if (remainingTools.length) tools.set(conversationId, remainingTools)
@@ -135,20 +135,20 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
   const observe = (event: RunInteractionEvent): boolean => {
     if (event.kind === 'toolRequested') {
       const prompt = event.payload
-      const key = requestKey(prompt.conversationId, prompt.runId, prompt.toolCallId)
+      const key = requestKey(prompt.conversationId, prompt.runId, prompt.interactionId)
       if (terminalRuns.has(runKey(prompt.conversationId, prompt.runId))
         || answeredTools.has(key)
-        || withdrawnToolIds.has(JSON.stringify([prompt.conversationId, prompt.toolCallId]))
+        || withdrawnToolIds.has(JSON.stringify([prompt.conversationId, prompt.interactionId]))
         || hasTool(prompt)) return false
       tools.set(prompt.conversationId, [...(tools.get(prompt.conversationId) ?? []), prompt])
       toolErrors.delete(key)
     } else if (event.kind === 'toolWithdrawn') {
-      rememberLimited(withdrawnToolIds, JSON.stringify([event.conversationId, event.toolCallId]))
+      rememberLimited(withdrawnToolIds, JSON.stringify([event.conversationId, event.interactionId]))
       const previous = tools.get(event.conversationId) ?? []
-      const removed = previous.filter((item) => item.toolCallId === event.toolCallId)
-      const rest = previous.filter((item) => item.toolCallId !== event.toolCallId)
+      const removed = previous.filter((item) => item.interactionId === event.interactionId)
+      const rest = previous.filter((item) => item.interactionId !== event.interactionId)
       for (const item of removed) {
-        const key = requestKey(item.conversationId, item.runId, item.toolCallId)
+        const key = requestKey(item.conversationId, item.runId, item.interactionId)
         rememberLimited(answeredTools, key)
         toolErrors.delete(key)
       }
@@ -162,15 +162,15 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
       consentErrors.delete(key)
     } else if (event.kind === 'userPromptRequested') {
       const prompt = event.payload
-      const key = requestKey(prompt.conversationId, prompt.runId, prompt.toolCallId)
+      const key = requestKey(prompt.conversationId, prompt.runId, prompt.interactionId)
       if (terminalRuns.has(runKey(prompt.conversationId, prompt.runId)) || answeredUsers.has(key)) return false
       const queue = users.get(prompt.conversationId) ?? []
-      if (queue.some((item) => item.runId === prompt.runId && item.toolCallId === prompt.toolCallId)) return false
+      if (queue.some((item) => item.runId === prompt.runId && item.interactionId === prompt.interactionId)) return false
       users.set(prompt.conversationId, [...queue, prompt])
     } else if (event.kind === 'userAnswered') {
-      rememberLimited(answeredUsers, requestKey(event.conversationId, event.runId, event.toolCallId))
+      rememberLimited(answeredUsers, requestKey(event.conversationId, event.runId, event.interactionId))
       const rest = (users.get(event.conversationId) ?? [])
-        .filter((item) => item.runId !== event.runId || item.toolCallId !== event.toolCallId)
+        .filter((item) => item.runId !== event.runId || item.interactionId !== event.interactionId)
       if (rest.length) users.set(event.conversationId, rest)
       else users.delete(event.conversationId)
     } else if (event.kind === 'runStarted') {
@@ -183,11 +183,11 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
       clearRun(event.conversationId, event.runId)
     } else {
       for (const item of tools.get(event.conversationId) ?? []) {
-        rememberLimited(answeredTools, requestKey(item.conversationId, item.runId, item.toolCallId))
-        toolErrors.delete(requestKey(item.conversationId, item.runId, item.toolCallId))
+        rememberLimited(answeredTools, requestKey(item.conversationId, item.runId, item.interactionId))
+        toolErrors.delete(requestKey(item.conversationId, item.runId, item.interactionId))
       }
       for (const item of users.get(event.conversationId) ?? []) {
-        rememberLimited(answeredUsers, requestKey(item.conversationId, item.runId, item.toolCallId))
+        rememberLimited(answeredUsers, requestKey(item.conversationId, item.runId, item.interactionId))
       }
       const consent = consents.get(event.conversationId)
       if (consent) {
@@ -207,7 +207,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
     activeConversationId = conversationId
     if (conversationId) {
       for (const item of tools.get(conversationId) ?? []) {
-        toolErrors.delete(requestKey(item.conversationId, item.runId, item.toolCallId))
+        toolErrors.delete(requestKey(item.conversationId, item.runId, item.interactionId))
       }
       const consent = consents.get(conversationId)
       if (consent) consentErrors.delete(runKey(consent.conversationId, consent.runId))
@@ -215,23 +215,24 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
     publish()
   }
 
-  const respondTool = async ({ approved, always = false, permissionMode = null }: {
+  const respondTool = async ({ interactionId, approved, always = false, permissionMode = null }: {
+    interactionId: string
     approved: boolean
     always?: boolean
     permissionMode?: string | null
   }): Promise<boolean> => {
     const prompt = activeConversationId ? tools.get(activeConversationId)?.[0] : undefined
-    if (!prompt) return false
-    const key = requestKey(prompt.conversationId, prompt.runId, prompt.toolCallId)
+    if (!prompt || prompt.interactionId !== interactionId) return false
+    const key = requestKey(prompt.conversationId, prompt.runId, prompt.interactionId)
     if (toolSubmitting.has(key)) return false
     toolSubmitting.add(key)
     toolErrors.delete(key)
     publish()
     try {
-      await transport.confirmTool(prompt.toolCallId, approved, always, permissionMode)
+      await transport.confirmTool(prompt.interactionId, approved, always, permissionMode)
       rememberLimited(answeredTools, key)
       const rest = (tools.get(prompt.conversationId) ?? [])
-        .filter((item) => item.runId !== prompt.runId || item.toolCallId !== prompt.toolCallId)
+        .filter((item) => item.runId !== prompt.runId || item.interactionId !== prompt.interactionId)
       if (rest.length) tools.set(prompt.conversationId, rest)
       else tools.delete(prompt.conversationId)
       publish()
