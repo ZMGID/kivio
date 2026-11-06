@@ -27,7 +27,7 @@ use std::time::Duration;
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -685,8 +685,8 @@ fn stale_frame_verdict(budget: u32, value: &Value) -> (bool, u32) {
 /// 一个活着的 claude stream-json 会话：一个进程服完整个对话。由它自己的 actor 任务独占。
 pub struct ClaudeStreamJsonSession {
     child: Child,
-    stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
     chat_mcp_config: Option<tempfile::NamedTempFile>,
     /// 跨轮存活：保留完成计数和 resolved model；逐请求用量在真正的 result 边界复位。
     handler: StreamHandler,
@@ -751,7 +751,7 @@ impl ClaudeStreamJsonSession {
         .map_err(|e| format!("spawn: {e}"))?;
         let stderr_tail = spawn_stderr_tail(child.stderr.take());
 
-        let mut take_pipes = || -> Result<(ChildStdin, ChildStdout), String> {
+        let mut take_pipes = || -> Result<(AgentStdin, AgentStdout), String> {
             let stdin = child
                 .stdin
                 .take()
@@ -1639,7 +1639,7 @@ impl ClaudeStreamJsonSession {
     /// （落盘会话、关掉自己拉起的 MCP 子进程）。到点还赖着不走才升级到
     /// `kill_agent_process_tree`（spec 第 8c 条：杀整棵树，不然漏一批孤儿 MCP 进程）。
     ///
-    /// **`shutdown()` 之后必须 `drop(stdin)`**：tokio 的 `ChildStdin::poll_shutdown` 只 flush，
+    /// **`shutdown()` 之后必须 `drop(stdin)`**：tokio 的 `AgentStdin::poll_shutdown` 只 flush，
     /// **不关句柄** —— 句柄要到 drop 才关。少了这一行，子进程永远收不到 EOF，每次关停都要
     /// 白等满 `CLAUDE_SHUTDOWN_TIMEOUT` 再被杀掉（真机测试的耗时从 53s 涨到 169s 才暴露）。
     /// acp / codex 的 `close()` 是 `shutdown()` 紧跟 `start_kill()`，掩盖了同一个问题。
@@ -4047,3 +4047,7 @@ text={}",
         close_and_cleanup(control, &workdir).await;
     }
 }
+
+#[cfg(test)]
+#[path = "claude_stream_replay_tests.rs"]
+mod replay_tests;

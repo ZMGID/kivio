@@ -1,0 +1,2 @@
+{"type":"transcript_start","protocol":"claude.stream-json","version":"synthetic","classification":"synthetic"}
+{"type":"expect_outbound","frame":{"type":"user","message":{"content":[{"type":"text","text":"probe"}]}}}

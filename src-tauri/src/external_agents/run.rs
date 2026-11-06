@@ -2481,6 +2481,7 @@ where
             );
         }
     }
+    let _observation = control.observe_generation(run_generation);
     state
         .chat_runtime()
         .while_generation_active(conversation_id, run_generation, || {
@@ -3526,173 +3527,201 @@ async fn connect_persistent_session(
         spawn_dsh_session_actor_with_sink, DshJsonRpcSession,
     };
 
-    let identity = crate::external_agents::session::live::SessionIdentity::default();
-    let background_task_sink = Some(background_task_sink(app, conversation_id, identity.clone()));
-    let dsh_idle_sink = Some(dsh_idle_sink(app, conversation_id, identity.clone()));
-    let dsh_idle_approvals = dsh_idle_approvals_for(protocol, app, conversation_id, identity.clone());
-    // WSL loopback may not reach the Windows-hosted MCP server.
-    let chat_credential = if matches!(
-        protocol,
-        StreamFormat::ClaudeStreamJson | StreamFormat::CodexAppServer | StreamFormat::AcpJsonRpc
-    ) && !crate::external_agents::wsl::is_wsl_target(resolved_bin)
-    {
-        Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
-    } else {
-        None
-    };
+    let capture = app.state::<AppState>().native_diagnostics().connection(protocol, Uuid::parse_str(conversation_id).ok());
+    capture.scope_spawn(async {
+        let identity = crate::external_agents::session::live::SessionIdentity::default();
+        let background_task_sink = Some(background_task_sink(app, conversation_id, identity.clone()));
+        let dsh_idle_sink = Some(dsh_idle_sink(app, conversation_id, identity.clone()));
+        let dsh_idle_approvals = dsh_idle_approvals_for(protocol, app, conversation_id, identity.clone());
+        // WSL loopback may not reach the Windows-hosted MCP server.
+        let chat_credential = if matches!(
+            protocol,
+            StreamFormat::ClaudeStreamJson | StreamFormat::CodexAppServer | StreamFormat::AcpJsonRpc
+        ) && !crate::external_agents::wsl::is_wsl_target(resolved_bin)
+        {
+            Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
+        } else {
+            None
+        };
 
-    match protocol {
-        StreamFormat::AntigravityStreamJson => {
-            use crate::external_agents::session::antigravity::{
-                spawn_antigravity_session_actor, AntigravitySession,
-            };
-            let session =
-                AntigravitySession::connect(resolved_bin, args, cwd, resume_native.as_deref())
-                    .await?;
-            let native_id = session.session_id().to_string();
-            let child_pid = session.child_pid();
-            Ok(PersistentConnection {
-                control: spawn_antigravity_session_actor(session),
-                native_id,
-                resumed: resume_native.is_some(),
-                child_pid,
-                chat_credential,
-            }.identified(&identity))
-        }
-        StreamFormat::ClaudeStreamJson => {
-            // claude 的会话 id 走**启动参数**，不像 codex / ACP 在握手 RPC 里传 ——
-            // 所以这里要看/改 argv 而不是传参。
-            //
-            // **参数说了算**：`build_claude_args` 已按 `resolve_agent_resume_context` 放好
-            // `--resume <id>`（续接已有会话）或 `--session-id <new>`（这个对话还没有会话）。
-            // 参数里的会话标记是**本轮的真实决定**；live handle 只是「上一个进程最后报的那个
-            // id」。让 handle 压过参数，会把一个全新对话接到某个旧会话上 —— 用户会在新对话里
-            // 看到别人的上下文。
-            //
-            // （历史：这里曾解释成「换模型要开新会话」。2026-07-29 本机实测 claude 2.1.220
-            // 推翻了那个前提 —— `--resume` 带另一个 `--model` 既切得动模型、也保住上下文，
-            // 所以换模型现在照常续接。优先级本身不变，只是理由换了。见 spec 第 8 / 25 条。）
-            //
-            // live handle 只在参数里**没有**任何会话 flag 时兜底，且必须改写成 `--resume`：
-            // 同一个 id 再 `--session-id` 一次会被 claude 以「id 已存在」拒绝启动。
-            let (mut effective_args, resumed) = if args.iter().any(|arg| arg == "--resume") {
-                (args.to_vec(), true)
-            } else if args.iter().any(|arg| arg == "--session-id") {
-                (args.to_vec(), false)
-            } else if let Some(id) = resume_native
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                (
-                    crate::external_agents::providers::claude::claude_args_resuming(args, id),
-                    true,
-                )
-            } else {
-                (args.to_vec(), false)
-            };
-            let chat_mcp_config = if let Some(credential) = &chat_credential {
-                Some(crate::external_agents::providers::claude::append_chat_mcp_args(
-                    &mut effective_args,
-                    &credential.url,
-                    &credential.authorization,
-                )?)
-            } else {
-                None
-            };
-            let mut session =
-                ClaudeStreamJsonSession::connect(resolved_bin, &effective_args, cwd).await?;
-            if let Some(file) = chat_mcp_config {
-                session.hold_chat_mcp_config(file);
-            }
-            let id = session.session_id().to_string();
-            let child_pid = session.child_pid();
-            Ok(PersistentConnection {
-                control: spawn_claude_stream_session_actor_with_sink(session, background_task_sink),
-                native_id: id,
-                resumed,
-                child_pid,
-                chat_credential,
-            }.identified(&identity))
-        }
-        StreamFormat::CodexAppServer => {
-            let mcp = chat_credential
-                .as_ref()
-                .map(|credential| (credential.url.as_str(), credential.authorization.as_str()));
-            if let Some(tid) = resume_native
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                // Resume failure must surface to the caller. Swallowing it and starting
-                // a blank thread made `save_live_handle` overwrite the real id — the next
-                // time the user opened this conversation, we resumed the empty one.
-                // Missing-thread is classified one layer up (`is_missing_codex_thread_error`)
-                // and only then do we drop the binding and start fresh.
-                let session = CodexAppServerSession::connect(
-                    resolved_bin,
-                    args,
-                    cwd,
-                    model,
-                    sandbox,
-                    Some(tid),
-                    mcp,
-                )
-                .await
-                .map_err(|err| {
-                    eprintln!("[external-agent] codex resume failed (thread {tid}): {err}");
-                    err
-                })?;
-                let mut session = session;
-                if let Some(visible_users) = codex_rewind {
-                    if let Err(err) = session.revert_to_visible(visible_users).await {
-                        session.close().await;
-                        return Err(format!("{CODEX_REWIND_UNAVAILABLE}{err}"));
-                    }
-                }
-                let id = session.thread_id().to_string();
+        match protocol {
+            StreamFormat::AntigravityStreamJson => {
+                use crate::external_agents::session::antigravity::{
+                    spawn_antigravity_session_actor, AntigravitySession,
+                };
+                let session =
+                    AntigravitySession::connect(resolved_bin, args, cwd, resume_native.as_deref())
+                        .await?;
+                let native_id = session.session_id().to_string();
                 let child_pid = session.child_pid();
-                return Ok(PersistentConnection {
-                    control: spawn_codex_session_actor(session),
-                    native_id: id,
-                    resumed: true,
+                Ok(PersistentConnection {
+                    control: spawn_antigravity_session_actor(session),
+                    native_id,
+                    resumed: resume_native.is_some(),
                     child_pid,
                     chat_credential,
-                }.identified(&identity));
+                }.identified(&identity))
             }
-            let session =
-                CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None, mcp)
-                    .await?;
-            let id = session.thread_id().to_string();
-            let child_pid = session.child_pid();
-            Ok(PersistentConnection {
-                control: spawn_codex_session_actor(session),
-                native_id: id,
-                resumed: false,
-                child_pid,
-                chat_credential,
-            }.identified(&identity))
-        }
-        StreamFormat::AcpJsonRpc => {
-            let mcp_servers: Vec<AcpMcpServer> = chat_credential
-                .as_ref()
-                .map(|credential| AcpMcpServer::Http {
-                    name: crate::app_mcp::CHAT_MCP_SERVER_NAME.to_string(),
-                    url: credential.url.clone(),
-                    headers: vec![(
-                        "Authorization".to_string(),
-                        credential.authorization.clone(),
-                    )],
-                })
-                .into_iter()
-                .collect();
-            if let Some(sid) = resume_native
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                // Same contract as Codex: resume failure must surface. Swallowing it
-                // and calling session/new made save_live_handle overwrite the real id.
+            StreamFormat::ClaudeStreamJson => {
+                // claude 的会话 id 走**启动参数**，不像 codex / ACP 在握手 RPC 里传 ——
+                // 所以这里要看/改 argv 而不是传参。
+                //
+                // **参数说了算**：`build_claude_args` 已按 `resolve_agent_resume_context` 放好
+                // `--resume <id>`（续接已有会话）或 `--session-id <new>`（这个对话还没有会话）。
+                // 参数里的会话标记是**本轮的真实决定**；live handle 只是「上一个进程最后报的那个
+                // id」。让 handle 压过参数，会把一个全新对话接到某个旧会话上 —— 用户会在新对话里
+                // 看到别人的上下文。
+                //
+                // （历史：这里曾解释成「换模型要开新会话」。2026-07-29 本机实测 claude 2.1.220
+                // 推翻了那个前提 —— `--resume` 带另一个 `--model` 既切得动模型、也保住上下文，
+                // 所以换模型现在照常续接。优先级本身不变，只是理由换了。见 spec 第 8 / 25 条。）
+                //
+                // live handle 只在参数里**没有**任何会话 flag 时兜底，且必须改写成 `--resume`：
+                // 同一个 id 再 `--session-id` 一次会被 claude 以「id 已存在」拒绝启动。
+                let (mut effective_args, resumed) = if args.iter().any(|arg| arg == "--resume") {
+                    (args.to_vec(), true)
+                } else if args.iter().any(|arg| arg == "--session-id") {
+                    (args.to_vec(), false)
+                } else if let Some(id) = resume_native
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    (
+                        crate::external_agents::providers::claude::claude_args_resuming(args, id),
+                        true,
+                    )
+                } else {
+                    (args.to_vec(), false)
+                };
+                let chat_mcp_config = if let Some(credential) = &chat_credential {
+                    Some(crate::external_agents::providers::claude::append_chat_mcp_args(
+                        &mut effective_args,
+                        &credential.url,
+                        &credential.authorization,
+                    )?)
+                } else {
+                    None
+                };
+                let mut session =
+                    ClaudeStreamJsonSession::connect(resolved_bin, &effective_args, cwd).await?;
+                if let Some(file) = chat_mcp_config {
+                    session.hold_chat_mcp_config(file);
+                }
+                let id = session.session_id().to_string();
+                let child_pid = session.child_pid();
+                Ok(PersistentConnection {
+                    control: spawn_claude_stream_session_actor_with_sink(session, background_task_sink),
+                    native_id: id,
+                    resumed,
+                    child_pid,
+                    chat_credential,
+                }.identified(&identity))
+            }
+            StreamFormat::CodexAppServer => {
+                let mcp = chat_credential
+                    .as_ref()
+                    .map(|credential| (credential.url.as_str(), credential.authorization.as_str()));
+                if let Some(tid) = resume_native
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    // Resume failure must surface to the caller. Swallowing it and starting
+                    // a blank thread made `save_live_handle` overwrite the real id — the next
+                    // time the user opened this conversation, we resumed the empty one.
+                    // Missing-thread is classified one layer up (`is_missing_codex_thread_error`)
+                    // and only then do we drop the binding and start fresh.
+                    let session = CodexAppServerSession::connect(
+                        resolved_bin,
+                        args,
+                        cwd,
+                        model,
+                        sandbox,
+                        Some(tid),
+                        mcp,
+                    )
+                    .await
+                    .map_err(|err| {
+                        eprintln!("[external-agent] codex resume failed (thread {tid}): {err}");
+                        err
+                    })?;
+                    let mut session = session;
+                    if let Some(visible_users) = codex_rewind {
+                        if let Err(err) = session.revert_to_visible(visible_users).await {
+                            session.close().await;
+                            return Err(format!("{CODEX_REWIND_UNAVAILABLE}{err}"));
+                        }
+                    }
+                    let id = session.thread_id().to_string();
+                    let child_pid = session.child_pid();
+                    return Ok(PersistentConnection {
+                        control: spawn_codex_session_actor(session),
+                        native_id: id,
+                        resumed: true,
+                        child_pid,
+                        chat_credential,
+                    }.identified(&identity));
+                }
+                let session =
+                    CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None, mcp)
+                        .await?;
+                let id = session.thread_id().to_string();
+                let child_pid = session.child_pid();
+                Ok(PersistentConnection {
+                    control: spawn_codex_session_actor(session),
+                    native_id: id,
+                    resumed: false,
+                    child_pid,
+                    chat_credential,
+                }.identified(&identity))
+            }
+            StreamFormat::AcpJsonRpc => {
+                let mcp_servers: Vec<AcpMcpServer> = chat_credential
+                    .as_ref()
+                    .map(|credential| AcpMcpServer::Http {
+                        name: crate::app_mcp::CHAT_MCP_SERVER_NAME.to_string(),
+                        url: credential.url.clone(),
+                        headers: vec![(
+                            "Authorization".to_string(),
+                            credential.authorization.clone(),
+                        )],
+                    })
+                    .into_iter()
+                    .collect();
+                if let Some(sid) = resume_native
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    // Same contract as Codex: resume failure must surface. Swallowing it
+                    // and calling session/new made save_live_handle overwrite the real id.
+                    let session = AcpSession::connect(
+                        resolved_bin,
+                        args,
+                        cwd,
+                        model,
+                        reasoning,
+                        sandbox,
+                        &mcp_servers,
+                        Some(sid),
+                        additional_directories,
+                    )
+                    .await
+                    .map_err(|err| {
+                        eprintln!("[external-agent] acp resume failed (session {sid}): {err}");
+                        err
+                    })?;
+                    let id = session.session_id().to_string();
+                    let child_pid = session.child_pid();
+                    return Ok(PersistentConnection {
+                        control: spawn_acp_session_actor(session),
+                        native_id: id,
+                        resumed: true,
+                        child_pid,
+                        chat_credential,
+                    }.identified(&identity));
+                }
                 let session = AcpSession::connect(
                     resolved_bin,
                     args,
@@ -3701,132 +3730,107 @@ async fn connect_persistent_session(
                     reasoning,
                     sandbox,
                     &mcp_servers,
-                    Some(sid),
+                    None,
                     additional_directories,
                 )
-                .await
-                .map_err(|err| {
-                    eprintln!("[external-agent] acp resume failed (session {sid}): {err}");
-                    err
-                })?;
+                .await?;
                 let id = session.session_id().to_string();
                 let child_pid = session.child_pid();
-                return Ok(PersistentConnection {
+                Ok(PersistentConnection {
                     control: spawn_acp_session_actor(session),
                     native_id: id,
-                    resumed: true,
+                    resumed: false,
                     child_pid,
                     chat_credential,
-                }.identified(&identity));
+                }.identified(&identity))
             }
-            let session = AcpSession::connect(
-                resolved_bin,
-                args,
-                cwd,
-                model,
-                reasoning,
-                sandbox,
-                &mcp_servers,
-                None,
-                additional_directories,
-            )
-            .await?;
-            let id = session.session_id().to_string();
-            let child_pid = session.child_pid();
-            Ok(PersistentConnection {
-                control: spawn_acp_session_actor(session),
-                native_id: id,
-                resumed: false,
-                child_pid,
-                chat_credential,
-            }.identified(&identity))
-        }
-        StreamFormat::DshJsonRpc => {
-            if let Some(sid) = resume_native
-                .as_deref()
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                // Same contract as Codex / ACP: resume failure must surface. Swallowing
-                // `session/open` and creating a fresh `kivio-*` id made save_live_handle
-                // overwrite the real binding. Missing-session is classified one layer up.
+            StreamFormat::DshJsonRpc => {
+                if let Some(sid) = resume_native
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    // Same contract as Codex / ACP: resume failure must surface. Swallowing
+                    // `session/open` and creating a fresh `kivio-*` id made save_live_handle
+                    // overwrite the real binding. Missing-session is classified one layer up.
+                    let session = DshJsonRpcSession::connect(
+                        resolved_bin,
+                        args,
+                        cwd,
+                        Some(sid),
+                        model,
+                        reasoning,
+                        sandbox,
+                        preset,
+                    )
+                    .await
+                    .map_err(|err| {
+                        eprintln!("[external-agent] dsh resume failed (session {sid}): {err}");
+                        err
+                    })?;
+                    let id = session.session_id().to_string();
+                    let child_pid = session.child_pid();
+                    return Ok(PersistentConnection {
+                        control: spawn_dsh_session_actor_with_sink(
+                            session,
+                            dsh_idle_sink,
+                            dsh_idle_approvals,
+                        ),
+                        native_id: id,
+                        resumed: true,
+                        child_pid,
+                        chat_credential,
+                    }.identified(&identity));
+                }
                 let session = DshJsonRpcSession::connect(
                     resolved_bin,
                     args,
                     cwd,
-                    Some(sid),
+                    None,
                     model,
                     reasoning,
                     sandbox,
                     preset,
                 )
-                .await
-                .map_err(|err| {
-                    eprintln!("[external-agent] dsh resume failed (session {sid}): {err}");
-                    err
-                })?;
+                .await?;
                 let id = session.session_id().to_string();
+                let resumed = session.resumed();
                 let child_pid = session.child_pid();
-                return Ok(PersistentConnection {
+                Ok(PersistentConnection {
                     control: spawn_dsh_session_actor_with_sink(
                         session,
                         dsh_idle_sink,
                         dsh_idle_approvals,
                     ),
                     native_id: id,
-                    resumed: true,
+                    resumed,
                     child_pid,
                     chat_credential,
-                }.identified(&identity));
+                }.identified(&identity))
             }
-            let session = DshJsonRpcSession::connect(
-                resolved_bin,
-                args,
-                cwd,
-                None,
-                model,
-                reasoning,
-                sandbox,
-                preset,
-            )
-            .await?;
-            let id = session.session_id().to_string();
-            let resumed = session.resumed();
-            let child_pid = session.child_pid();
-            Ok(PersistentConnection {
-                control: spawn_dsh_session_actor_with_sink(
-                    session,
-                    dsh_idle_sink,
-                    dsh_idle_approvals,
-                ),
-                native_id: id,
-                resumed,
-                child_pid,
-                chat_credential,
-            }.identified(&identity))
+            StreamFormat::PiRpc => {
+                let session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
+                    resolved_bin,
+                    args,
+                    cwd,
+                    resume_native.as_deref(),
+                )
+                .await?;
+                let native_id = session.session_id().to_string();
+                let resumed = session.resumed();
+                let child_pid = session.child_pid();
+                Ok(PersistentConnection {
+                    control: crate::external_agents::session::pi_rpc::spawn_pi_rpc_session_actor(
+                        session,
+                    ),
+                    native_id,
+                    resumed,
+                    child_pid,
+                    chat_credential,
+                }.identified(&identity))
+            }
         }
-        StreamFormat::PiRpc => {
-            let session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
-                resolved_bin,
-                args,
-                cwd,
-                resume_native.as_deref(),
-            )
-            .await?;
-            let native_id = session.session_id().to_string();
-            let resumed = session.resumed();
-            let child_pid = session.child_pid();
-            Ok(PersistentConnection {
-                control: crate::external_agents::session::pi_rpc::spawn_pi_rpc_session_actor(
-                    session,
-                ),
-                native_id,
-                resumed,
-                child_pid,
-                chat_credential,
-            }.identified(&identity))
-        }
-    }
+    }).await
 }
 
 /// 文本 / 推理分段的 phase。

@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -1563,8 +1563,8 @@ fn head_chars(s: &str, n: usize) -> String {
 /// `session/prompt` turns over the same process. Owned exclusively by its actor task.
 pub struct AcpSession {
     child: Child,
-    stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
     session_id: String,
     next_id: u64,
     /// Ring-buffered stderr tail (N1): drained for the process lifetime, joined on close / error
@@ -5428,3 +5428,7 @@ async fn read_acp_session_history(
 
     tail_deadline.map(|_| updates)
 }
+
+#[cfg(test)]
+#[path = "acp_replay_tests.rs"]
+mod replay_tests;

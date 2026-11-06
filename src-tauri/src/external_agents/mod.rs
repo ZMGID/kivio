@@ -10,6 +10,7 @@ pub mod compact;
 pub mod context;
 pub mod providers;
 pub mod detection;
+pub(crate) mod diagnostics;
 pub(crate) mod discovery_state;
 pub mod dsh_plugins;
 pub mod dsh_profile;
@@ -37,3 +38,6 @@ pub mod wsl;
 
 pub(crate) use run::run_external_cli_reply_in;
 pub use run::{run_external_cli_reply, run_external_cli_slash_command};
+
+#[cfg(test)]
+mod replay_tests;

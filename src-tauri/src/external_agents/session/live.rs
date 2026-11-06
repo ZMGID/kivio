@@ -362,6 +362,7 @@ pub struct SessionControl {
     sender: mpsc::Sender<SessionCommand>,
     owner: Option<Arc<ActorOwner>>,
     instance_id: uuid::Uuid,
+    diagnostics: Option<crate::external_agents::diagnostics::ConnectionCapture>,
 }
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SessionIdentity(Arc<Mutex<Option<SessionInstance>>>);
@@ -433,11 +434,15 @@ impl SessionControl {
         Self {
             sender,
             instance_id: uuid::Uuid::new_v4(),
+            diagnostics: crate::external_agents::diagnostics::ConnectionCapture::current(),
             owner: Some(Arc::new(ActorOwner {
                 abort,
                 finished: receipt,
             })),
         }
+    }
+    pub(crate) fn observe_generation(&self, generation: u64) -> Option<crate::external_agents::diagnostics::ObservationGuard> {
+        self.diagnostics.as_ref().map(|capture| capture.observe_generation(generation))
     }
     pub(crate) fn abort(&self) {
         if let Some(owner) = &self.owner {
@@ -475,6 +480,7 @@ impl SessionControl {
         Self {
             sender,
             instance_id: uuid::Uuid::new_v4(),
+            diagnostics: crate::external_agents::diagnostics::ConnectionCapture::current(),
             owner: None,
         }
     }

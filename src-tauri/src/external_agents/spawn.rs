@@ -5,7 +5,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, Command};
+use tokio::process::{Child, Command};
+use super::diagnostics::{AgentPipe, AgentStdin, AgentStdout, AgentStderr, ConnectionCapture, Direction};
 use tokio::time::timeout;
 
 use crate::external_agents::types::{AgentHomeStrategy, AgentLaunchPolicy, RuntimeAgentDef};
@@ -42,9 +43,9 @@ pub struct AgentChild {
     child: Option<Box<dyn process_wrap::tokio::ChildWrapper>>,
     _maintenance: Option<super::session::live::ResourceLease>,
     _resource: Option<super::session::live::ResourceLease>,
-    pub stdin: Option<tokio::process::ChildStdin>,
-    pub stdout: Option<tokio::process::ChildStdout>,
-    pub stderr: Option<ChildStderr>,
+    pub stdin: Option<AgentStdin>,
+    pub stdout: Option<AgentStdout>,
+    pub stderr: Option<AgentStderr>,
     #[cfg(unix)]
     group: Option<u32>,
 }
@@ -115,12 +116,13 @@ impl AgentChild {
         #[cfg(windows)]
         command.creation_flags(crate::proc::CREATE_NO_WINDOW);
         let mut child = child?;
+        let capture = ConnectionCapture::current();
         Ok(Self {
             #[cfg(unix)]
             group: child.id(),
-            stdin: child.stdin().take(),
-            stdout: child.stdout().take(),
-            stderr: child.stderr().take(),
+            stdin: child.stdin().take().map(|pipe| AgentPipe::new(pipe, Direction::Stdin, capture.clone())),
+            stdout: child.stdout().take().map(|pipe| AgentPipe::new(pipe, Direction::Stdout, capture.clone())),
+            stderr: child.stderr().take().map(|pipe| AgentPipe::new(pipe, Direction::Stderr, capture)),
             child: Some(child),
             _maintenance: super::session::live::MAINTENANCE_OWNER
                 .try_with(Clone::clone)
@@ -133,7 +135,7 @@ impl AgentChild {
         let stdout = self.stdout.take();
         let stderr = self.stderr.take();
         self.stdin.take();
-        let read = |pipe: Option<tokio::process::ChildStdout>| async move {
+        let read = |pipe: Option<AgentStdout>| async move {
             let mut bytes = Vec::new();
             if let Some(mut pipe) = pipe {
                 pipe.read_to_end(&mut bytes).await?;
@@ -480,7 +482,7 @@ pub fn drain_stderr(child: &mut AgentChild) -> tokio::task::JoinHandle<String> {
 /// stderr is `take()`n separately from stdout, so we can't use `drain_stderr(&mut Child)`. Spawns a
 /// task that accumulates the tail (last `STDERR_CAP_CHARS`) until stderr hits EOF (i.e. the child
 /// dies / is killed), then returns it. Join the handle on close / error to fold into diagnostics.
-pub fn spawn_stderr_tail(stderr: Option<ChildStderr>) -> tokio::task::JoinHandle<String> {
+pub fn spawn_stderr_tail(stderr: Option<AgentStderr>) -> tokio::task::JoinHandle<String> {
     tokio::spawn(async move {
         match stderr {
             Some(stderr) => accumulate_tail(stderr, STDERR_CAP_CHARS).await,

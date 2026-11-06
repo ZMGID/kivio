@@ -15,7 +15,6 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout},
     sync::{mpsc, oneshot, watch},
     time::timeout,
 };
@@ -23,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     external_agents::{
+        diagnostics::{AgentStdin, AgentStdout},
         registry::get_agent_def,
         spawn::{agent_cli_command, resolve_binary, AgentChild},
     },
@@ -802,8 +802,8 @@ fn thread_params(
 // Own the child and its process group together with the bounded, cancellation-safe line reader.
 struct Rpc {
     _child: AgentChild,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    input: AgentStdin,
+    output: BufReader<AgentStdout>,
     line: Vec<u8>,
     pending: VecDeque<Value>,
     next_id: u64,

@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
@@ -26,7 +26,7 @@ fn codex_cli_command(resolved_bin: &Path) -> tokio::process::Command {
 /// Codex `app-server` speaks newline-delimited JSON-RPC over stdio (one JSON object per line,
 /// no `Content-Length` framing). Responses omit the `jsonrpc` field, so we never require it.
 async fn write_rpc(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &mut AgentStdin,
     id: u64,
     method: &str,
     params: Value,
@@ -46,7 +46,7 @@ async fn write_rpc(
 }
 
 async fn write_rpc_result(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &mut AgentStdin,
     id: &Value,
     result: Value,
 ) -> Result<(), String> {
@@ -64,7 +64,7 @@ async fn write_rpc_result(
 }
 
 async fn write_rpc_error(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &mut AgentStdin,
     id: &Value,
     code: i64,
     message: &str,
@@ -169,7 +169,7 @@ fn codex_thread_config(mcp: Option<(&str, &str)>) -> Value {
 /// JSON-RPC notification (no `id`). Required after `initialize` — newer app-server rejects
 /// subsequent requests until it sees `initialized`.
 async fn write_rpc_notification(
-    stdin: &mut tokio::process::ChildStdin,
+    stdin: &mut AgentStdin,
     method: &str,
     params: Value,
 ) -> Result<(), String> {
@@ -1507,8 +1507,8 @@ fn local_image_items(
 /// `turn/start` calls over the same process. Owned exclusively by its actor task.
 pub struct CodexAppServerSession {
     child: Child,
-    stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
     thread_id: String,
     cwd: String,
     cli_bin: PathBuf,
@@ -2219,7 +2219,7 @@ struct CodexPendingRequest {
 }
 
 async fn queue_codex_server_request(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     method: &str,
     id: &Value,
     params: &Value,
@@ -2297,7 +2297,7 @@ fn codex_tool_approval_result(
 }
 
 async fn answer_pending_codex_request(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     request: &CodexPendingRequest,
     decision: Option<crate::external_agents::session::live::ApprovalDecision>,
 ) -> Result<(), String> {
@@ -2416,8 +2416,8 @@ fn decode_codex_frame(value: &Value) -> Result<CodexFrame<'_>, String> {
 /// server→client approval requests and skipping notifications. Unknown requests are
 /// fail-closed so handshake cannot hang.
 async fn read_until_response(
-    reader: &mut Lines<BufReader<ChildStdout>>,
-    stdin: &mut ChildStdin,
+    reader: &mut Lines<BufReader<AgentStdout>>,
+    stdin: &mut AgentStdin,
     target_id: u64,
     overall: Duration,
 ) -> Result<Value, String> {
@@ -2450,7 +2450,7 @@ async fn read_until_response(
 }
 
 async fn answer_handshake_request(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     method: &str,
     id: &Value,
     params: &Value,
@@ -2466,8 +2466,8 @@ async fn answer_handshake_request(
 /// workspace-write turn. App-server does not do that by itself; without this
 /// call the model reports that the execution environment is still locked.
 async fn ensure_windows_sandbox(
-    reader: &mut Lines<BufReader<ChildStdout>>,
-    stdin: &mut ChildStdin,
+    reader: &mut Lines<BufReader<AgentStdout>>,
+    stdin: &mut AgentStdin,
     cwd: &str,
     next_id: &mut u64,
 ) {
@@ -2483,8 +2483,8 @@ async fn ensure_windows_sandbox(
 
 #[cfg(windows)]
 async fn ensure_windows_sandbox_inner(
-    reader: &mut Lines<BufReader<ChildStdout>>,
-    stdin: &mut ChildStdin,
+    reader: &mut Lines<BufReader<AgentStdout>>,
+    stdin: &mut AgentStdin,
     cwd: &str,
     next_id: &mut u64,
 ) -> Result<(), String> {
@@ -3330,7 +3330,7 @@ mod tests {
         );
     }
 
-    async fn protocol_peer_reader(stdout: ChildStdout) -> Lines<BufReader<ChildStdout>> {
+    async fn protocol_peer_reader(stdout: AgentStdout) -> Lines<BufReader<AgentStdout>> {
         let mut reader = BufReader::new(stdout).lines();
         loop {
             let line = timeout(Duration::from_secs(5), reader.next_line())
@@ -3463,8 +3463,66 @@ mod tests {
                 json!({"method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":turn,"status":"completed"}}}),
             );
         }
+        if mode == "diagnostics" {
+            let _ = input.next();
+            return;
+        }
         let finish: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
         assert_eq!(finish["method"], "test/finish");
+    }
+
+    #[tokio::test]
+    async fn native_diagnostics_survive_owned_handshake_and_actor_reuse() {
+        use crate::external_agents::{diagnostics::NativeDiagnostics, types::StreamFormat};
+        let (_diagnostics, capture, records) = NativeDiagnostics::test_capture(StreamFormat::CodexAppServer);
+        let control = capture.scope_spawn(async {
+            let exe = std::env::current_exe().unwrap();
+            let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
+                .args(["--exact", "external_agents::session::codex_app_server::tests::turn_identity_protocol_peer", "--nocapture"])
+                .env("KIVIO_TURN_IDENTITY_PEER", "diagnostics")
+                .stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+                .no_console_window()).unwrap();
+            let mut session = CodexAppServerSession {
+                stdin: child.stdin.take().unwrap(),
+                reader: protocol_peer_reader(child.stdout.take().unwrap()).await,
+                stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
+                child, thread_id: "thread-1".into(), cwd: "/work".into(), cli_bin: exe,
+                next_id: 1, emitted_tools: HashSet::new(), active_turn_id: None,
+                seen_turn_ids: HashSet::new(), approval_policy: "never",
+                sandbox_policy: json!({"type":"dangerFullAccess"}), plan_mode: false,
+                thread_model: None, service_tier: None,
+            };
+            session.request("initialize", json!({"SECRET-key":"SECRET-handshake"})).await.unwrap();
+            spawn_codex_session_actor(session)
+        }).await;
+        for generation in 1..=2 {
+            let _observation = control.observe_generation(generation);
+            let (events, mut output) = mpsc::channel(64);
+            let (done, result) = oneshot::channel();
+            control.send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(), cancelled: None, prompt: "SECRET-prompt".into(),
+                model: None, reasoning: None, images: vec![], extra_writable_roots: vec![],
+                events, done, approvals: None,
+            }).await.unwrap();
+            timeout(Duration::from_secs(5), result).await.unwrap().unwrap().unwrap();
+            let mut text = String::new();
+            while let Ok(event) = output.try_recv() {
+                if let UnifiedAgentEvent::TextDelta { delta } = event { text.push_str(&delta); }
+            }
+            assert_eq!(text, format!("turn-{generation}"));
+            assert!(!control.is_closed());
+        }
+        control.close().await.unwrap();
+        let records: Vec<Value> = records.try_iter().map(|(_, bytes)| {
+            assert!(!String::from_utf8_lossy(&bytes).contains("SECRET"));
+            serde_json::from_slice(&bytes).unwrap()
+        }).collect();
+        assert!(records.iter().any(|v| v["method"] == "initialize" && v.get("observed_during_generation").is_none()));
+        assert_eq!(records.iter().filter_map(|v| v["connection"].as_str()).collect::<HashSet<_>>().len(), 1);
+        for generation in 1..=2 {
+            assert!(records.iter().any(|v| v["method"] == "turn/start" && v["observed_during_generation"] == generation));
+            assert!(records.iter().any(|v| v["method"] == "turn/completed" && v["observed_during_generation"] == generation));
+        }
     }
 
     #[tokio::test]
@@ -5979,3 +6037,7 @@ mod tests {
         )));
     }
 }
+
+#[cfg(test)]
+#[path = "codex_app_server_replay_tests.rs"]
+mod replay_tests;

@@ -45,7 +45,7 @@ use std::time::{Duration, Instant};
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -81,8 +81,8 @@ static DSH_PROFILE_BOOT_LOCK: Mutex<()> = Mutex::const_new(());
 /// 运行中的 dsh 连接：一个进程可承载同一个 session 的多轮 prompt。
 pub struct DshJsonRpcSession {
     child: Child,
-    stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
     stderr_tail: tokio::task::JoinHandle<String>,
     session_id: String,
     resumed: bool,
@@ -1395,7 +1395,7 @@ fn rpc_id_key(id: &Value) -> Option<String> {
 }
 
 async fn handle_incoming_request(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     session_id: &str,
     value: &Value,
     approvals: Option<&mut ApprovalBridge>,
@@ -1497,7 +1497,7 @@ async fn handle_incoming_request(
 }
 
 async fn drain_ask_decisions(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     pending_asks: &mut std::collections::HashMap<String, Value>,
     mut turn_approvals: Option<&mut ApprovalBridge>,
     mut idle_approvals: Option<&mut ApprovalBridge>,
@@ -1513,7 +1513,7 @@ async fn drain_ask_decisions(
 }
 
 async fn settle_session_ask(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     pending_asks: &mut std::collections::HashMap<String, Value>,
     decision: ApprovalDecision,
 ) -> Result<(), String> {
@@ -1544,7 +1544,7 @@ async fn settle_session_ask(
 }
 
 async fn reject_pending_asks(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     pending_asks: &mut std::collections::HashMap<String, Value>,
     code: &str,
     message: &str,
@@ -1555,7 +1555,7 @@ async fn reject_pending_asks(
     }
 }
 
-async fn write_rpc_result(stdin: &mut ChildStdin, id: &Value, result: Value) -> Result<(), String> {
+async fn write_rpc_result(stdin: &mut AgentStdin, id: &Value, result: Value) -> Result<(), String> {
     write_rpc_frame(
         stdin,
         json!({
@@ -1568,7 +1568,7 @@ async fn write_rpc_result(stdin: &mut ChildStdin, id: &Value, result: Value) -> 
 }
 
 async fn write_rpc_error(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     id: &Value,
     code: i64,
     message: &str,
@@ -1595,7 +1595,7 @@ async fn write_rpc_error(
     .await
 }
 
-async fn write_rpc_frame(stdin: &mut ChildStdin, payload: Value) -> Result<(), String> {
+async fn write_rpc_frame(stdin: &mut AgentStdin, payload: Value) -> Result<(), String> {
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
     stdin
@@ -1606,7 +1606,7 @@ async fn write_rpc_frame(stdin: &mut ChildStdin, payload: Value) -> Result<(), S
 }
 
 async fn write_rpc(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     id: u64,
     method: &str,
     params: Value,
@@ -1624,8 +1624,8 @@ async fn write_rpc(
 }
 
 async fn read_until_response(
-    reader: &mut Lines<BufReader<ChildStdout>>,
-    stdin: &mut ChildStdin,
+    reader: &mut Lines<BufReader<AgentStdout>>,
+    stdin: &mut AgentStdin,
     target_id: u64,
     overall: Duration,
 ) -> Result<Value, String> {
@@ -4500,3 +4500,7 @@ mod tests {
         session.close().await;
     }
 }
+
+#[cfg(test)]
+#[path = "dsh_jsonrpc_replay_tests.rs"]
+mod replay_tests;
