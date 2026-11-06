@@ -247,20 +247,16 @@ async fn execute_graph(
         let handle_hint = match result {
             Ok((mut output, next_handle)) => {
                 record.nodes[node_index] = success_node_record(
-                    &node.id, &node.node_type, node_disabled(&node.data), &prev, &mut output,
+                    &node.id,
+                    &node.node_type,
+                    node_disabled(&node.data),
+                    &prev,
+                    &mut output,
                 );
                 let preview = record.nodes[node_index].output.clone();
                 let status = record.nodes[node_index].status.as_str();
                 let _ = history::write_run(app, record);
-                events::node_finished(
-                    app,
-                    &automation.id,
-                    run_id,
-                    &node.id,
-                    status,
-                    preview,
-                    None,
-                );
+                events::node_finished(app, &automation.id, run_id, &node.id, status, preview, None);
                 incoming = output;
                 next_handle
             }
@@ -323,7 +319,10 @@ pub(super) fn success_node_record(
     output: &mut NodeOutput,
 ) -> AutomationRunNode {
     output.sources = input.sources.clone();
-    output.sources.insert(node_id.to_string(), json!({ "text": output.text, "json": output.json }));
+    output.sources.insert(
+        node_id.to_string(),
+        json!({ "text": output.text, "json": output.json }),
+    );
     AutomationRunNode {
         node_id: node_id.to_string(),
         node_type: node_type.to_string(),
@@ -353,7 +352,13 @@ fn finish_run(
             node.status = status.to_string();
             node.error = error.clone();
             events::node_finished(
-                app, &record.automation_id, &record.id, &node.node_id, status, None, error.clone(),
+                app,
+                &record.automation_id,
+                &record.id,
+                &node.node_id,
+                status,
+                None,
+                error.clone(),
             );
         }
     }
@@ -579,7 +584,10 @@ fn execute_file(
     );
     write_file(
         &workspace,
-        &crate::native_tools::WriteArgs { path: path.clone(), content },
+        &crate::native_tools::WriteArgs {
+            path: path.clone(),
+            content,
+        },
     )?;
     Ok(NodeOutput::with_json(
         path.clone(),

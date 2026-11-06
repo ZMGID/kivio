@@ -226,10 +226,13 @@ impl<'a> ContextPolicy<'a> {
                     return Ok(result);
                 }
                 self.candidate = Some(CompactionCandidate {
-                    source_until_message_id: messages
-                        .iter()
-                        .rev()
-                        .find_map(|message| message.source.get("_ui_message_id").and_then(serde_json::Value::as_str).map(str::to_owned)),
+                    source_until_message_id: messages.iter().rev().find_map(|message| {
+                        message
+                            .source
+                            .get("_ui_message_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    }),
                     summary,
                     provider_id: provider.id.clone(),
                     model,

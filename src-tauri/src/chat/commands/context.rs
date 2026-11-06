@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use serde_json::Value;
 use tauri::{AppHandle, State};
 
-use crate::chat::context_policy::{
-    decay_warning_for, estimate_messages_tokens, replacement_body, summarize_history, CompactOutcome,
-    SUMMARY_OUTPUT_TOKENS,
-};
 use crate::chat::agent_preparation as agent_prepare;
+use crate::chat::context_policy::{
+    decay_warning_for, estimate_messages_tokens, replacement_body, summarize_history,
+    CompactOutcome, SUMMARY_OUTPUT_TOKENS,
+};
 use crate::chat::model::openai_messages_from_model_messages;
 use crate::chat::model_metadata::{chat_max_output_tokens_for_model, context_window_for_model};
 use crate::chat::storage::load_conversation;
@@ -421,7 +421,10 @@ pub(super) fn measure_request_segments(
 ) -> Vec<ContextUsageSegment> {
     crate::chat::context_measure::measure_prepared_request(
         &crate::chat::agent::history::import_history(messages.to_vec()),
-        &tools.iter().map(crate::chat::model::ModelTool::from).collect::<Vec<_>>(),
+        &tools
+            .iter()
+            .map(crate::chat::model::ModelTool::from)
+            .collect::<Vec<_>>(),
         provider,
         model,
     )
@@ -507,8 +510,7 @@ pub(super) fn resolve_usage_anchor(
                     return None;
                 }
             }
-            let tokens =
-                crate::chat::model::context_usage::anchor_total_tokens(usage, api_format);
+            let tokens = crate::chat::model::context_usage::anchor_total_tokens(usage, api_format);
             tokens.map(|total| (idx, total))
         });
     match anchor {
@@ -608,8 +610,7 @@ pub(super) async fn compute_context_state(
     let settings = state.settings_read().clone();
     let provider = settings.get_provider(&conversation.provider_id).cloned();
     let live = state.chat_runtime().context_measurement(&conversation.id);
-    let measurement =
-        crate::chat::context_measure::resolve_display(conversation, live.as_ref());
+    let measurement = crate::chat::context_measure::resolve_display(conversation, live.as_ref());
     let reported_context_tokens = measurement.reported_tokens;
     let segments = measurement.segments;
     let estimated_input_tokens = segments
@@ -700,15 +701,8 @@ pub(super) async fn compress_conversation_context(
         .ok_or("Compression provider not found")?;
     // Do not reopen historical videos for a summary. Image projection happens
     // only on the summary request copy, leaving retained recent images intact.
-    let messages = build_chat_api_messages_with_video(
-        Some(app),
-        "",
-        conversation,
-        None,
-        None,
-        &[],
-        false,
-    )?;
+    let messages =
+        build_chat_api_messages_with_video(Some(app), "", conversation, None, None, &[], false)?;
     let until = conversation
         .messages
         .last()

@@ -196,21 +196,52 @@ pub fn read_file(
 
     let content = fs::read_to_string(&full).map_err(|err| format!("Read file failed: {err}"))?;
     let display_path = workspace_display_path(workspace, &full);
-    read_text_window(display_path, full.display().to_string(), content, metadata.len(), offset, limit)
+    read_text_window(
+        display_path,
+        full.display().to_string(),
+        content,
+        metadata.len(),
+        offset,
+        limit,
+    )
 }
 
 /// Apply the normal read window and output limits to generated internal URLs.
-pub(crate) fn read_text_content(path: &str, content: String, arguments: &Value) -> Result<ReadFileResult, String> {
-    let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-    let limit = arguments.get("limit").and_then(Value::as_u64).map(|value| value as usize);
+pub(crate) fn read_text_content(
+    path: &str,
+    content: String,
+    arguments: &Value,
+) -> Result<ReadFileResult, String> {
+    let offset = arguments
+        .get("offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
     let size = content.len() as u64;
-    let mut result = read_text_window(path.to_string(), path.to_string(), content, size, offset, limit)?;
-    if result.start_line > result.end_line && result.next_offset == Some(result.start_line + 1)
-        && result.warnings.first().is_some_and(|warning| warning.contains("Use bash:"))
+    let mut result = read_text_window(
+        path.to_string(),
+        path.to_string(),
+        content,
+        size,
+        offset,
+        limit,
+    )?;
+    if result.start_line > result.end_line
+        && result.next_offset == Some(result.start_line + 1)
+        && result
+            .warnings
+            .first()
+            .is_some_and(|warning| warning.contains("Use bash:"))
     {
         result.warnings = vec![format!(
             "[Line {} exceeds the {}KB limit. Use offset={} to skip it.]",
-            result.start_line, TOOL_OUTPUT_MAX_BYTES / 1024, result.start_line + 1,
+            result.start_line,
+            TOOL_OUTPUT_MAX_BYTES / 1024,
+            result.start_line + 1,
         )];
     }
     Ok(result)
@@ -1789,7 +1820,10 @@ mod tests {
             std::env::temp_dir().join(format!("kivio_sim_outside_{}.txt", uuid::Uuid::new_v4()));
         let written = write_file(
             &ws,
-            &WriteArgs { path: outside.to_string_lossy().into_owned(), content: "escaped the project root\n".into() },
+            &WriteArgs {
+                path: outside.to_string_lossy().into_owned(),
+                content: "escaped the project root\n".into(),
+            },
         )
         .expect("write outside project (no boundary)");
         println!(
@@ -2861,9 +2895,14 @@ mod tests {
         let schema = input_schema::<WriteFile>();
         let malformed = json!({ "path": "hello.txt", "content": 42 });
         assert!(validate_arguments(&schema, &malformed).is_err());
-        assert!(matches!(call_typed(&tool, malformed).await, Err(ToolError::InvalidArguments(_))));
+        assert!(matches!(
+            call_typed(&tool, malformed).await,
+            Err(ToolError::InvalidArguments(_))
+        ));
         assert!(!root.path().join("hello.txt").exists());
-        assert!(call_typed(&tool, json!({ "path": "hello.txt" })).await.is_err());
+        assert!(call_typed(&tool, json!({ "path": "hello.txt" }))
+            .await
+            .is_err());
 
         let arguments = json!({ "path": "hello.txt", "content": "alpha\nbeta\n" });
         validate_arguments(&schema, &arguments).unwrap();
@@ -2874,14 +2913,24 @@ mod tests {
         assert_eq!(result["operation"], "create");
         assert_eq!(result["additions"], 2);
         assert!(result["diff"].as_str().unwrap().contains("+alpha"));
-        assert_eq!(fs::read_to_string(root.path().join("hello.txt")).unwrap(), "alpha\nbeta\n");
+        assert_eq!(
+            fs::read_to_string(root.path().join("hello.txt")).unwrap(),
+            "alpha\nbeta\n"
+        );
 
-        let overwritten = call_typed(&tool, json!({ "path": "hello.txt", "content": "gamma\n" })).await.unwrap();
+        let overwritten = call_typed(&tool, json!({ "path": "hello.txt", "content": "gamma\n" }))
+            .await
+            .unwrap();
         let result = overwritten.structured_content.unwrap();
         assert_eq!(result["operation"], "overwrite");
         assert_eq!(result["removals"], 2);
-        assert_eq!(fs::read_to_string(root.path().join("hello.txt")).unwrap(), "gamma\n");
-        assert!(call_typed(&tool, json!({ "path": ".", "content": "bad" })).await.is_err());
+        assert_eq!(
+            fs::read_to_string(root.path().join("hello.txt")).unwrap(),
+            "gamma\n"
+        );
+        assert!(call_typed(&tool, json!({ "path": ".", "content": "bad" }))
+            .await
+            .is_err());
         assert!(root.path().is_dir());
     }
 
@@ -2976,7 +3025,10 @@ mod tests {
         let target = dir.join("note.html");
         write_file(
             &workspace,
-            &WriteArgs { path: target.to_string_lossy().into_owned(), content: "<html></html>".into() },
+            &WriteArgs {
+                path: target.to_string_lossy().into_owned(),
+                content: "<html></html>".into(),
+            },
         )
         .expect("explicit absolute write outside project");
         assert_eq!(
@@ -2989,7 +3041,10 @@ mod tests {
         let escape_name = format!("kivio_escape_{}.txt", uuid::Uuid::new_v4());
         write_file(
             &workspace,
-            &WriteArgs { path: format!("../{escape_name}"), content: "x".into() },
+            &WriteArgs {
+                path: format!("../{escape_name}"),
+                content: "x".into(),
+            },
         )
         .expect("relative `..` write is allowed under no-boundary");
         let escaped = root.parent().expect("root parent").join(&escape_name);

@@ -7,30 +7,30 @@ use serde_json::Value;
 use crate::agents::AgentDefinition;
 use crate::mcp::ChatToolDefinition;
 
+pub(crate) mod awaits;
+pub mod commands;
 pub mod delivery;
+pub(crate) mod eval;
 pub mod executor;
+pub mod irc;
+pub(crate) mod isolation;
 pub mod jobs;
+pub mod lifecycle;
 pub mod names;
+pub(crate) mod policies;
+pub(crate) mod progress;
 pub mod prompts;
 pub mod registry;
-pub mod lifecycle;
-pub mod irc;
-pub(crate) mod session;
-pub(crate) mod awaits;
-pub mod view;
-pub(crate) mod services;
-pub(crate) mod spawn;
-pub(crate) mod structured;
-pub(crate) mod isolation;
 pub(crate) mod seance;
-pub(crate) mod progress;
+pub(crate) mod services;
+pub(crate) mod session;
+pub(crate) mod spawn;
 pub(crate) mod speculative;
+pub(crate) mod structured;
 pub mod task;
 pub mod urls;
+pub mod view;
 pub mod wait;
-pub mod commands;
-pub(crate) mod policies;
-pub(crate) mod eval;
 pub(crate) mod workpool;
 
 pub const TASK_TOOL_NAME: &str = "task";
@@ -103,34 +103,54 @@ impl SubAgentManager {
         self.set_user_interrupted(root, false);
     }
 
-
     /// OMP exception: after a user interrupt, finished results are not allowed to
     /// start a parent turn until the user prompts again.
     pub fn set_user_interrupted(&self, root: &str, interrupted: bool) {
-        let mut states = self.user_interrupted.lock().unwrap_or_else(|e| e.into_inner());
+        let mut states = self
+            .user_interrupted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let state = states.entry(root.to_string()).or_default();
-        if interrupted { state.epoch = state.epoch.wrapping_add(1); }
+        if interrupted {
+            state.epoch = state.epoch.wrapping_add(1);
+        }
         state.interrupted = interrupted;
     }
 
     pub fn user_interrupted(&self, root: &str) -> bool {
-        self.user_interrupted.lock().unwrap_or_else(|e| e.into_inner())
-            .get(root).is_some_and(|state| state.interrupted)
+        self.user_interrupted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(root)
+            .is_some_and(|state| state.interrupted)
     }
 
     pub fn interruption_epoch(&self, root: &str) -> u64 {
-        self.user_interrupted.lock().unwrap_or_else(|e| e.into_inner())
-            .get(root).map_or(0, |state| state.epoch)
+        self.user_interrupted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(root)
+            .map_or(0, |state| state.epoch)
     }
 
     /// Lock order: interruption state before runtime run reservations.
-    pub(crate) fn with_interruption_epoch<R>(&self, root: &str, action: impl FnOnce(u64) -> R) -> R {
-        let states = self.user_interrupted.lock().unwrap_or_else(|e| e.into_inner());
+    pub(crate) fn with_interruption_epoch<R>(
+        &self,
+        root: &str,
+        action: impl FnOnce(u64) -> R,
+    ) -> R {
+        let states = self
+            .user_interrupted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         action(states.get(root).map_or(0, |state| state.epoch))
     }
 
     pub(crate) fn interrupt_user_turn<R>(&self, root: &str, action: impl FnOnce() -> R) -> R {
-        let mut states = self.user_interrupted.lock().unwrap_or_else(|e| e.into_inner());
+        let mut states = self
+            .user_interrupted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let state = states.entry(root.to_string()).or_default();
         state.epoch = state.epoch.wrapping_add(1);
         state.interrupted = true;
@@ -139,9 +159,14 @@ impl SubAgentManager {
 
     /// A Stop accepted while the new turn was being saved must win.
     pub fn resume_user_turn(&self, root: &str, epoch: u64) -> bool {
-        let mut states = self.user_interrupted.lock().unwrap_or_else(|e| e.into_inner());
+        let mut states = self
+            .user_interrupted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let state = states.entry(root.to_string()).or_default();
-        if state.epoch != epoch { return false; }
+        if state.epoch != epoch {
+            return false;
+        }
         state.interrupted = false;
         true
     }
@@ -163,7 +188,10 @@ pub fn append_tool_definitions(
 ) {
     let task = (settings.chat_tools.task_max_recursion_depth != 0)
         .then(|| task::tool_definition(defs, settings));
-    for tool in task.into_iter().chain([wait::definition(), eval::definition()]) {
+    for tool in task
+        .into_iter()
+        .chain([wait::definition(), eval::definition()])
+    {
         if !tools
             .iter()
             .any(|existing| existing.openai_tool_name() == tool.openai_tool_name())
@@ -194,11 +222,19 @@ mod tests {
         let mut settings = crate::settings::Settings::default();
         settings.chat_tools.task_max_recursion_depth = 0;
         let mut tools = Vec::new();
-        append_tool_definitions(&mut tools, &settings, &crate::agents::builtin_agent_definitions());
+        append_tool_definitions(
+            &mut tools,
+            &settings,
+            &crate::agents::builtin_agent_definitions(),
+        );
         assert!(!tools.iter().any(|tool| tool.name == TASK_TOOL_NAME));
         assert!(tools.iter().any(|tool| tool.name == WAIT_TOOL_NAME));
         settings.chat_tools.task_max_recursion_depth = -1;
-        append_tool_definitions(&mut tools, &settings, &crate::agents::builtin_agent_definitions());
+        append_tool_definitions(
+            &mut tools,
+            &settings,
+            &crate::agents::builtin_agent_definitions(),
+        );
         assert!(tools.iter().any(|tool| tool.name == TASK_TOOL_NAME));
     }
 }

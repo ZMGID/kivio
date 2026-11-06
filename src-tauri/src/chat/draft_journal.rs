@@ -50,7 +50,8 @@ pub(crate) fn append_draft(
 }
 
 pub(crate) fn append_draft_at_path(path: &Path, draft: &ChatMessage) -> Result<(), String> {
-    let mut line = serde_json::to_string(draft).map_err(|e| format!("serialize draft message: {e}"))?;
+    let mut line =
+        serde_json::to_string(draft).map_err(|e| format!("serialize draft message: {e}"))?;
     line.push('\n');
     append_line(path, &line)
 }

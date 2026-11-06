@@ -217,15 +217,11 @@ async fn generate_title_with_model(
         "Chat title summary",
         GenerateRequestContext::new(Some(conversation_id), Some("")),
     );
-    let output = crate::chat::model::generate_via_stream_collect(
-        state,
-        &provider,
-        retry_attempts,
-        request,
-    )
-    .await
-    .map_err(|err| eprintln!("[title] 模型请求失败: {err}"))
-    .ok()?;
+    let output =
+        crate::chat::model::generate_via_stream_collect(state, &provider, retry_attempts, request)
+            .await
+            .map_err(|err| eprintln!("[title] 模型请求失败: {err}"))
+            .ok()?;
     let raw = output.text;
     sanitize_generated_title(&raw)
 }

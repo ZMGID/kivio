@@ -614,7 +614,12 @@ impl UsageLedger {
             ))
             .take_while(|(id, _)| id.starts_with(&prefix))
             .map(|(_, cost)| cost);
-        for cost in index.conversations.get(conversation_id).into_iter().chain(children) {
+        for cost in index
+            .conversations
+            .get(conversation_id)
+            .into_iter()
+            .chain(children)
+        {
             if let Some(value) = cost.cost_usd {
                 *result.cost_usd.get_or_insert(0.0) += value;
             }
@@ -1280,22 +1285,34 @@ mod tests {
         extra.cost_usd = Some(0.125);
         ledger.append(&usage_dir, &extra).unwrap();
         assert_eq!(
-            ledger.conversation_cost(&usage_dir, "parent").unwrap().cost_usd,
+            ledger
+                .conversation_cost(&usage_dir, "parent")
+                .unwrap()
+                .cost_usd,
             Some(1.0)
         );
         let restart = UsageLedger::default();
         assert_eq!(
-            restart.conversation_cost(&usage_dir, "parent").unwrap().cost_usd,
+            restart
+                .conversation_cost(&usage_dir, "parent")
+                .unwrap()
+                .cost_usd,
             Some(1.0)
         );
         ledger.clear(&usage_dir).unwrap();
         assert_eq!(
-            ledger.conversation_cost(&usage_dir, "parent").unwrap().cost_usd,
+            ledger
+                .conversation_cost(&usage_dir, "parent")
+                .unwrap()
+                .cost_usd,
             None
         );
         ledger.append(&usage_dir, &extra).unwrap();
         assert_eq!(
-            ledger.conversation_cost(&usage_dir, "parent").unwrap().cost_usd,
+            ledger
+                .conversation_cost(&usage_dir, "parent")
+                .unwrap()
+                .cost_usd,
             Some(0.125)
         );
     }
@@ -1351,9 +1368,7 @@ mod tests {
     fn concurrent_appends_and_failed_writes_preserve_the_cost_aggregate() {
         let dir = tempfile::tempdir().unwrap();
         let ledger = UsageLedger::default();
-        ledger
-            .conversation_cost(dir.path(), "parent")
-            .unwrap();
+        ledger.conversation_cost(dir.path(), "parent").unwrap();
         let mut record = base_record("openai_chat");
         record.conversation_id = Some("parent".into());
         record.cost_usd = Some(0.125);
@@ -1388,8 +1403,7 @@ mod tests {
         assert!(ledger.append(dir.path(), &record).is_err());
         let cold = UsageLedger::default();
         assert!(
-            cold.conversation_cost(dir.path(), "parent")
-                .is_err(),
+            cold.conversation_cost(dir.path(), "parent").is_err(),
             "an unreadable ledger must not become a permanent partial aggregate"
         );
         fs::remove_dir(&path).unwrap();
@@ -1428,9 +1442,7 @@ mod tests {
             record.usage_source = usage_source.into();
             ledger.append(dir.path(), &record).unwrap();
         }
-        let cost = ledger
-            .conversation_cost(dir.path(), "a")
-            .unwrap();
+        let cost = ledger.conversation_cost(dir.path(), "a").unwrap();
         assert_eq!(cost.cost_usd, Some(0.375));
         assert_eq!(cost.unpriced_requests, 2);
         assert_eq!(cost.skipped_records, 0);

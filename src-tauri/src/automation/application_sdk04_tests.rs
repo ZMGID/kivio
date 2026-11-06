@@ -1,13 +1,24 @@
 use super::*;
 use crate::chat::agent::control::AgentRunHandle;
-use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery};
-use crate::chat::agent::loop_::tests::{test_app_state, test_run_config, MockModelServer, MockResponse, RecordingExecutor, TestHost};
+use crate::chat::agent::events::{
+    AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery,
+};
+use crate::chat::agent::loop_::tests::{
+    test_app_state, test_run_config, MockModelServer, MockResponse, RecordingExecutor, TestHost,
+};
 use crate::chat::session_policy::run_session;
 
 fn event(kind: AgentEventKind<'_>) -> AgentEvent<'_> {
     AgentEvent {
-        identity: AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1 },
-        invocation_id: 1, sequence: 1, kind,
+        identity: AgentRunIdentity {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation: 1,
+        },
+        invocation_id: 1,
+        sequence: 1,
+        kind,
     }
 }
 
@@ -34,34 +45,66 @@ async fn real_loop_workflow_projection_output_and_history_reload() {
     let sink = |fact: &AgentEvent<'_>| {
         events.on_event(fact);
         if let AgentEventKind::ToolUpdated(call) = &fact.kind {
-            if call.output.is_some() { tools.lock().unwrap().push(call.output.clone()); }
+            if call.output.is_some() {
+                tools.lock().unwrap().push(call.output.clone());
+            }
         }
         EventDelivery::Accepted
     };
     let handle = AgentRunHandle::new(event(AgentEventKind::RunStarted).identity, &control);
     let executor = RecordingExecutor::default();
-    let result = run_session(config, &host, &executor, &sink, handle).await.unwrap();
-    assert!(tools.lock().unwrap().iter().any(|output| output.as_deref() == Some("result:read")));
+    let result = run_session(config, &host, &executor, &sink, handle)
+        .await
+        .unwrap();
+    assert!(tools
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|output| output.as_deref() == Some("result:read")));
     assert!(events.text.lock().unwrap().contains("A😀中"));
     let mut fallback_result = result.clone();
     fallback_result.content = " ".into();
-    assert_eq!(builtin_agent_node_output(Ok(fallback_result.clone()), "streamed😀".into()).unwrap().text, "streamed😀");
-    assert_eq!(builtin_agent_node_output(Ok(fallback_result), String::new()).unwrap_err(), "Agent returned an empty response");
-    assert_eq!(builtin_agent_node_output(Err("cancelled".into()), "ignored".into()).unwrap_err(), "cancelled");
-    let mut output = builtin_agent_node_output(Ok(result), events.text.lock().unwrap().clone()).unwrap();
+    assert_eq!(
+        builtin_agent_node_output(Ok(fallback_result.clone()), "streamed😀".into())
+            .unwrap()
+            .text,
+        "streamed😀"
+    );
+    assert_eq!(
+        builtin_agent_node_output(Ok(fallback_result), String::new()).unwrap_err(),
+        "Agent returned an empty response"
+    );
+    assert_eq!(
+        builtin_agent_node_output(Err("cancelled".into()), "ignored".into()).unwrap_err(),
+        "cancelled"
+    );
+    let mut output =
+        builtin_agent_node_output(Ok(result), events.text.lock().unwrap().clone()).unwrap();
     assert!(output.text.contains("完成😀"));
     assert_eq!(output.json["text"], output.text);
     let input = NodeOutput::from_text("task");
-    let node = super::super::runner::success_node_record("agent-node", "action.agent", false, &input, &mut output);
+    let node = super::super::runner::success_node_record(
+        "agent-node",
+        "action.agent",
+        false,
+        &input,
+        &mut output,
+    );
     let mut run = super::super::types::AutomationRun {
-        id: uuid::Uuid::new_v4().to_string(), automation_id: uuid::Uuid::new_v4().to_string(),
-        origin: "manual".into(), status: "running".into(), started_at: "2026-11-07T00:00:00Z".into(),
-        finished_at: None, error: None, nodes: vec![node],
+        id: uuid::Uuid::new_v4().to_string(),
+        automation_id: uuid::Uuid::new_v4().to_string(),
+        origin: "manual".into(),
+        status: "running".into(),
+        started_at: "2026-11-07T00:00:00Z".into(),
+        finished_at: None,
+        error: None,
+        nodes: vec![node],
     };
     super::super::runner::finish_run_record(&mut run, "success", None);
     let dir = tempfile::tempdir().unwrap();
     super::super::history::write_run_in(dir.path(), &run).unwrap();
-    let saved = super::super::history::read_run_file(&dir.path().join(format!("{}.json", run.id))).unwrap();
+    let saved =
+        super::super::history::read_run_file(&dir.path().join(format!("{}.json", run.id))).unwrap();
     assert_eq!(saved.status, "success");
     assert_eq!(saved.nodes.len(), 1);
     assert!(saved.finished_at.is_some());
@@ -73,17 +116,31 @@ async fn real_loop_workflow_projection_output_and_history_reload() {
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, "file").unwrap();
     assert!(super::super::history::write_run_in(&blocker, &run).is_err());
-    let tool_calls = executor.events().iter().filter(|event| event.starts_with("start:")).count();
+    let tool_calls = executor
+        .events()
+        .iter()
+        .filter(|event| event.starts_with("start:"))
+        .count();
     assert_eq!((server.captured_bodies().len(), tool_calls), (2, 1));
-    eprintln!("SDK_CONTRACT {}", serde_json::json!({"host":"workflow","requests":server.captured_bodies().len(),"tool_calls":tool_calls,"saved_nodes":saved.nodes.len(),"status":saved.status}));
+    eprintln!(
+        "SDK_CONTRACT {}",
+        serde_json::json!({"host":"workflow","requests":server.captured_bodies().len(),"tool_calls":tool_calls,"saved_nodes":saved.nodes.len(),"status":saved.status})
+    );
 }
 
 #[test]
 fn workflow_attempt_discard_counts_unicode_scalars() {
     let events = WorkflowAgentEvents::default();
-    events.on_event(&event(AgentEventKind::Content { delta: "kept😀中", reasoning_delta: None, block: None }));
+    events.on_event(&event(AgentEventKind::Content {
+        delta: "kept😀中",
+        reasoning_delta: None,
+        block: None,
+    }));
     events.on_event(&event(AgentEventKind::AttemptDiscarded {
-        text_chars: 2, reasoning_chars: 0, block_ids: vec![], tool_ids: vec![],
+        text_chars: 2,
+        reasoning_chars: 0,
+        block_ids: vec![],
+        tool_ids: vec![],
     }));
     assert_eq!(*events.text.lock().unwrap(), "kept");
 }

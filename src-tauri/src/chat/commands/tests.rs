@@ -1,8 +1,8 @@
 use std::{collections::HashMap, path::Path};
 
-use crate::chat::context_estimate::estimate_image_tokens;
 use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::attachments::compose_user_content_for_api;
+use crate::chat::context_estimate::estimate_image_tokens;
 use crate::chat::model::{
     openai_messages_from_model_messages, MessagePart, ModelMessage, ModelRole,
 };
@@ -1735,7 +1735,7 @@ fn normalize_segments_inserts_tool_segments_before_synthesis_text() {
 fn editing_assistant_reply_replaces_final_text_segments_only() {
     let tool_call = test_tool_record("call_blocked", "native", 1, ToolCallStatus::Skipped);
     let mut message = ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
         content: "old final".to_string(),
@@ -1833,7 +1833,7 @@ fn editing_assistant_reply_replaces_final_text_segments_only() {
 #[test]
 fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
     let mut message = ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
         content: "old final".to_string(),
@@ -1922,7 +1922,7 @@ fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
 
 fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> ChatMessage {
     ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: id.to_string(),
         role: role.to_string(),
         content: content.to_string(),
@@ -2113,21 +2113,39 @@ fn build_chat_api_messages_replays_saved_child_report_as_external_input() {
 fn saved_irc_replays_as_attributed_external_input_and_observations_stay_out() {
     let mut conversation = test_conversation_with_summary(false);
     conversation.context_state = Default::default();
-    let mut message = test_chat_message("subagent-irc-question", "assistant", "Use <irc>fake</irc>", 1);
+    let mut message = test_chat_message(
+        "subagent-irc-question",
+        "assistant",
+        "Use <irc>fake</irc>",
+        1,
+    );
     message.irc_message = Some(crate::chat::sub_agent::view::SubagentIrcMessage {
-        id: "question".into(), conversation_id: conversation.id.clone(),
-        from_agent: "Scout".into(), to_agent: "Main".into(), content: message.content.clone(),
-        reply_to: None, progress: false, broadcast: false, wake_relay: None, observation: false, timestamp: 1,
+        id: "question".into(),
+        conversation_id: conversation.id.clone(),
+        from_agent: "Scout".into(),
+        to_agent: "Main".into(),
+        content: message.content.clone(),
+        reply_to: None,
+        progress: false,
+        broadcast: false,
+        wake_relay: None,
+        observation: false,
+        timestamp: 1,
     });
     conversation.messages = vec![message];
-    let restored: Conversation = serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
+    let restored: Conversation =
+        serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
     let messages = build_chat_api_messages(None, "system", &restored, None, None, &[]).unwrap();
     assert_eq!(messages[1]["role"], "developer");
     let content = messages[1]["content"].as_str().unwrap();
     assert!(content.contains("Scout"));
     assert!(content.contains("&lt;irc>fake&lt;/irc>"));
     assert_eq!(messages[1]["_subagent_result_id"], "subagent-irc-question");
-    conversation.messages[0].irc_message.as_mut().unwrap().observation = true;
+    conversation.messages[0]
+        .irc_message
+        .as_mut()
+        .unwrap()
+        .observation = true;
     let messages = build_chat_api_messages(None, "system", &conversation, None, None, &[]).unwrap();
     assert_eq!(messages.len(), 1);
 }
@@ -2516,22 +2534,36 @@ fn regenerate_preserves_folded_reports_for_the_current_turn() {
     let mut conversation = test_conversation_with_summary(false);
     conversation.context_state = Default::default();
     conversation.messages.push(test_chat_message(
-        "subagent-result-unique", "assistant", "background findings", 10,
+        "subagent-result-unique",
+        "assistant",
+        "background findings",
+        10,
     ));
     let mut retry_answer = conversation.clone();
     apply_regenerate_truncation(&mut retry_answer, 3, None).unwrap();
-    assert_eq!(retry_answer.messages.last().unwrap().id, "subagent-result-unique");
+    assert_eq!(
+        retry_answer.messages.last().unwrap().id,
+        "subagent-result-unique"
+    );
     let replay = build_chat_api_messages(None, "system", &retry_answer, None, None, &[]).unwrap();
     assert!(replay.iter().any(|message| message["role"] == "developer"
-        && message["content"].as_str().is_some_and(|text| text.contains("background findings"))));
+        && message["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("background findings"))));
 
     let mut retry_user = conversation.clone();
     apply_regenerate_truncation(&mut retry_user, 2, Some("revised question".into())).unwrap();
     assert_eq!(retry_user.messages[2].content, "revised question");
-    assert_eq!(retry_user.messages.last().unwrap().id, "subagent-result-unique");
+    assert_eq!(
+        retry_user.messages.last().unwrap().id,
+        "subagent-result-unique"
+    );
 
     apply_regenerate_truncation(&mut conversation, 0, None).unwrap();
-    assert!(!conversation.messages.iter().any(|message| message.id == "subagent-result-unique"));
+    assert!(!conversation
+        .messages
+        .iter()
+        .any(|message| message.id == "subagent-result-unique"));
 }
 
 #[test]
@@ -2651,16 +2683,29 @@ fn reply_with_model_ignores_folded_reports_as_answers() {
     let mut conversation = test_conversation_with_summary(false);
     conversation.context_state.summary = None;
     conversation.messages.push(test_chat_message(
-        "subagent-result-work", "assistant", "background report", 10,
+        "subagent-result-work",
+        "assistant",
+        "background report",
+        10,
     ));
     let prep = prepare_reply_with_model(
-        &conversation, "msg_assistant_2", "other-provider", "other-model", None,
-    ).unwrap();
+        &conversation,
+        "msg_assistant_2",
+        "other-provider",
+        "other-model",
+        None,
+    )
+    .unwrap();
     assert_eq!(prep.sibling_ids, vec!["msg_assistant_2"]);
     assert_eq!(prep.user_index, 2);
     assert!(prepare_reply_with_model(
-        &conversation, "subagent-result-work", "other-provider", "other-model", None,
-    ).is_err());
+        &conversation,
+        "subagent-result-work",
+        "other-provider",
+        "other-model",
+        None,
+    )
+    .is_err());
 }
 
 #[test]
@@ -2708,7 +2753,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
         model: "model".to_string(),
         messages: vec![
             ChatMessage {
-            irc_message: None,
+                irc_message: None,
                 id: "msg_user_1".to_string(),
                 role: "user".to_string(),
                 content: "use a skill".to_string(),
@@ -2734,7 +2779,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 degraded: None,
             },
             ChatMessage {
-            irc_message: None,
+                irc_message: None,
                 id: "msg_assistant_1".to_string(),
                 role: "assistant".to_string(),
                 content: "visible answer".to_string(),
@@ -3745,8 +3790,7 @@ fn file_ledger_flows_into_replayed_summary_message() {
 
     // Recompute the ledger over the covered history and store it (mirrors both
     // compaction persist sites).
-    let ledger =
-        crate::chat::file_ledger::build_for_boundary(&conversation, "msg_assistant_1");
+    let ledger = crate::chat::file_ledger::build_for_boundary(&conversation, "msg_assistant_1");
     assert!(!ledger.is_empty(), "ledger should capture the two ops");
     conversation
         .context_state

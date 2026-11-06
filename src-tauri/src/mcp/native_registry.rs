@@ -787,10 +787,13 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
 ];
 
 fn bash_output_timeout_ms(default_ms: u64, arguments: &Value) -> u64 {
-    default_ms.max(arguments.get("wait_ms")
-        .and_then(Value::as_u64)
-        .unwrap_or(crate::native_tools::DEFAULT_BASH_OUTPUT_WAIT_MS)
-        .min(crate::settings::CHAT_TOOL_MAX_TIMEOUT_MS))
+    default_ms.max(
+        arguments
+            .get("wait_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(crate::native_tools::DEFAULT_BASH_OUTPUT_WAIT_MS)
+            .min(crate::settings::CHAT_TOOL_MAX_TIMEOUT_MS),
+    )
 }
 
 fn automation_run_timeout_ms(default_ms: u64, arguments: &Value) -> u64 {
@@ -849,9 +852,14 @@ fn html_tool_result(result: crate::html_render::HtmlToolResult) -> McpToolCallRe
 
 fn call_write(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
-        let output = call_typed(&crate::native_tools::WriteFile {
-            workspace: ctx.workspace.clone(),
-        }, ctx.arguments.clone()).await.map_err(|error| error.to_string())?;
+        let output = call_typed(
+            &crate::native_tools::WriteFile {
+                workspace: ctx.workspace.clone(),
+            },
+            ctx.arguments.clone(),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         Ok(McpToolCallResult {
             content: output.content,
             is_error: output.is_error,
@@ -975,7 +983,9 @@ fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             let arguments = read_args.clone();
             if let Ok(Some(summary)) = tokio::task::spawn_blocking(move || {
                 crate::native_tools::read_file_summary(&workspace, &arguments)
-            }).await {
+            })
+            .await
+            {
                 return Ok(text_tool_result(summary));
             }
         }
@@ -1483,7 +1493,13 @@ fn call_memory_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
 
 fn call_run_command(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
-        let owner = ctx.native_ctx.map(|context| crate::chat::sub_agent::services::owner_for_run(&ctx.state.sub_agents, &context.conversation_id, &context.run_id));
+        let owner = ctx.native_ctx.map(|context| {
+            crate::chat::sub_agent::services::owner_for_run(
+                &ctx.state.sub_agents,
+                &context.conversation_id,
+                &context.run_id,
+            )
+        });
         let content = crate::native_tools::run_command(
             ctx.workspace,
             ctx.arguments,
@@ -1504,7 +1520,13 @@ fn call_bash_output(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             .and_then(|value| value.as_str())
             .map(|id| !id.trim().is_empty())
             .unwrap_or(false);
-        let owner = ctx.native_ctx.map(|context| crate::chat::sub_agent::services::owner_for_run(&ctx.state.sub_agents, &context.conversation_id, &context.run_id));
+        let owner = ctx.native_ctx.map(|context| {
+            crate::chat::sub_agent::services::owner_for_run(
+                &ctx.state.sub_agents,
+                &context.conversation_id,
+                &context.run_id,
+            )
+        });
         let conversation_id = owner.as_deref();
         let content = if has_job {
             crate::native_tools::bash_output(ctx.state, ctx.arguments, conversation_id).await?
@@ -1517,12 +1539,15 @@ fn call_bash_output(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
 
 fn call_kill_background(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
-        let owner = ctx.native_ctx.map(|context| crate::chat::sub_agent::services::owner_for_run(&ctx.state.sub_agents, &context.conversation_id, &context.run_id));
-        let content = crate::native_tools::kill_background(
-            ctx.state,
-            ctx.arguments,
-            owner.as_deref(),
-        )?;
+        let owner = ctx.native_ctx.map(|context| {
+            crate::chat::sub_agent::services::owner_for_run(
+                &ctx.state.sub_agents,
+                &context.conversation_id,
+                &context.run_id,
+            )
+        });
+        let content =
+            crate::native_tools::kill_background(ctx.state, ctx.arguments, owner.as_deref())?;
         Ok(text_tool_result(content))
     })
 }
@@ -1720,18 +1745,49 @@ mod tests {
 
     #[test]
     fn tool_policies_preserve_native_lifetimes_and_task_validation() {
-        for name in ["bash", "task", "wait", "kivio_create_conversation", "kivio_send_message"] {
+        for name in [
+            "bash",
+            "task",
+            "wait",
+            "kivio_create_conversation",
+            "kivio_send_message",
+        ] {
             let tool = (find_entry(name).unwrap().def)();
-            assert_eq!(tool.timeout_policy().milliseconds(1, &serde_json::json!({})), None, "{name}");
+            assert_eq!(
+                tool.timeout_policy()
+                    .milliseconds(1, &serde_json::json!({})),
+                None,
+                "{name}"
+            );
         }
         let bash_output = native_bash_output_tool();
-        assert_eq!(bash_output.timeout_policy().milliseconds(1, &serde_json::json!({})), Some(crate::native_tools::DEFAULT_BASH_OUTPUT_WAIT_MS));
-        assert_eq!(bash_output.timeout_policy().milliseconds(1, &serde_json::json!({"wait_ms": u64::MAX})), Some(crate::settings::CHAT_TOOL_MAX_TIMEOUT_MS));
+        assert_eq!(
+            bash_output
+                .timeout_policy()
+                .milliseconds(1, &serde_json::json!({})),
+            Some(crate::native_tools::DEFAULT_BASH_OUTPUT_WAIT_MS)
+        );
+        assert_eq!(
+            bash_output
+                .timeout_policy()
+                .milliseconds(1, &serde_json::json!({"wait_ms": u64::MAX})),
+            Some(crate::settings::CHAT_TOOL_MAX_TIMEOUT_MS)
+        );
         let automation = native_automation_run_tool();
-        assert_eq!(automation.timeout_policy().milliseconds(60_000, &serde_json::json!({"timeout_seconds": 120})), Some(125_000));
+        assert_eq!(
+            automation
+                .timeout_policy()
+                .milliseconds(60_000, &serde_json::json!({"timeout_seconds": 120})),
+            Some(125_000)
+        );
         for entry in NATIVE_TOOLS {
             let tool = (entry.def)();
-            assert_eq!(tool.argument_policy() == ArgumentPolicy::ToolAfterApproval, entry.name == "task", "{}", entry.name);
+            assert_eq!(
+                tool.argument_policy() == ArgumentPolicy::ToolAfterApproval,
+                entry.name == "task",
+                "{}",
+                entry.name
+            );
             assert_eq!(tool.parallel_safe(), entry.parallel_safe, "{}", entry.name);
         }
     }
@@ -2006,7 +2062,6 @@ mod tests {
         "wait",
     ];
 
-
     #[test]
     fn registry_order_and_names_match_exposure_order() {
         let names: Vec<&str> = NATIVE_TOOLS.iter().map(|entry| entry.name).collect();
@@ -2128,7 +2183,6 @@ mod tests {
             "memory_read/memory_search are read-only but deliberately not parallel-safe"
         );
     }
-
 
     #[test]
     fn conversation_tools_are_never_listed_via_builtin_exposure() {

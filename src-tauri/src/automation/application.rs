@@ -3,7 +3,9 @@
 //! and Chat runs do not write a sidebar conversation (`auto_{id}` workspace
 //! only). External CLI needs a `conv_` session, so it uses an archived
 //! `conv_auto_{id}` conversation that stays off the default sidebar.
-use crate::chat::session_policy::{run_session as run_agent_loop, ApplicationRunConfig as AgentRunConfig};
+use crate::chat::session_policy::{
+    run_session as run_agent_loop, ApplicationRunConfig as AgentRunConfig,
+};
 use crate::chat::tool_runtime::{ToolDispatcher as ToolExecutor, ToolExecutionContext};
 
 use std::collections::{HashMap, HashSet};
@@ -13,11 +15,8 @@ use std::sync::Mutex;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
+use crate::chat::agent::{AgentHost, AgentHostFuture, AgentRunEntry, ToolExecutorFuture};
 use crate::chat::agent_preparation::{available_builtin_tool_names, build_chat_prompt};
-use crate::chat::agent::{
-    AgentHost, AgentHostFuture, AgentRunEntry,
-    ToolExecutorFuture,
-};
 use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
 use crate::chat::types::{
     AgentPlanState, AgentRuntimeConfig, AgentRuntimeKind, AgentTodoState, ChatMessage,
@@ -191,7 +190,10 @@ fn apply_workflow_event(text: &mut String, event: &crate::chat::agent::events::A
 }
 
 impl crate::chat::agent::events::AgentEventSink for WorkflowAgentEvents {
-    fn on_event(&self, event: &crate::chat::agent::events::AgentEvent<'_>) -> crate::chat::agent::events::EventDelivery {
+    fn on_event(
+        &self,
+        event: &crate::chat::agent::events::AgentEvent<'_>,
+    ) -> crate::chat::agent::events::EventDelivery {
         if let Ok(mut text) = self.text.lock() {
             apply_workflow_event(&mut text, event);
         }
@@ -201,14 +203,7 @@ impl crate::chat::agent::events::AgentEventSink for WorkflowAgentEvents {
 
 struct WorkflowAgentHost;
 
-impl AgentHost for WorkflowAgentHost {
-
-
-
-
-
-
-}
+impl AgentHost for WorkflowAgentHost {}
 
 impl crate::chat::tool_runtime::ApplicationHost for WorkflowAgentHost {
     fn request_tool_approval<'a>(
@@ -484,7 +479,10 @@ async fn run_builtin_agent_node(
 
     let host = WorkflowAgentHost;
     let events = WorkflowAgentEvents::default();
-    let executor = WorkflowToolExecutor { app: app.clone(), skills: skills::SkillRunContext::for_run(registry.clone(), None) };
+    let executor = WorkflowToolExecutor {
+        app: app.clone(),
+        skills: skills::SkillRunContext::for_run(registry.clone(), None),
+    };
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
     } else {
@@ -529,13 +527,18 @@ async fn run_builtin_agent_node(
     };
 
     let control = crate::chat::runtime_state::ChatRunControl::new(
-        state.chat_runtime(), &conversation_id, generation,
+        state.chat_runtime(),
+        &conversation_id,
+        generation,
     );
     let run_id = config.run_id.clone();
     let message_id = config.message_id.clone();
     let handle = crate::chat::agent::control::AgentRunHandle::new(
         crate::chat::agent::events::AgentRunIdentity {
-            conversation_id: &conversation_id, run_id: &run_id, message_id: &message_id, generation,
+            conversation_id: &conversation_id,
+            run_id: &run_id,
+            message_id: &message_id,
+            generation,
         },
         &control,
     );
@@ -543,7 +546,12 @@ async fn run_builtin_agent_node(
     state
         .chat_runtime()
         .end_generation(&conversation_id, generation);
-    let fallback = events.text.lock().ok().map(|text| text.clone()).unwrap_or_default();
+    let fallback = events
+        .text
+        .lock()
+        .ok()
+        .map(|text| text.clone())
+        .unwrap_or_default();
     builtin_agent_node_output(outcome, fallback)
 }
 
@@ -552,7 +560,11 @@ fn builtin_agent_node_output(
     fallback_text: String,
 ) -> Result<NodeOutput, String> {
     let result = outcome?;
-    let text = if result.content.trim().is_empty() { fallback_text } else { result.content };
+    let text = if result.content.trim().is_empty() {
+        fallback_text
+    } else {
+        result.content
+    };
     if text.trim().is_empty() {
         Err("Agent returned an empty response".to_string())
     } else {
@@ -675,7 +687,7 @@ fn extra_loaded_skill_bodies(
 
 fn workflow_user_message(content: String) -> ChatMessage {
     ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: format!("msg_{}", uuid::Uuid::new_v4()),
         role: "user".to_string(),
         content,

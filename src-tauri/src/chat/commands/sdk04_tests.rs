@@ -298,20 +298,22 @@ async fn sdk04_desktop_real_loop_projects_checkpoints_and_saved_history() {
         .iter()
         .map(crate::chat::protocol::ChatSegmentPayload::from)
         .collect();
-    // The existing protocol fold represents an absent tool-card body as empty text.
-    let mut live_blocks = live.segments.clone();
-    for block in &mut live_blocks {
+    let mut normalized_live_blocks = live.segments.clone();
+    for block in &mut normalized_live_blocks {
         if block.text.as_deref() == Some("") {
             block.text = None;
         }
     }
-    assert_eq!(live_blocks, expected_blocks);
+    assert_eq!(normalized_live_blocks, expected_blocks);
 
     drop(events);
     drop(reply);
     assert!(!state.chat_runtime().has_active_reply("conversation"));
     assert_eq!(server.captured_bodies().len(), 3);
-    eprintln!("SDK_CONTRACT {}", json!({"host":"desktop","requests":server.captured_bodies().len(),"tool_calls":executor.calls.load(Ordering::SeqCst),"saved_messages":loaded.messages.len(),"draft_messages":drafts.len(),"released":!state.chat_runtime().has_active_reply("conversation")}));
+    eprintln!(
+        "SDK_CONTRACT {}",
+        json!({"host":"desktop","requests":server.captured_bodies().len(),"tool_calls":executor.calls.load(Ordering::SeqCst),"saved_messages":loaded.messages.len(),"draft_messages":drafts.len(),"released":!state.chat_runtime().has_active_reply("conversation")})
+    );
 }
 
 #[tokio::test]
@@ -352,13 +354,7 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
     let handle = AgentRunHandle::new(identity(config.generation), &control);
     let executor = CountingExecutor::default();
-    let mut future = Box::pin(run_session(
-        config,
-        &host,
-        &executor,
-        &host,
-        handle.clone(),
-    ));
+    let mut future = Box::pin(run_session(config, &host, &executor, &host, handle.clone()));
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(50), &mut future)
             .await
@@ -382,11 +378,9 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     config.generation = state.chat_runtime().begin_generation("conversation");
     let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
     let handle = AgentRunHandle::new(identity(config.generation), &control);
-    assert!(
-        run_session(config, &host, &executor, &host, handle)
-            .await
-            .is_err()
-    );
+    assert!(run_session(config, &host, &executor, &host, handle)
+        .await
+        .is_err());
     let outcomes = host.outcomes.lock().unwrap();
     assert_eq!(outcomes.len(), 1);
     assert!(

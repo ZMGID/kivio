@@ -2152,5 +2152,4 @@ mod interrupted_history_tests {
         let gemini = crate::chat::model::gemini::gemini_contents_from_generate_request(&request);
         assert_eq!(gemini[1]["parts"][0]["functionResponse"]["name"], "read");
     }
-
 }

@@ -7,11 +7,11 @@ mod shell;
 
 pub(crate) use fetch::html_to_text;
 pub use fetch::web_fetch;
+pub(crate) use files::read_text_content;
 pub use files::{
     edit_file, glob_files, list_dir, read_file, search_files, write_file, FileMutationResult,
     ReadFileResult, WriteArgs, WriteFile,
 };
-pub(crate) use files::read_text_content;
 pub(crate) use read_summary::read_file_summary;
 pub(crate) use sandbox_exports::preflight_directory_merge;
 pub use sandbox_exports::{
@@ -450,7 +450,10 @@ mod tests {
         assert!(!root.exists(), "resolving a directory must not create it");
         write_file(
             &first,
-            &WriteArgs { path: "report.txt".into(), content: "shared report".into() },
+            &WriteArgs {
+                path: "report.txt".into(),
+                content: "shared report".into(),
+            },
         )
         .unwrap();
         let second = NativeToolWorkspace::conversation(

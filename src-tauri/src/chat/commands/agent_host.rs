@@ -9,19 +9,24 @@ use crate::skills;
 use crate::state::AppState;
 
 use super::context::{emit_chat_compaction_state, emit_chat_context_usage_live};
-use super::interaction::{
-    request_session_consent, request_tool_approval,
-    request_user_response,
-};
+use super::interaction::{request_session_consent, request_tool_approval, request_user_response};
 use super::messages::persist_partial_assistant_snapshot;
 
 fn session_input(message: RuntimeMessage) -> SessionInput {
-    let persistence = if message.source.get("subagent_parent_persisted").and_then(serde_json::Value::as_bool) == Some(true) {
+    let persistence = if message
+        .source
+        .get("subagent_parent_persisted")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
         InputPersistence::AlreadyPersisted
     } else {
         InputPersistence::Append
     };
-    SessionInput { message, persistence }
+    SessionInput {
+        message,
+        persistence,
+    }
 }
 
 pub(super) struct ChatAgentHost<'a> {
@@ -38,7 +43,6 @@ pub(super) struct ChatAgentHost<'a> {
 }
 
 impl ChatAgentHost<'_> {
-
     fn emit_compaction_status(
         &self,
         conversation_id: &str,
@@ -165,25 +169,64 @@ impl ChatAgentHost<'_> {
     }
 }
 impl crate::chat::agent::events::AgentEventSink for ChatAgentHost<'_> {
- fn on_event(&self, event: &crate::chat::agent::events::AgentEvent<'_>) -> crate::chat::agent::events::EventDelivery {
- use crate::chat::agent::events::AgentEventKind;
- let id = event.identity;
- for projected in crate::chat::agent_presentation::project_event(event) { crate::chat::protocol::emit_run_event(&self.app, event.identity.run_id, projected); }
- match &event.kind {
-AgentEventKind::Compaction { phase, trigger, boundary } => self.emit_compaction_status(id.conversation_id, phase, *trigger, boundary.as_ref().map(crate::chat::agent_presentation::project_compaction).as_ref()),
-AgentEventKind::ContextPrepared { provider_id, model, messages, tools } => self.begin_context_request(id.conversation_id, id.message_id, provider_id, model, messages, tools),
-AgentEventKind::ContextCache { cache } => self.note_context_cache(id.conversation_id, *cache),
-AgentEventKind::ContextUnreported => self.finish_unreported_context(id.conversation_id),
-AgentEventKind::ContextUsage { used_tokens, source, window, cache } => self.emit_context_usage_live(id.conversation_id, *used_tokens, *source, *window, *cache),
- _ => {},
- }
- crate::chat::agent::events::EventDelivery::Accepted
- }}
+    fn on_event(
+        &self,
+        event: &crate::chat::agent::events::AgentEvent<'_>,
+    ) -> crate::chat::agent::events::EventDelivery {
+        use crate::chat::agent::events::AgentEventKind;
+        let id = event.identity;
+        for projected in crate::chat::agent_presentation::project_event(event) {
+            crate::chat::protocol::emit_run_event(&self.app, event.identity.run_id, projected);
+        }
+        match &event.kind {
+            AgentEventKind::Compaction {
+                phase,
+                trigger,
+                boundary,
+            } => self.emit_compaction_status(
+                id.conversation_id,
+                phase,
+                *trigger,
+                boundary
+                    .as_ref()
+                    .map(crate::chat::agent_presentation::project_compaction)
+                    .as_ref(),
+            ),
+            AgentEventKind::ContextPrepared {
+                provider_id,
+                model,
+                messages,
+                tools,
+            } => self.begin_context_request(
+                id.conversation_id,
+                id.message_id,
+                provider_id,
+                model,
+                messages,
+                tools,
+            ),
+            AgentEventKind::ContextCache { cache } => {
+                self.note_context_cache(id.conversation_id, *cache)
+            }
+            AgentEventKind::ContextUnreported => self.finish_unreported_context(id.conversation_id),
+            AgentEventKind::ContextUsage {
+                used_tokens,
+                source,
+                window,
+                cache,
+            } => self.emit_context_usage_live(
+                id.conversation_id,
+                *used_tokens,
+                *source,
+                *window,
+                *cache,
+            ),
+            _ => {}
+        }
+        crate::chat::agent::events::EventDelivery::Accepted
+    }
+}
 impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
-
-
-
-
     fn run_ended(&self, conversation_id: &str) {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
@@ -196,11 +239,16 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
-            Ok(crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
-                .await?
-                .into_iter()
-                .map(session_input)
-                .collect())
+            Ok(crate::chat::sub_agent::collect_for_main(
+                &self.app,
+                conversation_id,
+                run_id,
+                history,
+            )
+            .await?
+            .into_iter()
+            .map(session_input)
+            .collect())
         })
     }
 
@@ -216,7 +264,11 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
             if self.suppress_partial_persist {
                 return;
             }
-            let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(tool_records, segments, Some(&self.run_id));
+            let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(
+                tool_records,
+                segments,
+                Some(&self.run_id),
+            );
             if let Err(err) = persist_partial_assistant_snapshot(
                 &self.app,
                 conversation_id,
@@ -232,14 +284,10 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         })
     }
 
-
-
-
-
-
-
     fn hooks(&self) -> Option<&dyn crate::chat::agent::events::AgentEventSink> {
-        self.hooks.as_ref().map(|hooks| hooks as &dyn crate::chat::agent::events::AgentEventSink)
+        self.hooks
+            .as_ref()
+            .map(|hooks| hooks as &dyn crate::chat::agent::events::AgentEventSink)
     }
 }
 
@@ -257,8 +305,10 @@ impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
     }
 
     fn tool_execution_hooks_active(&self) -> bool {
-        self.hooks.as_ref().is_some_and(|hooks| hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionStart)
-            || hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionEnd))
+        self.hooks.as_ref().is_some_and(|hooks| {
+            hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionStart)
+                || hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionEnd)
+        })
     }
 
     fn supports_interactive_approval(&self) -> bool {
@@ -355,15 +405,26 @@ pub(super) struct ProbeAgentHost<'a> {
 
 #[cfg(debug_assertions)]
 impl crate::chat::agent::events::AgentEventSink for ProbeAgentHost<'_> {
- fn on_event(&self, event: &crate::chat::agent::events::AgentEvent<'_>) -> crate::chat::agent::events::EventDelivery {
- use crate::chat::agent::events::AgentEventKind;
- if matches!(event.kind, AgentEventKind::AttemptDiscarded { .. } | AgentEventKind::Status { .. } | AgentEventKind::Retry(_)) { for projected in crate::chat::agent_presentation::project_event(event) { crate::chat::protocol::emit_run_event(&self.app, event.identity.run_id, projected); } }
- crate::chat::agent::events::EventDelivery::Accepted
- }}
+    fn on_event(
+        &self,
+        event: &crate::chat::agent::events::AgentEvent<'_>,
+    ) -> crate::chat::agent::events::EventDelivery {
+        use crate::chat::agent::events::AgentEventKind;
+        if matches!(
+            event.kind,
+            AgentEventKind::AttemptDiscarded { .. }
+                | AgentEventKind::Status { .. }
+                | AgentEventKind::Retry(_)
+        ) {
+            for projected in crate::chat::agent_presentation::project_event(event) {
+                crate::chat::protocol::emit_run_event(&self.app, event.identity.run_id, projected);
+            }
+        }
+        crate::chat::agent::events::EventDelivery::Accepted
+    }
+}
 #[cfg(debug_assertions)]
 impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
-
-
     fn run_ended(&self, conversation_id: &str) {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
@@ -376,11 +437,16 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
-            Ok(crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
-                .await?
-                .into_iter()
-                .map(session_input)
-                .collect())
+            Ok(crate::chat::sub_agent::collect_for_main(
+                &self.app,
+                conversation_id,
+                run_id,
+                history,
+            )
+            .await?
+            .into_iter()
+            .map(session_input)
+            .collect())
         })
     }
 
@@ -395,7 +461,11 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         api_messages: &'a [RuntimeMessage],
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
-            let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(tool_records, segments, Some(&self.run_id));
+            let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(
+                tool_records,
+                segments,
+                Some(&self.run_id),
+            );
             if let Err(err) = persist_partial_assistant_snapshot(
                 &self.app,
                 conversation_id,
@@ -410,13 +480,6 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
             }
         })
     }
-
-
-
-
-
-
-
 }
 
 impl crate::chat::tool_runtime::ApplicationHost for ProbeAgentHost<'_> {

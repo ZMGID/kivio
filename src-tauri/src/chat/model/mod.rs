@@ -5,8 +5,8 @@
 
 pub(crate) mod context_usage;
 
-pub mod anthropic;
 pub(crate) mod agent_runtime;
+pub mod anthropic;
 mod error;
 pub mod gemini;
 mod legacy;
@@ -23,10 +23,13 @@ use crate::usage::UsageRecordInput;
 
 use anthropic::AnthropicMessagesProvider;
 pub use error::extract_status_code;
-pub use error::{is_missing_stream_terminal_error, stream_read_error, ModelError, ModelErrorKind};
 pub(crate) use error::is_permanent_provider_error;
+pub use error::{is_missing_stream_terminal_error, stream_read_error, ModelError, ModelErrorKind};
 use gemini::GeminiProvider;
-pub use legacy::{generate_request_from_model_messages, generate_request_from_openai_messages, split_workbench_system_suffix, WORKBENCH_LOCATION_PROMPT_HEAD};
+pub use legacy::{
+    generate_request_from_model_messages, generate_request_from_openai_messages,
+    split_workbench_system_suffix, WORKBENCH_LOCATION_PROMPT_HEAD,
+};
 use openai::OpenAiChatProvider;
 use responses::OpenAiResponsesProvider;
 pub use types::*;
@@ -106,7 +109,6 @@ impl<'a> ProviderConfig<'a> {
     }
 }
 
-/// Shared desktop entry point for buffered model calls.
 pub(crate) async fn generate_with_chat_provider(
     state: &AppState,
     provider: &ModelProvider,
@@ -116,7 +118,6 @@ pub(crate) async fn generate_with_chat_provider(
     call_chat_provider(state, provider, retry_attempts, request, None).await
 }
 
-/// Shared desktop entry point for streamed model calls.
 pub(crate) async fn stream_with_chat_provider(
     state: &AppState,
     provider: &ModelProvider,
@@ -401,9 +402,12 @@ mod anonymous_http_tests {
             return body.to_string();
         }
         let events = match format {
-            "openai_chat" => vec![json!({"choices":[{"delta":{"content":"answer"},"finish_reason":finish}]})],
+            "openai_chat" => {
+                vec![json!({"choices":[{"delta":{"content":"answer"},"finish_reason":finish}]})]
+            }
             "openai_responses" | "xai_responses" => {
-                let mut events = vec![json!({"type":"response.output_text.delta","delta":"answer"})];
+                let mut events =
+                    vec![json!({"type":"response.output_text.delta","delta":"answer"})];
                 if tool {
                     events.push(json!({"type":"response.output_item.added","output_index":0,
                         "item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"read","arguments":"{}"}}));
@@ -422,47 +426,58 @@ mod anonymous_http_tests {
             "gemini" => vec![body],
             _ => unreachable!(),
         };
-        events.into_iter().map(|event| format!("data: {event}\n\n")).collect()
+        events
+            .into_iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect()
     }
 
     #[tokio::test]
     async fn no_tools_and_finish_reason_survive_provider_wire_and_message_runtime() {
         use crate::chat::agent::history::RuntimeMessage;
-        use crate::chat::agent::provider_runtime::{DiscardModelSink, ModelCall, ModelDelivery, ModelRuntime};
+        use crate::chat::agent::provider_runtime::{
+            DiscardModelSink, ModelCall, ModelDelivery, ModelRuntime,
+        };
         for format in FORMATS {
             for stream in [false, true] {
                 for finish in ["stop", "length", "tool_calls"] {
                     let (url, server) = endpoint(
-                        vec![("200 OK", finish_response(format, finish, stream))], false,
-                    ).await;
+                        vec![("200 OK", finish_response(format, finish, stream))],
+                        false,
+                    )
+                    .await;
                     let state = crate::state::AppState::new_headless(
-                        crate::settings::Settings::default(), std::env::temp_dir(),
+                        crate::settings::Settings::default(),
+                        std::env::temp_dir(),
                     );
                     let provider = provider(format, url, Vec::new());
                     let output = if stream {
-                        agent_runtime::AppAgentModel::new(&state, &provider, 1).generate(
-                            ModelCall {
-                                provider_id: provider.id.clone(),
-                                model: "local-model".into(),
-                                history: vec![RuntimeMessage::text(ModelRole::User, "hello")],
-                                tools: Vec::new(),
-                                options: GenerateOptions {
-                                    tool_choice: ToolChoice::None,
-                                    thinking_enabled: false,
-                                    builtin_web_search: true,
-                                    max_tokens: 100,
-                                    ..Default::default()
+                        agent_runtime::AppAgentModel::new(&state, &provider, 1)
+                            .generate(
+                                ModelCall {
+                                    provider_id: provider.id.clone(),
+                                    model: "local-model".into(),
+                                    history: vec![RuntimeMessage::text(ModelRole::User, "hello")],
+                                    tools: Vec::new(),
+                                    options: GenerateOptions {
+                                        tool_choice: ToolChoice::None,
+                                        thinking_enabled: false,
+                                        builtin_web_search: true,
+                                        max_tokens: 100,
+                                        ..Default::default()
+                                    },
+                                    metadata: RequestMetadata {
+                                        conversation_id: Some("conv".into()),
+                                        message_id: Some("msg".into()),
+                                        label: "finish regression".into(),
+                                        ..Default::default()
+                                    },
+                                    delivery: ModelDelivery::Collected,
                                 },
-                                metadata: RequestMetadata {
-                                    conversation_id: Some("conv".into()),
-                                    message_id: Some("msg".into()),
-                                    label: "finish regression".into(),
-                                    ..Default::default()
-                                },
-                                delivery: ModelDelivery::Collected,
-                            },
-                            &mut DiscardModelSink,
-                        ).await.unwrap()
+                                &mut DiscardModelSink,
+                            )
+                            .await
+                            .unwrap()
                     } else {
                         let request = GenerateRequest {
                             model: "local-model".into(),
@@ -496,10 +511,15 @@ mod anonymous_http_tests {
                     let captured = server.await.unwrap();
                     let (_, body) = captured[0].split_once("\r\n\r\n").unwrap();
                     let body: serde_json::Value = serde_json::from_str(body).unwrap();
-                    assert!(body.get("tools").is_none(), "{format} stream={stream}: {body}");
+                    assert!(
+                        body.get("tools").is_none(),
+                        "{format} stream={stream}: {body}"
+                    );
                     match format {
                         "anthropic_messages" => assert_eq!(body["tool_choice"]["type"], "none"),
-                        "gemini" => assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "NONE"),
+                        "gemini" => {
+                            assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "NONE")
+                        }
                         _ => assert_eq!(body["tool_choice"], "none"),
                     }
                 }
@@ -510,35 +530,43 @@ mod anonymous_http_tests {
     #[tokio::test]
     async fn message_runtime_preserves_provider_errors() {
         use crate::chat::agent::history::RuntimeMessage;
-        use crate::chat::agent::provider_runtime::{DiscardModelSink, ModelCall, ModelDelivery, ModelRuntime};
+        use crate::chat::agent::provider_runtime::{
+            DiscardModelSink, ModelCall, ModelDelivery, ModelRuntime,
+        };
         let (url, server) = endpoint(
-            vec![("401 Unauthorized", r#"{"error":{"message":"server requires authentication"}}"#.into())],
+            vec![(
+                "401 Unauthorized",
+                r#"{"error":{"message":"server requires authentication"}}"#.into(),
+            )],
             false,
-        ).await;
+        )
+        .await;
         let state = crate::state::test_app_state();
         let provider = provider("openai_chat", url, Vec::new());
-        let result = agent_runtime::AppAgentModel::new(&state, &provider, 1).generate(
-            ModelCall {
-                provider_id: provider.id.clone(),
-                model: "local-model".into(),
-                history: vec![RuntimeMessage::text(ModelRole::User, "hello")],
-                tools: Vec::new(),
-                options: GenerateOptions {
-                    tool_choice: ToolChoice::None,
-                    thinking_enabled: false,
-                    max_tokens: 100,
-                    ..Default::default()
+        let result = agent_runtime::AppAgentModel::new(&state, &provider, 1)
+            .generate(
+                ModelCall {
+                    provider_id: provider.id.clone(),
+                    model: "local-model".into(),
+                    history: vec![RuntimeMessage::text(ModelRole::User, "hello")],
+                    tools: Vec::new(),
+                    options: GenerateOptions {
+                        tool_choice: ToolChoice::None,
+                        thinking_enabled: false,
+                        max_tokens: 100,
+                        ..Default::default()
+                    },
+                    metadata: RequestMetadata {
+                        conversation_id: Some("conv".into()),
+                        message_id: Some("msg".into()),
+                        label: "error regression".into(),
+                        ..Default::default()
+                    },
+                    delivery: ModelDelivery::Collected,
                 },
-                metadata: RequestMetadata {
-                    conversation_id: Some("conv".into()),
-                    message_id: Some("msg".into()),
-                    label: "error regression".into(),
-                    ..Default::default()
-                },
-                delivery: ModelDelivery::Collected,
-            },
-            &mut DiscardModelSink,
-        ).await;
+                &mut DiscardModelSink,
+            )
+            .await;
         let error = result.unwrap_err();
         assert_eq!(error.kind, ModelErrorKind::Auth);
         assert!(error.message.contains("server requires authentication"));
@@ -555,20 +583,29 @@ mod anonymous_http_tests {
             serde_json::json!({"role":"developer", "content":delivery}),
         ];
         let request = generate_request_from_openai_messages(
-            "local-model", history, None, GenerateOptions::default(), "delivery",
+            "local-model",
+            history,
+            None,
+            GenerateOptions::default(),
+            "delivery",
             GenerateRequestContext::default(),
         );
         assert_eq!(request.messages[2].role, ModelRole::Developer);
         let stored = serde_json::to_vec(&request.messages).unwrap();
         let replayed: Vec<ModelMessage> = serde_json::from_slice(&stored).unwrap();
         assert_eq!(replayed[2].role, ModelRole::Developer);
-        assert_eq!(openai_messages_from_model_messages(&replayed)[2]["role"], "developer");
+        assert_eq!(
+            openai_messages_from_model_messages(&replayed)[2]["role"],
+            "developer"
+        );
 
         for format in FORMATS {
             let (url, server) = endpoint(vec![("200 OK", success(format, false))], false).await;
             let state = crate::state::test_app_state();
             let provider = provider(format, url, Vec::new());
-            generate_with_chat_provider(&state, &provider, 1, request.clone()).await.unwrap();
+            generate_with_chat_provider(&state, &provider, 1, request.clone())
+                .await
+                .unwrap();
             let captured = server.await.unwrap();
             let (_, body) = captured[0].split_once("\r\n\r\n").unwrap();
             let body: serde_json::Value = serde_json::from_str(body).unwrap();
