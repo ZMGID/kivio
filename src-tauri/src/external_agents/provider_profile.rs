@@ -767,6 +767,14 @@ fn nonempty_env_path(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+fn default_user_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_PROFILE_ROOT.with(|root| root.borrow().clone()) {
+        return Some(root.join("home"));
+    }
+    directories::BaseDirs::new().map(|base| base.home_dir().to_path_buf())
+}
+
 fn opencode_paths() -> Option<NativePaths> {
     opencode_paths_in(
         nonempty_env_path("XDG_CONFIG_HOME"),
@@ -778,8 +786,7 @@ fn opencode_paths_in(
     config_home: Option<PathBuf>,
     data_home: Option<PathBuf>,
 ) -> Option<NativePaths> {
-    let base = directories::BaseDirs::new()?;
-    let home = base.home_dir();
+    let home = default_user_home()?;
     let config_home = config_home.unwrap_or_else(|| home.join(".config"));
     let data_home = data_home.unwrap_or_else(|| home.join(".local/share"));
     let config_dir = config_home.join("opencode");
@@ -1757,7 +1764,7 @@ fn grok_config_path() -> Option<PathBuf> {
     if let Some(home) = nonempty_env_path("GROK_HOME") {
         return Some(home.join("config.toml"));
     }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".grok").join("config.toml"))
+    default_user_home().map(|home| home.join(".grok/config.toml"))
 }
 
 fn grok_state_path() -> Option<PathBuf> {
@@ -1912,7 +1919,7 @@ fn kimi_config_path() -> Option<PathBuf> {
     if let Some(home) = nonempty_env_path("KIMI_CODE_HOME") {
         return Some(home.join("config.toml"));
     }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".kimi-code").join("config.toml"))
+    default_user_home().map(|home| home.join(".kimi-code/config.toml"))
 }
 
 fn kimi_state_path() -> Option<PathBuf> {
@@ -2918,6 +2925,83 @@ mod tests {
     fn isolated_profiles(root: &Path) -> ProfileRoot {
         TEST_PROFILE_ROOT.with(|value| *value.borrow_mut() = Some(root.to_owned()));
         ProfileRoot
+    }
+
+    fn assert_user_home_file_changes_launch_identity(agent: &str, relative: &str) {
+        use super::super::overrides::LaunchIdentity;
+
+        let keys = if cfg!(windows) {
+            vec!["USERPROFILE", "userprofile"]
+        } else {
+            vec!["HOME"]
+        };
+        for key in keys {
+            let temp = tempfile::tempdir().unwrap();
+            let _root = isolated_profiles(temp.path());
+            let home = temp.path().join("child-home");
+            let path = home.join(relative);
+            let def = get_agent_def(agent).unwrap();
+            let config = ExternalCliAgentConfig {
+                env: vec![crate::settings::CliEnvVar {
+                    key: key.into(),
+                    value: home.to_string_lossy().into_owned(),
+                }],
+                ..Default::default()
+            };
+            let effective = if agent == "opencode" {
+                let paths = effective_native_paths(def, &config).unwrap();
+                if relative.ends_with("auth.json") {
+                    paths.auth
+                } else {
+                    paths.config
+                }
+            } else {
+                let fallback = match agent {
+                    "grok" => grok_config_path().unwrap(),
+                    "kimi" => kimi_config_path().unwrap(),
+                    _ => unreachable!(),
+                };
+                assert!(fallback.starts_with(temp.path()));
+                effective_toml_paths(def, &config).unwrap().0
+            };
+            assert_eq!(effective, path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"first account").unwrap();
+            let bin = temp.path().join(agent);
+            std::fs::write(&bin, b"fixture executable").unwrap();
+            let environment = [(OsString::from(key), home.into_os_string())].into();
+            let capture = || {
+                LaunchIdentity::from_environment(def, &bin, Some(0), Some(&config), &environment)
+            };
+            let first = capture();
+            assert_eq!(first, capture());
+            std::fs::write(&path, b"second account").unwrap();
+            assert_ne!(
+                first,
+                capture(),
+                "{agent} must observe {relative} under {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn launch_identity_tracks_opencode_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("opencode", ".config/opencode/opencode.json");
+    }
+
+    #[test]
+    fn launch_identity_tracks_opencode_auth_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("opencode", ".local/share/opencode/auth.json");
+    }
+
+    #[test]
+    fn launch_identity_tracks_grok_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("grok", ".grok/config.toml");
+    }
+
+    #[test]
+    fn launch_identity_tracks_kimi_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("kimi", ".kimi-code/config.toml");
     }
 
     #[cfg(windows)]
