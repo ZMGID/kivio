@@ -20,6 +20,7 @@ import {
   rememberTreeExpanded,
 } from '../persistence'
 import { insertTextIntoComposer } from '../composerInsert'
+import { useDockSubagent } from './useDockSubagent'
 
 export interface UseRightDockOptions {
   conversationId: string | null
@@ -105,6 +106,7 @@ export function useRightDock({
   const openGit = useCallback(() => showTab('git'), [showTab])
   /** 标题栏后台任务状态灯。 */
   const openTasks = useCallback(() => showTab('tasks'), [showTab])
+  const subagent = useDockSubagent(conversationId, openTasks)
 
   const setWidth = useCallback((nextWidth: number) => {
     setWidthState(nextWidth)
@@ -172,6 +174,7 @@ export function useRightDock({
     close,
     openGit,
     openTasks,
+    subagent,
     setWidth,
     setTab,
     setTreeExpanded,

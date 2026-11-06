@@ -2910,6 +2910,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     resolvePendingSessionConsent, resolvePendingToolConfirm,
   ])
 
+  const showConversationDock = chatView === 'conversation' && !conversationOccupied
+    && (!usesChatRuntime || Boolean(dock.subagent.selection))
   return (
     <LangContext.Provider value={uiLang}>
     <AsyncQuestionsContext.Provider value={asyncQuestionsValue}>
@@ -2927,7 +2929,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           settingsMode={settingsPanelActive}
           onToggleSidebar={handleTitlebarToggleSidebar}
           onNewConversation={handleTitlebarNewConversation}
-          dockVisible={chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && dockOpen}
+          dockVisible={showConversationDock && dockOpen}
           dockWidth={dock.width}
           dockToolbarRef={setDockToolbarHost}
         >
@@ -3160,7 +3162,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           />
         )}
         </ChatRouteKeepAlive>
-        {chatView === 'conversation' && !usesChatRuntime && !conversationOccupied && (
+        {showConversationDock && (
           <RightDock
             open={dockOpen}
             toolbarHost={usesNativeTitlebar ? null : dockToolbarHost}
@@ -3173,6 +3175,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             treeExpanded={dock.treeExpanded}
             revealRequest={dock.reveal}
             previewRequest={dock.preview}
+            subagent={dock.subagent.selection}
+            onBackFromSubagent={dock.subagent.close}
             onToggleTab={dock.setTab}
             onOpenTabRequestHandled={dock.onOpenTabRequestHandled}
             onWidthChange={dock.setWidth}

@@ -4,7 +4,8 @@ import { IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
 import { parsedRecord, record, text } from '../api/subagents'
 import { AgentProgress, AgentOutput, AgentStatus } from './AgentProgress'
-import { SubagentDialog, SubagentInspectionDialog } from './AgentHub'
+import { SubagentDialog } from './AgentHub'
+import { requestDockSubagent } from './dock/dockPreview'
 import { normalizeToolCallStatus } from './toolStatus'
 import type { SubagentTimelineEntry, SubagentTimelineStatus } from '../generated/chatProtocol'
 import type { ToolCallRecord } from './types'
@@ -33,19 +34,15 @@ export function SubagentLifecycleEvent({ event, conversationId, live = false }: 
   live?: boolean
 }) {
   const zh = useLang() === 'zh'
-  const [open, setOpen] = useState(false)
   const label = `${event.name || event.agentId} ${lifecycleLabels[event.status][zh ? 0 : 1]}`
   const content = <>
     <Flower2 size={14} className={`shrink-0 ${agentColor(event.agentId)}`} aria-hidden="true" />
     <span>{label}</span>
   </>
   return <div className={`not-prose kv-agent-event${live ? ' chat-motion-bubble-in' : ''}`}>
-    {conversationId ? <button type="button" className="kv-agent-event-link" aria-haspopup="dialog" onClick={() => setOpen(true)}>
+    {conversationId ? <button type="button" className="kv-agent-event-link" onClick={() => requestDockSubagent({ conversationId, agentId: event.agentId })}>
       {content}
     </button> : <span className="kv-agent-event-link">{content}</span>}
-    {conversationId && open && <SubagentInspectionDialog
-      conversationId={conversationId} initial={{ agentId: event.agentId }} onClose={() => setOpen(false)}
-    />}
   </div>
 }
 
@@ -80,7 +77,7 @@ function taskRows(structured: Record<string, unknown>): AgentRow[] {
 
 export function SubagentTimelineEvents({ toolCall, conversationId }: { toolCall: ToolCallRecord; conversationId?: string | null }) {
   const zh = useLang() === 'zh'
-  const [inspection, setInspection] = useState<'receipt' | { agentId: string } | null>(null)
+  const [inspection, setInspection] = useState<'receipt' | null>(null)
   const t = (a: string, b: string) => zh ? a : b
   const args = parsedRecord(toolCall.arguments ?? toolCall.args ?? toolCall.input)
   const structured = record(toolCall.structured_content ?? toolCall.structuredContent)
@@ -115,11 +112,11 @@ export function SubagentTimelineEvents({ toolCall, conversationId }: { toolCall:
           : state === 'failed' || state === 'error' ? t('失败', 'failed')
             : state === 'aborted' || state === 'cancelled' ? t('已中断', 'was interrupted')
               : state === 'queued' || state === 'pending' ? t('等待运行', 'queued') : dispatchStatus
-      const inspectAgent = Boolean(root && id)
+      const inspectAgent = root && id
       const caption = `${name} ${action}`
       return <div className="kv-agent-event" key={key}>
-        <button type="button" className="kv-agent-event-link" aria-haspopup="dialog"
-          onClick={() => setInspection(inspectAgent ? { agentId: id } : 'receipt')}>
+        <button type="button" className="kv-agent-event-link" aria-haspopup={inspectAgent ? undefined : 'dialog'}
+          onClick={() => inspectAgent && root ? requestDockSubagent({ conversationId: root, agentId: id }) : setInspection('receipt')}>
           {id ? <Flower2 size={14} className={`shrink-0 ${agentColor(id)}`} aria-hidden="true" />
             : <Users size={14} className="shrink-0" aria-hidden="true" />}
           <span>{caption}</span>
@@ -159,6 +156,5 @@ export function SubagentTimelineEvents({ toolCall, conversationId }: { toolCall:
         {result && rows.length === 0 && <AgentOutput content={result} />}
       </div>
     </SubagentDialog>}
-    {root && inspection && inspection !== 'receipt' && <SubagentInspectionDialog conversationId={root} initial={inspection} onClose={close} />}
   </section>
 }

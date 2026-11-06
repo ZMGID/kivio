@@ -707,7 +707,9 @@ function renderProcessSegments({
   onReasoningExpand: () => void
 }) {
   const nodes: ReactNode[] = []
-  const renderSegment = (segment: ChatMessageSegment, defaultReasoningOpen = false) => (
+  const renderSegment = (segment: ChatMessageSegment, defaultReasoningOpen = false) => isSubagentTimelineSegment(segment) ? (
+    <SubagentLifecycleEvent event={segment.kind.subagent} conversationId={conversationId} live={messageStreaming} />
+  ) : (
     <TimelineSegmentNode
       segment={segment}
       toolCall={segment.kind === 'tool' ? toolCallById.get(segmentToolCallId(segment)) : undefined}
@@ -995,8 +997,7 @@ function TimelineSegments({
       segment => {
         const tool = toolCallById.get(segmentToolCallId(segment))
         return Boolean(tool && (isVisiblePresentation(tool) || isUserInjectedToolCall(tool)
-          || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)
-          || isNativeTaskToolCall(tool)))
+          || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)))
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')
@@ -1024,10 +1025,6 @@ function TimelineSegments({
   return (
     <section aria-label="回答时间线" className="space-y-1.5">
       {groupItems.map((item: TimelineGroupItem) => {
-        if (item.type === 'subagent') {
-          return <SubagentLifecycleEvent key={item.segment.id}
-            event={item.segment.kind.subagent} conversationId={conversationId} live={messageStreaming} />
-        }
         if (item.type === 'presentation') {
           return <TimelineToolSegment
             key={item.segment.id}
@@ -1603,12 +1600,12 @@ export const MessageBubble = memo(function MessageBubble(props: MessageBubblePro
   const irc = props.message.irc_message ?? props.message.ircMessage
   const bubble = irc ? <IrcMessageCard message={irc} /> : <MessageBubbleComponent {...props} />
   if (!irc && props.message.role !== 'user') return bubble
-  const events = props.message.segments?.filter(isSubagentTimelineSegment).sort((left, right) => left.order - right.order)
+  const events = props.message.segments?.filter(isSubagentTimelineSegment)
   if (!events?.length) return bubble
   return <>
     {bubble}
-    {events.map(segment => (
-      <SubagentLifecycleEvent key={segment.id} event={segment.kind.subagent} conversationId={props.conversationId} />
-    ))}
+    <TimelineSegments segments={positionSubagentTimeline(events)} toolCalls={EMPTY_TOOL_CALLS} artifacts={[]}
+      ownerMessageId={props.message.id} conversationId={props.conversationId}
+      completed cancelled={false} messageStreaming={false} reasoningStreaming={false} />
   </>
 })
