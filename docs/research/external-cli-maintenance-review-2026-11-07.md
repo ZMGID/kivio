@@ -28,8 +28,18 @@
 
 Laziness Protocol 促使本次复用现有管道、actor、安装命令及恢复事务；Model the Domain 将诊断观察窗口与原生请求归属区分，并保留历史投递的不确定状态；Fix Root Causes 将修复落在环境合并、安装目标和历史修改入口；Prove It Works 要求先复现四个失败，再通过实际生产入口回归。
 
+## 后续实机回归：OpenCode 发送栈溢出
+
+用户在 Windows Dev 选择 OpenCode 发送消息后报告闪退。通过既有 `chat_probe` 调用同一聊天生成入口，发送不读写文件的最小消息，在未修改的代码上复现 `STATUS_STACK_OVERFLOW`。此前的协议和历史单测没有覆盖这个完整发送调用栈，自动化通过不能替代实机发送验收。
+
+完整外部运行 future 被 task-local、取消等待和上层异步调用内联保存，调试构建的栈帧叠加超出默认线程栈。临时大栈与插桩用于确认有限栈压力；仅装箱下层连接任务不足以解决问题，已撤回。最终只在 `run_external_cli_reply_in` 中、`PROCESS_CONVERSATION.scope` 之前用 `Box::pin` 保存完整 owned future。取消、落盘收尾、lease 和上下文传播保持原路径，没有新增任务或修改全局栈大小。所有插桩均已删除；实际验证的最终 exe 主栈恢复为原来的 1 MiB，启动环境没有 `RUST_MIN_STACK` 覆盖。
+
+默认栈下，本机 OpenCode 2.2.5 的首轮返回 `OK`，常驻会话存活；已有 `probe:e2e` 的 `multi-turn` 场景通过，同一进程续聊并记住上文。取消轮返回 `cancelled`，随后在同一对话恢复原生会话并正确返回先前记住的 `77`。已有 `cancel-resume` 场景按 Claude 语义要求取消后保留同一 PID，因此该断言在 OpenCode 上报红；ACP 的现有 `cancel_keeps_live_session` 策略本就关闭旧进程并在下轮恢复。本次没有修改或放宽该脚本，另通过同一入口验证了 ACP 的正确恢复行为。
+
+修复后的 Windows Rust 全量 lib 测试 **3221 项通过、56 项按既有配置跳过**，架构检查和差异空白检查通过。新的独立审查未发现取消、Drop、lease、task-local 或错误传播回归。动态证据为本机 `.scratch/dev-20261107-043504.stderr.log`、`opencode-stack-final-result.log`、`opencode-stack-live-regression.log`、`opencode-stack-after-cancel-result.log` 和 `opencode-stack-rust-final.log`。另一个工作区一度占用相同 Dev 身份，误由该实例消费的 `opencode-stack-outer` 请求已排除；最终验证按当前 checkout 的可执行路径和 PID 核对归属。
+
 ## 验证边界
 
-未运行真实模型请求、登录、安装更新或桌面完整联调，未验证 WSL、Linux/macOS 实机及远端 CI。Windows 受控子进程测试不能证明 WSL 内后代进程清理；路径转换测试也不等于 WSL 实机验证。各 CLI 样本仅证明文档列明的版本及片段，不证明任意升级版本兼容。诊断摘要有损且容量有限，不是完整会话录制。
+除上节 OpenCode 的实际模型请求外，未运行其他 CLI 的真实模型请求、登录、安装更新或桌面完整联调，未验证 WSL、Linux/macOS 实机及远端 CI。本机桌面控制接口不可用，OpenCode 补验使用已有调试入口进入相同后端生成路径，未自动操作聊天窗口。Windows 受控子进程测试不能证明 WSL 内后代进程清理；路径转换测试也不等于 WSL 实机验证。各 CLI 样本仅证明文档列明的版本及片段，不证明任意升级版本兼容。诊断摘要有损且容量有限，不是完整会话录制。
 
 独立审查使用当前可用的 GPT 家族模型，未执行跨模型家族评审。没有发现其他确认问题不等于证明全部路径无缺陷。既有平台限制、未托管终端的并发修改、宿主崩溃时跨文件原子性及 npm 包版本回滚仍按任务记录中的边界处理。
