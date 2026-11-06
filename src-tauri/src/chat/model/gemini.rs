@@ -2126,3 +2126,31 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod interrupted_history_tests {
+    use crate::chat::model::generate_request_from_openai_messages;
+    #[test]
+    fn interrupted_tool_history_keeps_function_response_name() {
+        let messages = vec![
+            serde_json::json!({"role":"assistant", "tool_calls":[
+                {"id":"missing", "type":"function", "function":{"name":"read", "arguments":"{}"}}
+            ]}),
+            serde_json::json!({"role":"user", "content":"new instruction"}),
+            serde_json::json!({"role":"tool", "tool_call_id":"unrelated", "content":"keep"}),
+            serde_json::json!({"role":"assistant", "content":"next turn"}),
+            serde_json::json!({"role":"tool", "tool_call_id":"missing", "content":"late"}),
+        ];
+        let request = generate_request_from_openai_messages(
+            "m",
+            messages,
+            None,
+            Default::default(),
+            "t",
+            Default::default(),
+        );
+        let gemini = crate::chat::model::gemini::gemini_contents_from_generate_request(&request);
+        assert_eq!(gemini[1]["parts"][0]["functionResponse"]["name"], "read");
+    }
+
+}

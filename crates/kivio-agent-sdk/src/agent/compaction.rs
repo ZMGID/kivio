@@ -3,7 +3,7 @@ use super::{
     loop_::{LoopEnv, RunState},
     session::{ContextReason, ContextSnapshot, ContextUpdate, SessionPolicy},
 };
-use crate::chat::model::ModelTool;
+use crate::model::ModelTool;
 
 pub(crate) async fn maybe_compact_send_view(
     env: &LoopEnv<'_>,

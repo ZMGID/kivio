@@ -16,7 +16,7 @@ use super::interaction::{
 use super::messages::persist_partial_assistant_snapshot;
 
 fn session_input(message: RuntimeMessage) -> SessionInput {
-    let persistence = if message.source.subagent_parent_persisted == Some(true) {
+    let persistence = if message.source.get("subagent_parent_persisted").and_then(serde_json::Value::as_bool) == Some(true) {
         InputPersistence::AlreadyPersisted
     } else {
         InputPersistence::Append

@@ -7,7 +7,7 @@ use super::{
     host::AgentHost,
 };
 
-pub(crate) struct AgentContext<'a> {
+pub struct AgentContext<'a> {
     pub(crate) host: &'a dyn AgentHost,
     pub(crate) events: AgentEvents<'a>,
     pub(crate) control: AgentRunHandle<'a>,
@@ -20,7 +20,25 @@ impl<'a> Deref for AgentContext<'a> {
     }
 }
 
-impl AgentContext<'_> {
+impl<'a> AgentContext<'a> {
+    pub fn new(
+        host: &'a dyn AgentHost,
+        sink: &'a dyn super::events::AgentEventSink,
+        control: AgentRunHandle<'a>,
+    ) -> Self {
+        let events = AgentEvents::new(
+            control.identity(),
+            sink,
+            host.hooks(),
+            control.invocation_id(),
+        );
+        Self {
+            host,
+            events,
+            control,
+        }
+    }
+
     pub(crate) fn content(
         &self,
         delta: &str,
@@ -65,7 +83,7 @@ impl AgentContext<'_> {
         provider_id: &str,
         model: &str,
         messages: &[super::history::RuntimeMessage],
-        tools: &[crate::chat::model::ModelTool],
+        tools: &[crate::model::ModelTool],
     ) {
         self.events.emit(AgentEventKind::ContextPrepared {
             provider_id,
@@ -97,8 +115,17 @@ impl AgentContext<'_> {
 }
 
 impl super::session::PolicyProgress for AgentContext<'_> {
-    fn compaction(&self, phase: &str, trigger: Option<&str>, boundary: Option<super::events::CompactionFact<'_>>) {
-        self.events.emit(AgentEventKind::Compaction { phase, trigger, boundary });
+    fn compaction(
+        &self,
+        phase: &str,
+        trigger: Option<&str>,
+        boundary: Option<super::events::CompactionFact<'_>>,
+    ) {
+        self.events.emit(AgentEventKind::Compaction {
+            phase,
+            trigger,
+            boundary,
+        });
     }
 
     fn context_reset(&self, window: Option<u64>) {

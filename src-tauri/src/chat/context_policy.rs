@@ -229,7 +229,7 @@ impl<'a> ContextPolicy<'a> {
                     source_until_message_id: messages
                         .iter()
                         .rev()
-                        .find_map(|message| message.source.ui_message_id.clone()),
+                        .find_map(|message| message.source.get("_ui_message_id").and_then(serde_json::Value::as_str).map(str::to_owned)),
                     summary,
                     provider_id: provider.id.clone(),
                     model,
@@ -362,7 +362,6 @@ impl<'a> ContextPolicy<'a> {
 }
 
 pub(crate) const PERSISTED_SUMMARY_PREFIX: &str = "Previous conversation summary:";
-pub(crate) const UI_MESSAGE_ID_KEY: &str = "_ui_message_id";
 const SUMMARY_MARKER_PREFIX: &str = "[context summary]";
 pub(crate) const SUMMARY_OUTPUT_TOKENS: u32 = 16_384;
 const KEEP_RECENT_TOKENS: usize = 20_000;

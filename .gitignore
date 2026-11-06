@@ -26,6 +26,8 @@ dist-ssr
 dist-electron
 release
 src-tauri/target
+/crates/kivio-agent-sdk/target/
+/tests/fixtures/agent-sdk-consumer/target/
 # rust-analyzer 在 workspace 根生成的 cache,不是 cargo 用户产物
 /target
 

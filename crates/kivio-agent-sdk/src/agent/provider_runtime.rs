@@ -1,6 +1,6 @@
 use std::{future::Future, pin::Pin};
 
-use crate::chat::model::{
+use crate::model::{
     GenerateOptions, GenerateOutput, ModelError, ModelTool, RequestMetadata, StreamSink,
 };
 
@@ -22,6 +22,7 @@ pub struct ModelCall {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ModelDelivery {
     Streamed,
+    /// Return aggregate output without visible content frames; transport may still use SSE.
     Collected,
 }
 
@@ -42,10 +43,10 @@ pub trait ModelOutputSink: StreamSink {
     fn draft_snapshot(&self) -> Vec<(String, String)>;
 }
 
-pub(crate) struct DiscardModelSink;
+pub struct DiscardModelSink;
 
 impl StreamSink for DiscardModelSink {
-    fn emit(&mut self, _: crate::chat::model::StreamPart) -> Result<(), ModelError> {
+    fn emit(&mut self, _: crate::model::StreamPart) -> Result<(), ModelError> {
         Ok(())
     }
 }

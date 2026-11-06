@@ -1,10 +1,10 @@
-use crate::chat::model::{FinishKind, ModelError, ModelErrorKind};
+use crate::model::{FinishKind, ModelError, ModelErrorKind};
 
 #[derive(Clone, Copy)]
 pub struct RecoverySnapshot<'a> {
     pub history: &'a [super::history::RuntimeMessage],
     pub tool_records: &'a [super::content::AgentToolCall],
-    pub last_step_usage: Option<&'a crate::chat::model::ModelUsage>,
+    pub last_step_usage: Option<&'a crate::model::ModelUsage>,
 }
 
 pub enum RecoveryInput {
@@ -54,7 +54,7 @@ pub(crate) struct StreamRequest<'a> {
 }
 
 pub(crate) fn is_recoverable_text_length(
-    output: &crate::chat::model::GenerateOutput,
+    output: &crate::model::GenerateOutput,
     max_output_tokens: u32,
 ) -> bool {
     !output.cancelled
@@ -81,7 +81,7 @@ pub(crate) async fn stream_with_truncation_recovery(
     state: &mut super::loop_::RunState,
     mut request: StreamRequest<'_>,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<crate::chat::model::GenerateOutput, crate::chat::model::ModelError> {
+) -> Result<crate::model::GenerateOutput, crate::model::ModelError> {
     let mut attempted = false;
     loop {
         let result = super::planning::stream_model_call(
@@ -126,10 +126,7 @@ pub(crate) async fn stream_with_truncation_recovery(
                 .await
                 .map_err(ModelError::new)?;
         if !env.host.control.active() {
-            return Ok(crate::chat::model::GenerateOutput::cancelled(
-                String::new(),
-                None,
-            ));
+            return Ok(crate::model::GenerateOutput::cancelled(String::new(), None));
         }
         if state.compaction_blocked || compacted == request.call.history {
             return Err(ModelError::with_kind("Truncated response recovery failed: context could not be compacted. Please reduce context or switch models.", ModelErrorKind::TruncationRecoveryFailed));

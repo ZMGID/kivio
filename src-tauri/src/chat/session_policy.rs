@@ -1,6 +1,5 @@
 use crate::chat::agent::content::{AgentToolCall, ContentBlock};
 use crate::chat::agent::provider_runtime::ModelRuntime;
-use crate::chat::types::ChatAssistantSnapshot;
 use crate::mcp::ChatToolDefinition;
 use crate::settings::{ChatToolsConfig, ModelProvider, Settings};
 use serde_json::Value;
@@ -45,7 +44,6 @@ pub struct ApplicationRunConfig<'a> {
     pub web_search_mode: crate::chat::types::WebSearchMode,
     pub max_output_tokens: u32,
     pub retry_attempts: usize,
-    pub assistant_snapshot: Option<ChatAssistantSnapshot>,
     pub provider_tools_fallback_prompt: crate::chat::agent_preparation::PreparedChatPrompt,
     /// Completed selected-branch main requests: (normalized input, cache-read tokens).
     pub initial_cache_usage: Option<(u64, u64)>,
@@ -71,7 +69,6 @@ impl ApplicationRunConfig<'_> {
 
 #[derive(Debug, Clone)]
 pub struct ApplicationRunResult {
-    pub(crate) final_message: Option<crate::chat::model::ModelMessage>,
     pub content: String,
     pub reasoning: Option<String>,
     pub tool_records: Vec<AgentToolCall>,
@@ -467,12 +464,11 @@ pub(crate) async fn run_session(
     let degraded = policy.recovery.take_degraded();
     let compacted_history = result.compacted.then(|| export_history(&result.history));
     Ok(ApplicationRunResult {
-        final_message: result.final_message,
         content: result.content,
         reasoning: result.reasoning,
         tool_records: result.tool_records,
         segments: result.segments,
-        api_messages: result.api_messages,
+        api_messages: export_history(&result.generated_history),
         status: result.status,
         usage: result.usage,
         cache_pairs: result.cache_pairs,

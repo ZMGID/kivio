@@ -2,13 +2,12 @@ use crate::chat::session_policy::{ApplicationRunConfig as AgentRunConfig, Applic
 use crate::chat::tool_runtime::{ApplicationHost, ToolDispatcher as ToolExecutor, ToolExecutionContext, ApplicationToolExecutor, ToolAuthority};
 use crate::chat::recovery_policy::{empty_synthesis_fallback_response, synthesis_failed_fallback_response, tool_planning_failed_fallback_response};
 use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase, ToolCallRecord};
-use crate::chat::agent::content::{AgentToolCall, ContentBlock, ContentKind, ContentPhase, InputKind};
+use crate::chat::agent::content::{AgentToolCall, ContentBlock, InputKind};
 use crate::chat::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
-use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentEvents, AgentRunIdentity, EventDelivery};
+use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery};
 use crate::chat::agent::context::AgentContext;
 use crate::chat::agent::history::{export_history, import_history, RuntimeMessage};
 use crate::chat::agent::host::{InputPersistence, SessionInput};
-use crate::chat::agent::planning;
 use crate::chat::model::FinishKind;
 use crate::mcp::ChatToolDefinition;
 use serde_json::Value;
@@ -21,15 +20,15 @@ use std::sync::{
 
 use tokio::time::{sleep, Duration};
 
-use super::*;
+use crate::chat::agent::AgentHost;
 use crate::chat::context_policy as compaction;
 use crate::chat::agent::SteeringMessage;
-use crate::chat::model::{StreamPart, StreamSink as _};
+use crate::chat::model::{PendingToolCall, StreamPart};
 use crate::chat::types::ToolCallStatus;
 use crate::mcp::types::{
-    native_read_file_tool, native_run_command_tool, native_web_fetch_tool, native_write_file_tool,
+    native_read_file_tool, native_run_command_tool, native_web_fetch_tool,
 };
-use crate::settings::{ChatToolsConfig, ModelProvider};
+use crate::settings::{ChatToolsConfig, ModelProvider, Settings};
 use crate::state::AppState;
 
 #[path = "compaction_live_tests.rs"]
@@ -174,7 +173,7 @@ impl AgentHost for TestHost {
                 import_history(messages)
                     .into_iter()
                     .map(|message| {
-                        let persistence = if message.source.subagent_parent_persisted == Some(true) {
+                        let persistence = if message.source.get("subagent_parent_persisted").and_then(Value::as_bool) == Some(true) {
                             InputPersistence::AlreadyPersisted
                         } else {
                             InputPersistence::Append
@@ -781,7 +780,6 @@ pub(crate) fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentR
         web_search_mode: crate::chat::types::WebSearchMode::Off,
         max_output_tokens: 1024,
         retry_attempts: 1,
-        assistant_snapshot: None,
         runtime_context: None,
         provider_tools_fallback_prompt: Default::default(),
         initial_cache_usage: None,
@@ -1047,26 +1045,8 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
     assert_eq!(result.tool_records[0].status, ToolCallStatus::Success);
 }
 
-#[test]
-fn reasoning_segment_order_precedes_text_in_same_step() {
-    let mut builder = SegmentBuilder::new();
-    let reasoning = builder.reserve(
-        ContentKind::Reasoning,
-        ContentPhase::ToolLoop,
-        Some(1),
-        Some(1),
-        "step_1_reasoning",
-    );
-    let text = builder.reserve(
-        ContentKind::Text,
-        ContentPhase::ToolLoop,
-        Some(1),
-        Some(1),
-        "step_1_text",
-    );
 
-    assert!(reasoning.id < text.id);
-}
+
 
 fn test_mcp_tool(name: &str, annotations: Value) -> ChatToolDefinition {
     ChatToolDefinition {
@@ -1591,86 +1571,8 @@ async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
     );
 }
 
-#[test]
-fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
-    let tool_record = AgentToolCall {
-        id: "call_read".to_string(),
-        name: "read".to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        arguments: "{}".to_string(),
-        status: crate::chat::agent::content::AgentToolStatus::Cancelled,
-        output: None,
-        output_limit: None,
-        draft: None,
-        error: Some("Tool call cancelled".to_string()),
-        duration_ms: Some(5),
-        started_at: Some(10),
-        completed_at: Some(11),
-        round: 1,
-        sensitive: false,
-        artifacts: Vec::new(),
-        structured_content: None,
-    };
-    let assistant_message = serde_json::json!({
-        "role": "assistant",
-        "content": Value::Null,
-        "tool_calls": [{
-            "id": "call_read",
-            "type": "function",
-            "function": {
-                "name": "read",
-                "arguments": "{}",
-            }
-        }],
-    });
-    let tool_response = tool_message("call_read".to_string(), "Tool call cancelled");
-    let result = cancelled_tool_round_run_result(
-        &["planning".to_string()],
-        vec![tool_record.clone()],
-        vec![ContentBlock {
-            id: 1000,
-            kind: ContentKind::Tool,
-            phase: ContentPhase::ToolLoop,
-            step_number: Some(1),
-            round: Some(1),
-            text: None,
-            tool_call_id: Some("call_read".to_string()),
-        }],
-        import_history(vec![assistant_message.clone(), tool_response.clone()]),
-    );
 
-    let result = present_core_result(result);
-    assert!(result.content.is_empty());
-    assert_eq!(result.reasoning.as_deref(), Some("planning"));
-    assert_eq!(result.tool_records.len(), 1);
-    assert!(result.segments.iter().any(|segment| {
-        segment.kind == ChatMessageSegmentKind::Tool
-            && segment.tool_call_id.as_deref() == Some("call_read")
-    }));
-    assert!(!result
-        .segments
-        .iter()
-        .any(|segment| segment.kind == ChatMessageSegmentKind::Text));
-    assert!(matches!(
-        result.tool_records[0].status,
-        ToolCallStatus::Cancelled
-    ));
-    assert_eq!(result.api_messages, vec![assistant_message, tool_response]);
-    assert_eq!(
-        result.api_messages[0]
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(
-        result.api_messages[1]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
-        Some("call_read")
-    );
-}
+
 
 #[tokio::test]
 async fn tool_round_keeps_serial_only_tools_non_overlapping() {
@@ -1743,124 +1645,8 @@ fn fallback_responses_are_bilingual() {
         );
 }
 
-/// Fallback A (helper level, deterministic): a planning stream dies while tool
-/// argument drafts are in flight; the run result must mark every draft record
-/// as error, emit the bilingual fallback, and finish with stream_outcome "error".
-#[test]
-fn tool_planning_failed_run_result_marks_drafts_error_and_emits_fallback() {
-    let state = test_app_state();
-    let config = test_run_config(&state, "http://127.0.0.1:9/v1");
-    let host = TestHost::default();
 
-    let mut segment_builder = SegmentBuilder::new();
-    let _reasoning_segment = segment_builder.reserve(
-        ContentKind::Reasoning,
-        ContentPhase::ToolLoop,
-        Some(1),
-        Some(1),
-        "step_1_reasoning",
-    );
-    let planning_text_segment = segment_builder.reserve(
-        ContentKind::Text,
-        ContentPhase::ToolLoop,
-        Some(1),
-        Some(1),
-        "step_1_text",
-    );
-    let tracker = ToolCallDraftTracker::new(
-        vec![native_write_file_tool().for_run(&config.settings)],
-        1,
-        Some(1),
-        segment_builder.next_order(),
-    );
-    let context = test_context(&host);
-    let mut sink = AgentStreamSink::new(
-        &context,
-        true,
-        None,
-        None,
-        Some(tracker.clone()),
-        None,
-    );
-    sink.emit(StreamPart::ToolCallStart {
-        id: "call_write".to_string(),
-        name: "write".to_string(),
-    })
-    .expect("tool call start should emit");
-    sink.emit(StreamPart::ToolCallDelta {
-        id: "call_write".to_string(),
-        delta: "{\"path\":\"large.html\",\"content\":\"".to_string(),
-    })
-    .expect("tool call delta should emit");
-    assert!(tracker.has_started());
 
-    let result = tool_planning_failed_run_result(
-        &context,
-        tool_planning_failed_fallback_response(&config.language),
-        segment_builder,
-        planning_text_segment,
-        tracker,
-        &["planning thought".to_string()],
-        Vec::new(),
-        "Chat tools planning read body failed".to_string(),
-    );
-
-    let result = present_core_result(result);
-    let fallback = tool_planning_failed_fallback_response("zh-CN");
-    assert_eq!(result.stream_outcome, "error");
-    assert_eq!(result.content, fallback);
-    assert_eq!(result.reasoning.as_deref(), Some("planning thought"));
-    assert_eq!(result.tool_records.len(), 1);
-    assert_eq!(result.tool_records[0].id, "call_write");
-    assert!(matches!(
-        result.tool_records[0].status,
-        ToolCallStatus::Error
-    ));
-    assert_eq!(
-        result.tool_records[0].error.as_deref(),
-        Some("Chat tools planning read body failed")
-    );
-    assert!(result.tool_records[0].completed_at.is_some());
-
-    // The error record was re-emitted through the host (after the pending draft).
-    let emitted = host.recorded_tool_records();
-    let last_emitted = emitted.last().expect("error record emitted");
-    assert_eq!(last_emitted.id, "call_write");
-    assert!(matches!(last_emitted.status, ToolCallStatus::Error));
-
-    // Draft tool segment is preserved and the fallback text segment is
-    // synthesis-phase with no round.
-    assert!(result.segments.iter().any(|segment| {
-        segment.kind == ChatMessageSegmentKind::Tool
-            && segment.tool_call_id.as_deref() == Some("call_write")
-    }));
-    let fallback_segment = result
-        .segments
-        .iter()
-        .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
-        .expect("fallback text segment");
-    assert_eq!(fallback_segment.phase, ChatMessageSegmentPhase::Synthesis);
-    assert_eq!(fallback_segment.round, None);
-    assert_eq!(fallback_segment.text.as_deref(), Some(fallback.as_str()));
-
-    // Fallback delta.
-    assert!(host
-        .recorded_deltas()
-        .iter()
-        .any(|delta| delta.delta == fallback));
-
-    // The final assistant message is pushed unconditionally here.
-    assert_eq!(result.api_messages.len(), 1);
-    assert_eq!(
-        result.api_messages[0]
-            .get("content")
-            .and_then(Value::as_str),
-        Some(fallback.as_str())
-    );
-
-    // The whole turn is preserved: exactly the one failed tool record.
-    assert_eq!(result.tool_records.len(), 1);
-}
 
 /// Fallback A (integration): the provider stream breaks mid-connection after a
 /// tool-call draft has started; run_agent_loop must return Ok with
@@ -1902,9 +1688,26 @@ async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_resul
     );
 }
 
+#[derive(Default)]
+struct ProviderTestSink {
+    retries: Vec<crate::chat::agent::events::RetryStatus>,
+    resets: usize,
+}
+
+impl crate::chat::model::StreamSink for ProviderTestSink {
+    fn emit(&mut self, _: StreamPart) -> Result<(), crate::chat::model::ModelError> { Ok(()) }
+}
+
+impl crate::chat::agent::provider_runtime::ModelOutputSink for ProviderTestSink {
+    fn request_started(&mut self, _: &crate::chat::agent::provider_runtime::ModelCall) {}
+    fn retry(&mut self, status: crate::chat::agent::events::RetryStatus) { self.retries.push(status); }
+    fn reset_attempt(&mut self) { self.resets += 1; }
+    fn draft_snapshot(&self) -> Vec<(String, String)> { Vec::new() }
+}
+
 #[tokio::test]
 async fn stream_request_none_reaches_provider_wire() {
-    use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery};
+    use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery, ModelRuntime};
     use crate::chat::model::{GenerateOptions, ModelTool, RequestMetadata, ToolChoice};
     let server = MockModelServer::start(vec![MockResponse::Sse(vec![
         r#"{"choices":[{"delta":{"content":"finished"},"finish_reason":"stop"}]}"#.into(),
@@ -1913,10 +1716,7 @@ async fn stream_request_none_reaches_provider_wire() {
     let state = test_app_state();
     let provider = test_provider(&server.base_url);
     let runtime = crate::chat::model::agent_runtime::AppAgentModel::new(&state, &provider, 1);
-    let host = TestHost::default();
-    let context = test_context(&host);
-    let output = planning::stream_model_call(
-        &runtime, &context,
+    let output = runtime.generate(
         ModelCall {
             provider_id: provider.id.clone(),
             model: "test-model".into(),
@@ -1926,8 +1726,7 @@ async fn stream_request_none_reaches_provider_wire() {
             metadata: RequestMetadata { label: "forced finalization".into(), conversation_id: Some("conversation".into()), message_id: Some("message".into()), ..Default::default() },
             delivery: ModelDelivery::Streamed,
         },
-        crate::chat::agent::types::AgentStreamPolicy::SynthesisAlwaysDone,
-        None, None, None, None, None,
+        &mut ProviderTestSink::default(),
     ).await.unwrap();
     assert_eq!(output.finish_reason.as_ref().map(|reason| reason.kind), Some(crate::chat::model::FinishKind::Stop));
     let body: Value = serde_json::from_str(&server.captured_bodies()[0]).unwrap();
@@ -1937,7 +1736,7 @@ async fn stream_request_none_reaches_provider_wire() {
 
 #[tokio::test]
 async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
-    use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery};
+    use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery, ModelRuntime};
     use crate::chat::model::{GenerateOptions, RequestMetadata};
     for recover in [true, false] {
         let final_response = if recover {
@@ -1957,10 +1756,8 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
         let state = test_app_state();
         let provider = test_provider(&server.base_url);
         let runtime = crate::chat::model::agent_runtime::AppAgentModel::new(&state, &provider, 3);
-        let host = TestHost::default();
-        let context = test_context(&host);
-        let result = planning::stream_model_call(
-            &runtime, &context,
+        let mut sink = ProviderTestSink::default();
+        let result = runtime.generate(
             ModelCall {
                 provider_id: provider.id.clone(),
                 model: "test-model".into(),
@@ -1970,42 +1767,19 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
                 metadata: RequestMetadata { label: "Budget test".into(), conversation_id: Some("conversation".into()), message_id: Some("message".into()), ..Default::default() },
                 delivery: ModelDelivery::Streamed,
             },
-            crate::chat::agent::types::AgentStreamPolicy::SynthesisAlwaysDone,
-            None, None, None, None, None,
+            &mut sink,
         ).await;
         assert_eq!(result.is_ok(), recover);
         if let Ok(output) = result { assert_eq!(output.text, "recovered"); assert!(output.reasoning.is_none()); }
         assert_eq!(server.captured_bodies().len(), 3);
-        let progress = host.retry_statuses.lock().unwrap();
+        let progress = &sink.retries;
         assert_eq!(progress.iter().map(|retry| (retry.attempt, retry.max_retries)).collect::<Vec<_>>(), vec![(1, 2), (2, 2)]);
-        assert_eq!(host.discarded_attempts.lock().unwrap().len(), 1);
+        assert_eq!(sink.resets, 1);
     }
 }
-#[tokio::test]
-async fn synthetic_model_completion_does_not_enter_stream_normalization() {
-    use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery, ModelOutputSink, ModelRuntime, ProviderFuture};
-    use crate::chat::model::{GenerateOutput, ModelError};
-    struct Completed;
-    impl ModelRuntime for Completed {
-        fn generate<'a>(&'a self, _: ModelCall, _: &'a mut dyn ModelOutputSink)
-            -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
-            Box::pin(async { Ok(GenerateOutput::text("  completed yield  ".into(), None)) })
-        }
-    }
-    let host = TestHost::default();
-    let context = test_context(&host);
-    let output = planning::stream_model_call(
-        &Completed, &context,
-        ModelCall {
-            provider_id: String::new(), model: String::new(), history: Vec::new(), tools: Vec::new(),
-            options: Default::default(), metadata: Default::default(), delivery: ModelDelivery::Streamed,
-        },
-        crate::chat::agent::types::AgentStreamPolicy::PlanningNoDoneUntilNoTools,
-        None, None, None, None, None,
-    ).await.unwrap();
-    assert_eq!(output.text, "  completed yield  ");
-    assert!(output.tool_calls.is_empty());
-}
+
+
+
 /// A transient disconnect retries only the current model request, keeping completed
 /// tool results and never executing an incomplete tool draft.
 #[tokio::test]
@@ -6179,7 +5953,7 @@ async fn assert_oversized_history_recovers(
         .runtime_messages
         .push(serde_json::json!({"role":"user", "content":"current question"}));
     for (index, message) in config.runtime_messages.iter_mut().enumerate().skip(1) {
-        message[compaction::UI_MESSAGE_ID_KEY] = Value::String(format!("history-{index}"));
+        message["_ui_message_id"] = Value::String(format!("history-{index}"));
     }
     let original_runtime = config.runtime_messages.clone();
     let host = TestHost::default();
@@ -6228,7 +6002,7 @@ async fn assert_oversized_history_recovers(
             .skip(1)
             .map(|message| {
                 serde_json::json!({
-                    "id":message[compaction::UI_MESSAGE_ID_KEY], "role":message["role"],
+                    "id":message["_ui_message_id"], "role":message["role"],
                     "content":message["content"], "timestamp":0
                 })
             })
@@ -7057,7 +6831,7 @@ impl AgentEventSink for HookedHost {
 fn test_context<H: AgentHost + AgentEventSink + AgentRunControl>(host: &H) -> AgentContext<'_> {
     let identity = AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1 };
     let control = AgentRunHandle::new(identity, host);
-    AgentContext { host, events: AgentEvents::new(identity, host, host.hooks().map(|hooks| hooks as &dyn AgentEventSink), control.invocation_id()), control }
+    AgentContext::new(host, host, control)
 }
 
 #[derive(Debug)]
@@ -7124,13 +6898,8 @@ async fn execute_tool_round<H: ApplicationHost + AgentEventSink + AgentRunContro
     PresentedRoundResult { tool_records: result.tool_records.iter().map(|call| crate::chat::agent_presentation::project_tool(call, Some("run"))).collect(), response_messages: result.response_messages, cancelled: result.cancelled }
 }
 
-fn present_core_result(result: crate::chat::agent::types::AgentRunResult) -> PresentedRunResult {
-    present_result(AgentRunResult { final_message: result.final_message, content: result.content, reasoning: result.reasoning,
-        tool_records: result.tool_records, segments: result.segments, api_messages: result.api_messages, status: result.status,
-        usage: result.usage, cache_pairs: result.cache_pairs, last_step_usage: result.last_step_usage,
-        compacted_history: result.compacted.then(|| export_history(&result.history)), compaction_summary: None,
-        compaction_boundary: None, degraded: None, images: result.images })
-}
+
+
 
 fn tool_call_parallel_eligible(settings: &Settings, tool: &ChatToolDefinition) -> bool {
     tool.for_run(settings).parallel_safe
@@ -7315,4 +7084,46 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["tool_call_id"], "call_read");
     assert_eq!(results[0]["content"], "registered result");
+}
+
+#[test]
+fn task_speculation_is_enabled_only_for_the_registered_native_tool() {
+    let settings = Settings::default();
+    let mut tool = crate::chat::sub_agent::task::tool_definition(&[], &settings);
+    assert!(tool.for_run(&settings).speculative);
+    tool.source = "mcp".into();
+    assert!(!tool.for_run(&settings).speculative);
+}
+
+#[tokio::test]
+async fn core_completion_closes_handle_before_application_releases_capacity() {
+    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+        serde_json::json!({"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}).to_string(),
+        "[DONE]".into(),
+    ])]);
+    let state = test_app_state();
+    let runtime = state.chat_runtime();
+    let generation = runtime.begin_generation("conversation");
+    assert!(runtime.try_begin_reply("conversation", "run"));
+    let control = crate::chat::runtime_state::ChatRunControl::new(runtime, "conversation", generation);
+    let handle = AgentRunHandle::new(AgentRunIdentity {
+        conversation_id: "conversation", run_id: "run", message_id: "message", generation,
+    }, &control);
+    let clone = handle.clone();
+    let waiting = clone.wait_inactive();
+    tokio::pin!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let host = TestHost::default();
+    crate::chat::session_policy::run_session(test_run_config(&state, &server.base_url),
+        &host, &RecordingExecutor::default(), &host, handle).await.unwrap();
+    assert!(futures::poll!(waiting.as_mut()).is_ready());
+    assert!(!clone.active());
+    assert_eq!(clone.steer(SteeringMessage::new("late".into(), "late").unwrap()), InputAdmission::Inactive);
+    assert_eq!(clone.follow_up(SteeringMessage::new("late".into(), "late").unwrap()), InputAdmission::Inactive);
+    assert_eq!(clone.stop(), StopAdmission::Inactive);
+    assert!(clone.take_steering().is_empty());
+    assert!(runtime.is_generation_active("conversation", generation));
+    assert!(!runtime.try_reserve_send("conversation", "next"));
+    runtime.finish_reply_generation("conversation", "run", generation);
+    assert!(runtime.try_reserve_send("conversation", "next"));
 }

@@ -1,6 +1,6 @@
 use super::content::{ContentBlock, ContentKind};
 use super::history::RuntimeMessage;
-use crate::chat::model::{
+use crate::model::{
     GenerateOutput, ModelError, ModelErrorKind, ModelMessage, StreamPart, StreamSink,
 };
 
@@ -16,7 +16,7 @@ use super::stream::WebSearchCardTracker;
 use super::types::{AgentPhase, AgentRunConfig, AgentRunResult, AgentStreamPolicy};
 
 pub(crate) struct SynthesisCompleted {
-    pub(crate) replay: Option<crate::chat::model::ModelMessage>,
+    pub(crate) replay: Option<crate::model::ModelMessage>,
     pub(crate) response: String,
     pub(crate) reasoning: Option<String>,
     pub(crate) response_reasoning: Option<String>,
@@ -109,7 +109,7 @@ pub(crate) async fn synthesis_step(
             call: config.model_call(
                 send_messages,
                 Vec::new(),
-                crate::chat::model::ToolChoice::Auto,
+                crate::model::ToolChoice::Auto,
                 "Chat stream",
                 ModelDelivery::Streamed,
             ),
@@ -309,7 +309,7 @@ pub(crate) async fn recover_synthesis(
     let call = env.config.model_call(
         history,
         Vec::new(),
-        crate::chat::model::ToolChoice::Auto,
+        crate::model::ToolChoice::Auto,
         label,
         ModelDelivery::Collected,
     );

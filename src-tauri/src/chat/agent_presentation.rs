@@ -358,7 +358,6 @@ pub fn build_follow_up_record(message: &SteeringMessage, round: u32) -> ToolCall
     }
 }
 
-
 fn tool_draft_arguments(name: &str, phase: &str, argument_chars: usize) -> String {
     serde_json::json!({
         "_kivioToolDraft": true,
@@ -428,6 +427,114 @@ pub(crate) fn run_status(status: &crate::chat::agent::types::AgentRunStatus) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tool_draft_projection_preserves_progress_errors_and_completed_arguments() {
+        for name in ["write", "present_artifacts"] {
+            let mut call = AgentToolCall {
+                id: "call".into(),
+                name: name.into(),
+                source: "native".into(),
+                server_id: None,
+                arguments: r#"{"path":"demo.html"}"#.into(),
+                status: AgentToolStatus::Pending,
+                output: None,
+                output_limit: None,
+                error: None,
+                duration_ms: None,
+                started_at: None,
+                completed_at: None,
+                round: 2,
+                sensitive: false,
+                artifacts: Vec::new(),
+                structured_content: None,
+                draft: Some(crate::chat::agent::content::ToolArgumentState {
+                    model_name: name.into(),
+                    complete: false,
+                }),
+            };
+            let pending = project_tool(&call, Some("run"));
+            assert_eq!(pending.status, ToolCallStatus::Pending);
+            assert_eq!(pending.trace_id.as_deref(), Some("run"));
+            assert_eq!(pending.span_id.as_deref(), Some("tool_round_2_call"));
+            let preview = pending.result_preview.unwrap();
+            if name == "write" {
+                assert!(preview.contains("正在生成文件内容"));
+            } else {
+                assert!(preview.contains("正在展示文件"));
+                assert!(!preview.contains("已收到"));
+            }
+            call.status = AgentToolStatus::Error;
+            let failed = project_tool(&call, Some("run"));
+            assert_eq!(failed.status, ToolCallStatus::Error);
+            assert!(failed.result_preview.is_none());
+            let details = failed.structured_content.unwrap();
+            assert_eq!(details["toolDraft"]["phase"], "error");
+            assert_eq!(
+                details["toolDraft"]["argumentChars"],
+                call.arguments.chars().count()
+            );
+            call.status = AgentToolStatus::Pending;
+            call.draft.as_mut().unwrap().complete = true;
+            let ready = project_tool(&call, Some("run"));
+            assert!(ready.result_preview.unwrap().contains("工具参数已生成"));
+            assert_eq!(ready.arguments, call.arguments);
+            let block = ContentBlock {
+                id: 1002,
+                kind: ContentKind::Tool,
+                phase: ContentPhase::ToolLoop,
+                step_number: Some(3),
+                round: Some(2),
+                text: None,
+                tool_call_id: Some("call".into()),
+            };
+            let (_, segments) = project_snapshot(&[call], &[block], Some("run"));
+            assert_eq!(segments[0].kind, ChatMessageSegmentKind::Tool);
+            assert_eq!(segments[0].phase, ChatMessageSegmentPhase::ToolLoop);
+            assert_eq!(segments[0].tool_call_id.as_deref(), Some("call"));
+            assert_eq!(segments[0].order, 1002);
+        }
+    }
+
+    #[test]
+    fn search_projection_keeps_running_and_completed_citations() {
+        for complete in [false, true] {
+            let block = ContentBlock {
+                id: 1001,
+                kind: ContentKind::Search(crate::chat::agent::content::ProviderSearch {
+                    id: "search".into(),
+                    provider: "provider".into(),
+                    queries: vec!["query".into()],
+                    citations: vec![serde_json::from_value(
+                        serde_json::json!({"title":"source", "url":"https://example.test/source"}),
+                    )
+                    .unwrap()],
+                    complete,
+                }),
+                phase: ContentPhase::ToolLoop,
+                step_number: None,
+                round: Some(1),
+                text: None,
+                tool_call_id: None,
+            };
+            let (records, segments) = project_snapshot(&[], &[block], Some("run"));
+            assert_eq!(
+                records[0].status,
+                if complete {
+                    ToolCallStatus::Success
+                } else {
+                    ToolCallStatus::Running
+                }
+            );
+            assert_eq!(records[0].name, "web_search");
+            assert_eq!(records[0].source, "native");
+            let data = records[0].structured_content.as_ref().unwrap();
+            assert_eq!(data["queries"][0], "query");
+            assert_eq!(data["citations"][0]["url"], "https://example.test/source");
+            assert_eq!(segments[0].kind, ChatMessageSegmentKind::Tool);
+            assert_eq!(segments[0].tool_call_id.as_deref(), Some("search"));
+        }
+    }
+
     #[test]
     fn formats_raw_search_result_before_applying_display_limit() {
         let call = AgentToolCall {

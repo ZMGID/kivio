@@ -712,6 +712,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stopped_sdk_handle_cannot_reach_replacement_input() {
+        use crate::chat::agent::control::{AgentRunHandle, InputAdmission, StopAdmission};
+        use crate::chat::agent::events::AgentRunIdentity;
+        let runtime = ChatRuntimeState::default();
+        let old_generation = runtime.begin_generation("conversation");
+        let old_control = ChatRunControl::new(&runtime, "conversation", old_generation);
+        let identity = |generation| AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation };
+        let old = AgentRunHandle::new(identity(old_generation), &old_control);
+        let message = |id: &str| SteeringMessage::new(id.into(), id).unwrap();
+        assert_eq!(old.steer(message("old")), InputAdmission::Accepted);
+        assert_eq!(old.follow_up(message("old")), InputAdmission::Accepted);
+        let waiting = old.wait_inactive();
+        tokio::pin!(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        assert_eq!(old.stop(), StopAdmission::Requested);
+        assert!(futures::poll!(waiting.as_mut()).is_ready());
+        let generation = runtime.begin_generation("conversation");
+        let current_control = ChatRunControl::new(&runtime, "conversation", generation);
+        let current = AgentRunHandle::new(identity(generation), &current_control);
+        assert!(current.take_steering().is_empty());
+        assert!(current.take_follow_up().is_empty());
+        assert_eq!(current.steer(message("new")), InputAdmission::Accepted);
+        assert_eq!(current.follow_up(message("new")), InputAdmission::Accepted);
+        assert_eq!(old.stop(), StopAdmission::Inactive);
+        assert_eq!(old.steer(message("late")), InputAdmission::Inactive);
+        assert_eq!(old.follow_up(message("late")), InputAdmission::Inactive);
+        assert!(old.take_steering().is_empty());
+        assert!(old.take_follow_up().is_empty());
+        assert_eq!(current.take_steering(), vec![message("new")]);
+        assert_eq!(current.take_follow_up(), vec![message("new")]);
+        assert!(current.active());
+    }
+
+    #[tokio::test]
     async fn generation_waiters_wake_on_every_retirement_and_keep_siblings_active() {
         for retirement in ["end", "finish", "cancel", "forget"] {
             let runtime = ChatRuntimeState::default();

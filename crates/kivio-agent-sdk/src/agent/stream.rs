@@ -1,18 +1,17 @@
-use super::content::{ContentPhase, ContentKind, ContentBlock, AgentToolCall, AgentToolStatus};
+use super::content::{AgentToolCall, AgentToolStatus, ContentBlock, ContentKind, ContentPhase};
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use serde_json::Value;
 
-use crate::chat::model::{
-    GenerateOutput, ModelError, PendingToolCall, StreamPart, StreamSink,
-    WebCitation,
+use crate::model::{
+    GenerateOutput, ModelError, PendingToolCall, StreamPart, StreamSink, WebCitation,
 };
 
-use crate::chat::tools::ToolDefinition;
+use crate::tools::ToolDefinition;
 
-use super::execute::match_tool_call;
 use super::content::{ProviderSearch, ToolArgumentState};
+use super::execute::match_tool_call;
 use super::host::SpeculativeTaskScope;
 use super::stop::{
     empty_assistant_response_error, pending_tool_calls_from_dsml, sanitize_assistant_text_response,
@@ -79,17 +78,37 @@ impl ToolCallDraftTracker {
         &self,
         executor: &dyn super::execute::ToolExecutor,
         context: &super::execute::ToolExecutionContext<'_>,
-        effective_tools: &[crate::chat::model::ModelTool],
+        effective_tools: &[crate::model::ModelTool],
     ) {
-        let tools: Vec<_> = self.inner.lock().unwrap_or_else(|err| err.into_inner()).tools.iter()
-            .filter(|tool| tool.speculative && effective_tools.iter().any(|effective| effective.name == tool.model.name))
-            .cloned().collect();
-        let scope = (!tools.is_empty()).then(|| executor.start_speculation(context, &tools)).flatten();
-        self.inner.lock().unwrap_or_else(|err| err.into_inner()).speculative = scope;
+        let tools: Vec<_> = self
+            .inner
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .tools
+            .iter()
+            .filter(|tool| {
+                tool.speculative
+                    && effective_tools
+                        .iter()
+                        .any(|effective| effective.name == tool.model.name)
+            })
+            .cloned()
+            .collect();
+        let scope = (!tools.is_empty())
+            .then(|| executor.start_speculation(context, &tools))
+            .flatten();
+        self.inner
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .speculative = scope;
     }
 
     pub(crate) fn disable_speculation(&self) {
-        self.inner.lock().unwrap_or_else(|err| err.into_inner()).speculative.take();
+        self.inner
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .speculative
+            .take();
     }
 
     pub fn has_started(&self) -> bool {
@@ -133,17 +152,25 @@ impl ToolCallDraftTracker {
 
     pub(crate) fn reconcile_speculation(&self, calls: &[PendingToolCall], truncated: bool) {
         let state = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        let Some(scope) = &state.speculative else { return; };
+        let Some(scope) = &state.speculative else {
+            return;
+        };
         let final_calls = if truncated {
             Vec::new()
         } else {
-            calls.iter().filter_map(|call| {
-                let draft = state.drafts.iter().find(|draft| draft.record.id == call.id)?;
-                (draft.speculative
-                    && draft.model_name == call.function_name
-                    && call.arguments_parse_error.is_none())
+            calls
+                .iter()
+                .filter_map(|call| {
+                    let draft = state
+                        .drafts
+                        .iter()
+                        .find(|draft| draft.record.id == call.id)?;
+                    (draft.speculative
+                        && draft.model_name == call.function_name
+                        && call.arguments_parse_error.is_none())
                     .then_some((call.id.as_str(), &call.arguments))
-            }).collect()
+                })
+                .collect()
         };
         scope.reconcile(&final_calls);
     }
@@ -151,7 +178,9 @@ impl ToolCallDraftTracker {
     pub fn mark_error(&self, error: &str) -> Vec<AgentToolCall> {
         let now = chrono::Local::now().timestamp();
         let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        if let Some(scope) = &guard.speculative { scope.discard(); }
+        if let Some(scope) = &guard.speculative {
+            scope.discard();
+        }
         for draft in &mut guard.drafts {
             draft.record.status = AgentToolStatus::Error;
             draft.record.completed_at = Some(now);
@@ -163,7 +192,6 @@ impl ToolCallDraftTracker {
             draft.record.error = Some(error.to_string());
             draft.record.arguments = draft.arguments_raw.clone();
             draft.record.output = None;
-
         }
         guard
             .drafts
@@ -182,39 +210,85 @@ pub struct WebSearchCardTracker {
     inner: Arc<Mutex<WebSearchCardState>>,
 }
 
-struct WebSearchCardState { block: ContentBlock, started: bool }
+struct WebSearchCardState {
+    block: ContentBlock,
+    started: bool,
+}
 impl WebSearchCardTracker {
-    pub(crate) fn new(order: u32, round: Option<u32>, phase: ContentPhase, provider_label: String) -> Self {
-        Self { inner: Arc::new(Mutex::new(WebSearchCardState {
-            block: ContentBlock { id: order, kind: ContentKind::Search(ProviderSearch {
-                id: format!("websearch_{}", uuid::Uuid::new_v4()), provider: provider_label,
-                queries: Vec::new(), citations: Vec::new(), complete: false,
-            }), phase, step_number: None, round, text: None, tool_call_id: None }, started: false,
-        })) }
+    pub(crate) fn new(
+        order: u32,
+        round: Option<u32>,
+        phase: ContentPhase,
+        provider_label: String,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(WebSearchCardState {
+                block: ContentBlock {
+                    id: order,
+                    kind: ContentKind::Search(ProviderSearch {
+                        id: format!("websearch_{}", uuid::Uuid::new_v4()),
+                        provider: provider_label,
+                        queries: Vec::new(),
+                        citations: Vec::new(),
+                        complete: false,
+                    }),
+                    phase,
+                    step_number: None,
+                    round,
+                    text: None,
+                    tool_call_id: None,
+                },
+                started: false,
+            })),
+        }
     }
-    pub(crate) fn note(&self, queries: &[String], citations: &[WebCitation]) -> (ContentBlock, bool) {
+    pub(crate) fn note(
+        &self,
+        queries: &[String],
+        citations: &[WebCitation],
+    ) -> (ContentBlock, bool) {
         let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         let announce = !guard.started;
         guard.started = true;
-        let ContentKind::Search(search) = &mut guard.block.kind else { unreachable!() };
+        let ContentKind::Search(search) = &mut guard.block.kind else {
+            unreachable!()
+        };
         for query in queries {
             let query = query.trim();
-            if !query.is_empty() && !search.queries.iter().any(|existing| existing == query) { search.queries.push(query.to_string()); }
+            if !query.is_empty() && !search.queries.iter().any(|existing| existing == query) {
+                search.queries.push(query.to_string());
+            }
         }
         for citation in citations {
             let url = citation.url.trim();
-            if url.is_empty() { continue; }
-            if let Some(existing) = search.citations.iter_mut().find(|existing| existing.url == url) {
-                if existing.snippet.is_none() { existing.snippet = citation.snippet.clone(); }
-                if existing.published_date.is_none() { existing.published_date = citation.published_date.clone(); }
-            } else { search.citations.push(citation.clone()); }
+            if url.is_empty() {
+                continue;
+            }
+            if let Some(existing) = search
+                .citations
+                .iter_mut()
+                .find(|existing| existing.url == url)
+            {
+                if existing.snippet.is_none() {
+                    existing.snippet = citation.snippet.clone();
+                }
+                if existing.published_date.is_none() {
+                    existing.published_date = citation.published_date.clone();
+                }
+            } else {
+                search.citations.push(citation.clone());
+            }
         }
         (guard.block.clone(), announce)
     }
     pub(crate) fn finalize_success(&self) -> Option<ContentBlock> {
         let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        if !guard.started { return None; }
-        let ContentKind::Search(search) = &mut guard.block.kind else { unreachable!() };
+        if !guard.started {
+            return None;
+        }
+        let ContentKind::Search(search) = &mut guard.block.kind else {
+            unreachable!()
+        };
         search.complete = true;
         Some(guard.block.clone())
     }
@@ -244,7 +318,10 @@ pub struct AgentStreamSink<'a> {
     text_suppressed: bool,
     emitted_text_chars: u32,
     request_started: bool,
-    speculation: Option<(&'a dyn super::execute::ToolExecutor, &'a super::execute::ToolExecutionContext<'a>)>,
+    speculation: Option<(
+        &'a dyn super::execute::ToolExecutor,
+        &'a super::execute::ToolExecutionContext<'a>,
+    )>,
 }
 
 impl<'a> AgentStreamSink<'a> {
@@ -277,7 +354,13 @@ impl<'a> AgentStreamSink<'a> {
         (snapshot.content, snapshot.reasoning)
     }
 
-    pub(crate) fn with_speculation(mut self, speculation: Option<(&'a dyn super::execute::ToolExecutor, &'a super::execute::ToolExecutionContext<'a>)>) -> Self {
+    pub(crate) fn with_speculation(
+        mut self,
+        speculation: Option<(
+            &'a dyn super::execute::ToolExecutor,
+            &'a super::execute::ToolExecutionContext<'a>,
+        )>,
+    ) -> Self {
         self.speculation = speculation;
         self
     }
@@ -301,7 +384,9 @@ impl<'a> AgentStreamSink<'a> {
         let mut tool_ids = Vec::new();
         if let Some(tracker) = &self.tool_draft_tracker {
             let mut state = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
-            if let Some(scope) = &state.speculative { scope.discard(); }
+            if let Some(scope) = &state.speculative {
+                scope.discard();
+            }
             if let Some(order) = state.drafts.iter().map(|d| d.segment.id).min() {
                 state.next_order = order;
             }
@@ -316,13 +401,20 @@ impl<'a> AgentStreamSink<'a> {
                 segment_ids.push(state.block.id);
                 if let ContentKind::Search(search) = &mut state.block.kind {
                     tool_ids.push(search.id.clone());
-                    search.queries.clear(); search.citations.clear(); search.complete = false;
+                    search.queries.clear();
+                    search.citations.clear();
+                    search.complete = false;
                 }
             }
             state.started = false;
         }
         let (_, reasoning) = self.snapshot();
-        self.host.discard_attempt(self.emitted_text_chars, reasoning.chars().count() as u32, segment_ids, tool_ids);
+        self.host.discard_attempt(
+            self.emitted_text_chars,
+            reasoning.chars().count() as u32,
+            segment_ids,
+            tool_ids,
+        );
     }
 
     fn handle_text_delta(&mut self, delta: String) {
@@ -341,7 +433,7 @@ impl<'a> AgentStreamSink<'a> {
         }
 
         self.text_buffer.push_str(&delta);
-        if crate::chat::dsml_tools::contains_dsml_tool_markup(&self.text_buffer) {
+        if crate::dsml_tools::contains_dsml_tool_markup(&self.text_buffer) {
             self.text_buffer.clear();
             self.text_suppressed = true;
             return;
@@ -368,7 +460,10 @@ impl<'a> AgentStreamSink<'a> {
             return;
         }
         if match_tool_call(&guard.tools, &name).is_none()
-            && self.speculation.and_then(|(executor, _)| executor.unknown_feedback(&name)).is_some()
+            && self
+                .speculation
+                .and_then(|(executor, _)| executor.unknown_feedback(&name))
+                .is_some()
         {
             return;
         }
@@ -415,9 +510,11 @@ impl<'a> AgentStreamSink<'a> {
             sensitive,
             artifacts: Vec::new(),
             output_limit: None,
-            draft: Some(ToolArgumentState { model_name: name.clone(), complete: false }),
+            draft: Some(ToolArgumentState {
+                model_name: name.clone(),
+                complete: false,
+            }),
             structured_content: None,
-
         };
         guard.drafts.push(ToolCallDraft {
             model_name: name,
@@ -426,7 +523,9 @@ impl<'a> AgentStreamSink<'a> {
             segment: segment.clone(),
             last_emitted_argument_chars: 0,
             done: false,
-            speculative, argument_limit, argument_limit_error,
+            speculative,
+            argument_limit,
+            argument_limit_error,
         });
         drop(guard);
         self.host.content("", None, Some(&segment));
@@ -439,7 +538,11 @@ impl<'a> AgentStreamSink<'a> {
         };
         let record_to_emit = {
             let mut guard = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
-            let ToolCallDraftState { drafts, speculative, .. } = &mut *guard;
+            let ToolCallDraftState {
+                drafts,
+                speculative,
+                ..
+            } = &mut *guard;
             let Some(draft) = drafts.iter_mut().find(|draft| draft.record.id == id) else {
                 return Ok(());
             };
@@ -450,12 +553,18 @@ impl<'a> AgentStreamSink<'a> {
                     .count()
                     .saturating_add(delta.chars().count());
                 if next > limit {
-                    return Err(ModelError::new(draft.argument_limit_error.clone().unwrap_or_else(|| format!("{} arguments are too large", draft.model_name))));
+                    return Err(ModelError::new(
+                        draft.argument_limit_error.clone().unwrap_or_else(|| {
+                            format!("{} arguments are too large", draft.model_name)
+                        }),
+                    ));
                 }
             }
             draft.arguments_raw.push_str(&delta);
             if draft.speculative {
-                if let Some(scope) = speculative { scope.update(&id, &draft.arguments_raw); }
+                if let Some(scope) = speculative {
+                    scope.update(&id, &draft.arguments_raw);
+                }
             }
             if draft.argument_limit.is_some() {
                 return Ok(());
@@ -480,20 +589,30 @@ impl<'a> AgentStreamSink<'a> {
         };
         let record_to_emit = {
             let mut guard = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
-            let ToolCallDraftState { drafts, speculative, .. } = &mut *guard;
-            let Some(draft) = drafts
-                .iter_mut()
-                .find(|draft| draft.record.id == call.id)
-            else {
+            let ToolCallDraftState {
+                drafts,
+                speculative,
+                ..
+            } = &mut *guard;
+            let Some(draft) = drafts.iter_mut().find(|draft| draft.record.id == call.id) else {
                 return Ok(());
             };
-            if draft.argument_limit.is_some_and(|limit| call.arguments_raw.chars().count() > limit) {
-                return Err(ModelError::new(draft.argument_limit_error.clone().unwrap_or_else(|| format!("{} arguments are too large", draft.model_name))));
+            if draft
+                .argument_limit
+                .is_some_and(|limit| call.arguments_raw.chars().count() > limit)
+            {
+                return Err(ModelError::new(
+                    draft
+                        .argument_limit_error
+                        .clone()
+                        .unwrap_or_else(|| format!("{} arguments are too large", draft.model_name)),
+                ));
             }
             if draft.speculative {
                 if let Some(scope) = speculative {
-                    let args = (draft.model_name == call.function_name && call.arguments_parse_error.is_none())
-                        .then_some(&call.arguments);
+                    let args = (draft.model_name == call.function_name
+                        && call.arguments_parse_error.is_none())
+                    .then_some(&call.arguments);
                     scope.reconcile_call(&call.id, args);
                 }
             }
@@ -521,18 +640,22 @@ impl<'a> AgentStreamSink<'a> {
         }
     }
     pub fn finish_web_search_card(&self) -> Option<ContentBlock> {
-        self.web_search_tracker.as_ref().and_then(WebSearchCardTracker::finalize_success)
+        self.web_search_tracker
+            .as_ref()
+            .and_then(WebSearchCardTracker::finalize_success)
     }
-
 }
 
 impl super::provider_runtime::ModelOutputSink for AgentStreamSink<'_> {
     fn request_started(&mut self, call: &super::provider_runtime::ModelCall) {
-        if !self.host.control.active() { return; }
+        if !self.host.control.active() {
+            return;
+        }
         self.request_started = true;
-        self.host.context_prepared(&call.provider_id, &call.model, &call.history, &call.tools);
+        self.host
+            .context_prepared(&call.provider_id, &call.model, &call.history, &call.tools);
         if let Some(tracker) = &self.tool_draft_tracker {
-            if call.options.tool_choice == crate::chat::model::ToolChoice::None || call.tools.is_empty() {
+            if call.options.tool_choice == crate::model::ToolChoice::None || call.tools.is_empty() {
                 tracker.disable_speculation();
             } else if let Some((executor, context)) = self.speculation {
                 tracker.enable_speculation(executor, context, &call.tools);
@@ -546,25 +669,38 @@ impl super::provider_runtime::ModelOutputSink for AgentStreamSink<'_> {
 
     fn reset_attempt(&mut self) {
         self.discard_attempt();
-        *self.accumulator.lock().unwrap_or_else(|error| error.into_inner()) = ChatStreamAccumulator::default();
+        *self
+            .accumulator
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = ChatStreamAccumulator::default();
         self.text_buffer.clear();
         self.text_suppressed = false;
         self.emitted_text_chars = 0;
     }
 
     fn draft_snapshot(&self) -> Vec<(String, String)> {
-        self.tool_draft_tracker.as_ref().map(ToolCallDraftTracker::inflight).unwrap_or_default()
+        self.tool_draft_tracker
+            .as_ref()
+            .map(ToolCallDraftTracker::inflight)
+            .unwrap_or_default()
     }
 }
 impl StreamSink for AgentStreamSink<'_> {
     fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
-        if !self.host.control.active() { return Ok(()); }
+        if !self.host.control.active() {
+            return Ok(());
+        }
         match part {
             StreamPart::ContextUsage {
                 input_tokens,
                 output_tokens,
             } => {
-                self.host.context_usage(input_tokens.saturating_add(output_tokens), Some("provider_context_reported"), None, None);
+                self.host.context_usage(
+                    input_tokens.saturating_add(output_tokens),
+                    Some("provider_context_reported"),
+                    None,
+                    None,
+                );
             }
             StreamPart::TextDelta { delta } => {
                 self.handle_text_delta(delta);
@@ -575,7 +711,8 @@ impl StreamSink for AgentStreamSink<'_> {
                     .unwrap_or_else(|err| err.into_inner())
                     .reasoning
                     .push_str(&delta);
-                self.host.content("", Some(&delta), self.reasoning_segment.as_ref());
+                self.host
+                    .content("", Some(&delta), self.reasoning_segment.as_ref());
             }
             StreamPart::ToolCallStart { id, name } => self.emit_tool_call_start(id, name),
             StreamPart::ToolCallDelta { id, delta } => self.emit_tool_call_delta(id, delta)?,
@@ -629,13 +766,12 @@ pub(crate) fn normalize_stream_output(
         replay.content.retain(|part| {
             !matches!(
                 part,
-                crate::chat::model::MessagePart::Text { .. }
-                    | crate::chat::model::MessagePart::ToolCall { .. }
-            ) && !matches!(part, crate::chat::model::MessagePart::AnthropicNativeBlock { block, .. }
+                crate::model::MessagePart::Text { .. } | crate::model::MessagePart::ToolCall { .. }
+            ) && !matches!(part, crate::model::MessagePart::AnthropicNativeBlock { block, .. }
             if block["type"] == "text")
         });
         if !cleaned.is_empty() {
-            replay.content.push(crate::chat::model::MessagePart::Text {
+            replay.content.push(crate::model::MessagePart::Text {
                 text: cleaned.clone(),
             });
         }
@@ -677,31 +813,47 @@ pub fn validate_stream_output(
 
 #[cfg(test)]
 mod tests {
-    use crate::chat::model::{FinishReason, GeneratedImageData};
-    use std::sync::Mutex;
+    use crate::model::{FinishReason, GeneratedImageData};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
 
     use super::*;
-    use crate::chat::types::{ToolCallRecord, ToolCallStatus, ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase};
-    use crate::chat::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
-    use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentEvents, AgentRunIdentity, EventDelivery};
-    use crate::chat::agent::content::InputKind;
-    use crate::chat::agent::steering::SteeringMessage;
-    use crate::chat::agent::context::AgentContext;
-    use crate::chat::agent::execute::ToolExecutionContext;
-    use crate::chat::agent::host::{AgentHost, AgentHostFuture, SpeculativeTaskScope};
-    use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery, ModelOutputSink};
-    use crate::chat::agent::execute::{ToolExecutor, ToolExecutorFuture, ToolFuture, ToolPreparation, ToolProgress};
-    use crate::chat::tools::ToolDefinition;
-    use crate::mcp::types::PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS;
-    use crate::mcp::types::{native_present_artifacts_tool, native_write_file_tool};
+    use crate::agent::content::InputKind;
+    use crate::agent::context::AgentContext;
+    use crate::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
+    use crate::agent::events::{
+        AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery,
+    };
+    use crate::agent::execute::ToolExecutionContext;
+    use crate::agent::execute::{
+        ToolExecutor, ToolExecutorFuture, ToolFuture, ToolPreparation, ToolProgress,
+    };
+    use crate::agent::host::{AgentHost, AgentHostFuture, SpeculativeTaskScope};
+    use crate::agent::provider_runtime::{ModelCall, ModelDelivery, ModelOutputSink};
+    use crate::agent::steering::SteeringMessage;
+    use crate::tools::ToolDefinition;
+    const ARGUMENT_LIMIT: usize = 64;
+    fn tool(name: &str) -> ToolDefinition {
+        ToolDefinition::new(crate::model::ModelTool {
+            name: name.into(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type":"object"}),
+        })
+    }
+    fn limited_tool() -> ToolDefinition {
+        let mut tool = tool("present_artifacts");
+        tool.argument_limit = Some(ARGUMENT_LIMIT);
+        tool.argument_limit_error = Some("artifact_ids arguments are too large".into());
+        tool
+    }
 
     #[derive(Default)]
     struct TestHost {
         stopped: AtomicBool,
         scope_drops: Option<Arc<AtomicUsize>>,
-        records: Mutex<Vec<ToolCallRecord>>,
-        segments: Mutex<Vec<ChatMessageSegment>>,
+        records: Mutex<Vec<AgentToolCall>>,
+        segments: Mutex<Vec<ContentBlock>>,
+        searches: Mutex<Vec<ContentBlock>>,
     }
 
     struct TestScope(Arc<AtomicUsize>);
@@ -711,54 +863,45 @@ mod tests {
         fn reconcile(&self, _final_calls: &[(&str, &Value)]) {}
         fn discard(&self) {}
     }
-    impl Drop for TestScope { fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); } }
+    impl Drop for TestScope {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
     impl AgentHost for TestHost {}
 
     impl ToolExecutor for TestHost {
-        fn prepare<'a>(&'a self, _: &'a ToolProgress<'a>, _: &'a ToolExecutionContext<'a>, _: &'a ToolDefinition,
-            _: PendingToolCall, _: AgentToolCall) -> ToolFuture<'a, ToolPreparation> {
+        fn prepare<'a>(
+            &'a self,
+            _: &'a ToolProgress<'a>,
+            _: &'a ToolExecutionContext<'a>,
+            _: &'a ToolDefinition,
+            _: PendingToolCall,
+            _: AgentToolCall,
+        ) -> ToolFuture<'a, ToolPreparation> {
             unreachable!("stream tests do not execute tools")
         }
-        fn call<'a>(&'a self, _: &'a ToolExecutionContext<'a>, _: &'a ToolDefinition, _: Value) -> ToolExecutorFuture<'a> {
+        fn call<'a>(
+            &'a self,
+            _: &'a ToolExecutionContext<'a>,
+            _: &'a ToolDefinition,
+            _: Value,
+        ) -> ToolExecutorFuture<'a> {
             unreachable!("stream tests do not execute tools")
         }
-        fn start_speculation(&self, _: &ToolExecutionContext<'_>, tools: &[ToolDefinition]) -> Option<Box<dyn SpeculativeTaskScope>> {
-            if !tools.iter().any(|tool| tool.speculative) { return None; }
-            self.scope_drops.as_ref().map(|drops| Box::new(TestScope(drops.clone())) as Box<dyn SpeculativeTaskScope>)
+        fn start_speculation(
+            &self,
+            _: &ToolExecutionContext<'_>,
+            tools: &[ToolDefinition],
+        ) -> Option<Box<dyn SpeculativeTaskScope>> {
+            if !tools.iter().any(|tool| tool.speculative) {
+                return None;
+            }
+            self.scope_drops
+                .as_ref()
+                .map(|drops| Box::new(TestScope(drops.clone())) as Box<dyn SpeculativeTaskScope>)
         }
     }
-impl TestHost {
-        fn emit_stream_delta(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            _delta: &str,
-            _reasoning_delta: Option<&str>,
-            segment: Option<&ChatMessageSegment>,
-        ) {
-            if let Some(segment) = segment {
-                self.segments
-                    .lock()
-                    .unwrap_or_else(|err| err.into_inner())
-                    .push(segment.clone());
-            }
-        }
-        fn emit_tool_record(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            record: &ToolCallRecord,
-        ) {
-            self.records
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push(record.clone());
-        }
-
-}
-
     #[test]
     fn tool_planning_text_buffer_delays_possible_dsml_prefix() {
         assert!(!should_flush_tool_planning_text_buffer("<|DSML|"));
@@ -772,16 +915,10 @@ impl TestHost {
     #[test]
     fn tool_call_stream_parts_emit_draft_records_and_segments() {
         let host = TestHost::default();
-        let tracker = ToolCallDraftTracker::new(vec![native_write_file_tool().for_run(&crate::settings::Settings::default())], 2, Some(3), 1002);
+        let tracker = ToolCallDraftTracker::new(vec![tool("write")], 2, Some(3), 1002);
         let context = test_context(&host);
-        let mut sink = AgentStreamSink::new(
-            &context,
-            true,
-            None,
-            None,
-            Some(tracker.clone()),
-            None,
-        );
+        let mut sink =
+            AgentStreamSink::new(&context, true, None, None, Some(tracker.clone()), None);
 
         sink.emit(StreamPart::ToolCallStart {
             id: "call_write".to_string(),
@@ -795,7 +932,10 @@ impl TestHost {
         .expect("delta should emit");
         assert_eq!(
             tracker.inflight(),
-            vec![("write".to_string(), "{\"path\":\"demo.html\",\"content\":\"".to_string())]
+            vec![(
+                "write".to_string(),
+                "{\"path\":\"demo.html\",\"content\":\"".to_string()
+            )]
         );
         let call = PendingToolCall {
             id: "call_write".to_string(),
@@ -816,30 +956,17 @@ impl TestHost {
         assert_eq!(records.len(), 2);
         assert_eq!(records[0].id, "call_write");
         assert_eq!(records[0].name, "write");
-        assert!(matches!(records[0].status, ToolCallStatus::Pending));
-        assert!(records[0]
-            .result_preview
-            .as_deref()
-            .unwrap_or_default()
-            .contains("正在生成文件内容"));
-        assert_eq!(records[0].trace_id.as_deref(), Some("run"));
-        assert_eq!(
-            records[0].span_id.as_deref(),
-            Some("tool_round_2_call_write")
-        );
-        assert!(records[1]
-            .result_preview
-            .as_deref()
-            .unwrap_or_default()
-            .contains("工具参数已生成"));
+        assert!(matches!(records[0].status, AgentToolStatus::Pending));
+        assert!(!records[0].draft.as_ref().unwrap().complete);
+        assert!(records[1].draft.as_ref().unwrap().complete);
         assert!(records[1].arguments.contains("demo.html"));
 
         let segments = host.segments.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].kind, ChatMessageSegmentKind::Tool);
-        assert_eq!(segments[0].phase, ChatMessageSegmentPhase::ToolLoop);
+        assert_eq!(segments[0].kind, ContentKind::Tool);
+        assert_eq!(segments[0].phase, ContentPhase::ToolLoop);
         assert_eq!(segments[0].tool_call_id.as_deref(), Some("call_write"));
-        assert_eq!(segments[0].order, 1002);
+        assert_eq!(segments[0].id, 1002);
         assert!(tracker.has_started());
         assert!(!tracker.has_unfinished_drafts());
     }
@@ -847,16 +974,10 @@ impl TestHost {
     #[test]
     fn tool_call_draft_error_preserves_backend_record_after_stream_failure() {
         let host = TestHost::default();
-        let tracker = ToolCallDraftTracker::new(vec![native_write_file_tool().for_run(&crate::settings::Settings::default())], 1, Some(1), 1000);
+        let tracker = ToolCallDraftTracker::new(vec![tool("write")], 1, Some(1), 1000);
         let context = test_context(&host);
-        let mut sink = AgentStreamSink::new(
-            &context,
-            true,
-            None,
-            None,
-            Some(tracker.clone()),
-            None,
-        );
+        let mut sink =
+            AgentStreamSink::new(&context, true, None, None, Some(tracker.clone()), None);
 
         sink.emit(StreamPart::ToolCallStart {
             id: "call_write".to_string(),
@@ -872,32 +993,19 @@ impl TestHost {
         let failed = tracker.mark_error("Chat tools planning read body failed");
 
         assert_eq!(failed.len(), 1);
-        let record = crate::chat::agent_presentation::project_tool(&failed[0], Some("run"));
+        let record = &failed[0];
         assert_eq!(record.id, "call_write");
         assert_eq!(record.name, "write");
-        assert!(matches!(record.status, ToolCallStatus::Error));
+        assert!(matches!(record.status, AgentToolStatus::Error));
         assert_eq!(
             record.error.as_deref(),
             Some("Chat tools planning read body failed")
         );
-        assert_eq!(record.trace_id.as_deref(), Some("run"));
-        assert_eq!(record.span_id.as_deref(), Some("tool_round_1_call_write"));
-        assert_eq!(
-            record
-                .structured_content
-                .as_ref()
-                .and_then(|value| value.pointer("/toolDraft/phase"))
-                .and_then(Value::as_str),
-            Some("error")
-        );
-        assert_eq!(
-            record
-                .structured_content
-                .as_ref()
-                .and_then(|value| value.pointer("/toolDraft/argumentChars"))
-                .and_then(Value::as_u64),
-            Some("{\"path\":\"large.html\",\"content\":\"".chars().count() as u64)
-        );
+        assert_eq!(record.round, 1);
+        assert_eq!(record.draft.as_ref().unwrap().model_name, "write");
+        assert!(!record.draft.as_ref().unwrap().complete);
+        assert_eq!(record.arguments, "{\"path\":\"large.html\",\"content\":\"");
+        assert!(record.completed_at.is_some());
 
         let segments = host.segments.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(segments.len(), 1);
@@ -908,17 +1016,10 @@ impl TestHost {
     #[test]
     fn present_artifacts_argument_stream_aborts_when_too_large() {
         let host = TestHost::default();
-        let tracker =
-            ToolCallDraftTracker::new(vec![native_present_artifacts_tool().for_run(&crate::settings::Settings::default())], 1, Some(1), 1000);
+        let tracker = ToolCallDraftTracker::new(vec![limited_tool()], 1, Some(1), 1000);
         let context = test_context(&host);
-        let mut sink = AgentStreamSink::new(
-            &context,
-            true,
-            None,
-            None,
-            Some(tracker.clone()),
-            None,
-        );
+        let mut sink =
+            AgentStreamSink::new(&context, true, None, None, Some(tracker.clone()), None);
 
         sink.emit(StreamPart::ToolCallStart {
             id: "call_present".to_string(),
@@ -928,7 +1029,7 @@ impl TestHost {
         let err = sink
             .emit(StreamPart::ToolCallDelta {
                 id: "call_present".to_string(),
-                delta: "x".repeat(PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS + 1),
+                delta: "x".repeat(ARGUMENT_LIMIT + 1),
             })
             .expect_err("oversized present_artifacts args must abort the stream");
         assert!(err.to_string().contains("too large"), "{err}");
@@ -936,32 +1037,17 @@ impl TestHost {
 
         let records = host.records.lock().unwrap_or_else(|err| err.into_inner());
         assert_eq!(records.len(), 1);
-        assert!(records[0]
-            .result_preview
-            .as_deref()
-            .unwrap_or_default()
-            .contains("正在展示文件"));
-        assert!(!records[0]
-            .result_preview
-            .as_deref()
-            .unwrap_or_default()
-            .contains("已收到"));
+        assert_eq!(records[0].status, AgentToolStatus::Pending);
+        assert!(records[0].arguments.is_empty());
+        assert!(!records[0].draft.as_ref().unwrap().complete);
     }
 
     #[test]
     fn present_artifacts_argument_stream_accepts_id_list() {
         let host = TestHost::default();
-        let tracker =
-            ToolCallDraftTracker::new(vec![native_present_artifacts_tool().for_run(&crate::settings::Settings::default())], 1, Some(1), 1000);
+        let tracker = ToolCallDraftTracker::new(vec![limited_tool()], 1, Some(1), 1000);
         let context = test_context(&host);
-        let mut sink = AgentStreamSink::new(
-            &context,
-            true,
-            None,
-            None,
-            Some(tracker),
-            None,
-        );
+        let mut sink = AgentStreamSink::new(&context, true, None, None, Some(tracker), None);
         let args = r#"{"artifact_ids":["art_a","art_b"]}"#;
 
         sink.emit(StreamPart::ToolCallStart {
@@ -1014,8 +1100,6 @@ impl TestHost {
 
     #[test]
     fn image_only_output_validates_despite_empty_text() {
-        // 真机形态（xb1520 + gpt-5.6 走 Responses hosted image_generation_call）：正文空串、
-        // 无工具调用，但出了图——图即答案。此前 planning 策略会判成「空助手响应」把图丢掉。
         let mut output = GenerateOutput::text(String::new(), None);
         output.images = vec![GeneratedImageData {
             mime_type: "image/png".to_string(),
@@ -1029,7 +1113,6 @@ impl TestHost {
         )
         .expect("image-only planning output must validate");
 
-        // 没图时仍照旧报错（不放宽既有守门）。
         output.images.clear();
         assert!(validate_stream_output(
             "Chat tools planning",
@@ -1051,12 +1134,10 @@ impl TestHost {
         .expect("non-empty synthesis should validate");
     }
 
-    /// 内置搜索实时卡（任务 07-23）：首帧开牌 order 落在正文段之前的预留槽、同 id 增量原地
-    /// 合并（段只发一次、queries/citations 去重累加）、finalize 翻 Success、take_card 返回终态。
     #[test]
     fn web_search_card_streams_running_before_text_and_merges_by_id() {
         let host = TestHost::default();
-        // 预留槽：reasoning=1000 → web_search 卡=1001 → 正文=1002。
+
         let tracker = WebSearchCardTracker::new(
             1001,
             Some(2),
@@ -1082,7 +1163,6 @@ impl TestHost {
             Some(tracker.clone()),
         );
 
-        // 首帧空 = 开牌；随后带查询词；再带来源（含重复 url，应去重）。
         sink.emit(StreamPart::WebSearch {
             queries: Vec::new(),
             citations: Vec::new(),
@@ -1111,73 +1191,57 @@ impl TestHost {
         .expect("citation frame");
 
         let segments = host.segments.lock().unwrap_or_else(|err| err.into_inner());
-        // 段只发一次，order 落预留槽且在正文段之前。
+
         assert_eq!(segments.len(), 1);
-        assert_eq!(segments[0].order, 1001);
-        assert!(segments[0].order < text_segment.id);
-        assert_eq!(segments[0].kind, ChatMessageSegmentKind::Tool);
-        let card_id = segments[0].tool_call_id.clone().expect("card id");
+        assert_eq!(segments[0].id, 1001);
+        assert!(segments[0].id < text_segment.id);
+        let ContentKind::Search(opened) = &segments[0].kind else {
+            panic!("search block")
+        };
+        assert!(!opened.complete);
+        let card_id = opened.id.clone();
         drop(segments);
-
-        let records = host.records.lock().unwrap_or_else(|err| err.into_inner());
-        // 三帧 → 三条 Running 记录，同 id（前端原地翻牌）。
-        assert_eq!(records.len(), 3);
-        for record in records.iter() {
-            assert_eq!(record.id, card_id);
-            assert_eq!(record.name, "web_search");
-            assert!(matches!(record.status, ToolCallStatus::Running));
+        let searches = host.searches.lock().unwrap();
+        assert_eq!(searches.len(), 3);
+        for block in searches.iter() {
+            let ContentKind::Search(search) = &block.kind else {
+                panic!("search block")
+            };
+            assert_eq!(search.id, card_id);
+            assert!(!search.complete);
         }
-        let last = records.last().expect("last record");
-        let structured = last.structured_content.as_ref().expect("structured");
-        // 去重后仅 1 条来源。
-        assert_eq!(
-            structured
-                .get("citations")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(1)
-        );
-        assert_eq!(
-            structured
-                .get("queries")
-                .and_then(Value::as_array)
-                .map(Vec::len),
-            Some(1)
-        );
-        drop(records);
-
-        // 流成功结束 → 翻 Success。
+        let ContentKind::Search(last) = &searches.last().unwrap().kind else {
+            panic!("search block")
+        };
+        assert_eq!(last.provider, "Test Provider");
+        assert_eq!(last.citations.len(), 1);
+        assert_eq!(last.queries, vec!["kivio release"]);
+        drop(searches);
         let success = sink
             .finish_web_search_card()
             .expect("started card finalizes");
-        let success = crate::chat::agent_presentation::project_embedded(&success).unwrap();
-        assert!(matches!(success.status, ToolCallStatus::Success));
-        assert_eq!(success.id, card_id);
-        // take_card 返回 Success 终态 + 预留槽段。
+        let ContentKind::Search(search) = &success.kind else {
+            panic!("search block")
+        };
+        assert!(search.complete);
+        assert_eq!(search.id, card_id);
         let block = tracker.take_card().expect("card present after start");
-        let record = crate::chat::agent_presentation::project_embedded(&block).unwrap();
-        let segment = crate::chat::agent_presentation::project_block(&block);
-        assert!(matches!(record.status, ToolCallStatus::Success));
-        assert_eq!(record.id, card_id);
-        assert_eq!(segment.order, 1001);
+        let ContentKind::Search(search) = &block.kind else {
+            panic!("search block")
+        };
+        assert!(search.complete);
+        assert_eq!(search.id, card_id);
+        assert_eq!(block.id, 1001);
     }
 
-    /// 从未开牌（未发生内置搜索 / 取消中途）：take_card 与 finalize_success 均为 None，
-    /// 不落卡——保证「web_search_tracker=None 或未搜索」时行为与现状一致。
     #[test]
     fn web_search_card_absent_before_first_frame() {
-        let tracker = WebSearchCardTracker::new(
-            1001,
-            None,
-            ContentPhase::Synthesis,
-            "P".to_string(),
-        );
+        let tracker =
+            WebSearchCardTracker::new(1001, None, ContentPhase::Synthesis, "P".to_string());
         assert!(tracker.take_card().is_none());
         assert!(tracker.finalize_success().is_none());
     }
 
-    /// 无 tracker（非内置模式）：WebSearch part 被静默忽略，不发任何段/记录——逐字节
-    /// 兼容现状。
     #[test]
     fn web_search_part_without_tracker_is_ignored() {
         let host = TestHost::default();
@@ -1193,6 +1257,7 @@ impl TestHost {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .is_empty());
+        assert!(host.searches.lock().unwrap().is_empty());
         assert!(host
             .records
             .lock()
@@ -1202,10 +1267,10 @@ impl TestHost {
 
     #[test]
     fn stream_output_carries_reasoning_items_into_openai_message() {
-        let output = crate::chat::model::GenerateOutput {
+        let output = crate::model::GenerateOutput {
             text: String::new(),
             reasoning: None,
-            tool_calls: vec![crate::chat::model::PendingToolCall {
+            tool_calls: vec![crate::model::PendingToolCall {
                 id: "call_1".to_string(),
                 function_name: "read".to_string(),
                 arguments: serde_json::json!({ "path": "a.png" }),
@@ -1220,7 +1285,7 @@ impl TestHost {
             images: Vec::new(),
             canonical_message: None,
             billing_usage: None,
-            reasoning_items: vec![crate::chat::model::ProviderReasoningItem {
+            reasoning_items: vec![crate::model::ProviderReasoningItem {
                 model: "gpt-5.6".to_string(),
                 item: serde_json::json!({
                     "type": "reasoning", "id": "rs_1", "summary": [],
@@ -1234,59 +1299,84 @@ impl TestHost {
             String::new(),
             AgentStreamPolicy::PlanningNoDoneUntilNoTools,
         );
-        let message = crate::chat::model::openai_messages_from_model_messages(&[
-            stream_output.replay_message()
-        ])
-        .remove(0);
+        let message =
+            crate::model::openai_messages_from_model_messages(&[stream_output.replay_message()])
+                .remove(0);
         assert_eq!(message["reasoning_items"][0]["model"], "gpt-5.6");
         assert_eq!(message["reasoning_items"][0]["item"]["id"], "rs_1");
         assert_eq!(message["tool_calls"][0]["id"], "call_1");
     }
 
-impl AgentRunControl for TestHost {
-    fn active(&self) -> bool { !self.stopped.load(Ordering::SeqCst) }
-    fn stop(&self) -> StopAdmission { self.stopped.store(true, Ordering::SeqCst); StopAdmission::Requested }
-    fn submit(&self, _kind: InputKind, _message: SteeringMessage) -> InputAdmission { InputAdmission::Unsupported }
-    fn take(&self, _kind: InputKind) -> Vec<SteeringMessage> { Vec::new() }
-    fn wait_inactive(&self) -> AgentHostFuture<'_, ()> { Box::pin(std::future::pending()) }
-}
-impl AgentEventSink for TestHost {
-    fn on_event(&self, event: &AgentEvent<'_>) -> EventDelivery {
-        let id = event.identity;
-        match &event.kind {
-            AgentEventKind::Content { delta, reasoning_delta, block } => {
-                let segment = block.map(crate::chat::agent_presentation::project_block);
-                self.emit_stream_delta(id.conversation_id, id.run_id, id.message_id, delta, *reasoning_delta, segment.as_ref());
-                if let Some(record) = block.and_then(crate::chat::agent_presentation::project_embedded) { self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record); }
-            }
-            AgentEventKind::SearchUpdated { block, announce } => {
-                if *announce {
-                    self.emit_stream_delta(id.conversation_id, id.run_id, id.message_id, "", None, Some(&crate::chat::agent_presentation::project_block(block)));
-                }
-                if let Some(record) = crate::chat::agent_presentation::project_embedded(block) { self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record); }
-            }
-            AgentEventKind::ToolUpdated(call) => self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &crate::chat::agent_presentation::project_tool(call, Some(id.run_id))),
-            _ => {}
+    impl AgentRunControl for TestHost {
+        fn active(&self) -> bool {
+            !self.stopped.load(Ordering::SeqCst)
         }
-        EventDelivery::Accepted
+        fn stop(&self) -> StopAdmission {
+            self.stopped.store(true, Ordering::SeqCst);
+            StopAdmission::Requested
+        }
+        fn submit(&self, _kind: InputKind, _message: SteeringMessage) -> InputAdmission {
+            InputAdmission::Unsupported
+        }
+        fn take(&self, _kind: InputKind) -> Vec<SteeringMessage> {
+            Vec::new()
+        }
+        fn wait_inactive(&self) -> AgentHostFuture<'_, ()> {
+            Box::pin(std::future::pending())
+        }
     }
-}
-fn test_context(host: &TestHost) -> AgentContext<'_> {
-    let identity = AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1 };
-    let control = AgentRunHandle::new(identity, host);
-    AgentContext { host, events: AgentEvents::new(identity, host, host.hooks().map(|hooks| hooks as &dyn AgentEventSink), control.invocation_id()), control }
-}
+    impl AgentEventSink for TestHost {
+        fn on_event(&self, event: &AgentEvent<'_>) -> EventDelivery {
+            match &event.kind {
+                AgentEventKind::Content {
+                    block: Some(block), ..
+                } => self.segments.lock().unwrap().push((*block).clone()),
+                AgentEventKind::SearchUpdated { block, announce } => {
+                    if *announce {
+                        self.segments.lock().unwrap().push((*block).clone());
+                    }
+                    self.searches.lock().unwrap().push((*block).clone());
+                }
+                AgentEventKind::ToolUpdated(call) => {
+                    self.records.lock().unwrap().push((*call).clone())
+                }
+                _ => {}
+            }
+            EventDelivery::Accepted
+        }
+    }
+    fn test_context(host: &TestHost) -> AgentContext<'_> {
+        let identity = AgentRunIdentity {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation: 1,
+        };
+        let control = AgentRunHandle::new(identity, host);
+        AgentContext::new(host, host, control)
+    }
 
     #[test]
     fn stopped_stream_ignores_late_frames() {
         let drops = Arc::new(AtomicUsize::new(0));
-        let host = TestHost { scope_drops: Some(drops.clone()), ..Default::default() };
+        let host = TestHost {
+            scope_drops: Some(drops.clone()),
+            ..Default::default()
+        };
         let context = test_context(&host);
-        let tracker = ToolCallDraftTracker::new(vec![native_write_file_tool().for_run(&crate::settings::Settings::default())], 1, None, 1000);
-        let mut sink = AgentStreamSink::new(&context, true, None, None, Some(tracker.clone()), None);
+        let tracker = ToolCallDraftTracker::new(vec![tool("write")], 1, None, 1000);
+        let mut sink =
+            AgentStreamSink::new(&context, true, None, None, Some(tracker.clone()), None);
         host.stop();
-        sink.emit(StreamPart::ToolCallStart { id: "late".into(), name: "write".into() }).unwrap();
-        sink.emit(StreamPart::TextDelta { delta: "late text".into() }).unwrap();
+        sink.emit(StreamPart::ToolCallStart {
+            id: "late".into(),
+            name: "write".into(),
+        })
+        .unwrap();
+        sink.emit(StreamPart::TextDelta {
+            delta: "late text".into(),
+        })
+        .unwrap();
         assert_eq!(sink.snapshot(), (String::new(), String::new()));
         assert!(!tracker.has_started());
         assert!(host.records.lock().unwrap().is_empty());
@@ -1295,11 +1385,23 @@ fn test_context(host: &TestHost) -> AgentContext<'_> {
     #[test]
     fn disabling_or_dropping_tracker_releases_speculative_scope() {
         let drops = Arc::new(AtomicUsize::new(0));
-        let host = TestHost { scope_drops: Some(drops.clone()), ..Default::default() };
+        let host = TestHost {
+            scope_drops: Some(drops.clone()),
+            ..Default::default()
+        };
         let agent = test_context(&host);
-        let context = ToolExecutionContext { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1, round: 1, tool_call_id: "" };
-        let mut tool = ToolDefinition::new(crate::chat::model::ModelTool {
-            name: "task".into(), description: String::new(), input_schema: serde_json::json!({"type":"object"}),
+        let context = ToolExecutionContext {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation: 1,
+            round: 1,
+            tool_call_id: "",
+        };
+        let mut tool = ToolDefinition::new(crate::model::ModelTool {
+            name: "task".into(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type":"object"}),
         });
         tool.speculative = true;
         let effective_tools = vec![tool.model.clone()];
@@ -1316,11 +1418,17 @@ fn test_context(host: &TestHost) -> AgentContext<'_> {
         host.stop();
         let tracker = ToolCallDraftTracker::new(vec![tool], 1, None, 0);
         {
-            let mut sink = AgentStreamSink::new(&agent, true, None, None, Some(tracker.clone()), None)
-                .with_speculation(Some((&host, &context)));
+            let mut sink =
+                AgentStreamSink::new(&agent, true, None, None, Some(tracker.clone()), None)
+                    .with_speculation(Some((&host, &context)));
             sink.request_started(&ModelCall {
-                provider_id: String::new(), model: String::new(), history: Vec::new(), tools: effective_tools,
-                options: Default::default(), metadata: Default::default(), delivery: ModelDelivery::Streamed,
+                provider_id: String::new(),
+                model: String::new(),
+                history: Vec::new(),
+                tools: effective_tools,
+                options: Default::default(),
+                metadata: Default::default(),
+                delivery: ModelDelivery::Streamed,
             });
         }
         drop(tracker);
@@ -1328,30 +1436,50 @@ fn test_context(host: &TestHost) -> AgentContext<'_> {
     }
     #[test]
     fn effective_request_gates_speculation_before_any_stream_part() {
-        use crate::chat::model::ToolChoice;
-        for (choice, expose_tools, source, expected) in [
-            (ToolChoice::Auto, true, "native", 1),
-            (ToolChoice::None, true, "native", 0),
-            (ToolChoice::Auto, false, "native", 0),
-            (ToolChoice::Auto, true, "mcp", 0),
+        use crate::model::ToolChoice;
+        for (choice, expose_tools, speculative, expected) in [
+            (ToolChoice::Auto, true, true, 1),
+            (ToolChoice::None, true, true, 0),
+            (ToolChoice::Auto, false, true, 0),
+            (ToolChoice::Auto, true, false, 0),
         ] {
-            let settings = crate::settings::Settings::default();
-            let mut tool = crate::chat::sub_agent::task::tool_definition(&[], &settings);
-            tool.source = source.into();
-            let tool = tool.for_run(&settings);
-            let effective_tools = if expose_tools { vec![tool.model.clone()] } else { Vec::new() };
+            let mut tool = tool("task");
+            tool.speculative = speculative;
+            let effective_tools = if expose_tools {
+                vec![tool.model.clone()]
+            } else {
+                Vec::new()
+            };
             let drops = Arc::new(AtomicUsize::new(0));
-            let host = TestHost { scope_drops: Some(drops.clone()), ..Default::default() };
+            let host = TestHost {
+                scope_drops: Some(drops.clone()),
+                ..Default::default()
+            };
             let agent = test_context(&host);
-            let context = ToolExecutionContext { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1, round: 1, tool_call_id: "" };
+            let context = ToolExecutionContext {
+                conversation_id: "conversation",
+                run_id: "run",
+                message_id: "message",
+                generation: 1,
+                round: 1,
+                tool_call_id: "",
+            };
             let tracker = ToolCallDraftTracker::new(vec![tool], 1, None, 0);
             {
-                let mut sink = AgentStreamSink::new(&agent, true, None, None, Some(tracker.clone()), None)
-                    .with_speculation(Some((&host, &context)));
+                let mut sink =
+                    AgentStreamSink::new(&agent, true, None, None, Some(tracker.clone()), None)
+                        .with_speculation(Some((&host, &context)));
                 sink.request_started(&ModelCall {
-                    provider_id: String::new(), model: String::new(), history: Vec::new(), tools: effective_tools,
-                    options: crate::chat::model::GenerateOptions { tool_choice: choice, ..Default::default() },
-                    metadata: Default::default(), delivery: ModelDelivery::Streamed,
+                    provider_id: String::new(),
+                    model: String::new(),
+                    history: Vec::new(),
+                    tools: effective_tools,
+                    options: crate::model::GenerateOptions {
+                        tool_choice: choice,
+                        ..Default::default()
+                    },
+                    metadata: Default::default(),
+                    delivery: ModelDelivery::Streamed,
                 });
             }
             drop(tracker);
@@ -1364,10 +1492,19 @@ fn test_context(host: &TestHost) -> AgentContext<'_> {
         let host = TestHost::default();
         let agent = test_context(&host);
         let mut sink = AgentStreamSink::new(&agent, true, None, None, None, None);
-        sink.emit(StreamPart::TextDelta { delta: "failed 🌱".into() }).unwrap();
-        sink.emit(StreamPart::ReasoningDelta { delta: "discarded thought".into() }).unwrap();
+        sink.emit(StreamPart::TextDelta {
+            delta: "failed 🌱".into(),
+        })
+        .unwrap();
+        sink.emit(StreamPart::ReasoningDelta {
+            delta: "discarded thought".into(),
+        })
+        .unwrap();
         sink.reset_attempt();
-        sink.emit(StreamPart::TextDelta { delta: "accepted answer".into() }).unwrap();
+        sink.emit(StreamPart::TextDelta {
+            delta: "accepted answer".into(),
+        })
+        .unwrap();
         assert_eq!(sink.snapshot(), ("accepted answer".into(), String::new()));
     }
 }

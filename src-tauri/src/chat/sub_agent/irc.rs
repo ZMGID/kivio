@@ -566,10 +566,10 @@ pub async fn collect_for_main(
         .iter()
         .filter(|message| {
             !history.iter().any(|item| {
-                item.source.subagent_irc_id.as_deref() == Some(message.id.as_str())
-                    || item.source.subagent_result_id.as_deref()
+                item.source.get("_subagent_irc_id").and_then(serde_json::Value::as_str) == Some(message.id.as_str())
+                    || item.source.get("_subagent_result_id").and_then(serde_json::Value::as_str)
                         == Some(format!("subagent-irc-{}", message.id).as_str())
-                    || item.source.ui_message_id.as_deref()
+                    || item.source.get("_ui_message_id").and_then(serde_json::Value::as_str)
                         == Some(format!("subagent-irc-{}", message.id).as_str())
             })
         })

@@ -4,7 +4,7 @@
 
 目标是逐步形成可独立引用的 Kivio Agent SDK。Kivio 桌面、自动化和 OMP 子代理使用同一套核心实现，其他 Rust 程序也能接入模型、工具和自己的宿主。
 
-本文件整理实现顺序和验收条件。SDK-01 至 SDK-05 已实现；SDK-05 的完整 Rust 库测试和所有构建目标检查已通过。SDK-06 与 SDK-07 尚未开始。工程规则继续以[统一工程规范](../engineering-standards.md)为唯一入口。本计划不增加另一套全仓规范，也不改变已有产品 ADR。
+本文件整理实现顺序和验收条件。SDK-01 至 SDK-06 已实现；独立 SDK、消费夹具、应用完整库测试、所有构建目标及共享协议检查已通过。SDK-07 尚未开始。工程规则继续以[统一工程规范](../engineering-standards.md)为唯一入口。本计划不增加另一套全仓规范，也不改变已有产品 ADR。
 
 ## 1. 确定首版范围
 
@@ -203,19 +203,29 @@ Rig 与 LangGraph 的依据是 2026-11-06 查阅的官方文档，不等同于�
 
 ### SDK-06 抽出独立 crate 并接回生产入口
 
-**交付物。** `crates/kivio-agent-sdk/` 可独立编译，三个生产入口依赖同一个 SDK。此路径为拟新增。
+**交付物。** `crates/kivio-agent-sdk/` 可独立编译，三个生产入口依赖同一个 SDK。
 
 **主要位置。** 新 SDK crate、`src-tauri/Cargo.toml`、锁文件、`chat/model/`、`chat/agent/`、三个宿主及必要的构建脚本。
 
-- [ ] 迁移已经收敛的核心、公开类型和必要接口，应用通过 path dependency 引用。先保持单个 SDK crate，以模块区分职责。
-- [ ] 核心和公开接口不能依赖 Kivio 应用 crate、Tauri、`AppState`、`Settings` 或 UI DTO。用独立消费测试和 Cargo 依赖图验证。
-- [ ] 提取至少一条实际模型协议实现供非桌面宿主使用，建议从现有 OpenAI-compatible Chat 路径开始。复用协议编码和流解码，不另写演示专用 provider。
-- [ ] 凭据和应用配置在宿主解析，provider 接收窄配置和传输依赖。桌面 OAuth、密钥轮换、请求日志及计费仍由原负责人接入，重试职责和次数不能叠乘。
-- [ ] 将桌面、自动化和 OMP 子代理接回 SDK，同时删除旧循环实现。其余已有供应商可先通过应用适配器接入同一 SDK，文档明确独立 SDK 首版提供哪些协议。
-- [ ] 核对 `chat/model` 被 Lens、翻译等非 Agent 路径复用的调用方，保留它们的能力并避免复制 provider 实现。
-- [ ] 核对新增 crate 对锁文件、CI 缓存和 Windows 测试脚本目标目录的影响，不为引入 SDK 强制重排整个 Cargo workspace。
+- [x] 迁移已经收敛的核心、公开类型和必要接口，应用通过 path dependency 引用。先保持单个 SDK crate，以模块区分职责。
+- [x] 核心和公开接口不能依赖 Kivio 应用 crate、Tauri、`AppState`、`Settings` 或 UI DTO。用独立消费测试和 Cargo 依赖图验证。
+- [x] 提取至少一条实际模型协议实现供非桌面宿主使用，建议从现有 OpenAI-compatible Chat 路径开始。复用协议编码和流解码，不另写演示专用 provider。
+- [x] 凭据和应用配置在宿主解析，provider 接收窄配置和传输依赖。桌面 OAuth、密钥轮换、请求日志及计费仍由原负责人接入，重试职责和次数不能叠乘。
+- [x] 将桌面、自动化和 OMP 子代理接回 SDK，同时删除旧循环实现。其余已有供应商可先通过应用适配器接入同一 SDK，文档明确独立 SDK 首版提供哪些协议。
+- [x] 核对 `chat/model` 被 Lens、翻译等非 Agent 路径复用的调用方，保留它们的能力并避免复制 provider 实现。
+- [x] 核对新增 crate 对锁文件、CI 缓存和 Windows 测试脚本目标目录的影响，不为引入 SDK 强制重排整个 Cargo workspace。
 
 **验收。** SDK 独立测试不启动桌面或读取用户配置。外部消费程序通过公开接口完成真实模型、普通工具、流事件和取消。Kivio 三类入口使用同一核心；已有供应商能力无回退。仅 fake provider 的测试通过不足以完成本项。
+
+**实现结果。** `crates/kivio-agent-sdk` 的版本为 `0.1.0-alpha.1`，沿用 GPL-3.0-or-later。应用通过 path dependency 使用唯一循环，原目录只保留公开类型重导出、应用历史适配和应用集成测试。SDK 历史和生成增量均为类型化消息，来源信息为不透明映射；应用在落盘边界转换旧 JSON。Workbench 提示词处理、图片附件持久化和模型设置解析仍由应用负责。三个生产入口及非 Agent 模型调用继续共用规范模型类型。
+
+独立 SDK 首版提供 OpenAI-compatible Chat HTTP provider。桌面与它共用请求编码、响应及 SSE 解码、用量解析；其余桌面供应商仍通过应用适配器接入。独立 provider 每次调用只发送一次请求，凭据、请求头和 HTTP client 由宿主显式提供；桌面保持原来的共享重试预算、密钥轮换及计费负责人。流解码错误现在统一交给原应用负责人记录失败诊断，不增加模型请求。额外边界校验拒绝大于等于 1024 的工具流索引，避免按不可信索引分配无界内存。
+
+**验证记录。** 独立 SDK 单元测试 98 项全部通过；应用完整库测试 3107 通过、0 失败、55 按原配置忽略。测试清单对照仅有两项控制测试拆分并改名：SDK 保留控制句柄行为，应用保留 generation 和运行容量断言。应用所有构建目标检查通过。独立 consumer 的 6 项真实 HTTP 契约测试通过，覆盖工具往返、流事件、历史继续、steer/follow-up、取消并关闭连接、拒绝执行及协议错误。该消费者只有公开 SDK 依赖，不读取应用配置。Cargo 依赖图确认 SDK 不包含应用、Tauri、Wry、MCP、SQLite 或 OCR 运行时。
+
+`npm run protocol:check`、SDK 与消费夹具的格式检查及 `git diff --check` 通过，协议文件未变化。独立行为审查未发现新的回归；公开 API 注释已去除应用专有的附件、模型设置和落盘承诺。
+
+2026-11-07，独立消费程序通过显式子进程环境使用 Dev 配置选定的 `deepseek-v4.1-flash`，真实执行 `echo` 一次并返回 `Completed`。凭据未写入仓库、命令参数或日志。Windows Dev 完整应用回归以及跨平台 CI 配置在 SDK-07 完成；本项未在 macOS、Linux 上运行测试，也未公开发布。
 
 ### SDK-07 固定首版消费方式与持续验收
 
@@ -248,7 +258,7 @@ powershell -File scripts/win-cargo-test.ps1 --lib chat::sub_agent
 
 模块迁移后应改用新的测试过滤路径。全量 Rust 测试使用 `scripts/win-cargo-test.ps1`。涉及前端与共享协议时，执行 `npm run typecheck`、`npm run lint`、`npm run test` 和 `npm run architecture:check`；协议变化通过现有 `protocol:generate` 与 `protocol:check` 管理。
 
-SDK crate 创建后，再增加以下检查。这些命令目前尚不可执行。
+SDK crate 的独立检查如下。可运行示例和公开 API 文档在 SDK-07 补齐。
 
 ```powershell
 cargo test --manifest-path crates/kivio-agent-sdk/Cargo.toml
@@ -262,8 +272,8 @@ SDK 的确定性测试先用脚本化模型与受控工具固定事件、请求�
 
 本计划采用 Foundational Thinking，先收敛类型与行为边界，再提取 crate。采用 Sequence Work into Verifiable Units，每批给出可观察验收结果并删除迁移后的旧路径。采用 Minimize Reader Load，以调用方需要了解的状态和执行顺序减少作为收益。
 
-SDK-01 至 SDK-05 已完成模型步骤、类型化模型流、工具契约、事件与运行控制及产品策略隔离的内部迁移和自动化测试。当前尚未提取独立 SDK crate，也未进行独立 SDK 消费验证、基准测试或实机验证。公开 Rust 签名和 provider 配置拆分需要在对应任务中用消费样例验证，再固定为公开契约。它们不作为等待用户回答的架构偏好问题。
+SDK-01 至 SDK-06 已完成核心迁移、产品策略隔离和独立 crate 提取。独立消费者通过公开接口完成生产 HTTP 协议、工具、流事件、续聊与取消验证，并完成一次真实供应商调用。SDK-07 将补齐可运行示例、公开文档、独立 CI 和 Windows Dev 回归。未进行性能基准测试，不把这次架构提取称为提速。
 
 进度检查点为七项串行实现，重叠文件不并行修改。调查和独立验证可以并行。每项记录变更提交、检查结果和未验证范围；当前不创建 PR、不启动定时任务，也不估算未经验证的工期。
 
-决策记录见 [SDK 规划决策记录](../research/kivio-agent-sdk-decisions.tsv)。下一项为 **SDK-06 抽出独立 crate 并接回生产入口**。
+决策记录见 [SDK 规划决策记录](../research/kivio-agent-sdk-decisions.tsv)。下一项为 **SDK-07 固定首版消费方式与持续验收**。

@@ -1909,7 +1909,7 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
         plan_state: host.plan_state.clone(), mcp_tool_ids, mcp_server_ids,
         runtime_context: Some(prompt.context.clone()), tools, blocked_tool_calls: Vec::new(), settings,
         effective_chat_tools: effective, language, thinking_enabled, thinking_level,
-        web_search_mode: WebSearchMode::Off, max_output_tokens, retry_attempts, assistant_snapshot: None,
+        web_search_mode: WebSearchMode::Off, max_output_tokens, retry_attempts,
         provider_tools_fallback_prompt: prompt, initial_cache_usage: None, initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
     };

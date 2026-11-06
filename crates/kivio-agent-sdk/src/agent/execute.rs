@@ -3,7 +3,7 @@ use super::{
     control::AgentRunHandle,
     events::AgentEvents,
 };
-use crate::chat::{
+use crate::{
     model::{ModelArtifact, PendingToolCall},
     tools::{ToolDefinition, ToolOutput},
 };
@@ -56,6 +56,7 @@ pub enum ToolPreparation {
 }
 
 pub trait ToolExecutor: Send + Sync {
+    /// Authorize and validate the call. Before returning `Complete`, publish its final record with `progress.updated`.
     fn prepare<'a>(
         &'a self,
         progress: &'a ToolProgress<'a>,
@@ -258,7 +259,7 @@ pub async fn execute_tool_call(
             record.artifacts = output.host_data;
             record.structured_content = output.structured_content;
             follow_ups =
-                crate::chat::model::openai_messages_from_model_messages(&output.follow_up_messages);
+                crate::model::openai_messages_from_model_messages(&output.follow_up_messages);
             record.output = Some(output.content.clone());
             record.output_limit = prepared.output_limit;
             limit_tool_text_for_model(&output.content, prepared.output_limit)
@@ -303,7 +304,7 @@ pub fn truncate_chars(value: &str, max_chars: usize) -> String {
     out
 }
 
-pub(crate) fn limit_tool_text_for_model(value: &str, max_chars: Option<usize>) -> String {
+pub fn limit_tool_text_for_model(value: &str, max_chars: Option<usize>) -> String {
     match max_chars {
         Some(max_chars) => truncate_tool_content_for_model(value, max_chars),
         None => value.to_string(),

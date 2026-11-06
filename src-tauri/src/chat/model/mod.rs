@@ -25,10 +25,8 @@ use anthropic::AnthropicMessagesProvider;
 pub use error::extract_status_code;
 pub use error::{is_missing_stream_terminal_error, stream_read_error, ModelError, ModelErrorKind};
 pub(crate) use error::is_permanent_provider_error;
-#[cfg(test)]
-pub(crate) use error::is_tools_unsupported_error;
 use gemini::GeminiProvider;
-pub use legacy::{generate_request_from_model_messages, generate_request_from_openai_messages};
+pub use legacy::{generate_request_from_model_messages, generate_request_from_openai_messages, split_workbench_system_suffix, WORKBENCH_LOCATION_PROMPT_HEAD};
 use openai::OpenAiChatProvider;
 use responses::OpenAiResponsesProvider;
 pub use types::*;
