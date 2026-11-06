@@ -87,25 +87,9 @@ pub(crate) fn with_acp_peer(mode: &str, test: impl FnOnce(&AppHandle, &Path)) {
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(directory.path().join("peer.py"), PEER).unwrap();
     std::fs::write(directory.path().join("mode"), mode).unwrap();
-    #[cfg(windows)]
     let binary = {
         let path = directory.path().join("peer.cmd");
         std::fs::write(&path, "@echo off\r\npython -u \"%~dp0peer.py\" %*\r\n").unwrap();
-        path
-    };
-    #[cfg(not(windows))]
-    let binary = {
-        use std::os::unix::fs::PermissionsExt;
-        let path = directory.path().join("peer");
-        std::fs::write(
-            &path,
-            format!(
-                "#!/bin/sh\nexec python3 -u '{}' \"$@\"\n",
-                directory.path().join("peer.py").display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
     };
     let mut previous = crate::settings::Settings::default();
@@ -123,7 +107,10 @@ pub(crate) fn with_acp_peer(mode: &str, test: impl FnOnce(&AppHandle, &Path)) {
         }
     }
     let _restore = Restore(previous);
-    let state = crate::state::test_app_state();
+    let state = AppState::new_headless(
+        crate::settings::Settings::default(),
+        directory.path().join("usage"),
+    );
     state.update_settings_for_test(|settings| {
         settings.chat_memory.enabled = false;
         settings.chat_tools.request_debug_enabled = mode == "diagnostics";
@@ -239,7 +226,7 @@ fn first_history_handoff_keeps_prefix_when_unsent_config_failure_resumes_empty_n
                 .external_live_sessions()
                 .close_all()
                 .await;
-            result.unwrap();
+            assert_eq!(result.unwrap(), ExternalCliTurnOutcome::Completed);
             let requests = wire(directory);
             let methods: Vec<_> = requests
                 .iter()
@@ -280,7 +267,7 @@ fn failed_or_cancelled_external_turn_preserves_partial_answer() {
     if isolated_peer_test() {
         return;
     }
-    for mode in ["error", "cancel"] {
+    for mode in ["error", "cancel", "complete"] {
         with_acp_peer(mode, |app, _| {
             run_peer(async {
                 let mut conversation = conversation(&format!("conv_terminal_{mode}"));
@@ -288,7 +275,23 @@ fn failed_or_cancelled_external_turn_preserves_partial_answer() {
                     .messages
                     .push(message("request", "user", "write an answer"));
                 let mut conversation = repository(app).create(app, conversation).await.unwrap();
-                let _result = run_external_cli_reply(
+                #[cfg(debug_assertions)]
+                let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                #[cfg(debug_assertions)]
+                {
+                    let events = events.clone();
+                    let id = conversation.id.clone();
+                    crate::chat::protocol::set_protocol_debug_sink(Some(std::sync::Arc::new(
+                        move |event| {
+                            if let crate::chat::protocol::ChatProtocolEvent::Run(event) = event {
+                                if event.conversation_id == id {
+                                    events.lock().unwrap().push(event.event.clone());
+                                }
+                            }
+                        },
+                    )));
+                }
+                let result = run_external_cli_reply(
                     app,
                     &app.state(),
                     &mut conversation,
@@ -304,17 +307,56 @@ fn failed_or_cancelled_external_turn_preserves_partial_answer() {
                     .external_live_sessions()
                     .close_all()
                     .await;
+                #[cfg(debug_assertions)]
+                crate::chat::protocol::set_protocol_debug_sink(None);
+                let outcome = result.unwrap();
+                match mode {
+                    "error" => assert!(matches!(outcome, ExternalCliTurnOutcome::Failed(_))),
+                    "cancel" => assert_eq!(outcome, ExternalCliTurnOutcome::Cancelled),
+                    _ => assert_eq!(outcome, ExternalCliTurnOutcome::Completed),
+                }
                 let saved = repository(app).get(app, &conversation.id).await.unwrap();
+                assert_eq!(
+                    saved.messages.len(),
+                    2,
+                    "one assistant message per terminal"
+                );
                 let answer = saved.messages.last().unwrap();
                 assert!(answer.content.contains("partial answer"));
+                if let ExternalCliTurnOutcome::Failed(message) = &outcome {
+                    assert_eq!(answer.content.matches(message.as_str()).count(), 1);
+                }
                 assert_eq!(
                     answer.stream_outcome.as_deref(),
-                    Some(if mode == "cancel" {
-                        "cancelled"
-                    } else {
-                        "error"
+                    Some(match mode {
+                        "cancel" => "cancelled",
+                        "error" => "error",
+                        _ => "completed",
                     })
                 );
+                #[cfg(debug_assertions)]
+                {
+                    use crate::chat::protocol::ChatRunEvent;
+                    let events = events.lock().unwrap();
+                    let terminals: Vec<_> = events
+                        .iter()
+                        .filter(|event| {
+                            matches!(
+                                event,
+                                ChatRunEvent::RunCompleted { .. }
+                                    | ChatRunEvent::RunFailed { .. }
+                                    | ChatRunEvent::RunCancelled { .. }
+                            )
+                        })
+                        .collect();
+                    assert_eq!(terminals.len(), 1, "one published terminal per run");
+                    assert!(matches!(
+                        (mode, terminals[0]),
+                        ("error", ChatRunEvent::RunFailed { .. })
+                            | ("cancel", ChatRunEvent::RunCancelled { .. })
+                            | ("complete", ChatRunEvent::RunCompleted { .. })
+                    ));
+                }
             })
         });
     }
@@ -325,52 +367,74 @@ fn rejected_external_compact_preserves_compression_timestamp() {
     if isolated_peer_test() {
         return;
     }
-    with_acp_peer("error", |app, _| {
-        run_peer(async {
-            let mut conversation = conversation("conv_compact_failure");
-            conversation.context_state.last_compressed_at = Some(123);
-            let conversation = repository(app).create(app, conversation).await.unwrap();
-            let cwd = crate::external_agents::workspace::resolve_detection_cwd(
-                app,
-                Some(&conversation.id),
-            )
-            .unwrap();
-            app.state::<AppState>()
-                .external_discovery()
-                .set_cached_external_slash_commands(
-                    crate::external_agents::slash::cache_key("grok", &cwd.to_string_lossy()),
-                    vec![crate::external_agents::types::ExternalCliSlashCommand {
-                        name: "compact".into(),
-                        slash: "/compact".into(),
-                        description: None,
-                        argument_hint: None,
-                    }],
-                );
-            let result = crate::chat::commands::context::chat_compress_context(
-                app.clone(),
-                app.state(),
-                conversation.id.clone(),
-            )
-            .await;
-            app.state::<AppState>()
-                .external_live_sessions()
-                .close_all()
+    for mode in ["error", "cancel", "complete"] {
+        with_acp_peer(mode, |app, _| {
+            run_peer(async {
+                let mut conversation = conversation("conv_compact_failure");
+                conversation.context_state.last_compressed_at = Some(123);
+                conversation.context_state.warning = Some("keep warning".into());
+                conversation.context_state.compression_count = 2;
+                let before = conversation.context_state.clone();
+                let conversation = repository(app).create(app, conversation).await.unwrap();
+                let cwd = crate::external_agents::workspace::resolve_detection_cwd(
+                    app,
+                    Some(&conversation.id),
+                )
+                .unwrap();
+                app.state::<AppState>()
+                    .external_discovery()
+                    .set_cached_external_slash_commands(
+                        crate::external_agents::slash::cache_key("grok", &cwd.to_string_lossy()),
+                        vec![crate::external_agents::types::ExternalCliSlashCommand {
+                            name: "compact".into(),
+                            slash: "/compact".into(),
+                            description: None,
+                            argument_hint: None,
+                        }],
+                    );
+                let result = crate::chat::commands::context::chat_compress_context(
+                    app.clone(),
+                    app.state(),
+                    conversation.id.clone(),
+                )
                 .await;
-            let saved = repository(app).get(app, &conversation.id).await.unwrap();
-            assert_eq!(
-                saved.context_state.last_compressed_at,
-                Some(123),
-                "rejected compact changed its success timestamp"
-            );
-            assert!(saved
-                .messages
-                .last()
-                .unwrap()
-                .content
-                .contains("partial answer"));
-            assert!(result.is_err(), "rejected compact command returned success");
-        })
-    });
+                app.state::<AppState>()
+                    .external_live_sessions()
+                    .close_all()
+                    .await;
+                let saved = repository(app).get(app, &conversation.id).await.unwrap();
+                if mode == "complete" {
+                    assert!(result.is_ok(), "completed compact failed: {result:?}");
+                    assert_ne!(
+                        saved.context_state.last_compressed_at,
+                        before.last_compressed_at
+                    );
+                    assert!(saved.context_state.warning.is_none());
+                } else {
+                    assert!(result.is_err(), "rejected compact command returned success");
+                    assert_eq!(
+                        saved.context_state.last_compressed_at, before.last_compressed_at,
+                        "rejected compact changed its success timestamp"
+                    );
+                    assert_eq!(saved.context_state.warning, before.warning);
+                }
+                assert_eq!(
+                    saved.context_state.compression_count,
+                    before.compression_count
+                );
+                assert_eq!(
+                    serde_json::to_value(&saved.context_state.compaction_boundaries).unwrap(),
+                    serde_json::to_value(&before.compaction_boundaries).unwrap()
+                );
+                assert!(saved
+                    .messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("partial answer"));
+            })
+        });
+    }
 }
 
 #[test]
@@ -398,6 +462,8 @@ fn native_diagnostics_records_real_conversation_id_from_common_entry() {
                 AgentRunEntry::Send,
             )
             .await
+            .unwrap()
+            .require_completed()
             .unwrap();
             let state = app.state::<AppState>();
             state.external_live_sessions().close_all().await;

@@ -38,8 +38,33 @@ Laziness Protocol 促使本次复用现有管道、actor、安装命令及恢复
 
 修复后的 Windows Rust 全量 lib 测试 **3221 项通过、56 项按既有配置跳过**，架构检查和差异空白检查通过。新的独立审查未发现取消、Drop、lease、task-local 或错误传播回归。动态证据为本机 `.scratch/dev-20261107-043504.stderr.log`、`opencode-stack-final-result.log`、`opencode-stack-live-regression.log`、`opencode-stack-after-cancel-result.log` 和 `opencode-stack-rust-final.log`。另一个工作区一度占用相同 Dev 身份，误由该实例消费的 `opencode-stack-outer` 请求已排除；最终验证按当前 checkout 的可执行路径和 PID 核对归属。
 
+## 第二轮审查修复
+
+第二轮审查以 `fdd8ce5b` 为基线，再次核对计划六项内容。确认的四项 P2 已建立失败回归，先提交测试，再在现有负责人内修复。
+
+| 问题 | 修复归属与行为 |
+| --- | --- |
+| ACP 首次补历史在配置请求断线后丢失。原生空会话恢复成功，被误当作历史已经交付。 | `run.rs` 在明确未发送的恢复重试中保留本次完整提示词。新建原生会话仍使用首轮提示词，可能已发送的轮次仍禁止自动重试。成功回答落盘后才结清匹配历史。 |
+| OpenCode、Grok、Kimi 的自定义 HOME 文件变化未进入启动身份。 | `provider_profile.rs` 让配置物化与启动指纹共用路径规则，指纹读取已捕获环境中的实际路径。继续保留专用目录优先级与 Windows 变量大小写规则。 |
+| 失败或取消轮次保存部分回答后返回成功，自动化继续下游，手动压缩更新成功时间。 | 共同运行入口返回明确的已持久化终态。自动化与压缩要求完成终态，普通聊天继续消费已经保存的回答与错误记录。 |
+| 诊断把 `conv_<uuid>` 当作裸 UUID，省略宿主对话归属。 | `diagnostics.rs` 验证并保留完整宿主 ID，包括自动化 ID。非法或超过 256 字节的 ID 省略，原有脱敏和容量上限不变。 |
+
+参考仍使用计划中的固定 T3 快照。历史交付参考 [ContextHandoffDelivery](https://github.com/pingdotgg/t3code/blob/6577c6b6185167c0e502fa01f9e8e8f2dee6ff25/apps/server/src/orchestration-v2/ContextHandoffDelivery.ts)，终态参考 [ProviderAdapter](https://github.com/pingdotgg/t3code/blob/6577c6b6185167c0e502fa01f9e8e8f2dee6ff25/packages/provider-core/src/server/ProviderAdapter.ts)，有效目录参考同版本的 ClaudeHome 与 CodexHomeLayout，诊断归属参考 [ProviderEventLoggers](https://github.com/pingdotgg/t3code/blob/85bd3f2a2a0ad4a8ddf2950e01db80765e9a1bf4/packages/provider-core/src/server/ProviderEventLoggers.ts)。复用的是交付、终态和身份约束，没有引入 T3 的服务框架或新依赖。
+
+新增运行回归在 Windows 测试进程内启动临时 Python ACP 对端，通过真实管道、生产 actor、共同运行入口与临时对话仓库验证。对端只返回固定数据，不执行真实 CLI 或模型请求。HOME 回归使用临时配置文件与真实启动身份计算。修复前四个 HOME 测试失败，五个运行测试中四个命中预期失败，部分回答保存的对照通过。
+
+修复后，11 项针对性回归全部通过，Windows Rust 全量 lib 测试 **3232 项通过、56 项按原配置跳过**。成功、失败和协议取消均检查持久化回答与单次终态。压缩失败保留原时间、警告、计数和边界；外部上下文原有的 `summary = None` 重算规则不变。HOME 用例另覆盖专用目录优先级、大小写别名和捕获路径之外的文件变化。诊断测试覆盖普通与自动化 ID、无效输入及长度边界。
+
+独立正确性复审未发现新的 P1/P2。注释复审移除一条重复叙述，保留公共返回契约与日志长度限制说明。另修正上一轮指出的历史回归用例格式遗漏，没有格式化无关代码。Laziness Protocol 促使路径计算继续归原模块，Type System Discipline 将持久化收尾与执行成功分开，Fix Root Causes 将修复落在共同运行入口，Prove It Works 通过相同生产调用路径验证先失败后通过。
+
+协议一致性、TypeScript、架构、Clippy 全目标检查及差异空白检查通过。Clippy 仍报告非阻断警告，不作零警告声明。新增回归文件、诊断、profile 与历史生命周期测试文件的格式检查通过；全仓 `cargo fmt --all -- --check` 仍因多处存量格式差异失败，未将其报告为通过，也未扩大本次修改范围。
+
+本轮证据保存在忽略目录 `.scratch/external-cli-review-fixes/`。`home-red.log` 与 `runtime-red-2.log` 是有效失败复现；较早的 `runtime-red.log` 是测试夹具初始化失败，不计入缺陷证据。`regressions-green.log` 与 `full-rust.log` 保存修复后结果，`final-correctness-review.md` 保存独立复审结论。测试使用普通 Windows libtest 入口，ACP 夹具要求 PATH 可找到 Python 3。
+
+本轮没有启动或操作 SDK 工作树的 Dev，没有执行真实 CLI 账号、安装或模型请求。新增取消用例由协议对端报告取消，不单独证明用户点击停止的时序。Pi 连续压缩拒绝、Codex skill slash 等待窗口的后台审批，以及旧安装旁路占用仍属于前轮列出的待验证风险，本次没有将其宣称为已修复。
+
 ## 验证边界
 
-除上节 OpenCode 的实际模型请求外，未运行其他 CLI 的真实模型请求、登录、安装更新或桌面完整联调，未验证 WSL、Linux/macOS 实机及远端 CI。本机桌面控制接口不可用，OpenCode 补验使用已有调试入口进入相同后端生成路径，未自动操作聊天窗口。Windows 受控子进程测试不能证明 WSL 内后代进程清理；路径转换测试也不等于 WSL 实机验证。各 CLI 样本仅证明文档列明的版本及片段，不证明任意升级版本兼容。诊断摘要有损且容量有限，不是完整会话录制。
+除前述 OpenCode 的实际模型请求外，未运行其他 CLI 的真实模型请求、登录、安装更新或桌面完整联调，未验证 WSL、Linux/macOS 实机及远端 CI。本机桌面控制接口不可用，OpenCode 补验使用已有调试入口进入相同后端生成路径，未自动操作聊天窗口。Windows 受控子进程测试不能证明 WSL 内后代进程清理；路径转换测试也不等于 WSL 实机验证。各 CLI 样本仅证明文档列明的版本及片段，不证明任意升级版本兼容。诊断摘要有损且容量有限，不是完整会话录制。
 
 独立审查使用当前可用的 GPT 家族模型，未执行跨模型家族评审。没有发现其他确认问题不等于证明全部路径无缺陷。既有平台限制、未托管终端的并发修改、宿主崩溃时跨文件原子性及 npm 包版本回滚仍按任务记录中的边界处理。

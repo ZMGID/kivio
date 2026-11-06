@@ -62,6 +62,25 @@ fn context_reset_notice_event() -> UnifiedAgentEvent {
 /// 崩溃留下的残渣 24h 后被回收。
 const SYSTEM_PROMPT_FILE_PREFIX: &str = "kivio-extsys-";
 
+/// The assistant message is saved and its terminal event is published.
+#[must_use]
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExternalCliTurnOutcome {
+    Completed,
+    Failed(String),
+    Cancelled,
+}
+
+impl ExternalCliTurnOutcome {
+    pub fn require_completed(self) -> Result<(), String> {
+        match self {
+            Self::Completed => Ok(()),
+            Self::Failed(message) => Err(message),
+            Self::Cancelled => Err("cancelled".into()),
+        }
+    }
+}
+
 fn translate_cli_dirs(cli_bin: &Path, dirs: Vec<String>) -> Vec<String> {
     dirs.into_iter()
         .map(|dir| {
@@ -101,7 +120,7 @@ pub async fn run_external_cli_slash_command(
     state: &State<'_, AppState>,
     conversation: &mut Conversation,
     slash_command: &str,
-) -> Result<(), String> {
+) -> Result<ExternalCliTurnOutcome, String> {
     if !is_cli_slash_input(slash_command) {
         return Err("外部 CLI slash 命令必须以 / 开头".to_string());
     }
@@ -130,7 +149,7 @@ pub async fn run_external_cli_reply(
     file_paths: &[std::path::PathBuf],
     active_skill_id: Option<&str>,
     entry: AgentRunEntry,
-) -> Result<(), String> {
+) -> Result<ExternalCliTurnOutcome, String> {
     run_external_cli_reply_in(
         app,
         state,
@@ -159,7 +178,7 @@ pub(crate) async fn run_external_cli_reply_in(
     active_skill_id: Option<&str>,
     entry: AgentRunEntry,
     working_directory: Option<&std::path::Path>,
-) -> Result<(), String> {
+) -> Result<ExternalCliTurnOutcome, String> {
     let run_generation = state
         .chat_runtime()
         .begin_reply_generation(&conversation.id)
@@ -233,7 +252,7 @@ async fn run_external_cli_reply_owned(
     run_id: &str,
     lease: &crate::external_agents::session::live::SessionLease<'_>,
     finalizes_reply: &std::sync::atomic::AtomicBool,
-) -> Result<(), String> {
+) -> Result<ExternalCliTurnOutcome, String> {
     let settings = state.settings_read().clone();
     let agent_id = conversation
         .agent_runtime
@@ -1022,6 +1041,7 @@ async fn run_external_cli_reply_owned(
     // into a collapsible `<details>` rather than being shown verbatim as the bubble body.
     let turn_error = resolve_turn_error(read_result.as_ref().err(), stream_error.as_ref());
     let mut error_rendered = false;
+    let mut failure_message = None;
     if let Some(err) = turn_error {
         if is_cancellation(err) {
             stream_outcome = "cancelled".to_string();
@@ -1030,6 +1050,7 @@ async fn run_external_cli_reply_owned(
             let classified =
                 crate::external_agents::errors::classify(err, exit_code, &stderr_output, &agent_id);
             let bubble = classified.render_bubble();
+            failure_message = Some(classified.user_message);
             append_final_text(
                 &mut content,
                 &mut segments,
@@ -1203,7 +1224,13 @@ async fn run_external_cli_reply_owned(
         conversation.revision,
     );
 
-    Ok(())
+    Ok(match terminal_outcome.as_str() {
+        "completed" => ExternalCliTurnOutcome::Completed,
+        "cancelled" => ExternalCliTurnOutcome::Cancelled,
+        _ => ExternalCliTurnOutcome::Failed(
+            failure_message.unwrap_or_else(|| format!("{} 执行失败", def.name)),
+        ),
+    })
 }
 
 #[derive(Default)]
@@ -1893,11 +1920,9 @@ where
         _busy = state.external_live_sessions().mark_busy_exact(conversation_id, &next_control);
         lease.track(&next_control);
         control = next_control;
-        prompt = if resumed {
-            reuse_prompt.to_string()
-        } else {
-            first_prompt.to_string()
-        };
+        if !resumed {
+            prompt = first_prompt.to_string();
+        }
         // A fresh reconnect after an in-run session failure drops whatever context that session
         // had accumulated this run — surface it rather than silently continuing on a blank slate.
         // 但**真的续上了**原生会话时不能发这条（claude 的 argv 仍带 `--resume` 就属于这种）：
@@ -3527,7 +3552,10 @@ async fn connect_persistent_session(
         spawn_dsh_session_actor_with_sink, DshJsonRpcSession,
     };
 
-    let capture = app.state::<AppState>().native_diagnostics().connection(protocol, Uuid::parse_str(conversation_id).ok());
+    let capture = app
+        .state::<AppState>()
+        .native_diagnostics()
+        .connection(protocol, Some(conversation_id));
     capture.scope_spawn(async {
         let identity = crate::external_agents::session::live::SessionIdentity::default();
         let background_task_sink = Some(background_task_sink(app, conversation_id, identity.clone()));
