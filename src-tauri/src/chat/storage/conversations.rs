@@ -213,6 +213,9 @@ pub(crate) fn delete_conversation(app: &AppHandle, id: &str) -> Result<Vec<Strin
     if let Ok(draft) = draft_journal_path(app, id) {
         let _ = fs::remove_file(draft);
     }
+    if let Ok(fence) = crate::chat::draft_journal::stop_fence_path(app, id) {
+        let _ = fs::remove_file(fence);
+    }
     let attachments_dir = match conversations_dir(app) {
         Ok(dir) => Some(dir.join(format!("{}_attachments", id))),
         Err(e) => {

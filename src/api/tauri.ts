@@ -710,6 +710,7 @@ export type ChatToolsConfig = {
   taskIsolationEnabled?: boolean
   taskAgentSoftRequestBudget?: Record<string, number | null>
   taskAgentModelOverrides?: Record<string, string[] | null>
+  taskDisabledAgents?: string[]
   taskAgentCompactionThresholdOverrides?: Record<string, number | string | null>
   taskPrewalk?: boolean
   taskAgentPrewalk?: Record<string, string | null>
@@ -1015,6 +1016,14 @@ export function isOpenCodeFree(provider: ModelProvider): boolean {
 export function providerAuthenticationReady(provider: ModelProvider): boolean {
   // API keys are optional for local/anonymous endpoints; OAuth still requires login.
   return !provider.request.oauth || Boolean(provider.request.oauth.credentialId)
+}
+
+export type SubagentRoleSummary = {
+  id: string
+  name: string
+  description: string
+  source: string
+  unsupported: string[]
 }
 
 export type ProviderRequestConfig = {
@@ -2246,6 +2255,8 @@ export const api = {
       })
     })
   },
+  chatSubagentRoles: (conversationId?: string) =>
+    invoke<SubagentRoleSummary[]>('chat_subagent_roles', { conversationId }),
   onChatSubagent: (listener: (payload: ChatSubagentPayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return onChatProtocol((event) => {
@@ -2270,6 +2281,12 @@ export const api = {
   onChatSubagentIrc: (listener: (payload: import('../generated/chatProtocol').SubagentIrcMessage) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<import('../generated/chatProtocol').SubagentIrcMessage>('subagent-irc', listener)
+  },
+  onChatSubagentActivity: (listener: (conversationId: string) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return onChatProtocol(event => {
+      if (event.scope === 'conversation' && event.type === 'subagent_activity_added') listener(event.conversationId)
+    })
   },
   onChatUserPrompt: (listener: (payload: ChatUserPromptPayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})

@@ -23,6 +23,7 @@ vi.mock('../../api/tauri', () => ({
     onChatTool: listen('tool'),
     onChatSubagent: listen('subagent'),
     onChatSubagentIrc: listen('irc'),
+    onChatSubagentActivity: listen('subagentActivity'),
     onChatToolConfirm: listen('toolConfirm'),
     onChatToolConfirmWithdraw: listen('toolConfirmWithdraw'),
     onChatSessionConsent: listen('sessionConsent'),

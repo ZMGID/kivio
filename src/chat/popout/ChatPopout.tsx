@@ -5,6 +5,8 @@ import { configureChatProtocolFilter } from '../../api/chatProtocol'
 import { ApprovalCard } from '../ApprovalCard'
 import { AskUserBlock } from '../AskUserBlock'
 import { InputBar } from '../InputBar'
+import { useStreamCoarse } from '../streamingStore'
+import { useBackgroundTaskWait } from '../useBackgroundTaskWait'
 import { GoalCard } from '../GoalCard'
 import { composerGoal } from '../goalPresentation'
 import { ChatTitlebar } from '../ChatTitlebar'
@@ -127,6 +129,8 @@ function ChatPopoutBody({
   lang: Lang
 }) {
   const session = usePopoutSession(conversationId, lang)
+  const { streaming, streamFrozen } = useStreamCoarse()
+  const stopBackgroundWait = useBackgroundTaskWait(streaming || streamFrozen || !session.conversation ? null : conversationId, lang)
   const visibleGoal = composerGoal(session.conversation?.goal_state ?? session.conversation?.goalState,
     session.conversation?.messages ?? [])
   const titlebar = (
@@ -176,10 +180,10 @@ function ChatPopoutBody({
         </div>
       )}
       <Suspense fallback={<MessageListLoading />}>
-        <MessageList key={conversationId} {...session.messageListProps} />
+        <MessageList key={conversationId} {...session.messageListProps} waitingForBackgroundTasks={Boolean(stopBackgroundWait)} />
       </Suspense>
       <PopoutPendingSlot session={session} />
-      <InputBar {...session.inputBarProps} goalSlot={visibleGoal && (
+      <InputBar {...session.inputBarProps} onStopBackgroundWait={stopBackgroundWait} goalSlot={visibleGoal && (
         <GoalCard
           goal={visibleGoal}
           onEdit={session.editGoal}

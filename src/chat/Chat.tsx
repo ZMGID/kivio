@@ -1466,13 +1466,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     refreshSidebar()
   }, [applyConversationIfCurrent, refreshSidebar])
 
-  useTauriEvent(api.onChatSubagentIrc, (message) => {
-    if (message.observation || message.conversationId !== currentConversationIdRef.current || popoutOwner.owns(message.conversationId)) return
+  const refreshAgentMessages = useCallback((id: string) => {
+    if (id !== currentConversationIdRef.current || popoutOwner.owns(id)) return
     const lease = captureConversationNavigation()
-    void chatApi.getConversation(message.conversationId).then(updated => {
-      if (isCurrentConversationNavigation(lease) && !popoutOwner.owns(message.conversationId)) applyConversationIfCurrent(message.conversationId, updated)
-    }).catch(error => console.error('Failed to refresh incoming agent message:', error))
+    void chatApi.getConversation(id).then(updated => {
+      if (isCurrentConversationNavigation(lease) && !popoutOwner.owns(id)) applyConversationIfCurrent(id, updated)
+    }).catch(error => console.error('Failed to refresh agent messages:', error))
   }, [applyConversationIfCurrent, popoutOwner])
+  useTauriEvent(api.onChatSubagentIrc, message => {
+    if (!message.observation) refreshAgentMessages(message.conversationId)
+  }, [refreshAgentMessages])
+  useTauriEvent(api.onChatSubagentActivity, refreshAgentMessages, [refreshAgentMessages])
 
   useTauriEvent(api.onChatHook, (payload) => {
     const currentConversationId = currentConversationIdRef.current
@@ -3090,7 +3094,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
                   projectCwd={dockWorkdir || undefined}
                 />
               ) : chatView === 'mcp' ? (
-                <McpCenter heading={<PluginCenterHeading value={chatView} onChange={handleSidebarOpenExtensionsItem} />} />
+                <McpCenter conversationId={currentConversation?.id} heading={<PluginCenterHeading value={chatView} onChange={handleSidebarOpenExtensionsItem} />} />
               ) : (
                 <MarketPage
                   heading={<PluginCenterHeading value={chatView} onChange={handleSidebarOpenExtensionsItem} />}

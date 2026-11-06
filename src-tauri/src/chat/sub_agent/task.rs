@@ -10,7 +10,7 @@ use tokio::sync::{oneshot, watch};
 use crate::agents::{find_definition, AgentDefinition};
 use crate::mcp::native_registry::NativeToolFuture;
 use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
-use crate::settings::Settings;
+use crate::settings::{ChatToolsConfig, Settings};
 
 use super::{executor, names, prompts, registry, spawn, SubAgentCallCtx, MAIN_AGENT_ID, TASK_TOOL_NAME};
 
@@ -204,6 +204,11 @@ impl<'a> SpawnPolicy<'a> {
         }))
     }
 
+    fn available(&self, definition: &AgentDefinition, settings: &ChatToolsConfig) -> bool {
+        self.allows(definition) && definition.unsupported.is_empty()
+            && settings.ensure_subagent_role_enabled(&definition.name).is_ok()
+    }
+
     fn description(&self) -> String {
         match &self.allowed {
             None => "*".into(),
@@ -214,16 +219,20 @@ impl<'a> SpawnPolicy<'a> {
 }
 
 pub fn tool_definition(defs: &[AgentDefinition], settings: &Settings) -> ChatToolDefinition {
-    tool_definition_with_policy(defs, settings, None)
+    tool_definition_with_policy(defs, settings, None, true)
 }
 
 pub(crate) fn tool_definition_with_policy(
     defs: &[AgentDefinition],
     settings: &Settings,
     spawns: Option<&str>,
+    main_agent: bool,
 ) -> ChatToolDefinition {
     let policy = SpawnPolicy::new(spawns);
-    let available: Vec<_> = defs.iter().filter(|def| policy.allows(def) && def.unsupported.is_empty()).collect();
+    let available: Vec<_> = defs.iter().filter(|def| policy.available(def, &settings.chat_tools)).collect();
+    let default_agent = find_definition(defs, policy.default_agent())
+        .filter(|definition| policy.available(definition, &settings.chat_tools))
+        .map(|definition| definition.name.as_str());
     let agent_list = available.iter()
         .map(|def| {
             let read_only = def.tools.as_ref().is_some_and(|tools| {
@@ -238,15 +247,15 @@ pub(crate) fn tool_definition_with_policy(
         })
         .collect::<String>();
     let async_guidance = prompts::render(prompts::TASK_ASYNC_CONTRACT, &json!({
-        "waitTool": true, "ircEnabled": true
+        "waitTool": true, "ircEnabled": true, "mainAgent": main_agent
     }));
     let mut description = prompts::render(prompts::TASK_TOOL, &json!({
         "asyncGuidance": async_guidance,
         "asyncEnabled": settings.chat_tools.task_async_enabled,
         "hasBlockingAgents": available.iter().any(|def| def.blocking),
-        "defaultAgent": policy.default_agent(),
+        "defaultAgent": default_agent,
         "scoutAvailable": available.iter().any(|def| def.name.eq_ignore_ascii_case("scout")),
-        "spawningDisabled": policy.allowed.as_ref().is_some_and(Vec::is_empty),
+        "spawningDisabled": available.is_empty(),
         "hasModelMentions": false,
         "ircEnabled": true,
         "agentList": agent_list,
@@ -340,7 +349,7 @@ fn preflight(
     defs: &[AgentDefinition],
     spawns: Option<&str>,
     depth: u8,
-    max_depth: i32,
+    settings: &ChatToolsConfig,
 ) -> Result<(String, Vec<PlannedTask>), String> {
     let obj = args.as_object().ok_or("Expected an object with `context` and `tasks`.")?;
     if obj.contains_key("agent") {
@@ -391,6 +400,7 @@ fn preflight(
     }
     let context = obj.get("context").and_then(Value::as_str).filter(|s| !s.trim().is_empty())
         .ok_or("Missing `context`. Provide shared background for this batch.")?;
+    let max_depth = settings.task_max_recursion_depth;
     if (max_depth >= 0 && i32::from(depth) >= max_depth) || depth == u8::MAX {
         return Err(format!("Task recursion depth limit reached (depth {depth}, maximum {max_depth})."));
     }
@@ -403,12 +413,13 @@ fn preflight(
         let solution_space = item["solutionSpace"].as_str().expect("validated solutionSpace");
         let agent = item.get("agent").and_then(Value::as_str).map(str::trim).unwrap_or_else(|| policy.default_agent());
         let definition = find_definition(defs, agent).ok_or_else(|| {
-            let available = defs.iter().filter(|def| policy.allows(def)).map(|def| def.name.as_str()).collect::<Vec<_>>().join(", ");
+            let available = defs.iter().filter(|def| policy.available(def, settings)).map(|def| def.name.as_str()).collect::<Vec<_>>().join(", ");
             format!("{label}: unknown agent `{agent}`. Available agents: {}.", if available.is_empty() { "none" } else { &available })
         })?;
         if !policy.allows(definition) {
             return Err(format!("{label}: agent `{}` is not allowed. Allowed agents: {}.", definition.name, policy.description()));
         }
+        settings.ensure_subagent_role_enabled(&definition.name)?;
         if !definition.unsupported.is_empty() {
             return Err(format!("{label}: agent `{}` requires unavailable capabilities: {}.", definition.name, definition.unsupported.join(", ")));
         }
@@ -469,7 +480,7 @@ async fn prepare(ctx: &SubAgentCallCtx<'_>, invocation: spawn::ModelInvocation) 
     };
     let (context, mut planned) = preflight(
         ctx.arguments, &catalog.agents, parent.and_then(|def| def.spawns.as_deref()),
-        ctx.native_ctx.depth, settings.chat_tools.task_max_recursion_depth,
+        ctx.native_ctx.depth, &settings.chat_tools,
     )?;
     if owner != MAIN_AGENT_ID {
         let saved = super::lifecycle::spawn_policy_for_run(&ctx.state.sub_agents, &ctx.native_ctx.run_id).ok_or("Spawning authority is unavailable for this run")?;
@@ -796,7 +807,13 @@ fn emit_progress(app: &tauri::AppHandle, run_id: &str, tool_call_id: &str, recor
 async fn replay_progress(app: &tauri::AppHandle, run_id: &str, tool_call_id: &str, run: &SpeculativeRun) {
     let state = app.state::<crate::state::AppState>();
     let Some(snapshot) = state.sub_agents.jobs.get(&run.job_id) else { return };
+    let mut record = run.record.clone();
+    record.run_id = Some(format!("subrun-{}-{}", record.generation, run.job_id));
+    if snapshot.execution_started {
+        crate::chat::protocol::record_subagent_started(app, &record, run_id, tool_call_id).await;
+    }
     let status = match snapshot.status {
+        super::jobs::JobStatus::Running if !snapshot.execution_started => "pending",
         super::jobs::JobStatus::Running => "running",
         super::jobs::JobStatus::Completed => "completed",
         super::jobs::JobStatus::Failed => "failed",
@@ -806,7 +823,7 @@ async fn replay_progress(app: &tauri::AppHandle, run_id: &str, tool_call_id: &st
         .or(snapshot.result)
         .or_else(|| snapshot.progress.as_ref().and_then(|p| p["recentOutput"].as_array())
             .map(|lines| lines.iter().rev().filter_map(Value::as_str).collect::<Vec<_>>().join("\n")));
-    let mut event = progress_event(tool_call_id, &run.record, status);
+    let mut event = progress_event(tool_call_id, &record, status);
     if let crate::chat::protocol::ChatRunEvent::SubagentUpdated { preview: target, .. } = &mut event {
         *target = preview;
     }
@@ -830,8 +847,9 @@ mod tests {
     #[test]
     fn validates_the_whole_batch_and_wire_shape() {
         let defs = crate::agents::builtin_agent_definitions();
+        let settings = ChatToolsConfig::default();
         let valid = batch(json!([one("Alpha", "task"), one("Beta", "scout")]));
-        assert_eq!(preflight(&valid, &defs, None, 0, 2).unwrap().1.len(), 2);
+        assert_eq!(preflight(&valid, &defs, None, 0, &settings).unwrap().1.len(), 2);
         for args in [
             json!({"context": "", "tasks": [one("A", "task")]}),
             batch(json!([])),
@@ -851,25 +869,45 @@ mod tests {
             batch(json!([one("A\\B", "task")])),
             batch(json!([one("A:B", "task")])),
         ] {
-            assert!(preflight(&args, &defs, None, 0, 2).is_err(), "accepted {args}");
+            assert!(preflight(&args, &defs, None, 0, &settings).is_err(), "accepted {args}");
         }
-        assert!(preflight(&batch(json!([one("A", "unknown")])), &defs, None, 0, 2)
+        assert!(preflight(&batch(json!([one("A", "unknown")])), &defs, None, 0, &settings)
             .unwrap_err().contains("Available agents:"));
         let names = batch(json!([one("  测试 Alpha.Beta  ", "task")]));
-        assert_eq!(preflight(&names, &defs, None, 0, 2).unwrap().1[0].name.as_deref(), Some("测试 Alpha.Beta"));
+        assert_eq!(preflight(&names, &defs, None, 0, &settings).unwrap().1[0].name.as_deref(), Some("测试 Alpha.Beta"));
         let duplicates = batch(json!([one("ÄBC", "task"), one("äbc", "task")]));
-        assert!(preflight(&duplicates, &defs, None, 0, 2).is_err());
+        assert!(preflight(&duplicates, &defs, None, 0, &settings).is_err());
     }
 
     #[test]
     fn policy_enforces_role_and_depth_limits() {
         let defs = crate::agents::builtin_agent_definitions();
+        let mut settings = ChatToolsConfig::default();
         let no_agent = batch(json!([{"task": "x", "solutionSpace": "x"}]));
-        assert_eq!(preflight(&no_agent, &defs, Some("scout, task"), 1, 2).unwrap().1[0].definition.name, "scout");
-        assert!(preflight(&batch(json!([one("A", "task")])), &defs, Some("scout"), 0, 2).is_err());
-        assert!(preflight(&no_agent, &defs, Some(""), 0, 2).is_err());
-        assert!(preflight(&no_agent, &defs, None, 2, 2).is_err());
-        assert!(preflight(&no_agent, &defs, None, 8, -1).is_ok());
+        assert_eq!(preflight(&no_agent, &defs, Some("scout, task"), 1, &settings).unwrap().1[0].definition.name, "scout");
+        assert!(preflight(&batch(json!([one("A", "task")])), &defs, Some("scout"), 0, &settings).is_err());
+        assert!(preflight(&no_agent, &defs, Some(""), 0, &settings).is_err());
+        assert!(preflight(&no_agent, &defs, None, 2, &settings).is_err());
+        settings.task_max_recursion_depth = -1;
+        assert!(preflight(&no_agent, &defs, None, 8, &settings).is_ok());
+    }
+
+    #[test]
+    fn disabled_role_is_hidden_and_cannot_be_selected_by_alias_or_default() {
+        let mut defs = crate::agents::builtin_agent_definitions();
+        defs.iter_mut().find(|role| role.name == "scout").unwrap().id = "scout-alias".into();
+        let mut settings = Settings::default();
+        settings.chat_tools.task_disabled_agents = vec!["task".into(), "scout".into()];
+        let no_agent = batch(json!([{"task": "x", "solutionSpace": "x"}]));
+        for args in [no_agent, batch(json!([one("A", "SCOUT"), one("B", "reviewer")])), batch(json!([one("A", "scout-alias")]))] {
+            assert!(preflight(&args, &defs, None, 0, &settings.chat_tools)
+                .unwrap_err().contains("disabled in settings"));
+        }
+        let description = tool_definition(&defs, &settings).description;
+        assert!(!description.lines().any(|line| line.starts_with("- `scout`")));
+        assert!(description.lines().any(|line| line.starts_with("- `reviewer`")));
+        settings.chat_tools.task_disabled_agents.clear();
+        assert!(preflight(&batch(json!([one("A", "scout-alias")])), &defs, None, 0, &settings.chat_tools).is_ok());
     }
 
     #[test]

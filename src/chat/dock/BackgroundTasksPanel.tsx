@@ -6,6 +6,8 @@ import { api, type BackgroundTaskInfo } from '../../api/tauri'
 import { i18n, type Lang } from '../../components/i18n'
 import { partitionTasks } from '../backgroundTasks'
 import { updateBackgroundTasks, useBackgroundTasks } from '../useBackgroundTasks'
+import { SubagentTaskList } from '../AgentHub'
+import { useSubagentRoster } from '../useSubagentRoster'
 
 function formatElapsed(secs: number): string {
   if (secs < 60) return `${secs}s`
@@ -30,6 +32,7 @@ type BackgroundTasksPanelProps = {
 export function BackgroundTasksPanel({ active, lang, conversationId }: BackgroundTasksPanelProps) {
   const t = i18n[lang]
   const tasks = useBackgroundTasks(conversationId, active)
+  const { roster } = useSubagentRoster(active ? conversationId : null)
   const stopping = useRef<Set<string>>(new Set())
 
   const { running, finished } = partitionTasks(tasks)
@@ -70,7 +73,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
         ? t.chatBgStatusFailed
         : t.chatBgStatusStopped
 
-  if (tasks.length === 0) {
+  if (tasks.length === 0 && !roster?.agents.length) {
     return (
       <div className="grid flex-1 place-items-center px-6 text-center text-[12.5px] text-neutral-400 dark:text-neutral-500">
         {t.chatBgEmpty}
@@ -80,6 +83,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
 
   return (
     <div className="shrink-0 px-2 py-2">
+      {conversationId && roster && <SubagentTaskList key={conversationId} conversationId={conversationId} roster={roster} />}
       {running.length > 0 && (
         <div className="px-1 py-1.5 text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
           {t.chatBgRunning} · {running.length}

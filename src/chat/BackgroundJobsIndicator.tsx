@@ -1,4 +1,4 @@
-import { TerminalSquare } from 'lucide-react'
+import { ListChecks } from 'lucide-react'
 import { useT } from '../components/i18n'
 import { chatTitlebarIconButtonClass } from './platform'
 import { partitionTasks } from './backgroundTasks'
@@ -6,8 +6,7 @@ import { useBackgroundTasks } from './useBackgroundTasks'
 
 /**
  * Header status light for background tasks (built-in `run_command background:true`
- * jobs + the external CLI's self-reported background tasks). Renders nothing when
- * the list is empty; green + ping while anything is running. Clicking opens the
+ * jobs + the external CLI's self-reported background tasks). Clicking opens the
  * right dock's Tasks tab — the full panel (stop / clear / finished list) lives
  * there (`dock/BackgroundTasksPanel.tsx`), not in a popover.
  */
@@ -22,7 +21,7 @@ export function BackgroundJobsIndicator({
   const t = useT()
   const tasks = useBackgroundTasks(conversationId)
 
-  if (tasks.length === 0) return null
+  if (!conversationId) return null
 
   const { running } = partitionTasks(tasks)
   const label =
@@ -41,7 +40,7 @@ export function BackgroundJobsIndicator({
       title={label}
       aria-label={label}
     >
-      <TerminalSquare size={16} strokeWidth={1.8} />
+      <ListChecks size={16} strokeWidth={1.8} />
       {running.length > 0 && (
         <span className="absolute -right-0.5 -top-0.5 flex size-2">
           <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />

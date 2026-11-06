@@ -1646,7 +1646,7 @@ mod tests {
         );
         let prompt = format!("{}\n{}", prompt.system, prompt.context);
         assert!(prompt.contains("fan substantial work to `task`"));
-        assert!(prompt.contains("use `wait` only when completely blocked"));
+        assert!(prompt.contains("Follow the task tool's handoff guidance when blocked"));
         assert!(!prompt.contains("To add a PERMANENT role"));
         assert!(!prompt.contains("There is no polling or collection tool"));
         assert!(!prompt.contains("Required flow"));

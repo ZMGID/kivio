@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const scenarios = ['batch-scouts', 'idle-auto-result', 'nested-irc', 'task-error', 'cancel-resume', 'eval-shared', 'workpool-reuse']
+const scenarios = ['batch-scouts', 'idle-auto-result', 'single-event-wait', 'nested-irc', 'task-error', 'cancel-resume', 'eval-shared', 'workpool-reuse']
 const options = {}
 const filters = []
 for (let index = 2; index < process.argv.length; index++) {
@@ -201,7 +201,7 @@ async function runScenario(name) {
     return { conversationId: result.conversationId, agents: children.map((child) => child.init.id) }
   }
   if (name === 'idle-auto-result') {
-    const result = await turn(name, { prompt: 'Call task once with {"context":"Delayed output tests idle automatic result delivery.","tasks":[{"name":"Smoke-delayed","agent":"probe-delay","solutionSpace":"Run the fixture command only.","task":"Run node delayed.cjs once with bash and return its exact output. The intentional delay must finish."}]}. Do not wait, read files, call other tools, or continue working. Immediately finish this first turn with only DISPATCHED. When its result arrives automatically in a later turn, reply with exactly the child output.' })
+    const result = await turn(name, { prompt: 'Use task to delegate this check to probe-delay. The child should run node delayed.cjs once with bash and report the exact output. I only need you to relay that output when available. The child owns the entire check, so do not run commands or read files yourself.' })
     completed(result)
     assert(!(result.toolCalls ?? []).some((call) => /(^|__)wait$/.test(call.name)), 'Initial parent must become idle without waiting')
     const baseline = conversation(result.conversationId)
@@ -213,10 +213,23 @@ async function runScenario(name) {
       return current && autoReply(current, fixtures.idle, ids) ? current : null
     }, 240_000, 'new completed assistant reply after automatic child report without another user request')
     assert.equal(saved.messages.filter((message) => message.role === 'user').length, 1, 'No second user turn may trigger the result')
+    assert.equal(saved.messages.filter((message) => message.id.startsWith('subagent-result-')).length, 1, 'The child result must be delivered once')
     const [child] = await completedWorkers(result.conversationId, 1)
     requireCall(child.entries, 'bash', (call) => JSON.stringify(call.args).includes('delayed.cjs'))
     assert(child.output.includes(fixtures.idle), 'Child must obtain the private nonce from its delayed command')
     return { conversationId: result.conversationId, agent: child.init.id }
+  }
+  if (name === 'single-event-wait') {
+    const result = await turn(name, { prompt: 'Call task once with {"context":"The child must run the delayed fixture.","tasks":[{"name":"Smoke-delayed","agent":"probe-delay","solutionSpace":"Run the fixture command only.","task":"Run node delayed.cjs once with bash and return its exact output."}]}. This result is required in this same turn. Wait for it using wait {}, then reply with exactly the child output. Do not run commands or read files yourself.' })
+    completed(result)
+    const saved = conversation(result.conversationId)
+    requireCall(saved.messages, 'task')
+    const [child] = await completedWorkers(result.conversationId, 1)
+    assert(child.output.includes(fixtures.idle), 'Delayed child must produce its fixture nonce')
+    const waits = calls(saved.messages).filter(call => call.name === 'wait')
+    assert.equal(waits.length, 1, `Expected one wait until the child settled, got ${waits.length}`)
+    assert(result.answer.includes(fixtures.idle), 'Parent must receive the child result in the same turn')
+    return { conversationId: result.conversationId, agent: child.init.id, waits: waits.length }
   }
   if (name === 'nested-irc') {
     const assignment = 'Use task with nonempty context and solutionSpace to spawn exactly one probe-peer named Smoke-peer. Its full ID will be Smoke-parent.Smoke-peer. Assign it: Send write path agent://Smoke-parent content "Please read nested.txt and send its exact contents back". Then call wait {} until that reply arrives. Finish with that exact reply. You, Smoke-parent, must wait for the question, read nested.txt yourself, send its exact contents via write path agent://Smoke-parent.Smoke-peer, then wait for the peer to finish and return its exact final output. Do not put file contents in the initial task.'

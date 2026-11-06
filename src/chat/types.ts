@@ -1,4 +1,5 @@
 // Chat 前端类型定义
+import type { ChatSegmentKind } from '../generated/chatProtocol'
 
 export type ToolCallStatus =
   | 'pending'
@@ -149,7 +150,7 @@ export interface ChatToolArtifact {
   localPath?: string | null
 }
 
-export type ChatMessageSegmentKind = 'text' | 'reasoning' | 'tool'
+export type ChatMessageSegmentKind = ChatSegmentKind
 
 export type ChatMessageSegmentPhase = 'auxiliary' | 'plain' | 'tool_loop' | 'synthesis'
 

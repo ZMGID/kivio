@@ -1,9 +1,15 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { expect, it } from 'vitest'
+import { fireEvent, render, screen, within } from '@testing-library/react'
+import { beforeEach, expect, it } from 'vitest'
 import { ToolCallBlock } from './ToolCallBlock'
 import { mergeSubagentProgress } from './streamApply'
 import { mergeToolRecord } from './conversationRuns'
 import type { ToolCallRecord } from './types'
+
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
+  HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open') }
+})
+const receiptDialog = () => within(screen.getByRole('dialog'))
 
 it('shows native task assignments, shared context, and solution spaces before admission', () => {
   render(<ToolCallBlock toolCall={{
@@ -13,8 +19,8 @@ it('shows native task assignments, shared context, and solution spaces before ad
       { task: '检查协议', solutionSpace: '修改测试' },
     ] }),
   }} />)
-  expect(screen.getByText('正在启动…')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
+  expect(screen.getByRole('button', { name: '子代理 正在派工' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: '子代理 正在派工' }))
   expect(screen.getByText('共享约束')).toBeVisible()
   expect(screen.getByText('审查前端')).toBeVisible()
   expect(screen.getByText('reviewer')).toBeVisible()
@@ -44,8 +50,9 @@ it('keeps both agents live after asynchronous task admission and displays their 
   expect(second.status).toBe('success')
   expect(second.result_preview).toBe('Two agents scheduled')
   const { rerender } = render(<ToolCallBlock toolCall={second} />)
-  expect(screen.getByText('2 个运行中')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
+  expect(screen.getByRole('button', { name: 'Alpha 开始工作' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Beta 开始工作' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Alpha 开始工作' }))
   expect(screen.getByText('read A')).toBeVisible()
   expect(screen.getByText('Checking A')).toBeVisible()
   expect(screen.getByText('read B')).toBeVisible()
@@ -55,8 +62,8 @@ it('keeps both agents live after asynchronous task admission and displays their 
 
   const completed = mergeSubagentProgress(second, { ...event, taskId: 'alpha', name: 'Alpha', status: 'completed', preview: 'Alpha result' })
   rerender(<ToolCallBlock toolCall={completed} />)
-  expect(screen.getByText('1 个运行中')).toBeVisible()
-  expect(screen.getByText('已完成')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Beta 开始工作' })).toBeVisible()
+  expect(receiptDialog().getByText('已完成')).toBeVisible()
   expect(screen.getByText('Alpha result')).toBeVisible()
   expect(screen.getByText('Checking B')).toBeVisible()
 })
@@ -68,9 +75,9 @@ it('keeps progress visible if it arrives before the task receipt', () => {
     taskId: 'worker', name: 'Worker', depth: 1, status: 'running', preview: 'Inspecting',
   })
   const { rerender } = render(<ToolCallBlock toolCall={progress} />)
-  expect(screen.getByText('1 个运行中')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
-  expect(screen.getByText('Worker')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Worker 开始工作' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Worker 开始工作' }))
+  expect(receiptDialog().getByText('Worker')).toBeVisible()
   expect(screen.getByText('Inspecting')).toBeVisible()
   const admitted = mergeToolRecord(progress, { ...pending, status: 'success', result_preview: 'Spawned',
     structured_content: { agents: [{ agentId: 'worker', jobId: 'job-worker', name: 'Worker' }] } })
@@ -86,10 +93,10 @@ it('recognizes queued progress for a native wire task name', () => {
     taskId: 'queued', name: 'Queued worker', depth: 1, status: 'pending',
   })
   render(<ToolCallBlock toolCall={progress} />)
-  expect(screen.getByText('1 个等待运行')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
-  expect(screen.getByText('等待运行')).toBeVisible()
-  expect(screen.getByText('Queued worker')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Queued worker 等待运行' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Queued worker 等待运行' }))
+  expect(receiptDialog().getByText('等待运行')).toBeVisible()
+  expect(receiptDialog().getByText('Queued worker')).toBeVisible()
 })
 
 it('distinguishes failed and aborted children from successful scheduling', () => {
@@ -100,12 +107,13 @@ it('distinguishes failed and aborted children from successful scheduling', () =>
         b: { status: 'aborted', preview: 'Cancelled work' },
       } },
   }} />)
-  expect(screen.getByText('2 个已结束')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
-  expect(screen.getByText('失败')).toBeVisible()
-  expect(screen.getByText('已中断')).toBeVisible()
-  expect(screen.getByText('Child error')).toBeVisible()
-  expect(screen.getByText('Cancelled work')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'First 失败' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Second 已中断' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'First 失败' }))
+  expect(receiptDialog().getByText('失败')).toBeVisible()
+  expect(receiptDialog().getByText('已中断')).toBeVisible()
+  expect(receiptDialog().getByText('Child error')).toBeVisible()
+  expect(receiptDialog().getByText('Cancelled work')).toBeVisible()
 })
 
 it('restores mixed inline and background results after reload without regressing on late events', () => {
@@ -127,17 +135,18 @@ it('restores mixed inline and background results after reload without regressing
   }
   const reloaded = JSON.parse(JSON.stringify(persisted)) as ToolCallRecord
   const { rerender } = render(<ToolCallBlock toolCall={reloaded} />)
-  expect(screen.getByText('3 个已结束')).toBeVisible()
-  const disclosure = screen.getByRole('button', { name: /子代理/ })
-  expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+  expect(screen.getByRole('button', { name: 'Inline 已完成' })).toBeVisible()
+  const disclosure = screen.getByRole('button', { name: 'Inline 已完成' })
+  expect(disclosure).toHaveAttribute('aria-haspopup', 'dialog')
   fireEvent.click(disclosure)
-  expect(disclosure).toHaveAttribute('aria-expanded', 'true')
-  expect(screen.getByText('已完成')).toBeVisible()
-  expect(screen.getByText('失败')).toBeVisible()
-  expect(screen.getByText('已中断')).toBeVisible()
+  expect(screen.getByRole('dialog')).toBeVisible()
+  expect(disclosure).not.toHaveAttribute('aria-expanded')
+  expect(receiptDialog().getByText('已完成')).toBeVisible()
+  expect(receiptDialog().getByText('失败')).toBeVisible()
+  expect(receiptDialog().getByText('已中断')).toBeVisible()
   expect(screen.getByText('Inline final output')).toBeVisible()
-  expect(screen.getByText('Background failure')).toBeVisible()
-  expect(screen.getByText('Cancelled by caller')).toBeVisible()
+  expect(receiptDialog().getByText('Background failure')).toBeVisible()
+  expect(receiptDialog().getByText('Cancelled by caller')).toBeVisible()
   expect(screen.getByText('任务: job-background')).toBeVisible()
   expect(screen.getByText('任务: job-cancelled')).toBeVisible()
 
@@ -146,10 +155,10 @@ it('restores mixed inline and background results after reload without regressing
     taskId: 'inline', name: 'Inline', depth: 1, status: 'running', preview: 'Stale output',
   })
   rerender(<ToolCallBlock toolCall={stale} />)
-  expect(screen.getByText('3 个已结束')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'Inline 已完成' })).toBeVisible()
   expect(screen.getByText('Inline final output')).toBeVisible()
   expect(screen.queryByText('Stale output')).toBeNull()
-  expect(screen.getByText('Background failure')).toBeVisible()
+  expect(receiptDialog().getByText('Background failure')).toBeVisible()
 })
 
 it('merges receipt snapshots per child while retaining newer live progress and terminal results', () => {
@@ -168,9 +177,9 @@ it('merges receipt snapshots per child while retaining newer live progress and t
     },
   })
   const { rerender } = render(<ToolCallBlock toolCall={receipt} />)
-  expect(screen.getByText('1 个运行中')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
-  expect(screen.getByText('已完成')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'B 开始工作' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'A 已完成' }))
+  expect(receiptDialog().getByText('已完成')).toBeVisible()
   expect(screen.getByText('A final')).toBeVisible()
   expect(screen.getByText('B working')).toBeVisible()
   expect(screen.queryByText('A stale')).toBeNull()
@@ -187,56 +196,17 @@ it('merges receipt snapshots per child while retaining newer live progress and t
     },
   })
   rerender(<ToolCallBlock toolCall={finalReceipt} />)
-  expect(screen.getByText('2 个已结束')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'A 已完成' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'B 已完成' })).toBeVisible()
   expect(screen.getByText('A final')).toBeVisible()
   expect(screen.queryByText('A stale terminal snapshot')).toBeNull()
   expect(screen.getByText('B final')).toBeVisible()
 })
 
-it('shows wait progress, complete structured results, and already-delivered receipts', () => {
-  const call: ToolCallRecord = { id: 'wait', source: 'native', name: 'wait', status: 'running', arguments: {} }
-  const { rerender } = render(<ToolCallBlock toolCall={call} />)
-  expect(screen.getByText('正在等待结果')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: /等待子代理/ }))
-  rerender(<ToolCallBlock toolCall={{ ...call, status: 'success',
-    result_preview: 'Delivery: already delivered or recovered.',
-    structured_content: { op: 'wait', jobs: [
-      { id: 'job-a', agentId: 'alpha', label: 'Research', status: 'completed', result: 'Full untruncated result' },
-      { id: 'job-b', agentId: 'beta', label: 'Review', status: 'completed', result: null },
-      { id: 'job-c', agentId: 'gamma', label: 'Tests', status: 'running', progress: { stage: 'Reviewing assertions', currentToolIntent: 'run tests', recentOutput: ['Still checking'] } },
-    ] },
-  }} />)
-  expect(screen.getByText('Full untruncated result')).toBeVisible()
-  expect(screen.getByText('Delivery: already delivered or recovered.')).toBeVisible()
-  expect(screen.getByText('run tests')).toBeVisible()
-  expect(screen.getByText('Still checking')).toBeVisible()
-  expect(screen.getByText('Reviewing assertions')).toBeVisible()
-  expect(screen.getByText('任务: job-c')).toBeVisible()
-})
-
-it.each(['wait', 'native__wait'])('shows an empty %s receipt and does not hide wait errors', name => {
-  const { rerender } = render(<ToolCallBlock toolCall={{ id: 'wait', source: 'native', name, status: 'success', structured_content: { op: 'wait', jobs: [] }, result_preview: 'No tasks to wait for.' }} />)
-  fireEvent.click(screen.getByRole('button', { name: /等待子代理/ }))
-  expect(screen.getByText('No tasks to wait for.')).toBeVisible()
-  rerender(<ToolCallBlock toolCall={{ id: 'wait', source: 'native', name, status: 'error', error: '无法等待' }} />)
-  expect(screen.getByText('操作异常')).toBeVisible()
-  expect(screen.getByRole('alert')).toHaveTextContent('无法等待')
-})
-
-it('does not repeat a complete job result already included in the wait receipt', () => {
-  const { container } = render(<ToolCallBlock toolCall={{ id: 'wait', source: 'native', name: 'wait', status: 'success',
-    result_preview: 'Completed:\\nFull result',
-    structured_content: { jobs: [{ id: 'job', agentId: 'worker', label: 'Research', status: 'completed', result: 'Full result' }] },
-  }} />)
-  fireEvent.click(screen.getByRole('button', { name: /等待子代理/ }))
-  expect(container.querySelectorAll('pre')).toHaveLength(1)
-  expect(screen.getByText(/Full result/)).toBeVisible()
-})
-
 it('keeps a rejected task and its error inspectable without claiming it ran', () => {
   render(<ToolCallBlock toolCall={{ id: 'task', source: 'native', name: 'task', status: 'error', arguments: { tasks: [{ name: '调查', task: 'Read package.json', solutionSpace: 'Read only' }] }, error: 'Task rejected' }} />)
-  expect(screen.getByText('操作异常')).toBeVisible()
-  expect(screen.queryByText('已调度')).toBeNull()
+  expect(screen.getByRole('button', { name: '调查 派工失败' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: '调查 开始工作' })).toBeNull()
   fireEvent.click(screen.getByRole('button', { name: /调查/ }))
   expect(screen.getByRole('alert')).toHaveTextContent('Task rejected')
   expect(screen.getByText('Read package.json')).toBeVisible()
@@ -248,33 +218,23 @@ it('renders mixed inline results once while keeping rich asynchronous progress a
     results: [{ id: 'job-inline', agentId: 'inline', status: 'completed', result: 'Complete inline result' }],
     subagentProgressByTask: { inline: { status: 'completed', preview: 'Duplicate preview' }, async: { status: 'running', model: 'provider/model', requests: 3, toolCount: 7, tokens: 10000, contextTokens: 2000, contextWindow: 32000, durationMs: 1500, stage: 'Inspecting source', currentToolIntent: 'Read registry' } },
   } }} />)
-  expect(screen.getByText('1 个运行中')).toBeVisible()
-  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
+  expect(screen.getByRole('button', { name: 'Background 开始工作' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Inline 已完成' }))
   expect(screen.getAllByText('Complete inline result')).toHaveLength(1)
   expect(screen.queryByText('Duplicate preview')).not.toBeInTheDocument()
   expect(screen.getByText(/10,000 累计 token · 上下文 2,000 \/ 32,000/)).toBeVisible()
-  expect(screen.getByText('Read registry')).toBeVisible()
+  expect(receiptDialog().getByText('Read registry')).toBeVisible()
 })
 
-it('keeps failures visible among settled rows and the live edge visible for long active batches', () => {
+it('keeps every agent visible and in dispatch order as statuses change', () => {
   const agents = Array.from({ length: 6 }, (_, index) => ({ agentId: `a${index}`, name: `Agent ${index}` }))
   const final = Object.fromEntries(agents.map((agent, index) => [agent.agentId, { status: index === 5 ? 'failed' : 'completed', preview: `Output ${index}`, durationMs: index * 100 }]))
   const view = render(<ToolCallBlock toolCall={{ id: 'task', source: 'native', name: 'task', status: 'success', structured_content: { agents, subagentProgressByTask: final } }} />)
-  expect(screen.getByText('Agent 5')).toBeVisible()
-  expect(screen.queryByText('Agent 4')).not.toBeInTheDocument()
-  expect(screen.getByText('另有 2 项 · 展开查看全部')).toBeVisible()
+  expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual([
+    'Agent 0 已完成', 'Agent 1 已完成', 'Agent 2 已完成', 'Agent 3 已完成', 'Agent 4 已完成', 'Agent 5 失败',
+  ])
   view.rerender(<ToolCallBlock toolCall={{ id: 'task', source: 'native', name: 'task', status: 'success', structured_content: { agents, subagentProgressByTask: Object.fromEntries(agents.map(agent => [agent.agentId, { status: 'running' }])) } }} />)
-  expect(screen.getByText('Agent 5')).toBeVisible()
-  expect(screen.queryByText('Agent 0')).not.toBeInTheDocument()
-})
-
-it('distinguishes a successful interrupted wait from completion and shows its inbox message', () => {
-  render(<ToolCallBlock toolCall={{ id: 'wait', source: 'native', name: 'wait', status: 'success', structured_content: { interrupted: true, reason: 'Incoming peer question', messages: [{ id: 'irc', fromAgent: 'reviewer', toAgent: 'main', content: 'Which branch should I inspect?' }] } }} />)
-  expect(screen.getByText('等待已打断')).toBeVisible()
-  expect(screen.queryByText('已完成')).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: /等待子代理/ }))
-  expect(screen.getByText('Incoming peer question')).toBeVisible()
-  expect(screen.getByText('Which branch should I inspect?')).toBeVisible()
+  expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(agents.map(agent => `${agent.name} 开始工作`))
 })
 
 it('isolates generations and admitted child runs while retaining richer metrics through receipt merges', () => {
@@ -286,7 +246,7 @@ it('isolates generations and admitted child runs while retaining richer metrics 
   expect(mergeSubagentProgress(next, { ...event, generation: 2, childRunId: 'other', status: 'running', preview: 'Wrong run' })).toBe(next)
   const receipt = mergeToolRecord(next, { ...tool, structured_content: { agents: [{ agentId: 'worker', name: 'Worker' }], subagentProgressByTask: { worker: { generation: 1, status: 'completed', preview: 'Old receipt' } } } })
   render(<ToolCallBlock toolCall={receipt} />)
-  fireEvent.click(screen.getByRole('button', { name: /子代理/ }))
+  fireEvent.click(screen.getByRole('button', { name: 'Worker 开始工作' }))
   expect(screen.getByText('Current output')).toBeVisible()
   expect(screen.getByText(/1 请求 · 上下文 50/)).toBeVisible()
   expect(screen.queryByText('First output')).not.toBeInTheDocument()

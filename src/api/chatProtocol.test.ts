@@ -309,6 +309,21 @@ describe('chat protocol sequencing', () => {
     expect(revisions).toEqual([])
   })
 
+  it('delivers a subagent activity refresh that arrives behind a newer revision', () => {
+    const seen: string[] = []
+    chatProtocolTesting.subscribe(item => seen.push(item.type))
+    chatProtocolTesting.ingest(event(1))
+    chatProtocolTesting.ingest(event(2, 'run_completed'))
+    chatProtocolTesting.ingest({
+      protocolVersion: 1,
+      scope: 'conversation',
+      conversationId: 'conversation',
+      revision: 1,
+      type: 'subagent_activity_added',
+    })
+    expect(seen).toEqual(['run_started', 'run_completed', 'subagent_activity_added'])
+  })
+
   it('delivers a later background title update but rejects an older one', () => {
     const titles: string[] = []
     chatProtocolTesting.subscribe((item) => {

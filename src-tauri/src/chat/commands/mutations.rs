@@ -547,6 +547,7 @@ pub(crate) async fn chat_regenerate_message(
         &last_user_image_paths,
         None,
         crate::chat::agent::AgentRunEntry::Regenerate,
+        None,
     )
     .await;
     strip_transcripts_for_frontend(&mut conversation);
@@ -1791,6 +1792,7 @@ pub(crate) async fn chat_reply_with_model(
         crate::chat::agent::AgentRunEntry::Send,
         Some(&arm),
         false,
+        None,
     )
     .await;
 

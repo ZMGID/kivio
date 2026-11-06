@@ -75,6 +75,27 @@ pub struct SubagentTranscriptPage {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum SubagentActivityKind {
+    Response,
+    Tool,
+    Message,
+    Lifecycle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct SubagentActivity {
+    pub agent_id: String,
+    pub entry_id: String,
+    pub kind: SubagentActivityKind,
+    pub summary: String,
+    pub timestamp: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
@@ -154,7 +175,7 @@ fn message_text(value: &Value) -> String {
     String::new()
 }
 
-fn transcript_entry(value: Value, offset: u64) -> SubagentTranscriptEntry {
+fn transcript_entries(value: Value, offset: u64) -> Vec<SubagentTranscriptEntry> {
     let message = value.get("message").unwrap_or(&value);
     let kind = match value["type"].as_str() {
         Some("session_init" | "session") => SubagentTranscriptKind::Init,
@@ -162,14 +183,26 @@ fn transcript_entry(value: Value, offset: u64) -> SubagentTranscriptEntry {
         _ if message["role"].is_string() => SubagentTranscriptKind::Message,
         _ => SubagentTranscriptKind::Notice,
     };
-    let role = message["role"].as_str().unwrap_or_default().to_string();
+    let role = if message["_subagent_irc_id"].is_string() {
+        "irc"
+    } else {
+        message["role"].as_str().unwrap_or_default()
+    }.to_string();
     let mut content = message_text(&message["content"]);
-    if let Some(calls) = message["tool_calls"].as_array() {
-        for call in calls {
+    let timestamp = value["timestamp"].as_i64();
+    let calls = message["tool_calls"].as_array().filter(|calls| !calls.is_empty());
+    let mut entries = Vec::new();
+    if let Some(calls) = calls {
+        for (index, call) in calls.iter().enumerate() {
             let function = &call["function"];
             let name = function["name"].as_str().unwrap_or("tool");
-            content.push_str(&format!("\n{name}\n{}", function["arguments"].as_str().unwrap_or_default()));
+            let arguments = function["arguments"].as_str().unwrap_or_default();
+            entries.push(SubagentTranscriptEntry {
+                id: format!("line-{offset}-tool-{index}"), kind: SubagentTranscriptKind::Message,
+                role: "tool".into(), content: format!("{name}\n{arguments}"), timestamp,
+            });
         }
+        if content.trim().is_empty() { return entries; }
     }
     if content.is_empty() {
         content = match kind {
@@ -178,7 +211,8 @@ fn transcript_entry(value: Value, offset: u64) -> SubagentTranscriptEntry {
             _ => serde_json::to_string_pretty(&value).unwrap_or_default(),
         };
     }
-    SubagentTranscriptEntry { id: format!("line-{offset}"), kind, role, content, timestamp: value["timestamp"].as_i64() }
+    entries.insert(0, SubagentTranscriptEntry { id: format!("line-{offset}"), kind, role, content, timestamp });
+    entries
 }
 
 async fn read_page(path: &Path, id: &str, generation: u64, cursor: Option<SubagentTranscriptCursor>) -> Result<SubagentTranscriptPage, String> {
@@ -212,7 +246,7 @@ async fn read_page(path: &Path, id: &str, generation: u64, cursor: Option<Subage
             Ok(value) => value,
             Err(error) => json!({"type":"notice", "content":format!("Unreadable transcript record at byte {}: {error}", start + used as u64)}),
         };
-        entries.push(transcript_entry(value, start + used as u64));
+        entries.extend(transcript_entries(value, start + used as u64));
         used += line.len();
     }
     if used == 0 && bytes.len() as u64 > MAX_LINE_BYTES { return Err("Agent history record exceeds 8 MiB".into()); }
@@ -225,8 +259,74 @@ pub async fn transcript(app: &AppHandle, root: &str, id: &str, expected_generati
     crate::chat::storage::validate_conversation_id(root)?;
     let state = app.state::<AppState>();
     let record = state.sub_agents.registry.resolve(root, id).ok_or("Agent not found")?;
-    if !record.published || record.generation != expected_generation { return Err("Agent changed. Refresh its snapshot.".into()); }
+    if !state.sub_agents.registry.is_published(root, &record.id) || record.generation != expected_generation { return Err("Agent changed. Refresh its snapshot.".into()); }
     read_page(&record.session_file, &record.id, record.generation, cursor).await
+}
+
+const ACTIVITY_TAIL_BYTES: u64 = 256 * 1024;
+const ACTIVITY_LIMIT: usize = 200;
+
+async fn recent_activity(path: &Path, agent_id: &str) -> Result<Vec<SubagentActivity>, String> {
+    let mut file = tokio::fs::File::open(path).await.map_err(|error| error.to_string())?;
+    let length = file.metadata().await.map_err(|error| error.to_string())?.len();
+    let mut start = length.saturating_sub(ACTIVITY_TAIL_BYTES);
+    let boundary = if start == 0 { true } else {
+        file.seek(SeekFrom::Start(start - 1)).await.map_err(|error| error.to_string())?;
+        file.read_u8().await.map_err(|error| error.to_string())? == b'\n'
+    };
+    let mut bytes = Vec::new();
+    (&mut file).take(length - start).read_to_end(&mut bytes).await.map_err(|error| error.to_string())?;
+    let mut lines = bytes.split_inclusive(|byte| *byte == b'\n');
+    if !boundary {
+        start += lines.next().map_or(0, |line| line.len()) as u64;
+    }
+    let mut rows = std::collections::VecDeque::new();
+    for line in lines {
+        if !line.ends_with(b"\n") { break; }
+        let offset = start;
+        start += line.len() as u64;
+        let Ok(value) = serde_json::from_slice::<Value>(line) else { continue; };
+        let lifecycle = match value["type"].as_str() {
+            Some("turn_start") => Some("turn_start"),
+            Some("turn_end") => Some(value["progress"]["status"].as_str().unwrap_or("turn_end")),
+            Some("compaction") => Some("compaction"),
+            _ => None,
+        }.map(str::to_owned);
+        for entry in transcript_entries(value, offset) {
+            let (kind, summary) = match entry.role.as_str() {
+                "assistant" if !entry.content.trim().is_empty() => (SubagentActivityKind::Response, entry.content.as_str()),
+                "irc" => (SubagentActivityKind::Message, entry.content.as_str()),
+                "tool" => (SubagentActivityKind::Tool, entry.content.as_str()),
+                _ if lifecycle.is_some() => (SubagentActivityKind::Lifecycle, lifecycle.as_deref().unwrap_or_default()),
+                _ => continue,
+            };
+            let summary = summary.split_whitespace().flat_map(|word| word.chars().chain(std::iter::once(' ')))
+                .take(240).collect::<String>().trim_end().to_owned();
+            if rows.len() == ACTIVITY_LIMIT { rows.pop_front(); }
+            rows.push_back(SubagentActivity { agent_id: agent_id.into(), entry_id: entry.id, kind, summary, timestamp: entry.timestamp });
+        }
+    }
+    Ok(rows.into())
+}
+
+pub(crate) async fn activity(app: &AppHandle, root: &str) -> Result<Vec<SubagentActivity>, String> {
+    crate::chat::storage::validate_conversation_id(root)?;
+    crate::chat::storage::load_conversation(app, root)?;
+    let state = app.state::<AppState>();
+    let mut agents = super::lifecycle::discover(app, root).await?;
+    agents.retain(|agent| state.sub_agents.registry.is_published(root, &agent.id));
+    agents.sort_by(|a, b| b.last_activity.cmp(&a.last_activity).then_with(|| a.id.cmp(&b.id)));
+    let mut rows = Vec::new();
+    // shortcut: scan a bounded recent window; add a persisted index for paging older activity.
+    for agent in agents.into_iter().take(64) {
+        match recent_activity(&agent.session_file, &agent.id).await {
+            Ok(entries) => rows.extend(entries.into_iter().rev().map(|row| (row.timestamp.unwrap_or(agent.last_activity), row))),
+            Err(_) if !agent.session_file.exists() => {}
+            Err(error) => eprintln!("Cannot read subagent activity for {}: {error}", agent.id),
+        }
+    }
+    rows.sort_by(|(left, _), (right, _)| right.cmp(left));
+    Ok(rows.into_iter().take(ACTIVITY_LIMIT).map(|(_, row)| row).collect())
 }
 
 #[cfg(test)]
@@ -256,11 +356,44 @@ mod tests {
     }
 
     #[test]
-    fn transcript_displays_tools_without_executing_them() {
-        let entry = transcript_entry(json!({"role":"assistant", "tool_calls":[{"function":{"name":"write","arguments":"{\"path\":\"example\"}"}}]}), 12);
-        assert_eq!(entry.kind, SubagentTranscriptKind::Message);
-        assert!(entry.content.contains("write"));
-        assert!(entry.content.contains("example"));
+    fn transcript_separates_agent_text_from_tool_calls() {
+        let mut record = json!({"role":"assistant", "content":"Checking the file.", "tool_calls":[{"function":{"name":"write","arguments":"{\"path\":\"example\"}"}}]});
+        let entries = transcript_entries(record.clone(), 12);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].role, "assistant");
+        assert_eq!(entries[0].content, "Checking the file.");
+        assert_eq!(entries[1].role, "tool");
+        assert_eq!(entries[1].content, "write\n{\"path\":\"example\"}");
+        assert_ne!(entries[0].id, entries[1].id);
+        record["content"] = Value::Null;
+        let entries = transcript_entries(record, 12);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].role, "tool");
+    }
+
+    #[tokio::test]
+    async fn activity_points_to_projected_records_and_ignores_partial_rows() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("Scout.jsonl");
+        let entries = [
+            json!({"type":"turn_start","timestamp":100}),
+            json!({"role":"system","content":"Private system prompt"}),
+            json!({"role":"assistant","content":"Checking the file.","tool_calls":[{"function":{"name":"read","arguments":"README.md"}}]}),
+            json!({"role":"developer","content":"Peer update","_subagent_irc_id":"irc"}),
+        ];
+        let mut data = entries.iter().map(|entry| format!("{entry}\n")).collect::<String>();
+        data.push_str("{\"role\":\"assistant\",\"content\":\"Unfinished\"}");
+        tokio::fs::write(&path, data).await.unwrap();
+        let rows = recent_activity(&path, "Scout").await.unwrap();
+        assert_eq!(rows.iter().map(|row| row.kind).collect::<Vec<_>>(), [
+            SubagentActivityKind::Lifecycle, SubagentActivityKind::Response, SubagentActivityKind::Tool, SubagentActivityKind::Message,
+        ]);
+        let transcript = read_page(&path, "Scout", 1, None).await.unwrap();
+        for row in &rows {
+            assert!(transcript.entries.iter().any(|entry| entry.id == row.entry_id));
+        }
+        assert_eq!(rows[0].timestamp, Some(100));
+        assert_eq!(rows[2].summary, "read README.md");
     }
 
     #[test]

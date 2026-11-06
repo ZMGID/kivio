@@ -166,6 +166,7 @@ pub(crate) async fn run_chat_probe(
         crate::chat::agent::AgentRunEntry::Send,
         None,
         /* probe */ true,
+        None,
     )
     .await;
 

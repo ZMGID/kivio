@@ -298,6 +298,7 @@ mod tests {
             status: JobStatus::Completed,
             label: label.into(),
             started_at: 0,
+            execution_started: true,
             finished_at: Some(1),
             result: Some(result.into()),
             progress: None,

@@ -1608,6 +1608,8 @@ pub struct ChatToolsConfig {
     #[serde(default)]
     pub task_agent_model_overrides: std::collections::BTreeMap<String, Option<Vec<String>>>,
     #[serde(default)]
+    pub task_disabled_agents: Vec<String>,
+    #[serde(default)]
     pub task_agent_compaction_threshold_overrides: std::collections::BTreeMap<String, Option<TaskCompactionThreshold>>,
     #[serde(default)]
     pub task_prewalk: bool,
@@ -1642,6 +1644,15 @@ pub struct ChatToolsConfig {
     pub native_tools: ChatNativeToolsConfig,
 }
 
+impl ChatToolsConfig {
+    pub(crate) fn ensure_subagent_role_enabled(&self, name: &str) -> Result<(), String> {
+        if self.task_disabled_agents.iter().any(|disabled| disabled == name) {
+            return Err(format!("Subagent role `{name}` is disabled in settings."));
+        }
+        Ok(())
+    }
+}
+
 impl Default for ChatToolsConfig {
     fn default() -> Self {
         Self {
@@ -1671,6 +1682,7 @@ impl Default for ChatToolsConfig {
             task_isolation_enabled: false,
             task_agent_soft_request_budget: Default::default(),
             task_agent_model_overrides: Default::default(),
+            task_disabled_agents: Vec::new(),
             task_agent_compaction_threshold_overrides: Default::default(),
             task_prewalk: false,
             task_agent_prewalk: Default::default(),

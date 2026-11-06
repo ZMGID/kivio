@@ -1,17 +1,16 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { SubagentRoster, SubagentSendReceipt, SubagentTranscriptCursor, SubagentTranscriptPage, SubagentView } from '../generated/chatProtocol'
+import type { SubagentActivity, SubagentRoster, SubagentSendReceipt, SubagentTranscriptCursor, SubagentTranscriptPage, SubagentView } from '../generated/chatProtocol'
 
-export type { SubagentRoster, SubagentTranscriptEntry, SubagentView } from '../generated/chatProtocol'
+export type { SubagentActivity, SubagentRoster, SubagentTranscriptEntry, SubagentView } from '../generated/chatProtocol'
 
 export type SubagentTarget = { conversationId: string; agentId: string; expectedGeneration: number }
 
 export const subagentsApi = {
   snapshot: (conversationId: string) => invoke<SubagentRoster>('chat_subagent_snapshot', { conversationId }),
-  open: (target: SubagentTarget) => invoke<SubagentView>('chat_subagent_open', target),
+  waiting: (conversationId: string) => invoke<boolean>('chat_subagent_waiting', { conversationId }),
   send: (target: SubagentTarget, content: string) => invoke<SubagentSendReceipt>('chat_subagent_send', { ...target, content }),
   kill: (target: SubagentTarget) => invoke<SubagentView>('chat_subagent_kill', target),
-  park: (target: SubagentTarget) => invoke<SubagentView>('chat_subagent_park', target),
-  restore: (conversationId: string) => invoke<SubagentRoster>('chat_subagent_restore', { conversationId }),
+  activity: (conversationId: string) => invoke<SubagentActivity[]>('chat_subagent_activity', { conversationId }),
   transcript: (target: SubagentTarget, cursor: SubagentTranscriptCursor | null) => invoke<SubagentTranscriptPage>('chat_subagent_transcript', { ...target, cursor }),
 }
 

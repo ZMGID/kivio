@@ -51,13 +51,9 @@ function GoalDraftComposer({ conversationId }: { conversationId: string }) {
 }
 
 describe('InputBar 底栏模式胶囊', () => {
-  it('provides the shared Agent Hub entry only for built-in agent conversations', () => {
-    const view = render(<InputBar onSend={() => {}} conversationId="root" />)
-    expect(screen.getByRole('button', { name: /子代理 ·/ })).toHaveAttribute('aria-haspopup', 'dialog')
-    view.rerender(<InputBar onSend={() => {}} conversationId="root" usesExternalRuntime />)
-    expect(screen.queryByRole('button', { name: /子代理 ·/ })).not.toBeInTheDocument()
-    view.rerender(<InputBar onSend={() => {}} conversationId="root" usesChatRuntime />)
-    expect(screen.queryByRole('button', { name: /子代理 ·/ })).not.toBeInTheDocument()
+  it('keeps subagent management out of the composer', () => {
+    render(<InputBar onSend={() => {}} conversationId="root" />)
+    expect(screen.queryByRole('button', { name: '子代理' })).not.toBeInTheDocument()
   })
   it('shows Git only for project chats and hides it when leaving the project', () => {
     const props = { onSend: () => {}, gitWorkdir: '/shared', gitLang: 'en' as const, onOpenGitPanel: () => {} }

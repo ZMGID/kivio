@@ -30,6 +30,12 @@ async fn roster(app: &AppHandle, root: &str) -> Result<SubagentRoster, String> {
 pub async fn chat_subagent_snapshot(app: AppHandle, conversation_id: String) -> Result<SubagentRoster, String> { roster(&app, &conversation_id).await }
 
 #[tauri::command]
+pub fn chat_subagent_waiting(state: tauri::State<'_, AppState>, conversation_id: String) -> bool {
+    !state.sub_agents.user_interrupted(&conversation_id)
+        && !state.sub_agents.jobs.running(&conversation_id, super::MAIN_AGENT_ID).is_empty()
+}
+
+#[tauri::command]
 pub async fn chat_subagent_open(app: AppHandle, conversation_id: String, agent_id: String, expected_generation: u64) -> Result<SubagentView, String> {
     let record = lifecycle::ensure_live(&app, &conversation_id, &agent_id, expected_generation).await?;
     project(&app, record).await
@@ -55,12 +61,51 @@ pub async fn chat_subagent_park(app: AppHandle, conversation_id: String, agent_i
 }
 
 #[tauri::command]
-pub async fn chat_subagent_restore(app: AppHandle, conversation_id: String) -> Result<SubagentRoster, String> {
-    lifecycle::restore_interrupted(&app, &conversation_id).await?;
-    roster(&app, &conversation_id).await
+pub async fn chat_subagent_transcript(app: AppHandle, conversation_id: String, agent_id: String, expected_generation: u64, cursor: Option<SubagentTranscriptCursor>) -> Result<SubagentTranscriptPage, String> {
+    view::transcript(&app, &conversation_id, &agent_id, expected_generation, cursor).await
 }
 
 #[tauri::command]
-pub async fn chat_subagent_transcript(app: AppHandle, conversation_id: String, agent_id: String, expected_generation: u64, cursor: Option<SubagentTranscriptCursor>) -> Result<SubagentTranscriptPage, String> {
-    view::transcript(&app, &conversation_id, &agent_id, expected_generation, cursor).await
+pub async fn chat_subagent_activity(app: AppHandle, conversation_id: String) -> Result<Vec<view::SubagentActivity>, String> {
+    view::activity(&app, &conversation_id).await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentRoleSummary {
+    id: String,
+    name: String,
+    description: String,
+    source: String,
+    unsupported: Vec<String>,
+}
+
+#[tauri::command]
+pub async fn chat_subagent_roles(
+    app: AppHandle,
+    conversation_id: Option<String>,
+) -> Result<Vec<SubagentRoleSummary>, String> {
+    let state = app.state::<AppState>();
+    let definitions = if let Some(root) = conversation_id {
+        crate::chat::storage::validate_conversation_id(&root)?;
+        let conversation = crate::chat::storage::load_conversation(&app, &root)?;
+        let settings = state.settings_read().clone();
+        let cwd = crate::chat::storage::resolve_conversation_working_directory(
+            &app, &conversation, &settings.chat_tools.native_tools.working_directory,
+        )?;
+        state.chat_runtime().resource_catalog(
+            &app, &root, &settings.chat_tools.skill_scan_paths, Some(&cwd), false,
+        ).await?.agents.clone()
+    } else {
+        let app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let plugins = crate::plugins::packages::discover_active()?;
+            let user = crate::agents::user_agents_dir(&app)?;
+            Ok::<_, String>(crate::agents::load_agent_definitions(Some(&user), None, &plugins))
+        }).await.map_err(|error| format!("Could not read subagent roles: {error}"))??
+    };
+    Ok(definitions.into_iter().map(|role| SubagentRoleSummary {
+        id: role.id, name: role.name, description: role.description,
+        source: role.source, unsupported: role.unsupported,
+    }).collect())
 }

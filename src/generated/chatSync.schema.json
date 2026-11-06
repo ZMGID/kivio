@@ -2056,12 +2056,28 @@
       ]
     },
     "ChatSegmentKind": {
-      "enum": [
-        "text",
-        "reasoning",
-        "tool"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "text",
+            "reasoning",
+            "tool"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "subagent": {
+              "$ref": "#/$defs/SubagentTimelineEntry"
+            }
+          },
+          "required": [
+            "subagent"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "ChatSegmentPayload": {
       "additionalProperties": false,
@@ -2539,6 +2555,61 @@
         "path"
       ],
       "type": "object"
+    },
+    "SubagentTimelineEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "afterOrder": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "afterSegmentId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentId": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parentToolCallId": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/SubagentTimelineStatus"
+        },
+        "textChars": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "agentId",
+        "name",
+        "status",
+        "parentToolCallId"
+      ],
+      "type": "object"
+    },
+    "SubagentTimelineStatus": {
+      "enum": [
+        "started",
+        "completed",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

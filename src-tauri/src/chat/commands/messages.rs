@@ -774,6 +774,7 @@ fn joined_segment_text(
 fn next_segment_order(segments: &[ChatMessageSegment]) -> u32 {
     segments
         .iter()
+        .filter(|segment| !matches!(segment.kind, ChatMessageSegmentKind::Subagent(_)))
         .map(|segment| segment.order)
         .max()
         .unwrap_or(999)

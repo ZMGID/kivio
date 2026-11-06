@@ -3,7 +3,7 @@
 {{#if asyncEnabled}}{{asyncGuidance}}{{/if}}
 
 # Delegation
-Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scout` only when files unknown.{{/if}} Prefer one agent to investigate + edit. Omit `agent` only for default (`{{defaultAgent}}`); NEVER specify it.
+Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scout` only when files unknown.{{/if}} Prefer one agent to investigate + edit.{{#if defaultAgent}} Omit `agent` only for default (`{{defaultAgent}}`); NEVER specify it.{{else}} Specify an enabled role explicitly.{{/if}}
 Specialist `agent` selectors belong inside each `tasks[]` item; NEVER put `agent` at the top level.
 Shared edits need one integration owner; give each task its files. Set interfaces in `context`. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
 

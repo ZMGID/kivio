@@ -169,13 +169,14 @@ pub(super) struct ArmReplyOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::interaction::{cancel_user_generation, UserStopScope};
 
     #[test]
     fn stop_invalidates_reserved_turn_before_or_after_generation_admission() {
         let state = crate::state::test_app_state();
         let first = ChatSendReservation::try_acquire(&state, "conversation").unwrap();
         let epoch = first.interruption_epoch();
-        super::super::interaction::cancel_user_generation(&state, "conversation");
+        cancel_user_generation(&state, "conversation", UserStopScope::Generation, || ());
         assert!(!state.sub_agents.resume_user_turn("conversation", epoch));
         assert!(state.sub_agents.user_interrupted("conversation"));
         assert!(state.chat_runtime().begin_reply_generation("conversation").is_none());
@@ -184,7 +185,7 @@ mod tests {
         let second = ChatSendReservation::try_acquire(&state, "conversation").unwrap();
         assert!(state.sub_agents.resume_user_turn("conversation", second.interruption_epoch()));
         let generation = state.chat_runtime().begin_reply_generation("conversation").unwrap();
-        super::super::interaction::cancel_user_generation(&state, "conversation");
+        cancel_user_generation(&state, "conversation", UserStopScope::Generation, || ());
         assert!(!state.chat_runtime().is_generation_active("conversation", generation));
         assert!(state.chat_runtime().begin_reply_generation("conversation").is_none());
         assert!(state.sub_agents.user_interrupted("conversation"));
@@ -195,6 +196,28 @@ mod tests {
         assert!(state.chat_runtime().begin_reply_generation("conversation").is_some());
     }
 
+    #[test]
+    fn stopping_background_wait_invalidates_parent_admission_and_keeps_the_child_result() {
+        use crate::chat::sub_agent::{jobs::JobStatus, MAIN_AGENT_ID};
+
+        let state = crate::state::test_app_state();
+        let root = "conversation";
+        let (job, _) = state.sub_agents.jobs.register(root, MAIN_AGENT_ID, "Scout", "look up the answer");
+        let reservation = ChatSendReservation::try_acquire(&state, root).unwrap();
+
+        cancel_user_generation(&state, root, UserStopScope::BackgroundWait, || ());
+        assert!(state.sub_agents.user_interrupted(root));
+        assert!(state.chat_runtime().begin_reply_generation(root).is_none());
+        assert_eq!(state.sub_agents.jobs.status(&job), Some(JobStatus::Running));
+        state.sub_agents.jobs.settle(&job, Ok("child result".into()));
+        assert_eq!(state.sub_agents.jobs.undelivered(root, MAIN_AGENT_ID)[0].result.as_deref(), Some("child result"));
+
+        drop(reservation);
+        let next = ChatSendReservation::try_acquire(&state, root).unwrap();
+        assert!(state.sub_agents.resume_user_turn(root, next.interruption_epoch()));
+        assert!(state.chat_runtime().begin_reply_generation(root).is_some());
+    }
+
     #[tokio::test]
     async fn queued_turn_captures_epoch_when_it_acquires_the_reservation() {
         let state = crate::state::test_app_state();
@@ -202,7 +225,7 @@ mod tests {
         let waiting = ChatSendReservation::acquire_when_idle(&state, "conversation");
         tokio::pin!(waiting);
         assert!(futures::poll!(waiting.as_mut()).is_pending());
-        super::super::interaction::cancel_user_generation(&state, "conversation");
+        cancel_user_generation(&state, "conversation", UserStopScope::Generation, || ());
         drop(first);
         let next = waiting.await;
         assert!(state.sub_agents.resume_user_turn("conversation", next.interruption_epoch()));

@@ -1,5 +1,22 @@
 import { subagentProgress } from '../api/subagents'
 
+export function AgentStatus({ state, zh }: { state: string; zh: boolean }) {
+  const label = (() => {
+    switch (state) {
+      case 'running': return zh ? '运行中' : 'Running'
+      case 'completed': return zh ? '已完成' : 'Completed'
+      case 'failed':
+      case 'error': return zh ? '失败' : 'Failed'
+      case 'aborted':
+      case 'cancelled': return zh ? '已中断' : 'Cancelled'
+      case 'idle': return zh ? '可继续' : 'Ready'
+      case 'parked': return zh ? '已休眠' : 'Parked'
+      default: return zh ? '等待运行' : 'Queued'
+    }
+  })()
+  return <span className="kv-agent-status" data-state={state}><span aria-hidden="true" />{label}</span>
+}
+
 export function AgentProgress({ value, expanded = true, zh }: { value: unknown; expanded?: boolean; zh: boolean }) {
   const progress = subagentProgress(value)
   if (!progress) return null
@@ -20,19 +37,13 @@ export function AgentProgress({ value, expanded = true, zh }: { value: unknown; 
     {expanded && <>
       {progress.recentTools?.length ? progress.recentTools.map((tool, index) => <p key={index} title={tool.args} className="break-words font-mono text-xs text-[var(--text-muted)]">{tool.intent || tool.tool}{tool.isError ? zh ? ' · 失败' : ' · Failed' : ''}</p>)
         : progress.steps?.map((step, index) => <p key={index} className="break-words font-mono text-xs text-[var(--text-muted)]">{step}</p>)}
-      {output && <AgentOutput content={output} zh={zh} />}
+      {output && <AgentOutput content={output} />}
       {progress.error && <p role="alert" className="whitespace-pre-wrap break-words">{progress.error}</p>}
     </>}
   </div>
 }
 
-export function AgentOutput({ content, zh, lines = 12 }: { content: string; zh: boolean; lines?: number }) {
-  const parts = content.split('\n')
-  const long = parts.length > lines || content.length > 2000
-  if (!long) return <pre className="whitespace-pre-wrap break-words font-sans">{content}</pre>
-  const preview = parts.slice(0, lines).join('\n').slice(0, 2000)
-  return <div><pre className="whitespace-pre-wrap break-words font-sans">{preview}…</pre><details>
-    <summary className="cursor-pointer text-xs text-[var(--text-muted)]">{zh ? '展开完整输出' : 'Show full output'} ({content.length.toLocaleString()} {zh ? '字符' : 'characters'})</summary>
-    <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words font-sans custom-scrollbar">{content}</pre>
-  </details></div>
+export function AgentOutput({ content }: { content: string }) {
+  const long = content.length > 2000 || content.split('\n').length > 12
+  return <pre tabIndex={long ? 0 : undefined} className={`whitespace-pre-wrap [overflow-wrap:anywhere] font-sans${long ? ' max-h-60 overflow-auto custom-scrollbar' : ''}`}>{content}</pre>
 }

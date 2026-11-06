@@ -64,6 +64,21 @@ function RewindFirstMessage({ conversationId }: { conversationId: string }) {
 }
 
 describe('InputBar 发送清草稿', () => {
+  it('routes Escape from the editor to the current stop action', () => {
+    const stopWaiting = vi.fn()
+    const stopGeneration = vi.fn()
+    const props = { onSend: () => {}, onStopBackgroundWait: stopWaiting, onCancel: stopGeneration }
+    const { rerender } = render(<InputBar {...props} />)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    expect(stopWaiting).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+    expect(stopWaiting).toHaveBeenCalledTimes(1)
+    rerender(<InputBar {...props} cancelVisible />)
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+    expect(stopGeneration).toHaveBeenCalledTimes(1)
+    expect(stopWaiting).toHaveBeenCalledTimes(1)
+  })
+
   it.each(['enter', 'button'])('running %s sends directly to steering and clears the draft', async (trigger) => {
     const onSend = vi.fn().mockResolvedValue(true)
     function RunningComposer() {

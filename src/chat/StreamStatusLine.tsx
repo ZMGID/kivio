@@ -3,6 +3,7 @@ import { KivioBlob, type BlobMood } from './KivioBlob'
 import { getCoarse, getSnapshot } from './streamingStore'
 import { resolveBlobMood } from './kivioBlobSim'
 import { isAskUserToolName } from './askUserTools'
+import { isNativeWaitToolCall } from './segments'
 import { useStatusQuip } from './blobQuips'
 import { useConversationTransition } from './conversationTransitionStore'
 import type { Lang } from '../components/i18n'
@@ -39,7 +40,7 @@ function moodFromRun(active: boolean, doneUntil: number, now: number): BlobMood 
     contentLen: snapshot.content.length,
     reasoningStreaming: snapshot.reasoningStreaming,
     runningToolNames: running.map(toolName),
-    waiting: running.some((tool) => isAskUserToolName(toolName(tool))),
+    waiting: running.some((tool) => isAskUserToolName(toolName(tool)) || isNativeWaitToolCall(tool)),
     done: now < doneUntil,
   })
 }
@@ -72,6 +73,7 @@ function estimateTokens(text: string): number {
 interface StreamStatusLineProps {
   /** 生成中（按检索/干活/说话/思考切脸 + 实时信息）；false = 闲置或出错脸 */
   active: boolean
+  waitingInBackground?: boolean
   lang?: Lang
 }
 
@@ -79,6 +81,7 @@ interface LiveStats {
   elapsedMs: number
   tokens: number
   running: number
+  waitingForJobs: boolean
   statusNote: string | null
   retryStatus: ChatRetryStatusPayload | null
   now: number
@@ -93,12 +96,13 @@ interface LiveStats {
  * 读一次，token 从已流出的正文 + 思维链估算 —— 任何运行时（内置 / 外部 CLI）都有数，
  * 且和 Claude 一样随输出平滑上涨；后端的 live 用量事件太稀（每 planning 轮一次）不用。
  */
-export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 'en' }: StreamStatusLineProps) {
+export const StreamStatusLine = memo(function StreamStatusLine({ active, waitingInBackground = false, lang = 'en' }: StreamStatusLineProps) {
   const { loading } = useConversationTransition()
   const [stats, setStats] = useState<LiveStats | null>(null)
   const doneUntilRef = useRef(0)
   const prevActiveRef = useRef(active)
   const [mood, setMood] = useState<BlobMood>(() => moodFromRun(active, 0, Date.now()))
+
   useEffect(() => {
     // 生成 true→false 且没翻车、没被停：有概率进入「搞定」窗口。
     if (prevActiveRef.current && !active) {
@@ -115,13 +119,12 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 
         return
       }
       const snapshot = getSnapshot()
+      const runningTools = snapshot.toolCalls.filter(tool => tool.status === 'running')
       setStats({
         elapsedMs: snapshot.startedAt != null ? now - snapshot.startedAt : 0,
         tokens: estimateTokens(snapshot.content) + estimateTokens(snapshot.reasoning),
-        running: snapshot.toolCalls.reduce(
-          (n, tool) => (tool.status === 'running' ? n + 1 : n),
-          0,
-        ),
+        running: runningTools.filter(tool => !isNativeWaitToolCall(tool)).length,
+        waitingForJobs: runningTools.some(isNativeWaitToolCall),
         statusNote: snapshot.statusNote,
         retryStatus: snapshot.retryStatus,
         now,
@@ -141,7 +144,9 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 
   const quip = useStatusQuip(mood, lang)
 
   const parts: string[] = []
-  if (stats) {
+  const waitLabel = lang === 'zh' ? '等待任务结果' : 'Waiting for task results'
+  if (waitingInBackground) parts.push(waitLabel)
+  if (active && stats) {
     parts.push(formatElapsed(stats.elapsedMs))
     if (stats.tokens > 0) parts.push(`${formatTokens(stats.tokens)} tokens`)
     if (stats.running > 0) parts.push(`${stats.running} running`)
@@ -150,18 +155,20 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, lang = 
       const seconds = Math.max(0, Math.ceil((retry.retryAtMs - stats.now) / 1000))
       parts.push(`${retry.reason} · retry ${retry.attempt}/${retry.maxRetries} · ${seconds > 0 ? `in ${seconds}s` : 'Retrying…'}`)
     } else if (stats.statusNote) parts.push(stats.statusNote)
+    else if (stats.waitingForJobs) parts.push(waitLabel)
   }
   // 后端的状态一行字优先，墨团别抢话。
-  const showQuip = quip && !stats?.statusNote && !stats?.retryStatus
+  const showQuip = quip && !waitingInBackground && !stats?.statusNote && !stats?.retryStatus && !stats?.waitingForJobs
 
   return (
     <div
       className={`flex items-center gap-2.5 py-2${active ? ' chat-motion-fade-up' : ' kv-stream-status-idle'}`}
     >
-      <StreamStatusLogo mood={mood} paused={loading} />
+      <StreamStatusLogo mood={waitingInBackground ? 'wait' : mood} paused={loading} />
       {(parts.length > 0 || showQuip) && (
         <span className="min-w-0 break-words text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
           {parts.join(' · ')}
+          {waitingInBackground && <span>{lang === 'zh' ? ' · Esc 停止等待' : ' · Esc to stop waiting'}</span>}
           {showQuip && (
             <span key={quip} className="kv-blob-quip">
               {parts.length > 0 ? ' · ' : ''}

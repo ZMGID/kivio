@@ -81,13 +81,36 @@ pub enum ChatProtocolScope {
     Conversation,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
 pub enum ChatSegmentKind {
     Text,
     Reasoning,
     Tool,
+    Subagent(SubagentTimelineEntry),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentTimelineStatus {
+    Started,
+    Completed,
+    Failed,
+    Interrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct SubagentTimelineEntry {
+    pub agent_id: String,
+    pub name: String,
+    pub status: SubagentTimelineStatus,
+    pub parent_tool_call_id: String,
+    pub after_segment_id: Option<String>,
+    pub after_order: Option<u32>,
+    pub text_chars: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
@@ -118,10 +141,11 @@ impl From<&crate::chat::ChatMessageSegment> for ChatSegmentPayload {
     fn from(segment: &crate::chat::ChatMessageSegment) -> Self {
         Self {
             id: segment.id.clone(),
-            kind: match segment.kind {
+            kind: match &segment.kind {
                 crate::chat::ChatMessageSegmentKind::Text => ChatSegmentKind::Text,
                 crate::chat::ChatMessageSegmentKind::Reasoning => ChatSegmentKind::Reasoning,
                 crate::chat::ChatMessageSegmentKind::Tool => ChatSegmentKind::Tool,
+                crate::chat::ChatMessageSegmentKind::Subagent(entry) => ChatSegmentKind::Subagent(entry.clone()),
             },
             phase: match segment.phase {
                 crate::chat::ChatMessageSegmentPhase::Auxiliary => ChatSegmentPhase::Auxiliary,
@@ -903,6 +927,7 @@ pub struct ChatRunEventEnvelope {
 )]
 #[ts(tag = "type", rename_all = "snake_case")]
 pub enum ChatConversationEvent {
+    SubagentActivityAdded,
     TitleUpdated {
         title: String,
     },
@@ -2302,11 +2327,167 @@ pub fn emit_run_event_or_live(
     emit_run_event_or_live_now(app, conversation_id, run_id, event);
 }
 
+fn place_subagent_activity(
+    app: &AppHandle,
+    conversation_id: &str,
+    origin_run_id: &str,
+    segment: &mut crate::chat::ChatMessageSegment,
+) -> Option<String> {
+    use crate::chat::ChatMessageSegmentKind;
+    let state = app.state::<AppState>();
+    let mut hub = state.chat_protocol().hub();
+    for run in hub.runs.values().filter(|run| run.snapshot.conversation_id == conversation_id) {
+        if let Some(existing) = run.snapshot.segments.iter().find(|item| item.id == segment.id) {
+            if let ChatSegmentKind::Subagent(entry) = &existing.kind {
+                segment.kind = ChatMessageSegmentKind::Subagent(entry.clone());
+                segment.order = existing.order;
+                return Some(run.snapshot.message_id.clone());
+            }
+        }
+    }
+    let mut active = hub.runs.values().filter(|run| {
+        run.snapshot.conversation_id == conversation_id && run.terminal_at.is_none()
+    });
+    let run_id = if let Some(origin) = active.clone().find(|run| run.snapshot.run_id == origin_run_id) {
+        origin.snapshot.run_id.clone()
+    } else {
+        let only = active.next()?;
+        if active.next().is_some() { return None; }
+        only.snapshot.run_id.clone()
+    };
+    if let Some(envelope) = hub.flush_pending_delta(&run_id) {
+        emit_protocol(app, ChatProtocolEvent::Run(envelope));
+    }
+    let snapshot = &hub.runs.get(&run_id)?.snapshot;
+    let message_id = snapshot.message_id.clone();
+    let ChatMessageSegmentKind::Subagent(entry) = &mut segment.kind else { return None; };
+    if let Some(anchor) = snapshot.segments.iter().rev()
+        .find(|item| !matches!(item.kind, ChatSegmentKind::Subagent(_)))
+    {
+        entry.after_segment_id = Some(anchor.id.clone());
+        entry.after_order = Some(anchor.order);
+        if anchor.kind == ChatSegmentKind::Text {
+            entry.text_chars = anchor.text.as_deref()
+                .filter(|text| text.len() < SNAPSHOT_SEGMENT_MAX_BYTES - 3)
+                .map(|text| text.chars().count() as u32);
+        }
+    }
+    segment.order = snapshot.last_seq.saturating_add(1).min(u64::from(u32::MAX - 1)) as u32;
+    let envelope = hub.push(&run_id, ChatRunEvent::TextDelta {
+        delta: String::new(), segment: Some(ChatSegmentPayload::from(&*segment)),
+    }).ok()?;
+    emit_protocol(app, ChatProtocolEvent::Run(envelope));
+    Some(message_id)
+}
+
+pub(crate) struct SubagentActivityPlacement {
+    message_id: Option<String>,
+    segment: crate::chat::ChatMessageSegment,
+}
+
+pub(crate) fn capture_subagent_activity(
+    app: &AppHandle,
+    conversation_id: &str,
+    run_id: &str,
+    event: &ChatRunEvent,
+    status: SubagentTimelineStatus,
+) -> Option<SubagentActivityPlacement> {
+    use crate::chat::{ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase};
+    let ChatRunEvent::SubagentUpdated { parent_tool_call_id, task_id, child_run_id, name, .. } = event else { return None; };
+    if parent_tool_call_id.is_empty() { return None; }
+    let record = app.state::<AppState>().sub_agents.registry.get(conversation_id, task_id)?;
+    if !record.published || record.parent_id != crate::chat::sub_agent::MAIN_AGENT_ID { return None; }
+    let mut segment = ChatMessageSegment {
+        id: format!("subagent-{}-{}-{}-{}",
+            parent_tool_call_id, task_id, child_run_id.as_deref().unwrap_or(run_id),
+            if status == SubagentTimelineStatus::Started { "start" } else { "finish" }),
+        kind: ChatMessageSegmentKind::Subagent(SubagentTimelineEntry {
+            agent_id: task_id.clone(), name: name.clone(), status,
+            parent_tool_call_id: parent_tool_call_id.clone(),
+            after_segment_id: None, after_order: None, text_chars: None,
+        }),
+        phase: ChatMessageSegmentPhase::Auxiliary,
+        order: 0, step_number: None, round: None, text: None, tool_call_id: None,
+    };
+    let message_id = place_subagent_activity(app, conversation_id, run_id, &mut segment);
+    Some(SubagentActivityPlacement { message_id, segment })
+}
+
+async fn save_subagent_activity(
+    app: &AppHandle,
+    conversation_id: &str,
+    mut progress: crate::chat::sub_agent::progress::TaskProgressRecord,
+    placement: Option<SubagentActivityPlacement>,
+) -> Result<(), String> {
+    use crate::chat::ChatMessageSegmentKind;
+    let mut target_message = None;
+    let saved = crate::chat::repository::repository(app)
+        .mutate(app, conversation_id, |conversation| {
+            if let Some(SubagentActivityPlacement { message_id, mut segment }) = placement {
+                let existing = conversation.messages.iter().find(|message| {
+                    message.segments.iter().any(|entry| entry.id == segment.id)
+                });
+                let message_id = existing.map(|message| message.id.clone()).or(message_id).or_else(|| {
+                    if let ChatMessageSegmentKind::Subagent(entry) = &mut segment.kind {
+                        entry.after_order = Some(u32::MAX);
+                    }
+                    conversation.messages.iter().rev().find(|message| {
+                        !message.id.starts_with("subagent-result-")
+                    }).map(|message| message.id.clone())
+                });
+                if let Some(message_id) = message_id {
+                    target_message = Some(message_id.clone());
+                    progress.timeline = Some((message_id, segment));
+                }
+            }
+            crate::chat::sub_agent::progress::append(app, conversation_id, &progress)
+        })
+        .await.map_err(|error| error.to_string())?;
+    if target_message.is_some_and(|id| saved.messages.iter().any(|message| message.id == id)) {
+        emit_conversation_event(app, conversation_id, saved.revision, ChatConversationEvent::SubagentActivityAdded);
+    }
+    Ok(())
+}
+
+pub(crate) async fn record_subagent_started(
+    app: &AppHandle,
+    record: &crate::chat::sub_agent::registry::AgentRecord,
+    run_id: &str,
+    tool_call_id: &str,
+) {
+    let event = ChatRunEvent::SubagentUpdated {
+        parent_tool_call_id: tool_call_id.into(), task_id: record.id.clone(), name: record.display_name.clone(),
+        generation: Some(record.generation), child_run_id: record.run_id.clone(), depth: record.depth,
+        model: None, progress: None, status: "running".into(), preview: None, steps: Vec::new(),
+    };
+    let Some(placement) = capture_subagent_activity(app, &record.root, run_id, &event, SubagentTimelineStatus::Started)
+        else { return; };
+    let progress = crate::chat::sub_agent::progress::TaskProgressRecord {
+        message_id: None, tool_call_id: tool_call_id.into(), task_id: record.id.clone(),
+        name: record.display_name.clone(), generation: Some(record.generation),
+        run_id: record.run_id.clone(), depth: record.depth, status: "running".into(),
+        model: None, progress: None, preview: None, steps: Vec::new(), timeline: None,
+    };
+    if let Err(error) = save_subagent_activity(app, &record.root, progress, Some(placement)).await {
+        eprintln!("Cannot persist subagent start: {error}");
+    }
+}
+
 pub async fn emit_run_event_or_live_durable(
     app: &AppHandle,
     conversation_id: &str,
     run_id: &str,
+    event: ChatRunEvent,
+) -> Result<(), String> {
+    emit_run_event_or_live_durable_at(app, conversation_id, run_id, event, None).await
+}
+
+pub(crate) async fn emit_run_event_or_live_durable_at(
+    app: &AppHandle,
+    conversation_id: &str,
+    run_id: &str,
     mut event: ChatRunEvent,
+    placement: Option<SubagentActivityPlacement>,
 ) -> Result<(), String> {
     let progress = if let ChatRunEvent::SubagentUpdated {
         parent_tool_call_id, task_id, name, model, generation, child_run_id, progress: detail, depth, status, preview, steps,
@@ -2319,7 +2500,7 @@ pub async fn emit_run_event_or_live_durable(
                 let message_id = state.chat_protocol().hub().runs.get(run_id)
                     .filter(|run| run.snapshot.conversation_id == conversation_id)
                     .map(|run| run.snapshot.message_id.clone());
-                Some(crate::chat::sub_agent::progress::TerminalProgress {
+                Some(crate::chat::sub_agent::progress::TaskProgressRecord {
                     message_id,
                     tool_call_id: parent_tool_call_id.clone(),
                     task_id: task_id.clone(),
@@ -2332,6 +2513,7 @@ pub async fn emit_run_event_or_live_durable(
                     status: status.clone(),
                     preview: preview.clone(),
                     steps: steps.clone(),
+                    timeline: None,
                 })
             }
             _ => None,
@@ -2343,13 +2525,13 @@ pub async fn emit_run_event_or_live_durable(
         if progress.tool_call_id.is_empty() {
             Err("missing parent task tool-call identity".to_string())
         } else {
-            crate::chat::repository::repository(app)
-                .mutate(app, conversation_id, |_| {
-                    crate::chat::sub_agent::progress::append(app, conversation_id, &progress)
-                })
-                .await
-                .map(|_| ())
-                .map_err(|error| error.to_string())
+            let status = match progress.status.as_str() {
+                "completed" => SubagentTimelineStatus::Completed,
+                "failed" => SubagentTimelineStatus::Failed,
+                _ => SubagentTimelineStatus::Interrupted,
+            };
+            let placement = placement.or_else(|| capture_subagent_activity(app, conversation_id, run_id, &event, status));
+            save_subagent_activity(app, conversation_id, progress, placement).await
         }
     } else {
         Ok(())

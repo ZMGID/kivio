@@ -10,6 +10,7 @@ import {
   isImageReadToolCall,
   isUserFollowUpToolCall,
   isUserSteerToolCall,
+  positionSubagentTimeline,
   segmentToolCallId,
   summarizeToolGroup,
   userFollowUpId,
@@ -32,6 +33,17 @@ describe('segmentToolCallId', () => {
   it('falls back to camelCase toolCallId', () => {
     expect(segmentToolCallId({ toolCallId: 'b' } as ChatMessageSegment)).toBe('b')
   })
+})
+
+it('inserts an event after its Markdown block and preserves later paragraphs', () => {
+  const code = '```ts\nconst example = 1\n```'
+  const text = segment({ id: 'text', kind: 'text', order: 1000, text: `${code}\n\n下一段正文。` })
+  const event = segment({ id: 'completed', kind: { subagent: {
+    agentId: 'a', name: 'A', status: 'completed', parentToolCallId: 'task',
+    afterSegmentId: text.id, afterOrder: text.order, textChars: 12,
+  } }, order: 6 })
+  const visible = positionSubagentTimeline([event, text])
+  expect(visible.map(part => part.text?.trim() ?? part.id)).toEqual([code, 'completed', '下一段正文。'])
 })
 
 describe('compareTimelineSegments', () => {
@@ -235,9 +247,7 @@ describe('summarizeToolGroup', () => {
 
   it.each([
     { name: 'task', source: 'native' },
-    { name: 'wait', source: 'native' },
     { name: 'native__task', source: 'native' },
-    { name: 'native__wait', source: 'native' },
     { name: 'Agent', source: 'external_cli' },
     { name: 'Task', source: 'external_cli' },
     { name: 'subagent_fork', source: 'external_cli' },

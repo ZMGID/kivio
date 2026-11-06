@@ -15,6 +15,7 @@ vi.mock('../api/tauri', () => ({ api: {
   chatMcpTestServer: mocks.test,
   onMcpServerState: async () => () => {},
   chatMcpServerStatus: async () => ({ state: { kind: 'disconnected' } }),
+  chatSubagentRoles: async () => [],
 } }))
 vi.mock('../api/settingsCache', () => ({
   peekSettings: () => mocks.settings,

@@ -4,6 +4,8 @@ import { ChatImageViewer } from './ChatImageViewer'
 import { ConversationLoadingState } from './ConversationLoadingState'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { useConversationTransition } from './conversationTransitionStore'
+import { useStreamCoarse } from './streamingStore'
+import { useBackgroundTaskWait } from './useBackgroundTaskWait'
 import { InputBar, type InputBarProps } from './InputBar'
 import { KivioBlob, type KivioBlobHandle } from './KivioBlob'
 import { useEmptyHeroJab, useEmptyHeroLine } from './emptyHero'
@@ -145,6 +147,8 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   const transition = useConversationTransition()
   // 目标会话的数据到达前才遮挡；到达后同一个 MessageList 直接换内容，不再铺底色等排版稳定。
   const awaitingConversation = transition.loading && transition.targetConversationId !== currentConversationId
+  const { streaming, streamFrozen } = useStreamCoarse()
+  const stopBackgroundWait = useBackgroundTaskWait(streaming || streamFrozen || awaitingConversation ? null : currentConversationId, lang)
   return (
     <div className="chat-motion-pane-in chat-main-pane relative flex min-w-0 flex-1 flex-col">
       {usesNativeTitlebar && (
@@ -245,7 +249,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>
                 {/* 不按会话 key 重建：切换时复用同一列表，避免整块卸载重挂造成的闪烁。 */}
-                <MessageList {...messageListProps} pendingInjections={queuedMessages} />
+                <MessageList {...messageListProps} pendingInjections={queuedMessages} waitingForBackgroundTasks={Boolean(stopBackgroundWait)} />
               </Profiler>
             </Suspense>
 
@@ -265,7 +269,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             )}
 
             <VoiceComposerOrb lang={lang} conversationId={currentConversationId} />
-            <InputBar {...inputBarProps} goalSlot={goalSlot} />
+            <InputBar {...inputBarProps} goalSlot={goalSlot} onStopBackgroundWait={stopBackgroundWait} />
           </>
         )}
         {awaitingConversation && <ConversationLoadingState />}
