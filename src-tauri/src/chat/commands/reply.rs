@@ -882,6 +882,24 @@ pub(super) async fn complete_assistant_reply_inner(
         conversation.context_state.request_measurement.as_ref(),
     );
     let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
+    let control = crate::chat::runtime_state::ChatRunControl::new(
+        state.chat_runtime(), &conversation.id, run_generation,
+    );
+    let handle = crate::chat::agent::control::AgentRunHandle::new(
+        crate::chat::agent::events::AgentRunIdentity {
+            conversation_id: &conversation.id,
+            run_id: &run_id,
+            message_id: &assistant_message_id,
+            generation: run_generation,
+        },
+        &control,
+    );
+    let events: &dyn crate::chat::agent::events::AgentEventSink = {
+        #[cfg(debug_assertions)]
+        { if probe { &probe_host } else { &chat_host } }
+        #[cfg(not(debug_assertions))]
+        { &chat_host }
+    };
     let result = crate::chat::agent::run_agent_loop(
         crate::chat::agent::AgentRunConfig {
             provider_runtime: state.inner(),
@@ -923,6 +941,8 @@ pub(super) async fn complete_assistant_reply_inner(
         },
         host,
         &executor,
+        events,
+        handle,
     )
     .await;
     let result = match result {
@@ -962,7 +982,7 @@ pub(super) async fn complete_assistant_reply_inner(
     // A saved document, not the wording of the final response, identifies a plan.
     let message_plan = if plan_mode
         && result.tool_records.iter().any(|tool| {
-            tool.name == "save_plan" && tool.status == crate::chat::types::ToolCallStatus::Success
+            tool.name == "save_plan" && tool.status == crate::chat::agent::content::AgentToolStatus::Success
         }) {
         let latest = crate::chat::storage::load_conversation(app, &conversation.id)?;
         (crate::chat::plan::is_plan_mode(&latest.agent_plan_state)
@@ -971,10 +991,11 @@ pub(super) async fn complete_assistant_reply_inner(
     } else {
         None
     };
+    let (projected_tools, projected_blocks) = crate::chat::agent_presentation::project_snapshot(&result.tool_records, &result.segments, Some(&run_id));
     let mut segments = auxiliary_tool_segments(&auxiliary_tool_records);
-    segments.extend(result.segments);
+    segments.extend(projected_blocks);
     let mut tool_records = auxiliary_tool_records;
-    tool_records.extend(result.tool_records);
+    tool_records.extend(projected_tools);
     // 模型原生生成的图片（Gemini native image gen，任务 07-24）→ assistant 消息级 artifacts，
     // 前端答案下方图片画廊直接展示（消费 message.artifacts）。空则无开销。
     let artifacts = generated_image_artifacts(&result.images);
@@ -991,7 +1012,7 @@ pub(super) async fn complete_assistant_reply_inner(
             segments,
             skill_id.as_deref(),
             Some(run_entry),
-            Some(result.stream_outcome.as_str()),
+            Some(crate::chat::agent_presentation::run_status(&result.status)),
             result.usage,
             result.last_step_usage,
             message_plan,
@@ -1050,7 +1071,7 @@ pub(super) async fn complete_assistant_reply_inner(
         );
     }
     let terminal_content = result.content.clone();
-    let terminal_outcome = result.stream_outcome.clone();
+    let terminal_outcome = crate::chat::agent_presentation::run_status(&result.status).to_string();
     let goal_assistant_message_id = assistant_message_id.clone();
     let goal_run = conversation
         .goal_state
@@ -1074,7 +1095,7 @@ pub(super) async fn complete_assistant_reply_inner(
         skill_id.as_deref(),
         title_from_first_user,
         Some(run_entry),
-        Some(result.stream_outcome.as_str()),
+        Some(crate::chat::agent_presentation::run_status(&result.status)),
         result.usage,
         result.last_step_usage,
         message_plan,

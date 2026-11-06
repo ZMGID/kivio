@@ -1039,3 +1039,26 @@ mod tests {
         );
     }
 }
+
+impl crate::chat::agent::events::AgentEventSink for HookDispatcher {
+    fn on_event(&self, event: &crate::chat::agent::events::AgentEvent<'_>) -> crate::chat::agent::events::EventDelivery {
+
+            use crate::chat::agent::events::{AgentEventKind, AgentRunOutcome};
+            let hook = match &event.kind {
+                AgentEventKind::RunStarted => Some((HookEvent::AgentStart, None, None, None)),
+                AgentEventKind::RunEnded { outcome } => {
+                    if matches!(outcome, AgentRunOutcome::Cancelled | AgentRunOutcome::Dropped) { self.cancel(); }
+                    Some((HookEvent::AgentEnd, None, None, None))
+                }
+                AgentEventKind::StepStarted { round } => Some((HookEvent::TurnStart, None, Some(*round), None)),
+                AgentEventKind::StepEnded { round } => Some((HookEvent::TurnEnd, None, Some(*round), None)),
+                AgentEventKind::MessageStarted { round } => Some((HookEvent::MessageStart, None, Some(*round), None)),
+                AgentEventKind::MessageEnded { round } => Some((HookEvent::MessageEnd, None, Some(*round), None)),
+                AgentEventKind::ToolStarted { round, name, call_id } => Some((HookEvent::ToolExecutionStart, Some(*name), Some(*round), Some(*call_id))),
+                AgentEventKind::ToolEnded { round, name, call_id, .. } => Some((HookEvent::ToolExecutionEnd, Some(*name), Some(*round), Some(*call_id))),
+                _ => None,
+            };
+            if let Some((event, name, round, cancelled)) = hook { self.dispatch(event, name, round, cancelled); }
+        crate::chat::agent::events::EventDelivery::Accepted
+    }
+}

@@ -1,9 +1,8 @@
+use super::content::{ContentBlock, AgentToolCall};
 use serde_json::Value;
 
 use super::provider_runtime::ProviderRuntime;
-use crate::chat::types::{
-    ChatAssistantSnapshot, ChatMessageSegment, CompactionBoundaryRecord, ToolCallRecord,
-};
+use crate::chat::types::{ChatAssistantSnapshot, CompactionBoundaryRecord};
 use crate::mcp::ChatToolDefinition;
 use crate::settings::{ChatToolsConfig, ModelProvider, Settings};
 
@@ -94,15 +93,24 @@ impl AgentRunConfig<'_> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRunStatus {
+    Completed,
+    Recovered,
+    CompactionBlocked,
+    Cancelled,
+    Failed(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentRunResult {
     pub(crate) final_message: Option<crate::chat::model::ModelMessage>,
     pub content: String,
     pub reasoning: Option<String>,
-    pub tool_records: Vec<ToolCallRecord>,
-    pub segments: Vec<ChatMessageSegment>,
+    pub tool_records: Vec<AgentToolCall>,
+    pub segments: Vec<ContentBlock>,
     pub api_messages: Vec<Value>,
-    pub stream_outcome: String,
+    pub status: AgentRunStatus,
     /// 本轮全部模型调用（规划/合成/压缩摘要）累计的 provider 真实 usage；
     /// provider 不报告时为 None（前端回落到 chars 估算）。
     pub usage: Option<crate::chat::model::ModelUsage>,

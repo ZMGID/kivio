@@ -1,3 +1,4 @@
+use super::content::{AgentToolCall, AgentToolStatus};
 use std::{
     future::Future,
     pin::Pin,
@@ -9,7 +10,7 @@ use tokio::time::timeout;
 
 use crate::chat::ask_user;
 use crate::chat::model::PendingToolCall;
-use crate::chat::types::{ToolCallRecord, ToolCallStatus};
+
 use crate::chat::{
     model::ModelArtifact,
     tools::{ArgumentPolicy, ToolOutput},
@@ -97,16 +98,16 @@ pub fn match_tool_call<'a>(
     Some(candidate)
 }
 
-pub fn unknown_tool_record(call: &PendingToolCall, round: u32, error: String) -> ToolCallRecord {
+pub fn unknown_tool_record(call: &PendingToolCall, round: u32, error: String) -> AgentToolCall {
     let now = chrono::Local::now().timestamp();
-    ToolCallRecord {
+    AgentToolCall {
         id: call.id.clone(),
         name: call.function_name.clone(),
         source: "unknown".to_string(),
         server_id: None,
         arguments: call.arguments_raw.clone(),
-        status: ToolCallStatus::Error,
-        result_preview: None,
+        status: AgentToolStatus::Error,
+        output: None,
         error: Some(error),
         duration_ms: Some(0),
         started_at: Some(now),
@@ -114,8 +115,8 @@ pub fn unknown_tool_record(call: &PendingToolCall, round: u32, error: String) ->
         round,
         sensitive: false,
         artifacts: Vec::new(),
-        trace_id: None,
-        span_id: None,
+        output_limit: None,
+        draft: None,
         structured_content: None,
     }
 }
@@ -125,16 +126,16 @@ pub fn invalid_tool_arguments_record(
     tool: &ChatToolDefinition,
     round: u32,
     error: String,
-) -> ToolCallRecord {
+) -> AgentToolCall {
     let now = chrono::Local::now().timestamp();
-    ToolCallRecord {
+    AgentToolCall {
         id: call.id.clone(),
         name: tool.name.clone(),
         source: tool.source.clone(),
         server_id: tool.server_id.clone(),
         arguments: call.arguments_raw.clone(),
-        status: ToolCallStatus::Error,
-        result_preview: None,
+        status: AgentToolStatus::Error,
+        output: None,
         error: Some(error),
         duration_ms: Some(0),
         started_at: Some(now),
@@ -142,8 +143,8 @@ pub fn invalid_tool_arguments_record(
         round,
         sensitive: tool.sensitive,
         artifacts: Vec::new(),
-        trace_id: None,
-        span_id: None,
+        output_limit: None,
+        draft: None,
         structured_content: None,
     }
 }
@@ -151,17 +152,16 @@ pub fn invalid_tool_arguments_record(
 pub(crate) fn pending_tool_record(
     tool: &ChatToolDefinition,
     call: &PendingToolCall,
-    run_id: &str,
     round: u32,
-) -> ToolCallRecord {
-    ToolCallRecord {
+) -> AgentToolCall {
+    AgentToolCall {
         id: call.id.clone(),
         name: tool.name.clone(),
         source: tool.source.clone(),
         server_id: tool.server_id.clone(),
         arguments: call.arguments_raw.clone(),
-        status: ToolCallStatus::Pending,
-        result_preview: None,
+        status: AgentToolStatus::Pending,
+        output: None,
         error: None,
         duration_ms: None,
         started_at: Some(chrono::Local::now().timestamp()),
@@ -169,29 +169,29 @@ pub(crate) fn pending_tool_record(
         round,
         sensitive: tool.sensitive,
         artifacts: Vec::new(),
-        trace_id: Some(run_id.to_string()),
-        span_id: Some(tool_span_id(round, &call.id)),
+        output_limit: None,
+        draft: None,
         structured_content: None,
     }
 }
 
 pub async fn execute_tool_call(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     settings: &Settings,
     ctx: &ToolExecutionContext<'_>,
     tool: &ChatToolDefinition,
     call: PendingToolCall,
     skill_context: Option<&mut skills::SkillRunContext>,
-) -> (ToolCallRecord, String, Vec<Value>) {
+) -> (AgentToolCall, String, Vec<Value>) {
     let task_preflight = tool.argument_policy() == ArgumentPolicy::ToolAfterApproval;
     let mut call = call;
     if !task_preflight {
         call.arguments =
             coerce_tool_arguments(&tool.input_schema, std::mem::take(&mut call.arguments));
     }
-    let mut record = pending_tool_record(tool, &call, ctx.run_id, ctx.round);
-    host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+    let mut record = pending_tool_record(tool, &call, ctx.round);
+    host.tool_updated(&record);
 
     let mut hook_context = Vec::new();
     let mut hook_approval_reason = None;
@@ -202,10 +202,10 @@ pub async fn execute_tool_call(
         .and_then(|rest| rest.get(..36))
     {
         if !crate::plugins::packages::owner_enabled(package_id) {
-            record.status = ToolCallStatus::Skipped;
+            record.status = AgentToolStatus::Skipped;
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some("Plugin has been disabled".into());
-            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+            host.tool_updated(&record);
             return (record, "Plugin has been disabled".into(), Vec::new());
         }
     }
@@ -218,8 +218,6 @@ pub async fn execute_tool_call(
             host,
             "PreToolUse",
             input,
-            ctx.conversation_id,
-            ctx.generation,
         )
         .await;
         let failure = match outcome {
@@ -236,14 +234,14 @@ pub async fn execute_tool_call(
             Err(err) => Some(err),
         };
         if let Some(reason) = failure {
-            record.status = if host.is_generation_active(ctx.conversation_id, ctx.generation) {
-                ToolCallStatus::Skipped
+            record.status = if host.control.active() {
+                AgentToolStatus::Skipped
             } else {
-                ToolCallStatus::Cancelled
+                AgentToolStatus::Cancelled
             };
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some(reason.clone());
-            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+            host.tool_updated(&record);
             return (record, format!("Workflow hook: {reason}"), Vec::new());
         }
     }
@@ -253,11 +251,11 @@ pub async fn execute_tool_call(
     } else {
         validate_tool_arguments(tool, &call.arguments)
     } {
-        record.status = ToolCallStatus::Error;
+        record.status = AgentToolStatus::Error;
         record.duration_ms = Some(0);
         record.completed_at = Some(chrono::Local::now().timestamp());
         record.error = Some(err.clone());
-        host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+        host.tool_updated(&record);
         return (
             record,
             format!("Tool arguments failed schema validation: {err}. Retry this tool call with arguments that match the declared JSON schema."),
@@ -271,21 +269,21 @@ pub async fn execute_tool_call(
         && (hook_approval_reason.is_some() || tool_requires_approval(settings, tool) || asks_user)
     {
         let reason = "多答模式无法安全审批；请改用单模型执行，或在设置中显式选择自动授权。Interactive approval is unavailable in parallel answers; use single-model mode or explicitly select automatic authorization.";
-        record.status = ToolCallStatus::Skipped;
+        record.status = AgentToolStatus::Skipped;
         record.duration_ms = Some(0);
         record.completed_at = Some(chrono::Local::now().timestamp());
         record.error = Some(reason.into());
-        host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+        host.tool_updated(&record);
         return (record, reason.into(), Vec::new());
     }
 
     let hook_approved = if let Some(reason) = hook_approval_reason {
-        record.result_preview = Some(reason);
+        record.output = Some(reason);
         if !host.request_tool_approval(ctx, &record).await {
-            record.status = ToolCallStatus::Skipped;
+            record.status = AgentToolStatus::Skipped;
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some("Workflow hook approval was declined".into());
-            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+            host.tool_updated(&record);
             return (
                 record,
                 "Workflow hook approval was declined".into(),
@@ -309,8 +307,8 @@ pub async fn execute_tool_call(
     // confirms each call (the per-call prompt IS the gate — no separate session
     // consent); the legacy read-only policy prompts once per conversation. Everything else (MCP
     // tools, etc.) keeps the existing per-call approval.
-    let skip = |record: &mut ToolCallRecord, reason: &str| {
-        record.status = ToolCallStatus::Skipped;
+    let skip = |record: &mut AgentToolCall, reason: &str| {
+        record.status = AgentToolStatus::Skipped;
         record.completed_at = Some(chrono::Local::now().timestamp());
         record.error = Some(reason.to_string());
     };
@@ -321,13 +319,13 @@ pub async fn execute_tool_call(
         if policy == "always_confirm" {
             if !host.request_tool_approval(ctx, &record).await {
                 skip(&mut record, "Tool call was not approved");
-                host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+                host.tool_updated(&record);
                 let content = record.error.clone().unwrap_or_default();
                 return (record, content, Vec::new());
             }
         } else if policy != "auto" && !host.request_session_consent(ctx).await {
             skip(&mut record, "用户未授权本会话使用文件 / 命令工具");
-            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+            host.tool_updated(&record);
             let content = record.error.clone().unwrap_or_default();
             return (record, content, Vec::new());
         }
@@ -335,14 +333,14 @@ pub async fn execute_tool_call(
         let approved = host.request_tool_approval(ctx, &record).await;
         if !approved {
             skip(&mut record, "Tool call was not approved");
-            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+            host.tool_updated(&record);
             let content = record.error.clone().unwrap_or_default();
             return (record, content, Vec::new());
         }
     }
 
-    record.status = ToolCallStatus::Running;
-    host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+    record.status = AgentToolStatus::Running;
+    host.tool_updated(&record);
     let started = Instant::now();
     let timeout_ms = effective_tool_timeout_ms(settings, tool, &call.arguments);
     let call_fut = executor.call(ctx, tool, call.arguments.clone(), skill_context);
@@ -360,47 +358,53 @@ pub async fn execute_tool_call(
                     timeout(Duration::from_millis(timeout_ms), call_fut).await
                 }
             } => result,
-            _ = host.wait_for_generation_inactive(ctx.conversation_id, ctx.generation) => {
-                record.status = ToolCallStatus::Cancelled;
+            _ = host.control.wait_inactive() => {
+                record.status = AgentToolStatus::Cancelled;
                 record.duration_ms = Some(started.elapsed().as_millis() as u64);
                 record.completed_at = Some(chrono::Local::now().timestamp());
                 record.error = Some("Tool call cancelled".to_string());
-                host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+                host.tool_updated(&record);
                 let content = record.error.clone().unwrap_or_default();
                 return (record, content, Vec::new());
             }
         }
     };
+    if !host.requires_tool_completion() && !host.control.active() {
+        record.status = AgentToolStatus::Cancelled;
+        record.duration_ms = Some(started.elapsed().as_millis() as u64);
+        record.completed_at = Some(chrono::Local::now().timestamp());
+        record.error = Some("Tool call cancelled".to_string());
+        host.tool_updated(&record);
+        return (record, "Tool call cancelled".to_string(), Vec::new());
+    }
     record.duration_ms = Some(started.elapsed().as_millis() as u64);
     record.completed_at = Some(chrono::Local::now().timestamp());
     let max_tool_output_chars = settings.chat_tools.max_tool_output_chars;
     let mut follow_ups: Vec<Value> = Vec::new();
     let mut tool_content = match result {
         Ok(Ok(output)) if !output.is_error => {
-            record.status = ToolCallStatus::Success;
+            record.status = AgentToolStatus::Success;
             record.artifacts = output.host_data.clone();
             record.structured_content = output.structured_content.clone();
             follow_ups =
                 crate::chat::model::openai_messages_from_model_messages(&output.follow_up_messages);
-            record.result_preview = Some(limit_tool_text_for_model(
-                &format_tool_result_preview(&output.content),
-                max_tool_output_chars,
-            ));
+            record.output = Some(output.content.clone());
+            record.output_limit = max_tool_output_chars;
             limit_tool_text_for_model(&output.content, max_tool_output_chars)
         }
         Ok(Ok(output)) => {
-            record.status = ToolCallStatus::Error;
+            record.status = AgentToolStatus::Error;
             record.structured_content = output.structured_content.clone();
             record.error = Some(truncate_chars(&output.content, 1000));
             limit_tool_text_for_model(&output.content, max_tool_output_chars)
         }
         Ok(Err(err)) => {
-            record.status = ToolCallStatus::Error;
+            record.status = AgentToolStatus::Error;
             record.error = Some(err.clone());
             limit_tool_text_for_model(&err, max_tool_output_chars)
         }
         Err(_) => {
-            record.status = ToolCallStatus::Error;
+            record.status = AgentToolStatus::Error;
             let err = format_tool_timeout_error(tool, timeout_ms, &call.arguments);
             record.error = Some(err.clone());
             // 让模型在 tool result 里也能读到完整说明（不只在 error 字段）
@@ -417,8 +421,6 @@ pub async fn execute_tool_call(
             host,
             "PostToolUse",
             input,
-            ctx.conversation_id,
-            ctx.generation,
         )
         .await
         {
@@ -437,25 +439,25 @@ pub async fn execute_tool_call(
             hook_context.join("\n\n")
         ));
     }
-    host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+    host.tool_updated(&record);
     (record, tool_content, follow_ups)
 }
 
 async fn execute_ask_user_call(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     settings: &Settings,
     ctx: &ToolExecutionContext<'_>,
-    mut record: ToolCallRecord,
+    mut record: AgentToolCall,
     arguments: Value,
-) -> (ToolCallRecord, String) {
+) -> (AgentToolCall, String) {
     let prompt = match ask_user::normalize_prompt(arguments) {
         Ok(prompt) => prompt,
         Err(err) => {
-            record.status = ToolCallStatus::Error;
+            record.status = AgentToolStatus::Error;
             record.duration_ms = Some(0);
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some(err.clone());
-            host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+            host.tool_updated(&record);
             return (
                 record,
                 format!("Invalid ask_user prompt: {err}. Retry with a valid questions payload."),
@@ -463,13 +465,13 @@ async fn execute_ask_user_call(
         }
     };
 
-    record.status = ToolCallStatus::Running;
+    record.status = AgentToolStatus::Running;
     record.structured_content = Some(ask_user::structured_content(
         &prompt,
         ask_user::ASK_USER_PHASE_AWAITING,
         &Default::default(),
     ));
-    host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+    host.tool_updated(&record);
 
     let started = Instant::now();
     let response = host
@@ -485,30 +487,30 @@ async fn execute_ask_user_call(
     let content = ask_user::tool_result_content(&response);
     match response.phase.as_str() {
         ask_user::ASK_USER_PHASE_ANSWERED => {
-            record.status = ToolCallStatus::Success;
-            record.result_preview = Some("User answered clarification questions".to_string());
+            record.status = AgentToolStatus::Success;
+            record.output = Some("User answered clarification questions".to_string());
         }
         ask_user::ASK_USER_PHASE_SKIPPED => {
-            record.status = ToolCallStatus::Skipped;
-            record.result_preview = Some("User skipped clarification".to_string());
+            record.status = AgentToolStatus::Skipped;
+            record.output = Some("User skipped clarification".to_string());
         }
         ask_user::ASK_USER_PHASE_TIMEOUT => {
-            record.status = ToolCallStatus::Skipped;
-            record.result_preview = Some("Clarification timed out".to_string());
+            record.status = AgentToolStatus::Skipped;
+            record.output = Some("Clarification timed out".to_string());
         }
         ask_user::ASK_USER_PHASE_CANCELLED => {
-            record.status = ToolCallStatus::Cancelled;
+            record.status = AgentToolStatus::Cancelled;
             record.error = Some("Clarification cancelled".to_string());
         }
         _ => {
-            record.status = ToolCallStatus::Error;
+            record.status = AgentToolStatus::Error;
             record.error = Some(format!(
                 "Invalid ask_user response phase: {}",
                 response.phase
             ));
         }
     }
-    host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+    host.tool_updated(&record);
     (
         record,
         limit_tool_text_for_model(&content, settings.chat_tools.max_tool_output_chars),
@@ -537,9 +539,7 @@ pub(crate) fn tool_requires_approval_for_policy(policy: &str, tool: &ChatToolDef
     }
 }
 
-fn tool_span_id(round: u32, tool_call_id: &str) -> String {
-    format!("tool_round_{round}_{tool_call_id}")
-}
+
 
 pub fn validate_tool_arguments(tool: &ChatToolDefinition, arguments: &Value) -> Result<(), String> {
     crate::chat::tools::schema::validate_arguments(&tool.input_schema, arguments)
@@ -625,7 +625,7 @@ pub fn truncate_chars(value: &str, max_chars: usize) -> String {
     out
 }
 
-fn limit_tool_text_for_model(value: &str, max_chars: Option<usize>) -> String {
+pub(crate) fn limit_tool_text_for_model(value: &str, max_chars: Option<usize>) -> String {
     match max_chars {
         Some(max_chars) => truncate_tool_content_for_model(value, max_chars),
         None => value.to_string(),
@@ -652,78 +652,27 @@ fn truncate_tool_content_for_model(value: &str, max_chars: usize) -> String {
     )
 }
 
-fn format_tool_result_preview(content: &str) -> String {
-    let trimmed = content.trim();
-    let json_str = trimmed
-        .strip_prefix("stdout:")
-        .map(str::trim)
-        .unwrap_or(trimmed);
-    let Ok(value) = serde_json::from_str::<Value>(json_str) else {
-        return content.to_string();
-    };
-
-    if let Some(answer) = value
-        .get("answer")
-        .and_then(|answer| answer.as_str())
-        .map(str::trim)
-        .filter(|answer| !answer.is_empty())
-    {
-        return format!("答: {answer}");
-    }
-
-    let Some(results) = value.get("results").and_then(|results| results.as_array()) else {
-        return content.to_string();
-    };
-
-    if results.is_empty() {
-        return "无搜索结果".to_string();
-    }
-
-    let query = value
-        .get("query")
-        .and_then(|query| query.as_str())
-        .unwrap_or_default();
-    let query_label = if query.is_empty() {
-        String::new()
-    } else {
-        format!("「{query}」")
-    };
-    let first = &results[0];
-    let title = first
-        .get("title")
-        .or_else(|| first.get("url"))
-        .and_then(|title| title.as_str())
-        .unwrap_or_default();
-    let snippet = first
-        .get("content")
-        .or_else(|| first.get("raw_content"))
-        .and_then(|content| content.as_str())
-        .unwrap_or_default();
-    let snippet: String = snippet.chars().take(80).collect();
-    let head = format!("{} 条结果{query_label}", results.len());
-    if title.is_empty() && snippet.is_empty() {
-        return head;
-    }
-    if snippet.is_empty() {
-        return format!("{head}: {title}");
-    }
-    format!("{head}: {title} - {snippet}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat::types::{ToolCallRecord, ToolCallStatus, ChatMessageSegment};
+    use crate::chat::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
+    use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentEvents, AgentRunIdentity, EventDelivery};
+    use crate::chat::agent::content::InputKind;
+    use crate::chat::agent::steering::SteeringMessage;
+    use crate::chat::agent::context::AgentContext;
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Mutex,
     };
 
     use crate::chat::agent::host::AgentHostFuture;
-    use crate::chat::types::{ChatMessageSegment, ToolCallStatus};
     use crate::mcp::types::native_skill_activate_tool;
 
     #[derive(Default)]
     struct ExecuteTestHost {
+        stopped: AtomicBool,
+        finish_tool: bool,
         workflow: Option<crate::chat::workflow_hooks::Runtime>,
         approvals: AtomicUsize,
         consents: AtomicUsize,
@@ -734,40 +683,18 @@ mod tests {
     }
 
     impl AgentHost for ExecuteTestHost {
+        fn requires_tool_completion(&self) -> bool { self.finish_tool }
         fn supports_interactive_approval(&self) -> bool {
             !self.parallel_arm
         }
         fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
             self.workflow.as_ref()
         }
-        fn emit_stream_delta(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            _delta: &str,
-            _reasoning_delta: Option<&str>,
-            _segment: Option<&ChatMessageSegment>,
-        ) {
-        }
-
-        fn emit_tool_record(
-            &self,
-            _conversation_id: &str,
-            _run_id: &str,
-            _message_id: &str,
-            record: &ToolCallRecord,
-        ) {
-            self.records
-                .lock()
-                .unwrap_or_else(|err| err.into_inner())
-                .push(record.clone());
-        }
 
         fn request_tool_approval<'a>(
             &'a self,
             _ctx: &'a ToolExecutionContext<'a>,
-            _record: &'a ToolCallRecord,
+            _record: &'a AgentToolCall,
         ) -> AgentHostFuture<'a, bool> {
             self.approvals.fetch_add(1, Ordering::SeqCst);
             let granted = !self.deny_approval;
@@ -786,24 +713,39 @@ mod tests {
         fn request_user_response<'a>(
             &'a self,
             _ctx: &'a ToolExecutionContext<'a>,
-            _record: &'a ToolCallRecord,
+            _record: &'a AgentToolCall,
             _prompt: crate::chat::ask_user::AskUserPromptPayload,
         ) -> AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
             Box::pin(async { crate::chat::ask_user::skipped_response() })
         }
 
-        fn is_generation_active(&self, _conversation_id: &str, _generation: u64) -> bool {
-            true
+    }
+
+impl ExecuteTestHost {
+        fn emit_stream_delta(
+            &self,
+            _conversation_id: &str,
+            _run_id: &str,
+            _message_id: &str,
+            _delta: &str,
+            _reasoning_delta: Option<&str>,
+            _segment: Option<&ChatMessageSegment>,
+        ) {
+        }
+        fn emit_tool_record(
+            &self,
+            _conversation_id: &str,
+            _run_id: &str,
+            _message_id: &str,
+            record: &ToolCallRecord,
+        ) {
+            self.records
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .push(record.clone());
         }
 
-        fn wait_for_generation_inactive<'a>(
-            &'a self,
-            _conversation_id: &'a str,
-            _generation: u64,
-        ) -> AgentHostFuture<'a, ()> {
-            Box::pin(async { std::future::pending::<()>().await })
-        }
-    }
+}
 
     #[derive(Default)]
     struct ExecuteTestExecutor {
@@ -982,6 +924,7 @@ mod tests {
         };
 
         let record = unknown_tool_record(&call, 2, "Unknown tool requested: missing".to_string());
+        let record = crate::chat::agent_presentation::project_tool(&record, None);
 
         assert!(matches!(record.status, ToolCallStatus::Error));
         assert_eq!(record.round, 2);
@@ -1523,7 +1466,7 @@ mod tests {
     }
   ]
 }"#;
-        let preview = format_tool_result_preview(raw);
+        let preview = crate::chat::tools::summarize_tool_text(raw);
         assert!(preview.contains("1 条结果"));
         assert!(preview.contains("吉林市天气预报"));
         assert!(preview.contains("33"));
@@ -1852,4 +1795,67 @@ mod tests {
             serde_json::json!(12)
         );
     }
+
+impl AgentRunControl for ExecuteTestHost {
+    fn active(&self) -> bool { !self.stopped.load(Ordering::SeqCst) }
+    fn stop(&self) -> StopAdmission { self.stopped.store(true, Ordering::SeqCst); StopAdmission::Requested }
+    fn submit(&self, _kind: InputKind, _message: SteeringMessage) -> InputAdmission { InputAdmission::Unsupported }
+    fn take(&self, _kind: InputKind) -> Vec<SteeringMessage> { Vec::new() }
+    fn wait_inactive(&self) -> AgentHostFuture<'_, ()> { Box::pin(std::future::pending()) }
+}
+impl AgentEventSink for ExecuteTestHost {
+    fn on_event(&self, event: &AgentEvent<'_>) -> EventDelivery {
+        let id = event.identity;
+        match &event.kind {
+            AgentEventKind::Content { delta, reasoning_delta, block } => {
+                let segment = block.map(crate::chat::agent_presentation::project_block);
+                self.emit_stream_delta(id.conversation_id, id.run_id, id.message_id, delta, *reasoning_delta, segment.as_ref());
+                if let Some(record) = block.and_then(crate::chat::agent_presentation::project_embedded) { self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record); }
+            }
+            AgentEventKind::SearchUpdated { block, announce } => {
+                if *announce {
+                    self.emit_stream_delta(id.conversation_id, id.run_id, id.message_id, "", None, Some(&crate::chat::agent_presentation::project_block(block)));
+                }
+                if let Some(record) = crate::chat::agent_presentation::project_embedded(block) { self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record); }
+            }
+            AgentEventKind::ToolUpdated(call) => self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &crate::chat::agent_presentation::project_tool(call, Some(id.run_id))),
+            _ => {}
+        }
+        EventDelivery::Accepted
+    }
+}
+fn test_context(host: &ExecuteTestHost) -> AgentContext<'_> {
+    let identity = AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1 };
+    let control = AgentRunHandle::new(identity, host);
+    AgentContext { host, events: AgentEvents::new(identity, host, host.hooks().map(|hooks| hooks as &dyn AgentEventSink), control.invocation_id()), control }
+}
+
+async fn execute_tool_call(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall, skills: Option<&mut skills::SkillRunContext>) -> (ToolCallRecord, String, Vec<Value>) {
+    let context = test_context(host);
+    let (record, content, follow_ups) = super::execute_tool_call(&context, executor, settings, ctx, tool, call, skills).await;
+    (crate::chat::agent_presentation::project_tool(&record, Some(ctx.run_id)), content, follow_ups)
+}
+
+    #[tokio::test]
+    async fn stopped_host_discards_ordinary_tool_completion_but_drains_required_completion() {
+        struct StoppingExecutor<'a>(&'a ExecuteTestHost);
+        impl ToolExecutor for StoppingExecutor<'_> {
+            fn call<'a>(&'a self, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition, _arguments: Value, _skills: Option<&'a mut skills::SkillRunContext>) -> ToolExecutorFuture<'a> {
+                Box::pin(async move {
+                    self.0.stop();
+                    Ok(crate::chat::tools::ToolOutput::text("late result"))
+                })
+            }
+        }
+        for finish_tool in [false, true] {
+            let host = ExecuteTestHost { finish_tool, ..Default::default() };
+            let tool = named_test_tool("echo");
+            let (record, content, follow_ups) = execute_tool_call(&host, &StoppingExecutor(&host), &Settings::default(), &test_execution_context(), &tool, test_pending_call("call", "echo", serde_json::json!({})), None).await;
+            assert_eq!(record.status, if finish_tool { ToolCallStatus::Success } else { ToolCallStatus::Cancelled });
+            assert_eq!(record.result_preview.as_deref(), finish_tool.then_some("late result"));
+            assert_eq!(content, if finish_tool { "late result" } else { "Tool call cancelled" });
+            assert!(follow_ups.is_empty());
+        }
+    }
+
 }

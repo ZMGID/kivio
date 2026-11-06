@@ -33,7 +33,7 @@ pub(crate) fn write_run(app: &AppHandle, run: &AutomationRun) -> Result<(), Stri
     write_run_in(&runs_dir(app, &run.automation_id)?, run)
 }
 
-fn write_run_in(dir: &Path, run: &AutomationRun) -> Result<(), String> {
+pub(super) fn write_run_in(dir: &Path, run: &AutomationRun) -> Result<(), String> {
     validate_id(&run.id)?;
     let path = dir.join(format!("{}.json", run.id));
     let new_run = !path.exists();
@@ -102,7 +102,7 @@ pub(crate) fn get(
     read_run_file(&run_path(app, automation_id, run_id)?)
 }
 
-fn read_run_file(path: &PathBuf) -> Result<AutomationRun, String> {
+pub(super) fn read_run_file(path: &PathBuf) -> Result<AutomationRun, String> {
     let raw = fs::read_to_string(path).map_err(|err| format!("read run failed: {err}"))?;
     serde_json::from_str(&raw).map_err(|err| format!("parse run failed: {err}"))
 }

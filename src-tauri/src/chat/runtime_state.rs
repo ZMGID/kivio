@@ -119,6 +119,17 @@ impl ChatRuntimeState {
         self.generation_retired.notify_waiters();
     }
 
+    /// A run-bound stop keeps sibling arms and outer reply/send guards intact.
+    pub(crate) fn cancel_generation(&self, conversation_id: &str, generation: u64) -> bool {
+        let mut indexes = self.indexes();
+        if !is_generation_active(&indexes, conversation_id, generation) {
+            return false;
+        }
+        retire_generation(&mut indexes, conversation_id, generation);
+        self.generation_retired.notify_waiters();
+        true
+    }
+
     /// Reply slot and generation are retired as one operation. Releasing the
     /// reply slot first would let a new send begin between two independent
     /// locks, leaving old pending input attached to the new run.
@@ -140,10 +151,7 @@ impl ChatRuntimeState {
     }
 
     pub(crate) fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.indexes()
-            .active_generations
-            .get(conversation_id)
-            .is_some_and(|active| active.contains(&generation))
+        is_generation_active(&self.indexes(), conversation_id, generation)
     }
 
     pub(crate) fn has_active_generation(&self, conversation_id: &str) -> bool {
@@ -198,11 +206,32 @@ impl ChatRuntimeState {
         }
     }
 
-    pub(crate) fn take_steering(&self, conversation_id: &str) -> Vec<SteeringMessage> {
-        self.indexes()
-            .pending_steering
-            .remove(conversation_id)
-            .unwrap_or_default()
+    pub(crate) fn push_steering_for_generation(
+        &self,
+        conversation_id: &str,
+        generation: u64,
+        message: SteeringMessage,
+    ) -> bool {
+        let mut indexes = self.indexes();
+        if !is_generation_active(&indexes, conversation_id, generation) {
+            return false;
+        }
+        indexes.pending_steering.entry(conversation_id.to_owned()).or_default().push(message);
+        drop(indexes);
+        self.steering_arrived.notify_waiters();
+        true
+    }
+
+    pub(crate) fn take_steering_for_generation(
+        &self,
+        conversation_id: &str,
+        generation: u64,
+    ) -> Vec<SteeringMessage> {
+        let mut indexes = self.indexes();
+        if !is_generation_active(&indexes, conversation_id, generation) {
+            return Vec::new();
+        }
+        indexes.pending_steering.remove(conversation_id).unwrap_or_default()
     }
 
     pub(crate) fn push_follow_up(&self, conversation_id: &str, message: SteeringMessage) -> bool {
@@ -218,11 +247,30 @@ impl ChatRuntimeState {
         true
     }
 
-    pub(crate) fn take_follow_up(&self, conversation_id: &str) -> Vec<SteeringMessage> {
-        self.indexes()
-            .pending_follow_up
-            .remove(conversation_id)
-            .unwrap_or_default()
+    pub(crate) fn push_follow_up_for_generation(
+        &self,
+        conversation_id: &str,
+        generation: u64,
+        message: SteeringMessage,
+    ) -> bool {
+        let mut indexes = self.indexes();
+        if !is_generation_active(&indexes, conversation_id, generation) {
+            return false;
+        }
+        indexes.pending_follow_up.entry(conversation_id.to_owned()).or_default().push(message);
+        true
+    }
+
+    pub(crate) fn take_follow_up_for_generation(
+        &self,
+        conversation_id: &str,
+        generation: u64,
+    ) -> Vec<SteeringMessage> {
+        let mut indexes = self.indexes();
+        if !is_generation_active(&indexes, conversation_id, generation) {
+            return Vec::new();
+        }
+        indexes.pending_follow_up.remove(conversation_id).unwrap_or_default()
     }
 
     pub(crate) fn has_pending_input(&self, conversation_id: &str) -> bool {
@@ -523,6 +571,58 @@ fn has_active_generation(indexes: &ChatRunIndexes, conversation_id: &str) -> boo
         .is_some_and(|active| !active.is_empty())
 }
 
+fn is_generation_active(indexes: &ChatRunIndexes, conversation_id: &str, generation: u64) -> bool {
+    indexes.active_generations.get(conversation_id).is_some_and(|active| active.contains(&generation))
+}
+
+/// Desktop conversation inputs remain shared across deliberate sibling answer arms.
+pub(crate) struct ChatRunControl<'a> {
+    runtime: &'a ChatRuntimeState,
+    conversation_id: &'a str,
+    generation: u64,
+}
+
+impl<'a> ChatRunControl<'a> {
+    pub(crate) fn new(runtime: &'a ChatRuntimeState, conversation_id: &'a str, generation: u64) -> Self {
+        Self { runtime, conversation_id, generation }
+    }
+}
+
+impl super::agent::control::AgentRunControl for ChatRunControl<'_> {
+    fn active(&self) -> bool {
+        self.runtime.is_generation_active(self.conversation_id, self.generation)
+    }
+
+    fn stop(&self) -> super::agent::control::StopAdmission {
+        use super::agent::control::StopAdmission;
+        if self.runtime.cancel_generation(self.conversation_id, self.generation) {
+            StopAdmission::Requested
+        } else {
+            StopAdmission::Inactive
+        }
+    }
+
+    fn submit(&self, kind: super::agent::events::InputKind, message: SteeringMessage) -> super::agent::control::InputAdmission {
+        use super::agent::{control::InputAdmission, events::InputKind};
+        let accepted = match kind {
+            InputKind::Steer => self.runtime.push_steering_for_generation(self.conversation_id, self.generation, message),
+            InputKind::FollowUp => self.runtime.push_follow_up_for_generation(self.conversation_id, self.generation, message),
+        };
+        if accepted { InputAdmission::Accepted } else { InputAdmission::Inactive }
+    }
+
+    fn take(&self, kind: super::agent::events::InputKind) -> Vec<SteeringMessage> {
+        match kind {
+            super::agent::events::InputKind::Steer => self.runtime.take_steering_for_generation(self.conversation_id, self.generation),
+            super::agent::events::InputKind::FollowUp => self.runtime.take_follow_up_for_generation(self.conversation_id, self.generation),
+        }
+    }
+
+    fn wait_inactive(&self) -> super::agent::AgentHostFuture<'_, ()> {
+        Box::pin(self.runtime.wait_for_generation_inactive(self.conversation_id, self.generation))
+    }
+}
+
 fn retire_generation(indexes: &mut ChatRunIndexes, conversation_id: &str, generation: u64) {
     if let Some(active) = indexes.active_generations.get_mut(conversation_id) {
         active.remove(&generation);
@@ -554,6 +654,62 @@ fn retire_reply(indexes: &mut ChatRunIndexes, conversation_id: &str, run_id: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn bound_stop_preserves_sibling_mailbox_and_send_admission_until_guards_release() {
+        let runtime = ChatRuntimeState::default();
+        assert!(runtime.try_reserve_send("conversation", "send"));
+        let first = runtime.begin_reply_generation("conversation").unwrap();
+        let sibling = runtime.begin_reply_generation("conversation").unwrap();
+        assert!(runtime.try_begin_reply("conversation", "first"));
+        assert!(runtime.try_begin_reply("conversation", "sibling"));
+        let message = SteeringMessage::new("shared".into(), "shared input").unwrap();
+        assert!(runtime.push_steering_for_generation("conversation", first, message.clone()));
+        assert!(runtime.push_follow_up_for_generation("conversation", first, message.clone()));
+        let waiting = runtime.wait_for_generation_inactive("conversation", first);
+        tokio::pin!(waiting);
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+
+        assert!(runtime.cancel_generation("conversation", first));
+
+        assert!(futures::poll!(waiting.as_mut()).is_ready());
+        assert!(runtime.is_generation_active("conversation", sibling));
+        assert!(runtime.take_steering_for_generation("conversation", first).is_empty());
+        assert!(runtime.take_follow_up_for_generation("conversation", first).is_empty());
+        assert_eq!(runtime.take_steering_for_generation("conversation", sibling), vec![message.clone()]);
+        assert_eq!(runtime.take_follow_up_for_generation("conversation", sibling), vec![message]);
+        assert!(!runtime.try_reserve_send("conversation", "next"));
+        runtime.finish_reply_generation("conversation", "first", first);
+        assert!(!runtime.try_reserve_send("conversation", "next"));
+        runtime.finish_reply_generation("conversation", "sibling", sibling);
+        assert!(!runtime.try_reserve_send("conversation", "next"));
+        runtime.end_reply("conversation", "send");
+        assert!(runtime.try_reserve_send("conversation", "next"));
+    }
+
+    #[test]
+    fn stale_generation_cannot_write_drain_or_stop_a_replacement_mailbox() {
+        let runtime = ChatRuntimeState::default();
+        let old = runtime.begin_generation("conversation");
+        let message = SteeringMessage::new("input".into(), "input").unwrap();
+        assert!(runtime.push_steering_for_generation("conversation", old, message.clone()));
+        assert!(runtime.push_follow_up_for_generation("conversation", old, message.clone()));
+        assert!(runtime.cancel_generation("conversation", old));
+        let current = runtime.begin_generation("conversation");
+        assert!(!runtime.has_pending_input("conversation"));
+        assert!(runtime.push_steering_for_generation("conversation", current, message.clone()));
+        assert!(runtime.push_follow_up_for_generation("conversation", current, message.clone()));
+
+        assert!(!runtime.push_steering_for_generation("conversation", old, message.clone()));
+        assert!(!runtime.push_follow_up_for_generation("conversation", old, message.clone()));
+        assert!(runtime.take_steering_for_generation("conversation", old).is_empty());
+        assert!(runtime.take_follow_up_for_generation("conversation", old).is_empty());
+        assert!(!runtime.cancel_generation("conversation", old));
+
+        assert!(runtime.is_generation_active("conversation", current));
+        assert_eq!(runtime.take_steering_for_generation("conversation", current), vec![message.clone()]);
+        assert_eq!(runtime.take_follow_up_for_generation("conversation", current), vec![message]);
+    }
 
     #[tokio::test]
     async fn generation_waiters_wake_on_every_retirement_and_keep_siblings_active() {
@@ -675,7 +831,7 @@ mod tests {
         ));
         runtime.cancel_conversation("conversation");
         assert!(!runtime.is_generation_active("conversation", old));
-        assert!(runtime.take_steering("conversation").is_empty());
+        assert!(!runtime.has_pending_input("conversation"));
         assert!(!runtime.push_steering(
             "conversation",
             SteeringMessage {
@@ -684,13 +840,13 @@ mod tests {
             },
         ));
         runtime.begin_generation("conversation");
-        assert!(runtime.take_steering("conversation").is_empty());
+        assert!(!runtime.has_pending_input("conversation"));
     }
 
     #[tokio::test]
     async fn steering_wakes_waiters_without_consuming_or_confusing_follow_up() {
         let runtime = ChatRuntimeState::default();
-        runtime.begin_generation("conversation");
+        let generation = runtime.begin_generation("conversation");
         let waiting = runtime.wait_for_steering("conversation");
         tokio::pin!(waiting);
         assert!(futures::poll!(waiting.as_mut()).is_pending());
@@ -698,8 +854,8 @@ mod tests {
         assert!(futures::poll!(waiting.as_mut()).is_pending());
         assert!(runtime.push_steering("conversation", SteeringMessage { id: "steer".into(), text: "now".into() }));
         waiting.await;
-        assert_eq!(runtime.take_steering("conversation")[0].id, "steer");
-        assert_eq!(runtime.take_follow_up("conversation")[0].id, "follow");
+        assert_eq!(runtime.take_steering_for_generation("conversation", generation)[0].id, "steer");
+        assert_eq!(runtime.take_follow_up_for_generation("conversation", generation)[0].id, "follow");
     }
 
     #[test]

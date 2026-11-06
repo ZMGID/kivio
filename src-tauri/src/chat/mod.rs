@@ -1,3 +1,4 @@
+pub(crate) mod agent_presentation;
 // Chat 模块：AI 客户端核心功能
 pub mod agent;
 pub(crate) mod artifacts;

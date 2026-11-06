@@ -46,6 +46,8 @@ pub(crate) use conversations::{
     delete_conversation, read_conversation_file, restart_goal_candidates, write_conversation_file,
     RestartGoal,
 };
+#[cfg(test)]
+pub(crate) use conversations::write_conversation_file_at_path;
 pub use index::load_index;
 pub(crate) use index::{
     conversation_index_needs_persist, load_index_or_scan, persist_healed_conversation_index,

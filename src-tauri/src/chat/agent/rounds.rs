@@ -1,9 +1,10 @@
+use super::content::{AgentToolCall, AgentToolStatus};
 use super::history::{import_history, RuntimeMessage};
 use crate::chat::model::FinishKind;
 use serde_json::Value;
 
 use crate::chat::model::PendingToolCall;
-use crate::chat::types::{ToolCallRecord, ToolCallStatus};
+
 use crate::mcp::ChatToolDefinition;
 use crate::settings::Settings;
 use crate::skills;
@@ -13,7 +14,6 @@ use super::execute::{
     pending_tool_record, tool_requires_approval, unknown_tool_record, ToolExecutionContext, ToolExecutor,
 };
 use super::finalize::cancelled_tool_round_run_result;
-use super::host::AgentHost;
 use super::loop_::{LoopEnv, RunState};
 use super::planning::PlannedToolRound;
 use super::types::AgentRunResult;
@@ -45,7 +45,7 @@ pub(crate) async fn run_tool_round(
     let mut task_records = planned.tool_calls.iter().filter_map(|call| {
         let tool = match_tool_call(&state.tools, &call.function_name)?;
         (tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME)
-            .then(|| pending_tool_record(tool, call, &config.run_id, round))
+            .then(|| pending_tool_record(tool, call, round))
     });
     if let Some(first) = task_records.next() {
         let mut records = state.tool_records.clone();
@@ -126,13 +126,13 @@ pub(crate) struct ToolRoundContext<'a> {
 
 pub(crate) struct ToolRoundResult {
     pub(crate) response_messages: Vec<Value>,
-    pub(crate) tool_records: Vec<ToolCallRecord>,
+    pub(crate) tool_records: Vec<AgentToolCall>,
     pub(crate) cancelled: bool,
 }
 
 struct ToolExecutionResult {
     response_message: Value,
-    record: Option<ToolCallRecord>,
+    record: Option<AgentToolCall>,
     cancelled: bool,
     /// Extra user-role messages (OpenAI shape) appended after ALL results in the
     /// round — used by `read` to feed an image to a vision model.
@@ -161,7 +161,7 @@ pub(crate) fn visible_tool_segment_calls(
 }
 
 pub(crate) async fn execute_tool_round(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     settings: &Settings,
     ctx: ToolRoundContext<'_>,
@@ -377,7 +377,7 @@ pub(crate) async fn execute_tool_round(
 fn push_tool_execution_result(
     result: ToolExecutionResult,
     response_messages: &mut Vec<Value>,
-    tool_records: &mut Vec<ToolCallRecord>,
+    tool_records: &mut Vec<AgentToolCall>,
 ) -> bool {
     let cancelled = result.cancelled;
     if let Some(record) = result.record {
@@ -398,8 +398,8 @@ fn push_tool_execution_result(
 async fn flush_parallel_batch(
     batch: &mut Vec<ExecutableToolCall<'_>>,
     response_messages: &mut Vec<Value>,
-    tool_records: &mut Vec<ToolCallRecord>,
-    host: &dyn AgentHost,
+    tool_records: &mut Vec<AgentToolCall>,
+    host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     settings: &Settings,
     ctx: &ToolRoundContext<'_>,
@@ -428,7 +428,7 @@ async fn flush_parallel_batch(
 }
 
 async fn execute_parallel_chunk(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     settings: &Settings,
     ctx: &ToolRoundContext<'_>,
@@ -446,7 +446,7 @@ async fn execute_parallel_chunk(
 }
 
 async fn execute_parallel_tool_call(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     settings: &Settings,
     ctx: &ToolRoundContext<'_>,
@@ -465,7 +465,7 @@ async fn execute_parallel_tool_call(
 }
 
 async fn execute_serial_tool_call(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     settings: &Settings,
     ctx: &ToolRoundContext<'_>,
@@ -486,7 +486,7 @@ async fn execute_serial_tool_call(
 }
 
 async fn execute_tool_call_result(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     settings: &Settings,
     round_ctx: &ToolRoundContext<'_>,
@@ -514,15 +514,7 @@ async fn execute_tool_call_result(
     };
     // 单点：串行与并行两条路径都经过这里，所以 start/end 一定成对。并行 chunk 里多个
     // 工具的事件会交错——那是真实语义，脚本靠 toolCallId 自己配对，不做重排。
-    let hooks = host.hooks();
-    if let Some(hooks) = hooks {
-        hooks.dispatch(
-            crate::chat::hooks::HookEvent::ToolExecutionStart,
-            Some(tool.name.as_str()),
-            Some(round_ctx.round),
-            Some(tool_call_id.as_str()),
-        );
-    }
+    let mut lifecycle = super::events::ToolEventGuard::new(&host.events, round_ctx.round, &tool_call_id, &tool.name);
     let (record, tool_content, follow_up_messages) = execute_tool_call(
         host,
         executor,
@@ -533,17 +525,10 @@ async fn execute_tool_call_result(
         skill_context,
     )
     .await;
-    if let Some(hooks) = hooks {
-        hooks.dispatch(
-            crate::chat::hooks::HookEvent::ToolExecutionEnd,
-            Some(tool.name.as_str()),
-            Some(round_ctx.round),
-            Some(tool_call_id.as_str()),
-        );
-    }
-    let cancelled = matches!(record.status, ToolCallStatus::Cancelled);
+    lifecycle.cancelled = matches!(record.status, AgentToolStatus::Cancelled);
+    let cancelled = matches!(record.status, AgentToolStatus::Cancelled);
     ToolExecutionResult {
-        response_message: tool_message(tool_call_id, tool_content),
+        response_message: tool_message(tool_call_id.clone(), tool_content),
         record: Some(record),
         cancelled,
         follow_up_messages,
@@ -551,12 +536,12 @@ async fn execute_tool_call_result(
 }
 
 fn push_cancelled_tool_calls(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tools: &[ChatToolDefinition],
     tool_calls: impl IntoIterator<Item = PendingToolCall>,
     response_messages: &mut Vec<Value>,
-    tool_records: &mut Vec<ToolCallRecord>,
+    tool_records: &mut Vec<AgentToolCall>,
 ) {
     for tool_call in tool_calls {
         push_cancelled_tool_call(host, ctx, tools, tool_call, response_messages, tool_records);
@@ -564,12 +549,12 @@ fn push_cancelled_tool_calls(
 }
 
 fn push_cancelled_tool_call(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tools: &[ChatToolDefinition],
     tool_call: PendingToolCall,
     response_messages: &mut Vec<Value>,
-    tool_records: &mut Vec<ToolCallRecord>,
+    tool_records: &mut Vec<AgentToolCall>,
 ) {
     let tool = match_tool_call(tools, &tool_call.function_name);
     let result = cancelled_tool_result(host, ctx, &tool_call, tool);
@@ -577,13 +562,13 @@ fn push_cancelled_tool_call(
 }
 
 fn cancelled_tool_result(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tool_call: &PendingToolCall,
     tool: Option<&ChatToolDefinition>,
 ) -> ToolExecutionResult {
     let now = chrono::Local::now().timestamp();
-    let record = ToolCallRecord {
+    let record = AgentToolCall {
         id: tool_call.id.clone(),
         name: tool
             .map(|tool| tool.name.clone())
@@ -593,8 +578,9 @@ fn cancelled_tool_result(
             .unwrap_or_else(|| "unknown".to_string()),
         server_id: tool.and_then(|tool| tool.server_id.clone()),
         arguments: tool_call.arguments_raw.clone(),
-        status: ToolCallStatus::Cancelled,
-        result_preview: None,
+        status: AgentToolStatus::Cancelled,
+        output: None,
+            output_limit: None,
         error: Some("Tool call cancelled".to_string()),
         duration_ms: Some(0),
         started_at: Some(now),
@@ -602,11 +588,10 @@ fn cancelled_tool_result(
         round: ctx.round,
         sensitive: tool.map(|tool| tool.sensitive).unwrap_or(false),
         artifacts: Vec::new(),
-        trace_id: Some(ctx.run_id.to_string()),
-        span_id: Some(tool_span_id(ctx, &tool_call.id)),
+        draft: None,
         structured_content: None,
     };
-    host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+    host.tool_updated(&record);
     ToolExecutionResult {
         response_message: tool_message(tool_call.id.clone(), "Tool call cancelled"),
         record: Some(record),
@@ -616,7 +601,7 @@ fn cancelled_tool_result(
 }
 
 fn unknown_or_disabled_tool_result(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tools: &[ChatToolDefinition],
     blocked_tool_calls: &[ChatToolDefinition],
@@ -627,9 +612,8 @@ fn unknown_or_disabled_tool_result(
             "Tool `{}` is blocked in Plan mode. Switch to Act / execute the plan before using side-effecting tools.",
             tool.openai_tool_name()
         );
-        let mut record = skipped_tool_record(ctx, &tool_call, tool, error.clone());
-        attach_tool_trace(ctx, &mut record);
-        host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+        let record = skipped_tool_record(ctx, &tool_call, tool, error.clone());
+        host.tool_updated(&record);
         return ToolExecutionResult {
             response_message: tool_message(tool_call.id, error),
             record: Some(record),
@@ -641,9 +625,8 @@ fn unknown_or_disabled_tool_result(
     let disabled = disabled_tool_content(&tool_call);
     let record = if disabled.is_none() {
         let error = format!("Unknown tool requested: {}", tool_call.function_name);
-        let mut record = unknown_tool_record(&tool_call, ctx.round, error);
-        attach_tool_trace(ctx, &mut record);
-        host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+        let record = unknown_tool_record(&tool_call, ctx.round, error);
+        host.tool_updated(&record);
         Some(record)
     } else {
         None
@@ -672,16 +655,17 @@ fn skipped_tool_record(
     call: &PendingToolCall,
     tool: &ChatToolDefinition,
     error: String,
-) -> ToolCallRecord {
+) -> AgentToolCall {
     let now = chrono::Local::now().timestamp();
-    ToolCallRecord {
+    AgentToolCall {
         id: call.id.clone(),
         name: tool.name.clone(),
         source: tool.source.clone(),
         server_id: tool.server_id.clone(),
         arguments: call.arguments_raw.clone(),
-        status: ToolCallStatus::Skipped,
-        result_preview: None,
+        status: AgentToolStatus::Skipped,
+        output: None,
+            output_limit: None,
         error: Some(error),
         duration_ms: Some(0),
         started_at: Some(now),
@@ -689,14 +673,13 @@ fn skipped_tool_record(
         round: ctx.round,
         sensitive: tool.sensitive,
         artifacts: Vec::new(),
-        trace_id: None,
-        span_id: None,
+        draft: None,
         structured_content: None,
     }
 }
 
 fn invalid_tool_arguments_result(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tool_call: &PendingToolCall,
     tool: &ChatToolDefinition,
@@ -728,9 +711,8 @@ fn invalid_tool_arguments_result(
                 .to_string(),
         )
     };
-    let mut record = invalid_tool_arguments_record(tool_call, tool, ctx.round, record_error);
-    attach_tool_trace(ctx, &mut record);
-    host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+    let record = invalid_tool_arguments_record(tool_call, tool, ctx.round, record_error);
+    host.tool_updated(&record);
     ToolExecutionResult {
         response_message: tool_message(tool_call.id.clone(), model_hint),
         record: Some(record),
@@ -742,7 +724,7 @@ fn invalid_tool_arguments_result(
 /// finish_reason=="length" 的整批作废结果：不执行，只给模型一条「参数可能被截断，
 /// 请重发」的错误结果（每个 tool_call_id 都必须被应答，缺一条下一轮请求直接 400）。
 fn truncated_tool_call_result(
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tools: &[ChatToolDefinition],
     tool_call: PendingToolCall,
@@ -757,27 +739,17 @@ fn truncated_tool_call_result(
          by splitting the work across several calls.",
         tool_call.function_name
     );
-    let mut record = match match_tool_call(tools, &tool_call.function_name) {
+    let record = match match_tool_call(tools, &tool_call.function_name) {
         Some(tool) => invalid_tool_arguments_record(&tool_call, tool, ctx.round, error),
         None => unknown_tool_record(&tool_call, ctx.round, error),
     };
-    attach_tool_trace(ctx, &mut record);
-    host.emit_tool_record(ctx.conversation_id, ctx.run_id, ctx.message_id, &record);
+    host.tool_updated(&record);
     ToolExecutionResult {
         response_message: tool_message(tool_call.id, model_hint),
         record: Some(record),
         cancelled: false,
         follow_up_messages: Vec::new(),
     }
-}
-
-fn attach_tool_trace(ctx: &ToolRoundContext<'_>, record: &mut ToolCallRecord) {
-    record.trace_id = Some(ctx.run_id.to_string());
-    record.span_id = Some(tool_span_id(ctx, &record.id));
-}
-
-fn tool_span_id(ctx: &ToolRoundContext<'_>, tool_call_id: &str) -> String {
-    format!("tool_round_{}_{}", ctx.round, tool_call_id)
 }
 
 pub(crate) fn tool_message(tool_call_id: String, content: impl Into<String>) -> Value {

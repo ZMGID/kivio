@@ -1,8 +1,8 @@
+use super::content::{AgentToolCall};
 use super::history::{export_history, import_history, RuntimeMessage};
 use crate::chat::model::ModelRole;
 
-use crate::chat::hooks::{HookDispatcher, HookEvent};
-use crate::chat::types::ToolCallRecord;
+
 use crate::mcp::ChatToolDefinition;
 use crate::skills;
 
@@ -57,32 +57,15 @@ fn current_todo_state(
     config: &AgentRunConfig<'_>,
     state: &RunState,
 ) -> crate::chat::types::AgentTodoState {
-    crate::chat::todo::latest_recorded_state(&state.tool_records)
+    crate::chat::todo::latest_result_state(state.tool_records.iter().rev().filter(|record| record.status == super::content::AgentToolStatus::Success).filter_map(|record| record.structured_content.as_ref()))
         .unwrap_or_else(|| config.todo_state.clone())
 }
 
 /// Immutable per-run environment shared by every loop phase.
 pub(crate) struct LoopEnv<'a> {
     pub(crate) config: &'a AgentRunConfig<'a>,
-    pub(crate) host: &'a dyn AgentHost,
+    pub(crate) host: &'a super::context::AgentContext<'a>,
     pub(crate) executor: &'a dyn ToolExecutor,
-}
-
-impl LoopEnv<'_> {
-    pub(crate) fn ids(&self) -> RunIds<'_> {
-        RunIds {
-            conversation_id: &self.config.conversation_id,
-            run_id: &self.config.run_id,
-            message_id: &self.config.message_id,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct RunIds<'a> {
-    pub(crate) conversation_id: &'a str,
-    pub(crate) run_id: &'a str,
-    pub(crate) message_id: &'a str,
 }
 
 /// Mutable accumulators threaded through the loop phases.
@@ -91,7 +74,7 @@ pub(crate) struct RunState {
     pub(crate) tools: Vec<ChatToolDefinition>,
     pub(crate) blocked_tool_calls: Vec<ChatToolDefinition>,
     pub(crate) generated_api_messages: Vec<RuntimeMessage>,
-    pub(crate) tool_records: Vec<ToolCallRecord>,
+    pub(crate) tool_records: Vec<AgentToolCall>,
     pub(crate) planning_reasoning_parts: Vec<String>,
     pub(crate) segment_builder: SegmentBuilder,
     pub(crate) step_number: u8,
@@ -188,7 +171,7 @@ impl RunState {
         }
         if next.is_none() && main_display {
             env.host
-                .finish_unreported_context(&env.config.conversation_id);
+                .context_unreported();
         }
         let bill = billing.or_else(|| next.clone());
         let Some(bill) = bill else {
@@ -201,7 +184,7 @@ impl RunState {
                 &env.config.provider.api_format,
             );
             env.host
-                .note_context_cache(&env.config.conversation_id, self.cache_pairs);
+                .context_cache(self.cache_pairs);
         }
         let total = self.usage.get_or_insert_with(Default::default);
         let add = |slot: &mut Option<u64>, value: Option<u64>| {
@@ -232,104 +215,81 @@ impl RunState {
                 env.config.initial_cache_usage,
                 self.cache_pairs,
             );
-            env.host.emit_context_usage_live(
-                &env.config.conversation_id,
-                used,
-                Some("provider_context_reported"),
-                None,
-                cache,
-            );
+            env.host.context_usage(used, Some("provider_context_reported"), None, cache);
         } else {
             env.host
-                .finish_unreported_context(&env.config.conversation_id);
+                .context_unreported();
         }
     }
 }
 
-/// `agent_end` 的 RAII 触发器。loop 有 8 条 return 路径，逐条加一行等于迟早漏一条；
-/// 挂在 Drop 上则「无论怎么退出（成功 / 失败 / 取消 / `?` 早返回）都恰好发一次」。
-///
-/// 兼作**取消的兜底**：loop 里显式 `cancel()` 的只有三处工具轮分支，而 synthesis 阶段的
-/// 取消（`SynthesisFlow::Early` outcome=cancelled、以及 `Err("cancelled")` 经 `?` 传播）
-/// 一处都不经过它们 —— 偏偏那是流式最长的阶段，也是「工具全关」会话**唯一**的阶段。
-/// 漏掉就等于「停止」之后排队的 Hook 照跑、在跑的 `sleep 600` 没人杀。这里按同一条
-/// RAII 纪律统一收口：Drop 时若本 run 的 generation 已失效即先 `cancel()`，再发 `agent_end`
-/// （取消是世代而非闭锁，所以这个顺序下 `agent_end` 仍会执行）。
-struct HookRunGuard<'a> {
-    hooks: Option<&'a HookDispatcher>,
-    host: &'a dyn AgentHost,
-    conversation_id: &'a str,
-    generation: u64,
+struct RunGuard<'a> {
+    host: &'a super::context::AgentContext<'a>,
+    outcome: super::events::AgentRunOutcome,
 }
-
-impl Drop for HookRunGuard<'_> {
+impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
-        self.host.run_ended(self.conversation_id);
-        if let Some(hooks) = self.hooks {
-            if !self
-                .host
-                .is_generation_active(self.conversation_id, self.generation)
-            {
-                hooks.cancel();
-            }
-            hooks.dispatch(HookEvent::AgentEnd, None, None, None);
-        }
+        self.host.control.finish_core();
+        self.host.events.emit(super::events::AgentEventKind::RunEnded { outcome: self.outcome.clone() });
+        self.host.run_ended(self.host.events.identity.conversation_id);
     }
 }
 
-/// 一轮（planning step）的 RAII 触发器：构造发 `turn_start` + `message_start`，
-/// Drop 发 `message_end`（若还没发过）+ `turn_end`。
-///
-/// 同样是「逐条 return 加一行必漏一条」——planning 有 7 个 outcome，其中 4 个
-/// （两条 retry `continue` / `DraftFailed` / `Recovered`）加上 `planning_step(..)?`
-/// 的错误传播都会绕开手写的收尾，留下永不闭合的 `turn_start`。挂 Drop 则每个
-/// `turn_start`/`message_start` 在任何路径上都恰好配一个 `turn_end`/`message_end`。
-struct HookTurnGuard<'a> {
-    hooks: Option<&'a HookDispatcher>,
-    round: u32,
-    /// `message_end` 是否还欠着。取工具调用那条路上消息先于本轮结束，需提前闭合。
-    message_open: bool,
-}
-
+struct HookTurnGuard<'a> { events: &'a super::events::AgentEvents<'a>, round: u32, message_open: bool }
 impl<'a> HookTurnGuard<'a> {
-    fn new(hooks: Option<&'a HookDispatcher>, round: u32) -> Self {
-        // LiveAgent 的 startTurn 同时发这两个：一次 planning step 既是一「轮」的开始，
-        // 也是该轮助手消息开始产出的时刻。
-        if let Some(hooks) = hooks {
-            hooks.dispatch(HookEvent::TurnStart, None, Some(round), None);
-            hooks.dispatch(HookEvent::MessageStart, None, Some(round), None);
-        }
-        Self {
-            hooks,
-            round,
-            message_open: true,
-        }
+    fn new(events: &'a super::events::AgentEvents<'a>, round: u32) -> Self {
+        use super::events::AgentEventKind;
+        events.emit(AgentEventKind::StepStarted { round });
+        events.emit(AgentEventKind::MessageStarted { round });
+        Self { events, round, message_open: true }
     }
-
-    /// 助手消息产出完毕（含工具调用决策）。工具还要接着跑，所以本轮尚未结束。
     fn end_message(&mut self) {
-        if !self.message_open {
-            return;
-        }
-        self.message_open = false;
-        if let Some(hooks) = self.hooks {
-            hooks.dispatch(HookEvent::MessageEnd, None, Some(self.round), None);
+        if self.message_open {
+            self.message_open = false;
+            self.events.emit(super::events::AgentEventKind::MessageEnded { round: self.round });
         }
     }
 }
-
 impl Drop for HookTurnGuard<'_> {
     fn drop(&mut self) {
         self.end_message();
-        if let Some(hooks) = self.hooks {
-            hooks.dispatch(HookEvent::TurnEnd, None, Some(self.round), None);
-        }
+        self.events.emit(super::events::AgentEventKind::StepEnded { round: self.round });
     }
 }
 
 pub async fn run_agent_loop(
+    config: AgentRunConfig<'_>,
+    operations: &dyn AgentHost,
+    executor: &dyn ToolExecutor,
+    sink: &dyn super::events::AgentEventSink,
+    control: super::control::AgentRunHandle<'_>,
+) -> Result<AgentRunResult, String> {
+    use super::events::{AgentEventKind, AgentEvents, AgentRunOutcome};
+    let identity = control.identity();
+    if identity.conversation_id != config.conversation_id || identity.run_id != config.run_id
+        || identity.message_id != config.message_id || identity.generation != config.generation {
+        return Err("agent run control identity does not match configuration".into());
+    }
+    control.begin_core().map_err(|error| error.to_string())?;
+    let host = super::context::AgentContext { host: operations, events: AgentEvents::new(identity, sink, operations.hooks().map(|hooks| hooks as &dyn super::events::AgentEventSink), control.invocation_id()), control };
+    host.events.emit(AgentEventKind::RunStarted);
+    let mut guard = RunGuard { host: &host, outcome: AgentRunOutcome::Dropped };
+    let result = run_agent_loop_inner(config, &host, executor).await;
+    guard.outcome = match &result {
+        Ok(result) => match &result.status {
+            super::types::AgentRunStatus::Cancelled => AgentRunOutcome::Cancelled,
+            super::types::AgentRunStatus::Failed(error) => AgentRunOutcome::Failed(error.clone()),
+            _ => AgentRunOutcome::Completed,
+        },
+        Err(_) if !host.control.active() => AgentRunOutcome::Cancelled,
+        Err(error) => AgentRunOutcome::Failed(error.clone()),
+    };
+    result
+}
+
+async fn run_agent_loop_inner(
     mut config: AgentRunConfig<'_>,
-    host: &dyn AgentHost,
+    host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
 ) -> Result<AgentRunResult, String> {
     config.settings.chat_tools.approval_policy
@@ -385,42 +345,19 @@ pub async fn run_agent_loop(
     state
         .skill_context
         .set_registry(config.skill_registry.clone());
-    let hooks = host.hooks();
-    // agent_start 在 guard 之前发：guard 的 Drop 负责成对的 agent_end。
-    if let Some(hooks) = hooks {
-        hooks.dispatch(HookEvent::AgentStart, None, None, None);
-    }
-    let _hook_guard = HookRunGuard {
-        hooks,
-        host,
-        conversation_id: &config.conversation_id,
-        generation: config.generation,
-    };
 
     let tool_loop_ran = !state.tools.is_empty();
     let resumed = state
         .runtime_messages
         .iter()
         .any(|m| m.role() == Some(ModelRole::Assistant));
-    let mut hook_context = crate::chat::workflow_hooks::start_context(
-        host,
-        &config.conversation_id,
-        config.generation,
-        resumed,
-        config.depth > 0,
-    )
+    let mut hook_context = crate::chat::workflow_hooks::start_context(host, &config.conversation_id, resumed, config.depth > 0)
     .await?;
     if config.depth == 0 {
         if let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) {
             let mut input = runtime.input("UserPromptSubmit", &config.conversation_id);
             input["prompt"] = serde_json::json!(runtime.prompt.as_deref().unwrap_or(""));
-            let outcome = crate::chat::workflow_hooks::run_for_host(
-                host,
-                "UserPromptSubmit",
-                input,
-                &config.conversation_id,
-                config.generation,
-            )
+            let outcome = crate::chat::workflow_hooks::run_for_host(host, "UserPromptSubmit", input)
             .await?;
             if let Some(reason) = outcome.denied {
                 return Err(reason);
@@ -449,22 +386,19 @@ pub async fn run_agent_loop(
         loop {
             round = round.saturating_add(1);
             state.step_number = state.step_number.saturating_add(1);
-            if !host.is_generation_active(&config.conversation_id, config.generation) {
+            if !host.control.active() {
                 // Cancelled at the loop top (before this round's planning call).
                 // Preserve whatever previous rounds already accumulated
                 // (tool_records / segments / api_messages) by ending with
                 // Ok(cancelled_result) instead of a bare Err("cancelled") — the
                 // latter skipped persistence and dropped the whole turn.
-                if let Some(hooks) = hooks {
-                    hooks.cancel();
-                }
                 let result = cancelled_run_result_from_state(&mut state);
                 return Ok(attach_usage(result, &mut state));
             }
 
             // 本轮的 turn_start / message_start 由 guard 构造时发；turn_end / message_end
             // 由它的 Drop 补齐，所以下面任何一条 return / continue / `?` 都不会漏配对。
-            let mut turn = HookTurnGuard::new(hooks, round);
+            let mut turn = HookTurnGuard::new(&host.events, round);
 
             // 用户在生成期间点了「立刻引导」：轮次边界是唯一安全的注入点（上一轮的工具结果
             // 已经落进历史，本轮还没开始调模型）。信箱为空时零开销。
@@ -524,10 +458,7 @@ pub async fn run_agent_loop(
                             config.generation,
                         )
                         .await?;
-                    if !host.is_generation_active(&config.conversation_id, config.generation) {
-                        if let Some(hooks) = hooks {
-                            hooks.cancel();
-                        }
+                    if !host.control.active() {
                         let result = cancelled_run_result_from_state(&mut state);
                         return Ok(attach_usage(result, &mut state));
                     }
@@ -559,9 +490,6 @@ pub async fn run_agent_loop(
                     return Ok(attach_usage(result, &mut state));
                 }
                 PlanningStepOutcome::Cancelled(result) => {
-                    if let Some(hooks) = hooks {
-                        hooks.cancel();
-                    }
                     return Ok(attach_usage(result, &mut state));
                 }
                 PlanningStepOutcome::ToolCalls(planned) => planned,
@@ -574,9 +502,6 @@ pub async fn run_agent_loop(
                     state.tool_batches_since_compact += 1;
                 }
                 ToolRoundOutcome::Cancelled(result) => {
-                    if let Some(hooks) = hooks {
-                        hooks.cancel();
-                    }
                     return Ok(attach_usage(result, &mut state));
                 }
             }
@@ -619,7 +544,7 @@ pub async fn run_agent_loop(
 
     // A managed tool may finish cleanup after cancellation. Recheck before
     // synthesis.
-    if !host.is_generation_active(&config.conversation_id, config.generation) {
+    if !host.control.active() {
         let result = cancelled_run_result_from_state(&mut state);
         return Ok(attach_usage(result, &mut state));
     }
@@ -662,7 +587,7 @@ pub async fn run_agent_loop(
     // 都不会发——只剩 agent_start/agent_end。这里的 synthesis 就是那一「轮」，补上配对
     // （对齐 LiveAgent 的 runTextConversationTurn 也走 startTurn/endTurn）。工具循环跑过
     // 的情况下它自己的 guard 已经配好了，不能再发一次。
-    let _text_turn = (!tool_loop_ran).then(|| HookTurnGuard::new(hooks, 1));
+    let _text_turn = (!tool_loop_ran).then(|| HookTurnGuard::new(&host.events, 1));
 
     match synthesis_step(&env, &mut state).await? {
         SynthesisFlow::Early(result) => Ok(attach_usage(result, &mut state)),
@@ -710,7 +635,7 @@ pub(crate) use super::finalize::{
 };
 #[cfg(test)]
 pub(crate) use super::rounds::{
-    execute_tool_round, tool_call_parallel_eligible, tool_message, visible_tool_segment_calls,
+    tool_call_parallel_eligible, tool_message, visible_tool_segment_calls,
     ToolRoundContext,
 };
 #[cfg(test)]
@@ -718,12 +643,8 @@ pub(crate) use super::stream::{AgentStreamSink, ToolCallDraftTracker};
 #[cfg(test)]
 pub(crate) use crate::chat::model::PendingToolCall;
 #[cfg(test)]
-pub(crate) use crate::chat::types::{
-    ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase,
-};
-#[cfg(test)]
 pub(crate) use crate::settings::Settings;
 
 #[cfg(test)]
 #[path = "loop_tests.rs"]
-mod tests;
+pub(crate) mod tests;

@@ -2,6 +2,7 @@
 //! owns provider credentials, failover and HTTP pools; a run only asks for the
 //! three model operations it can perform.
 
+use super::content::{ContentBlock};
 use std::{future::Future, pin::Pin};
 
 use serde_json::Value;
@@ -9,7 +10,7 @@ use serde_json::Value;
 use crate::{
     chat::{
         model::{GenerateOptions, GenerateOutput, ModelError, RequestMetadata, ToolChoice},
-        types::ChatMessageSegment,
+
     },
     mcp::ChatToolDefinition,
     settings::ModelProvider,
@@ -18,7 +19,6 @@ use crate::{
 
 use super::{
     compaction::{summarize_history, CompactOutcome},
-    host::AgentHost,
     planning::{generate_via_stream_collect, stream_scoped_chat_completion_inner},
     stream::{ToolCallDraftTracker, WebSearchCardTracker},
     types::AgentStreamPolicy,
@@ -28,7 +28,7 @@ pub(crate) type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 
 
 #[derive(Clone)]
 pub(crate) struct StreamRequest<'a> {
-    pub host: &'a dyn AgentHost,
+    pub host: &'a super::context::AgentContext<'a>,
     pub provider: &'a ModelProvider,
     pub model: &'a str,
     pub messages: Vec<super::history::RuntimeMessage>,
@@ -40,13 +40,11 @@ pub(crate) struct StreamRequest<'a> {
     pub builtin_web_search: bool,
     pub max_output_tokens: u32,
     pub conversation_id: &'a str,
-    pub run_id: &'a str,
     pub message_id: &'a str,
-    pub generation: u64,
     pub label: &'a str,
     pub policy: AgentStreamPolicy,
-    pub text_segment: Option<ChatMessageSegment>,
-    pub reasoning_segment: Option<ChatMessageSegment>,
+    pub text_segment: Option<ContentBlock>,
+    pub reasoning_segment: Option<ContentBlock>,
     pub tool_draft_tracker: Option<ToolCallDraftTracker>,
     pub web_search_tracker: Option<WebSearchCardTracker>,
 }
@@ -77,7 +75,7 @@ pub(crate) struct SummaryRequest<'a> {
     pub conversation_id: &'a str,
     pub message_id: &'a str,
     pub cancel: Option<ProviderFuture<'a, ()>>,
-    pub host: Option<&'a dyn AgentHost>,
+    pub host: Option<&'a super::context::AgentContext<'a>>,
 }
 
 pub(crate) trait ProviderRuntime: Send + Sync {
@@ -124,9 +122,7 @@ impl ProviderRuntime for AppState {
             request.builtin_web_search,
             request.max_output_tokens,
             request.conversation_id,
-            request.run_id,
             request.message_id,
-            request.generation,
             request.label,
             request.policy,
             request.text_segment,

@@ -1,5 +1,7 @@
 //! Execution of one OMP task assignment, using the shared chat agent loop.
 
+use crate::chat::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
+use crate::chat::agent::events::{AgentRunIdentity, InputKind};
 use crate::chat::agent::history::{export_history, import_history, RuntimeMessage};
 use crate::chat::model::{FinishKind, FinishReason};
 use std::collections::HashMap;
@@ -26,7 +28,7 @@ use crate::chat::agent::{
 use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
 use crate::chat::model::{GenerateOutput, ModelRole};
 use crate::chat::model::{ModelError, ModelErrorKind, ModelUsage};
-use crate::chat::types::{ChatMessageSegment, ToolCallRecord, ToolCallStatus, WebSearchMode};
+use crate::chat::types::{ToolCallRecord, ToolCallStatus, WebSearchMode};
 use crate::mcp::ChatToolDefinition;
 use crate::settings::{ModelProvider, Settings};
 use crate::state::AppState;
@@ -222,6 +224,35 @@ struct Journal {
     failed: bool,
 }
 
+impl Journal {
+    async fn save_history(&mut self, path: &std::path::Path, history: &[RuntimeMessage], records: &[ToolCallRecord]) -> Result<(), String> {
+        if self.failed {
+            return Err("Subagent transcript append previously failed".into());
+        }
+        if self.history == history { return Ok(()); }
+        let entries = journal_entries(&export_history(&self.history), &export_history(history), records);
+        if !entries.is_empty() {
+            if let Err(error) = append_journal(path, &entries).await {
+                self.failed = true;
+                return Err(error);
+            }
+        }
+        self.history = history.to_vec();
+        Ok(())
+    }
+}
+
+async fn append_journal(path: &std::path::Path, entries: &[Value]) -> Result<(), String> {
+    let mut data = Vec::new();
+    for entry in entries {
+        serde_json::to_writer(&mut data, entry).map_err(|error| error.to_string())?;
+        data.push(b'\n');
+    }
+    let mut file = tokio::fs::OpenOptions::new().append(true).open(path).await
+        .map_err(|error| format!("Cannot open subagent transcript: {error}"))?;
+    file.write_all(&data).await.map_err(|error| format!("Cannot append subagent transcript: {error}"))
+}
+
 impl Host {
     fn completed_stream(&self, content: String) -> GenerateOutput {
         let mut output = GenerateOutput::text(content.clone(), None);
@@ -250,11 +281,11 @@ impl Host {
         self.cancelled() || self.timed_out()
     }
 
-    async fn until_inactive<F: Future>(&self, generation: u64, future: F) -> Result<F::Output, String> {
-        if !self.is_generation_active(&self.record.child_conversation_id, generation) { return Err("cancelled".into()); }
+    async fn until_inactive<F: Future>(&self, future: F) -> Result<F::Output, String> {
+        if !self.active() { return Err("cancelled".into()); }
         tokio::select! {
             result = future => Ok(result),
-            _ = self.wait_for_generation_inactive(&self.record.child_conversation_id, generation) => Err("cancelled".into()),
+            _ = self.wait_inactive() => Err("cancelled".into()),
         }
     }
 
@@ -399,14 +430,7 @@ impl Host {
 
     async fn append_journal(&self, entries: &[Value]) -> Result<(), String> {
         if !self.owns_turn() { return Err("cancelled".into()); }
-        let mut data = Vec::new();
-        for entry in entries {
-            serde_json::to_writer(&mut data, entry).map_err(|error| error.to_string())?;
-            data.push(b'\n');
-        }
-        let mut file = tokio::fs::OpenOptions::new().append(true).open(&self.record.session_file).await
-            .map_err(|error| format!("Cannot open subagent transcript: {error}"))?;
-        file.write_all(&data).await.map_err(|error| format!("Cannot append subagent transcript: {error}"))
+        append_journal(&self.record.session_file, entries).await
     }
 
     async fn save_session_init(&self, init: Value) -> Result<(), String> {
@@ -420,25 +444,9 @@ impl Host {
 
     async fn save_history(&self, history: &[RuntimeMessage]) -> Result<(), String> {
         let mut journal = self.journal.lock().await;
-        if journal.failed {
-            return Err("Subagent transcript append previously failed".into());
-        }
-        if journal.history == history {
-            return Ok(());
-        }
-        let entries = journal_entries(
-            &export_history(&journal.history),
-            &export_history(history),
-            &self.lock().records,
-        );
-        if !entries.is_empty() {
-            if let Err(error) = self.append_journal(&entries).await {
-                journal.failed = true;
-                return Err(error);
-            }
-        }
-        journal.history = history.to_vec();
-        Ok(())
+        if !self.owns_turn() { return Err("cancelled".into()); }
+        let records = self.lock().records.clone();
+        journal.save_history(&self.record.session_file, history, &records).await
     }
 
     async fn checkpoint_policies(
@@ -478,7 +486,7 @@ impl Host {
                 let cancel = self.cancel.clone();
                 let deadline = self.deadline.clone();
                 let reviews = scheduler.checkpoint(advisor, &export_history(history), finishing,
-                    self.wait_for_generation_inactive(&self.record.child_conversation_id, generation), Duration::from_secs(30),
+                    self.wait_inactive(), Duration::from_secs(30),
                     move |mut advisor, history| {
                         let app = app.clone();
                         let weak_host = weak_host.clone();
@@ -548,7 +556,7 @@ impl Host {
         let mut cancel = self.cancel.clone();
         let mut deadline = self.deadline.clone();
         loop {
-            if !self.is_generation_active(conversation, generation) { return Err("cancelled".into()); }
+            if !self.active() { return Err("cancelled".into()); }
             if jobs.running(&self.record.root, &self.record.id).is_empty() { break; }
             tokio::select! {
                 result = changed.changed() => if result.is_err() { break; },
@@ -634,6 +642,63 @@ fn tool_intent(record: &ToolCallRecord) -> Option<String> {
     parsed["i"].as_str().or_else(|| parsed["intent"].as_str()).map(str::to_string)
 }
 
+
+impl Progress {
+    fn apply_event(&mut self, event: &crate::chat::agent::events::AgentEvent<'_>) {
+        use crate::chat::agent::events::AgentEventKind;
+        match &event.kind {
+            AgentEventKind::Content { delta, block, .. } => {
+                self.text.push_str(delta);
+                if self.text.len() > 16_384 {
+                    let mut cut = self.text.len() - 8_192;
+                    while !self.text.is_char_boundary(cut) { cut += 1; }
+                    self.text.drain(..cut);
+                }
+                if !delta.is_empty() { self.dirty = true; }
+                if let Some(record) = block.and_then(crate::chat::agent_presentation::project_embedded) {
+                    if !matches!(record.name.as_str(), "user_steer" | "user_follow_up") {
+                        self.apply_tool_record(&record);
+                    }
+                }
+            }
+            AgentEventKind::SearchUpdated { block, .. } => {
+                if let Some(record) = crate::chat::agent_presentation::project_embedded(block) {
+                    self.apply_tool_record(&record);
+                }
+            }
+            AgentEventKind::ToolUpdated(call) => {
+                self.apply_tool_record(&crate::chat::agent_presentation::project_tool(call, Some(event.identity.run_id)));
+            }
+            AgentEventKind::AttemptDiscarded { text_chars, tool_ids, .. } => {
+                crate::chat::protocol::truncate_stream_tail(&mut self.text, *text_chars);
+                self.records.retain(|record| !tool_ids.contains(&record.id)
+                    || matches!(record.status, ToolCallStatus::Success | ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped));
+                self.dirty = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_tool_record(&mut self, record: &ToolCallRecord) {
+        let old = self.records.iter().position(|item| item.id == record.id && item.round == record.round);
+        let was_running = old.is_some_and(|i| self.records[i].status == ToolCallStatus::Running);
+        let was_finished = old.is_some_and(|i| matches!(self.records[i].status, ToolCallStatus::Success | ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped));
+        if record.status == ToolCallStatus::Running && !was_running && !was_finished { self.tool_count += 1; }
+        if matches!(record.status, ToolCallStatus::Success | ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped) && !was_finished {
+            self.recent_tools.insert(0, json!({"tool": record.name, "args": tool_args_preview(record), "intent": tool_intent(record), "isError": matches!(record.status, ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped), "endMs": registry::now_ms()}));
+            self.recent_tools.truncate(5);
+        }
+        if let Some(i) = old { self.records[i] = record.clone(); } else { self.records.push(record.clone()); }
+        self.dirty = true;
+    }
+}
+
+impl crate::chat::agent::events::AgentEventSink for Host {
+    fn on_event(&self, event: &crate::chat::agent::events::AgentEvent<'_>) -> crate::chat::agent::events::EventDelivery {
+        self.lock().apply_event(event);
+        crate::chat::agent::events::EventDelivery::Accepted
+    }
+}
 impl AgentHost for Host {
     fn compaction_threshold(&self, context_window: usize) -> Option<usize> {
         self.compaction_threshold.as_ref()?.tokens(context_window)
@@ -641,8 +706,13 @@ impl AgentHost for Host {
     fn requires_tool_completion(&self) -> bool {
         true
     }
-    fn speculative_task_app(&self) -> Option<AppHandle> {
-        Some(self.app.clone())
+    fn start_speculation(
+        &self,
+        settings: &crate::settings::Settings,
+        tools: &[crate::mcp::ChatToolDefinition],
+        context: &ToolExecutionContext<'_>,
+    ) -> Option<Box<dyn crate::chat::agent::host::SpeculativeTaskScope>> {
+        super::speculative::start(&self.app, self, settings, tools, context)
     }
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
         self.workflow_hooks.get()
@@ -715,42 +785,13 @@ impl AgentHost for Host {
         Box::pin(self.wait_children(conversation, generation))
     }
 
-    fn emit_stream_delta(&self, _conversation: &str, _run: &str, _message: &str, delta: &str, _reasoning: Option<&str>, _segment: Option<&ChatMessageSegment>) {
-        if delta.is_empty() { return; }
-        let mut p = self.lock();
-        p.text.push_str(delta);
-        if p.text.len() > 16_384 {
-            let mut cut = p.text.len() - 8_192;
-            while !p.text.is_char_boundary(cut) { cut += 1; }
-            p.text.drain(..cut);
-        }
-        p.dirty = true;
-    }
 
-    fn discard_stream_attempt(&self, _run: &str, text_chars: u32, _reasoning_chars: u32, _segments: Vec<String>, tool_ids: Vec<String>) {
-        let mut p = self.lock();
-        crate::chat::protocol::truncate_stream_tail(&mut p.text, text_chars);
-        p.records.retain(|record| !tool_ids.contains(&record.id)
-            || matches!(record.status, ToolCallStatus::Success | ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped));
-        p.dirty = true;
-    }
 
-    fn emit_tool_record(&self, _conversation: &str, _run: &str, _message: &str, record: &ToolCallRecord) {
-        if matches!(record.name.as_str(), "user_steer" | "user_follow_up") { return; }
-        let mut p = self.lock();
-        let old = p.records.iter().position(|item| item.id == record.id && item.round == record.round);
-        let was_running = old.is_some_and(|i| p.records[i].status == ToolCallStatus::Running);
-        let was_finished = old.is_some_and(|i| matches!(p.records[i].status, ToolCallStatus::Success | ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped));
-        if record.status == ToolCallStatus::Running && !was_running && !was_finished { p.tool_count += 1; }
-        if matches!(record.status, ToolCallStatus::Success | ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped) && !was_finished {
-            p.recent_tools.insert(0, json!({"tool": record.name, "args": tool_args_preview(record), "intent": tool_intent(record), "isError": matches!(record.status, ToolCallStatus::Error | ToolCallStatus::Cancelled | ToolCallStatus::Skipped), "endMs": registry::now_ms()}));
-            p.recent_tools.truncate(5);
-        }
-        if let Some(i) = old { p.records[i] = record.clone(); } else { p.records.push(record.clone()); }
-        p.dirty = true;
-    }
 
-    fn request_tool_approval<'a>(&'a self, _ctx: &'a ToolExecutionContext<'a>, record: &'a ToolCallRecord) -> AgentHostFuture<'a, bool> {
+
+
+
+    fn request_tool_approval<'a>(&'a self, _ctx: &'a ToolExecutionContext<'a>, record: &'a crate::chat::agent::content::AgentToolCall) -> AgentHostFuture<'a, bool> {
         Box::pin(async move {
             self.app.state::<AppState>().chat_interactions().has_tool_always_allow(&self.record.root, &record.name)
         })
@@ -760,28 +801,49 @@ impl AgentHost for Host {
             self.app.state::<AppState>().chat_interactions().has_session_consent(&self.record.root)
         })
     }
-    fn request_user_response<'a>(&'a self, _ctx: &'a ToolExecutionContext<'a>, _record: &'a ToolCallRecord, _prompt: AskUserPromptPayload) -> AgentHostFuture<'a, AskUserResponseResult> {
+    fn request_user_response<'a>(&'a self, _ctx: &'a ToolExecutionContext<'a>, _record: &'a crate::chat::agent::content::AgentToolCall, _prompt: AskUserPromptPayload) -> AgentHostFuture<'a, AskUserResponseResult> {
         Box::pin(async { AskUserResponseResult { phase: "cancelled".into(), answers: HashMap::new() } })
     }
-    fn is_generation_active(&self, conversation: &str, generation: u64) -> bool {
+}
+
+impl AgentRunControl for Host {
+    fn active(&self) -> bool {
+        let Some(generation) = self.runtime_generation.get() else { return false; };
         let p = self.lock();
         self.owns_turn() && !self.stopped() && !p.hard_budget && !p.budget_stop
-            && self.app.state::<AppState>().chat_runtime().is_generation_active(conversation, generation)
+            && self.app.state::<AppState>().chat_runtime().is_generation_active(&self.record.child_conversation_id, *generation)
     }
-    fn wait_for_generation_inactive<'a>(&'a self, conversation: &'a str, generation: u64) -> AgentHostFuture<'a, ()> {
+
+    fn stop(&self) -> StopAdmission {
+        let Some(generation) = self.runtime_generation.get() else { return StopAdmission::Inactive; };
+        if self.app.state::<AppState>().chat_runtime().cancel_generation(&self.record.child_conversation_id, *generation) {
+            StopAdmission::Requested
+        } else {
+            StopAdmission::Inactive
+        }
+    }
+
+    fn submit(&self, _kind: InputKind, _message: SteeringMessage) -> InputAdmission {
+        if self.active() { InputAdmission::Unsupported } else { InputAdmission::Inactive }
+    }
+
+    fn wait_inactive(&self) -> AgentHostFuture<'_, ()> {
         Box::pin(async move {
+            let Some(generation) = self.runtime_generation.get() else { return; };
             let mut cancel = self.cancel.clone();
             let mut deadline = self.deadline.clone();
-            if self.stopped() { return; }
+            if !self.active() { return; }
             let state = self.app.state::<AppState>();
             tokio::select! {
-                _ = state.chat_runtime().wait_for_generation_inactive(conversation, generation) => {},
+                _ = state.chat_runtime().wait_for_generation_inactive(&self.record.child_conversation_id, *generation) => {},
                 _ = cancel.changed() => {},
                 _ = deadline.changed() => {},
             }
         })
     }
-    fn take_steering_messages(&self, _conversation: &str) -> Vec<SteeringMessage> {
+
+    fn take(&self, kind: InputKind) -> Vec<SteeringMessage> {
+        if kind != InputKind::Steer || !self.active() { return Vec::new(); }
         let mut p = self.lock();
         let mut messages = Vec::new();
         if self.budget > 0 && p.requests >= self.budget && !p.notice_sent {
@@ -1219,7 +1281,6 @@ async fn write_artifact(path: &std::path::Path, data: &[u8]) -> Result<(), std::
     }
     Ok(())
 }
-
 
 fn escape_attribute(value: &str) -> String {
     value.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;")
@@ -1675,13 +1736,13 @@ async fn prepare(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
         if worker.contract.is_some() { return Err("An isolated worker cannot be cold-revived after its lease ended".into()); }
         let parent = current_cwd.clone();
         let artifacts = registry::artifacts_dir(app, &host.record.root)?;
-        Some(Arc::new(Mutex::new(host.until_inactive(generation, tauri::async_runtime::spawn_blocking(move || super::isolation::IsolationLease::prepare(&parent, &artifacts))).await?.map_err(|error| error.to_string())??)))
+        Some(Arc::new(Mutex::new(host.until_inactive(tauri::async_runtime::spawn_blocking(move || super::isolation::IsolationLease::prepare(&parent, &artifacts))).await?.map_err(|error| error.to_string())??)))
     } else { None };
     let cwd = Some(isolation.as_ref().map(|lease| lease.lock().unwrap_or_else(|error| error.into_inner()).cwd().to_path_buf())
         .unwrap_or_else(|| worker.contract.as_ref().map_or(current_cwd.clone(), |saved| saved.cwd.clone())));
     if !cwd.as_ref().is_some_and(|cwd| cwd.is_dir()) { return Err("Saved subagent working directory is unavailable".into()); }
     if worker.contract.as_ref().is_some_and(|saved| saved.cwd != current_cwd) { return Err("Saved subagent directory is no longer authorized by its owner".into()); }
-    let resources = host.until_inactive(generation, state.chat_runtime().resource_catalog(
+    let resources = host.until_inactive(state.chat_runtime().resource_catalog(
         app, &host.record.root, &settings.chat_tools.skill_scan_paths, cwd.as_deref(), false,
     )).await??;
     let seance = super::seance::is_bundled(&definition);
@@ -1691,7 +1752,7 @@ async fn prepare(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
     ) });
     let catalog = resources.skills.clone();
     let selected = definition.skills.clone();
-    let loaded = host.until_inactive(generation, tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected)))
+    let loaded = host.until_inactive(tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected)))
         .await?.map_err(|e| e.to_string())??;
     let mut persona = definition.system_prompt.clone();
     for id in &definition.skills {
@@ -1700,7 +1761,7 @@ async fn prepare(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
         }
     }
     let persona = render_worker_persona(&persona, context, &host.plan_state);
-    let mut tools = host.until_inactive(generation,
+    let mut tools = host.until_inactive(
         crate::mcp::registry::list_enabled_tool_catalog_for_run(app, state, Some(&host.mcp_server_ids)),
     ).await?.tools;
     retain_mcp_grants(&mut tools, &host.mcp_tool_ids, &host.mcp_server_ids);
@@ -1771,9 +1832,7 @@ async fn prepare(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
                 .ok_or("Historical consultation requires a source session")?;
             let destination = host.record.session_file.with_extension("evidence");
             let history = host
-                .until_inactive(
-                    generation,
-                    tauri::async_runtime::spawn_blocking(move || {
+                .until_inactive(tauri::async_runtime::spawn_blocking(move || {
                         let source = super::seance::read_source(std::path::Path::new(&source))?;
                         super::seance::fork_source(&source, &destination)?;
                         Ok::<_, String>(source.history)
@@ -1836,7 +1895,7 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
     if expected.provider(&settings).is_none() || expected.provider_id != provider.id || expected.model != model {
         return Err("Saved exact subagent model is no longer authorized".into());
     }
-    let mut available = host.until_inactive(generation,
+    let mut available = host.until_inactive(
         crate::mcp::registry::list_enabled_tool_catalog_for_run(app, state, Some(&host.mcp_server_ids)),
     ).await?.tools;
     super::append_tool_definitions(&mut available, &settings, &[]);
@@ -1910,7 +1969,11 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
     let outcome = async {
         loop {
             config.todo_state = worker.policies.lock().await.todo_state.clone();
-            let attempt = run_agent_loop(config.clone(), host.as_ref(), &executor).await;
+            let handle = AgentRunHandle::new(AgentRunIdentity {
+                conversation_id: &config.conversation_id, run_id: &config.run_id,
+                message_id: &config.message_id, generation,
+            }, host.as_ref());
+            let attempt = run_agent_loop(config.clone(), host.as_ref(), &executor, host.as_ref(), handle).await;
             if attempt.as_ref().is_err_and(|error| error == PREWALK_HANDOFF) {
                 let target = worker.policies.lock().await.handoff_model().cloned().ok_or("Prewalk handoff has no saved target")?;
                 let live_settings = state.settings_read().clone();
@@ -1961,7 +2024,7 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
                     }),
                     Err(_) => export_history(&host.lock().history),
                 };
-                if !host.is_generation_active(&config.conversation_id, generation) {
+                if !host.active() {
                     return Err("cancelled".into());
                 }
                 host.wait_children(&config.conversation_id, generation)
@@ -1993,7 +2056,7 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
                 history.extend(result.api_messages.iter().cloned());
                 history
             });
-            if result.stream_outcome == "cancelled" {
+            if matches!(result.status, crate::chat::agent::types::AgentRunStatus::Cancelled) {
                 host.lock().history = import_history(history);
                 return Err("cancelled".into());
             }
@@ -2016,10 +2079,10 @@ async fn execute(app: &AppHandle, host: &Arc<Host>, definition: &AgentDefinition
                     &config.model,
                 ));
             }
-            if result.stream_outcome != "completed" && result.stream_outcome != "recovered" {
+            if !matches!(result.status, crate::chat::agent::types::AgentRunStatus::Completed | crate::chat::agent::types::AgentRunStatus::Recovered) {
                 host.lock().history = import_history(history);
                 return Err(attribute_model_error(
-                    &format!("Subagent run ended with {}", result.stream_outcome),
+                    &format!("Subagent run ended with {}", crate::chat::agent_presentation::run_status(&result.status)),
                     &config.provider.id,
                     &config.model,
                 ));
@@ -2916,3 +2979,7 @@ mod tests {
         assert_eq!(parse_task_label(&format!("<title>{}</title>", "x".repeat(81)), "Scout"), None);
     }
 }
+
+#[cfg(test)]
+#[path = "executor_sdk04_tests.rs"]
+mod sdk04_tests;

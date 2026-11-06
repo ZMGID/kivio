@@ -1,7 +1,6 @@
+use super::content::{ContentKind, ContentBlock, AgentToolStatus};
 use super::history::RuntimeMessage;
 use crate::chat::model::{GenerateOutput, ModelError, ModelErrorKind, ModelMessage, ModelRole};
-
-use crate::chat::types::{ChatMessageSegment, ChatMessageSegmentKind, ToolCallStatus};
 
 use super::finalize::{
     empty_synthesis_fallback_response, segment_phase_for_agent_phase,
@@ -18,8 +17,8 @@ pub(crate) struct SynthesisCompleted {
     pub(crate) response: String,
     pub(crate) reasoning: Option<String>,
     pub(crate) response_reasoning: Option<String>,
-    pub(crate) response_segment: ChatMessageSegment,
-    pub(crate) response_reasoning_segment: ChatMessageSegment,
+    pub(crate) response_segment: ContentBlock,
+    pub(crate) response_reasoning_segment: ContentBlock,
 }
 
 pub(crate) enum SynthesisFlow {
@@ -54,17 +53,17 @@ pub(crate) async fn synthesis_step(
             content
         };
         let segment = state.segment_builder.reserve(
-            ChatMessageSegmentKind::Text,
+            ContentKind::Text,
             segment_phase_for_agent_phase(phase),
             Some(step_number),
             None,
             &format!("step_{step_number}_compaction_blocked"),
         );
         return Ok(SynthesisFlow::Early(
-            RunResultBuilder::new(host, env.ids(), content)
+            RunResultBuilder::new(host, content)
                 .segment(&segment)
                 .emit_done("done")
-                .outcome("compaction_blocked")
+                .outcome(super::types::AgentRunStatus::CompactionBlocked)
                 .finish(
                     std::mem::take(&mut state.segment_builder),
                     &state.planning_reasoning_parts,
@@ -80,7 +79,7 @@ pub(crate) async fn synthesis_step(
     };
     let response_phase = segment_phase_for_agent_phase(phase);
     let response_reasoning_segment = state.segment_builder.reserve(
-        ChatMessageSegmentKind::Reasoning,
+        ContentKind::Reasoning,
         response_phase.clone(),
         Some(step_number),
         None,
@@ -89,7 +88,7 @@ pub(crate) async fn synthesis_step(
     // reasoning 与正文之间预留内置搜索实时卡的 order 槽（任务 07-23，与 planning 同款）。
     let web_search_order = state.segment_builder.reserve_order();
     let response_segment = state.segment_builder.reserve(
-        ChatMessageSegmentKind::Text,
+        ContentKind::Text,
         response_phase.clone(),
         Some(step_number),
         None,
@@ -123,9 +122,7 @@ pub(crate) async fn synthesis_step(
             builtin_web_search: config.builtin_web_search_active(),
             max_output_tokens: config.max_output_tokens,
             conversation_id: &config.conversation_id,
-            run_id: &config.run_id,
             message_id: &config.message_id,
-            generation: config.generation,
             label: "Chat stream",
             policy: synthesis_stream_policy,
             text_segment: Some(response_segment.clone()),
@@ -147,10 +144,10 @@ pub(crate) async fn synthesis_step(
                 recovered.text
             };
             return Ok(SynthesisFlow::Early(
-                RunResultBuilder::new(host, env.ids(), content)
+                RunResultBuilder::new(host, content)
                     .segment(&response_segment)
                     .emit_done("done")
-                    .outcome("recovered")
+                    .outcome(super::types::AgentRunStatus::Recovered)
                     .replay(replay.clone())
                     .degraded(state.degraded.take())
                     .finish(
@@ -166,11 +163,11 @@ pub(crate) async fn synthesis_step(
     if stream.cancelled {
         if !state.tool_records.is_empty() {
             return Ok(SynthesisFlow::Early(
-                RunResultBuilder::new(host, env.ids(), stream.text.clone())
+                RunResultBuilder::new(host, stream.text.clone())
                     .segment(&response_segment)
                     .api_reasoning(stream.reasoning.clone())
                     .reasoning_tail(stream.reasoning)
-                    .outcome("cancelled")
+                    .outcome(super::types::AgentRunStatus::Cancelled)
                     .finish(
                         std::mem::take(&mut state.segment_builder),
                         &state.planning_reasoning_parts,
@@ -187,11 +184,11 @@ pub(crate) async fn synthesis_step(
         // layer already emitted the single done("cancelled") event. Preserve
         // the generated text instead of dropping the whole turn.
         return Ok(SynthesisFlow::Early(
-            RunResultBuilder::new(host, env.ids(), partial)
+            RunResultBuilder::new(host, partial)
                 .segment(&response_segment)
                 .api_reasoning(stream.reasoning.clone())
                 .reasoning_tail(stream.reasoning)
-                .outcome("cancelled")
+                .outcome(super::types::AgentRunStatus::Cancelled)
                 .finish(
                     std::mem::take(&mut state.segment_builder),
                     &state.planning_reasoning_parts,
@@ -226,7 +223,7 @@ pub(crate) async fn synthesis_step(
             } else {
                 recovered.text
             };
-            let fallback = RunResultBuilder::new(host, env.ids(), content)
+            let fallback = RunResultBuilder::new(host, content)
                 .emit_segment_opt(Some(response_segment.clone()))
                 .api_reasoning(final_reasoning_for_api.clone())
                 .emit_done("done")
@@ -252,11 +249,10 @@ pub(crate) async fn synthesis_step(
 
     // 内置搜索：实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
     if let Some(tracker) = synth_web_search_tracker.as_ref() {
-        if let Some((record, segment)) = tracker.take_card() {
+        if let Some(segment) = tracker.take_card() {
             state
                 .segment_builder
                 .append_existing_segments(vec![segment]);
-            state.tool_records.push(record);
         }
     }
 
@@ -285,12 +281,14 @@ fn gathered_previews(state: &RunState) -> Vec<String> {
     state
         .tool_records
         .iter()
-        .filter(|r| r.status == ToolCallStatus::Success)
+        .filter(|r| r.status == AgentToolStatus::Success)
         .filter_map(|r| {
-            r.result_preview
+            r.output
                 .as_deref()
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
+                .map(|output| super::execute::limit_tool_text_for_model(
+                    &crate::chat::tools::summarize_tool_text(output), r.output_limit,
+                ))
+                .filter(|p| !p.trim().is_empty())
                 .map(|p| format!("【{}】\n{}", r.name, p))
         })
         .collect()
@@ -419,14 +417,7 @@ async fn recover_overflow_compact_and_retry(
         ));
     }
     if config.depth == 0 {
-        env.host.begin_context_request(
-            &config.conversation_id,
-            &config.message_id,
-            &config.provider.id,
-            &config.model,
-            &compacted,
-            &[],
-        );
+        env.host.context_prepared(&config.provider.id, &config.model, &compacted, &[]);
     }
     // 恢复重试内部有 send_with_retry 多次退避——必须接取消，否则用户点停止后卡到重试耗尽。
     let result = tokio::select! {
@@ -444,7 +435,7 @@ async fn recover_overflow_compact_and_retry(
             message_id: &config.message_id,
             label: "Chat synthesis overflow recovery",
         }) => result,
-        _ = env.host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
+        _ = env.host.control.wait_inactive() => {
             Err(ModelError::with_kind("cancelled", ModelErrorKind::Cancelled))
         }
     };
@@ -509,7 +500,7 @@ async fn recover_remediate(
             message_id: &config.message_id,
             label: "Chat synthesis recovery",
         }) => result,
-        _ = env.host.wait_for_generation_inactive(&config.conversation_id, config.generation) => {
+        _ = env.host.control.wait_inactive() => {
             Err(ModelError::with_kind("cancelled", ModelErrorKind::Cancelled))
         }
     };

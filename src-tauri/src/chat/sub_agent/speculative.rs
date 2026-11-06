@@ -7,8 +7,57 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{chat::agent::ToolExecutionContext, mcp::registry::NativeToolContext};
+use crate::{
+    chat::agent::{host::SpeculativeTaskScope, AgentHost, ToolExecutionContext},
+    mcp::{registry::NativeToolContext, ChatToolDefinition},
+};
 use super::task::{self, SpeculativeRun};
+
+pub(crate) fn start(
+    app: &AppHandle,
+    host: &dyn AgentHost,
+    settings: &crate::settings::Settings,
+    tools: &[ChatToolDefinition],
+    context: &ToolExecutionContext<'_>,
+) -> Option<Box<dyn SpeculativeTaskScope>> {
+    let root_consent = context.approval_policy == "auto"
+        || (context.approval_policy != "always_confirm"
+            && app.state::<crate::state::AppState>().chat_interactions()
+                .has_session_consent(context.tool_conversation_id));
+    if !speculative_task_allowed(settings, tools, host.workflow_hooks(),
+        context.approval_policy, root_consent, host.supports_interactive_approval())
+        || host.hooks().is_some_and(|hooks| {
+            hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionStart)
+                || hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionEnd)
+        })
+        || !app.state::<crate::state::AppState>().chat_runtime().is_generation_active(context.conversation_id, context.generation)
+    {
+        return None;
+    }
+    Some(Box::new(Scope::new(app.clone(), context)))
+}
+
+fn speculative_task_allowed(
+    settings: &crate::settings::Settings,
+    tools: &[ChatToolDefinition],
+    workflow: Option<&crate::chat::workflow_hooks::Runtime>,
+    approval_policy: &str,
+    root_consent: bool,
+    interactive: bool,
+) -> bool {
+    let Some(task) = tools.iter().find(|tool| {
+        tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
+    }) else { return false; };
+    let requires_approval = crate::chat::agent::execute::tool_requires_approval_for_policy(approval_policy, task);
+    settings.chat_tools.task_speculative_launch
+        && approval_policy != "always_confirm"
+        && (approval_policy == "auto" || root_consent)
+        && (interactive || !requires_approval)
+        && (crate::chat::agent::prepare::tool_requires_session_consent(task) || !requires_approval)
+        && !workflow.is_some_and(|runtime| runtime.hooks.iter().any(|hook| {
+            matches!(hook.event.as_str(), "PreToolUse" | "PostToolUse")
+        }))
+}
 
 #[derive(Clone)]
 struct OwnedContext {
@@ -93,19 +142,21 @@ pub(crate) struct Sessions {
 }
 
 /// Owns all sessions made by one streamed attempt through its final tool round.
-pub(crate) struct Scope {
+struct Scope {
     app: AppHandle,
     sessions: Sessions,
     context: OwnedContext,
 }
 
 impl Scope {
-    pub(crate) fn new(app: AppHandle, ctx: &ToolExecutionContext<'_>) -> Self {
+    fn new(app: AppHandle, ctx: &ToolExecutionContext<'_>) -> Self {
         let sessions = app.state::<crate::state::AppState>().sub_agents.speculative.clone();
         Self { app, sessions, context: OwnedContext::new(ctx) }
     }
+}
 
-    pub(crate) fn update(&self, call: &str, raw: &str) {
+impl SpeculativeTaskScope for Scope {
+    fn update(&self, call: &str, raw: &str) {
         let ctx = self.context.native(call);
         let key = Key::new(&ctx);
         let mut calls = self.sessions.calls.lock().unwrap_or_else(|e| e.into_inner());
@@ -130,7 +181,7 @@ impl Scope {
         session.update(raw);
     }
 
-    pub(crate) fn reconcile_call(&self, call: &str, args: Option<&Value>) {
+    fn reconcile_call(&self, call: &str, args: Option<&Value>) {
         let key = Key::new(&self.context.native(call));
         let mut calls = self.sessions.calls.lock().unwrap_or_else(|e| e.into_inner());
         let discard = calls.get(&key).is_some_and(|session| args.is_none_or(|args| !session.matches(args)));
@@ -139,7 +190,7 @@ impl Scope {
         if let Some(session) = session { session.discard(); }
     }
 
-    pub(crate) fn reconcile(&self, final_calls: &[(&str, &Value)]) {
+    fn reconcile(&self, final_calls: &[(&str, &Value)]) {
         let mut calls = self.sessions.calls.lock().unwrap_or_else(|e| e.into_inner());
         let mut removed = Vec::new();
         calls.retain(|key, session| {
@@ -158,7 +209,7 @@ impl Scope {
         for session in removed { session.discard(); }
     }
 
-    pub(crate) fn discard(&self) { self.reconcile(&[]); }
+    fn discard(&self) { self.reconcile(&[]); }
 }
 
 impl Drop for Scope {
@@ -453,6 +504,37 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::oneshot;
+
+    #[test]
+    fn speculative_launch_obeys_visibility_approval_and_workflow_hooks() {
+        let mut settings = crate::settings::Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        assert!(settings.chat_tools.task_speculative_launch);
+        let task = crate::chat::sub_agent::task::tool_definition(&[], &settings);
+        assert!(speculative_task_allowed(&settings, &[task.clone()], None, "auto", false, true));
+        assert!(!speculative_task_allowed(&settings, &[], None, "auto", false, true));
+        settings.chat_tools.task_speculative_launch = false;
+        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "auto", true, true));
+        settings.chat_tools.task_speculative_launch = true;
+        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "always_confirm", true, true));
+        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "readonly_auto_sensitive_confirm", false, true));
+        assert!(speculative_task_allowed(&settings, &[task.clone()], None, "readonly_auto_sensitive_confirm", true, true));
+        let mut sensitive_task = task.clone();
+        sensitive_task.sensitive = true;
+        assert!(speculative_task_allowed(&settings, &[sensitive_task.clone()], None, "readonly_auto_sensitive_confirm", true, true));
+        assert!(!speculative_task_allowed(&settings, &[sensitive_task], None, "readonly_auto_sensitive_confirm", true, false));
+        for event in ["PreToolUse", "PostToolUse", "SessionStart"] {
+            let hooks = crate::chat::workflow_hooks::parse(
+                &serde_json::json!({(event): [{"hooks": [{"type": "command", "command": "true"}]}]}),
+                "test", std::path::Path::new("."), std::path::Path::new("."),
+            ).unwrap();
+            let runtime = crate::chat::workflow_hooks::Runtime { hooks, ..Default::default() };
+            assert_eq!(
+                speculative_task_allowed(&settings, &[task.clone()], Some(&runtime), "auto", false, true),
+                event == "SessionStart"
+            );
+        }
+    }
 
     struct Run {
         index: usize,

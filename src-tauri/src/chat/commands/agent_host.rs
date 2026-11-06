@@ -2,15 +2,15 @@ use serde_json::Value;
 use tauri::AppHandle;
 
 use crate::chat::agent::history::RuntimeMessage;
-use crate::chat::{ChatMessageSegment, CompactionBoundaryRecord, ToolCallRecord};
+use crate::chat::CompactionBoundaryRecord;
 use crate::mcp::{self, ChatToolDefinition};
 use crate::skills;
 use crate::state::AppState;
 
 use super::context::{emit_chat_compaction_state, emit_chat_context_usage_live};
 use super::interaction::{
-    emit_chat_stream_delta, emit_chat_tool_record, request_session_consent, request_tool_approval,
-    request_user_response, wait_for_chat_cancel,
+    request_session_consent, request_tool_approval,
+    request_user_response,
 };
 use super::messages::persist_partial_assistant_snapshot;
 pub(super) struct ChatAgentHost<'a> {
@@ -26,113 +26,7 @@ pub(super) struct ChatAgentHost<'a> {
     pub(super) workflow_hooks: crate::chat::workflow_hooks::Runtime,
 }
 
-impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
-    fn supports_interactive_approval(&self) -> bool {
-        self.interactive_approval
-    }
-
-    fn speculative_task_app(&self) -> Option<AppHandle> {
-        Some(self.app.clone())
-    }
-
-    fn run_ended(&self, conversation_id: &str) {
-        crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
-    }
-
-    fn checkpoint_runtime<'b>(
-        &'b self,
-        conversation_id: &'b str,
-        run_id: &'b str,
-        history: &'b [RuntimeMessage],
-        _finishing: bool,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<RuntimeMessage>, String>> {
-        Box::pin(async move {
-            crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
-                .await
-        })
-    }
-    fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
-        Some(&self.workflow_hooks)
-    }
-    fn emit_stream_delta(
-        &self,
-        _conversation_id: &str,
-        run_id: &str,
-        _message_id: &str,
-        delta: &str,
-        reasoning_delta: Option<&str>,
-        segment: Option<&ChatMessageSegment>,
-    ) {
-        emit_chat_stream_delta(&self.app, run_id, delta, reasoning_delta, segment);
-    }
-
-    fn discard_stream_attempt(
-        &self,
-        run_id: &str,
-        text_chars: u32,
-        reasoning_chars: u32,
-        segment_ids: Vec<String>,
-        tool_ids: Vec<String>,
-    ) {
-        crate::chat::protocol::emit_run_event(
-            &self.app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::StreamAttemptDiscarded {
-                text_chars,
-                reasoning_chars,
-                segment_ids,
-                tool_ids,
-            },
-        );
-    }
-
-    fn emit_status_note(&self, run_id: &str, note: Option<String>) {
-        crate::chat::protocol::emit_run_event(
-            &self.app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note, retry: None },
-        );
-    }
-
-    fn emit_retry_status(
-        &self,
-        run_id: &str,
-        retry: crate::chat::protocol::ChatRetryStatusPayload,
-    ) {
-        crate::chat::protocol::emit_run_event(
-            &self.app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated {
-                note: Some(format!(
-                    "{} · retry {}/{}",
-                    retry.reason, retry.attempt, retry.max_retries
-                )),
-                retry: Some(retry),
-            },
-        );
-    }
-
-    fn emit_tool_record(
-        &self,
-        _conversation_id: &str,
-        run_id: &str,
-        _message_id: &str,
-        record: &ToolCallRecord,
-    ) {
-        emit_chat_tool_record(&self.app, run_id, record);
-    }
-
-    fn auto_compact_failures(&self, conversation_id: &str) -> u32 {
-        self.state
-            .chat_runtime()
-            .auto_compact_failures(conversation_id)
-    }
-
-    fn set_auto_compact_failures(&self, conversation_id: &str, failures: u32) {
-        self.state
-            .chat_runtime()
-            .set_auto_compact_failures(conversation_id, failures);
-    }
+impl ChatAgentHost<'_> {
 
     fn emit_compaction_status(
         &self,
@@ -150,44 +44,6 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
             boundary,
         );
     }
-
-    fn emit_context_usage_live(
-        &self,
-        conversation_id: &str,
-        used_tokens: u64,
-        token_count_source: Option<&str>,
-        context_window_tokens: Option<u64>,
-        cache_usage: Option<(u64, u64)>,
-    ) {
-        if !self.context_owner {
-            return;
-        }
-        let runtime = self.state.chat_runtime();
-        let (live, segments_once) = if token_count_source.is_some() {
-            let Some((live, include_segments)) =
-                runtime.report_context_tokens(conversation_id, &self.run_id, used_tokens)
-            else {
-                return;
-            };
-            (live, include_segments)
-        } else {
-            (runtime.invalidate_context_display(conversation_id), true)
-        };
-        let segments = segments_once.then_some(live.segments.as_slice());
-        emit_chat_context_usage_live(
-            &self.app,
-            conversation_id,
-            &self.run_id,
-            used_tokens,
-            token_count_source,
-            context_window_tokens,
-            cache_usage,
-            live.seq,
-            live.lifecycle_id,
-            segments,
-        );
-    }
-
     fn begin_context_request(
         &self,
         conversation_id: &str,
@@ -226,7 +82,14 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
             cache,
         );
     }
-
+    fn note_context_cache(&self, conversation_id: &str, run_cache: Option<(u64, u64)>) {
+        if !self.context_owner {
+            return;
+        }
+        self.state
+            .chat_runtime()
+            .note_context_run_cache(conversation_id, &self.run_id, run_cache);
+    }
     fn finish_unreported_context(&self, conversation_id: &str) {
         if !self.context_owner {
             return;
@@ -253,34 +116,123 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
             Some(&live.segments),
         );
     }
-
-    fn note_context_cache(&self, conversation_id: &str, run_cache: Option<(u64, u64)>) {
+    fn emit_context_usage_live(
+        &self,
+        conversation_id: &str,
+        used_tokens: u64,
+        token_count_source: Option<&str>,
+        context_window_tokens: Option<u64>,
+        cache_usage: Option<(u64, u64)>,
+    ) {
         if !self.context_owner {
             return;
         }
+        let runtime = self.state.chat_runtime();
+        let (live, segments_once) = if token_count_source.is_some() {
+            let Some((live, include_segments)) =
+                runtime.report_context_tokens(conversation_id, &self.run_id, used_tokens)
+            else {
+                return;
+            };
+            (live, include_segments)
+        } else {
+            (runtime.invalidate_context_display(conversation_id), true)
+        };
+        let segments = segments_once.then_some(live.segments.as_slice());
+        emit_chat_context_usage_live(
+            &self.app,
+            conversation_id,
+            &self.run_id,
+            used_tokens,
+            token_count_source,
+            context_window_tokens,
+            cache_usage,
+            live.seq,
+            live.lifecycle_id,
+            segments,
+        );
+    }
+}
+impl crate::chat::agent::events::AgentEventSink for ChatAgentHost<'_> {
+ fn on_event(&self, event: &crate::chat::agent::events::AgentEvent<'_>) -> crate::chat::agent::events::EventDelivery {
+ use crate::chat::agent::events::AgentEventKind;
+ let id = event.identity;
+ for projected in crate::chat::agent_presentation::project_event(event) { crate::chat::protocol::emit_run_event(&self.app, event.identity.run_id, projected); }
+ match &event.kind {
+AgentEventKind::Compaction { phase, trigger, boundary } => self.emit_compaction_status(id.conversation_id, phase, *trigger, boundary.as_ref().map(crate::chat::agent_presentation::project_compaction).as_ref()),
+AgentEventKind::ContextPrepared { provider_id, model, messages, tools } => self.begin_context_request(id.conversation_id, id.message_id, provider_id, model, messages, tools),
+AgentEventKind::ContextCache { cache } => self.note_context_cache(id.conversation_id, *cache),
+AgentEventKind::ContextUnreported => self.finish_unreported_context(id.conversation_id),
+AgentEventKind::ContextUsage { used_tokens, source, window, cache } => self.emit_context_usage_live(id.conversation_id, *used_tokens, *source, *window, *cache),
+ _ => {},
+ }
+ crate::chat::agent::events::EventDelivery::Accepted
+ }}
+impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
+    fn supports_interactive_approval(&self) -> bool {
+        self.interactive_approval
+    }
+
+    fn start_speculation(
+        &self,
+        settings: &crate::settings::Settings,
+        tools: &[ChatToolDefinition],
+        context: &crate::chat::agent::ToolExecutionContext<'_>,
+    ) -> Option<Box<dyn crate::chat::agent::host::SpeculativeTaskScope>> {
+        crate::chat::sub_agent::speculative::start(&self.app, self, settings, tools, context)
+    }
+
+    fn run_ended(&self, conversation_id: &str) {
+        crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
+    }
+
+    fn checkpoint_runtime<'b>(
+        &'b self,
+        conversation_id: &'b str,
+        run_id: &'b str,
+        history: &'b [RuntimeMessage],
+        _finishing: bool,
+    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<RuntimeMessage>, String>> {
+        Box::pin(async move {
+            crate::chat::sub_agent::collect_for_main(&self.app, conversation_id, run_id, history)
+                .await
+        })
+    }
+    fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
+        Some(&self.workflow_hooks)
+    }
+
+    fn auto_compact_failures(&self, conversation_id: &str) -> u32 {
         self.state
             .chat_runtime()
-            .note_context_run_cache(conversation_id, &self.run_id, run_cache);
+            .auto_compact_failures(conversation_id)
+    }
+
+    fn set_auto_compact_failures(&self, conversation_id: &str, failures: u32) {
+        self.state
+            .chat_runtime()
+            .set_auto_compact_failures(conversation_id, failures);
     }
 
     fn persist_partial_assistant<'a>(
         &'a self,
         conversation_id: &'a str,
         message_id: &'a str,
-        tool_records: &'a [ToolCallRecord],
-        segments: &'a [ChatMessageSegment],
+        tool_records: &'a [crate::chat::agent::content::AgentToolCall],
+        segments: &'a [crate::chat::agent::content::ContentBlock],
         api_messages: &'a [RuntimeMessage],
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
             if self.suppress_partial_persist {
                 return;
             }
+            let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(tool_records, segments, Some(&self.run_id));
             if let Err(err) = persist_partial_assistant_snapshot(
                 &self.app,
                 conversation_id,
                 message_id,
-                tool_records,
-                segments,
+                &tool_records,
+                &segments,
                 api_messages,
             )
             .await
@@ -293,16 +245,17 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
     fn request_tool_approval<'a>(
         &'a self,
         ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        record: &'a ToolCallRecord,
+        record: &'a crate::chat::agent::content::AgentToolCall,
     ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
         Box::pin(async move {
+            let record = crate::chat::agent_presentation::project_tool(record, Some(ctx.run_id));
             request_tool_approval(
                 &self.app,
                 self.state,
                 ctx.conversation_id,
                 ctx.run_id,
                 ctx.generation,
-                record,
+                &record,
             )
             .await
         })
@@ -327,7 +280,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
     fn request_user_response<'a>(
         &'a self,
         ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        record: &'a ToolCallRecord,
+        record: &'a crate::chat::agent::content::AgentToolCall,
         prompt: crate::chat::ask_user::AskUserPromptPayload,
     ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
         Box::pin(async move {
@@ -338,46 +291,17 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
                 self.state.sub_agents.irc.mark(),
                 false,
             );
+            let record = crate::chat::agent_presentation::project_tool(record, Some(ctx.run_id));
             request_user_response(
                 &self.app,
                 self.state,
                 ctx.conversation_id,
                 ctx.run_id,
                 ctx.generation,
-                record,
+                &record,
                 prompt,
             )
             .await
-        })
-    }
-
-    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.state
-            .chat_runtime()
-            .is_generation_active(conversation_id, generation)
-    }
-
-    fn take_steering_messages(
-        &self,
-        conversation_id: &str,
-    ) -> Vec<crate::chat::agent::SteeringMessage> {
-        self.state.chat_runtime().take_steering(conversation_id)
-    }
-
-    fn take_follow_up_messages(
-        &self,
-        conversation_id: &str,
-    ) -> Vec<crate::chat::agent::SteeringMessage> {
-        self.state.chat_runtime().take_follow_up(conversation_id)
-    }
-
-    fn wait_for_generation_inactive<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        generation: u64,
-    ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
-        Box::pin(async move {
-            wait_for_chat_cancel(self.state, conversation_id, generation).await;
         })
     }
 
@@ -398,9 +322,21 @@ pub(super) struct ProbeAgentHost<'a> {
 }
 
 #[cfg(debug_assertions)]
+impl crate::chat::agent::events::AgentEventSink for ProbeAgentHost<'_> {
+ fn on_event(&self, event: &crate::chat::agent::events::AgentEvent<'_>) -> crate::chat::agent::events::EventDelivery {
+ use crate::chat::agent::events::AgentEventKind;
+ if matches!(event.kind, AgentEventKind::AttemptDiscarded { .. } | AgentEventKind::Status { .. } | AgentEventKind::Retry(_)) { for projected in crate::chat::agent_presentation::project_event(event) { crate::chat::protocol::emit_run_event(&self.app, event.identity.run_id, projected); } }
+ crate::chat::agent::events::EventDelivery::Accepted
+ }}
+#[cfg(debug_assertions)]
 impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
-    fn speculative_task_app(&self) -> Option<AppHandle> {
-        Some(self.app.clone())
+    fn start_speculation(
+        &self,
+        settings: &crate::settings::Settings,
+        tools: &[ChatToolDefinition],
+        context: &crate::chat::agent::ToolExecutionContext<'_>,
+    ) -> Option<Box<dyn crate::chat::agent::host::SpeculativeTaskScope>> {
+        crate::chat::sub_agent::speculative::start(&self.app, self, settings, tools, context)
     }
 
     fn run_ended(&self, conversation_id: &str) {
@@ -419,71 +355,6 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
                 .await
         })
     }
-    fn emit_stream_delta(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        _delta: &str,
-        _reasoning_delta: Option<&str>,
-        _segment: Option<&ChatMessageSegment>,
-    ) {
-    }
-
-    fn discard_stream_attempt(
-        &self,
-        run_id: &str,
-        text_chars: u32,
-        reasoning_chars: u32,
-        segment_ids: Vec<String>,
-        tool_ids: Vec<String>,
-    ) {
-        crate::chat::protocol::emit_run_event(
-            &self.app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::StreamAttemptDiscarded {
-                text_chars,
-                reasoning_chars,
-                segment_ids,
-                tool_ids,
-            },
-        );
-    }
-
-    fn emit_status_note(&self, run_id: &str, note: Option<String>) {
-        crate::chat::protocol::emit_run_event(
-            &self.app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated { note, retry: None },
-        );
-    }
-
-    fn emit_retry_status(
-        &self,
-        run_id: &str,
-        retry: crate::chat::protocol::ChatRetryStatusPayload,
-    ) {
-        crate::chat::protocol::emit_run_event(
-            &self.app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::StatusNoteUpdated {
-                note: Some(format!(
-                    "{} · retry {}/{}",
-                    retry.reason, retry.attempt, retry.max_retries
-                )),
-                retry: Some(retry),
-            },
-        );
-    }
-
-    fn emit_tool_record(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        _record: &ToolCallRecord,
-    ) {
-    }
 
     /// 与 GUI host 同一份草稿落盘(append-only 草稿日志)。probe 的定位是「和 chat 窗口
     /// 完全相同的生成路径」,持久化侧路径也该一致,probe:e2e 才能覆盖草稿日志的生命周期。
@@ -491,17 +362,18 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         &'a self,
         conversation_id: &'a str,
         message_id: &'a str,
-        tool_records: &'a [ToolCallRecord],
-        segments: &'a [ChatMessageSegment],
+        tool_records: &'a [crate::chat::agent::content::AgentToolCall],
+        segments: &'a [crate::chat::agent::content::ContentBlock],
         api_messages: &'a [RuntimeMessage],
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
+            let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(tool_records, segments, Some(&self.run_id));
             if let Err(err) = persist_partial_assistant_snapshot(
                 &self.app,
                 conversation_id,
                 message_id,
-                tool_records,
-                segments,
+                &tool_records,
+                &segments,
                 api_messages,
             )
             .await
@@ -514,7 +386,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
     fn request_tool_approval<'a>(
         &'a self,
         _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
+        _record: &'a crate::chat::agent::content::AgentToolCall,
     ) -> crate::chat::agent::AgentHostFuture<'a, bool> {
         Box::pin(async { true })
     }
@@ -529,28 +401,13 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
     fn request_user_response<'a>(
         &'a self,
         _ctx: &'a crate::chat::agent::ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
+        _record: &'a crate::chat::agent::content::AgentToolCall,
         _prompt: crate::chat::ask_user::AskUserPromptPayload,
     ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
         // 无头：不能向用户提问，直接返回取消态让 loop 继续（不阻塞）。
         Box::pin(async { crate::chat::ask_user::cancelled_response() })
     }
 
-    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.state
-            .chat_runtime()
-            .is_generation_active(conversation_id, generation)
-    }
-
-    fn wait_for_generation_inactive<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        generation: u64,
-    ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
-        Box::pin(async move {
-            wait_for_chat_cancel(self.state, conversation_id, generation).await;
-        })
-    }
 }
 
 pub(super) struct RegistryToolExecutor<'a> {

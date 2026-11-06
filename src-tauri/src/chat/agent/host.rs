@@ -1,12 +1,20 @@
+use super::content::{ContentBlock, AgentToolCall};
 use std::{future::Future, pin::Pin};
 
 use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
 use crate::chat::hooks::HookDispatcher;
-use crate::chat::types::{ChatMessageSegment, CompactionBoundaryRecord, ToolCallRecord};
 
 use super::execute::ToolExecutionContext;
 
 pub type AgentHostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Owns streamed task launches; dropping it discards any that were not adopted.
+pub trait SpeculativeTaskScope: Send + Sync {
+    fn update(&self, call: &str, raw: &str);
+    fn reconcile_call(&self, call: &str, args: Option<&serde_json::Value>);
+    fn reconcile(&self, final_calls: &[(&str, &serde_json::Value)]);
+    fn discard(&self);
+}
 
 pub trait AgentHost: Send + Sync {
     fn compaction_threshold(&self, _context_window: usize) -> Option<usize> {
@@ -18,8 +26,12 @@ pub trait AgentHost: Send + Sync {
         true
     }
 
-    /// Only application-backed hosts may start subagents while arguments stream.
-    fn speculative_task_app(&self) -> Option<tauri::AppHandle> {
+    fn start_speculation(
+        &self,
+        _settings: &crate::settings::Settings,
+        _tools: &[crate::mcp::ChatToolDefinition],
+        _context: &ToolExecutionContext<'_>,
+    ) -> Option<Box<dyn SpeculativeTaskScope>> {
         None
     }
 
@@ -51,50 +63,6 @@ pub trait AgentHost: Send + Sync {
     fn workflow_hooks(&self) -> Option<&crate::chat::workflow_hooks::Runtime> {
         None
     }
-    fn emit_stream_delta(
-        &self,
-        conversation_id: &str,
-        run_id: &str,
-        message_id: &str,
-        delta: &str,
-        reasoning_delta: Option<&str>,
-        segment: Option<&ChatMessageSegment>,
-    );
-
-    /// Only the current model attempt is rolled back; completed tool rounds stay intact.
-    fn discard_stream_attempt(
-        &self,
-        _run_id: &str,
-        _text_chars: u32,
-        _reasoning_chars: u32,
-        _segment_ids: Vec<String>,
-        _tool_ids: Vec<String>,
-    ) {
-    }
-
-    fn emit_status_note(&self, _run_id: &str, _note: Option<String>) {}
-
-    fn emit_retry_status(
-        &self,
-        run_id: &str,
-        retry: crate::chat::protocol::ChatRetryStatusPayload,
-    ) {
-        self.emit_status_note(
-            run_id,
-            Some(format!(
-                "{} · retry {}/{}",
-                retry.reason, retry.attempt, retry.max_retries
-            )),
-        );
-    }
-
-    fn emit_tool_record(
-        &self,
-        conversation_id: &str,
-        run_id: &str,
-        message_id: &str,
-        record: &ToolCallRecord,
-    );
 
     /// Consecutive automatic compaction failures remembered for the conversation, so the
     /// ZCode circuit breaker outlives one run. Default: nothing is remembered between runs.
@@ -103,50 +71,6 @@ pub trait AgentHost: Send + Sync {
     }
 
     fn set_auto_compact_failures(&self, _conversation_id: &str, _failures: u32) {}
-
-    /// Live compaction progress for chat timeline UI. Default no-op.
-    fn emit_compaction_status(
-        &self,
-        _conversation_id: &str,
-        _phase: &str,
-        _trigger: Option<&str>,
-        _boundary: Option<&CompactionBoundaryRecord>,
-    ) {
-    }
-
-    /// Capture categories once from the final prepared main request.
-    /// Child hosts intentionally do not publish into their parent's context.
-    fn begin_context_request(
-        &self,
-        _conversation_id: &str,
-        _message_id: &str,
-        _provider_id: &str,
-        _model: &str,
-        _messages: &[super::history::RuntimeMessage],
-        _tools: &[crate::mcp::ChatToolDefinition],
-    ) {
-    }
-
-    fn note_context_cache(&self, _conversation_id: &str, _cache: Option<(u64, u64)>) {}
-
-    /// The bound main request ended with no provider occupancy. Default no-op
-    /// so a child host cannot clear the parent meter.
-    fn finish_unreported_context(&self, _conversation_id: &str) {}
-
-    /// Latest main-request API occupancy; completed requests also publish weighted cache totals.
-    /// History rewrites send a source-less invalidation, never the internal estimate.
-    ///
-    /// **默认 no-op，且子 agent host 必须保持默认**：子 agent 有自己独立的上下文窗口
-    /// （常是便宜的小模型，窗口小 5 倍），它的占用混进主对话会让用量条来回乱跳。
-    fn emit_context_usage_live(
-        &self,
-        _conversation_id: &str,
-        _used_tokens: u64,
-        _token_count_source: Option<&str>,
-        _context_window_tokens: Option<u64>,
-        _cache_usage: Option<(u64, u64)>,
-    ) {
-    }
 
     /// Persist a best-effort snapshot of the in-progress assistant message to
     /// durable storage after a completed tool round. The full assistant message
@@ -162,8 +86,8 @@ pub trait AgentHost: Send + Sync {
         &'a self,
         _conversation_id: &'a str,
         _message_id: &'a str,
-        _tool_records: &'a [ToolCallRecord],
-        _segments: &'a [ChatMessageSegment],
+        _tool_records: &'a [AgentToolCall],
+        _segments: &'a [ContentBlock],
         _api_messages: &'a [super::history::RuntimeMessage],
     ) -> AgentHostFuture<'a, ()> {
         Box::pin(async {})
@@ -172,7 +96,7 @@ pub trait AgentHost: Send + Sync {
     fn request_tool_approval<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
-        record: &'a ToolCallRecord,
+        record: &'a AgentToolCall,
     ) -> AgentHostFuture<'a, bool>;
 
     /// Ask the user once per conversation to authorize the file/shell tool
@@ -189,29 +113,9 @@ pub trait AgentHost: Send + Sync {
     fn request_user_response<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
-        record: &'a ToolCallRecord,
+        record: &'a AgentToolCall,
         prompt: AskUserPromptPayload,
     ) -> AgentHostFuture<'a, AskUserResponseResult>;
-
-    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool;
-
-    /// 运行中用户插话（steering）：轮首取走该会话待注入的用户消息（take 语义，取一次清一次）。
-    /// 默认空 —— 只有能收到用户输入的宿主（GUI chat）才有这条通道；子 agent / probe / 测试保持默认。
-    fn take_steering_messages(&self, _conversation_id: &str) -> Vec<super::SteeringMessage> {
-        Vec::new()
-    }
-
-    /// 原生 follow-up：终答边界取走（take 语义）。不在轮首注入，避免打断还在跑的工具循环。
-    /// 默认空；GUI chat 才有这条通道。
-    fn take_follow_up_messages(&self, _conversation_id: &str) -> Vec<super::SteeringMessage> {
-        Vec::new()
-    }
-
-    fn wait_for_generation_inactive<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        generation: u64,
-    ) -> AgentHostFuture<'a, ()>;
 
     /// User-configured lifecycle hooks for this run, or `None` when the host has
     /// none (sub-agents, probe, tests) or the user configured zero enabled hooks.

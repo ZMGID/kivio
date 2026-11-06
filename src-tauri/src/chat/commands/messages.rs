@@ -486,16 +486,14 @@ pub(super) fn upsert_assistant_message(conversation: &mut Conversation, mut mess
 /// replayable on a later "continue" — `model_messages` are derived from them
 /// exactly as the final write does, keeping the storage shape consistent. No-op
 /// when nothing has been produced yet.
-pub(super) async fn persist_partial_assistant_snapshot(
-    app: &AppHandle,
-    conversation_id: &str,
+pub(super) fn build_partial_assistant_snapshot(
     message_id: &str,
     tool_records: &[ToolCallRecord],
     segments: &[ChatMessageSegment],
     api_messages: &[crate::chat::agent::history::RuntimeMessage],
-) -> Result<(), String> {
+) -> Option<ChatMessage> {
     if tool_records.is_empty() && segments.is_empty() {
-        return Ok(());
+        return None;
     }
     let api_messages = crate::chat::agent::history::export_history(api_messages);
     let segments = segments.to_vec();
@@ -536,6 +534,18 @@ pub(super) async fn persist_partial_assistant_snapshot(
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
     };
+    Some(draft)
+}
+
+pub(super) async fn persist_partial_assistant_snapshot(
+    app: &AppHandle,
+    conversation_id: &str,
+    message_id: &str,
+    tool_records: &[ToolCallRecord],
+    segments: &[ChatMessageSegment],
+    api_messages: &[crate::chat::agent::history::RuntimeMessage],
+) -> Result<(), String> {
+    let Some(draft) = build_partial_assistant_snapshot(message_id, tool_records, segments, api_messages) else { return Ok(()); };
     // 草稿不再整会话重写:追加进 append-only 日志(见 chat::draft_journal 模块注释),
     // 主会话文件与索引在 run 期间完全不动;终态写入后 push_assistant_message 清日志。
     let app_handle = app.clone();

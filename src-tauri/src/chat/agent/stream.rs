@@ -1,22 +1,20 @@
+use super::content::{ContentPhase, ContentKind, ContentBlock, AgentToolCall, AgentToolStatus};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
 use serde_json::Value;
-use tauri::Manager;
 
 use crate::chat::model::{
     GenerateOutput, ModelError, PendingToolCall, StreamPart, StreamSink,
     WebCitation,
 };
-use crate::chat::types::{
-    ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase, ToolCallRecord,
-    ToolCallStatus,
-};
+
 use crate::mcp::types::PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS;
 use crate::mcp::ChatToolDefinition;
 
 use super::execute::match_tool_call;
-use super::finalize::{build_web_search_record, build_web_search_segment};
-use super::host::AgentHost;
+use super::content::{ProviderSearch, ToolArgumentState};
+use super::host::{AgentHost, SpeculativeTaskScope};
 use super::prepare::disabled_builtin_tool_feedback;
 use super::stop::{
     empty_assistant_response_error, pending_tool_calls_from_dsml, sanitize_assistant_text_response,
@@ -45,14 +43,14 @@ struct ToolCallDraftState {
     step_number: Option<u8>,
     next_order: u32,
     drafts: Vec<ToolCallDraft>,
-    speculative: Option<crate::chat::sub_agent::speculative::Scope>,
+    speculative: Option<Box<dyn SpeculativeTaskScope>>,
 }
 
 struct ToolCallDraft {
     model_name: String,
     arguments_raw: String,
-    record: ToolCallRecord,
-    segment: ChatMessageSegment,
+    record: AgentToolCall,
+    segment: ContentBlock,
     last_emitted_argument_chars: usize,
     done: bool,
 }
@@ -78,27 +76,15 @@ impl ToolCallDraftTracker {
 
     pub(crate) fn enable_speculation(
         &self,
-        host: &dyn AgentHost,
+        host: &super::context::AgentContext<'_>,
         settings: &crate::settings::Settings,
         context: &super::execute::ToolExecutionContext<'_>,
     ) {
-        let Some(app) = host.speculative_task_app() else { return; };
-        let root_consent = context.approval_policy == "auto"
-            || (context.approval_policy != "always_confirm"
-                && app.state::<crate::state::AppState>().chat_interactions()
-                    .has_session_consent(context.tool_conversation_id));
-        let mut state = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        if !speculative_task_allowed(settings, &state.tools, host.workflow_hooks(),
-            context.approval_policy, root_consent, host.supports_interactive_approval())
-            || host.hooks().is_some_and(|hooks| {
-                hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionStart)
-                    || hooks.handles(crate::chat::hooks::HookEvent::ToolExecutionEnd)
-            })
-            || !host.is_generation_active(context.conversation_id, context.generation)
-        {
-            return;
+        if !host.control.active() { return; }
+        let tools = self.inner.lock().unwrap_or_else(|err| err.into_inner()).tools.clone();
+        if let Some(scope) = host.start_speculation(settings, &tools, context) {
+            self.inner.lock().unwrap_or_else(|err| err.into_inner()).speculative = Some(scope);
         }
-        state.speculative = Some(crate::chat::sub_agent::speculative::Scope::new(app, context));
     }
 
     pub(crate) fn disable_speculation(&self) {
@@ -114,7 +100,7 @@ impl ToolCallDraftTracker {
             .is_empty()
     }
 
-    pub fn segments(&self) -> Vec<ChatMessageSegment> {
+    pub fn segments(&self) -> Vec<ContentBlock> {
         self.inner
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -162,12 +148,12 @@ impl ToolCallDraftTracker {
         scope.reconcile(&final_calls);
     }
 
-    pub fn mark_error(&self, error: &str) -> Vec<ToolCallRecord> {
+    pub fn mark_error(&self, error: &str) -> Vec<AgentToolCall> {
         let now = chrono::Local::now().timestamp();
         let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         if let Some(scope) = &guard.speculative { scope.discard(); }
         for draft in &mut guard.drafts {
-            draft.record.status = ToolCallStatus::Error;
+            draft.record.status = AgentToolStatus::Error;
             draft.record.completed_at = Some(now);
             draft.record.duration_ms = draft
                 .record
@@ -175,12 +161,9 @@ impl ToolCallDraftTracker {
                 .map(|started| (now.saturating_sub(started) as u64).saturating_mul(1000))
                 .or(Some(0));
             draft.record.error = Some(error.to_string());
-            draft.record.result_preview = None;
-            draft.record.structured_content = Some(tool_draft_structured_content(
-                &draft.model_name,
-                "error",
-                draft.arguments_raw.chars().count(),
-            ));
+            draft.record.arguments = draft.arguments_raw.clone();
+            draft.record.output = None;
+
         }
         guard
             .drafts
@@ -188,28 +171,6 @@ impl ToolCallDraftTracker {
             .map(|draft| draft.record.clone())
             .collect()
     }
-}
-
-fn speculative_task_allowed(
-    settings: &crate::settings::Settings,
-    tools: &[ChatToolDefinition],
-    workflow: Option<&crate::chat::workflow_hooks::Runtime>,
-    approval_policy: &str,
-    root_consent: bool,
-    interactive: bool,
-) -> bool {
-    let Some(task) = tools.iter().find(|tool| {
-        tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
-    }) else { return false; };
-    let requires_approval = super::execute::tool_requires_approval_for_policy(approval_policy, task);
-    settings.chat_tools.task_speculative_launch
-        && approval_policy != "always_confirm"
-        && (approval_policy == "auto" || root_consent)
-        && (interactive || !requires_approval)
-        && (super::prepare::tool_requires_session_consent(task) || !requires_approval)
-        && !workflow.is_some_and(|runtime| runtime.hooks.iter().any(|hook| {
-            matches!(hook.event.as_str(), "PreToolUse" | "PostToolUse")
-        }))
 }
 
 /// 模型**原生内置联网搜索**的实时卡追踪器（任务 07-23）。镜像 `ToolCallDraftTracker`
@@ -221,130 +182,45 @@ pub struct WebSearchCardTracker {
     inner: Arc<Mutex<WebSearchCardState>>,
 }
 
-struct WebSearchCardState {
-    id: String,
-    order: u32,
-    round: Option<u32>,
-    phase: ChatMessageSegmentPhase,
-    provider_label: String,
-    queries: Vec<String>,
-    citations: Vec<WebCitation>,
-    started: bool,
-    record: Option<ToolCallRecord>,
-    segment: Option<ChatMessageSegment>,
-}
-
-/// 一次 `note` 的产物：`segment` 仅首帧为 `Some`（段只发一次），`record` 每帧都发
-/// （同 id 幂等 merge → 前端原地更新 Running 卡）。
-pub(crate) struct WebSearchCardUpdate {
-    pub(crate) segment: Option<ChatMessageSegment>,
-    pub(crate) record: ToolCallRecord,
-}
-
+struct WebSearchCardState { block: ContentBlock, started: bool }
 impl WebSearchCardTracker {
-    pub(crate) fn new(
-        order: u32,
-        round: Option<u32>,
-        phase: ChatMessageSegmentPhase,
-        provider_label: String,
-    ) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(WebSearchCardState {
-                id: format!("websearch_{}", uuid::Uuid::new_v4()),
-                order,
-                round,
-                phase,
-                provider_label,
-                queries: Vec::new(),
-                citations: Vec::new(),
-                started: false,
-                record: None,
-                segment: None,
-            })),
-        }
+    pub(crate) fn new(order: u32, round: Option<u32>, phase: ContentPhase, provider_label: String) -> Self {
+        Self { inner: Arc::new(Mutex::new(WebSearchCardState {
+            block: ContentBlock { id: order, kind: ContentKind::Search(ProviderSearch {
+                id: format!("websearch_{}", uuid::Uuid::new_v4()), provider: provider_label,
+                queries: Vec::new(), citations: Vec::new(), complete: false,
+            }), phase, step_number: None, round, text: None, tool_call_id: None }, started: false,
+        })) }
     }
-
-    /// 收到一帧内置搜索增量：去重累加查询/来源，回传本帧要 emit 的段（仅首帧）+ Running 记录。
-    pub(crate) fn note(
-        &self,
-        queries: &[String],
-        citations: &[WebCitation],
-    ) -> WebSearchCardUpdate {
+    pub(crate) fn note(&self, queries: &[String], citations: &[WebCitation]) -> (ContentBlock, bool) {
         let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let announce = !guard.started;
+        guard.started = true;
+        let ContentKind::Search(search) = &mut guard.block.kind else { unreachable!() };
         for query in queries {
             let query = query.trim();
-            if !query.is_empty() && !guard.queries.iter().any(|existing| existing == query) {
-                guard.queries.push(query.to_string());
-            }
+            if !query.is_empty() && !search.queries.iter().any(|existing| existing == query) { search.queries.push(query.to_string()); }
         }
         for citation in citations {
             let url = citation.url.trim();
-            if url.is_empty() {
-                continue;
-            }
-            if let Some(existing) = guard
-                .citations
-                .iter_mut()
-                .find(|existing| existing.url == url)
-            {
-                // 同 url 后到帧带新字段（Gemini 的 groundingSupports 可能晚于 chunk）→ 补全。
-                if existing.snippet.is_none() {
-                    existing.snippet = citation.snippet.clone();
-                }
-                if existing.published_date.is_none() {
-                    existing.published_date = citation.published_date.clone();
-                }
-                continue;
-            }
-            guard.citations.push(citation.clone());
+            if url.is_empty() { continue; }
+            if let Some(existing) = search.citations.iter_mut().find(|existing| existing.url == url) {
+                if existing.snippet.is_none() { existing.snippet = citation.snippet.clone(); }
+                if existing.published_date.is_none() { existing.published_date = citation.published_date.clone(); }
+            } else { search.citations.push(citation.clone()); }
         }
-        let record = build_web_search_record(
-            &guard.id,
-            &guard.provider_label,
-            &guard.queries,
-            &guard.citations,
-            ToolCallStatus::Running,
-            guard.round,
-        );
-        guard.record = Some(record.clone());
-        let segment = if guard.started {
-            None
-        } else {
-            guard.started = true;
-            let segment =
-                build_web_search_segment(guard.order, &guard.id, guard.phase.clone(), guard.round);
-            guard.segment = Some(segment.clone());
-            Some(segment)
-        };
-        WebSearchCardUpdate { segment, record }
+        (guard.block.clone(), announce)
     }
-
-    /// 流成功结束 ⇒ 把卡翻 Success 并回传终态记录（供 caller emit）。从未开牌则 `None`。
-    pub(crate) fn finalize_success(&self) -> Option<ToolCallRecord> {
+    pub(crate) fn finalize_success(&self) -> Option<ContentBlock> {
         let mut guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        if !guard.started {
-            return None;
-        }
-        let record = build_web_search_record(
-            &guard.id,
-            &guard.provider_label,
-            &guard.queries,
-            &guard.citations,
-            ToolCallStatus::Success,
-            guard.round,
-        );
-        guard.record = Some(record.clone());
-        Some(record)
+        if !guard.started { return None; }
+        let ContentKind::Search(search) = &mut guard.block.kind else { unreachable!() };
+        search.complete = true;
+        Some(guard.block.clone())
     }
-
-    /// 取回卡的（记录, 段）供落盘。已 `finalize_success` 则记录为 Success。从未开牌则 `None`
-    /// （取消中途 kill / 未发生搜索：实时卡不落盘，与 draft tracker 现状一致）。
-    pub(crate) fn take_card(&self) -> Option<(ToolCallRecord, ChatMessageSegment)> {
+    pub(crate) fn take_card(&self) -> Option<ContentBlock> {
         let guard = self.inner.lock().unwrap_or_else(|err| err.into_inner());
-        match (guard.record.clone(), guard.segment.clone()) {
-            (Some(record), Some(segment)) => Some((record, segment)),
-            _ => None,
-        }
+        guard.started.then(|| guard.block.clone())
     }
 }
 
@@ -357,14 +233,11 @@ fn chat_stream_snapshot(accumulator: &Arc<Mutex<ChatStreamAccumulator>>) -> Chat
 }
 
 pub struct AgentStreamSink<'a> {
-    host: &'a dyn AgentHost,
-    conversation_id: String,
-    run_id: String,
-    message_id: String,
+    host: &'a super::context::AgentContext<'a>,
     accumulator: Arc<Mutex<ChatStreamAccumulator>>,
     buffer_tool_planning_text: bool,
-    text_segment: Option<ChatMessageSegment>,
-    reasoning_segment: Option<ChatMessageSegment>,
+    text_segment: Option<ContentBlock>,
+    reasoning_segment: Option<ContentBlock>,
     tool_draft_tracker: Option<ToolCallDraftTracker>,
     web_search_tracker: Option<WebSearchCardTracker>,
     text_buffer: String,
@@ -373,23 +246,16 @@ pub struct AgentStreamSink<'a> {
 }
 
 impl<'a> AgentStreamSink<'a> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
-        host: &'a dyn AgentHost,
-        conversation_id: &str,
-        run_id: &str,
-        message_id: &str,
+        host: &'a super::context::AgentContext<'a>,
         buffer_tool_planning_text: bool,
-        text_segment: Option<ChatMessageSegment>,
-        reasoning_segment: Option<ChatMessageSegment>,
+        text_segment: Option<ContentBlock>,
+        reasoning_segment: Option<ContentBlock>,
         tool_draft_tracker: Option<ToolCallDraftTracker>,
         web_search_tracker: Option<WebSearchCardTracker>,
     ) -> Self {
         Self {
             host,
-            conversation_id: conversation_id.to_string(),
-            run_id: run_id.to_string(),
-            message_id: message_id.to_string(),
             accumulator: Arc::new(Mutex::new(ChatStreamAccumulator::default())),
             buffer_tool_planning_text,
             text_segment,
@@ -409,18 +275,11 @@ impl<'a> AgentStreamSink<'a> {
 
     fn emit_text_delta(&mut self, delta: &str) {
         self.emitted_text_chars += delta.chars().count() as u32;
-        self.host.emit_stream_delta(
-            &self.conversation_id,
-            &self.run_id,
-            &self.message_id,
-            delta,
-            None,
-            self.text_segment.as_ref(),
-        );
+        self.host.content(delta, None, self.text_segment.as_ref());
     }
 
     pub fn discard_attempt(&mut self) {
-        let mut segment_ids: Vec<String> = self
+        let mut segment_ids: Vec<u32> = self
             .text_segment
             .iter()
             .chain(self.reasoning_segment.iter())
@@ -430,7 +289,7 @@ impl<'a> AgentStreamSink<'a> {
         if let Some(tracker) = &self.tool_draft_tracker {
             let mut state = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
             if let Some(scope) = &state.speculative { scope.discard(); }
-            if let Some(order) = state.drafts.iter().map(|d| d.segment.order).min() {
+            if let Some(order) = state.drafts.iter().map(|d| d.segment.id).min() {
                 state.next_order = order;
             }
             for draft in state.drafts.drain(..) {
@@ -440,24 +299,17 @@ impl<'a> AgentStreamSink<'a> {
         }
         if let Some(tracker) = &self.web_search_tracker {
             let mut state = tracker.inner.lock().unwrap_or_else(|err| err.into_inner());
-            if let Some(segment) = state.segment.take() {
-                segment_ids.push(segment.id);
-            }
-            if let Some(record) = state.record.take() {
-                tool_ids.push(record.id);
+            if state.started {
+                segment_ids.push(state.block.id);
+                if let ContentKind::Search(search) = &mut state.block.kind {
+                    tool_ids.push(search.id.clone());
+                    search.queries.clear(); search.citations.clear(); search.complete = false;
+                }
             }
             state.started = false;
-            state.queries.clear();
-            state.citations.clear();
         }
         let (_, reasoning) = self.snapshot();
-        self.host.discard_stream_attempt(
-            &self.run_id,
-            self.emitted_text_chars,
-            reasoning.chars().count() as u32,
-            segment_ids,
-            tool_ids,
-        );
+        self.host.discard_attempt(self.emitted_text_chars, reasoning.chars().count() as u32, segment_ids, tool_ids);
     }
 
     fn handle_text_delta(&mut self, delta: String) {
@@ -521,24 +373,23 @@ impl<'a> AgentStreamSink<'a> {
         let order = guard.next_order;
         guard.next_order = guard.next_order.saturating_add(1);
         let now = chrono::Local::now().timestamp();
-        let segment = ChatMessageSegment {
-            id: format!("seg_{}_tool_{}", order, id),
-            kind: ChatMessageSegmentKind::Tool,
-            phase: ChatMessageSegmentPhase::ToolLoop,
-            order,
+        let segment = ContentBlock {
+            id: order,
+            kind: ContentKind::Tool,
+            phase: ContentPhase::ToolLoop,
             step_number: guard.step_number,
             round: Some(guard.round),
             text: None,
             tool_call_id: Some(id.clone()),
         };
-        let record = ToolCallRecord {
+        let record = AgentToolCall {
             id: id.clone(),
             name: record_name,
             source,
             server_id,
-            arguments: tool_draft_arguments(&name, "generating_arguments", 0),
-            status: ToolCallStatus::Pending,
-            result_preview: Some(tool_draft_preview(&name, "generating_arguments", 0)),
+            arguments: String::new(),
+            status: AgentToolStatus::Pending,
+            output: None,
             error: None,
             duration_ms: None,
             started_at: Some(now),
@@ -546,13 +397,10 @@ impl<'a> AgentStreamSink<'a> {
             round: guard.round,
             sensitive,
             artifacts: Vec::new(),
-            trace_id: Some(self.run_id.clone()),
-            span_id: Some(tool_draft_span_id(guard.round, &id)),
-            structured_content: Some(tool_draft_structured_content(
-                &name,
-                "generating_arguments",
-                0,
-            )),
+            output_limit: None,
+            draft: Some(ToolArgumentState { model_name: name.clone(), complete: false }),
+            structured_content: None,
+
         };
         guard.drafts.push(ToolCallDraft {
             model_name: name,
@@ -563,20 +411,8 @@ impl<'a> AgentStreamSink<'a> {
             done: false,
         });
         drop(guard);
-        self.host.emit_stream_delta(
-            &self.conversation_id,
-            &self.run_id,
-            &self.message_id,
-            "",
-            None,
-            Some(&segment),
-        );
-        self.host.emit_tool_record(
-            &self.conversation_id,
-            &self.run_id,
-            &self.message_id,
-            &record,
-        );
+        self.host.content("", None, Some(&segment));
+        self.host.tool_updated(&record);
     }
 
     fn emit_tool_call_delta(&mut self, id: String, delta: String) -> Result<(), ModelError> {
@@ -613,27 +449,11 @@ impl<'a> AgentStreamSink<'a> {
                 return Ok(());
             }
             draft.last_emitted_argument_chars = chars;
-            draft.record.arguments =
-                tool_draft_arguments(&draft.model_name, "generating_arguments", chars);
-            draft.record.result_preview = Some(tool_draft_preview(
-                &draft.model_name,
-                "generating_arguments",
-                chars,
-            ));
-            draft.record.structured_content = Some(tool_draft_structured_content(
-                &draft.model_name,
-                "generating_arguments",
-                chars,
-            ));
+            draft.record.arguments = draft.arguments_raw.clone();
             Some(draft.record.clone())
         };
         if let Some(record) = record_to_emit {
-            self.host.emit_tool_record(
-                &self.conversation_id,
-                &self.run_id,
-                &self.message_id,
-                &record,
-            );
+            self.host.tool_updated(&record);
         }
         Ok(())
     }
@@ -670,25 +490,11 @@ impl<'a> AgentStreamSink<'a> {
             let chars = draft.arguments_raw.chars().count();
             draft.last_emitted_argument_chars = chars;
             draft.record.arguments = call.arguments_raw.clone();
-            draft.record.result_preview = Some(tool_draft_preview(
-                &draft.model_name,
-                "arguments_ready",
-                chars,
-            ));
-            draft.record.structured_content = Some(tool_draft_structured_content(
-                &draft.model_name,
-                "arguments_ready",
-                chars,
-            ));
+            draft.record.draft.as_mut().expect("draft state").complete = true;
             Some(draft.record.clone())
         };
         if let Some(record) = record_to_emit {
-            self.host.emit_tool_record(
-                &self.conversation_id,
-                &self.run_id,
-                &self.message_id,
-                &record,
-            );
+            self.host.tool_updated(&record);
         }
         Ok(())
     }
@@ -697,51 +503,26 @@ impl<'a> AgentStreamSink<'a> {
     /// `web_search_tracker=None` 时行为与现状逐字节一致。首帧 emit 段（把卡插入答案之前的
     /// 预留槽），每帧 emit Running 记录（同 id 幂等 → 前端原地更新）。
     fn handle_web_search(&mut self, queries: Vec<String>, citations: Vec<WebCitation>) {
-        let Some(tracker) = self.web_search_tracker.as_ref() else {
-            return;
-        };
-        let update = tracker.note(&queries, &citations);
-        if let Some(segment) = update.segment.as_ref() {
-            self.host.emit_stream_delta(
-                &self.conversation_id,
-                &self.run_id,
-                &self.message_id,
-                "",
-                None,
-                Some(segment),
-            );
+        if let Some(tracker) = &self.web_search_tracker {
+            let (block, announce) = tracker.note(&queries, &citations);
+            self.host.search_updated(&block, announce);
         }
-        self.host.emit_tool_record(
-            &self.conversation_id,
-            &self.run_id,
-            &self.message_id,
-            &update.record,
-        );
+    }
+    pub fn finish_web_search_card(&self) -> Option<ContentBlock> {
+        self.web_search_tracker.as_ref().and_then(WebSearchCardTracker::finalize_success)
     }
 
-    /// 流成功结束时把内置搜索实时卡翻 Success，回传终态记录供 caller emit。转发到 tracker
-    /// （与 caller 共享同一 `Arc`，故 caller 随后 `take_card()` 读到的即是 Success）。
-    pub fn finish_web_search_card(&self) -> Option<ToolCallRecord> {
-        self.web_search_tracker
-            .as_ref()
-            .and_then(|tracker| tracker.finalize_success())
-    }
 }
 
 impl StreamSink for AgentStreamSink<'_> {
     fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
+        if !self.host.control.active() { return Ok(()); }
         match part {
             StreamPart::ContextUsage {
                 input_tokens,
                 output_tokens,
             } => {
-                self.host.emit_context_usage_live(
-                    &self.conversation_id,
-                    input_tokens.saturating_add(output_tokens),
-                    Some("provider_context_reported"),
-                    None,
-                    None,
-                );
+                self.host.context_usage(input_tokens.saturating_add(output_tokens), Some("provider_context_reported"), None, None);
             }
             StreamPart::TextDelta { delta } => {
                 self.handle_text_delta(delta);
@@ -752,14 +533,7 @@ impl StreamSink for AgentStreamSink<'_> {
                     .unwrap_or_else(|err| err.into_inner())
                     .reasoning
                     .push_str(&delta);
-                self.host.emit_stream_delta(
-                    &self.conversation_id,
-                    &self.run_id,
-                    &self.message_id,
-                    "",
-                    Some(&delta),
-                    self.reasoning_segment.as_ref(),
-                );
+                self.host.content("", Some(&delta), self.reasoning_segment.as_ref());
             }
             StreamPart::ToolCallStart { id, name } => self.emit_tool_call_start(id, name),
             StreamPart::ToolCallDelta { id, delta } => self.emit_tool_call_delta(id, delta)?,
@@ -775,10 +549,6 @@ impl StreamSink for AgentStreamSink<'_> {
     }
 }
 
-fn tool_draft_span_id(round: u32, tool_call_id: &str) -> String {
-    format!("tool_round_{}_{}", round, tool_call_id)
-}
-
 fn compact_tool_argument_limit(name: &str) -> Option<usize> {
     (name == "present_artifacts").then_some(PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS)
 }
@@ -787,61 +557,6 @@ fn oversized_tool_arguments_error(name: &str) -> String {
     format!(
         "{name} arguments are too large. Pass only artifact_ids or paths; never file contents, base64, or data URLs."
     )
-}
-
-fn tool_draft_arguments(name: &str, phase: &str, argument_chars: usize) -> String {
-    serde_json::json!({
-        "_kivioToolDraft": true,
-        "tool": name,
-        "phase": phase,
-        "argumentChars": argument_chars,
-    })
-    .to_string()
-}
-
-fn tool_draft_structured_content(name: &str, phase: &str, argument_chars: usize) -> Value {
-    serde_json::json!({
-        "toolDraft": {
-            "toolName": name,
-            "phase": phase,
-            "argumentChars": argument_chars,
-        }
-    })
-}
-
-fn tool_draft_preview(name: &str, phase: &str, argument_chars: usize) -> String {
-    if compact_tool_argument_limit(name).is_some() {
-        return if phase == "arguments_ready" {
-            "工具参数已生成，等待调用…".to_string()
-        } else {
-            "正在展示文件…".to_string()
-        };
-    }
-    if phase == "arguments_ready" {
-        return "工具参数已生成，等待调用…".to_string();
-    }
-    let prefix = match name {
-        "write" => "正在生成文件内容",
-        "edit" => "正在生成编辑参数",
-        _ => "正在生成工具参数",
-    };
-    if argument_chars == 0 {
-        format!("{prefix}…")
-    } else {
-        format!("{prefix}…已收到 {} 字符", format_count(argument_chars))
-    }
-}
-
-fn format_count(value: usize) -> String {
-    let text = value.to_string();
-    let mut out = String::new();
-    for (idx, ch) in text.chars().rev().enumerate() {
-        if idx > 0 && idx % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
-    }
-    out.chars().rev().collect()
 }
 
 pub fn should_flush_tool_planning_text_buffer(buffer: &str) -> bool {
@@ -932,8 +647,15 @@ pub fn validate_stream_output(
 mod tests {
     use crate::chat::model::{FinishReason, GeneratedImageData};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
+    use crate::chat::types::{ToolCallRecord, ToolCallStatus, ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase};
+    use crate::chat::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
+    use crate::chat::agent::events::{AgentEvent, AgentEventKind, AgentEventSink, AgentEvents, AgentRunIdentity, EventDelivery};
+    use crate::chat::agent::content::InputKind;
+    use crate::chat::agent::steering::SteeringMessage;
+    use crate::chat::agent::context::AgentContext;
     use crate::chat::agent::execute::ToolExecutionContext;
     use crate::chat::agent::host::AgentHostFuture;
     use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
@@ -941,11 +663,50 @@ mod tests {
 
     #[derive(Default)]
     struct TestHost {
+        stopped: AtomicBool,
+        scope_drops: Option<Arc<AtomicUsize>>,
         records: Mutex<Vec<ToolCallRecord>>,
         segments: Mutex<Vec<ChatMessageSegment>>,
     }
 
+    struct TestScope(Arc<AtomicUsize>);
+    impl SpeculativeTaskScope for TestScope {
+        fn update(&self, _call: &str, _raw: &str) {}
+        fn reconcile_call(&self, _call: &str, _args: Option<&Value>) {}
+        fn reconcile(&self, _final_calls: &[(&str, &Value)]) {}
+        fn discard(&self) {}
+    }
+    impl Drop for TestScope { fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); } }
     impl AgentHost for TestHost {
+        fn start_speculation(&self, _settings: &crate::settings::Settings, _tools: &[ChatToolDefinition], _context: &ToolExecutionContext<'_>) -> Option<Box<dyn SpeculativeTaskScope>> { self.scope_drops.as_ref().map(|drops| Box::new(TestScope(drops.clone())) as _) }
+
+        fn request_tool_approval<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+            _record: &'a AgentToolCall,
+        ) -> AgentHostFuture<'a, bool> {
+            Box::pin(async { true })
+        }
+
+        fn request_session_consent<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+        ) -> AgentHostFuture<'a, bool> {
+            Box::pin(async { true })
+        }
+
+        fn request_user_response<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+            _record: &'a AgentToolCall,
+            _prompt: AskUserPromptPayload,
+        ) -> AgentHostFuture<'a, AskUserResponseResult> {
+            Box::pin(async { crate::chat::ask_user::skipped_response() })
+        }
+
+    }
+
+impl TestHost {
         fn emit_stream_delta(
             &self,
             _conversation_id: &str,
@@ -962,7 +723,6 @@ mod tests {
                     .push(segment.clone());
             }
         }
-
         fn emit_tool_record(
             &self,
             _conversation_id: &str,
@@ -976,73 +736,7 @@ mod tests {
                 .push(record.clone());
         }
 
-        fn request_tool_approval<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            _record: &'a ToolCallRecord,
-        ) -> AgentHostFuture<'a, bool> {
-            Box::pin(async { true })
-        }
-
-        fn request_session_consent<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-        ) -> AgentHostFuture<'a, bool> {
-            Box::pin(async { true })
-        }
-
-        fn request_user_response<'a>(
-            &'a self,
-            _ctx: &'a ToolExecutionContext<'a>,
-            _record: &'a ToolCallRecord,
-            _prompt: AskUserPromptPayload,
-        ) -> AgentHostFuture<'a, AskUserResponseResult> {
-            Box::pin(async { crate::chat::ask_user::skipped_response() })
-        }
-
-        fn is_generation_active(&self, _conversation_id: &str, _generation: u64) -> bool {
-            true
-        }
-
-        fn wait_for_generation_inactive<'a>(
-            &'a self,
-            _conversation_id: &'a str,
-            _generation: u64,
-        ) -> AgentHostFuture<'a, ()> {
-            Box::pin(async { std::future::pending::<()>().await })
-        }
-    }
-
-    #[test]
-    fn speculative_launch_obeys_visibility_approval_and_workflow_hooks() {
-        let mut settings = crate::settings::Settings::default();
-        settings.chat_tools.approval_policy = "auto".into();
-        assert!(settings.chat_tools.task_speculative_launch);
-        let task = crate::chat::sub_agent::task::tool_definition(&[], &settings);
-        assert!(speculative_task_allowed(&settings, &[task.clone()], None, "auto", false, true));
-        assert!(!speculative_task_allowed(&settings, &[], None, "auto", false, true));
-        settings.chat_tools.task_speculative_launch = false;
-        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "auto", true, true));
-        settings.chat_tools.task_speculative_launch = true;
-        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "always_confirm", true, true));
-        assert!(!speculative_task_allowed(&settings, &[task.clone()], None, "readonly_auto_sensitive_confirm", false, true));
-        assert!(speculative_task_allowed(&settings, &[task.clone()], None, "readonly_auto_sensitive_confirm", true, true));
-        let mut sensitive_task = task.clone();
-        sensitive_task.sensitive = true;
-        assert!(speculative_task_allowed(&settings, &[sensitive_task.clone()], None, "readonly_auto_sensitive_confirm", true, true));
-        assert!(!speculative_task_allowed(&settings, &[sensitive_task], None, "readonly_auto_sensitive_confirm", true, false));
-        for event in ["PreToolUse", "PostToolUse", "SessionStart"] {
-            let hooks = crate::chat::workflow_hooks::parse(
-                &serde_json::json!({(event): [{"hooks": [{"type": "command", "command": "true"}]}]}),
-                "test", std::path::Path::new("."), std::path::Path::new("."),
-            ).unwrap();
-            let runtime = crate::chat::workflow_hooks::Runtime { hooks, ..Default::default() };
-            assert_eq!(
-                speculative_task_allowed(&settings, &[task.clone()], Some(&runtime), "auto", false, true),
-                event == "SessionStart"
-            );
-        }
-    }
+}
 
     #[test]
     fn tool_planning_text_buffer_delays_possible_dsml_prefix() {
@@ -1058,11 +752,9 @@ mod tests {
     fn tool_call_stream_parts_emit_draft_records_and_segments() {
         let host = TestHost::default();
         let tracker = ToolCallDraftTracker::new(vec![native_write_file_tool()], 2, Some(3), 1002);
+        let context = test_context(&host);
         let mut sink = AgentStreamSink::new(
-            &host,
-            "conversation",
-            "run",
-            "message",
+            &context,
             true,
             None,
             None,
@@ -1135,11 +827,9 @@ mod tests {
     fn tool_call_draft_error_preserves_backend_record_after_stream_failure() {
         let host = TestHost::default();
         let tracker = ToolCallDraftTracker::new(vec![native_write_file_tool()], 1, Some(1), 1000);
+        let context = test_context(&host);
         let mut sink = AgentStreamSink::new(
-            &host,
-            "conversation",
-            "run",
-            "message",
+            &context,
             true,
             None,
             None,
@@ -1161,7 +851,7 @@ mod tests {
         let failed = tracker.mark_error("Chat tools planning read body failed");
 
         assert_eq!(failed.len(), 1);
-        let record = &failed[0];
+        let record = crate::chat::agent_presentation::project_tool(&failed[0], Some("run"));
         assert_eq!(record.id, "call_write");
         assert_eq!(record.name, "write");
         assert!(matches!(record.status, ToolCallStatus::Error));
@@ -1199,11 +889,9 @@ mod tests {
         let host = TestHost::default();
         let tracker =
             ToolCallDraftTracker::new(vec![native_present_artifacts_tool()], 1, Some(1), 1000);
+        let context = test_context(&host);
         let mut sink = AgentStreamSink::new(
-            &host,
-            "conversation",
-            "run",
-            "message",
+            &context,
             true,
             None,
             None,
@@ -1244,11 +932,9 @@ mod tests {
         let host = TestHost::default();
         let tracker =
             ToolCallDraftTracker::new(vec![native_present_artifacts_tool()], 1, Some(1), 1000);
+        let context = test_context(&host);
         let mut sink = AgentStreamSink::new(
-            &host,
-            "conversation",
-            "run",
-            "message",
+            &context,
             true,
             None,
             None,
@@ -1353,24 +1039,21 @@ mod tests {
         let tracker = WebSearchCardTracker::new(
             1001,
             Some(2),
-            ChatMessageSegmentPhase::ToolLoop,
+            ContentPhase::ToolLoop,
             "Test Provider".to_string(),
         );
-        let text_segment = ChatMessageSegment {
-            id: "seg_1002_text".to_string(),
-            kind: ChatMessageSegmentKind::Text,
-            phase: ChatMessageSegmentPhase::ToolLoop,
-            order: 1002,
+        let text_segment = ContentBlock {
+            id: 1002,
+            kind: ContentKind::Text,
+            phase: ContentPhase::ToolLoop,
             step_number: Some(1),
             round: Some(2),
             text: None,
             tool_call_id: None,
         };
+        let context = test_context(&host);
         let mut sink = AgentStreamSink::new(
-            &host,
-            "conversation",
-            "run",
-            "message",
+            &context,
             true,
             Some(text_segment.clone()),
             None,
@@ -1410,7 +1093,7 @@ mod tests {
         // 段只发一次，order 落预留槽且在正文段之前。
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].order, 1001);
-        assert!(segments[0].order < text_segment.order);
+        assert!(segments[0].order < text_segment.id);
         assert_eq!(segments[0].kind, ChatMessageSegmentKind::Tool);
         let card_id = segments[0].tool_call_id.clone().expect("card id");
         drop(segments);
@@ -1446,10 +1129,13 @@ mod tests {
         let success = sink
             .finish_web_search_card()
             .expect("started card finalizes");
+        let success = crate::chat::agent_presentation::project_embedded(&success).unwrap();
         assert!(matches!(success.status, ToolCallStatus::Success));
         assert_eq!(success.id, card_id);
         // take_card 返回 Success 终态 + 预留槽段。
-        let (record, segment) = tracker.take_card().expect("card present after start");
+        let block = tracker.take_card().expect("card present after start");
+        let record = crate::chat::agent_presentation::project_embedded(&block).unwrap();
+        let segment = crate::chat::agent_presentation::project_block(&block);
         assert!(matches!(record.status, ToolCallStatus::Success));
         assert_eq!(record.id, card_id);
         assert_eq!(segment.order, 1001);
@@ -1462,7 +1148,7 @@ mod tests {
         let tracker = WebSearchCardTracker::new(
             1001,
             None,
-            ChatMessageSegmentPhase::Synthesis,
+            ContentPhase::Synthesis,
             "P".to_string(),
         );
         assert!(tracker.take_card().is_none());
@@ -1474,7 +1160,8 @@ mod tests {
     #[test]
     fn web_search_part_without_tracker_is_ignored() {
         let host = TestHost::default();
-        let mut sink = AgentStreamSink::new(&host, "c", "r", "m", true, None, None, None, None);
+        let context = test_context(&host);
+        let mut sink = AgentStreamSink::new(&context, true, None, None, None, None);
         sink.emit(StreamPart::WebSearch {
             queries: vec!["q".to_string()],
             citations: Vec::new(),
@@ -1534,4 +1221,80 @@ mod tests {
         assert_eq!(message["reasoning_items"][0]["item"]["id"], "rs_1");
         assert_eq!(message["tool_calls"][0]["id"], "call_1");
     }
+
+impl AgentRunControl for TestHost {
+    fn active(&self) -> bool { !self.stopped.load(Ordering::SeqCst) }
+    fn stop(&self) -> StopAdmission { self.stopped.store(true, Ordering::SeqCst); StopAdmission::Requested }
+    fn submit(&self, _kind: InputKind, _message: SteeringMessage) -> InputAdmission { InputAdmission::Unsupported }
+    fn take(&self, _kind: InputKind) -> Vec<SteeringMessage> { Vec::new() }
+    fn wait_inactive(&self) -> AgentHostFuture<'_, ()> { Box::pin(std::future::pending()) }
+}
+impl AgentEventSink for TestHost {
+    fn on_event(&self, event: &AgentEvent<'_>) -> EventDelivery {
+        let id = event.identity;
+        match &event.kind {
+            AgentEventKind::Content { delta, reasoning_delta, block } => {
+                let segment = block.map(crate::chat::agent_presentation::project_block);
+                self.emit_stream_delta(id.conversation_id, id.run_id, id.message_id, delta, *reasoning_delta, segment.as_ref());
+                if let Some(record) = block.and_then(crate::chat::agent_presentation::project_embedded) { self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record); }
+            }
+            AgentEventKind::SearchUpdated { block, announce } => {
+                if *announce {
+                    self.emit_stream_delta(id.conversation_id, id.run_id, id.message_id, "", None, Some(&crate::chat::agent_presentation::project_block(block)));
+                }
+                if let Some(record) = crate::chat::agent_presentation::project_embedded(block) { self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record); }
+            }
+            AgentEventKind::ToolUpdated(call) => self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &crate::chat::agent_presentation::project_tool(call, Some(id.run_id))),
+            _ => {}
+        }
+        EventDelivery::Accepted
+    }
+}
+fn test_context(host: &TestHost) -> AgentContext<'_> {
+    let identity = AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1 };
+    let control = AgentRunHandle::new(identity, host);
+    AgentContext { host, events: AgentEvents::new(identity, host, host.hooks().map(|hooks| hooks as &dyn AgentEventSink), control.invocation_id()), control }
+}
+
+    #[test]
+    fn stopped_stream_ignores_late_frames() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let host = TestHost { scope_drops: Some(drops.clone()), ..Default::default() };
+        let context = test_context(&host);
+        let tracker = ToolCallDraftTracker::new(vec![native_write_file_tool()], 1, None, 1000);
+        let mut sink = AgentStreamSink::new(&context, true, None, None, Some(tracker.clone()), None);
+        host.stop();
+        sink.emit(StreamPart::ToolCallStart { id: "late".into(), name: "write".into() }).unwrap();
+        sink.emit(StreamPart::TextDelta { delta: "late text".into() }).unwrap();
+        assert_eq!(sink.snapshot(), (String::new(), String::new()));
+        assert!(!tracker.has_started());
+        assert!(host.records.lock().unwrap().is_empty());
+        assert!(host.segments.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn disabling_or_dropping_tracker_releases_speculative_scope() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let host = TestHost { scope_drops: Some(drops.clone()), ..Default::default() };
+        let agent = test_context(&host);
+        let settings = crate::settings::Settings::default();
+        let provider = serde_json::from_value(serde_json::json!({"id":"test-provider","name":"Test","baseUrl":""})).unwrap();
+        let plan_state = crate::chat::types::AgentPlanState::default();
+        let context = ToolExecutionContext { conversation_id: "conversation", run_id: "run", message_id: "message", provider: &provider, model: "model", generation: 1, round: 1, depth: 0, tool_conversation_id: "conversation", plan_state: &plan_state, mcp_tool_ids: &[], mcp_server_ids: &[], approval_policy: "auto", interactive_host: true, tool_call_id: "" };
+        let tracker = ToolCallDraftTracker::new(Vec::new(), 1, None, 0);
+        tracker.enable_speculation(&agent, &settings, &context);
+        let other = tracker.clone();
+        tracker.disable_speculation();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        tracker.enable_speculation(&agent, &settings, &context);
+        drop(tracker);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        drop(other);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        host.stop();
+        let tracker = ToolCallDraftTracker::new(Vec::new(), 1, None, 0);
+        tracker.enable_speculation(&agent, &settings, &context);
+        drop(tracker);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
 }

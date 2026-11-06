@@ -3,26 +3,16 @@
 //! 对齐 Codex CLI 的 steer —— 不打断、不丢已做的工具工作，只在**下一个轮次边界**（工具跑完、
 //! 下次调模型之前）把用户那句话塞进模型历史，模型带着新指示继续。
 //!
-//! 显示走「合成一条 display-only `ToolCallRecord` + 一个 Tool 段」这条已验证的路子（与内置联网
-//! 搜索卡同构，见 `finalize::build_web_search_record`）：因此**不新增 segment kind、不动
-//! protocol.rs**，落盘（assistant 消息的 `tool_calls` + `segments`）与实时流两条路都是现成的。
+//! Consumed input is retained as an ordered content block and in both replay histories.
 
 use serde::{Deserialize, Serialize};
+use super::content::{ContentBlock, ContentKind, ContentPhase};
 
-use crate::chat::types::{
-    ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase, ToolCallRecord,
-    ToolCallStatus,
-};
+
 
 use super::history::RuntimeMessage;
 use super::loop_::{LoopEnv, RunState};
 use crate::chat::model::{GenerateOutput, ModelRole};
-
-/// 插话卡的保留工具名。前端按 `source == "native" && name == STEER_TOOL_NAME &&
-/// structured.type == "user_steer"` 三条一起认——这张卡渲染成「用户说过的话」，
-/// 不能让某个 MCP 服务器的工具结果冒充。
-pub const STEER_TOOL_NAME: &str = "user_steer";
-pub const FOLLOW_UP_TOOL_NAME: &str = "user_follow_up";
 
 /// 单条插话文本上限。与 `ask_user.rs` 那批 `MAX_*_CHARS` 同一取舍：越界截断而不是报错，
 /// 用户已经打完的字不该因为长度被整条丢掉。
@@ -68,7 +58,7 @@ pub(crate) async fn inject_steering_messages(
 ) -> Result<(), String> {
     state
         .pending_steering
-        .extend(env.host.take_steering_messages(&env.config.conversation_id));
+        .extend(env.host.control.take_steering());
     let Some(message) = state.pending_steering.pop_front() else {
         return Ok(());
     };
@@ -78,7 +68,7 @@ pub(crate) async fn inject_steering_messages(
         state,
         round,
         &message,
-        build_steer_record(&message, round),
+        super::content::InputKind::Steer,
     );
     Ok(())
 }
@@ -90,7 +80,7 @@ pub(crate) async fn inject_steering_messages(
 pub(crate) fn steering_pending(env: &LoopEnv<'_>, state: &mut RunState) -> bool {
     state
         .pending_steering
-        .extend(env.host.take_steering_messages(&env.config.conversation_id));
+        .extend(env.host.control.take_steering());
     !state.pending_steering.is_empty()
 }
 
@@ -98,7 +88,7 @@ pub(crate) fn steering_pending(env: &LoopEnv<'_>, state: &mut RunState) -> bool 
 pub(crate) fn follow_up_pending(env: &LoopEnv<'_>, state: &mut RunState) -> bool {
     state.pending_follow_up.extend(
         env.host
-            .take_follow_up_messages(&env.config.conversation_id),
+            .control.take_follow_up(),
     );
     !state.pending_follow_up.is_empty()
 }
@@ -118,7 +108,7 @@ pub(crate) async fn inject_follow_up_messages(
         state,
         round,
         &message,
-        build_follow_up_record(&message, round),
+        super::content::InputKind::FollowUp,
     );
     Ok(())
 }
@@ -133,13 +123,7 @@ async fn apply_prompt_hooks(
     };
     let mut input = runtime.input("UserPromptSubmit", &env.config.conversation_id);
     input["prompt"] = serde_json::json!(prompt);
-    let out = crate::chat::workflow_hooks::run_for_host(
-        env.host,
-        "UserPromptSubmit",
-        input,
-        &env.config.conversation_id,
-        env.config.generation,
-    )
+    let out = crate::chat::workflow_hooks::run_for_host(env.host, "UserPromptSubmit", input)
     .await?;
     if let Some(reason) = out.denied {
         return Err(reason);
@@ -163,20 +147,20 @@ fn append_injected_user_turn(
     state: &mut RunState,
     round: u32,
     message: &SteeringMessage,
-    record: ToolCallRecord,
+    kind: super::content::InputKind,
 ) {
-    let ids = env.ids();
     let injected = RuntimeMessage::text(ModelRole::User, message.text.clone());
     state.runtime_messages.push(injected.clone());
     state.generated_api_messages.push(injected);
 
-    env.host
-        .emit_tool_record(ids.conversation_id, ids.run_id, ids.message_id, &record);
-    let order = state.segment_builder.next_order();
-    state
-        .segment_builder
-        .append_existing_segments(vec![build_steer_segment(order, &record.id, round)]);
-    state.tool_records.push(record);
+    let block = ContentBlock {
+        id: state.segment_builder.reserve_order(),
+        kind: ContentKind::Input { kind, message: message.clone() },
+        phase: ContentPhase::ToolLoop,
+        step_number: None, round: Some(round), text: None, tool_call_id: None,
+    };
+    env.host.content("", None, Some(&block));
+    state.segment_builder.append_existing_segments(vec![block]);
 }
 
 /// 把本该收束的终答落成一条**中间** assistant 消息（对齐 pi：终答照常成为历史的一部分，
@@ -186,79 +170,6 @@ pub(crate) fn absorb_final_answer(state: &mut RunState, message: GenerateOutput)
     let message = RuntimeMessage::model(message.replay_message());
     state.runtime_messages.push(message.clone());
     state.generated_api_messages.push(message);
-}
-
-/// 插话卡的 `ToolCallRecord`。永远是 Success（它不是一次调用，是一件已经发生的事）。
-///
-/// 外部 CLI 那条路（`external_agents::run`）也用这一份：同一个工具名、同一个
-/// `structured_content` 形状，前端的判据与出队对账两条路共用。
-pub fn build_steer_record(message: &SteeringMessage, round: u32) -> ToolCallRecord {
-    ToolCallRecord {
-        id: format!("steer_{}", message.id),
-        name: STEER_TOOL_NAME.to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        arguments: serde_json::json!({ "text": message.text }).to_string(),
-        status: ToolCallStatus::Success,
-        // 纯文本兜底：不识别 structured 的旧前端仍能看到这句话，而不是一张空卡。
-        result_preview: Some(message.text.clone()),
-        error: None,
-        duration_ms: None,
-        started_at: None,
-        completed_at: None,
-        round,
-        sensitive: false,
-        artifacts: Vec::new(),
-        trace_id: None,
-        span_id: None,
-        structured_content: Some(serde_json::json!({
-            "type": "user_steer",
-            "steer_id": message.id,
-            "text": message.text,
-        })),
-    }
-}
-
-/// 原生 follow-up 的显示记录。它与 steer 同样渲染成时间线里的用户小气泡，
-/// 但保留独立类型，避免把“当前轮次引导”和“轮末追加”混成一种协议语义。
-pub fn build_follow_up_record(message: &SteeringMessage, round: u32) -> ToolCallRecord {
-    ToolCallRecord {
-        id: format!("follow_up_{}", message.id),
-        name: FOLLOW_UP_TOOL_NAME.to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        arguments: serde_json::json!({ "text": message.text }).to_string(),
-        status: ToolCallStatus::Success,
-        result_preview: Some(message.text.clone()),
-        error: None,
-        duration_ms: None,
-        started_at: None,
-        completed_at: None,
-        round,
-        sensitive: false,
-        artifacts: Vec::new(),
-        trace_id: None,
-        span_id: None,
-        structured_content: Some(serde_json::json!({
-            "type": "user_follow_up",
-            "follow_up_id": message.id,
-            "text": message.text,
-        })),
-    }
-}
-
-/// 对应的 Tool 段。`step_number=None` 让它与正文段纯按 order 排序（同内置搜索卡的取舍）。
-fn build_steer_segment(order: u32, record_id: &str, round: u32) -> ChatMessageSegment {
-    ChatMessageSegment {
-        id: format!("seg_{order}_tool_{record_id}"),
-        kind: ChatMessageSegmentKind::Tool,
-        phase: ChatMessageSegmentPhase::ToolLoop,
-        order,
-        step_number: None,
-        round: Some(round),
-        text: None,
-        tool_call_id: Some(record_id.to_string()),
-    }
 }
 
 #[cfg(test)]
@@ -276,24 +187,4 @@ mod tests {
         assert_eq!(clipped.text.chars().count(), MAX_STEER_CHARS);
     }
 
-    #[test]
-    fn follow_up_record_is_not_a_steer_card() {
-        let message = SteeringMessage::new("f1".into(), "接着做").expect("non-blank");
-        let record = build_follow_up_record(&message, 2);
-        assert_eq!(record.name, FOLLOW_UP_TOOL_NAME);
-        assert_eq!(
-            record
-                .structured_content
-                .as_ref()
-                .and_then(|value| value.get("type")),
-            Some(&serde_json::json!("user_follow_up"))
-        );
-        assert_eq!(
-            record
-                .structured_content
-                .as_ref()
-                .and_then(|value| value.get("follow_up_id")),
-            Some(&serde_json::json!("f1"))
-        );
-    }
 }

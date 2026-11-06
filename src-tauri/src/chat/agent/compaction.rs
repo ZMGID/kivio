@@ -9,10 +9,7 @@ use crate::chat::model::{
     MessagePart, ModelErrorKind, ModelMessage, ModelRole,
 };
 use crate::chat::model_metadata::{chat_max_output_tokens_for_model, context_window_for_model};
-use crate::chat::types::{
-    ChatMessage, CompactionBoundaryRecord, CompactionReplay, Conversation,
-    ConversationContextSummary,
-};
+use crate::chat::types::{ChatMessage, CompactionBoundaryRecord, CompactionReplay, Conversation, ConversationContextSummary};
 use crate::settings::Settings;
 use crate::state::AppState;
 use serde_json::{json, Value};
@@ -355,7 +352,7 @@ pub(crate) async fn summarize_history(
     conversation_id: &str,
     message_id: &str,
     mut cancel: Option<super::provider_runtime::ProviderFuture<'_, ()>>,
-    host: Option<&dyn super::host::AgentHost>,
+    host: Option<&super::context::AgentContext<'_>>,
 ) -> CompactOutcome {
     let (prefix, groups) = group_starts(messages);
     let group_end = |kept: usize| {
@@ -641,12 +638,7 @@ pub(crate) async fn summarize_history(
                 }
                 batch_budget = batch_budget.min(sent_input_tokens) / 2;
                 if let Some(host) = host {
-                    host.emit_compaction_status(
-                        conversation_id,
-                        "retrying",
-                        Some("agent_loop"),
-                        None,
-                    );
+                    host.compaction("retrying", Some("agent_loop"), None);
                 }
                 continue;
             }
@@ -668,7 +660,7 @@ pub(crate) async fn summarize_history(
             force_transcript = true;
             batch_budget = batch_budget.min(sent_input_tokens / 2);
             if let Some(host) = host {
-                host.emit_compaction_status(conversation_id, "retrying", Some("agent_loop"), None);
+                host.compaction("retrying", Some("agent_loop"), None);
             }
             continue;
         }
@@ -691,7 +683,7 @@ pub(crate) async fn summarize_history(
         // Retry incomplete/transient results without advancing coverage.
         strip_media = false;
         if let Some(host) = host {
-            host.emit_compaction_status(conversation_id, "retrying", Some("agent_loop"), None);
+            host.compaction("retrying", Some("agent_loop"), None);
         }
     }
 }
@@ -1147,7 +1139,7 @@ fn estimate_json_text_tokens(text: &str) -> usize {
 
 /// 把单条 UI `ChatMessage` 估算成 token 数。**优先按展开形态**（model_messages /
 /// api_messages）估算——真实 replay 发给模型的是这些里的完整工具转录，而非截断的
-/// `result_preview`；分支顺序与 `build_chat_api_messages` 的展开路径同源对齐。
+/// `output`；分支顺序与 `build_chat_api_messages` 的展开路径同源对齐。
 /// 无展开数据时退回 content + reasoning + 工具入参 + 结果预览口径。
 pub(crate) fn estimate_chat_message_tokens(message: &ChatMessage) -> usize {
     if !message.model_messages.is_empty() {
@@ -1223,7 +1215,7 @@ pub(crate) async fn compact_send_view(
     // Failed/paused compaction may continue only while the real request fits.
     if env
         .host
-        .is_generation_active(&config.conversation_id, config.generation)
+        .control.active()
         && estimate_runtime_request_tokens(&messages, &config.provider, &config.model)
             .saturating_add(schemas)
             > window.saturating_sub(config.max_output_tokens as usize)
@@ -1247,7 +1239,7 @@ async fn compact_send_view_inner(
         state.last_step_usage = None;
         state.initial_anchor_valid = false;
         env.host
-            .emit_context_usage_live(&config.conversation_id, 0, None, None, None);
+            .context_usage(0, None, None, None);
         eprintln!("Chat context: pruned {saved_bytes} bytes of image data from the send view");
     }
     let window = context_window_for_model(Some(&config.provider), &config.model).0;
@@ -1348,10 +1340,10 @@ async fn compact_send_view_inner(
     );
 
     env.host
-        .emit_compaction_status(&config.conversation_id, "started", Some(trigger), None);
+        .compaction("started", Some(trigger), None);
     let cancel = env
         .host
-        .wait_for_generation_inactive(&config.conversation_id, config.generation);
+        .control.wait_inactive();
     let source_until_message_id = state
         .runtime_messages
         .iter()
@@ -1373,7 +1365,7 @@ async fn compact_send_view_inner(
         env.host
             .set_auto_compact_failures(&config.conversation_id, state.auto_compact_failures);
         env.host
-            .emit_compaction_status(&config.conversation_id, "failed", Some(trigger), None);
+            .compaction("failed", Some(trigger), None);
         return Ok(state.runtime_messages.clone());
     };
     let compacted = config
@@ -1392,7 +1384,7 @@ async fn compact_send_view_inner(
             .unwrap_or(SUMMARY_OUTPUT_TOKENS),
             conversation_id: &config.conversation_id,
             message_id: &config.message_id,
-            cancel: Some(cancel),
+            cancel: Some(Box::pin(cancel)),
             host: Some(env.host),
         })
         .await;
@@ -1409,12 +1401,7 @@ async fn compact_send_view_inner(
                     &config.conversation_id,
                     state.auto_compact_failures,
                 );
-                env.host.emit_compaction_status(
-                    &config.conversation_id,
-                    "failed",
-                    Some(trigger),
-                    None,
-                );
+                env.host.compaction("failed", Some(trigger), None);
                 return Ok(state.runtime_messages.clone());
             }
             let incoming = match env
@@ -1429,12 +1416,7 @@ async fn compact_send_view_inner(
             {
                 Ok(incoming) => incoming,
                 Err(error) => {
-                    env.host.emit_compaction_status(
-                        &config.conversation_id,
-                        "failed",
-                        Some(trigger),
-                        None,
-                    );
+                    env.host.compaction("failed", Some(trigger), None);
                     return Err(error);
                 }
             };
@@ -1456,13 +1438,7 @@ async fn compact_send_view_inner(
             // 压缩后消息序列已变，旧锚点失真——清空，回落纯估算直到下次模型调用产生新 usage。
             state.last_step_usage = None;
             state.initial_anchor_valid = false;
-            env.host.emit_context_usage_live(
-                &config.conversation_id,
-                0,
-                None,
-                Some(window as u64),
-                None,
-            );
+            env.host.context_usage(0, None, Some(window as u64), None);
             if let Some(source_until_message_id) = source_until_message_id {
                 let created_at = chrono::Local::now().timestamp();
                 let summary_record = ConversationContextSummary {
@@ -1494,29 +1470,15 @@ async fn compact_send_view_inner(
                     trigger: trigger.to_string(),
                     created_at,
                 };
-                env.host.emit_compaction_status(
-                    &config.conversation_id,
-                    "completed",
-                    Some(trigger),
-                    Some(&boundary),
-                );
+                env.host.compaction("completed", Some(trigger), Some(&boundary));
                 state.pending_compaction_boundary = Some(boundary);
                 state.pending_compaction_summary = Some(summary_record);
             } else {
                 // 压缩视图已生效但无法可靠映射回 UI 消息（旧段只有摘要锚点/系统注入）——
                 // 不落盘 boundary，但必须发终止事件让前端"压缩中"归位。
-                env.host.emit_compaction_status(
-                    &config.conversation_id,
-                    "completed",
-                    Some(trigger),
-                    None,
-                );
+                env.host.compaction("completed", Some(trigger), None);
             }
-            match crate::chat::workflow_hooks::compact_context(
-                env.host,
-                &config.conversation_id,
-                config.generation,
-            )
+            match crate::chat::workflow_hooks::compact_context(env.host, &config.conversation_id)
             .await
             {
                 Ok(context) => crate::chat::workflow_hooks::inject_context(
@@ -1532,23 +1494,13 @@ async fn compact_send_view_inner(
         }
         CompactOutcome::Skipped => {
             // Nothing outside the recent retention budget can be summarized safely.
-            env.host.emit_compaction_status(
-                &config.conversation_id,
-                "skipped",
-                Some(trigger),
-                None,
-            );
+            env.host.compaction("skipped", Some(trigger), None);
             Ok(state.runtime_messages.clone())
         }
         CompactOutcome::Cancelled => {
             // 用户主动取消进行中的 run：不计入失败次数（取消 ≠ 压缩无能为力），
             // 让后续 planning 自己检测取消并正常收尾。仍发终止事件让前端"压缩中"归位。
-            env.host.emit_compaction_status(
-                &config.conversation_id,
-                "interrupted",
-                Some(trigger),
-                None,
-            );
+            env.host.compaction("interrupted", Some(trigger), None);
             Ok(state.runtime_messages.clone())
         }
         CompactOutcome::Failed => {
@@ -1558,7 +1510,7 @@ async fn compact_send_view_inner(
                 .set_auto_compact_failures(&config.conversation_id, state.auto_compact_failures);
             // started 已发——失败也必须发终止事件，否则前端"压缩中"状态永久卡死。
             env.host
-                .emit_compaction_status(&config.conversation_id, "failed", Some(trigger), None);
+                .compaction("failed", Some(trigger), None);
             Ok(state.runtime_messages.clone())
         }
     }

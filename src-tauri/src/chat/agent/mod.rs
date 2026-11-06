@@ -1,3 +1,7 @@
+pub mod content;
+pub mod events;
+pub mod control;
+pub(crate) mod context;
 pub(crate) mod compaction;
 pub(crate) mod context_estimate;
 pub(crate) mod context_measure;
@@ -23,5 +27,5 @@ pub use execute::{ToolExecutionContext, ToolExecutor, ToolExecutorFuture};
 pub use history::{RuntimeBody, RuntimeMessage, RuntimeSource};
 pub use host::{AgentHost, AgentHostFuture};
 pub use loop_::run_agent_loop;
-pub use steering::{SteeringMessage, FOLLOW_UP_TOOL_NAME, STEER_TOOL_NAME};
+pub use steering::SteeringMessage;
 pub use types::{AgentRunConfig, AgentRunEntry};

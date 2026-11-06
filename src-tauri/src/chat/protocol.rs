@@ -1452,7 +1452,7 @@ impl ChatProtocolHub {
     }
 
     #[cfg(test)]
-    fn register(
+    pub(crate) fn register(
         &mut self,
         conversation_id: &str,
         run_id: &str,
@@ -1513,7 +1513,7 @@ impl ChatProtocolHub {
             .ok()
     }
 
-    fn push(&mut self, run_id: &str, event: ChatRunEvent) -> Result<ChatRunEventEnvelope, String> {
+    pub(crate) fn push(&mut self, run_id: &str, event: ChatRunEvent) -> Result<ChatRunEventEnvelope, String> {
         let run = self
             .runs
             .get_mut(run_id)
