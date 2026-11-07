@@ -244,6 +244,7 @@ struct WorkflowToolExecutor {
 impl ToolExecutor for WorkflowToolExecutor {
     fn call<'a>(
         &'a self,
+        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -251,7 +252,7 @@ impl ToolExecutor for WorkflowToolExecutor {
         Box::pin(async move {
             let result_arguments = arguments.clone();
             let output: crate::mcp::types::McpToolCallResult = async {
-                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
                 crate::mcp::registry::call_tool(
                     &self.app,
                     &self.app.state::<AppState>(),

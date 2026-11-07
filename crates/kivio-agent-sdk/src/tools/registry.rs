@@ -134,6 +134,7 @@ impl ToolExecutor for ToolRegistry {
 
     fn call<'a>(
         &'a self,
+        progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         arguments: Value,
@@ -142,7 +143,7 @@ impl ToolExecutor for ToolRegistry {
             let (definition, executor) = self
                 .entry(&tool.key)
                 .ok_or_else(|| format!("Tool `{}` is not registered", tool.key))?;
-            executor.call(ctx, definition, arguments).await
+            executor.call(progress, ctx, definition, arguments).await
         })
     }
 
@@ -265,6 +266,7 @@ impl<T: StaticTool<HostData = Vec<ModelArtifact>>> ToolExecutor for RegisteredSt
 
     fn call<'a>(
         &'a self,
+        _progress: &'a ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         _tool: &'a ToolDefinition,
         arguments: Value,

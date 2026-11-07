@@ -44,6 +44,7 @@ struct RegisteredExecutor(Mutex<Vec<String>>);
 impl ToolDispatcher for RegisteredExecutor {
     fn call<'a>(
         &'a self,
+        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         _: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,

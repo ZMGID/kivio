@@ -443,7 +443,7 @@ async fn search_exa_mcp(
     // 一次性连接，不进 MCP 连接池：这个 server 是临时合成的（api key 就在 URL 里），
     // 不该被当成用户配置的常驻服务器缓存起来。
     let max_results = config.max_results.clamp(1, 10);
-    let raw = crate::mcp::conn::call_tool_once(
+    let result = crate::mcp::conn::call_tool_once(
         &server,
         &state.http,
         "web_search_exa",
@@ -451,9 +451,6 @@ async fn search_exa_mcp(
         std::time::Duration::from_secs(30),
     )
     .await?;
-    let result = crate::mcp::result::parse_tool_result(
-        serde_json::to_value(&raw).map_err(|err| err.to_string())?,
-    );
     if result.is_error {
         return Err(format!("Exa MCP search failed: {}", result.content));
     }
@@ -766,6 +763,7 @@ async fn search_tinyfish_mcp(
             &server,
             "search",
             serde_json::json!({ "query": query }),
+            None,
         )
         .await
         .map_err(|err| map_tinyfish_mcp_error(&err))?;

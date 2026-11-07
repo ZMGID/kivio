@@ -118,6 +118,30 @@ The `skills` feature adds explicit-source discovery and `SkillTool` without new 
 
 The application shares the parser, loader, formatting and typed activation tool. It retains source enumeration, settings, assistant policy, plugin transformations and `ResourceSessions` publication of skills, roles and hooks together. A normal send or retry does not rescan an existing catalog. The existing `skill` tool name and `<skill_content>` wrapper remain compatible with context compaction and subsequent reload instructions.
 
+## MCP clients
+
+The `mcp` feature adds the pinned rmcp transport and process dependencies. Default-feature consumers do not load them. `McpClient` owns one immutable transport configuration, one live connection, its tool revision/cache, stderr reader and cleanup. Hosts own server selection, credentials, OAuth, persisted offline schemas and reconnection policy. Creating a replacement client never retargets an existing registry to another endpoint.
+
+Connection setup completes initial discovery. `list_tools` serializes refreshes, follows bounded pagination and captures the revision before listing. A notification received during listing invalidates that snapshot for the next refresh. A failed refresh does not publish a partial catalog. `register_tools` stages a complete registry update and rejects name collisions atomically. Each executor retains the exact remote name; it never reconstructs identity from a sanitized model name. Tool annotations do not grant permission or enable parallel execution by default.
+
+The same frozen schema validates arguments before host authorization and before dispatch. The application retains its existing input normalization, approval hooks and final validation. MCP results preserve text, images, structured content, error status and raw wire data. Application-specific follow-up messages, attachments and previews remain in the host adapter.
+
+`ToolExecutor::call` now receives `ToolProgress`, matching the preparation and completion hooks. The MCP adapter uses its admitted run control and requests draining on cancellation. It owns its deadline, sends cancellation notifications and settles local request tracking before returning. Cancelling one call does not close the shared client. Direct `call_tool` consumers must keep polling the future through completion to obtain this cleanup guarantee. Dropping it abandons the response; use its cancellation future and await the result instead.
+
+`close()` rejects new calls, notifies active requests, waits for local draining and closes the transport, including HTTP session deletion or managed stdio process cleanup. Cleanup has bounded waits and reports failure. Last-owner drop is a fallback; it does not offer the same awaited completion guarantee. The desktop retains its existing emergency process-exit fallback.
+
+`McpCallFailure::replay_safe` distinguishes a rejected local send from an unknown response-phase outcome. The SDK has no general replay loop. The pinned Streamable HTTP transport retains its existing single session-expiration recovery for an MCP session rejected with HTTP 404. Other HTTP errors, dropped responses, timeouts and cancellation do not authorize automatic replay. A remote tool error that mentions OAuth is not evidence that the tool did not execute.
+
+`AgentSession::set_tools` is admitted only when idle. A run captures both definitions and executors together before it starts, so a refreshed server catalog cannot change its tool set mid-run. This is also the publication mechanism for a reloaded Skill catalog.
+
+| MCP surface | SDK support |
+|---|---|
+| tools over stdio and Streamable HTTP | Discovery, pagination, list-change refresh, registered authorized calls and explicit close |
+| resources and resource templates | No discovery/read API |
+| prompts | No API |
+| sampling and elicitation | No host callback API or advertised capability |
+| OAuth login and token refresh | Host-owned |
+
 ## Errors and retries
 
 Provider calls return `ModelError` with `kind`, an optional HTTP `status`, an optional `provider_code`, an optional `retry_after` duration, and a diagnostic `message`. Kinds distinguish authentication, rate limits, timeouts, transport errors, invalid requests, unsupported tools, context overflow, moderation, cancellation, and other failures. Retry classification is information for the runtime owner. It is not an automatic retry promise.

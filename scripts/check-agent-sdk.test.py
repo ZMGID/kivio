@@ -25,12 +25,32 @@ class SdkBoundaryTests(unittest.TestCase):
         checker.check_metadata(self.metadata())
 
     def test_forbidden_transitive_packages_are_rejected(self):
-        for name in ("kivio", "tauri", "tauri-plugin-store", "wry", "rmcp", "rusqlite", "ort"):
+        for name in ("kivio", "tauri", "tauri-plugin-store", "wry", "rusqlite", "ort"):
             with self.subTest(name=name):
                 metadata = self.metadata()
                 metadata["packages"].append({"name": name, "source": "registry+example"})
                 with self.assertRaisesRegex(ValueError, "desktop boundary"):
                     checker.check_metadata(metadata)
+
+    def test_mcp_is_allowed_only_when_explicitly_enabled(self):
+        metadata = self.metadata()
+        metadata["packages"][0]["id"] = "sdk"
+        metadata["packages"].append({"id": "rmcp", "name": "rmcp", "source": "registry+example"})
+        metadata["resolve"] = {"nodes": [{"id": "sdk", "features": ["mcp"]}, {"id": "rmcp", "features": []}]}
+        with self.assertRaisesRegex(ValueError, "must not enable MCP"):
+            checker.check_metadata(metadata)
+        checker.check_metadata(metadata, allow_mcp=True)
+        metadata["resolve"]["nodes"][0]["features"] = []
+        with self.assertRaisesRegex(ValueError, "requires the SDK mcp feature"):
+            checker.check_metadata(metadata, allow_mcp=True)
+        metadata["resolve"]["nodes"].pop()
+        checker.check_metadata(metadata)
+
+    def test_mcp_does_not_allow_desktop_dependencies(self):
+        metadata = self.metadata()
+        metadata["packages"].append({"name": "tauri", "source": "registry+example"})
+        with self.assertRaisesRegex(ValueError, "desktop boundary"):
+            checker.check_metadata(metadata, allow_mcp=True)
 
     def test_unrecognized_local_package_is_rejected(self):
         metadata = self.metadata()

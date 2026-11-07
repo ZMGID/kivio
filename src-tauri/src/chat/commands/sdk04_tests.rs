@@ -134,12 +134,13 @@ struct CountingExecutor {
 impl ToolDispatcher for CountingExecutor {
     fn call<'a>(
         &'a self,
+        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a crate::mcp::ChatToolDefinition,
         arguments: serde_json::Value,
     ) -> ToolExecutorFuture<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.call(ctx, tool, arguments)
+        self.inner.call(progress, ctx, tool, arguments)
     }
 }
 fn tool_step() -> MockResponse {

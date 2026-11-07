@@ -208,39 +208,32 @@ pub struct McpToolCallResult {
     pub follow_up_user_messages: Vec<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct McpTool {
-    pub name: String,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default, rename = "inputSchema")]
-    pub input_schema: serde_json::Value,
-    #[serde(default, rename = "outputSchema")]
-    pub output_schema: Option<serde_json::Value>,
-    #[serde(default)]
-    pub annotations: Option<serde_json::Value>,
+pub use kivio_agent_sdk::mcp::McpTool;
+
+impl From<kivio_agent_sdk::mcp::McpToolCallResult> for McpToolCallResult {
+    fn from(result: kivio_agent_sdk::mcp::McpToolCallResult) -> Self {
+        Self {
+            content: result.content,
+            is_error: result.is_error,
+            raw: result.raw,
+            artifacts: result.artifacts,
+            structured_content: result.structured_content,
+            follow_up_user_messages: Vec::new(),
+        }
+    }
 }
 
 pub fn tool_definition_from_mcp(server: &ChatMcpServer, tool: McpTool) -> ChatToolDefinition {
-    let id = format!("mcp__{}__{}", server.id, tool.name);
-    let sensitive = mcp_tool_requires_confirmation(&tool);
+    let definition = kivio_agent_sdk::mcp::mcp_tool_definition(&server.id, &tool);
     ChatToolDefinition {
-        id,
-        name: tool.name.clone(),
-        description: if tool.description.trim().is_empty() {
-            format!("MCP tool {}", tool.name)
-        } else {
-            tool.description
-        },
-        source: "mcp".to_string(),
-        server_id: Some(server.id.clone()),
+        id: definition.key,
+        name: tool.name,
+        description: definition.model.description,
+        source: definition.label.source,
+        server_id: definition.label.server_id,
         server_name: Some(server.name.clone()),
-        input_schema: if tool.input_schema.is_null() {
-            serde_json::json!({ "type": "object", "properties": {} })
-        } else {
-            tool.input_schema
-        },
-        sensitive,
+        input_schema: definition.model.input_schema,
+        sensitive: definition.label.sensitive,
         annotations: tool.annotations,
         output_schema: tool.output_schema,
     }
@@ -268,13 +261,6 @@ fn to_snake_case(value: &str) -> String {
         }
     }
     out
-}
-
-fn mcp_tool_requires_confirmation(_tool: &McpTool) -> bool {
-    // MCP annotations are server-provided, untrusted hints. They may be displayed to the user,
-    // but must never relax Kivio's approval boundary. A user-owned approval policy (for example
-    // the explicit global `auto` policy) is the only way to bypass per-call MCP confirmation.
-    true
 }
 
 pub fn native_web_search_tool() -> ChatToolDefinition {
@@ -1216,14 +1202,9 @@ pub fn list_native_builtin_tool_defs(
         .collect()
 }
 
-/// OpenAI / Gemini / Anthropic function names share a 64-char cap
-/// (`^[a-zA-Z0-9_-]{1,64}$`). Naive left-truncate turns
-/// `mcp__<uuid>__ui_to_artifact` and `mcp__<uuid>__ui_diff_check` into the
-/// same `...-ui` and Gemini silently drops the rest.
+#[cfg(test)]
 const MAX_WIRE_TOOL_NAME: usize = 64;
-const WIRE_NAME_HASH_LEN: usize = 8;
-/// Server ids longer than this eat the 64-char budget; replace with a hash.
-const LONG_MCP_SERVER_ID: usize = 16;
+pub use kivio_agent_sdk::mcp::sanitize_openai_tool_name;
 
 /// Shared wire-name builder for [`ChatToolDefinition`] and `ModelTool`.
 pub fn wire_tool_name(source: &str, name: &str, id: &str, server_id: Option<&str>) -> String {
@@ -1231,63 +1212,8 @@ pub fn wire_tool_name(source: &str, name: &str, id: &str, server_id: Option<&str
         // Native and Skill tools are model-facing APIs owned by Kivio. Keep their names
         // aligned with the system prompt so models can call exactly what we instruct.
         "native" | "skill" | "mixer" => apply_reserved_wire_alias(&sanitize_openai_tool_name(name)),
-        _ => sanitize_openai_tool_name(&compact_mcp_tool_id(id, server_id)),
+        _ => kivio_agent_sdk::mcp::wire_mcp_tool_id(id, server_id),
     }
-}
-
-/// `mcp__<very-long-server-id>__<tool>` → `mcp__<8-hex>__<tool>` so the
-/// distinguishing tool suffix survives the 64-char cap. Short / already-compact
-/// ids are left alone. `sanitize_openai_tool_name` still hash-suffixes if the
-/// compact form itself exceeds 64.
-fn compact_mcp_tool_id(id: &str, server_id: Option<&str>) -> String {
-    let Some(server_id) =
-        server_id.filter(|s| !s.is_empty() && s.chars().count() > LONG_MCP_SERVER_ID)
-    else {
-        return id.to_string();
-    };
-    let prefix = format!("mcp__{server_id}__");
-    let Some(tool) = id.strip_prefix(&prefix).filter(|t| !t.is_empty()) else {
-        return id.to_string();
-    };
-    format!("mcp__{}__{tool}", short_stable_hash(server_id))
-}
-
-fn short_stable_hash(value: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(value.as_bytes());
-    digest
-        .iter()
-        .flat_map(|byte| [hex_digit(byte >> 4), hex_digit(byte & 0x0f)])
-        .take(WIRE_NAME_HASH_LEN)
-        .collect()
-}
-
-fn hex_digit(nibble: u8) -> char {
-    b"0123456789abcdef"[nibble as usize] as char
-}
-
-pub fn sanitize_openai_tool_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
-            out.push(c);
-        } else {
-            out.push('_');
-        }
-    }
-    let trimmed = out.trim_matches('_');
-    if trimmed.is_empty() {
-        return "tool".to_string();
-    }
-    if trimmed.chars().count() <= MAX_WIRE_TOOL_NAME {
-        return trimmed.to_string();
-    }
-    // Left-truncate used to collide (issue #33). Keep a stable unique suffix:
-    // `<prefix>_<8-hex>` always 64 chars, deterministic, legal on the wire.
-    let digest = short_stable_hash(trimmed);
-    let prefix_len = MAX_WIRE_TOOL_NAME - 1 - WIRE_NAME_HASH_LEN;
-    let prefix: String = trimmed.chars().take(prefix_len).collect();
-    format!("{prefix}_{digest}")
 }
 
 pub fn looks_sensitive_tool(name: &str) -> bool {

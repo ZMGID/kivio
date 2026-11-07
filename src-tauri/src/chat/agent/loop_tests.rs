@@ -468,6 +468,7 @@ impl RecordingExecutor {
 impl ToolExecutor for RecordingExecutor {
     fn call<'a>(
         &'a self,
+        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
@@ -521,12 +522,13 @@ struct PreviewFeedbackExecutor<'a> {
 impl ToolExecutor for PreviewFeedbackExecutor<'_> {
     fn call<'a>(
         &'a self,
+        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         Box::pin(async move {
-            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
             let mut result = crate::mcp::result::parse_tool_result(serde_json::json!({
                 "content": [
                     {"type": "text", "text": "Preview captured."},
@@ -1010,12 +1012,13 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
     impl ToolExecutor for InspectContext {
         fn call<'a>(
             &'a self,
+            progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
             ctx: &'a ToolExecutionContext<'a>,
             _: &'a ChatToolDefinition,
             _: Value,
         ) -> super::super::execute::ToolExecutorFuture<'a> {
             Box::pin(async move {
-                let native = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                let native = crate::mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
                 assert_eq!(
                     native.plan_state.mode,
                     crate::chat::types::AgentPlanMode::Orchestrate
@@ -1028,6 +1031,7 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
                 assert_eq!(native.mcp_server_ids[0], "allowed");
                 assert_eq!(native.approval_policy, "readonly_auto_sensitive_confirm");
                 assert!(native.interactive_host);
+                assert_eq!(native.control.as_ref().unwrap().invocation_id(), progress.control.invocation_id());
                 Ok(super::super::execute::AgentToolOutput::default())
             })
         }
@@ -2539,6 +2543,7 @@ struct HugeResultExecutor {
 impl ToolExecutor for HugeResultExecutor {
     fn call<'a>(
         &'a self,
+        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
@@ -2957,6 +2962,7 @@ async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provid
     impl ToolExecutor for CheckpointExecutor<'_> {
         fn call<'a>(
             &'a self,
+            _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -7359,6 +7365,7 @@ async fn sdk04_recovery_request_uses_formatted_bounded_tool_summary() {
     impl ToolExecutor for SearchResultExecutor {
         fn call<'a>(
             &'a self,
+            _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -7439,6 +7446,7 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
         }
         fn call<'a>(
             &'a self,
+            _: &'a ToolProgress<'a>,
             _: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
             _: &'a crate::chat::tools::ToolDefinition,
             _: Value,

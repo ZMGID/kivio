@@ -6,7 +6,7 @@ license = "GPL-3.0-or-later"
 publish = false
 
 [dependencies]
-kivio-agent-sdk = { path = "../../../crates/kivio-agent-sdk", features = ["skills"] }
+kivio-agent-sdk = { path = "../../../crates/kivio-agent-sdk", features = ["skills", "mcp"] }
 reqwest = { version = "0.13", features = ["json", "rustls", "stream"] }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }

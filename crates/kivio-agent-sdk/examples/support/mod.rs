@@ -206,6 +206,7 @@ impl ToolExecutor for EchoTool {
 
     fn call<'a>(
         &'a self,
+        _progress: &'a ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         _tool: &'a ToolDefinition,
         arguments: Value,

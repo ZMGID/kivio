@@ -7,6 +7,8 @@
 pub mod agent;
 pub mod dsml_tools;
 pub mod model;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 #[cfg(feature = "skills")]
 pub mod skills;
 pub mod tools;

@@ -383,9 +383,10 @@ impl AppState {
         server: &crate::settings::ChatMcpServer,
         name: &str,
         arguments: serde_json::Value,
+        control: Option<&crate::chat::agent::control::AgentRunHandle<'_>>,
     ) -> Result<crate::mcp::types::McpToolCallResult, String> {
         self.mcp_manager()
-            .mcp_call_tool(sink, server, name, arguments)
+            .mcp_call_tool(sink, server, name, arguments, control)
             .await
     }
 

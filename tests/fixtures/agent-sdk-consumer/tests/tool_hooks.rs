@@ -173,6 +173,7 @@ impl ToolExecutor for Policy {
     }
     fn call<'a>(
         &'a self,
+        progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         args: Value,
@@ -182,7 +183,7 @@ impl ToolExecutor for Policy {
                 control.stop();
                 tokio::task::yield_now().await;
             }
-            self.inner.call(ctx, tool, args).await
+            self.inner.call(progress, ctx, tool, args).await
         })
     }
     fn after_tool_call<'a>(
@@ -656,11 +657,12 @@ impl ToolExecutor for PanickingHook {
     }
     fn call<'a>(
         &'a self,
+        progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         args: Value,
     ) -> ToolExecutorFuture<'a> {
-        self.inner.call(ctx, tool, args)
+        self.inner.call(progress, ctx, tool, args)
     }
     fn after_tool_call<'a>(
         &'a self,

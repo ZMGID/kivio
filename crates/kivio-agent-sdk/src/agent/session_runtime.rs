@@ -98,6 +98,7 @@ struct SessionInner {
 
 struct SessionState {
     history: Vec<RuntimeMessage>,
+    tools: ToolRegistry,
     generation: u64,
     active: Option<Arc<Invocation>>,
     pending: Vec<SessionPendingInput>,
@@ -125,11 +126,13 @@ struct InvocationState {
 impl AgentSession {
     pub fn new(mut config: AgentSessionConfig) -> Self {
         let history = std::mem::take(&mut config.history);
+        let tools = std::mem::take(&mut config.tools);
         Self {
             inner: Arc::new(SessionInner {
                 config,
                 state: Mutex::new(SessionState {
                     history,
+                    tools,
                     generation: 0,
                     active: None,
                     pending: vec![],
@@ -164,7 +167,7 @@ impl AgentSession {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return SessionRun::rejected(AgentAdmissionError::NoRuntime);
         };
-        let (invocation, history) = {
+        let (invocation, history, tools) = {
             let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.active.is_some() {
                 return SessionRun::rejected(AgentAdmissionError::Busy);
@@ -200,13 +203,13 @@ impl AgentSession {
                 settlement: Notify::new(),
             });
             state.active = Some(invocation.clone());
-            (invocation, state.history.clone())
+            (invocation, state.history.clone(), state.tools.snapshot())
         };
         let (sender, receiver) = oneshot::channel();
         let inner = self.inner.clone();
         let worker = invocation.clone();
         runtime.spawn(async move {
-            run_session(inner, worker, history, sender).await;
+            run_session(inner, worker, history, tools, sender).await;
         });
         SessionRun {
             receiver: Some(receiver),
@@ -299,6 +302,15 @@ impl AgentSession {
             .try_lock()
             .map_err(|_| AgentAdmissionError::Busy)?;
         *current = Box::new(policy);
+        Ok(())
+    }
+
+    pub fn set_tools(&self, tools: ToolRegistry) -> Result<(), AgentAdmissionError> {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.active.is_some() {
+            return Err(AgentAdmissionError::Busy);
+        }
+        state.tools = tools;
         Ok(())
     }
 
@@ -499,6 +511,7 @@ async fn run_session(
     inner: Arc<SessionInner>,
     invocation: Arc<Invocation>,
     history: Vec<RuntimeMessage>,
+    tools: ToolRegistry,
     sender: oneshot::Sender<Result<AgentRunResult, AgentRunError>>,
 ) {
     let cfg = &inner.config;
@@ -519,7 +532,7 @@ async fn run_session(
         api_format: cfg.api_format.clone(),
         model: cfg.model.clone(),
         runtime_messages: history.clone(),
-        tools: cfg.tools.definitions(),
+        tools: tools.definitions(),
         blocked_tool_calls: vec![],
         options: cfg.options.clone(),
         capabilities: cfg.capabilities.clone(),
@@ -531,7 +544,7 @@ async fn run_session(
     let mut result = match std::panic::AssertUnwindSafe(super::run_agent_loop(
         config,
         cfg.host.as_ref(),
-        &cfg.tools,
+        &tools,
         policy.as_mut(),
         inner.as_ref(),
         AgentRunHandle::new(identity, invocation.as_ref()),

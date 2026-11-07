@@ -283,6 +283,7 @@ impl ToolExecutor for Dynamic {
     }
     fn call<'a>(
         &'a self,
+        _progress: &'a ToolProgress<'a>,
         _: &'a ToolExecutionContext<'a>,
         _: &'a ToolDefinition,
         arguments: Value,
@@ -414,15 +415,18 @@ async fn registry_rejects_ambiguous_identifiers_and_snapshot_keeps_its_definitio
     assert_eq!(registry.definitions().len(), 2);
     assert_eq!(snapshot.definitions().len(), 1);
     assert_eq!(snapshot.definitions()[0].key, "internal-read");
-    assert!(snapshot
-        .call(
-            &context(),
-            &registry.definitions()[1],
-            json!({"after_approval":true})
-        )
-        .await
-        .unwrap_err()
-        .contains("not registered"));
+    let host = Host;
+    let sink = |_: &AgentEvent<'_>| EventDelivery::Accepted;
+    let host = AgentContext::new(&host, &sink, AgentRunHandle::new(identity(), &host));
+    let result = execute_tool_call(
+        &host,
+        &snapshot,
+        &context(),
+        &registry.definitions()[1],
+        pending("write", json!({"after_approval":true})),
+    )
+    .await;
+    assert!(result.content.contains("not registered"));
 }
 
 #[test]

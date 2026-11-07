@@ -529,6 +529,7 @@ pub(super) struct RegistryToolExecutor<'a> {
 impl crate::chat::tool_runtime::ToolDispatcher for RegistryToolExecutor<'_> {
     fn call<'a>(
         &'a self,
+        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -559,7 +560,7 @@ impl crate::chat::tool_runtime::ToolDispatcher for RegistryToolExecutor<'_> {
                         .call(&self.app, self.state, ctx, &arguments)
                         .await;
                 }
-                let native_ctx = mcp::registry::NativeToolContext::from_execution(ctx);
+                let native_ctx = mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
                 let result = mcp::registry::call_tool(
                     &self.app,
                     self.state,

@@ -10,22 +10,32 @@ ROOT = Path(__file__).resolve().parent.parent
 SDK = ROOT / "crates/kivio-agent-sdk/Cargo.toml"
 CONSUMER = ROOT / "tests/fixtures/agent-sdk-consumer/Cargo.toml"
 FORBIDDEN = {
-    "kivio", "wry", "tao", "rmcp", "rusqlite", "libsqlite3-sys",
+    "kivio", "wry", "tao", "rusqlite", "libsqlite3-sys",
     "sqlite-vec", "ort", "ort-sys", "oar-ocr", "arboard", "enigo",
     "xcap", "window-vibrancy", "screencapturekit",
 }
 
 
-def check_metadata(metadata):
+def check_metadata(metadata, *, allow_mcp=False):
     packages = metadata["packages"]
     sdk = [package for package in packages if package["name"] == "kivio-agent-sdk"]
     if len(sdk) != 1 or sdk[0]["license"] != "GPL-3.0-or-later":
         raise ValueError("SDK must retain its GPL-3.0-or-later license")
     allowed_local = {SDK.resolve(), CONSUMER.resolve()}
+    nodes = metadata.get("resolve", {}).get("nodes", [])
+    active_ids = {node["id"] for node in nodes}
+    sdk_node = next((node for node in nodes if node["id"] == sdk[0].get("id")), None)
+    mcp_enabled = sdk_node is not None and "mcp" in sdk_node.get("features", [])
+    if mcp_enabled and not allow_mcp:
+        raise ValueError("Default SDK dependency graph must not enable MCP")
     for package in packages:
         name = package["name"]
-        if name in FORBIDDEN or name.startswith(("tauri", "rmcp-")):
+        if name in FORBIDDEN or name.startswith("tauri"):
             raise ValueError(f"SDK dependency crosses the desktop boundary: {name}")
+        if name == "rmcp" or name.startswith("rmcp-") or name == "process-wrap":
+            active = not nodes or package.get("id") in active_ids
+            if active and not (allow_mcp and mcp_enabled):
+                raise ValueError(f"MCP dependency requires the SDK mcp feature: {name}")
         if package["source"] is None:
             manifest = Path(package["manifest_path"]).resolve()
             if manifest not in allowed_local:
@@ -55,12 +65,16 @@ def main():
         check_package(args.package)
         print("SDK package files and license passed")
         return
-    for manifest in (SDK, CONSUMER):
+    for manifest, features, allow_mcp in (
+        (SDK, ["--no-default-features"], False),
+        (SDK, ["--all-features"], True),
+        (CONSUMER, [], True),
+    ):
         result = subprocess.run(
-            ["cargo", "metadata", "--locked", "--format-version", "1", "--manifest-path", str(manifest)],
+            ["cargo", "metadata", "--locked", "--format-version", "1", "--manifest-path", str(manifest), *features],
             check=True, stdout=subprocess.PIPE, encoding="utf-8",
         )
-        check_metadata(json.loads(result.stdout))
+        check_metadata(json.loads(result.stdout), allow_mcp=allow_mcp)
     print("SDK and independent consumer dependency boundaries passed")
 
 

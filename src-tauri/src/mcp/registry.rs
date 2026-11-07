@@ -19,6 +19,7 @@ use super::types::{
 
 #[derive(Clone)]
 pub struct NativeToolContext<'a> {
+    pub control: Option<crate::chat::agent::control::AgentRunHandle<'a>>,
     pub conversation_id: String,
     pub message_id: String,
     pub provider: &'a crate::settings::ModelProvider,
@@ -47,8 +48,10 @@ pub struct NativeToolContext<'a> {
 impl<'a> NativeToolContext<'a> {
     pub(crate) fn from_execution(
         ctx: &crate::chat::tool_runtime::ToolExecutionContext<'a>,
+        control: crate::chat::agent::control::AgentRunHandle<'a>,
     ) -> Self {
         Self {
+            control: Some(control),
             conversation_id: ctx.tool_conversation_id.to_string(),
             message_id: ctx.message_id.to_string(),
             provider: ctx.provider,
@@ -840,7 +843,7 @@ pub async fn call_tool(
         .ok_or_else(|| "MCP server is disabled or missing".to_string())?;
     // 走持久连接池：复用长连接、liveness 探活 + 透明重连、按 server_id 隔离。
     let mut result = state
-        .mcp_call_tool(Some(app), &server, &tool.name, arguments.clone())
+        .mcp_call_tool(Some(app), &server, &tool.name, arguments.clone(), native_ctx.as_ref().and_then(|ctx| ctx.control.as_ref()))
         .await?;
     // R1：MCP 工具结果里的图片 artifact 直达模型——vision 主模型直喂原图，
     // 纯文本主模型走辅助视觉模型审查向分析（R2）。通用于所有 MCP server，非

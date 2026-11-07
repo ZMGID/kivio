@@ -118,11 +118,42 @@ tools.register_static(SkillTool::definition(), SkillTool::new(context), authoriz
 catalog.reload(&sources)?;
 ```
 
-Here `tools` is the same `ToolRegistry` used by `AgentSessionConfig`, and `authorization` is the host's `ToolAuthorization`. Discovery returns metadata and diagnostics through `scan_failed` and `warnings`. A failed reload leaves the catalog unchanged. Existing tools retain their frozen catalog; build the next tool snapshot from the reloaded catalog.
+Here `tools` is the same `ToolRegistry` used by `AgentSessionConfig`, and `authorization` is the host's `ToolAuthorization`. Discovery returns metadata and diagnostics through `scan_failed` and `warnings`. A failed reload leaves the catalog unchanged. Existing tools retain their frozen catalog; build the next tool snapshot from the reloaded catalog and install it with `session.set_tools(tools)` while idle.
 
 Each activation reads the selected file again, applies optional arguments and returns the full instruction wrapper. `SkillAccess` can deny IDs or restrict activation to a whitelist; `Some(vec![])` allows none. `disable_model_invocation` retains the existing catalog-visibility behavior. Execution authority comes from access policy and host authorization. Resource paths can be resolved relative to a skill directory without reading or executing those resources or granting access to other tools.
 
 Hosts with adapted Markdown sources can supply a discovery reader and `SkillBodyReader`. Kivio uses these seams for plugin metadata, body variables and live plugin availability while retaining its existing resource cache and approval flow.
+
+## Connect MCP tools
+
+Enable the `mcp` Cargo feature for stdio and Streamable HTTP clients. The host supplies the transport configuration, resolved credentials and HTTP client. A client owns one connection and its tool catalog; it does not manage accounts or install servers.
+
+```rust
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use kivio_agent_sdk::mcp::{McpClient, McpClientConfig, McpTransport};
+use kivio_agent_sdk::tools::ToolRegistry;
+
+let client = Arc::new(McpClient::connect(
+    McpClientConfig {
+        transport: McpTransport::Stdio {
+            command: "my-mcp-server".into(), args: vec![],
+            cwd: None, env: HashMap::new(),
+        },
+    },
+    reqwest::Client::new(),
+).await?);
+let mut tools = ToolRegistry::new();
+client.register_tools(&mut tools, "my-server", authorization, Duration::from_secs(60)).await?;
+session.set_tools(tools)?;
+session.prompt("Use the server's tools").await?;
+client.close().await?;
+```
+
+`authorization` is the host's `Arc<dyn ToolAuthorization>`, and `session` is an idle `AgentSession`. Registration requires authorization even when a server marks a tool read-only. It preserves exact remote names behind namespaced model names and rejects collisions without partially changing the registry.
+
+`list_tools()` follows pagination and refreshes after `tools/list_changed`. Build a new registry and call `set_tools` between runs to publish a changed catalog. Running, stopping and finishing sessions reject replacement. Explicitly close the client after its consumers finish. Stop and timeout notify the MCP server while keeping other calls on the connection usable. A remote side effect can still have an unknown outcome; the SDK does not automatically replay failed calls. The pinned HTTP transport retains its protocol-specific retry for an expired MCP session.
+
+The supported MCP surface is tools, including image and structured tool results. Resources, resource templates, prompts, sampling and elicitation do not have SDK APIs in this version. Embedded resource blocks in a tool result do not imply resource discovery support. OAuth login, token refresh, credential storage, connection pools and UI remain host responsibilities.
 
 ## Verify the SDK and an independent consumer
 
@@ -131,6 +162,7 @@ These checks do not start the desktop application or require model credentials.
 ```powershell
 cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml
 cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --features skills
+cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --all-features
 cargo check --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --examples
 cargo doc --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --no-deps
 cargo test --locked --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml

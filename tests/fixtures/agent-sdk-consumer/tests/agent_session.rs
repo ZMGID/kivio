@@ -24,7 +24,7 @@ use kivio_agent_sdk::{
         ToolExecutor, ToolExecutorFuture,
     },
     model::{GenerateOutput, ModelError, ModelRole, PendingToolCall},
-    tools::{ToolDefinition, ToolOutput},
+    tools::{ToolDefinition, ToolOutput, ToolRegistry},
 };
 use kivio_agent_sdk_consumer::{echo_definition, EchoTool};
 use serde_json::{json, Value};
@@ -215,6 +215,53 @@ async fn busy_rejection_does_not_append_a_second_prompt() {
     assert_eq!(model.calls.lock().unwrap().len(), 1);
 }
 
+#[tokio::test]
+async fn replacing_tools_while_idle_changes_the_next_run() {
+    let model = Model::new(vec![tool(), text("first"), tool(), text("second")]);
+    let first_executor = Arc::new(EchoTool::new(true));
+    let second_executor = Arc::new(EchoTool::new(true));
+    let mut cfg = AgentSessionConfig::new(model.clone(), "test");
+    cfg.tools
+        .register_dynamic(echo_definition(), first_executor.clone())
+        .unwrap();
+    let session = AgentSession::new(cfg);
+    bounded(session.prompt("first question")).await.unwrap();
+
+    let mut replacement = ToolRegistry::new();
+    replacement
+        .register_dynamic(echo_definition(), second_executor.clone())
+        .unwrap();
+    let mut extra = echo_definition();
+    extra.key = "extra".into();
+    extra.model.name = "extra".into();
+    extra.label.name = "extra".into();
+    replacement
+        .register_dynamic(extra, second_executor.clone())
+        .unwrap();
+    session.set_tools(replacement).unwrap();
+    bounded(session.prompt("second question")).await.unwrap();
+
+    assert_eq!(first_executor.call_count(), 1);
+    assert_eq!(second_executor.call_count(), 1);
+    let calls = model.calls.lock().unwrap();
+    assert_eq!(
+        calls[0]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["echo"]
+    );
+    assert_eq!(
+        calls[2]
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
+        ["echo", "extra"]
+    );
+}
+
 struct CommitHost {
     gate: Arc<Gate>,
     committed: AtomicBool,
@@ -242,6 +289,7 @@ struct ManagedTool {
     delegate: EchoTool,
     gate: Arc<Gate>,
     cleaned: AtomicBool,
+    observed_stop: AtomicBool,
 }
 impl ToolExecutor for ManagedTool {
     fn before_tool_call<'a>(
@@ -266,12 +314,15 @@ impl ToolExecutor for ManagedTool {
     }
     fn call<'a>(
         &'a self,
+        progress: &'a ToolProgress<'a>,
         _: &'a ToolExecutionContext<'a>,
         _: &'a ToolDefinition,
         _: Value,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
             self.gate.hold().await;
+            self.observed_stop
+                .store(!progress.control.active(), Ordering::SeqCst);
             self.cleaned.store(true, Ordering::SeqCst);
             Ok(ToolOutput::text("cleanup complete"))
         })
@@ -287,21 +338,32 @@ async fn abort_and_dropped_run_keep_admission_busy_until_tool_drain_and_commit_f
             delegate: EchoTool::new(true),
             gate: tool_gate.clone(),
             cleaned: AtomicBool::new(false),
+            observed_stop: AtomicBool::new(false),
         });
         let host = Arc::new(CommitHost {
             gate: commit_gate.clone(),
             committed: AtomicBool::new(false),
             fail: false,
         });
-        let model = Model::new(vec![tool(), text("fresh answer")]);
+        let model = Model::new(vec![tool(), tool(), text("fresh answer")]);
         let mut cfg = AgentSessionConfig::new(model.clone(), "test");
         cfg.tools
             .register_dynamic(echo_definition(), executor.clone())
             .unwrap();
         cfg.host = host.clone();
         let session = AgentSession::new(cfg);
+        let replacement_executor = Arc::new(EchoTool::new(true));
+        let mut replacement = ToolRegistry::new();
+        replacement
+            .register_dynamic(echo_definition(), replacement_executor.clone())
+            .unwrap();
         let run = session.prompt("start");
         bounded(tool_gate.entered.notified()).await;
+        assert_eq!(session.status(), SessionStatus::Running);
+        assert_eq!(
+            session.set_tools(replacement.snapshot()),
+            Err(AgentAdmissionError::Busy)
+        );
         let mut run = Some(run);
         if drop_run {
             drop(run.take());
@@ -309,6 +371,10 @@ async fn abort_and_dropped_run_keep_admission_busy_until_tool_drain_and_commit_f
             assert_eq!(session.abort(), StopAdmission::Requested);
         }
         assert_eq!(session.status(), SessionStatus::StopRequested);
+        assert_eq!(
+            session.set_tools(replacement.snapshot()),
+            Err(AgentAdmissionError::Busy)
+        );
         let mut inactive = Box::pin(session.wait_inactive());
         assert!(
             tokio::time::timeout(Duration::from_millis(20), &mut inactive)
@@ -323,8 +389,13 @@ async fn abort_and_dropped_run_keep_admission_busy_until_tool_drain_and_commit_f
         tool_gate.release.notify_one();
         bounded(commit_gate.entered.notified()).await;
         assert!(executor.cleaned.load(Ordering::SeqCst));
+        assert!(executor.observed_stop.load(Ordering::SeqCst));
         assert!(!host.committed.load(Ordering::SeqCst));
         assert_eq!(session.status(), SessionStatus::Finishing);
+        assert_eq!(
+            session.set_tools(replacement.snapshot()),
+            Err(AgentAdmissionError::Busy)
+        );
         assert!(
             tokio::time::timeout(Duration::from_millis(20), &mut inactive)
                 .await
@@ -349,10 +420,18 @@ async fn abort_and_dropped_run_keep_admission_busy_until_tool_drain_and_commit_f
             .iter()
             .any(|message| message.role() == Some(ModelRole::Tool)));
         let fresh = session.prompt("fresh");
+        bounded(tool_gate.entered.notified()).await;
+        tool_gate.release.notify_one();
         bounded(commit_gate.entered.notified()).await;
         commit_gate.release.notify_one();
-        assert_eq!(bounded(fresh).await.unwrap().content, "fresh answer");
-        assert_eq!(model.calls.lock().unwrap().len(), 2);
+        let fresh = bounded(fresh).await.unwrap();
+        assert_eq!(fresh.content, "fresh answer");
+        assert_eq!(
+            fresh.tool_records[0].output.as_deref(),
+            Some("cleanup complete")
+        );
+        assert_eq!(replacement_executor.call_count(), 0);
+        assert_eq!(model.calls.lock().unwrap().len(), 3);
     }
 }
 

@@ -97,6 +97,7 @@ pub trait ToolExecutor: Send + Sync {
     ) -> ToolFuture<'a, Result<ToolPreparation, String>>;
     fn call<'a>(
         &'a self,
+        progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         arguments: Value,
@@ -287,7 +288,7 @@ pub async fn execute_tool_call(
         return interrupted_tool_call(host, record, None);
     }
     let started = Instant::now();
-    let call_fut = executor.call(ctx, tool, prepared.arguments.clone());
+    let call_fut = executor.call(&progress, ctx, tool, prepared.arguments.clone());
     let result = if prepared.drain_on_cancel {
         Ok(call_fut.await)
     } else {

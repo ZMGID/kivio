@@ -440,6 +440,7 @@ struct CleanupExecutor {
 impl ToolDispatcher for CleanupExecutor {
     fn call<'a>(
         &'a self,
+        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         _: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _: Value,

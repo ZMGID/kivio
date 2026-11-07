@@ -120,6 +120,7 @@ impl OwnedContext {
 
     fn native(&self, tool_call_id: &str) -> NativeToolContext<'_> {
         NativeToolContext {
+            control: None,
             conversation_id: self.conversation_id.clone(),
             message_id: self.message_id.clone(),
             provider: &self.provider,

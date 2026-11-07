@@ -189,6 +189,7 @@ impl ToolExecutor for Managed<'_> {
     }
     fn call<'a>(
         &'a self,
+        _progress: &'a ToolProgress<'a>,
         _: &'a ToolExecutionContext<'a>,
         _: &'a ToolDefinition,
         _: Value,

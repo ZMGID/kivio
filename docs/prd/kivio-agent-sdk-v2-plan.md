@@ -1,8 +1,8 @@
 # Kivio Agent SDK 第二版方案
 
-状态为实施中。T1、T2、T3、T4a 已完成测试，T4b 正在实现。更新于 2026-11-07。
+状态为实施中。T1、T2、T3、T4a、T4b 已完成测试，T5a 正在实现。更新于 2026-11-07。
 
-执行队列分为九个交付单元。T1 核心契约，T2 Session 与 hooks，T3 四协议 Provider，T4a Skill，T4b MCP，T5a 上下文，T5b 会话树，T5c 持久化迁移，T6 应用回归与交付。详细范围、依赖和验收集中在第 5 节。下一项是 T4b。
+执行队列分为九个交付单元。T1 核心契约，T2 Session 与 hooks，T3 四协议 Provider，T4a Skill，T4b MCP，T5a 上下文，T5b 会话树，T5c 持久化迁移，T6 应用回归与交付。详细范围、依赖和验收集中在第 5 节。下一项是 T5a。
 
 第二版面向两类使用者。外部 Rust 程序可以直接创建 Agent、注册工具、选择协议并管理多轮运行。Kivio 桌面、自动化和 OMP 子代理继续共享同一核心，维护者只在一个地方修改协议和运行规则。
 
@@ -366,12 +366,14 @@ T4a 验收（2026-11-07）：启用 skills 的 SDK 218 项、独立消费者 87 
 
 执行前置为 T4a，技术上复用 T1、T2。主要入口为现有 MCP conn、manager、state、result 和 registry，继续使用 rmcp。
 
-- [ ] 提取显式配置的 stdio 与 Streamable HTTP 客户端、分页发现和 list_changed 刷新。宿主提供凭据，OAuth 登录、密钥存储和状态界面留在应用。
-- [ ] 将 MCP 声明及动态 schema 接入同一 ToolRegistry。保留命名映射、图片、结构化内容、工具错误及授权边界。
-- [ ] 保留连接复用、并发、超时、取消、重连和关闭语义。验证子进程回收和共享连接隔离，未知调用结果不自动重放，annotations 不当作授权。
-- [ ] 迁移桌面与子代理调用，删除重复 wire 及工具桥接。逐项记录 tools、resources、resource templates、prompts、sampling、elicitation 支持情况，基础 tools 为明确承诺。
+- [x] 提取显式配置的 stdio 与 Streamable HTTP 客户端、分页发现和 list_changed 刷新。宿主提供凭据，OAuth 登录、密钥存储和状态界面留在应用。
+- [x] 将 MCP 声明及动态 schema 接入同一 ToolRegistry。保留命名映射、图片、结构化内容、工具错误及授权边界。
+- [x] 保留连接复用、并发、超时、取消、重连和关闭语义。验证子进程回收和共享连接隔离，未知调用结果不自动重放，annotations 不当作授权。
+- [x] 迁移桌面与子代理调用，删除重复 wire 及工具桥接。逐项记录 tools、resources、resource templates、prompts、sampling、elicitation 支持情况，基础 tools 为明确承诺。
 
 验收由独立消费者分别通过两种传输完成发现、授权、执行和关闭。复用现有安全测试，检查输入修改后重新校验、凭据不进入日志及取消不遗留受管进程。不能以底层 rmcp 的能力当作 SDK 已支持证明。
+
+T4b 验收（2026-11-07）：全部 feature 的 SDK 248 项、独立消费者 95 项、桌面 Rust 3087 项通过，56 项忽略；27 项协议与结果测试随实现移入 SDK，新增桌面重放与移除会话回归。独立消费者的 7 项 MCP 测试覆盖两种传输、分页中通知、授权和 schema 拒绝、同名命名空间、取消共享调用、未知结果不重放、并发关闭、HTTP DELETE 和 Windows 子进程退出。默认依赖边界、示例、rustdoc、App 类型及架构检查通过。评审修复了凭据脱敏、远端退出判断及移除会话重连竞态。tools 为已交付接口；resources、resource templates、prompts、sampling、elicitation 未提供 SDK API。Unix 子孙进程测试、外部真实 MCP 服务及桌面 UI 未在本项验证。
 
 ### T5a 交付上下文与压缩
 

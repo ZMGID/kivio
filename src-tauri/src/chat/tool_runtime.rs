@@ -19,6 +19,7 @@ use std::time::Instant;
 pub trait ToolDispatcher: Send + Sync {
     fn call<'a>(
         &'a self,
+        progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -282,7 +283,7 @@ async fn before_tool_call(
         timeout_message: format_tool_timeout_error(tool, timeout_ms, &call.arguments),
         arguments: call.arguments,
         output_limit: settings.chat_tools.max_tool_output_chars,
-        drain_on_cancel: host.requires_tool_completion(),
+        drain_on_cancel: tool.source == "mcp" || host.requires_tool_completion(),
         feedback: hook_context,
     }))
 }
@@ -603,6 +604,7 @@ impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
 
     fn call<'a>(
         &'a self,
+        progress: &'a ToolProgress<'a>,
         ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
         tool: &'a crate::chat::tools::ToolDefinition,
         arguments: Value,
@@ -610,6 +612,7 @@ impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
         Box::pin(async move {
             self.dispatcher
                 .call(
+                    progress,
                     &self.authority.context(ctx),
                     self.definition(tool),
                     arguments,

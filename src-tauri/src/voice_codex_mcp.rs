@@ -437,39 +437,29 @@ mod tests {
 
     #[tokio::test]
     async fn sdk_client_initializes_lists_and_calls_over_streamable_http() {
-        use rmcp::{
-            model::CallToolRequestParams,
-            transport::{
-                streamable_http_client::StreamableHttpClientTransportConfig,
-                StreamableHttpClientTransport,
-            },
-            ClientLifecycleMode, ClientServiceExt,
-        };
+        use kivio_agent_sdk::mcp::{McpClient, McpClientConfig, McpTransport};
 
         let backend = TestBackend::default();
         let server = start_server(backend.clone()).await.unwrap();
-        let mut config = StreamableHttpClientTransportConfig::with_uri(server.url.clone());
-        config.custom_headers.insert(
-            header::AUTHORIZATION,
-            HeaderValue::from_str(&server.authorization).unwrap(),
-        );
-        let transport = StreamableHttpClientTransport::with_client(client(), config);
-        let service = crate::mcp::conn::KivioClientHandler::default()
-            .serve_with_lifecycle(transport, ClientLifecycleMode::Initialize)
-            .await
-            .unwrap();
-        let tools = service.list_all_tools().await.unwrap();
+        let config = McpClientConfig {
+            transport: McpTransport::StreamableHttp {
+                url: server.url.clone(),
+                headers: [("Authorization".into(), server.authorization.clone())].into(),
+            },
+        };
+        let service = McpClient::connect(config, client()).await.unwrap();
+        let tools = service.list_tools().await.unwrap();
         assert_eq!(tools.len(), 7);
         assert!(tools.iter().any(|tool| tool.name == "kivio_list_agents"));
         backend.release.notify_one();
-        let result = service
-            .call_tool(CallToolRequestParams::new("kivio_list_agents".to_string()))
-            .await
-            .unwrap();
-        assert_eq!(
-            serde_json::to_value(result).unwrap()["content"][0]["text"],
-            "tool result"
-        );
+        let result = service.call_tool(
+            "kivio_list_agents",
+            json!({}),
+            Duration::from_secs(3),
+            std::future::pending(),
+        ).await.unwrap();
+        assert_eq!(result.content, "tool result");
+        service.close().await.unwrap();
     }
 
     #[tokio::test]

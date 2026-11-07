@@ -70,6 +70,7 @@ impl ToolExecutor for ImageTool {
 
     fn call<'a>(
         &'a self,
+        _progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         _tool: &'a ToolDefinition,
         arguments: Value,
@@ -266,6 +267,7 @@ async fn cancellation_during_preparation_does_not_execute_side_effects() {
 
         fn call<'a>(
             &'a self,
+            _progress: &'a ToolProgress<'a>,
             _ctx: &'a ToolExecutionContext<'a>,
             _tool: &'a ToolDefinition,
             _arguments: Value,

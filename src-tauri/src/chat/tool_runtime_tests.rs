@@ -116,7 +116,7 @@ impl ExecuteTestHost {
 
     impl ToolExecutor for ExecuteTestExecutor {
         fn call<'a>(
-            &'a self,
+            &'a self, _progress: &'a ToolProgress<'a>,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -328,7 +328,7 @@ impl ExecuteTestHost {
         struct TaskExecutor(Mutex<Vec<Value>>);
         impl ToolExecutor for TaskExecutor {
             fn call<'a>(
-                &'a self,
+                &'a self, _progress: &'a ToolProgress<'a>,
                 _ctx: &'a ToolExecutionContext<'a>,
                 tool: &'a ChatToolDefinition,
                 arguments: Value,
@@ -914,7 +914,7 @@ impl ExecuteTestHost {
         struct SlowTask;
         impl ToolExecutor for SlowTask {
             fn call<'a>(
-                &'a self, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
+                &'a self, _progress: &'a ToolProgress<'a>, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
                 _arguments: Value,
             ) -> ToolExecutorFuture<'a> {
                 Box::pin(async {
@@ -1225,23 +1225,33 @@ fn match_tool_call<'a>(tools: &'a [ChatToolDefinition], name: &str) -> Option<&'
 }
 
     #[tokio::test]
-    async fn stopped_host_discards_ordinary_tool_completion_but_drains_required_completion() {
-        struct StoppingExecutor<'a>(&'a ExecuteTestHost);
-        impl ToolExecutor for StoppingExecutor<'_> {
-            fn call<'a>(&'a self, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition, _arguments: Value) -> ToolExecutorFuture<'a> {
+    async fn stopped_host_discards_ordinary_completion_but_drains_mcp_and_required_completion() {
+        struct StoppingExecutor;
+        impl ToolExecutor for StoppingExecutor {
+            fn call<'a>(&'a self, progress: &'a ToolProgress<'a>, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition, _arguments: Value) -> ToolExecutorFuture<'a> {
                 Box::pin(async move {
-                    self.0.stop();
+                    progress.control.stop();
+                    progress.control.wait_inactive().await;
+                    tokio::task::yield_now().await;
                     Ok(crate::chat::tools::ToolOutput::text("late result"))
                 })
             }
         }
-        for finish_tool in [false, true] {
+        for (finish_tool, mcp) in [(false, false), (true, false), (false, true)] {
             let host = ExecuteTestHost { finish_tool, ..Default::default() };
-            let tool = named_test_tool("echo");
-            let (record, content, follow_ups) = execute_tool_call(&host, &StoppingExecutor(&host), &Settings::default(), &test_execution_context(), &tool, test_pending_call("call", "echo", serde_json::json!({}))).await;
-            assert_eq!(record.status, if finish_tool { ToolCallStatus::Success } else { ToolCallStatus::Cancelled });
-            assert_eq!(record.result_preview.as_deref(), finish_tool.then_some("late result"));
-            assert_eq!(content, if finish_tool { "late result" } else { "Tool call cancelled" });
+            let mut tool = named_test_tool("echo");
+            if mcp {
+                tool.source = "mcp".into();
+            }
+            let mut settings = Settings::default();
+            settings.chat_tools.approval_policy = "auto".into();
+            let name = tool.openai_tool_name();
+            let (record, content, follow_ups) = execute_tool_call(&host, &StoppingExecutor, &settings, &test_execution_context(), &tool, test_pending_call("call", &name, serde_json::json!({}))).await;
+            let drained = finish_tool || mcp;
+            assert!(host.stopped.load(Ordering::SeqCst), "dispatcher must use the issuing run control");
+            assert_eq!(record.status, if drained { ToolCallStatus::Success } else { ToolCallStatus::Cancelled });
+            assert_eq!(record.result_preview.as_deref(), drained.then_some("late result"));
+            assert_eq!(content, if drained { "late result" } else { "Tool call cancelled" });
             assert!(follow_ups.is_empty());
         }
     }
