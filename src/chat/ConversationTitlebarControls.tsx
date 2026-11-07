@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, type ReactNode } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { i18n, type Lang } from '../components/i18n'
@@ -33,6 +33,7 @@ export interface ConversationTitlebarControlsProps {
   onSandboxChange: (value: string) => void | Promise<void>
   /** 当前会话有运行中的回合：锁住 CLI 沙盒档位。 */
   busy: boolean
+  historyBranches?: ReactNode
   onOpenPopout: (conversationId: string) => void
   onOpenDockTasks: () => void
   onToggleDock: () => void
@@ -59,6 +60,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   onApprovalPolicyChange,
   onSandboxChange,
   busy,
+  historyBranches,
   onOpenPopout,
   onOpenDockTasks,
   onToggleDock,
@@ -125,6 +127,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
       </div>
       <div className="min-w-5 flex-1" data-tauri-drag-region />
       <div className="flex min-w-0 shrink items-center justify-end gap-1">
+        {historyBranches}
         {conversationId && (
           <div className="shrink-0" data-tauri-drag-region="false">
             <IconButton

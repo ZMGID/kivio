@@ -695,6 +695,34 @@ pub(crate) fn model_supports_vision(provider: Option<&ModelProvider>, model: &st
         .or_else(|| model_database_vision(provider_model_database_id(Some(provider), model)))
 }
 
+pub(crate) fn agent_model_capabilities(
+    provider: &ModelProvider,
+    model: &str,
+) -> crate::chat::model::ModelCapabilities {
+    let overrides =
+        override_model_info(provider, model).and_then(|info| info.capabilities.as_ref());
+    let entry = model_database_entry(provider_model_database_id(Some(provider), model));
+    let database = |key: &str| entry.as_ref()?.get("capabilities")?.get(key)?.as_bool();
+    crate::chat::model::ModelCapabilities {
+        tools: overrides
+            .and_then(|caps| caps.function_calling)
+            .or_else(|| database("functionCalling")),
+        reasoning: overrides
+            .and_then(|caps| caps.reasoning)
+            .or_else(|| database("reasoning")),
+        builtin_web_search: if builtin_web_search_supported(provider) {
+            overrides
+                .and_then(|caps| caps.web_search)
+                .or_else(|| database("webSearch"))
+        } else {
+            Some(false)
+        },
+        vision: overrides
+            .and_then(|caps| caps.vision)
+            .or_else(|| database("vision")),
+    }
+}
+
 pub(crate) fn model_supports_video(provider: &ModelProvider, model: &str) -> Option<bool> {
     provider
         .model_overrides
@@ -1418,6 +1446,43 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         }
+    }
+
+    #[test]
+    fn agent_capabilities_preserve_unknown_and_explicit_host_overrides() {
+        let mut provider = test_provider_with_overrides(HashMap::new());
+        provider.api_format = "openai_responses".into();
+        let unknown = agent_model_capabilities(&provider, "synthetic-unknown-model");
+        assert_eq!(unknown, crate::chat::model::ModelCapabilities::default());
+        let known = agent_model_capabilities(&provider, "gpt-5");
+        assert!(known.reasoning.is_some());
+        provider.model_overrides.insert(
+            "gpt-5".into(),
+            ModelInfo {
+                capabilities: Some(crate::settings::ModelCapabilities {
+                    function_calling: Some(false),
+                    reasoning: Some(false),
+                    web_search: Some(false),
+                    vision: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            agent_model_capabilities(&provider, "gpt-5"),
+            crate::chat::model::ModelCapabilities {
+                tools: Some(false),
+                reasoning: Some(false),
+                builtin_web_search: Some(false),
+                vision: Some(false),
+            }
+        );
+        provider.api_format = "openai_chat".into();
+        assert_eq!(
+            agent_model_capabilities(&provider, "synthetic-unknown-model").builtin_web_search,
+            Some(false)
+        );
     }
 
     #[test]

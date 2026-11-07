@@ -5,7 +5,10 @@ use tauri::{AppHandle, State};
 use crate::state::AppState;
 
 use super::context::{compute_context_state, emit_chat_context_state};
-use super::messages::{build_error_arm_message, upsert_assistant_message};
+use super::messages::{
+    build_error_arm_message, commit_reply_history, upsert_assistant_message,
+    validate_reply_history_branch,
+};
 use super::reply_runtime::{ArmReplyOutcome, ReplyArm};
 use super::{agent_run_entry_label, complete_assistant_reply_inner, Conversation};
 
@@ -37,6 +40,10 @@ pub(super) async fn run_reply_fan_out(
     // 故各臂统一传 title=None：多答首条回复的标题留给后续单模型轮或手动重命名
     // （避免 N 个克隆各自异步生成标题再丢弃）。
     let run_entry = agent_run_entry_label(crate::chat::agent::AgentRunEntry::Send);
+    let source_branch_id = conversation
+        .builtin_history
+        .as_ref()
+        .map(|history| history.active_branch_id.clone());
     let arm_futures = arms
         .iter()
         .enumerate()
@@ -77,12 +84,14 @@ pub(super) async fn run_reply_fan_out(
     let mut cancelled = 0usize;
     let mut first_error: Option<String> = None;
     let mut terminals = Vec::new();
+    let mut arm_results = Vec::new();
     for (outcome, provider_id, model) in results {
         match outcome {
             Ok(ArmReplyOutcome {
                 message: Some(message),
                 run_id,
                 error: _,
+                history,
             }) => {
                 if message.stream_outcome.as_deref() == Some("completed") {
                     completed += 1;
@@ -97,13 +106,14 @@ pub(super) async fn run_reply_fan_out(
                         message.content.clone(),
                     ));
                 }
-                upsert_assistant_message(conversation, message);
+                arm_results.push((message, history));
                 produced += 1;
             }
             Ok(ArmReplyOutcome {
                 message: None,
                 run_id: Some(run_id),
                 error: Some(err),
+                history,
             }) => {
                 if err == "cancelled" {
                     terminals.push((run_id, "cancelled".to_string(), String::new()));
@@ -119,7 +129,7 @@ pub(super) async fn run_reply_fan_out(
                     active_skill_id,
                 );
                 terminals.push((run_id, "error".to_string(), message.content.clone()));
-                upsert_assistant_message(conversation, message);
+                arm_results.push((message, history));
                 produced += 1;
                 if first_error.is_none() {
                     first_error = Some(err);
@@ -129,6 +139,7 @@ pub(super) async fn run_reply_fan_out(
                 message: None,
                 run_id: _,
                 error: _,
+                history: _,
             }) => {
                 // 不应发生（arm 模式必返回消息），保守计为无产出。
             }
@@ -146,7 +157,7 @@ pub(super) async fn run_reply_fan_out(
                     run_entry,
                     active_skill_id,
                 );
-                upsert_assistant_message(conversation, message);
+                arm_results.push((message, None));
                 produced += 1;
                 if first_error.is_none() {
                     first_error = Some(err);
@@ -156,19 +167,48 @@ pub(super) async fn run_reply_fan_out(
     }
 
     if produced > 0 {
-        let arm_messages = conversation
-            .messages
+        let selected_id = arm_results
             .iter()
-            .filter(|message| message.group_id.as_deref() == Some(group_id))
-            .cloned()
-            .collect();
+            .find(|(message, _)| message.stream_outcome.as_deref() != Some("error"))
+            .or_else(|| arm_results.first())
+            .map(|(message, _)| message.id.clone())
+            .expect("produced arm result");
         let persisted_result = crate::chat::repository::repository(app)
-            .upsert_messages(app, &conversation.id, arm_messages)
-            .await
-            .map_err(crate::chat::repository::repository_error);
-        let mut persisted = match persisted_result {
-            Ok(persisted) => persisted,
+            .mutate(app, &conversation.id, |latest| {
+                if let Some(branch_id) = source_branch_id.as_deref() {
+                    validate_reply_history_branch(latest, branch_id)?;
+                }
+                for (_, history) in &arm_results {
+                    if let Some(history) = history {
+                        validate_reply_history_branch(latest, &history.branch_id)?;
+                    }
+                }
+                for (message, history) in arm_results {
+                    let message_id = message.id.clone();
+                    upsert_assistant_message(latest, message);
+                    if let Some(history) = history {
+                        commit_reply_history(
+                            app,
+                            latest,
+                            &message_id,
+                            history,
+                            message_id == selected_id,
+                        )?;
+                    }
+                }
+                latest.select_group_answer(group_id.to_string(), selected_id);
+                Ok(())
+            })
+            .await;
+        let (mut persisted, warning) = match persisted_result {
+            Ok(persisted) => (persisted, None),
+            Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+                let (persisted, warning) =
+                    crate::chat::repository::recover_committed(app, error).await?;
+                (persisted, Some(warning))
+            }
             Err(error) => {
+                let error = crate::chat::repository::repository_error(error);
                 for (run_id, _, _) in terminals {
                     crate::chat::protocol::finish_run(
                         app,
@@ -228,6 +268,15 @@ pub(super) async fn run_reply_fan_out(
                     break;
                 }
             }
+        }
+        if let Some(warning) = warning {
+            persisted.context_state.warning = Some(warning);
+            emit_chat_context_state(
+                app,
+                &persisted.id,
+                persisted.revision,
+                &persisted.context_state,
+            );
         }
         *conversation = persisted;
         for (run_id, outcome, content) in terminals {

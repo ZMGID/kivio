@@ -116,7 +116,7 @@ impl ExecuteTestHost {
 
     impl ToolExecutor for ExecuteTestExecutor {
         fn call<'a>(
-            &'a self,
+            &'a self, _progress: &'a ToolProgress<'a>,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -328,7 +328,7 @@ impl ExecuteTestHost {
         struct TaskExecutor(Mutex<Vec<Value>>);
         impl ToolExecutor for TaskExecutor {
             fn call<'a>(
-                &'a self,
+                &'a self, _progress: &'a ToolProgress<'a>,
                 _ctx: &'a ToolExecutionContext<'a>,
                 tool: &'a ChatToolDefinition,
                 arguments: Value,
@@ -380,14 +380,14 @@ impl ExecuteTestHost {
         assert_eq!(executor.0.lock().unwrap().len(), 1);
     }
 
-    fn host_with_hook(dir: &std::path::Path, output: Value) -> ExecuteTestHost {
+    fn host_with_hook(dir: &std::path::Path, event: &str, output: Value) -> ExecuteTestHost {
         let file = dir.join("result.json");
         std::fs::write(&file, output.to_string()).unwrap();
         // Use the production shell choice; Git Bash and sh both support cat.
         // On Windows PowerShell also aliases cat to Get-Content.
         let command = format!("cat \"{}\"", file.to_string_lossy().replace('\\', "/"));
         let hooks = crate::chat::workflow_hooks::parse(
-            &serde_json::json!({"PreToolUse":[{"hooks":[{"type":"command","command":command}]}]}),
+            &serde_json::json!({(event):[{"hooks":[{"type":"command","command":command}]}]}),
             "test",
             dir,
             dir,
@@ -408,6 +408,7 @@ impl ExecuteTestHost {
         let dir = tempfile::tempdir().unwrap();
         let host = host_with_hook(
             dir.path(),
+            "PreToolUse",
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"protected"}}),
         );
         let executor = ExecuteTestExecutor::default();
@@ -431,10 +432,33 @@ impl ExecuteTestHost {
     }
 
     #[tokio::test]
+    async fn workflow_hook_errors_fail_with_source_and_preserve_executed_tool_results() {
+        for (event, hook, calls) in [("PreToolUse", "before_tool_call", 0), ("PostToolUse", "after_tool_call", 1)] {
+            let dir = tempfile::tempdir().unwrap();
+            let host = host_with_hook(dir.path(), event, serde_json::json!({"hookSpecificOutput":{"hookEventName":"invalid"}}));
+            let executor = ExecuteTestExecutor { structured_content: Some(serde_json::json!({"raw":true})), ..Default::default() };
+            let mut settings = Settings::default();
+            settings.chat_tools.approval_policy = "auto".into();
+            let result = execute_tool_result(&host, &executor, &settings, &test_execution_context(), &sensitive_test_tool(), test_pending_call("c", "write", serde_json::json!({"path":"file","content":"text"}))).await;
+            assert!(matches!(result.failure, Some(kivio_agent_sdk::agent::AgentFailure::Hook { hook: actual, .. }) if actual == hook));
+            assert_eq!(executor.calls.load(Ordering::SeqCst), calls);
+            if calls == 1 {
+                assert_eq!(result.record.status, AgentToolStatus::Success);
+                assert_eq!(result.content, "result:write");
+                assert_eq!(result.record.output.as_deref(), Some("result:write"));
+                assert_eq!(result.record.structured_content, Some(serde_json::json!({"raw":true})));
+            } else {
+                assert_eq!(result.record.status, AgentToolStatus::Skipped);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn workflow_hook_changes_are_validated_before_approval() {
         let dir = tempfile::tempdir().unwrap();
         let host = host_with_hook(
             dir.path(),
+            "PreToolUse",
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"content":"missing path"}}}),
         );
         let executor = ExecuteTestExecutor::default();
@@ -462,6 +486,7 @@ impl ExecuteTestHost {
         let dir = tempfile::tempdir().unwrap();
         let mut host = host_with_hook(
             dir.path(),
+            "PreToolUse",
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"path":"changed","content":"text"}}}),
         );
         host.deny_consent = true;
@@ -553,6 +578,7 @@ impl ExecuteTestHost {
         let dir = tempfile::tempdir().unwrap();
         let mut host = host_with_hook(
             dir.path(),
+            "PreToolUse",
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":"review"}}),
         );
         let executor = ExecuteTestExecutor::default();
@@ -888,7 +914,7 @@ impl ExecuteTestHost {
         struct SlowTask;
         impl ToolExecutor for SlowTask {
             fn call<'a>(
-                &'a self, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
+                &'a self, _progress: &'a ToolProgress<'a>, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
                 _arguments: Value,
             ) -> ToolExecutorFuture<'a> {
                 Box::pin(async {
@@ -1176,7 +1202,12 @@ fn test_context(host: &ExecuteTestHost) -> AgentContext<'_> {
     AgentContext::new(host, host, control)
 }
 
-async fn execute_tool_call(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> (ToolCallRecord, String, Vec<Value>) {
+async fn execute_tool_call(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> (ToolCallRecord, String, Vec<crate::chat::model::ModelMessage>) {
+    let result = execute_tool_result(host, executor, settings, ctx, tool, call).await;
+    (crate::chat::agent_presentation::project_tool(&result.record, Some(ctx.run_id)), result.content, result.follow_up_messages)
+}
+
+async fn execute_tool_result(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> crate::chat::agent::execute::ToolCallResult {
     let context = test_context(host);
     let tools = std::slice::from_ref(tool);
     let adapter = ApplicationToolExecutor { settings, authority: ToolAuthority::from_context(ctx), tools, host, dispatcher: executor };
@@ -1184,8 +1215,7 @@ async fn execute_tool_call(host: &ExecuteTestHost, executor: &dyn ToolExecutor, 
         conversation_id: ctx.conversation_id, run_id: ctx.run_id, message_id: ctx.message_id,
         generation: ctx.generation, round: ctx.round, tool_call_id: ctx.tool_call_id,
     };
-    let (record, content, follow_ups) = crate::chat::agent::execute::execute_tool_call(&context, &adapter, &core_ctx, &tool.for_run(settings), call).await;
-    (crate::chat::agent_presentation::project_tool(&record, Some(ctx.run_id)), content, follow_ups)
+    crate::chat::agent::execute::execute_tool_call(&context, &adapter, &core_ctx, &tool.for_run(settings), call).await
 }
 
 fn match_tool_call<'a>(tools: &'a [ChatToolDefinition], name: &str) -> Option<&'a ChatToolDefinition> {
@@ -1195,23 +1225,33 @@ fn match_tool_call<'a>(tools: &'a [ChatToolDefinition], name: &str) -> Option<&'
 }
 
     #[tokio::test]
-    async fn stopped_host_discards_ordinary_tool_completion_but_drains_required_completion() {
-        struct StoppingExecutor<'a>(&'a ExecuteTestHost);
-        impl ToolExecutor for StoppingExecutor<'_> {
-            fn call<'a>(&'a self, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition, _arguments: Value) -> ToolExecutorFuture<'a> {
+    async fn stopped_host_discards_ordinary_completion_but_drains_mcp_and_required_completion() {
+        struct StoppingExecutor;
+        impl ToolExecutor for StoppingExecutor {
+            fn call<'a>(&'a self, progress: &'a ToolProgress<'a>, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition, _arguments: Value) -> ToolExecutorFuture<'a> {
                 Box::pin(async move {
-                    self.0.stop();
+                    progress.control.stop();
+                    progress.control.wait_inactive().await;
+                    tokio::task::yield_now().await;
                     Ok(crate::chat::tools::ToolOutput::text("late result"))
                 })
             }
         }
-        for finish_tool in [false, true] {
+        for (finish_tool, mcp) in [(false, false), (true, false), (false, true)] {
             let host = ExecuteTestHost { finish_tool, ..Default::default() };
-            let tool = named_test_tool("echo");
-            let (record, content, follow_ups) = execute_tool_call(&host, &StoppingExecutor(&host), &Settings::default(), &test_execution_context(), &tool, test_pending_call("call", "echo", serde_json::json!({}))).await;
-            assert_eq!(record.status, if finish_tool { ToolCallStatus::Success } else { ToolCallStatus::Cancelled });
-            assert_eq!(record.result_preview.as_deref(), finish_tool.then_some("late result"));
-            assert_eq!(content, if finish_tool { "late result" } else { "Tool call cancelled" });
+            let mut tool = named_test_tool("echo");
+            if mcp {
+                tool.source = "mcp".into();
+            }
+            let mut settings = Settings::default();
+            settings.chat_tools.approval_policy = "auto".into();
+            let name = tool.openai_tool_name();
+            let (record, content, follow_ups) = execute_tool_call(&host, &StoppingExecutor, &settings, &test_execution_context(), &tool, test_pending_call("call", &name, serde_json::json!({}))).await;
+            let drained = finish_tool || mcp;
+            assert!(host.stopped.load(Ordering::SeqCst), "dispatcher must use the issuing run control");
+            assert_eq!(record.status, if drained { ToolCallStatus::Success } else { ToolCallStatus::Cancelled });
+            assert_eq!(record.result_preview.as_deref(), drained.then_some("late result"));
+            assert_eq!(content, if drained { "late result" } else { "Tool call cancelled" });
             assert!(follow_ups.is_empty());
         }
     }

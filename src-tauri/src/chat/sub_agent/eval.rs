@@ -46,6 +46,7 @@ pub(crate) struct Context {
 impl Context {
     pub(crate) fn native(&self) -> crate::mcp::registry::NativeToolContext<'_> {
         crate::mcp::registry::NativeToolContext {
+            control: None,
             conversation_id: self.root.clone(),
             message_id: format!("eval-{}", self.tool_call_id),
             provider: &self.provider,

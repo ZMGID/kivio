@@ -1,3 +1,4 @@
+use kivio_agent_sdk::agent::{EntryId, SessionHistory};
 use uuid::Uuid;
 
 use crate::settings::Settings;
@@ -172,8 +173,15 @@ pub(super) struct ReplyArm {
 
 /// 多模型臂运行后回收的结果。协调者据此把 assistant 消息合并进真正的会话并落盘。
 /// 单模型路径（`arm = None`）`message` 为 None（已在函数内自行落盘）。
+pub(crate) struct ReplyHistoryCommit {
+    pub(crate) history: SessionHistory,
+    pub(crate) source_anchor: Option<EntryId>,
+    pub(crate) branch_id: String,
+}
+
 pub(super) struct ArmReplyOutcome {
     pub(super) message: Option<ChatMessage>,
+    pub(super) history: Option<ReplyHistoryCommit>,
     pub(super) run_id: Option<String>,
     pub(super) error: Option<String>,
 }

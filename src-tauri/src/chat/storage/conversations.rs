@@ -124,6 +124,13 @@ pub(crate) fn write_conversation_file(
     mut conversation: Conversation,
 ) -> Result<Conversation, String> {
     let path = conversation_file_path(app, &conversation.id)?;
+    if let Some(history) = &mut conversation.builtin_history {
+        crate::chat::attachments::externalize_builtin_history_media(
+            app,
+            &conversation.id,
+            history,
+        )?;
+    }
     // 外置内联图：artifact 的大图 + 两份隐藏转录（`model_messages` / `api_messages`）里
     // 模型看过的整图 base64。后者是"会话 JSON 绝不含 base64"的关键——它每轮都被整本读写，
     // 一张图存几份就是几 MB × 每轮 fsync。中断草稿同时持有两份转录，所以两个都要扫。

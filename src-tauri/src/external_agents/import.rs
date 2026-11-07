@@ -1397,6 +1397,7 @@ async fn publish_import(
         .unwrap_or_else(|| format!("{} 导入的会话", def.name));
 
     let conversation = Conversation {
+        builtin_history: None,
         external_history: None,
         external_cwd: None,
         runtime_locked: false,

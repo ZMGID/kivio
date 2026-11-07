@@ -137,9 +137,11 @@ impl<'a> RunResultBuilder<'a> {
             usage: None,
             cache_pairs: None,
             last_step_usage: None,
-            history: Vec::new(),
+            history: Default::default(),
             compacted: false,
             images: Vec::new(),
+            pending_steering: Vec::new(),
+            pending_follow_up: Vec::new(),
         }
     }
 }
@@ -300,9 +302,11 @@ pub(crate) fn finalize_planning_final(
         usage: None,
         cache_pairs: None,
         last_step_usage: None,
-        history: Vec::new(),
+        history: Default::default(),
         compacted: false,
         images: Vec::new(),
+        pending_steering: Vec::new(),
+        pending_follow_up: Vec::new(),
     })
 }
 
@@ -330,9 +334,11 @@ pub(crate) fn finalize_completed(
         usage: None,
         cache_pairs: None,
         last_step_usage: None,
-        history: Vec::new(),
+        history: Default::default(),
         compacted: false,
         images: Vec::new(),
+        pending_steering: Vec::new(),
+        pending_follow_up: Vec::new(),
     }
 }
 
@@ -344,9 +350,9 @@ pub(crate) fn tool_planning_failed_run_result(
     tool_draft_tracker: ToolCallDraftTracker,
     planning_reasoning_parts: &[String],
     generated_api_messages: Vec<RuntimeMessage>,
-    error: String,
+    error: crate::agent::error::AgentFailure,
 ) -> AgentRunResult {
-    let failed_records = tool_draft_tracker.mark_error(&error);
+    let failed_records = tool_draft_tracker.mark_error(&error.to_string());
     for record in &failed_records {
         host.tool_updated(record);
     }
@@ -388,9 +394,11 @@ pub(crate) fn cancelled_tool_round_run_result(
         usage: None,
         cache_pairs: None,
         last_step_usage: None,
-        history: Vec::new(),
+        history: Default::default(),
         compacted: false,
         images: Vec::new(),
+        pending_steering: Vec::new(),
+        pending_follow_up: Vec::new(),
     }
 }
 
@@ -628,7 +636,9 @@ mod tests {
             tracker,
             &["planning thought".to_string()],
             Vec::new(),
-            "Chat tools planning read body failed".to_string(),
+            crate::agent::error::AgentFailure::InvalidOutput(
+                "Chat tools planning read body failed".into(),
+            ),
         );
 
         let api_messages = export_history(&result.generated_history);
@@ -636,7 +646,9 @@ mod tests {
         assert_eq!(
             result.status,
             crate::agent::types::AgentRunStatus::Failed(
-                "Chat tools planning read body failed".into()
+                crate::agent::error::AgentFailure::InvalidOutput(
+                    "Chat tools planning read body failed".into()
+                )
             )
         );
         assert_eq!(result.content, fallback);

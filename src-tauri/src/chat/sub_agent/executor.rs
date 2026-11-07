@@ -994,12 +994,12 @@ impl AgentHost for Host {
         &'a self,
         _conversation: &'a str,
         _run: &'a str,
-        history: &'a [RuntimeMessage],
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
-            self.lock().history = history.to_vec();
-            self.save_history(history).await?;
+            self.lock().history = history.context().to_vec();
+            self.save_history(history.context()).await?;
             let state = self.app.state::<AppState>();
             let (mut claim, mut incoming) =
                 delivery::claim_inputs(&state.sub_agents.jobs, &self.record.root, &self.record.id);
@@ -1030,7 +1030,7 @@ impl AgentHost for Host {
             );
             let mut incoming = import_history(incoming);
             if !incoming.is_empty() {
-                let mut saved = history.to_vec();
+                let mut saved = history.context().to_vec();
                 saved.extend(incoming.iter().cloned());
                 self.save_history(&saved).await?;
                 self.lock().history = saved;
@@ -1043,7 +1043,7 @@ impl AgentHost for Host {
                     .jobs
                     .promote_inline(&self.record.root, &self.job_id);
             }
-            let mut current = history.to_vec();
+            let mut current = history.context().to_vec();
             current.extend(incoming.iter().cloned());
             incoming.extend(self.checkpoint_policies(&current, finishing).await?);
             if !incoming.is_empty() {
@@ -1210,6 +1210,7 @@ struct Executor {
 impl ToolExecutor for Executor {
     fn call<'a>(
         &'a self,
+        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         args: Value,
@@ -1326,7 +1327,10 @@ impl ToolExecutor for Executor {
                         ..Default::default()
                     });
                 }
-                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(
+                    ctx,
+                    progress.control.clone(),
+                );
                 crate::mcp::registry::call_tool(
                     &self.app,
                     &self.app.state::<AppState>(),
@@ -2698,7 +2702,7 @@ async fn prepare(
     let selected = definition.skills.clone();
     let loaded = host
         .until_inactive(tauri::async_runtime::spawn_blocking(move || {
-            catalog.read_selected(&selected)
+            crate::skills::read_selected(&catalog, &selected)
         }))
         .await?
         .map_err(|e| e.to_string())??;
@@ -3074,7 +3078,7 @@ async fn execute(
     let executor = Executor {
         app: app.clone(),
         host: host.clone(),
-        skills: crate::skills::SkillRunContext::for_run(skills.clone(), None),
+        skills: crate::skills::for_run(skills.clone(), None),
     };
     tools.retain(|tool| tool.id != "native__yield");
     append_yield(&mut tools, &host.options);
@@ -3101,11 +3105,12 @@ async fn execute(
         generation,
         provider,
         model,
-        runtime_messages: initial,
+        history: import_history(initial).into(),
         plan_state: host.plan_state.clone(),
         mcp_tool_ids,
         mcp_server_ids,
         runtime_context: Some(prompt.context.clone()),
+        request_projection: None,
         tools,
         blocked_tool_calls: Vec::new(),
         settings,
@@ -3161,7 +3166,7 @@ async fn execute(
             .await;
             if attempt
                 .as_ref()
-                .is_err_and(|error| error == PREWALK_HANDOFF)
+                .is_err_and(|error| error.to_string() == PREWALK_HANDOFF)
             {
                 let target = worker
                     .policies
@@ -3196,13 +3201,12 @@ async fn execute(
                 config.thinking_level = level;
                 config.provider = provider;
                 config.model = target.model;
-                config.runtime_messages = export_history(&host.lock().history);
-                config
-                    .runtime_messages
-                    .retain(|message| message["_subagent_prewalk"] != true);
-                host.save_history(&import_history(config.runtime_messages.clone()))
-                    .await?;
-                host.lock().history = import_history(config.runtime_messages.clone());
+                let mut history = export_history(&host.lock().history);
+                history.retain(|message| message["_subagent_prewalk"] != true);
+                let history = import_history(history);
+                host.save_history(&history).await?;
+                host.lock().history = history.clone();
+                config.history = history.into();
                 config.runtime_context = None;
                 config.initial_cache_usage = None;
                 config.initial_anchor_total_tokens = None;
@@ -3242,11 +3246,11 @@ async fn execute(
             };
             if budget_stop {
                 let mut history = match &attempt {
-                    Ok(result) => result.compacted_history.clone().unwrap_or_else(|| {
-                        let mut history = config.runtime_messages.clone();
-                        history.extend(result.api_messages.iter().cloned());
-                        history
-                    }),
+                    Ok(result) => export_history(result.history.context()),
+                    Err(crate::chat::session_policy::ApplicationRunError::Failed {
+                        partial,
+                        ..
+                    }) => export_history(partial.history.context()),
                     Err(_) => export_history(&host.lock().history),
                 };
                 if !host.active() {
@@ -3258,7 +3262,9 @@ async fn execute(
                     .checkpoint_runtime(
                         &config.conversation_id,
                         &config.run_id,
-                        &import_history(history.clone()),
+                        &kivio_agent_sdk::agent::SessionHistory::from(import_history(
+                            history.clone(),
+                        )),
                         false,
                     )
                     .await?;
@@ -3271,12 +3277,13 @@ async fn execute(
                 history.push(json!({"role": "user", "content": budget_reminder()}));
                 host.lock().history = import_history(history.clone());
                 host.save_history(&import_history(history.clone())).await?;
-                config.runtime_messages = history;
+                config.history = import_history(history).into();
                 config.runtime_context = None;
                 config.tools.clear();
                 continue;
             }
             let result = attempt.map_err(|error| {
+                let error = error.to_string();
                 if error.contains("empty assistant response") {
                     EMPTY_FINAL.to_string()
                 } else if error == "cancelled"
@@ -3288,11 +3295,7 @@ async fn execute(
                     attribute_model_error(&error, &config.provider.id, &config.model)
                 }
             })?;
-            let mut history = result.compacted_history.clone().unwrap_or_else(|| {
-                let mut history = config.runtime_messages.clone();
-                history.extend(result.api_messages.iter().cloned());
-                history
-            });
+            let mut history = export_history(result.history.context());
             if matches!(
                 result.status,
                 crate::chat::agent::types::AgentRunStatus::Cancelled
@@ -3353,7 +3356,7 @@ async fn execute(
                 .checkpoint_runtime(
                     &config.conversation_id,
                     &config.run_id,
-                    &import_history(history.clone()),
+                    &kivio_agent_sdk::agent::SessionHistory::from(import_history(history.clone())),
                     true,
                 )
                 .await?;
@@ -3364,7 +3367,7 @@ async fn execute(
                         .map(|input| input.message)
                         .collect::<Vec<_>>(),
                 ));
-                config.runtime_messages = history;
+                config.history = import_history(history).into();
                 config.runtime_context = None;
                 continue;
             }

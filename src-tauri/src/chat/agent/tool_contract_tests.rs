@@ -44,6 +44,7 @@ struct RegisteredExecutor(Mutex<Vec<String>>);
 impl ToolDispatcher for RegisteredExecutor {
     fn call<'a>(
         &'a self,
+        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         _: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -159,7 +160,7 @@ async fn registered_typed_and_dynamic_tools_share_the_real_loop() {
         generation: 1,
     };
     let handle = AgentRunHandle::new(identity, &host);
-    let result = run_session(config, &host, &executor, &host, handle)
+    let result = run_session(config.into_application(), &host, &executor, &host, handle)
         .await
         .unwrap();
     assert_eq!(result.content, "finished");

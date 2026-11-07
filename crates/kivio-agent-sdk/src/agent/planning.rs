@@ -1,4 +1,5 @@
 use super::content::{ContentBlock, ContentKind, ContentPhase};
+use super::error::AgentFailure;
 use crate::model::{FinishKind, GenerateOutput, ModelError, ModelErrorKind, PendingToolCall};
 
 use super::session::{SessionPolicy, ToolsRejected};
@@ -53,7 +54,7 @@ pub(crate) async fn planning_step(
     state: &mut RunState,
     round: u32,
     session: &mut dyn SessionPolicy,
-) -> Result<PlanningStepOutcome, String> {
+) -> Result<PlanningStepOutcome, AgentFailure> {
     let config = env.config;
     let host = env.host;
     let step_number = state.step_number;
@@ -228,7 +229,7 @@ pub(crate) async fn planning_step(
                 let finish_kind = stream.finish_reason.as_ref().map(|reason| reason.kind);
                 break Ok((stream, finish_kind));
             }
-            Err(err) if planning_tool_drafts.has_started() => {
+            Err(AgentFailure::Model { source: err, .. }) if planning_tool_drafts.has_started() => {
                 eprintln!(
                     "Chat tools planning failed after stream recovery; surfacing tool draft error: {}",
                     err
@@ -242,11 +243,13 @@ pub(crate) async fn planning_step(
                         planning_tool_drafts,
                         &state.planning_reasoning_parts,
                         std::mem::take(&mut state.generated_api_messages),
-                        err.to_string(),
+                        AgentFailure::model("planning", err),
                     ),
                 ));
             }
-            Err(err) if !overflow_attempted && err.kind == ModelErrorKind::ContextOverflow => {
+            Err(AgentFailure::Model { source: err, .. })
+                if !overflow_attempted && err.kind == ModelErrorKind::ContextOverflow =>
+            {
                 overflow_attempted = true;
                 let previous = send_messages.clone();
                 send_messages =
@@ -257,7 +260,8 @@ pub(crate) async fn planning_step(
                 }
                 continue;
             }
-            Err(err) => break Err(err),
+            Err(AgentFailure::Model { source: err, .. }) => break Err(err),
+            Err(error) => return Err(error),
         }
     };
     let (message, finish_kind) = match planning_result {
@@ -306,7 +310,7 @@ pub(crate) async fn planning_step(
                     ));
                 }
             }
-            return Err(err.message);
+            return Err(AgentFailure::model("planning", err));
         }
     };
     // 内置搜索：实时卡追踪器边流边合成（take_card 落 Success 终态卡）。
@@ -526,9 +530,10 @@ mod tests {
             &Completed,
             &context,
             ModelCall {
+                capabilities: None,
                 provider_id: String::new(),
                 model: String::new(),
-                history: Vec::new(),
+                history: Default::default(),
                 tools: Vec::new(),
                 options: Default::default(),
                 metadata: Default::default(),

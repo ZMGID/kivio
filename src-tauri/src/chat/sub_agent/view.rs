@@ -167,6 +167,7 @@ pub fn model_input(incoming: &SubagentIrcMessage) -> Value {
         }),
     );
     let mut input = super::delivery::report_input(&content);
+    input["_ui_message_id"] = json!(format!("subagent-irc-{}", incoming.id));
     input[super::delivery::REPORT_MESSAGE_ID_KEY] = json!(format!("subagent-irc-{}", incoming.id));
     input
 }

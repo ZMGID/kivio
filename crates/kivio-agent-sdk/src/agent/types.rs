@@ -20,6 +20,13 @@ pub enum AgentStreamPolicy {
     SynthesisDeferEmpty,
 }
 
+/// Optional bounds for a run. Provider transport retries are not model steps.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunLimits {
+    pub max_model_steps: Option<std::num::NonZeroU32>,
+    pub timeout: Option<std::time::Duration>,
+}
+
 #[derive(Clone)]
 pub struct AgentRunConfig<'a> {
     pub provider_runtime: &'a dyn super::provider_runtime::ModelRuntime,
@@ -31,20 +38,100 @@ pub struct AgentRunConfig<'a> {
     pub provider_label: String,
     pub api_format: String,
     pub model: String,
-    pub runtime_messages: Vec<super::history::RuntimeMessage>,
+    pub history: super::SessionHistory,
     pub tools: Vec<crate::tools::ToolDefinition>,
     pub blocked_tool_calls: Vec<crate::tools::ToolDefinition>,
-    pub thinking_enabled: bool,
-    pub thinking_level: Option<String>,
-    pub builtin_web_search: bool,
-    pub max_output_tokens: u32,
+    pub options: crate::model::GenerateOptions,
+    pub capabilities: crate::model::ModelCapabilities,
     pub initial_cache_usage: Option<(u64, u64)>,
     pub report_context: bool,
+    pub limits: RunLimits,
 }
 
 impl AgentRunConfig<'_> {
+    pub(crate) fn validate_call(
+        &self,
+        call: &super::provider_runtime::ModelCall,
+    ) -> Result<(), crate::model::ModelError> {
+        use crate::model::{MessagePart, ModelError, ModelErrorKind, ToolChoice};
+        let unknown = crate::model::ModelCapabilities::default();
+        let capabilities = call.capabilities.as_ref().unwrap_or_else(|| {
+            if call.provider_id == self.provider_id && call.model == self.model {
+                &self.capabilities
+            } else {
+                &unknown
+            }
+        });
+        let tools_enabled = call.options.tool_choice != ToolChoice::None;
+        let native_tools = call
+            .options
+            .provider_options
+            .get("tools")
+            .and_then(serde_json::Value::as_array);
+        let native_functions = native_tools.is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                tool.get("type").and_then(serde_json::Value::as_str) == Some("function")
+            })
+        });
+        if tools_enabled
+            && capabilities.tools == Some(false)
+            && (!call.tools.is_empty() || native_functions)
+        {
+            return Err(ModelError::with_kind(
+                "Selected model does not support tools",
+                ModelErrorKind::ToolsUnsupported,
+            ));
+        }
+        let reasoning = call
+            .options
+            .thinking_level
+            .as_deref()
+            .is_some_and(|level| !matches!(level, "none" | "off"));
+        if capabilities.reasoning == Some(false) && reasoning {
+            return Err(ModelError::with_kind(
+                "Selected model does not support reasoning",
+                ModelErrorKind::InvalidRequest,
+            ));
+        }
+        let native_search = native_tools.is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                matches!(
+                    tool.get("type").and_then(serde_json::Value::as_str),
+                    Some("web_search" | "web_search_preview")
+                )
+            })
+        });
+        if tools_enabled
+            && capabilities.builtin_web_search == Some(false)
+            && (call.options.builtin_web_search || native_search)
+        {
+            return Err(ModelError::with_kind(
+                "Selected model does not support built-in web search",
+                ModelErrorKind::InvalidRequest,
+            ));
+        }
+        if capabilities.vision == Some(false)
+            && call
+                .history
+                .iter()
+                .filter_map(|entry| entry.model_message())
+                .any(|message| {
+                    message.content.iter().any(|part| {
+                        matches!(part, MessagePart::Image { data, .. } if !data.is_empty())
+                            || matches!(part, MessagePart::ImageUrl { .. })
+                    })
+                })
+        {
+            return Err(ModelError::with_kind(
+                "Selected model does not support image input",
+                ModelErrorKind::InvalidRequest,
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn builtin_web_search_active(&self) -> bool {
-        self.builtin_web_search
+        self.options.builtin_web_search
     }
 
     pub(crate) fn model_call(
@@ -58,16 +145,17 @@ impl AgentRunConfig<'_> {
         super::provider_runtime::ModelCall {
             provider_id: self.provider_id.clone(),
             model: self.model.clone(),
+            capabilities: None,
             history,
             tools,
             delivery,
             options: crate::model::GenerateOptions {
-                thinking_enabled: self.thinking_enabled,
-                thinking_level: self.thinking_level.clone(),
-                builtin_web_search: self.builtin_web_search,
-                tool_choice,
-                max_tokens: self.max_output_tokens,
-                ..Default::default()
+                tool_choice: if tool_choice == crate::model::ToolChoice::None {
+                    crate::model::ToolChoice::None
+                } else {
+                    self.options.tool_choice
+                },
+                ..self.options.clone()
             },
             metadata: crate::model::RequestMetadata {
                 label: label.into(),
@@ -85,7 +173,7 @@ pub enum AgentRunStatus {
     Recovered,
     CompactionBlocked,
     Cancelled,
-    Failed(String),
+    Failed(super::error::AgentFailure),
 }
 
 #[derive(Debug, Clone)]
@@ -103,8 +191,11 @@ pub struct AgentRunResult {
     pub cache_pairs: Option<(u64, u64)>,
     /// Usage from the latest model request, separate from accumulated billing usage.
     pub last_step_usage: Option<crate::model::ModelUsage>,
-    pub history: Vec<super::history::RuntimeMessage>,
+    pub history: super::SessionHistory,
     pub compacted: bool,
     /// Generated image payloads accumulated during this run. The host owns persistence.
     pub images: Vec<crate::model::GeneratedImageData>,
+    /// Inputs taken from the host but not consumed, in original queue order.
+    pub pending_steering: Vec<super::steering::SteeringMessage>,
+    pub pending_follow_up: Vec<super::steering::SteeringMessage>,
 }

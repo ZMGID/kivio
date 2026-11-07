@@ -234,6 +234,7 @@ async fn inputs_are_consumed_once_at_tool_and_answer_boundaries() {
         assert_eq!(
             result
                 .history
+                .context()
                 .iter()
                 .filter(|message| message.text_content() == text)
                 .count(),
@@ -310,6 +311,7 @@ async fn tool_free_run_consumes_steer_and_follow_up_once() {
         assert_eq!(
             result
                 .history
+                .context()
                 .iter()
                 .filter(|message| message.text_content() == text)
                 .count(),
@@ -648,7 +650,7 @@ async fn cancelled_follow_up_stream_preserves_prior_answer_and_current_reasoning
         assert_eq!(result.status, AgentRunStatus::Cancelled);
         assert_eq!(server.count(), 2);
         assert_eq!(executor.call_count(), 0);
-        for history in [&result.history, &result.generated_history] {
+        for history in [result.history.context(), &result.generated_history] {
             assert_eq!(
                 history
                     .iter()

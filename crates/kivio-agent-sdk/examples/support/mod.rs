@@ -102,7 +102,7 @@ pub fn handle(control: &Control) -> AgentRunHandle<'_> {
 
 pub fn config(
     runtime: &dyn kivio_agent_sdk::agent::provider_runtime::ModelRuntime,
-    history: Vec<RuntimeMessage>,
+    history: impl Into<kivio_agent_sdk::agent::SessionHistory>,
 ) -> AgentRunConfig<'_> {
     AgentRunConfig {
         provider_runtime: runtime,
@@ -114,15 +114,18 @@ pub fn config(
         provider_label: "OpenAI compatible".into(),
         api_format: "chat".into(),
         model: "test-model".into(),
-        runtime_messages: history,
+        history: history.into(),
         tools: vec![echo_definition()],
         blocked_tool_calls: vec![],
-        thinking_enabled: false,
-        thinking_level: None,
-        builtin_web_search: false,
-        max_output_tokens: 128,
+        options: kivio_agent_sdk::model::GenerateOptions {
+            thinking_enabled: false,
+            max_tokens: 128,
+            ..Default::default()
+        },
+        capabilities: Default::default(),
         initial_cache_usage: None,
         report_context: false,
+        limits: Default::default(),
     }
 }
 
@@ -161,14 +164,14 @@ impl EchoTool {
 }
 
 impl ToolExecutor for EchoTool {
-    fn prepare<'a>(
+    fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
+        _progress: &'a ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         mut record: AgentToolCall,
-    ) -> ToolFuture<'a, ToolPreparation> {
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
         Box::pin(async move {
             let validated = (|| {
                 if call.function_name != "echo" || tool.model.name != "echo" {
@@ -182,7 +185,7 @@ impl ToolExecutor for EchoTool {
                 validate_arguments(&echo_definition().model.input_schema, &arguments)?;
                 Ok(arguments)
             })();
-            match validated {
+            Ok(match validated {
                 Ok(arguments) => ToolPreparation::Ready(PreparedToolCall {
                     record,
                     arguments,
@@ -195,15 +198,15 @@ impl ToolExecutor for EchoTool {
                 Err(error) => {
                     record.status = AgentToolStatus::Error;
                     record.error = Some(error.clone());
-                    progress.updated(&record);
                     ToolPreparation::Complete(record, error, vec![])
                 }
-            }
+            })
         })
     }
 
     fn call<'a>(
         &'a self,
+        _progress: &'a ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         _tool: &'a ToolDefinition,
         arguments: Value,

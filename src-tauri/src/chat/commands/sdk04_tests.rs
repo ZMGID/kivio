@@ -84,6 +84,7 @@ impl AgentHost for DesktopHost {
         tools: &'a [AgentToolCall],
         blocks: &'a [ContentBlock],
         history: &'a [RuntimeMessage],
+        _history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> AgentHostFuture<'a, ()> {
         Box::pin(async move {
             let (tools, blocks) = agent_presentation::project_snapshot(tools, blocks, Some("run"));
@@ -134,12 +135,13 @@ struct CountingExecutor {
 impl ToolDispatcher for CountingExecutor {
     fn call<'a>(
         &'a self,
+        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a crate::mcp::ChatToolDefinition,
         arguments: serde_json::Value,
     ) -> ToolExecutorFuture<'a> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.call(ctx, tool, arguments)
+        self.inner.call(progress, ctx, tool, arguments)
     }
 }
 fn tool_step() -> MockResponse {
@@ -182,9 +184,15 @@ async fn sdk04_desktop_real_loop_projects_checkpoints_and_saved_history() {
     let handle = AgentRunHandle::new(identity(config.generation), &control);
     let host = DesktopHost::new(dir.path().join("draft.jsonl"));
     let executor = CountingExecutor::default();
-    let result = run_session(config, &host, &executor, &host, handle.clone())
-        .await
-        .unwrap();
+    let result = run_session(
+        config.into_application(),
+        &host,
+        &executor,
+        &host,
+        handle.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.content, "完成🙂");
     assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -330,9 +338,15 @@ async fn sdk04_closed_observation_does_not_authorize_a_tool() {
     host.approve = false;
     host.closed = true;
     let executor = CountingExecutor::default();
-    let result = run_session(config, &host, &executor, &host, handle.clone())
-        .await
-        .unwrap();
+    let result = run_session(
+        config.into_application(),
+        &host,
+        &executor,
+        &host,
+        handle.clone(),
+    )
+    .await
+    .unwrap();
     assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
     assert!(result
         .tool_records
@@ -354,7 +368,13 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
     let handle = AgentRunHandle::new(identity(config.generation), &control);
     let executor = CountingExecutor::default();
-    let mut future = Box::pin(run_session(config, &host, &executor, &host, handle.clone()));
+    let mut future = Box::pin(run_session(
+        config.into_application(),
+        &host,
+        &executor,
+        &host,
+        handle.clone(),
+    ));
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(50), &mut future)
             .await
@@ -378,12 +398,19 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     config.generation = state.chat_runtime().begin_generation("conversation");
     let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
     let handle = AgentRunHandle::new(identity(config.generation), &control);
-    assert!(run_session(config, &host, &executor, &host, handle)
+    let error = run_session(config.into_application(), &host, &executor, &host, handle)
         .await
-        .is_err());
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::chat::session_policy::ApplicationRunError::Failed {
+            cause: kivio_agent_sdk::agent::AgentFailure::Model { source, .. },
+            partial,
+        } if source.message.contains("bad request") && !partial.history.entries().is_empty()
+    ));
     let outcomes = host.outcomes.lock().unwrap();
     assert_eq!(outcomes.len(), 1);
     assert!(
-        matches!(&outcomes[0], AgentRunOutcome::Failed(error) if error.contains("bad request"))
+        matches!(&outcomes[0], AgentRunOutcome::Failed(error) if error.to_string().contains("bad request"))
     );
 }

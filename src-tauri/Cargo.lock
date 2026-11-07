@@ -3666,13 +3666,18 @@ dependencies = [
 name = "kivio-agent-sdk"
 version = "0.1.0-alpha.1"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "futures",
  "jsonschema",
+ "libc",
+ "process-wrap",
  "reqwest",
+ "rmcp",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "uuid",
 ]

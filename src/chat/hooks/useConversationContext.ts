@@ -171,6 +171,7 @@ export function useConversationContext({
     try {
       const result = await chatApi.clearContext(conversationId)
       if (currentConversationIdRef.current === conversationId) {
+        setCurrentConversation(result.conversation)
         const latestId = latestClearBoundaryId(result.contextState)
         if (latestId) flashClearBoundary(latestId)
         patchContextState(result.contextState)
@@ -181,7 +182,7 @@ export function useConversationContext({
         setContextError(errorMessage(err, '清空上下文失败'))
       }
     }
-  }, [currentConversationIdRef, flashClearBoundary, patchContextState, refreshSidebar])
+  }, [currentConversationIdRef, flashClearBoundary, patchContextState, refreshSidebar, setCurrentConversation])
 
   useTauriEvent(api.onChatContext, (payload) => {
     const currentConversationId = currentConversationIdRef.current

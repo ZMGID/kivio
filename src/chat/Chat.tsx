@@ -59,6 +59,7 @@ import { useMessageActions } from './hooks/useMessageActions'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { ModelSelector } from './ModelSelector'
 import { ConversationTitlebarControls } from './ConversationTitlebarControls'
+import { ConversationBranches } from './ConversationBranches'
 import {
   captureConversationNavigation,
   completeConversationTransition,
@@ -2174,6 +2175,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     forkAtMessage: handleForkMessage,
     saveMessageToNote: handleSaveMessageToNote,
     setGroupSelection: handleSetGroupSelection,
+    switchBranch: handleSwitchBranch,
   } = useMessageActions({
     currentConversationRef,
     navigation,
@@ -2632,6 +2634,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       onApprovalPolicyChange={handleApprovalPolicyChange}
       onSandboxChange={handleExternalSandboxChange}
       busy={streamCoarse.streaming}
+      historyBranches={currentConversation && !usesExternalRuntime ? <ConversationBranches
+        key={currentConversation.id}
+        conversationId={currentConversation.id}
+        disabled={isCurrentConversationBusy() || streamCoarse.streaming || streamCoarse.streamFrozen || streamCoarse.cancelling || conversationOccupied}
+        lang={uiLang}
+        onSwitch={handleSwitchBranch}
+      /> : undefined}
       onOpenPopout={(conversationId) => { void handleOpenConversationPopout(conversationId) }}
       onOpenDockTasks={handleOpenDockTasks}
       onToggleDock={handleToggleDock}
@@ -2654,8 +2663,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleRuntimeChange,
     handleThinkingLevelChange,
     handleToggleDock,
+    handleSwitchBranch,
+    isCurrentConversationBusy,
+    conversationOccupied,
     popoutConversationIds,
     streamCoarse.streaming,
+    streamCoarse.streamFrozen,
+    streamCoarse.cancelling,
     uiLang,
     usesChatRuntime,
     usesExternalRuntime,
@@ -2830,6 +2844,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onForkMessage: handleForkMessage,
     onRewindMessage: handleRewindMessage,
     onDeleteMessage: handleDeleteMessage,
+    messageDeleteLabel: usesExternalRuntime ? i18n[uiLang].dialogDelete : i18n[uiLang].chatMessageRemoveFromBranch,
     onSaveMessageToNote: handleSaveMessageToNote,
     onRetryLastUser: handleRegenerateMessage,
     onExecuteAgentPlan: handleExecuteAgentPlan,

@@ -18,12 +18,13 @@ pub enum ModelErrorKind {
     Other,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelError {
     pub message: String,
     pub kind: ModelErrorKind,
     pub status: Option<u16>,
     pub provider_code: Option<String>,
+    pub retry_after: Option<std::time::Duration>,
     retryable_stream: bool,
 }
 
@@ -44,6 +45,7 @@ impl ModelError {
             kind,
             status: None,
             provider_code: None,
+            retry_after: None,
             retryable_stream: false,
         }
     }
@@ -58,6 +60,7 @@ impl ModelError {
             message: diagnostic,
             status: Some(status),
             provider_code,
+            retry_after: None,
             retryable_stream: false,
         }
     }
@@ -69,6 +72,7 @@ impl ModelError {
             message: diagnostic,
             status,
             provider_code: code.map(str::to_string),
+            retry_after: None,
             retryable_stream: false,
         }
     }

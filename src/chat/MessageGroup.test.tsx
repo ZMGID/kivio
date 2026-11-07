@@ -67,14 +67,14 @@ describe('MessageGroup — 删除单个回答', () => {
     }
     render(<ConversationView />)
     const user = userEvent.setup()
-    await user.click(screen.getByRole('button', { name: '删除 model-c' }))
+    await user.click(screen.getByRole('button', { name: '从当前分支移除 model-c' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'model-c' })).toBeNull())
     let saved = await chatApi.getConversation(initial.id)
     expect(saved.messages.map(message => message.id)).toEqual(['question', 'a1', 'a2'])
     expect(saved.group_selections).toEqual({ g1: 'a2' })
     expect(screen.getByRole('button', { name: 'model-b' })).toHaveAttribute('aria-pressed', 'true')
 
-    await user.click(screen.getByRole('button', { name: '删除 model-b' }))
+    await user.click(screen.getByRole('button', { name: '从当前分支移除 model-b' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'model-b' })).toBeNull())
     saved = await chatApi.getConversation(initial.id)
     expect(saved.messages.map(message => message.id)).toEqual(['question', 'a1'])
@@ -92,7 +92,7 @@ describe('MessageGroup — 删除单个回答', () => {
       flushGroups()
     })
     render(<MessageGroup conversationId="c1" groupId="g1" messages={[]} onDeleteMessage={vi.fn()} />)
-    expect(screen.queryByRole('button', { name: '删除 model-a' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '从当前分支移除 model-a' })).toBeNull()
   })
 })
 
@@ -341,9 +341,9 @@ describe('MessageGroup — tabs 模式（默认）', () => {
     expect(screen.getByText('answer b')).toBeInTheDocument()
     expect(screen.queryByText('answer a')).not.toBeInTheDocument()
     for (const model of ['model-a', 'model-b', 'model-c']) {
-      expect(screen.getByRole('button', { name: `删除 ${model}` })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: `从当前分支移除 ${model}` })).toBeInTheDocument()
     }
-    fireEvent.click(screen.getByRole('button', { name: '删除 model-b' }))
+    fireEvent.click(screen.getByRole('button', { name: '从当前分支移除 model-b' }))
     expect(onDelete).toHaveBeenCalledTimes(1)
     expect(onDelete).toHaveBeenCalledWith('b')
     expect(screen.getByText('answer b')).toBeInTheDocument()
@@ -351,7 +351,7 @@ describe('MessageGroup — tabs 模式（默认）', () => {
     fireEvent.click(screen.getByTitle('并排显示（多列）'))
     expect(screen.getByText('answer a')).toBeInTheDocument()
     expect(screen.getByText('answer c')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '删除 model-c' }))
+    fireEvent.click(screen.getByRole('button', { name: '从当前分支移除 model-c' }))
     expect(onDelete).toHaveBeenCalledTimes(2)
     expect(onDelete).toHaveBeenLastCalledWith('c')
 

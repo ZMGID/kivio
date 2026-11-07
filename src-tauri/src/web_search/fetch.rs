@@ -348,7 +348,7 @@ async fn fetch_exa_mcp(
     url: &str,
 ) -> Result<WebFetchPage, String> {
     let server = exa_mcp_server(config)?;
-    let raw = crate::mcp::conn::call_tool_once(
+    let result = crate::mcp::conn::call_tool_once(
         &server,
         &state.http,
         "web_fetch_exa",
@@ -359,9 +359,6 @@ async fn fetch_exa_mcp(
         FETCH_MCP_TIMEOUT,
     )
     .await?;
-    let result = crate::mcp::result::parse_tool_result(
-        serde_json::to_value(&raw).map_err(|err| err.to_string())?,
-    );
     if result.is_error {
         return Err(format!("Exa MCP fetch failed: {}", result.content));
     }
@@ -587,6 +584,7 @@ async fn fetch_tinyfish_mcp(
                 "urls": [url],
                 "format": "markdown",
             }),
+            None,
         )
         .await
         .map_err(|err| map_tinyfish_mcp_error(&err))?;

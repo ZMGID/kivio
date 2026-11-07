@@ -167,6 +167,8 @@ fn print_event(event: &AgentEvent<'_>) -> EventDelivery {
             "run ended: {}",
             match outcome {
                 AgentRunOutcome::Completed => "completed",
+                AgentRunOutcome::Recovered => "recovered",
+                AgentRunOutcome::CompactionBlocked => "compaction blocked",
                 AgentRunOutcome::Cancelled => "cancelled",
                 AgentRunOutcome::Failed(_) => "failed",
                 AgentRunOutcome::Dropped => "dropped",

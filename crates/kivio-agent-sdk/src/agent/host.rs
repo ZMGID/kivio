@@ -35,6 +35,14 @@ impl SessionInput {
 }
 
 pub trait AgentHost: Send + Sync {
+    /// Final persistence owned by the convenience Session; direct loop callers commit themselves.
+    fn commit_run<'a>(
+        &'a self,
+        _identity: super::events::AgentRunIdentity<'a>,
+        _result: &'a super::types::AgentRunResult,
+    ) -> AgentHostFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Hosts may require an in-flight tool to finish before cancellation returns.
     fn requires_tool_completion(&self) -> bool {
         false
@@ -49,20 +57,22 @@ pub trait AgentHost: Send + Sync {
     ) -> AgentHostFuture<'a, Result<bool, String>> {
         Box::pin(async { Ok(false) })
     }
-    /// Persist the supplied history when needed and return newly received messages.
-    /// Before compaction this sees the original history; an error prevents replacement.
+    /// Persist the full session facts, including inactive branches, and receive new messages.
+    /// Before compaction this sees the original facts; an error prevents replacement.
     fn checkpoint_runtime<'a>(
         &'a self,
         _conversation_id: &'a str,
         _run_id: &'a str,
-        _history: &'a [super::history::RuntimeMessage],
+        _history: &'a super::session_history::SessionHistory,
         _finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 
     /// Persist a best-effort draft after a completed tool round. `api_messages`
-    /// contains completed assistant tool calls and results for later model context.
+    /// contains completed assistant tool calls and results for presentation compatibility.
+    /// `history` contains all session facts; before dispatch its active path may end
+    /// with pending tool calls, while completed-round drafts contain their results.
     /// This checkpoint does not make external tool effects transactional or safe
     /// to execute again. The default does not persist drafts.
     fn persist_partial_assistant<'a>(
@@ -72,6 +82,7 @@ pub trait AgentHost: Send + Sync {
         _tool_records: &'a [AgentToolCall],
         _segments: &'a [ContentBlock],
         _api_messages: &'a [super::history::RuntimeMessage],
+        _history: &'a super::session_history::SessionHistory,
     ) -> AgentHostFuture<'a, ()> {
         Box::pin(async {})
     }

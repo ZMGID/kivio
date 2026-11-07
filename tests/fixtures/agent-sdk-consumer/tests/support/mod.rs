@@ -17,7 +17,9 @@ pub const LIMIT: Duration = Duration::from_secs(5);
 
 pub enum Response {
     Sse(String),
+    Json(Value),
     Http(u16, String),
+    HttpHeaders(u16, String, Vec<(&'static str, &'static str)>),
     Disconnect(String),
     Hold(String),
 }
@@ -42,13 +44,22 @@ impl Drop for Server {
 
 impl Server {
     pub async fn start(responses: Vec<Response>) -> Self {
+        Self::start_at("/v1/chat/completions", responses).await
+    }
+
+    pub async fn start_at(path: &str, responses: Vec<Response>) -> Self {
+        Self::start_paths(path, vec![path.to_owned()], responses).await
+    }
+
+    pub async fn start_paths(
+        base_path: &str,
+        paths: Vec<String>,
+        responses: Vec<Response>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!(
-            "http://{}/v1/chat/completions",
-            listener.local_addr().unwrap()
-        )
-        .parse()
-        .unwrap();
+        let endpoint = format!("http://{}{base_path}", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = requests.clone();
         let disconnected = Arc::new(Notify::new());
@@ -57,18 +68,35 @@ impl Server {
             let mut responses = VecDeque::from(responses);
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                let request = timeout(LIMIT, read_request(&mut socket)).await.unwrap();
+                let request = timeout(LIMIT, read_request(&mut socket, &paths))
+                    .await
+                    .unwrap();
                 recorded.lock().unwrap().push(request);
                 let response = responses
                     .pop_front()
                     .unwrap_or_else(|| Response::Http(500, "unexpected extra request".into()));
-                let (status, body, extra_length, hold) = match response {
-                    Response::Sse(body) => (200, body, 0, false),
-                    Response::Http(status, body) => (status, body, 0, false),
-                    Response::Disconnect(body) => (200, body, 100, false),
-                    Response::Hold(body) => (200, body, 10000, true),
+                let (status, body, extra_length, hold, content_type, extra_headers) = match response
+                {
+                    Response::Sse(body) => (200, body, 0, false, "text/event-stream", vec![]),
+                    Response::Json(body) => {
+                        (200, body.to_string(), 0, false, "application/json", vec![])
+                    }
+                    Response::Http(status, body) => {
+                        (status, body, 0, false, "application/json", vec![])
+                    }
+                    Response::HttpHeaders(status, body, headers) => {
+                        (status, body, 0, false, "application/json", headers)
+                    }
+                    Response::Disconnect(body) => {
+                        (200, body, 100, false, "text/event-stream", vec![])
+                    }
+                    Response::Hold(body) => (200, body, 10000, true, "text/event-stream", vec![]),
                 };
-                let headers = format!("HTTP/1.1 {status} Test\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len() + extra_length);
+                let extra_headers = extra_headers
+                    .into_iter()
+                    .map(|(name, value)| format!("{name}: {value}\r\n"))
+                    .collect::<String>();
+                let headers = format!("HTTP/1.1 {status} Test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n", body.len() + extra_length);
                 socket.write_all(headers.as_bytes()).await.unwrap();
                 socket.write_all(body.as_bytes()).await.unwrap();
                 socket.flush().await.unwrap();
@@ -110,7 +138,7 @@ impl Server {
     }
 }
 
-async fn read_request(socket: &mut TcpStream) -> Request {
+async fn read_request(socket: &mut TcpStream, paths: &[String]) -> Request {
     let mut bytes = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 2048];
@@ -123,7 +151,13 @@ async fn read_request(socket: &mut TcpStream) -> Request {
         }
     };
     let headers = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
-    assert!(headers.starts_with("POST /v1/chat/completions HTTP/1.1"));
+    assert!(
+        paths
+            .iter()
+            .any(|path| headers.starts_with(&format!("POST {path} HTTP/1.1\r\n"))),
+        "unexpected request path: {}",
+        headers.lines().next().unwrap()
+    );
     let length: usize = headers
         .lines()
         .find_map(|line| {

@@ -34,33 +34,123 @@ pub(super) fn conversation_list_item_has_project_binding(
 pub(crate) fn rewrite_conversation_artifact_paths(
     conversation: &mut Conversation,
     mappings: &[(PathBuf, PathBuf)],
-) -> bool {
-    fn rewrite(path: &mut Option<String>, mappings: &[(PathBuf, PathBuf)]) -> bool {
-        let Some(raw) = path.as_deref() else {
-            return false;
-        };
-        let current = Path::new(raw);
+) -> Result<bool, String> {
+    map_conversation_resource_paths(conversation, |raw| {
         for (source, target) in mappings {
-            if let Ok(relative) = current.strip_prefix(source) {
-                *path = Some(target.join(relative).to_string_lossy().to_string());
-                return true;
+            if let Ok(relative) = Path::new(raw).strip_prefix(source) {
+                return Some(target.join(relative).to_string_lossy().into_owned());
             }
         }
-        false
-    }
+        None
+    })
+}
 
-    let mut changed = false;
-    for message in &mut conversation.messages {
-        for artifact in &mut message.artifacts {
-            changed |= rewrite(&mut artifact.path, mappings);
-        }
-        for tool_call in &mut message.tool_calls {
-            for artifact in &mut tool_call.artifacts {
-                changed |= rewrite(&mut artifact.path, mappings);
+pub(super) fn map_conversation_resource_paths(
+    conversation: &mut Conversation,
+    mut transform: impl FnMut(&str) -> Option<String>,
+) -> Result<bool, String> {
+    fn model_paths(
+        message: &mut crate::chat::model::ModelMessage,
+        transform: &mut impl FnMut(&mut String),
+    ) {
+        for part in &mut message.content {
+            match part {
+                crate::chat::model::MessagePart::Image {
+                    path: Some(path), ..
+                }
+                | crate::chat::model::MessagePart::Video {
+                    path: Some(path), ..
+                }
+                | crate::chat::model::MessagePart::ImageUrl { url: path, .. } => transform(path),
+                crate::chat::model::MessagePart::ToolResult { artifacts, .. } => {
+                    for artifact in artifacts {
+                        if let Some(path) = &mut artifact.path {
+                            transform(path);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
-    changed
+    fn wire_paths(value: &mut serde_json::Value, transform: &mut impl FnMut(&mut String)) {
+        match value {
+            serde_json::Value::Array(values) => {
+                values.iter_mut().for_each(|v| wire_paths(v, transform))
+            }
+            serde_json::Value::Object(values) => {
+                for (key, value) in values {
+                    if matches!(key.as_str(), "path" | "file_path" | "url") {
+                        if let Some(raw) = value.as_str() {
+                            let mut path = raw.to_owned();
+                            transform(&mut path);
+                            *value = serde_json::Value::String(path);
+                        }
+                    } else {
+                        wire_paths(value, transform);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut changed = false;
+    let mut rewrite = |raw: &mut String| {
+        if let Some(next) = transform(raw) {
+            if *raw != next {
+                *raw = next;
+                changed = true;
+            }
+        }
+    };
+    if let Some(state) = &mut conversation.builtin_history {
+        crate::chat::session_history::map_runtime_messages(state, |runtime| {
+            if let Some(model) = runtime.model_message_mut() {
+                model_paths(model, &mut rewrite);
+            }
+        })?;
+    }
+    let archived = conversation.builtin_history.iter_mut().flat_map(|state| {
+        state
+            .archived_branches
+            .iter_mut()
+            .flat_map(|branch| &mut branch.messages)
+    });
+    for message in conversation.messages.iter_mut().chain(archived) {
+        for attachment in &mut message.attachments {
+            rewrite(&mut attachment.path);
+        }
+        for artifact in message.artifacts.iter_mut().chain(
+            message
+                .tool_calls
+                .iter_mut()
+                .flat_map(|call| &mut call.artifacts),
+        ) {
+            if let Some(path) = &mut artifact.path {
+                rewrite(path);
+            }
+        }
+        for model in &mut message.model_messages {
+            model_paths(model, &mut rewrite);
+        }
+        for wire in &mut message.api_messages {
+            wire_paths(wire, &mut rewrite);
+        }
+    }
+    let archived_contexts = conversation.builtin_history.iter_mut().flat_map(|state| {
+        state
+            .archived_branches
+            .iter_mut()
+            .map(|branch| &mut branch.context_state)
+    });
+    for context in std::iter::once(&mut conversation.context_state).chain(archived_contexts) {
+        if let Some(replay) = context.summary.as_mut().and_then(|s| s.replay.as_mut()) {
+            for message in &mut replay.messages {
+                wire_paths(message, &mut rewrite);
+            }
+        }
+    }
+    Ok(changed)
 }
 
 pub async fn migrate_ordinary_conversation_workspaces(
@@ -142,7 +232,7 @@ pub async fn migrate_ordinary_conversation_workspaces(
                 }
                 let conversation = &mut conversations[migration.conversation_index];
                 if !mappings.is_empty()
-                    && rewrite_conversation_artifact_paths(conversation, &mappings)
+                    && rewrite_conversation_artifact_paths(conversation, &mappings)?
                 {
                     changed.push(conversation.id.clone());
                 }

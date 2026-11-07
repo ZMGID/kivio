@@ -1951,6 +1951,7 @@ fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> Cha
 
 fn test_conversation_with_summary(stale: bool) -> Conversation {
     Conversation {
+        builtin_history: None,
         external_history: None,
         external_cwd: None,
         runtime_locked: false,
@@ -2396,14 +2397,28 @@ fn rewind_past_clear_restores_live_context() {
     let mut conversation = test_conversation_with_summary(false);
     conversation.context_state.summary = None;
     apply_context_clear(&mut conversation).expect("clear");
-    conversation.messages.truncate(2);
-    mark_summary_stale_if_needed(&mut conversation, 0);
+    let cleared_branch = conversation
+        .builtin_history
+        .as_ref()
+        .unwrap()
+        .active_branch_id
+        .clone();
+    crate::chat::session_history::truncate_before(&mut conversation, "msg_user_2").expect("rewind");
     assert!(conversation.context_state.clear_boundaries.is_empty());
     let messages = build_chat_api_messages(None, "system", &conversation, None, None, &[])
         .expect("messages should build");
     let serialized = serde_json::to_string(&messages).expect("messages serialize");
     assert!(serialized.contains("old user content"));
     assert!(serialized.contains("old assistant content"));
+    assert!(!serialized.contains("recent user content"));
+    let mut restored: Conversation =
+        serde_json::from_value(serde_json::to_value(&conversation).unwrap()).unwrap();
+    crate::chat::session_history::switch_branch(&mut restored, &cleared_branch)
+        .expect("restore cleared branch");
+    let restored_messages =
+        build_chat_api_messages(None, "system", &restored, None, None, &[]).unwrap();
+    assert_eq!(restored_messages.len(), 1);
+    assert_eq!(restored.context_state.clear_boundaries.len(), 1);
 }
 
 #[test]
@@ -2421,6 +2436,7 @@ fn stale_summary_is_ignored_by_message_builder() {
 #[test]
 fn auxiliary_vision_result_becomes_text_for_main_chat_model() {
     let conversation = Conversation {
+        builtin_history: None,
         external_history: None,
         external_cwd: None,
         runtime_locked: false,
@@ -2604,6 +2620,16 @@ fn truncating_history_rewinds_the_todo_list_to_the_retained_snapshot() {
     super::mutations::restore_todo_state_from_history(&mut conversation);
     assert_eq!(conversation.agent_todo_state.items[0].content, "early step");
 
+    let history = conversation.builtin_history.as_ref().unwrap();
+    let rewound = history.active_branch_id.clone();
+    let original = history.archived_branches.last().unwrap().id.clone();
+    crate::chat::session_history::switch_branch(&mut conversation, &original).unwrap();
+    super::mutations::restore_todo_state_from_history(&mut conversation);
+    assert_eq!(conversation.agent_todo_state.items[0].content, "later step");
+    crate::chat::session_history::switch_branch(&mut conversation, &rewound).unwrap();
+    super::mutations::restore_todo_state_from_history(&mut conversation);
+    assert_eq!(conversation.agent_todo_state.items[0].content, "early step");
+
     // Going back before any todo_write empties it.
     conversation.messages.truncate(1);
     super::mutations::restore_todo_state_from_history(&mut conversation);
@@ -2730,7 +2756,7 @@ fn apply_reply_with_model_result_groups_existing_answer() {
     extra.group_id = Some("grp_new".to_string());
     extra.provider_id = Some("other-provider".to_string());
     extra.model = Some("other-model".to_string());
-    apply_reply_with_model_result(&mut conversation, &prep, extra);
+    apply_reply_with_model_result(&mut conversation, &prep, extra).unwrap();
     assert_eq!(
         conversation.messages[3].group_id.as_deref(),
         Some("grp_new")
@@ -2750,8 +2776,471 @@ fn apply_reply_with_model_result_groups_existing_answer() {
 }
 
 #[test]
+fn canonical_alternative_answer_keeps_tools_compaction_and_later_turns() {
+    use crate::chat::agent::history::RuntimeMessage;
+    use kivio_agent_sdk::agent::session::CompactionPlan;
+    let mut conversation =
+        test_conversation_with_messages(vec![test_chat_message("user", "user", "question", 1)]);
+    crate::chat::session_history::ensure_migrated(&mut conversation).unwrap();
+    let prefix = crate::chat::session_history::history(&conversation).unwrap();
+    let anchor = prefix.active_leaf();
+    let arm_history = |label: &str| {
+        let mut history = prefix.clone();
+        history.extend([
+            serde_json::json!({"role":"assistant","tool_calls":[{"id":format!("call-{label}"),"type":"function","function":{"name":"read","arguments":"{}"}}]}),
+            serde_json::json!({"role":"tool","tool_call_id":format!("call-{label}"),"content":format!("tool result {label}")}),
+        ].iter().map(|value| crate::chat::session_history::import_legacy(value).unwrap()));
+        history
+            .compact(CompactionPlan {
+                covered: 2..4,
+                replacement: vec![RuntimeMessage::system(format!("tool summary {label}"))],
+            })
+            .unwrap();
+        history.push(RuntimeMessage::text(
+            ModelRole::Assistant,
+            format!("MODEL_{label}"),
+        ));
+        history
+    };
+    let first = arm_history("A");
+    crate::chat::session_history::commit_completed_run(
+        &mut conversation,
+        "a",
+        &first,
+        anchor,
+        true,
+    )
+    .unwrap();
+    conversation
+        .messages
+        .push(test_chat_message("a", "assistant", "DISPLAY_A", 2));
+    let prep =
+        prepare_reply_with_model(&conversation, "a", "other", "other", Some("group")).unwrap();
+    let second = arm_history("B");
+    crate::chat::session_history::commit_completed_run(
+        &mut conversation,
+        "b",
+        &second,
+        anchor,
+        false,
+    )
+    .unwrap();
+    for (id, role, text) in [
+        ("later-user", "user", "later question"),
+        ("later-answer", "assistant", "later answer"),
+    ] {
+        conversation
+            .messages
+            .push(test_chat_message(id, role, text, 3));
+        crate::chat::session_history::admit_input(
+            &mut conversation,
+            id,
+            vec![RuntimeMessage::text(
+                if role == "user" {
+                    ModelRole::User
+                } else {
+                    ModelRole::Assistant
+                },
+                text,
+            )],
+        )
+        .unwrap();
+    }
+    let mut answer = test_chat_message("b", "assistant", "DISPLAY_B", 4);
+    answer.group_id = Some("group".into());
+    apply_reply_with_model_result(&mut conversation, &prep, answer).unwrap();
+    let restored: Conversation =
+        serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
+    let request = serde_json::to_string(
+        &build_chat_api_messages(None, "system", &restored, None, None, &[]).unwrap(),
+    )
+    .unwrap();
+    assert!(request.contains("MODEL_B"), "{request}");
+    assert!(request.contains("tool summary B"), "{request}");
+    assert!(
+        request.contains("later question") && request.contains("later answer"),
+        "{request}"
+    );
+    assert!(
+        !request.contains("MODEL_A") && !request.contains("DISPLAY_B"),
+        "{request}"
+    );
+    let facts = serde_json::to_string(
+        restored
+            .builtin_history
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .entries(),
+    )
+    .unwrap();
+    assert!(facts.contains("tool result A") && facts.contains("tool result B"));
+    assert!(facts.contains("MODEL_A") && facts.contains("MODEL_B"));
+}
+
+#[test]
+fn canonical_reply_commit_rejects_changed_branch_and_allows_metadata_updates() {
+    let mut conversation =
+        test_conversation_with_messages(vec![test_chat_message("user", "user", "question", 1)]);
+    crate::chat::session_history::ensure_migrated(&mut conversation).unwrap();
+    let commit = super::reply_runtime::ReplyHistoryCommit {
+        history: crate::chat::session_history::history(&conversation).unwrap(),
+        source_anchor: conversation
+            .builtin_history
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .active_leaf(),
+        branch_id: conversation
+            .builtin_history
+            .as_ref()
+            .unwrap()
+            .active_branch_id
+            .clone(),
+    };
+    conversation.title = "renamed while generating".into();
+    conversation.revision += 1;
+    super::messages::validate_reply_history_branch(&conversation, &commit.branch_id).unwrap();
+    crate::chat::session_history::archive_branch(&mut conversation).unwrap();
+    let before = serde_json::to_value(&conversation).unwrap();
+    assert!(
+        super::messages::validate_reply_history_branch(&conversation, &commit.branch_id).is_err()
+    );
+    assert_eq!(serde_json::to_value(&conversation).unwrap(), before);
+}
+
+#[test]
+fn canonical_error_column_is_visible_without_becoming_model_history() {
+    let mut conversation =
+        test_conversation_with_messages(vec![test_chat_message("user", "user", "question", 1)]);
+    crate::chat::session_history::ensure_migrated(&mut conversation).unwrap();
+    let mut error = build_error_arm_message(
+        "group",
+        "provider".into(),
+        "model".into(),
+        "UI_ONLY_FAILURE".into(),
+        "send",
+        None,
+    );
+    let error_id = error.id.clone();
+    error.api_messages = vec![serde_json::json!({"role":"assistant","content":"UI_ONLY_FAILURE"})];
+    super::messages::upsert_assistant_message(&mut conversation, error);
+    assert_eq!(
+        conversation
+            .builtin_history
+            .as_ref()
+            .unwrap()
+            .bindings
+            .get(&error_id),
+        Some(&None)
+    );
+    assert!(conversation.messages[1].api_messages.is_empty());
+    assert!(conversation.messages[1].model_messages.is_empty());
+    let request = serde_json::to_string(
+        &build_chat_api_messages(None, "system", &conversation, None, None, &[]).unwrap(),
+    )
+    .unwrap();
+    assert!(!request.contains("UI_ONLY_FAILURE"), "{request}");
+    assert!(conversation.messages[1].content.contains("UI_ONLY_FAILURE"));
+}
+
+fn canonical_error_group_with_followup() -> (Conversation, String) {
+    let mut conversation = test_conversation_with_messages(vec![
+        test_chat_message("user", "user", "question", 1),
+        grouped_assistant("answer", "answer", "group", 2),
+    ]);
+    crate::chat::session_history::ensure_migrated(&mut conversation).unwrap();
+    let error = build_error_arm_message(
+        "group",
+        "provider".into(),
+        "model".into(),
+        "UI_ONLY_FAILURE".into(),
+        "send",
+        None,
+    );
+    let error_id = error.id.clone();
+    super::messages::upsert_assistant_message(&mut conversation, error);
+    let followup = test_chat_message("followup", "user", "followup", 3);
+    crate::chat::session_history::admit_input(
+        &mut conversation,
+        &followup.id,
+        vec![crate::chat::agent::history::RuntimeMessage::text(
+            ModelRole::User,
+            "followup",
+        )],
+    )
+    .unwrap();
+    conversation.messages.push(followup);
+    (conversation, error_id)
+}
+
+fn canonical_context_texts(conversation: &Conversation) -> Vec<String> {
+    crate::chat::session_history::history(conversation)
+        .unwrap()
+        .context()
+        .iter()
+        .filter(|message| message.role().is_some())
+        .map(crate::chat::agent::history::RuntimeMessage::text_content)
+        .collect()
+}
+
+#[test]
+fn canonical_ui_only_error_selection_roundtrip_preserves_followup_and_original_branch() {
+    let (mut conversation, error_id) = canonical_error_group_with_followup();
+    let original = conversation
+        .builtin_history
+        .as_ref()
+        .unwrap()
+        .active_branch_id
+        .clone();
+    crate::chat::session_history::select_group_answer(&mut conversation, "group", &error_id)
+        .unwrap();
+    assert_eq!(
+        canonical_context_texts(&conversation),
+        ["question", "followup"]
+    );
+    crate::chat::session_history::select_group_answer(&mut conversation, "group", "answer")
+        .unwrap();
+    assert_eq!(
+        canonical_context_texts(&conversation),
+        ["question", "answer", "followup"]
+    );
+    let mut restored: Conversation =
+        serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
+    crate::chat::session_history::switch_branch(&mut restored, &original).unwrap();
+    assert_eq!(
+        canonical_context_texts(&restored),
+        ["question", "answer", "followup"]
+    );
+}
+
+#[test]
+fn canonical_ui_only_error_deletion_restores_successful_fallback() {
+    let (mut conversation, error_id) = canonical_error_group_with_followup();
+    crate::chat::session_history::select_group_answer(&mut conversation, "group", &error_id)
+        .unwrap();
+    crate::chat::session_history::delete_answer(&mut conversation, &error_id).unwrap();
+    assert_eq!(
+        canonical_context_texts(&conversation),
+        ["question", "answer", "followup"]
+    );
+    assert!(!conversation
+        .messages
+        .iter()
+        .any(|message| message.id == error_id));
+}
+
+#[test]
+fn canonical_ui_only_error_can_be_edited_on_selected_and_inactive_branches() {
+    for selected in [false, true] {
+        let (mut conversation, error_id) = canonical_error_group_with_followup();
+        if selected {
+            crate::chat::session_history::select_group_answer(
+                &mut conversation,
+                "group",
+                &error_id,
+            )
+            .unwrap();
+        }
+        crate::chat::session_history::edit_message(&mut conversation, &error_id, "corrected")
+            .unwrap();
+        assert_eq!(
+            canonical_context_texts(&conversation),
+            if selected {
+                vec!["question", "corrected", "followup"]
+            } else {
+                vec!["question", "answer", "followup"]
+            }
+        );
+        crate::chat::session_history::select_group_answer(&mut conversation, "group", &error_id)
+            .unwrap();
+        assert_eq!(
+            canonical_context_texts(&conversation),
+            ["question", "corrected", "followup"]
+        );
+        assert!(!canonical_context_texts(&conversation)
+            .iter()
+            .any(|text| text.contains("UI_ONLY_FAILURE")));
+    }
+}
+
+#[test]
+fn canonical_ui_only_error_regeneration_and_fork_use_the_user_anchor() {
+    let (mut conversation, error_id) = canonical_error_group_with_followup();
+    crate::chat::session_history::prepare_regenerate(&mut conversation.clone(), &error_id, None)
+        .unwrap();
+    let retained = vec![
+        conversation.messages[0].clone(),
+        conversation.messages[2].clone(),
+    ];
+    let fork = crate::chat::session_history::fork_prefix(&mut conversation, &retained).unwrap();
+    conversation.messages = retained;
+    conversation.builtin_history = Some(fork);
+    assert_eq!(canonical_context_texts(&conversation), ["question"]);
+    let mut edited = conversation.clone();
+    crate::chat::session_history::edit_message(&mut edited, &error_id, "corrected").unwrap();
+    assert_eq!(canonical_context_texts(&edited), ["question", "corrected"]);
+    crate::chat::session_history::prepare_regenerate(&mut conversation, &error_id, None).unwrap();
+    assert_eq!(canonical_context_texts(&conversation), ["question"]);
+    assert_eq!(conversation.messages.len(), 1);
+}
+
+#[test]
+fn canonical_reply_prefix_readmits_folded_reports_without_restoring_the_original_answer() {
+    let mut conversation = test_conversation_with_messages(vec![
+        test_chat_message("user", "user", "question", 1),
+        test_chat_message("answer", "assistant", "ORIGINAL_ANSWER", 2),
+        test_chat_message("subagent-result-report", "assistant", "folded report", 3),
+    ]);
+    crate::chat::session_history::ensure_migrated(&mut conversation).unwrap();
+    let retained = vec![
+        conversation.messages[0].clone(),
+        conversation.messages[2].clone(),
+    ];
+    let fork = crate::chat::session_history::fork_prefix(&mut conversation, &retained).unwrap();
+    conversation.messages = retained;
+    conversation.builtin_history = Some(fork);
+    assert!(!crate::chat::session_history::needs_report_admission(
+        &conversation
+    ));
+    let request = serde_json::to_string(
+        &build_chat_api_messages(None, "system", &conversation, None, None, &[]).unwrap(),
+    )
+    .unwrap();
+    assert!(request.contains("folded report"), "{request}");
+    assert!(!request.contains("ORIGINAL_ANSWER"), "{request}");
+}
+
+#[test]
+fn canonical_extra_answer_with_folded_report_commits_from_its_prepared_anchor() {
+    use crate::chat::{session_history, storage};
+    let temp = tempfile::tempdir().unwrap();
+    let mut conversation = test_conversation_with_messages(vec![
+        test_chat_message("user", "user", "question", 1),
+        test_chat_message("answer", "assistant", "ORIGINAL_ANSWER", 2),
+        test_chat_message("subagent-result-report", "assistant", "folded report", 3),
+    ]);
+    session_history::ensure_migrated(&mut conversation).unwrap();
+    let selected = conversation
+        .builtin_history
+        .as_ref()
+        .unwrap()
+        .snapshot
+        .active_leaf();
+    let bindings = conversation
+        .builtin_history
+        .as_ref()
+        .unwrap()
+        .bindings
+        .clone();
+    let prep =
+        prepare_reply_with_model(&conversation, "answer", "other", "other", Some("group")).unwrap();
+    let retained = vec![
+        conversation.messages[0].clone(),
+        conversation.messages[2].clone(),
+    ];
+    let prefix =
+        super::mutations::prepare_reply_with_model_history(&mut conversation, &retained).unwrap();
+    assert_eq!(
+        conversation
+            .builtin_history
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .active_leaf(),
+        selected
+    );
+    assert_eq!(
+        conversation.builtin_history.as_ref().unwrap().bindings,
+        bindings
+    );
+    let path = temp.path().join(format!("{}.json", conversation.id));
+    storage::write_conversation_file_at_path(&path, conversation.clone()).unwrap();
+    let mut latest = storage::read_conversation_file(&path, &conversation.id).unwrap();
+    let mut run = prefix.snapshot.into_history();
+    let anchor = run.active_leaf();
+    run.push(crate::chat::agent::history::RuntimeMessage::text(
+        ModelRole::Assistant,
+        "new answer",
+    ));
+    session_history::commit_completed_run(&mut latest, "alternative", &run, anchor, false).unwrap();
+    let mut answer = test_chat_message("alternative", "assistant", "new answer", 4);
+    answer.group_id = Some("group".into());
+    apply_reply_with_model_result(&mut latest, &prep, answer).unwrap();
+    let selected_texts = canonical_context_texts(&latest);
+    assert!(!selected_texts
+        .iter()
+        .any(|text| text.contains("ORIGINAL_ANSWER")));
+    assert_eq!(
+        selected_texts
+            .iter()
+            .filter(|text| text.contains("folded report"))
+            .count(),
+        1
+    );
+    assert!(selected_texts.iter().any(|text| text == "new answer"));
+    session_history::select_group_answer(&mut latest, "group", "answer").unwrap();
+    assert!(canonical_context_texts(&latest)
+        .iter()
+        .any(|text| text == "ORIGINAL_ANSWER"));
+    assert_eq!(
+        canonical_context_texts(&latest)
+            .iter()
+            .filter(|text| text.contains("folded report"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn legacy_extra_answer_persists_the_source_branch_before_running_the_model() {
+    use crate::chat::{session_history, storage};
+    let temp = tempfile::tempdir().unwrap();
+    let mut conversation = test_conversation_with_messages(vec![
+        test_chat_message("user", "user", "question", 1),
+        test_chat_message("answer", "assistant", "original answer", 2),
+    ]);
+    let path = temp.path().join(format!("{}.json", conversation.id));
+    storage::write_conversation_file_at_path(&path, conversation.clone()).unwrap();
+    assert!(storage::read_conversation_file(&path, &conversation.id)
+        .unwrap()
+        .builtin_history
+        .is_none());
+    let prep =
+        prepare_reply_with_model(&conversation, "answer", "other", "other", Some("group")).unwrap();
+    let retained = vec![conversation.messages[0].clone()];
+    let prefix =
+        super::mutations::prepare_reply_with_model_history(&mut conversation, &retained).unwrap();
+    storage::write_conversation_file_at_path(&path, conversation.clone()).unwrap();
+    let mut latest = storage::read_conversation_file(&path, &conversation.id).unwrap();
+    super::messages::validate_reply_history_branch(&latest, &prefix.active_branch_id).unwrap();
+    let mut run = prefix.snapshot.into_history();
+    let anchor = run.active_leaf();
+    run.push(crate::chat::agent::history::RuntimeMessage::text(
+        ModelRole::Assistant,
+        "new answer",
+    ));
+    session_history::commit_completed_run(&mut latest, "alternative", &run, anchor, false).unwrap();
+    let mut answer = test_chat_message("alternative", "assistant", "new answer", 3);
+    answer.group_id = Some("group".into());
+    apply_reply_with_model_result(&mut latest, &prep, answer).unwrap();
+    storage::write_conversation_file_at_path(&path, latest).unwrap();
+    let mut reopened = storage::read_conversation_file(&path, &conversation.id).unwrap();
+    assert_eq!(
+        canonical_context_texts(&reopened),
+        ["question", "new answer"]
+    );
+    session_history::select_group_answer(&mut reopened, "group", "answer").unwrap();
+    assert_eq!(
+        canonical_context_texts(&reopened),
+        ["question", "original answer"]
+    );
+}
+
+#[test]
 fn build_chat_api_messages_replays_hidden_tool_transcript() {
     let conversation = Conversation {
+        builtin_history: None,
         external_history: None,
         external_cwd: None,
         runtime_locked: false,
@@ -2926,6 +3415,7 @@ fn sanitize_image_payloads_replaces_raw_base64_lines() {
 #[test]
 fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
     let conversation = Conversation {
+        builtin_history: None,
             external_history: None,
             external_cwd: None,
             runtime_locked: false,
@@ -3065,6 +3555,7 @@ fn image_token_estimates_follow_provider_dimension_rules() {
 
 fn test_conversation_with_messages(messages: Vec<ChatMessage>) -> Conversation {
     Conversation {
+        builtin_history: None,
         external_history: None,
         external_cwd: None,
         runtime_locked: false,
@@ -3912,7 +4403,7 @@ fn compaction_fix_new_selected_answer_invalidates_saved_tail() {
     .unwrap();
     let mut answer = test_chat_message("answer_b", "assistant", "SELECTED_ANSWER_B", 6);
     answer.group_id = Some("g".into());
-    apply_reply_with_model_result(&mut conversation, &prep, answer);
+    apply_reply_with_model_result(&mut conversation, &prep, answer).unwrap();
     let restored: Conversation =
         serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
     let wire = serde_json::to_string(
@@ -4650,6 +5141,8 @@ fn maintenance_review_history_deletion_rejects_old_delivery_receipts() {
             test_chat_message("user_b", "user", "question B", 3),
             test_chat_message("answer_b", "assistant", "answer B", 4),
         ]);
+        conversation.agent_runtime.kind = crate::chat::types::AgentRuntimeKind::External;
+        conversation.agent_runtime.external_agent_id = Some("claude".into());
         let mut history =
             ExternalHistoryTransition::new(&conversation, ExternalHistoryMethod::NativeRewind);
         let attempt = crate::external_agents::session::HistoryAttempt {

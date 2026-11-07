@@ -327,7 +327,13 @@ pub(super) fn html_render_attachment_name(tool_call: &super::ToolCallRecord) -> 
 /// `model_messages` 的媒体部件，以及压缩快照的媒体引用。
 pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSet<String> {
     let mut referenced = HashSet::new();
-    for message in &conversation.messages {
+    let archived = conversation.builtin_history.iter().flat_map(|history| {
+        history
+            .archived_branches
+            .iter()
+            .flat_map(|branch| &branch.messages)
+    });
+    for message in conversation.messages.iter().chain(archived) {
         for attachment in &message.attachments {
             if !attachment.path.is_empty() {
                 referenced.insert(attachment.path.clone());
@@ -357,6 +363,11 @@ pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSe
                             referenced.insert(path.to_string());
                         }
                     }
+                    crate::chat::model::MessagePart::ImageUrl { url, .. } => {
+                        if let Some(reference) = local_attachment_reference(url) {
+                            referenced.insert(reference.to_string());
+                        }
+                    }
                     // 工具结果里的 artifact 也带 path（与 `tool_calls[].artifacts` 可能不同源）。
                     crate::chat::model::MessagePart::ToolResult { artifacts, .. } => {
                         for artifact in artifacts {
@@ -376,14 +387,28 @@ pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSe
             collect_attachment_uri_names(api_message, &mut referenced);
         }
     }
-    if let Some(replay) = conversation
-        .context_state
-        .summary
-        .as_ref()
-        .and_then(|summary| summary.replay.as_ref())
-    {
-        for message in &replay.messages {
-            collect_attachment_uri_names(message, &mut referenced);
+    let archived_contexts = conversation.builtin_history.iter().flat_map(|state| {
+        state
+            .archived_branches
+            .iter()
+            .map(|branch| &branch.context_state)
+    });
+    for context in std::iter::once(&conversation.context_state).chain(archived_contexts) {
+        if let Some(replay) = context
+            .summary
+            .as_ref()
+            .and_then(|summary| summary.replay.as_ref())
+        {
+            for message in &replay.messages {
+                collect_attachment_uri_names(message, &mut referenced);
+            }
+        }
+    }
+    if let Some(history) = &conversation.builtin_history {
+        for reference in history.snapshot.history().attachment_references() {
+            if let Some(path) = local_attachment_reference(reference.reference) {
+                referenced.insert(path.to_string());
+            }
         }
     }
     referenced
@@ -412,6 +437,14 @@ fn collect_attachment_uri_names(value: &serde_json::Value, out: &mut HashSet<Str
         }
         _ => {}
     }
+}
+
+pub(crate) fn local_attachment_reference(reference: &str) -> Option<&str> {
+    if reference.starts_with("kivio-attachment://") {
+        return attachment_uri_file_name(reference);
+    }
+    (!reference.is_empty() && !reference.contains("://") && !reference.starts_with("data:"))
+        .then_some(reference)
 }
 
 fn attachment_uri_file_name(url: &str) -> Option<&str> {
@@ -870,5 +903,29 @@ mod tests {
         );
         assert!(attachment_uri_file_name("kivio-attachment://image/png/").is_none());
         assert!(attachment_uri_file_name("data:image/png;base64,AAAA").is_none());
+    }
+
+    #[test]
+    fn local_references_exclude_remote_and_inline_urls() {
+        for remote in [
+            "https://example.com/photo.png",
+            "http://example.com/video.mp4",
+            "data:image/png;base64,AA==",
+            "memory://draft",
+        ] {
+            assert_eq!(local_attachment_reference(remote), None);
+        }
+        assert_eq!(
+            local_attachment_reference("kivio-attachment://image/png/msgimg-one.png"),
+            Some("msgimg-one.png")
+        );
+        assert_eq!(
+            local_attachment_reference("msgimg-one.png"),
+            Some("msgimg-one.png")
+        );
+        assert_eq!(
+            local_attachment_reference("kivio-attachment://image/png/"),
+            None
+        );
     }
 }

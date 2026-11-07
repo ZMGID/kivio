@@ -46,6 +46,7 @@ impl Message {
             }),
         );
         let mut input = super::delivery::report_input(&content);
+        input["_ui_message_id"] = json!(format!("subagent-irc-{}", self.id));
         input[super::delivery::REPORT_MESSAGE_ID_KEY] = json!(format!("subagent-irc-{}", self.id));
         input["_subagent_irc_id"] = json!(self.id);
         input

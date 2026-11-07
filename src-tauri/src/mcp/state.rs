@@ -69,6 +69,24 @@ impl McpRuntimeState {
         self.sessions.lock().await.get(server_id).cloned()
     }
 
+    pub(crate) async fn require_current_session(
+        &self,
+        server_id: &str,
+        session: &McpSessionHandle,
+    ) -> Result<(), String> {
+        if self
+            .sessions
+            .lock()
+            .await
+            .get(server_id)
+            .is_some_and(|current| Arc::ptr_eq(current, session))
+        {
+            Ok(())
+        } else {
+            Err("MCP session was disconnected".into())
+        }
+    }
+
     pub(crate) async fn session_entries(&self) -> Vec<(String, McpSessionHandle)> {
         self.sessions
             .lock()
@@ -146,6 +164,11 @@ impl McpRuntimeState {
             .tool_snapshots
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if snapshots.get(&server_id).is_some_and(|snapshot| {
+            snapshot.config_fingerprint == config_fingerprint && snapshot.tools == tools
+        }) {
+            return;
+        }
         snapshots.insert(
             server_id,
             McpToolSnapshot {

@@ -494,6 +494,7 @@ impl AdvisorState {
         let mut sink = DiscardModelSink;
         let request = runtime.generate(
             ModelCall {
+                capabilities: None,
                 provider_id: provider.id.clone(),
                 model: self.model.model.clone(),
                 history: import_history(messages),

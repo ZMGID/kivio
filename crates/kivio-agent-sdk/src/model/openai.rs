@@ -9,8 +9,8 @@ use super::{
 };
 use serde_json::Value;
 
-/// Host-resolved wire options. Per-call provider_options override extra_body;
-/// ToolChoice::None has final precedence over both.
+/// Host-resolved wire defaults. Encoded call options override extra_body,
+/// then per-call provider_options apply; ToolChoice::None has final precedence.
 #[derive(Clone, Debug, Default)]
 pub struct OpenAiChatOptions {
     /// Resolved temperature; None omits the field in request_body.
@@ -83,35 +83,7 @@ impl OpenAiChatProvider {
                 http = http.timeout(timeout);
             }
         }
-        let response = http.send().await.map_err(|error| {
-            ModelError::with_kind(
-                format!("Chat request failed: {error}"),
-                if error.is_timeout() {
-                    super::ModelErrorKind::Timeout
-                } else if error.is_builder() {
-                    super::ModelErrorKind::InvalidRequest
-                } else {
-                    super::ModelErrorKind::Transport
-                },
-            )
-        })?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response
-                .text()
-                .await
-                .map_err(|error| stream_read_error("Chat error body", &error))?;
-            return Err(ModelError::from_provider_http(
-                status.as_u16(),
-                &body,
-                format!(
-                    "Chat API {}: {}",
-                    status.as_u16(),
-                    body.chars().take(500).collect::<String>()
-                ),
-            ));
-        }
-        Ok(response)
+        super::transport::send(http, "Chat").await
     }
 }
 
@@ -148,21 +120,9 @@ impl crate::agent::provider_runtime::ModelRuntime for OpenAiChatProvider {
         sink: &'a mut dyn crate::agent::provider_runtime::ModelOutputSink,
     ) -> crate::agent::provider_runtime::ProviderFuture<'a, Result<GenerateOutput, ModelError>>
     {
-        Box::pin(async move {
-            sink.request_started(&call);
-            let request = crate::agent::history::request_from_history(
-                &call.history,
-                &call.model,
-                call.tools,
-                call.options,
-                call.metadata,
-            );
-            if call.delivery == crate::agent::provider_runtime::ModelDelivery::Collected {
-                LanguageModelProvider::stream(self, request, &mut |_part| Ok(())).await
-            } else {
-                LanguageModelProvider::stream(self, request, sink).await
-            }
-        })
+        Box::pin(crate::agent::provider_runtime::generate_with_provider(
+            self, call, sink,
+        ))
     }
 }
 
@@ -171,12 +131,6 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
         "model": request.model,
         "messages": openai_messages_from_generate_request(request),
     });
-    if request.options.max_tokens > 0 {
-        body["max_tokens"] = Value::from(request.options.max_tokens);
-    }
-    if let Some(temperature) = options.temperature {
-        body["temperature"] = serde_json::json!(temperature);
-    }
     if stream {
         body["stream"] = Value::Bool(true);
         // usage 随流返回（OpenAI 标准参数；AI SDK/opencode 同款）。缺省时部分
@@ -203,6 +157,22 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
             body["prompt_cache_retention"] = Value::String(retention.clone());
         }
     }
+    // 模型级额外请求体字段（model_overrides[model].extra_body）：原样 merge 进 body 根部，
+    // 给严格端点塞标准 schema 外的私有旋钮（NVIDIA NIM / vLLM `chat_template_kwargs` 等）。
+    // 放在单次 provider_options 之前，让显式的单次覆盖仍然最后生效。
+    if let Some(extra) = options.extra_body.as_object() {
+        for (key, value) in extra {
+            body[key] = value.clone();
+        }
+    }
+    if request.options.max_tokens > 0 {
+        body["max_tokens"] = Value::from(request.options.max_tokens);
+    } else {
+        body.as_object_mut().unwrap().remove("max_tokens");
+    }
+    if let Some(temperature) = options.temperature {
+        body["temperature"] = serde_json::json!(temperature);
+    }
     let native_thinking_switch = options.native_thinking_switch;
     if !request.options.thinking_enabled {
         if native_thinking_switch {
@@ -217,14 +187,6 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
     // 代理普遍接受;不发 Qwen/vLLM 私有的 enable_thinking / chat_template_kwargs。
     if let Some(effort) = request.options.thinking_level.as_deref() {
         body["reasoning_effort"] = Value::String(effort.to_string());
-    }
-    // 模型级额外请求体字段（model_overrides[model].extra_body）：原样 merge 进 body 根部，
-    // 给严格端点塞标准 schema 外的私有旋钮（NVIDIA NIM / vLLM `chat_template_kwargs` 等）。
-    // 放在单次 provider_options 之前，让显式的单次覆盖仍然最后生效。
-    if let Some(extra) = options.extra_body.as_object() {
-        for (key, value) in extra {
-            body[key] = value.clone();
-        }
     }
     if let Some(overrides) = request.options.provider_options.as_object() {
         for (key, value) in overrides {

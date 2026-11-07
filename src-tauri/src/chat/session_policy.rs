@@ -23,8 +23,9 @@ pub struct ApplicationRunConfig<'a> {
     pub generation: u64,
     pub provider: ModelProvider,
     pub model: String,
-    pub runtime_messages: Vec<Value>,
+    pub history: kivio_agent_sdk::agent::SessionHistory,
     pub runtime_context: Option<String>,
+    pub(crate) request_projection: Option<crate::chat::context_policy::MainRequestProjection>,
     pub tools: Vec<ChatToolDefinition>,
     pub blocked_tool_calls: Vec<ChatToolDefinition>,
     /// Delegation inherits the mode and the exact MCP authority exposed by this run.
@@ -83,11 +84,8 @@ pub struct ApplicationRunResult {
     /// 本轮**最后一次**模型调用的 usage（真实用量锚点，落盘到 `ChatMessage.anchor_usage`）。
     /// 与累计 `usage` 区分——累计是多步之和会虚高，锚点须是单次调用值。None = provider 未报。
     pub last_step_usage: Option<crate::chat::model::ModelUsage>,
-    /// 本轮发生了上下文压缩（L2 摘要）时，这里携带压缩后的**完整历史**
-    /// （system + 摘要 + 受保护尾段 + 本轮后续消息 + 最终 assistant 回答）。
-    /// 跨轮调用方（kivio-code 交互模式）据此**替换**自己累积的 runtime_messages，
-    /// 让压缩真正跨轮生效；为 None 时维持"追加 api_messages"的旧行为。
-    pub compacted_history: Option<Vec<Value>>,
+    pub history: kivio_agent_sdk::agent::SessionHistory,
+    pub compacted: bool,
     /// Agent-loop L2 compaction boundary for timeline UI persistence.
     pub compaction_boundary: Option<crate::chat::types::CompactionBoundaryRecord>,
     /// Agent-loop L2 compaction summary for `context_state.summary` persistence
@@ -101,13 +99,42 @@ pub struct ApplicationRunResult {
     pub images: Vec<crate::chat::model::GeneratedImageData>,
 }
 
+#[derive(Debug)]
+pub enum ApplicationRunError {
+    Admission(kivio_agent_sdk::agent::AgentAdmissionError),
+    Failed {
+        cause: kivio_agent_sdk::agent::AgentFailure,
+        partial: Box<ApplicationRunResult>,
+    },
+}
+
+impl std::fmt::Display for ApplicationRunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admission(error) => {
+                kivio_agent_sdk::agent::AgentRunError::Admission(error.clone()).fmt(f)
+            }
+            Self::Failed { cause, .. } => cause.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ApplicationRunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Failed { cause, .. } => Some(cause),
+            Self::Admission(_) => None,
+        }
+    }
+}
+
 use crate::chat::agent::{
     control::AgentRunHandle,
     history::RuntimeMessage,
     recovery::{FallbackReason, RecoveryDecision, RecoveryFailure, RecoverySnapshot},
     session::{
         ContextPreparation, ContextReason, ContextSnapshot, PolicyFuture, PolicyProgress,
-        PromptUpdate, RunSnapshot, SessionPolicy, ToolsRejected,
+        PromptUpdate, RunSnapshot, SessionPolicy, ToolsRejected, TurnDecision,
     },
 };
 
@@ -324,8 +351,41 @@ impl SessionPolicy for AppSessionPolicy<'_> {
         self.todo.before_step(run)
     }
 
-    fn before_finish(&mut self, run: RunSnapshot<'_>) -> Option<RuntimeMessage> {
-        self.todo.before_finish(run)
+    fn transform_context<'a>(
+        &'a mut self,
+        history: &'a [RuntimeMessage],
+        _control: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
+        Box::pin(async move { self.context.transform_context(history) })
+    }
+
+    fn finish_turn<'a>(
+        &'a mut self,
+        run: RunSnapshot<'a>,
+        _control: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
+        Box::pin(async move {
+            let tool_turn = run
+                .history
+                .iter()
+                .rev()
+                .filter_map(RuntimeMessage::model_message)
+                .find(|message| message.role == crate::chat::model::ModelRole::Assistant)
+                .is_some_and(|message| {
+                    message.content.iter().any(|part| {
+                        matches!(part, crate::chat::model::MessagePart::ToolCall { .. })
+                    })
+                });
+            if tool_turn {
+                return Ok(TurnDecision::Default);
+            }
+            Ok(self
+                .todo
+                .final_reminder(run)
+                .map_or(TurnDecision::Default, |message| {
+                    TurnDecision::Continue(vec![message])
+                }))
+        })
     }
 }
 
@@ -395,11 +455,8 @@ pub(crate) async fn run_session(
     dispatcher: &dyn crate::chat::tool_runtime::ToolDispatcher,
     sink: &dyn crate::chat::agent::events::AgentEventSink,
     control: crate::chat::agent::control::AgentRunHandle<'_>,
-) -> Result<ApplicationRunResult, String> {
-    use crate::chat::agent::{
-        history::{export_history, import_history},
-        types::AgentRunConfig,
-    };
+) -> Result<ApplicationRunResult, ApplicationRunError> {
+    use crate::chat::agent::types::AgentRunConfig;
     use crate::chat::tool_runtime::{ApplicationToolExecutor, ToolAuthority};
     config
         .settings
@@ -421,7 +478,7 @@ pub(crate) async fn run_session(
         provider_label: config.provider.name.clone(),
         api_format: config.provider.api_format.clone(),
         model: config.model.clone(),
-        runtime_messages: import_history(std::mem::take(&mut config.runtime_messages)),
+        history: std::mem::take(&mut config.history),
         tools: config
             .tools
             .iter()
@@ -432,12 +489,20 @@ pub(crate) async fn run_session(
             .iter()
             .map(|tool| tool.for_run(&config.settings))
             .collect(),
-        thinking_enabled: config.thinking_enabled,
-        thinking_level: config.thinking_level.clone(),
-        builtin_web_search: config.builtin_web_search_active(),
-        max_output_tokens: config.max_output_tokens,
+        options: crate::chat::model::GenerateOptions {
+            thinking_enabled: config.thinking_enabled,
+            thinking_level: config.thinking_level.clone(),
+            builtin_web_search: config.builtin_web_search_active(),
+            max_tokens: config.max_output_tokens,
+            ..Default::default()
+        },
+        capabilities: crate::chat::model_metadata::agent_model_capabilities(
+            &config.provider,
+            &config.model,
+        ),
         initial_cache_usage: config.initial_cache_usage,
         report_context: config.depth == 0,
+        limits: Default::default(),
     };
     let executor = ApplicationToolExecutor {
         settings: &config.settings,
@@ -458,12 +523,46 @@ pub(crate) async fn run_session(
     };
     let mut policy = AppSessionPolicy::new(&config, host);
     let result =
-        crate::chat::agent::run_agent_loop(core, host, &executor, &mut policy, sink, control)
-            .await?;
-    let (compaction_boundary, compaction_summary) = policy.context.finish_run(&result.history);
+        match crate::chat::agent::run_agent_loop(core, host, &executor, &mut policy, sink, control)
+            .await
+        {
+            Ok(result) => result,
+            Err(kivio_agent_sdk::agent::AgentRunError::Failed { cause, partial }) => {
+                if !partial.generated_history.is_empty()
+                    || !partial.tool_records.is_empty()
+                    || !partial.segments.is_empty()
+                {
+                    host.persist_partial_assistant(
+                        &config.conversation_id,
+                        &config.message_id,
+                        &partial.tool_records,
+                        &partial.segments,
+                        &partial.generated_history,
+                        &partial.history,
+                    )
+                    .await;
+                }
+                return Err(ApplicationRunError::Failed {
+                    cause,
+                    partial: Box::new(application_result(*partial, &mut policy)),
+                });
+            }
+            Err(kivio_agent_sdk::agent::AgentRunError::Admission(error)) => {
+                return Err(ApplicationRunError::Admission(error));
+            }
+        };
+    Ok(application_result(result, &mut policy))
+}
+
+fn application_result(
+    result: crate::chat::agent::types::AgentRunResult,
+    policy: &mut AppSessionPolicy<'_>,
+) -> ApplicationRunResult {
+    use crate::chat::agent::history::export_history;
+    let (compaction_boundary, compaction_summary) =
+        policy.context.finish_run(result.history.context());
     let degraded = policy.recovery.take_degraded();
-    let compacted_history = result.compacted.then(|| export_history(&result.history));
-    Ok(ApplicationRunResult {
+    ApplicationRunResult {
         content: result.content,
         reasoning: result.reasoning,
         tool_records: result.tool_records,
@@ -473,10 +572,11 @@ pub(crate) async fn run_session(
         usage: result.usage,
         cache_pairs: result.cache_pairs,
         last_step_usage: result.last_step_usage,
-        compacted_history,
+        history: result.history,
+        compacted: result.compacted,
         compaction_boundary,
         compaction_summary,
         degraded,
         images: result.images,
-    })
+    }
 }

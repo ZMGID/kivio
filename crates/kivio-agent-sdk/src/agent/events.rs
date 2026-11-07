@@ -15,8 +15,10 @@ pub struct AgentRunIdentity<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentRunOutcome {
     Completed,
+    Recovered,
+    CompactionBlocked,
     Cancelled,
-    Failed(String),
+    Failed(super::error::AgentFailure),
     Dropped,
 }
 

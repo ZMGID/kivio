@@ -11,6 +11,29 @@ use super::is_missing_stream_terminal_error;
 /// Text used when an image has no bytes available for provider encoding.
 pub const MISSING_IMAGE_PLACEHOLDER: &str = "[图片已不可用（附件文件缺失）]";
 
+/// Enforce the existing 20 MB inline-video request budget without copying the encoded body.
+pub fn validate_video_body(body: &Value) -> Result<(), ModelError> {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, body)
+        .map_err(|error| ModelError::new(error.to_string()))?;
+    if counter.0 > 20_000_000 {
+        return Err(ModelError::new(
+            "包含视频的请求超过 20 MB，请裁剪视频或减少附件及上下文。",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelRole {
@@ -31,8 +54,60 @@ impl ModelRole {
     }
 }
 
+/// Opaque tool-call replay data with its origin. Old string-only history remains readable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum ProviderSignature {
+    Scoped {
+        value: String,
+        model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_id: Option<String>,
+    },
+    Legacy(String),
+}
+
+impl ProviderSignature {
+    pub fn value(&self) -> &str {
+        match self {
+            Self::Scoped { value, .. } | Self::Legacy(value) => value,
+        }
+    }
+
+    /// A missing provider identity retains legacy unscoped behavior; a known model must match.
+    pub fn replay_for(&self, model: &str, provider_id: Option<&str>) -> Option<&str> {
+        match self {
+            Self::Scoped {
+                model: source_model,
+                provider_id: source_provider,
+                ..
+            } if source_model != model
+                || source_provider
+                    .as_deref()
+                    .zip(provider_id)
+                    .is_some_and(|(source, current)| source != current) =>
+            {
+                None
+            }
+            _ => Some(self.value()),
+        }
+    }
+}
+
+impl From<String> for ProviderSignature {
+    fn from(value: String) -> Self {
+        Self::Legacy(value)
+    }
+}
+
+impl From<&str> for ProviderSignature {
+    fn from(value: &str) -> Self {
+        Self::Legacy(value.to_string())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MessagePart {
     /// Runtime video bytes with an optional host-owned persistence reference.
     Video {
@@ -69,12 +144,9 @@ pub enum MessagePart {
         name: String,
         arguments: Value,
         arguments_raw: String,
-        /// Provider-specific opaque signature that must be echoed back when this
-        /// tool call is replayed (Gemini 3.x `thoughtSignature`: required on
-        /// `functionCall` parts in follow-up requests, else 400). Other providers
-        /// leave this `None` and ignore it.
+        /// Provider-local replay data; adapters check its origin before encoding.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        signature: Option<String>,
+        signature: Option<ProviderSignature>,
     },
     ToolResult {
         tool_call_id: String,
@@ -130,6 +202,7 @@ pub enum MessagePart {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelArtifact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -145,6 +218,7 @@ pub struct ModelArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelMessage {
     pub role: ModelRole,
     pub content: Vec<MessagePart>,
@@ -214,6 +288,17 @@ pub enum ToolChoice {
     None,
 }
 
+/// Host-resolved capabilities of the selected model. `None` means unknown;
+/// only `Some(false)` explicitly rules out a capability. The SDK does not infer model names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCapabilities {
+    /// Function tool calling, separate from provider-side web search.
+    pub tools: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub builtin_web_search: Option<bool>,
+    pub vision: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateOptions {
     /// Per-call temperature. Providers may use an explicitly configured fallback when absent.
@@ -231,6 +316,8 @@ pub struct GenerateOptions {
     pub builtin_web_search: bool,
     #[serde(default)]
     pub tool_choice: ToolChoice,
+    /// Per-call protocol extensions override provider defaults and encoded options;
+    /// mandatory tool prohibition applies last. Hosts validate unknown vendor fields.
     #[serde(default)]
     pub provider_options: Value,
 }
@@ -315,11 +402,9 @@ pub struct PendingToolCall {
     pub arguments: Value,
     pub arguments_raw: String,
     pub arguments_parse_error: Option<String>,
-    /// Provider-specific opaque signature echoed back on replay (Gemini 3.x
-    /// `thoughtSignature`; other providers leave `None`). Rides through the
-    /// stream accumulator into typed history so tool-call turns replay intact.
+    /// Provider-local replay data retained with the tool call through typed history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature: Option<String>,
+    pub signature: Option<ProviderSignature>,
 }
 
 impl PendingToolCall {
@@ -1081,11 +1166,9 @@ pub fn pending_tool_calls_from_openai_message(message: &Value) -> Vec<PendingToo
                         arguments,
                         arguments_raw,
                         arguments_parse_error,
-                        // Gemini thoughtSignature（自定义键）随回放带回。
                         signature: call
                             .get("thought_signature")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_string),
+                            .and_then(|value| serde_json::from_value(value.clone()).ok()),
                     })
                 })
                 .collect()
@@ -1208,9 +1291,10 @@ fn openai_messages_from_model_message(
                         "arguments": arguments_raw,
                     }
                 });
-                // Gemini thoughtSignature 挂在自定义键上带过存储/回放（其他 provider 忽略）。
-                if let Some(signature) = signature {
-                    call["thought_signature"] = Value::String(signature.clone());
+                if preserve_legacy_metadata {
+                    if let Some(signature) = signature {
+                        call["thought_signature"] = serde_json::json!(signature);
+                    }
                 }
                 tool_calls.push(call);
             }
@@ -1429,6 +1513,88 @@ fn responses_items_from_model_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn video_body_limit_counts_json_bytes_in_decimal_mb() {
+        assert!(validate_video_body(&Value::String("x".repeat(19_999_998))).is_ok());
+        assert!(validate_video_body(&Value::String("x".repeat(19_999_999))).is_err());
+    }
+
+    #[test]
+    fn tool_signature_origins_survive_history_without_leaking_to_chat_wire() {
+        let scoped = ProviderSignature::Scoped {
+            value: "opaque".into(),
+            model: "model-a".into(),
+            provider_id: Some("provider-a".into()),
+        };
+        assert_eq!(
+            scoped.replay_for("model-a", Some("provider-a")),
+            Some("opaque")
+        );
+        assert_eq!(scoped.replay_for("model-b", Some("provider-a")), None);
+        assert_eq!(scoped.replay_for("model-a", Some("provider-b")), None);
+        assert_eq!(scoped.replay_for("model-a", None), Some("opaque"));
+        let legacy: ProviderSignature =
+            serde_json::from_value(serde_json::json!("legacy")).unwrap();
+        assert_eq!(
+            legacy.replay_for("any-model", Some("any-provider")),
+            Some("legacy")
+        );
+
+        for signature in [legacy, scoped] {
+            let call = PendingToolCall {
+                id: "call-1".into(),
+                function_name: "echo".into(),
+                arguments: serde_json::json!({"text":"hi"}),
+                arguments_raw: r#"{"text":"hi"}"#.into(),
+                arguments_parse_error: None,
+                signature: Some(signature.clone()),
+            };
+            let history = vec![
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: vec![call.replay_part()],
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: vec![MessagePart::ToolResult {
+                        tool_call_id: "call-1".into(),
+                        content: "hi".into(),
+                        is_error: false,
+                        artifacts: vec![],
+                    }],
+                },
+            ];
+            let serialized = serde_json::to_string(&history).unwrap();
+            let restored: Vec<ModelMessage> = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(restored, history);
+            let stored = openai_messages_from_model_messages(&history);
+            assert_eq!(
+                pending_tool_calls_from_openai_message(&stored[0])[0]
+                    .signature
+                    .as_ref(),
+                Some(&signature)
+            );
+            assert_eq!(model_messages_from_openai_messages(stored), history);
+            let request = GenerateRequest {
+                model: "another-protocol".into(),
+                system: String::new(),
+                messages: restored,
+                tools: vec![],
+                options: Default::default(),
+                metadata: Default::default(),
+            };
+            let wire = openai_messages_from_generate_request(&request);
+            assert!(wire[0]["tool_calls"][0].get("thought_signature").is_none());
+            assert_eq!(wire[0]["tool_calls"][0]["id"], "call-1");
+            assert_eq!(wire[1]["tool_call_id"], "call-1");
+            let anthropic =
+                super::super::anthropic::anthropic_messages_from_generate_request(&request);
+            assert!(!serde_json::to_string(&anthropic)
+                .unwrap()
+                .contains(signature.value()));
+        }
+    }
 
     fn generate_request_from_openai_messages(
         model: &str,
