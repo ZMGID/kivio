@@ -2042,6 +2042,29 @@ pub(crate) async fn chat_switch_branch(
     Ok(serde_json::json!({"success":true,"conversation":conversation,"warning":warning}))
 }
 
+pub(super) fn prepare_reply_with_model_history(
+    conversation: &mut Conversation,
+    retained: &[ChatMessage],
+) -> Result<Box<crate::chat::session_history::BuiltinHistory>, String> {
+    crate::chat::session_history::admit_pending_reports(conversation)?;
+    let mut prefix =
+        crate::chat::session_history::fork_prefix(&mut conversation.clone(), retained)?;
+    prefix.active_branch_id = conversation
+        .builtin_history
+        .as_ref()
+        .ok_or("Missing canonical history")?
+        .active_branch_id
+        .clone();
+    let state = conversation
+        .builtin_history
+        .as_mut()
+        .expect("Migrated history");
+    let mut shared = prefix.snapshot.clone().into_history();
+    shared.switch_branch(state.snapshot.active_leaf())?;
+    state.snapshot = shared.snapshot()?;
+    Ok(prefix)
+}
+
 /// 对最后一轮同一问题再请一个模型作答。已有回答保留，新回答作为多答组的一列。
 #[tauri::command]
 pub(crate) async fn chat_reply_with_model(
@@ -2124,16 +2147,31 @@ pub(crate) async fn chat_reply_with_model(
     arm_conversation
         .messages
         .extend(removed.into_iter().filter(is_subagent_report));
-    if !arm_conversation.agent_runtime.is_external() {
-        let mut prefix = crate::chat::session_history::fork_prefix(
-            &mut conversation.clone(),
-            &arm_conversation.messages,
-        )?;
-        if let Some(history) = &conversation.builtin_history {
-            prefix.active_branch_id = history.active_branch_id.clone();
+    let mut prefix = None;
+    let prepared = repository
+        .mutate_expected(
+            &app,
+            &conversation_id,
+            Some(conversation.revision),
+            |latest| {
+                prefix = Some(prepare_reply_with_model_history(
+                    latest,
+                    &arm_conversation.messages,
+                )?);
+                Ok(())
+            },
+        )
+        .await;
+    let preparation_warning;
+    (conversation, preparation_warning) = match prepared {
+        Ok(latest) => (latest, None),
+        Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+            let (latest, warning) = crate::chat::repository::recover_committed(&app, error).await?;
+            (latest, Some(warning))
         }
-        arm_conversation.builtin_history = Some(prefix);
-    }
+        Err(error) => return Err(crate::chat::repository::repository_error(error)),
+    };
+    arm_conversation.builtin_history = prefix;
 
     let arm = ReplyArm {
         group_id: prep.group_id.clone(),
@@ -2190,6 +2228,7 @@ pub(crate) async fn chat_reply_with_model(
             return Ok(serde_json::json!({
                 "success": true,
                 "conversation": latest,
+                "warning": preparation_warning,
             }));
         }
         Ok(result) => {
@@ -2218,6 +2257,7 @@ pub(crate) async fn chat_reply_with_model(
             return Ok(serde_json::json!({
                 "success": true,
                 "conversation": latest,
+                "warning": preparation_warning,
             }));
         }
         Err(err) => {
@@ -2243,6 +2283,7 @@ pub(crate) async fn chat_reply_with_model(
             "success": false,
             "error": "换模型回答失败",
             "conversation": latest,
+            "warning": preparation_warning,
         }));
     };
 
@@ -2282,10 +2323,16 @@ pub(crate) async fn chat_reply_with_model(
         })
         .await;
     let (mut latest, warning) = match applied {
-        Ok(latest) => (latest, None),
+        Ok(latest) => (latest, preparation_warning),
         Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
             let (latest, warning) = crate::chat::repository::recover_committed(&app, error).await?;
-            (latest, Some(warning))
+            (
+                latest,
+                Some(match preparation_warning {
+                    Some(previous) => format!("{previous}\n{warning}"),
+                    None => warning,
+                }),
+            )
         }
         Err(error) => return Err(crate::chat::repository::repository_error(error)),
     };

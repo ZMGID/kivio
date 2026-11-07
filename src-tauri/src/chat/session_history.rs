@@ -760,13 +760,60 @@ fn range_messages(
         .collect())
 }
 
+fn message_parent(conversation: &Conversation, ui_id: &str) -> Result<Option<EntryId>, String> {
+    let index = conversation
+        .messages
+        .iter()
+        .position(|message| message.id == ui_id)
+        .ok_or("Unknown message")?;
+    let state = conversation
+        .builtin_history
+        .as_ref()
+        .ok_or("Missing canonical history")?;
+    let history = state.snapshot.clone().into_history();
+    if let Some(range) = state.bindings.get(ui_id).copied().flatten() {
+        return history
+            .entries()
+            .iter()
+            .find(|entry| entry.id == range.first)
+            .map(|entry| entry.parent_id)
+            .ok_or_else(|| "Missing message binding".into());
+    }
+    let group = conversation.messages[index].group_id.as_ref();
+    let active: HashSet<_> = history.active_path().iter().map(|entry| entry.id).collect();
+    for message in conversation.messages[..index].iter().rev() {
+        if message.role == "assistant" && group.is_some() && message.group_id.as_ref() == group {
+            continue;
+        }
+        if let Some(range) = state.bindings.get(&message.id).copied().flatten() {
+            if active.contains(&range.last) {
+                return Ok(Some(range.last));
+            }
+        }
+    }
+    Ok(history.active_path().first().and_then(|entry| {
+        matches!(&entry.kind, SessionEntryKind::Message(message) if message.role().is_none())
+            .then_some(entry.id)
+    }))
+}
+
 /// Replays immutable facts after a changed answer without carrying its old summary forward.
 fn replace_range(
-    state: &mut BuiltinHistory,
+    conversation: &mut Conversation,
     ui_id: &str,
     replacement: Vec<RuntimeMessage>,
     reuse: Option<EntryRange>,
 ) -> Result<(), String> {
+    let empty_parent = message_parent(conversation, ui_id)?;
+    let selected_empty = conversation
+        .messages
+        .iter()
+        .find(|message| message.id == ui_id)
+        .is_some_and(|message| !group_answer_excluded_from_context(conversation, message));
+    let state = conversation
+        .builtin_history
+        .as_mut()
+        .ok_or("Missing canonical history")?;
     let range = state.bindings.get(ui_id).copied().flatten();
     let mut history = state.snapshot.clone().into_history();
     let path: Vec<_> = history.active_path().into_iter().cloned().collect();
@@ -803,7 +850,17 @@ fn replace_range(
             .ok_or("Missing message binding")?;
         (first.parent_id, Vec::new())
     } else {
-        return Err("UI-only messages cannot replace model facts".into());
+        let start = empty_parent
+            .and_then(|parent| path.iter().position(|entry| entry.id == parent))
+            .map_or(0, |index| index + 1);
+        (
+            empty_parent,
+            if selected_empty {
+                path[start..].to_vec()
+            } else {
+                Vec::new()
+            },
+        )
     };
     history.switch_branch(parent)?;
     let reusable = reuse.filter(|range| {
@@ -828,7 +885,8 @@ fn replace_range(
         }
         ids.insert(entry.id, history.active_leaf().expect("Copied entry"));
     }
-    if selected.is_none() {
+    let changes_active = selected.is_some() || (range.is_none() && selected_empty);
+    if !changes_active {
         history.switch_branch(old_leaf)?;
     }
     let snapshot = history.snapshot()?;
@@ -837,7 +895,7 @@ fn replace_range(
         binding.last = ids.get(&binding.last).copied().unwrap_or(binding.last);
     }
     state.bindings.insert(ui_id.into(), new_range);
-    if selected.is_some() {
+    if changes_active {
         refresh_active_bindings(state, &history);
     }
     state.snapshot = snapshot;
@@ -887,12 +945,7 @@ pub(crate) fn edit_message(
         replacement.push(tag(RuntimeMessage::text(role, content), ui_id));
     }
     archive_branch(&mut candidate)?;
-    replace_range(
-        candidate.builtin_history.as_mut().expect("Migrated"),
-        ui_id,
-        replacement,
-        None,
-    )?;
+    replace_range(&mut candidate, ui_id, replacement, None)?;
     candidate.messages[index].content = content.into();
     if candidate.builtin_history.as_ref().is_some_and(|state| {
         state
@@ -935,11 +988,12 @@ pub(crate) fn select_group_answer(
         return Ok(());
     }
     archive_branch(&mut candidate)?;
-    let state = candidate.builtin_history.as_mut().expect("Migrated");
+    let state = candidate.builtin_history.as_ref().expect("Migrated");
     let reuse = state.bindings.get(ui_id).copied().flatten();
     let replacement = range_messages(&state.snapshot.clone().into_history(), reuse)?;
     let previous_binding = state.bindings.get(&previous).copied().flatten();
-    replace_range(state, &previous, replacement, reuse)?;
+    replace_range(&mut candidate, &previous, replacement, reuse)?;
+    let state = candidate.builtin_history.as_mut().expect("Migrated");
     let selected_binding = state.bindings.get(&previous).copied().flatten();
     state.bindings.insert(previous, previous_binding);
     state.bindings.insert(ui_id.into(), selected_binding);
@@ -959,6 +1013,7 @@ pub(crate) fn delete_answer(conversation: &mut Conversation, ui_id: &str) -> Res
         .ok_or("Unknown assistant answer")?;
     let selected = !group_answer_excluded_from_context(&candidate, &candidate.messages[index]);
     archive_branch(&mut candidate)?;
+    let before_removal = candidate.clone();
     let removed = candidate.messages.remove(index);
     if let Some(group) = &removed.group_id {
         if candidate
@@ -981,18 +1036,19 @@ pub(crate) fn delete_answer(conversation: &mut Conversation, ui_id: &str) -> Res
                 })
             })
             .map(|m| m.id.clone());
-        let state = candidate.builtin_history.as_mut().expect("Migrated");
+        let state = candidate.builtin_history.as_ref().expect("Migrated");
         let reuse = fallback
             .as_ref()
             .and_then(|id| state.bindings.get(id).copied().flatten());
         let replacement = range_messages(&state.snapshot.clone().into_history(), reuse)?;
-        if state.bindings.get(ui_id).copied().flatten().is_some() {
-            replace_range(state, ui_id, replacement, reuse)?;
-            if let Some(fallback) = fallback {
-                state
-                    .bindings
-                    .insert(fallback, state.bindings.get(ui_id).copied().flatten());
-            }
+        let mut replacement_view = before_removal;
+        replace_range(&mut replacement_view, ui_id, replacement, reuse)?;
+        candidate.builtin_history = replacement_view.builtin_history;
+        let state = candidate.builtin_history.as_mut().expect("Migrated");
+        if let Some(fallback) = fallback {
+            state
+                .bindings
+                .insert(fallback, state.bindings.get(ui_id).copied().flatten());
         }
         candidate.invalidate_summary_from(index);
     }
@@ -1081,20 +1137,10 @@ pub(crate) fn prepare_regenerate(
     };
     let state = candidate.builtin_history.as_ref().expect("Migrated");
     let mut history = state.snapshot.clone().into_history();
-    let range = state
-        .bindings
-        .get(ui_id)
-        .copied()
-        .flatten()
-        .ok_or("Message has no model entry")?;
-    let parent = history
-        .entries()
-        .iter()
-        .find(|entry| entry.id == range.first)
-        .ok_or("Unknown entry")?
-        .parent_id;
+    let range = state.bindings.get(ui_id).copied().flatten();
+    let parent = message_parent(&candidate, ui_id)?;
     history.switch_branch(if user && new_content.is_none() {
-        Some(range.last)
+        Some(range.ok_or("User message has no model entry")?.last)
     } else {
         parent
     })?;
@@ -1195,7 +1241,12 @@ pub(crate) fn fork_prefix(
     state
         .bindings
         .retain(|id, _| retained_ids.contains(id.as_str()));
-    Ok(state)
+    let mut fork = source.clone();
+    fork.messages = retained.to_vec();
+    fork.builtin_history = Some(state);
+    admit_pending_reports(&mut fork)?;
+    fork.builtin_history
+        .ok_or_else(|| "Missing fork history".into())
 }
 
 pub(crate) fn reset_context(conversation: &mut Conversation) -> Result<(), String> {
