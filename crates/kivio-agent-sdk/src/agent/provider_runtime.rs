@@ -45,6 +45,26 @@ pub trait ModelOutputSink: StreamSink {
     fn draft_snapshot(&self) -> Vec<(String, String)>;
 }
 
+pub(crate) async fn generate_with_provider(
+    provider: &(dyn crate::model::LanguageModelProvider + Sync),
+    call: ModelCall,
+    sink: &mut dyn ModelOutputSink,
+) -> Result<GenerateOutput, ModelError> {
+    sink.request_started(&call);
+    let request = super::history::request_from_history(
+        &call.history,
+        &call.model,
+        call.tools,
+        call.options,
+        call.metadata,
+    );
+    if call.delivery == ModelDelivery::Collected {
+        provider.stream(request, &mut |_part| Ok(())).await
+    } else {
+        provider.stream(request, sink).await
+    }
+}
+
 pub struct DiscardModelSink;
 
 impl StreamSink for DiscardModelSink {

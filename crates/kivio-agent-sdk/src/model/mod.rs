@@ -1,7 +1,9 @@
 pub mod context_usage;
 pub mod error;
 pub mod openai;
+pub mod responses;
 pub mod sse;
+mod transport;
 pub mod types;
 pub mod usage;
 

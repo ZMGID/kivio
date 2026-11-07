@@ -4,7 +4,7 @@ This reference describes the SDK v2 working API (not yet published). [The README
 
 ## Public interfaces
 
-`agent::run_agent_loop` combines a `ModelRuntime`, `ToolExecutor`, `AgentHost`, `SessionPolicy`, `AgentEventSink`, and `AgentRunHandle`. `agent::RuntimeMessage` carries typed model history and opaque host source metadata. The `model` module provides normalized model types and `model::openai::OpenAiChatProvider`. The `tools` module provides tool definitions, argument schemas, and tool output.
+`agent::run_agent_loop` combines a `ModelRuntime`, `ToolExecutor`, `AgentHost`, `SessionPolicy`, `AgentEventSink`, and `AgentRunHandle`. `agent::RuntimeMessage` carries typed model history and opaque host source metadata. The `model` module provides normalized model types and `model::openai::OpenAiChatProvider` and `model::responses::OpenAiResponsesProvider`. The `tools` module provides tool definitions, argument schemas, and tool output.
 
 Rustdoc lists the exported items. Other public modules contain lower-level stream, protocol, and loop helpers. Their visibility does not provide a stable compatibility guarantee during this alpha. Private and `pub(crate)` modules are implementation details. Consumers use the crate dependency and public imports, rather than compiling SDK source files directly.
 
@@ -112,11 +112,15 @@ Provider calls return `ModelError` with `kind`, an optional HTTP `status`, an op
 
 `run_agent_loop` returns `Result<AgentRunResult, AgentRunError>`. `Admission` means no run lifecycle started. `Failed { cause, partial }` retains completed tool work, history, segments, images and reported usage. The caller owns saving that partial result. `AgentFailure::Model` preserves `ModelError` and the failure stage; `Host` identifies the failed host operation; `InvalidOutput` identifies invalid final output. A successful Rust `Result` can still have status `Cancelled`, `Failed(AgentFailure)`, or `CompactionBlocked`. `Recovered` identifies a policy-assisted recovery. Consumers inspect the status as well as the outer result. Tool failures appear in tool records and feedback, so a model can finish after a failed tool.
 
-The standalone `OpenAiChatProvider` calls the supplied client's `send()` once per provider invocation. It performs no SDK-level retry, key rotation, or cache fallback. The client can still retry or follow redirects. Reqwest's default retry policy includes safe protocol failures; a host that requires retries to be disabled sets `ClientBuilder::retry(reqwest::retry::never())`. Redirect policy is configured separately. The agent loop can issue further requests for tool rounds, queued input, empty-response handling, or policy-directed recovery. Hosts own the combined retry budget and output withdrawal.
+The standalone Chat and Responses providers call the supplied client's `send()` once per provider invocation. It performs no SDK-level retry, key rotation, or cache fallback. The client can still retry or follow redirects. Reqwest's default retry policy includes safe protocol failures; a host that requires retries to be disabled sets `ClientBuilder::retry(reqwest::retry::never())`. Redirect policy is configured separately. The agent loop can issue further requests for tool rounds, queued input, empty-response handling, or policy-directed recovery. Hosts own the combined retry budget and output withdrawal.
 
 ## Credentials and transport
 
 `OpenAiChatConfig.endpoint` is the complete Chat Completions URL. The SDK does not append `/v1/chat/completions`. `api_key` supplies optional bearer authentication, and `headers` supplies host-resolved headers. The caller owns conflicting authentication headers and the request body's extra options. The SDK does not read environment variables, application settings, or credential files.
+
+`OpenAiResponsesConfig` uses the same explicit transport fields and a complete Responses URL. Its `options` selects OpenAI or xAI wire format, encrypted reasoning replay, cache fields, resolved temperature and default extra body fields. Video input is rejected before sending; unsupported content is not silently substituted. Both providers apply host defaults before encoded call options, then explicit `provider_options`, with tool prohibition last.
+
+Responses JSON summaries and encrypted replay items are separate outputs and both survive decoding. A complete JSON response may omit `status`, as in the [official Response type](https://github.com/openai/openai-node/blob/master/src/resources/responses/responses.ts); the SDK retains that compatibility. Streamed responses still require their terminal event, including when SSE is returned to buffered generation.
 
 The host supplies `reqwest::Client` and selects proxy behavior, TLS, connection limits, and stream timeouts. `OpenAiChatConfig.request_timeout` applies only to buffered generation. The agent runtime uses streaming generation, including collected delivery, so it relies on the client configuration for its timeout.
 

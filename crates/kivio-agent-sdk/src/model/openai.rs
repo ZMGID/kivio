@@ -83,56 +83,7 @@ impl OpenAiChatProvider {
                 http = http.timeout(timeout);
             }
         }
-        let response = http.send().await.map_err(|error| {
-            ModelError::with_kind(
-                format!("Chat request failed: {error}"),
-                if error.is_timeout() {
-                    super::ModelErrorKind::Timeout
-                } else if error.is_builder() {
-                    super::ModelErrorKind::InvalidRequest
-                } else {
-                    super::ModelErrorKind::Transport
-                },
-            )
-        })?;
-        let status = response.status();
-        if !status.is_success() {
-            let retry_after = response
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| {
-                    value
-                        .parse::<u64>()
-                        .ok()
-                        .map(std::time::Duration::from_secs)
-                        .or_else(|| {
-                            chrono::DateTime::parse_from_rfc2822(value)
-                                .ok()
-                                .map(|date| {
-                                    (date.with_timezone(&chrono::Utc) - chrono::Utc::now())
-                                        .to_std()
-                                        .unwrap_or_default()
-                                })
-                        })
-                });
-            let body = response
-                .text()
-                .await
-                .map_err(|error| stream_read_error("Chat error body", &error))?;
-            let mut error = ModelError::from_provider_http(
-                status.as_u16(),
-                &body,
-                format!(
-                    "Chat API {}: {}",
-                    status.as_u16(),
-                    body.chars().take(500).collect::<String>()
-                ),
-            );
-            error.retry_after = retry_after;
-            return Err(error);
-        }
-        Ok(response)
+        super::transport::send(http, "Chat").await
     }
 }
 
@@ -169,21 +120,9 @@ impl crate::agent::provider_runtime::ModelRuntime for OpenAiChatProvider {
         sink: &'a mut dyn crate::agent::provider_runtime::ModelOutputSink,
     ) -> crate::agent::provider_runtime::ProviderFuture<'a, Result<GenerateOutput, ModelError>>
     {
-        Box::pin(async move {
-            sink.request_started(&call);
-            let request = crate::agent::history::request_from_history(
-                &call.history,
-                &call.model,
-                call.tools,
-                call.options,
-                call.metadata,
-            );
-            if call.delivery == crate::agent::provider_runtime::ModelDelivery::Collected {
-                LanguageModelProvider::stream(self, request, &mut |_part| Ok(())).await
-            } else {
-                LanguageModelProvider::stream(self, request, sink).await
-            }
-        })
+        Box::pin(crate::agent::provider_runtime::generate_with_provider(
+            self, call, sink,
+        ))
     }
 }
 

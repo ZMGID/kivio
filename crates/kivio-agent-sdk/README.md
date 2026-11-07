@@ -76,7 +76,16 @@ The SDK does not register desktop tools or load permissions from Kivio settings.
 
 ## Run against a real provider
 
-The standalone provider implements OpenAI-compatible Chat Completions, including SSE text and function tool calls. The desktop application shares its wire encoding and decoding. Other desktop providers remain application adapters and are not standalone SDK providers in this release.
+The standalone providers currently support these protocols. Desktop adapters share their request encoders and response decoders.
+
+| Protocol | Public config and provider | Endpoint |
+| --- | --- | --- |
+| Chat Completions | `model::openai::{OpenAiChatConfig, OpenAiChatProvider}` | Complete `/chat/completions` URL |
+| Responses, including xAI format | `model::responses::{OpenAiResponsesConfig, OpenAiResponsesProvider}` | Complete `/responses` URL |
+
+Construct either provider with your HTTP client and config. Both implement `LanguageModelProvider` for direct generation and `ModelRuntime` for `AgentSession`. Responses accepts buffered JSON or SSE-only responses, preserves encrypted reasoning for same-model replay, and supports function tools and provider-side search. Use `ResponsesFormat::Xai` explicitly for xAI wire behavior. The host resolves cache keys, credentials and compatibility options; the standalone providers do not learn endpoint failures or rotate keys.
+
+Anthropic and Gemini remain application adapters until the following T3 extraction steps.
 
 Set environment variables in the example process. `KIVIO_SDK_BASE_URL` is the **full endpoint**, such as `https://api.example.com/v1/chat/completions`, rather than a base directory. `KIVIO_SDK_MODEL` selects your provider's model. `KIVIO_SDK_API_KEY` is optional for endpoints without bearer authentication. Supply the key through your process environment or secret manager, and omit it from command arguments and committed files.
 

@@ -1,6 +1,6 @@
 # Kivio Agent SDK 第二版方案
 
-状态为实施中。T1、T2 已完成测试与提交，下一项为 T3。更新于 2026-11-07。
+状态为实施中。T1、T2 已完成测试与提交，T3 正在实现。更新于 2026-11-07。
 
 执行队列分为九个交付单元。T1 核心契约，T2 Session 与 hooks，T3 四协议 Provider，T4a Skill，T4b MCP，T5a 上下文，T5b 会话树，T5c 持久化迁移，T6 应用回归与交付。详细范围、依赖和验收集中在第 5 节。下一项是 T3。
 
@@ -264,7 +264,7 @@ T1 按第 4.1 节确定身份、历史投影、配对、压缩覆盖范围和提
 |---|---|---|---|---|
 | T1 | 核心契约与 ToolRegistry | 无 | 类型化工具往返、完整选项、错误和明确历史投影语义 | 已完成 |
 | T2 | AgentSession 与 hooks | T1 | 可控制、可扩展的多轮 Agent | 已完成 |
-| T3 | 四协议 Provider | T2 | 四协议通过同一套公共契约用例 | 未开始 |
+| T3 | 四协议 Provider | T2 | 四协议通过同一套公共契约用例 | 进行中 |
 | T4a | Skill 加载 | T3 | 目录发现、按需激活及显式重新加载 | 未开始 |
 | T4b | MCP 接入 | T4a | 两种传输发现、授权、工具执行和清理 | 未开始 |
 | T5a | 上下文与压缩 | T4b | 当前路径投影、预算、摘要及取消失败处理 | 未开始 |
@@ -336,12 +336,14 @@ T1 按第 4.1 节确定身份、历史投影、配对、压缩覆盖范围和提
 依赖 T2。主要入口为 SDK `src/model/` 和应用 `src-tauri/src/chat/model/`。先固定 Chat 行为，再按 Responses、Anthropic、Gemini 顺序提取。每种协议单独完成迁移和验证后再处理下一种。
 
 - [ ] 用同一套参数化 conformance fixture 固定四协议公共请求、增量与收集结果、工具回放、usage/cache/reasoning、错误及终态契约。复用已有 SSE、usage、消息类型和 ModelRuntime 适配，协议差异放在 fixture 参数中。
-- [ ] 提取 Responses，验证 encrypted reasoning、store:false、SSE-only、缓存降级和原生搜索兼容。
+- [x] 提取 Responses，验证 encrypted reasoning、store:false、SSE-only、缓存降级和原生搜索兼容。
 - [ ] 提取 Anthropic，验证 signed、redacted、native blocks、工具名映射、pause_turn 有界续轮，以及最终用量和累计计费。
 - [ ] 提取 Gemini，验证 thoughtSignature、2.5/3.x 思考选项、图片、函数调用、grounding 和既有 Antigravity 适配。
 - [ ] 每个协议同步迁移聊天、标题、提示优化、压缩、视觉、自动化和子代理调用。应用保留账号、OAuth、密钥轮换、计费、请求日志和业务重试，删除重复编解码实现。
 
 验收采用第 6 节公共与专属矩阵。每种协议必须由独立消费者完成工具循环和后续对话，比较迁移前后夹具的请求与规范结果。真实供应商 smoke 单独记录，缺凭据的项目不得标记通过。
+
+Responses 子步骤验收（2026-11-07）：SDK 146 项、独立消费者 77 项、桌面 Rust 3168 项通过，56 项忽略；33 项原协议测试随实现移入 SDK，桌面测试数量相应减少。Chat 与 Responses 共用参数化消费者矩阵；补齐普通 JSON reasoning summary 与 SSE 的一致性。桌面类型检查、示例、rustdoc 和依赖边界通过。下一协议为 Anthropic；T3 尚未整体验收。
 
 ### T4a 交付 Skill 加载
 
@@ -420,7 +422,7 @@ T1 按第 4.1 节确定身份、历史投影、配对、压缩覆盖范围和提
 
 | 范围 | 必须验证的结果 |
 |---|---|
-| 四协议公共契约 | 增量与收集结果（收集允许底层 SSE）、工具往返、禁止工具最终覆盖扩展参数及原生工具、错误体、空响应、缺失 terminal 拒绝成功、截断参数、取消断流、usage、历史继续、自定义 header 和 endpoint |
+| 四协议公共契约 | 增量与收集结果（收集允许底层 SSE）、工具往返、禁止工具最终覆盖扩展参数及原生工具、错误体、空响应、流式缺失 terminal 拒绝成功、截断参数、取消断流、usage、历史继续、自定义 header 和 endpoint |
 | Chat | reasoning 扩展、工具增量分片、兼容参数优先级、DSML 输入规范化保持原归属 |
 | Responses | 文本与工具完成事件、encrypted reasoning 顺序及跨模型隔离、缓存参数降级、store:false、SSE-only、原生搜索和 xAI 现有兼容路径 |
 | Anthropic | thinking 与 redacted 签名、来源隔离、工具 ID 配对、工具大小写映射、原生搜索块、pause_turn 有界续轮、最终 usage 与累计计费区分 |
