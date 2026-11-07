@@ -34,7 +34,9 @@ pub async fn request_external_compaction(
         )
     })?;
 
-    run_external_cli_slash_command(app, state, conversation, compact_prompt).await?;
+    run_external_cli_slash_command(app, state, conversation, compact_prompt)
+        .await?
+        .require_completed()?;
 
     conversation.context_state.summary = None;
     // **不在这里自增 compression_count**：`/compact` 走的是 `run_external_cli_slash_command`

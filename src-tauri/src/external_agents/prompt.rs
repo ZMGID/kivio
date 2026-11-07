@@ -146,10 +146,25 @@ pub fn rewind_history_block(messages: &[ChatMessage]) -> String {
         "(Earlier messages are omitted.)\n\n"
     };
     format!(
-        "## Conversation so far\n\nThe user rewound this conversation, so it continues in a new session. \
+        "## Conversation so far\n\nThis conversation continues in a new session with the retained history. \
          This is the conversation that remains; treat anything else you may recall as removed.\n\n{omitted}{}",
         kept.join("\n\n")
     )
+}
+
+pub fn compose_history_handoff(
+    conversation: &crate::chat::Conversation,
+    composed: ComposedExternalPrompt,
+    latest_user_message: &str,
+) -> Result<ComposedExternalPrompt, String> {
+    let Some(history) = &conversation.external_history else {
+        return Ok(composed);
+    };
+    Ok(compose_external_prompt_with_history(
+        composed,
+        &rewind_history_block(history.prefix(conversation)?),
+        latest_user_message,
+    ))
 }
 
 /// Compose the first prompt of a fresh native session that replaces a rewound one.

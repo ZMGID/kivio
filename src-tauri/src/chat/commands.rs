@@ -27,7 +27,7 @@ mod messages;
 mod sanitization;
 
 mod reply_runtime;
-pub(crate) use reply_runtime::ChatSendReservation;
+pub(crate) use reply_runtime::{ChatReplyGuard, ChatSendReservation};
 use reply_runtime::{CHAT_REPLY_BUSY_ERROR, MAX_REPLY_MODELS};
 
 mod fan_out;

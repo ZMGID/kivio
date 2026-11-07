@@ -10,18 +10,18 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
-use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::process::Command;
+use tokio::sync::{mpsc, oneshot};
 
-use crate::native_tools::kill_process_group;
+use crate::external_agents::spawn::AgentChild;
 
 const MAX_OUTPUT_BYTE_LIMIT: usize = 8 * 1024 * 1024;
-
-#[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const TERMINAL_STOP_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone)]
 pub struct TerminalExit {
@@ -44,7 +44,7 @@ struct OutputState {
 struct Terminal {
     output: Arc<Mutex<OutputState>>,
     exit: Option<TerminalExit>,
-    pid: Option<u32>,
+    stop: Option<oneshot::Sender<()>>,
 }
 
 pub struct AcpTerminalHost {
@@ -56,7 +56,8 @@ pub struct AcpTerminalHost {
     completed_waits: Vec<(Value, Value)>,
     /// Spec: after `terminal/release` the RPC id is gone, but the Client SHOULD
     /// keep showing the captured output on the tool card.
-    released_output: HashMap<String, String>,
+    released_output: HashMap<String, Arc<Mutex<OutputState>>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
     exit_tx: mpsc::UnboundedSender<(String, TerminalExit)>,
     exit_rx: mpsc::UnboundedReceiver<(String, TerminalExit)>,
 }
@@ -72,6 +73,7 @@ impl AcpTerminalHost {
             aborted_waits: Vec::new(),
             completed_waits: Vec::new(),
             released_output: HashMap::new(),
+            tasks: Vec::new(),
             exit_tx,
             exit_rx,
         }
@@ -83,13 +85,21 @@ impl AcpTerminalHost {
             let (output, _) = snapshot_output(&term.output);
             return Some(output);
         }
-        self.released_output.get(terminal_id).cloned()
+        self.released_output
+            .get(terminal_id)
+            .map(|output| snapshot_output(output).0)
     }
 
     #[cfg(test)]
     pub fn seed_output(&mut self, terminal_id: &str, output: impl Into<String>) {
-        self.released_output
-            .insert(terminal_id.to_string(), output.into());
+        self.released_output.insert(
+            terminal_id.to_string(),
+            Arc::new(Mutex::new(OutputState {
+                bytes: output.into().into_bytes(),
+                truncated: false,
+                limit: MAX_OUTPUT_BYTE_LIMIT,
+            })),
+        );
     }
 
     pub fn set_extra_roots(&mut self, _roots: &[String]) {
@@ -129,18 +139,23 @@ impl AcpTerminalHost {
         for terminal_id in pending {
             self.abort_waits(&terminal_id, "session closed");
         }
-        for term in self.terminals.values() {
-            if term.exit.is_none() {
-                if let Some(pid) = term.pid {
-                    kill_process_group(pid);
-                }
-            }
-        }
         self.terminals.clear();
         self.pending_waits.clear();
     }
 
-    pub fn handle(&mut self, method: &str, params: &Value, rpc_id: &Value) -> TerminalReply {
+    pub async fn close_all_and_wait(&mut self) {
+        self.close_all();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        for task in &mut self.tasks {
+            if tokio::time::timeout_at(deadline, &mut *task).await.is_err() {
+                task.abort();
+                let _ = (&mut *task).await;
+            }
+        }
+        self.tasks.clear();
+    }
+
+    pub async fn handle(&mut self, method: &str, params: &Value, rpc_id: &Value) -> TerminalReply {
         if let Err(reply) = self.check_session(params) {
             return reply;
         }
@@ -148,8 +163,8 @@ impl AcpTerminalHost {
             "terminal/create" => self.create(params),
             "terminal/output" => self.output(params),
             "terminal/wait_for_exit" => self.wait_for_exit(params, rpc_id),
-            "terminal/kill" => self.kill(params),
-            "terminal/release" => self.release(params),
+            "terminal/kill" => self.stop_terminal(params, false).await,
+            "terminal/release" => self.stop_terminal(params, true).await,
             _ => TerminalReply::Error {
                 code: -32601,
                 message: format!("Method not found: {method}"),
@@ -205,9 +220,7 @@ impl AcpTerminalHost {
         for (name, value) in env {
             cmd.env(name, value);
         }
-        apply_process_group(&mut cmd);
-
-        let mut child = match cmd.spawn() {
+        let mut child = match AgentChild::spawn(&mut cmd) {
             Ok(child) => child,
             Err(err) => {
                 return TerminalReply::Error {
@@ -219,7 +232,6 @@ impl AcpTerminalHost {
                 };
             }
         };
-        let pid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let output = Arc::new(Mutex::new(OutputState {
@@ -227,31 +239,38 @@ impl AcpTerminalHost {
             truncated: false,
             limit,
         }));
-        let stdout_task = stdout.map(|pipe| spawn_pipe_reader(output.clone(), pipe));
-        let stderr_task = stderr.map(|pipe| spawn_pipe_reader(output.clone(), pipe));
-
         let terminal_id = format!("term_{}", uuid::Uuid::new_v4());
         let exit_tx = self.exit_tx.clone();
         let wait_id = terminal_id.clone();
-        tokio::spawn(async move {
-            let exit = wait_exit(child).await;
-            // Spec: after the command completes, terminal/output is the final
-            // captured output. Wait for pipe EOF before publishing exit.
-            if let Some(task) = stdout_task {
-                let _ = task.await;
-            }
-            if let Some(task) = stderr_task {
-                let _ = task.await;
-            }
+        let captured = output.clone();
+        let (stop, stopped) = oneshot::channel();
+        self.tasks.retain(|task| !task.is_finished());
+        self.tasks.push(tokio::spawn(async move {
+            let readers = async {
+                tokio::join!(
+                    read_pipe(captured.clone(), stdout),
+                    read_pipe(captured, stderr),
+                );
+            };
+            tokio::pin!(readers);
+            let waiting = wait_exit(child, stopped);
+            tokio::pin!(waiting);
+            let exit = tokio::select! {
+                exit = &mut waiting => {
+                    let _ = tokio::time::timeout(OUTPUT_DRAIN_TIMEOUT, &mut readers).await;
+                    exit
+                },
+                _ = &mut readers => waiting.await,
+            };
             let _ = exit_tx.send((wait_id, exit));
-        });
+        }));
 
         self.terminals.insert(
             terminal_id.clone(),
             Terminal {
                 output,
                 exit: None,
-                pid,
+                stop: Some(stop),
             },
         );
         TerminalReply::Result(json!({ "terminalId": terminal_id }))
@@ -292,38 +311,48 @@ impl AcpTerminalHost {
         TerminalReply::Pending
     }
 
-    fn kill(&self, params: &Value) -> TerminalReply {
-        let Some(term) = self.terminal(params) else {
+    async fn stop_terminal(&mut self, params: &Value, release: bool) -> TerminalReply {
+        let Some(terminal_id) = terminal_id(params) else {
             return unknown_terminal();
         };
-        if term.exit.is_none() {
-            if let Some(pid) = term.pid {
-                kill_process_group(pid);
-            }
+        let Some(term) = self.terminals.get_mut(terminal_id) else {
+            return unknown_terminal();
+        };
+        term.stop.take();
+        let exit = if let Some(exit) = &term.exit {
+            exit.clone()
+        } else if let Ok(Some(exit)) =
+            tokio::time::timeout(TERMINAL_STOP_TIMEOUT, self.await_exit(terminal_id)).await
+        {
+            exit
+        } else {
+            return TerminalReply::Error {
+                code: -32603,
+                message: "Timed out stopping terminal".to_string(),
+            };
+        };
+
+        if release {
+            let term = self.terminals.remove(terminal_id).expect("known terminal");
+            self.released_output
+                .insert(terminal_id.to_string(), term.output);
+            self.abort_waits(terminal_id, "terminal released");
+        } else {
+            let replies = self.on_exit(terminal_id.to_string(), exit);
+            self.completed_waits.extend(replies);
         }
         TerminalReply::Result(json!({}))
     }
 
-    fn release(&mut self, params: &Value) -> TerminalReply {
-        let Some(terminal_id) = terminal_id(params) else {
-            return unknown_terminal();
-        };
-        let Some(term) = self.terminals.remove(terminal_id) else {
-            return unknown_terminal();
-        };
-        let (output, _) = snapshot_output(&term.output);
-        if !output.is_empty() {
-            self.released_output.insert(terminal_id.to_string(), output);
-        }
-        if let Some(exit) = term.exit {
-            self.finish_waits(terminal_id, &exit);
-        } else {
-            if let Some(pid) = term.pid {
-                kill_process_group(pid);
+    async fn await_exit(&mut self, terminal_id: &str) -> Option<TerminalExit> {
+        while let Some((id, exit)) = self.exit_rx.recv().await {
+            if id == terminal_id {
+                return Some(exit);
             }
-            self.abort_waits(terminal_id, "terminal released");
+            let replies = self.on_exit(id, exit);
+            self.completed_waits.extend(replies);
         }
-        TerminalReply::Result(json!({}))
+        None
     }
 
     fn terminal(&self, params: &Value) -> Option<&Terminal> {
@@ -373,19 +402,14 @@ impl AcpTerminalHost {
             }
         }
     }
-
-    fn finish_waits(&mut self, terminal_id: &str, exit: &TerminalExit) {
-        if let Some(ids) = self.pending_waits.remove(terminal_id) {
-            for rpc_id in ids {
-                self.completed_waits.push((rpc_id, wait_result(exit)));
-            }
-        }
-    }
 }
 
 impl Drop for AcpTerminalHost {
     fn drop(&mut self) {
         self.close_all();
+        for task in &self.tasks {
+            task.abort();
+        }
     }
 }
 
@@ -494,46 +518,33 @@ fn shell_line_command(command: &str) -> Command {
     }
 }
 
-fn apply_process_group(cmd: &mut Command) {
-    #[cfg(windows)]
-    {
-        cmd.creation_flags(crate::proc::CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP);
-    }
-    #[cfg(unix)]
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-}
-
-fn spawn_pipe_reader<R>(
-    output: Arc<Mutex<OutputState>>,
-    mut reader: R,
-) -> tokio::task::JoinHandle<()>
+async fn read_pipe<R>(output: Arc<Mutex<OutputState>>, reader: Option<R>)
 where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    R: tokio::io::AsyncRead + Unpin,
 {
-    tokio::spawn(async move {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if let Ok(mut state) = output.lock() {
-                        append_output(&mut state, &buf[..n]);
-                    }
+    let Some(mut reader) = reader else { return };
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if let Ok(mut state) = output.lock() {
+                    append_output(&mut state, &buf[..n]);
                 }
             }
         }
-    })
+    }
 }
 
-async fn wait_exit(mut child: Child) -> TerminalExit {
-    match child.wait().await {
+async fn wait_exit(mut child: AgentChild, stopped: oneshot::Receiver<()>) -> TerminalExit {
+    let status = tokio::select! {
+        status = child.wait() => status,
+        _ = stopped => {
+            let _ = child.start_kill();
+            child.wait().await
+        }
+    };
+    match status {
         Ok(status) => exit_from_status(status),
         Err(_) => TerminalExit {
             exit_code: None,
@@ -601,7 +612,101 @@ impl OutputState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn terminal_lifecycle_reclaims_descendants_and_keeps_final_output() {
+        use crate::external_agents::spawn::windows_tests::{fixture_process, FIXTURE};
+
+        for end in ["normal", "kill", "release", "close", "drop"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut host = AcpTerminalHost::new(directory.path().to_path_buf());
+            let created = host
+                .handle(
+                    "terminal/create",
+                    &json!({
+                        "command": std::env::current_exe().unwrap(),
+                        "args": ["--exact", FIXTURE, "--ignored", "--nocapture"],
+                        "env": [
+                            { "name": "KIVIO_PROCESS_FIXTURE", "value": "root" },
+                            { "name": "KIVIO_PROCESS_FIXTURE_DIR", "value": directory.path() },
+                        ],
+                    }),
+                    &json!(1),
+                )
+                .await;
+            let TerminalReply::Result(created) = created else {
+                panic!("{created:?}")
+            };
+            let id = created["terminalId"].as_str().unwrap().to_string();
+            let leaf = fixture_process(directory.path(), "leaf").await;
+            match end {
+                "normal" => {
+                    let result = host
+                        .handle(
+                            "terminal/wait_for_exit",
+                            &json!({"terminalId": id}),
+                            &json!(2),
+                        )
+                        .await;
+                    assert!(matches!(result, TerminalReply::Pending), "{result:?}");
+                    std::fs::write(directory.path().join("release"), b"").unwrap();
+                    let (exited_id, exit) =
+                        tokio::time::timeout(Duration::from_secs(3), host.exit_rx().recv())
+                            .await
+                            .expect("terminal cleanup must publish exit")
+                            .unwrap();
+                    assert_eq!(exited_id, id);
+                    let replies = host.on_exit(exited_id, exit);
+                    assert_eq!(
+                        replies,
+                        vec![(json!(2), json!({"exitCode": 0, "signal": null}))]
+                    );
+                }
+                "close" => host.close_all_and_wait().await,
+                "drop" => {
+                    drop(host);
+                    assert!(
+                        leaf.stopped().await,
+                        "terminal host drop must reclaim descendants"
+                    );
+                    continue;
+                }
+                method => {
+                    let result = host
+                        .handle(
+                            &format!("terminal/{method}"),
+                            &json!({"terminalId": id}),
+                            &json!(2),
+                        )
+                        .await;
+                    assert!(matches!(result, TerminalReply::Result(_)), "{result:?}");
+                }
+            }
+            if matches!(end, "normal" | "kill") {
+                let result = host
+                    .handle("terminal/output", &json!({"terminalId": id}), &json!(3))
+                    .await;
+                let TerminalReply::Result(output) = result else {
+                    panic!("{result:?}");
+                };
+                assert!(output["exitStatus"].is_object(), "{output}");
+                let output = output["output"].as_str().unwrap();
+                assert!(output.contains("fixture-output"), "{output}");
+                if end == "normal" {
+                    assert!(output.contains("fixture-final-output"), "{output}");
+                }
+            }
+            if end == "release" {
+                assert!(host.preview_output(&id).unwrap().contains("fixture-output"));
+            }
+            assert!(
+                leaf.stopped().await,
+                "terminal {end} must reclaim descendants"
+            );
+            host.close_all_and_wait().await;
+        }
+    }
 
     #[test]
     fn truncates_from_the_front_on_a_utf8_boundary() {
@@ -624,15 +729,17 @@ mod tests {
         let cwd = std::env::temp_dir();
         let mut host = AcpTerminalHost::new(cwd.clone());
         let (command, args) = echo_command("kivio-acp-term");
-        let created = host.handle(
-            "terminal/create",
-            &json!({
-                "command": command,
-                "args": args,
-                "cwd": cwd.to_string_lossy(),
-            }),
-            &json!(1),
-        );
+        let created = host
+            .handle(
+                "terminal/create",
+                &json!({
+                    "command": command,
+                    "args": args,
+                    "cwd": cwd.to_string_lossy(),
+                }),
+                &json!(1),
+            )
+            .await;
         let terminal_id = match created {
             TerminalReply::Result(value) => value["terminalId"]
                 .as_str()
@@ -649,22 +756,28 @@ mod tests {
         let replies = host.on_exit(exit.0, exit.1);
         assert!(replies.is_empty(), "no waiter was registered yet");
 
-        match host.handle(
-            "terminal/wait_for_exit",
-            &json!({ "terminalId": terminal_id }),
-            &json!(2),
-        ) {
+        match host
+            .handle(
+                "terminal/wait_for_exit",
+                &json!({ "terminalId": terminal_id }),
+                &json!(2),
+            )
+            .await
+        {
             TerminalReply::Result(value) => {
                 assert_eq!(value["exitCode"], json!(0));
             }
             other => panic!("wait after exit should be immediate: {other:?}"),
         }
 
-        match host.handle(
-            "terminal/output",
-            &json!({ "terminalId": terminal_id }),
-            &json!(3),
-        ) {
+        match host
+            .handle(
+                "terminal/output",
+                &json!({ "terminalId": terminal_id }),
+                &json!(3),
+            )
+            .await
+        {
             TerminalReply::Result(value) => {
                 let output = value["output"].as_str().unwrap_or("");
                 assert!(output.contains("kivio-acp-term"), "output={output:?}");
@@ -674,11 +787,14 @@ mod tests {
             other => panic!("output failed: {other:?}"),
         }
 
-        match host.handle(
-            "terminal/release",
-            &json!({ "terminalId": terminal_id }),
-            &json!(4),
-        ) {
+        match host
+            .handle(
+                "terminal/release",
+                &json!({ "terminalId": terminal_id }),
+                &json!(4),
+            )
+            .await
+        {
             TerminalReply::Result(_) => {}
             other => panic!("release failed: {other:?}"),
         }
@@ -689,11 +805,14 @@ mod tests {
             preview.contains("kivio-acp-term"),
             "preview after release={preview:?}"
         );
-        match host.handle(
-            "terminal/output",
-            &json!({ "terminalId": terminal_id }),
-            &json!(5),
-        ) {
+        match host
+            .handle(
+                "terminal/output",
+                &json!({ "terminalId": terminal_id }),
+                &json!(5),
+            )
+            .await
+        {
             TerminalReply::Error { code, .. } => assert_eq!(code, -32602),
             other => panic!("released terminal must be invalid: {other:?}"),
         }
@@ -704,15 +823,17 @@ mod tests {
         let cwd = std::env::temp_dir();
         let mut host = AcpTerminalHost::new(cwd.clone());
         let (command, args) = sleep_command();
-        let created = host.handle(
-            "terminal/create",
-            &json!({
-                "command": command,
-                "args": args,
-                "cwd": cwd.to_string_lossy(),
-            }),
-            &json!(1),
-        );
+        let created = host
+            .handle(
+                "terminal/create",
+                &json!({
+                    "command": command,
+                    "args": args,
+                    "cwd": cwd.to_string_lossy(),
+                }),
+                &json!(1),
+            )
+            .await;
         let terminal_id = match created {
             TerminalReply::Result(value) => value["terminalId"]
                 .as_str()
@@ -720,11 +841,14 @@ mod tests {
                 .to_string(),
             other => panic!("create failed: {other:?}"),
         };
-        match host.handle(
-            "terminal/wait_for_exit",
-            &json!({ "terminalId": terminal_id }),
-            &json!(2),
-        ) {
+        match host
+            .handle(
+                "terminal/wait_for_exit",
+                &json!({ "terminalId": terminal_id }),
+                &json!(2),
+            )
+            .await
+        {
             TerminalReply::Pending => {}
             other => panic!("running command must pend wait_for_exit: {other:?}"),
         }
@@ -736,11 +860,13 @@ mod tests {
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].0, json!(2));
         assert_eq!(replies[0].1["exitCode"], json!(0));
-        let _ = host.handle(
-            "terminal/release",
-            &json!({ "terminalId": terminal_id }),
-            &json!(3),
-        );
+        let _ = host
+            .handle(
+                "terminal/release",
+                &json!({ "terminalId": terminal_id }),
+                &json!(3),
+            )
+            .await;
     }
 
     #[test]
@@ -799,14 +925,16 @@ mod tests {
     async fn create_runs_a_shell_line_without_args() {
         let cwd = std::env::temp_dir();
         let mut host = AcpTerminalHost::new(cwd.clone());
-        let created = host.handle(
-            "terminal/create",
-            &json!({
-                "command": "echo hi && echo there",
-                "cwd": cwd.to_string_lossy(),
-            }),
-            &json!(1),
-        );
+        let created = host
+            .handle(
+                "terminal/create",
+                &json!({
+                    "command": "echo hi && echo there",
+                    "cwd": cwd.to_string_lossy(),
+                }),
+                &json!(1),
+            )
+            .await;
         let terminal_id = match created {
             TerminalReply::Result(value) => value["terminalId"]
                 .as_str()
@@ -822,11 +950,14 @@ mod tests {
         assert_eq!(exit.0, terminal_id);
         host.on_exit(exit.0, exit.1);
 
-        match host.handle(
-            "terminal/output",
-            &json!({ "terminalId": terminal_id }),
-            &json!(2),
-        ) {
+        match host
+            .handle(
+                "terminal/output",
+                &json!({ "terminalId": terminal_id }),
+                &json!(2),
+            )
+            .await
+        {
             TerminalReply::Result(value) => {
                 let output = value["output"].as_str().unwrap_or("");
                 assert!(output.contains("hi"), "output={output:?}");
@@ -837,21 +968,24 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_cwd_that_does_not_exist() {
+    #[tokio::test]
+    async fn rejects_cwd_that_does_not_exist() {
         let missing =
             std::env::temp_dir().join(format!("kivio-acp-missing-cwd-{}", uuid::Uuid::new_v4()));
         let missing_text = missing.display().to_string();
 
         let mut host = AcpTerminalHost::new(std::env::temp_dir());
-        match host.handle(
-            "terminal/create",
-            &json!({
-                "command": "echo",
-                "cwd": &missing_text,
-            }),
-            &json!(1),
-        ) {
+        match host
+            .handle(
+                "terminal/create",
+                &json!({
+                    "command": "echo",
+                    "cwd": &missing_text,
+                }),
+                &json!(1),
+            )
+            .await
+        {
             TerminalReply::Error { code, message } => {
                 assert_eq!(code, -32602);
                 assert!(
@@ -863,7 +997,10 @@ mod tests {
         }
 
         let mut host = AcpTerminalHost::new(missing);
-        match host.handle("terminal/create", &json!({ "command": "echo" }), &json!(1)) {
+        match host
+            .handle("terminal/create", &json!({ "command": "echo" }), &json!(1))
+            .await
+        {
             TerminalReply::Error { code, message } => {
                 assert_eq!(code, -32602);
                 assert!(
@@ -875,17 +1012,20 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_relative_cwd() {
+    #[tokio::test]
+    async fn rejects_relative_cwd() {
         let mut host = AcpTerminalHost::new(std::env::temp_dir());
-        match host.handle(
-            "terminal/create",
-            &json!({
-                "command": "echo",
-                "cwd": "relative/path",
-            }),
-            &json!(1),
-        ) {
+        match host
+            .handle(
+                "terminal/create",
+                &json!({
+                    "command": "echo",
+                    "cwd": "relative/path",
+                }),
+                &json!(1),
+            )
+            .await
+        {
             TerminalReply::Error { code, message } => {
                 assert_eq!(code, -32602);
                 assert!(message.contains("absolute"), "{message}");
@@ -894,18 +1034,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rejects_mismatched_session_id() {
+    #[tokio::test]
+    async fn rejects_mismatched_session_id() {
         let mut host = AcpTerminalHost::new(std::env::temp_dir());
         host.set_session_id("sess-1");
-        match host.handle(
-            "terminal/create",
-            &json!({
-                "sessionId": "other",
-                "command": "echo",
-            }),
-            &json!(1),
-        ) {
+        match host
+            .handle(
+                "terminal/create",
+                &json!({
+                    "sessionId": "other",
+                    "command": "echo",
+                }),
+                &json!(1),
+            )
+            .await
+        {
             TerminalReply::Error { code, message } => {
                 assert_eq!(code, -32602);
                 assert!(message.contains("sessionId"), "{message}");
@@ -919,15 +1062,17 @@ mod tests {
         let cwd = std::env::temp_dir();
         let mut host = AcpTerminalHost::new(cwd.clone());
         let (command, args) = sleep_command();
-        let created = host.handle(
-            "terminal/create",
-            &json!({
-                "command": command,
-                "args": args,
-                "cwd": cwd.to_string_lossy(),
-            }),
-            &json!(1),
-        );
+        let created = host
+            .handle(
+                "terminal/create",
+                &json!({
+                    "command": command,
+                    "args": args,
+                    "cwd": cwd.to_string_lossy(),
+                }),
+                &json!(1),
+            )
+            .await;
         let terminal_id = match created {
             TerminalReply::Result(value) => value["terminalId"]
                 .as_str()
@@ -935,19 +1080,25 @@ mod tests {
                 .to_string(),
             other => panic!("create failed: {other:?}"),
         };
-        match host.handle(
-            "terminal/wait_for_exit",
-            &json!({ "terminalId": terminal_id }),
-            &json!(2),
-        ) {
+        match host
+            .handle(
+                "terminal/wait_for_exit",
+                &json!({ "terminalId": terminal_id }),
+                &json!(2),
+            )
+            .await
+        {
             TerminalReply::Pending => {}
             other => panic!("expected pending wait: {other:?}"),
         }
-        match host.handle(
-            "terminal/release",
-            &json!({ "terminalId": terminal_id }),
-            &json!(3),
-        ) {
+        match host
+            .handle(
+                "terminal/release",
+                &json!({ "terminalId": terminal_id }),
+                &json!(3),
+            )
+            .await
+        {
             TerminalReply::Result(_) => {}
             other => panic!("release failed: {other:?}"),
         }

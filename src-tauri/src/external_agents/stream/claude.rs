@@ -3693,7 +3693,7 @@ mod live_tests {
     use tokio::process::Child;
     use tokio::time::timeout;
 
-    use crate::external_agents::defs::claude::{append_system_prompt_file_args, build_claude_args};
+    use crate::external_agents::providers::claude::{append_system_prompt_file_args, build_claude_args};
     use crate::external_agents::registry::get_agent_def;
     use crate::external_agents::spawn::{cli_command, resolve_binary};
     use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext, UnifiedAgentEvent};

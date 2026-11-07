@@ -1,0 +1,5 @@
+{"type":"transcript_start","protocol":"antigravity.jsonl","version":"synthetic 1.1.26 shape","classification":"synthetic"}
+{"type":"emit_inbound","frame":{"event":"step_update","step_update":{"step_index":0,"conversation_id":"replay","step_type":"tool","state":"ACTIVE","tool_info":{"name":"view_file","parameters":{"path":"probe.txt"}}}}}
+{"type":"emit_inbound","frame":{"event":"step_update","step_update":{"step_index":0,"conversation_id":"replay","step_type":"tool","state":"DONE","tool_info":{"name":"view_file","parameters":{"path":"probe.txt"},"output":"probe"}}}}
+{"type":"emit_inbound","frame":{"event":"step_update","step_update":{"step_index":1,"step_type":"agent_response","state":"DONE","text_delta":"answer","usage":{"input_tokens":10,"output_tokens":2,"cache_read_tokens":3,"total_tokens":12}}}}
+{"type":"emit_inbound","frame":{"status":"SUCCESS","response":"answer","usage":{"input_tokens":10,"output_tokens":2,"cache_read_tokens":3,"total_tokens":12}}}

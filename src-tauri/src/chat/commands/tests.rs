@@ -1951,6 +1951,9 @@ fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> Cha
 
 fn test_conversation_with_summary(stale: bool) -> Conversation {
     Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2418,6 +2421,9 @@ fn stale_summary_is_ignored_by_message_builder() {
 #[test]
 fn auxiliary_vision_result_becomes_text_for_main_chat_model() {
     let conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2746,6 +2752,9 @@ fn apply_reply_with_model_result_groups_existing_answer() {
 #[test]
 fn build_chat_api_messages_replays_hidden_tool_transcript() {
     let conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: "conv_test".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -2917,6 +2926,9 @@ fn sanitize_image_payloads_replaces_raw_base64_lines() {
 #[test]
 fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
     let conversation = Conversation {
+            external_history: None,
+            external_cwd: None,
+            runtime_locked: false,
             id: "conv_test".to_string(),
             revision: 0,
             title: "test".to_string(),
@@ -3053,6 +3065,9 @@ fn image_token_estimates_follow_provider_dimension_rules() {
 
 fn test_conversation_with_messages(messages: Vec<ChatMessage>) -> Conversation {
     Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: "conv_multi".to_string(),
         revision: 0,
         title: "test".to_string(),
@@ -4595,4 +4610,57 @@ fn resolve_thinking_validates_stored_levels_and_picks_a_default() {
         .contains("不支持思考强度"));
     // Non-reasoning models ignore any stored choice, including Off.
     assert_eq!(resolve(Some("off"), "plain").unwrap(), (true, None));
+}
+#[test]
+fn maintenance_review_deleting_pending_history_boundary_keeps_handoff_sendable() {
+    let mut conversation = test_conversation_with_messages(vec![
+        test_chat_message("user_a", "user", "question A", 1),
+        test_chat_message("answer_a", "assistant", "answer A", 2),
+    ]);
+    conversation.agent_runtime.kind = crate::chat::types::AgentRuntimeKind::External;
+    conversation.agent_runtime.external_agent_id = Some("claude".into());
+    conversation.external_history = Some(crate::chat::types::ExternalHistoryTransition::new(
+        &conversation,
+        crate::chat::types::ExternalHistoryMethod::Replay,
+    ));
+    remove_assistant_answer(&mut conversation, "answer_a").unwrap();
+    conversation.messages.push(test_chat_message("user_b", "user", "question B", 3));
+    let prompt = crate::external_agents::prompt::compose_history_handoff(
+        &conversation,
+        crate::external_agents::prompt::compose_external_prompt_passthrough("question B"),
+        "question B",
+    ).expect("deleting a displayed answer must not block a branch's first send");
+    assert!(prompt.full_prompt.contains("question A"));
+    assert!(!prompt.full_prompt.contains("answer A"));
+    assert_eq!(prompt.full_prompt.matches("question B").count(), 1);
+}
+
+#[test]
+fn maintenance_review_history_deletion_rejects_old_delivery_receipts() {
+    use crate::chat::types::{ExternalHistoryDelivery, ExternalHistoryMethod, ExternalHistoryTransition};
+    for removed in ["answer_a", "answer_b"] {
+        let mut conversation = test_conversation_with_messages(vec![
+            test_chat_message("user_a", "user", "question A", 1),
+            test_chat_message("answer_a", "assistant", "answer A", 2),
+            test_chat_message("user_b", "user", "question B", 3),
+            test_chat_message("answer_b", "assistant", "answer B", 4),
+        ]);
+        let mut history = ExternalHistoryTransition::new(&conversation, ExternalHistoryMethod::NativeRewind);
+        let attempt = crate::external_agents::session::HistoryAttempt {
+            transition_id: history.id.clone(), native_id: "old-native".into(),
+            attempt_id: "old-attempt".into(), generation: 1,
+        };
+        history.delivery = ExternalHistoryDelivery::MayHaveSent {
+            native_id: attempt.native_id.clone(), attempt_id: attempt.attempt_id.clone(), generation: 1,
+        };
+        let delivery = history.delivery.clone();
+        conversation.external_history = Some(history);
+        remove_assistant_answer(&mut conversation, removed).unwrap();
+        crate::external_agents::session::settle_history_delivery(&mut conversation, &attempt);
+        let history = conversation.external_history.as_ref().expect("old receipt cannot settle edited history");
+        assert_ne!(history.id, attempt.transition_id);
+        assert_eq!(history.method, ExternalHistoryMethod::Replay);
+        assert_eq!(history.delivery, delivery);
+        assert!(history.prefix(&conversation).unwrap().iter().all(|message| message.id != removed));
+    }
 }

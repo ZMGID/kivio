@@ -8,7 +8,7 @@ import {
 } from './toolApproval'
 
 function payload(name: string) {
-  return { name, conversationId: 'c', runId: 'r', toolCallId: 't', source: 'cli' }
+  return { name, conversationId: 'c', runId: 'r', interactionId: 'approval-1', toolCallId: 't', source: 'cli' }
 }
 
 describe('toolApproval plan cards', () => {

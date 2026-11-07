@@ -14,16 +14,16 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function tool(conversationId: string, runId: string, toolCallId: string): ChatToolConfirmPayload {
-  return { conversationId, runId, toolCallId, name: 'write_file', source: 'test' }
+function tool(conversationId: string, runId: string, interactionId: string, toolCallId = interactionId): ChatToolConfirmPayload {
+  return { conversationId, runId, interactionId, toolCallId, name: 'write_file', source: 'test' }
 }
 
 function consent(conversationId: string, runId: string): ChatSessionConsentPayload {
   return { conversationId, runId }
 }
 
-function user(conversationId: string, runId: string, toolCallId: string): ChatUserPromptPayload {
-  return { conversationId, runId, toolCallId, name: 'ask_user', source: 'test', prompt: { questions: [] } }
+function user(conversationId: string, runId: string, interactionId: string, toolCallId = interactionId): ChatUserPromptPayload {
+  return { conversationId, runId, interactionId, toolCallId, name: 'ask_user', source: 'test', prompt: { questions: [] } }
 }
 
 function setup() {
@@ -44,7 +44,7 @@ describe('run interaction inbox', () => {
 
     expect(inbox.getSnapshot().toolConfirm?.toolCallId).toBe('first')
     expect(inbox.getSnapshot().pendingToolConversationIds).toEqual(['a', 'b'])
-    inbox.observe({ kind: 'toolWithdrawn', conversationId: 'a', toolCallId: 'first' })
+    inbox.observe({ kind: 'toolWithdrawn', conversationId: 'a', interactionId: 'first' })
     expect(inbox.getSnapshot().toolConfirm?.toolCallId).toBe('second')
     inbox.activate('b')
     expect(inbox.getSnapshot().toolConfirm?.toolCallId).toBe('other')
@@ -55,7 +55,7 @@ describe('run interaction inbox', () => {
   it('does not resurrect a withdrawn approval when its request packet arrives late', () => {
     const { inbox } = setup()
     inbox.activate('a')
-    inbox.observe({ kind: 'toolWithdrawn', conversationId: 'a', toolCallId: 'stale' })
+    inbox.observe({ kind: 'toolWithdrawn', conversationId: 'a', interactionId: 'stale' })
     inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'stale') })
     expect(inbox.getSnapshot().toolConfirm).toBeNull()
   })
@@ -104,9 +104,9 @@ describe('run interaction inbox', () => {
     inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'first') })
     inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'second') })
 
-    const first = inbox.respondTool({ approved: true, always: true, permissionMode: 'allow' })
+    const first = inbox.respondTool({ interactionId: 'first', approved: true, always: true, permissionMode: 'allow' })
     expect(inbox.getSnapshot().toolConfirmSubmitting).toBe(true)
-    expect(await inbox.respondTool({ approved: false })).toBe(false)
+    expect(await inbox.respondTool({ interactionId: 'first', approved: false })).toBe(false)
     inbox.activate('b')
     pending.resolve()
     expect(await first).toBe(true)
@@ -126,10 +126,10 @@ describe('run interaction inbox', () => {
     inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'first') })
     confirmTool.mockRejectedValueOnce(new Error('network'))
 
-    expect(await inbox.respondTool({ approved: true })).toBe(false)
+    expect(await inbox.respondTool({ interactionId: 'first', approved: true })).toBe(false)
     expect(inbox.getSnapshot().toolConfirmError).toBe('network')
     expect(inbox.getSnapshot().toolConfirm?.toolCallId).toBe('first')
-    expect(await inbox.respondTool({ approved: true })).toBe(true)
+    expect(await inbox.respondTool({ interactionId: 'first', approved: true })).toBe(true)
     expect(inbox.getSnapshot().toolConfirm).toBeNull()
     expect(inbox.getSnapshot().toolConfirmError).toBe('')
   })
@@ -140,14 +140,29 @@ describe('run interaction inbox', () => {
     confirmTool.mockReturnValue(pending.promise)
     inbox.activate('a')
     inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'old') })
-    const responding = inbox.respondTool({ approved: true })
-    inbox.observe({ kind: 'toolWithdrawn', conversationId: 'a', toolCallId: 'old' })
+    const responding = inbox.respondTool({ interactionId: 'old', approved: true })
+    inbox.observe({ kind: 'toolWithdrawn', conversationId: 'a', interactionId: 'old' })
     inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r2', 'new') })
     pending.reject(new Error('old failed'))
 
     expect(await responding).toBe(false)
     expect(inbox.getSnapshot().toolConfirm?.toolCallId).toBe('new')
     expect(inbox.getSnapshot().toolConfirmError).toBe('')
+  })
+
+  it('keeps repeated tool calls actionable after an old withdrawal and click', async () => {
+    const { inbox, confirmTool } = setup()
+    inbox.activate('a')
+    inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'old', 'reused-tool') })
+    inbox.observe({ kind: 'toolWithdrawn', conversationId: 'a', interactionId: 'old' })
+    inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r2', 'new', 'reused-tool') })
+    inbox.observe({ kind: 'toolWithdrawn', conversationId: 'a', interactionId: 'old' })
+
+    expect(await inbox.respondTool({ interactionId: 'old', approved: true })).toBe(false)
+    expect(confirmTool).not.toHaveBeenCalled()
+    expect(inbox.getSnapshot().toolConfirm?.toolCallId).toBe('reused-tool')
+    expect(await inbox.respondTool({ interactionId: 'new', approved: false })).toBe(true)
+    expect(confirmTool).toHaveBeenCalledWith('new', false, false, null)
   })
 
   it('does not let an old consent response erase a replacement run consent', async () => {
@@ -206,11 +221,11 @@ describe('run interaction inbox', () => {
     inbox.observe({ kind: 'userPromptRequested', payload: user('a', 'r1', 'first') })
     inbox.observe({ kind: 'userPromptRequested', payload: user('a', 'r1', 'first') })
     inbox.observe({ kind: 'userPromptRequested', payload: user('a', 'r1', 'second') })
-    inbox.observe({ kind: 'userAnswered', conversationId: 'a', runId: 'r1', toolCallId: 'first' })
-    inbox.observe({ kind: 'userAnswered', conversationId: 'a', runId: 'r1', toolCallId: 'first' })
+    inbox.observe({ kind: 'userAnswered', conversationId: 'a', runId: 'r1', interactionId: 'first' })
+    inbox.observe({ kind: 'userAnswered', conversationId: 'a', runId: 'r1', interactionId: 'first' })
 
     expect(inbox.getSnapshot().userPrompt?.toolCallId).toBe('second')
-    inbox.observe({ kind: 'userAnswered', conversationId: 'a', runId: 'r1', toolCallId: 'second' })
+    inbox.observe({ kind: 'userAnswered', conversationId: 'a', runId: 'r1', interactionId: 'second' })
     expect(inbox.getSnapshot().userPrompt).toBeNull()
     inbox.observe({ kind: 'userPromptRequested', payload: user('a', 'r1', 'first') })
     expect(inbox.getSnapshot().userPrompt).toBeNull()
@@ -225,7 +240,7 @@ describe('run interaction inbox', () => {
     inbox.observe({ kind: 'consentRequested', payload: consent('a', 'r1') })
     inbox.observe({ kind: 'userPromptRequested', payload: user('a', 'r1', 'user-a') })
     inbox.observe({ kind: 'toolRequested', payload: tool('b', 'r2', 'tool-b') })
-    const responding = inbox.respondTool({ approved: true })
+    const responding = inbox.respondTool({ interactionId: 'tool-a', approved: true })
 
     inbox.observe({ kind: 'drop', conversationId: 'a' })
     expect(inbox.getSnapshot().toolConfirm).toBeNull()

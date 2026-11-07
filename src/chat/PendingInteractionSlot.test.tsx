@@ -78,7 +78,7 @@ describe('PendingInteractionSlot', () => {
 
   it('passes the ACP approval command preview through to the approval card', () => {
     renderSlot({ toolConfirm: {
-      conversationId: 'c1', runId: 'r1', toolCallId: 't1', name: 'Run shell command',
+      conversationId: 'c1', runId: 'r1', interactionId: 'i1', toolCallId: 't1', name: 'Run shell command',
       source: 'external_cli', target: 'npm test', argumentsPreview: 'npm test',
     } })
     expect(captured.cards[0].detail).toBe('npm test')
@@ -99,7 +99,7 @@ describe('PendingInteractionSlot', () => {
     const userPrompt: ChatUserPromptPayload = {
       conversationId: 'c1',
       runId: 'r1',
-      toolCallId: 't1',
+      interactionId: 'i1', toolCallId: 't1',
       name: 'ask_user',
       source: 'native',
       prompt: { title: 'q', questions: [] },
@@ -120,6 +120,6 @@ describe('PendingInteractionSlot', () => {
     expect(captured.toolCalls).toHaveLength(2)
     expect(captured.toolCalls[1]).toBe(first)
     captured.onResolved?.()
-    expect(onDismissUserPrompt).toHaveBeenCalledWith('c1', 'r1', 't1')
+    expect(onDismissUserPrompt).toHaveBeenCalledWith('c1', 'r1', 'i1')
   })
 })

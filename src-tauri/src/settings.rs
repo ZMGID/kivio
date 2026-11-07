@@ -3445,45 +3445,11 @@ pub(crate) fn commit_settings(
     Ok(snapshot)
 }
 
-fn persist_then_apply_with_rollback(
-    persist: impl FnOnce() -> Result<(), String>,
-    rollback_unpersisted: impl FnOnce() -> Result<(), String>,
-    apply: impl FnOnce() -> Result<(), String>,
-    rollback_persisted: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
-    if let Err(error) = persist() {
-        return match rollback_unpersisted() {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(format!("{error}; cache rollback failed: {rollback_error}")),
-        };
-    }
-    if let Err(error) = apply() {
-        return match rollback_persisted() {
-            Ok(()) => Err(error),
-            Err(rollback_error) => Err(format!("{error}; rollback failed: {rollback_error}")),
-        };
-    }
-    Ok(())
-}
-
 /// 只有外部 CLI 配置本身变了才需要重新落地原生配置。
 ///
-/// `materialize_all` 会合并写 `~/.grok/config.toml`、`~/.kimi-code/config.toml`、OpenCode / Pi
-/// 的原生配置和 dsh 的 profile —— 都是用户家目录里的文件。`persist_settings` 是所有设置写盘的
-/// 总出口（收藏模型、热键、主题……），无条件物化等于「改任何设置都重写一遍外部 CLI 的用户配置」，
-/// 与 `provider_profile` 模块头写的「物化时机是保存 / 切换供应商那一次」不符。
-/// `materialize` 读的全部输入都来自 `overrides`（即 `chat.external_cli_agents` 的镜像），
-/// 所以这一个字段不变就没有任何东西需要重写。
+/// 设置事务仅在外部 CLI 配置变化时更新其原生文件，避免收藏模型、热键或主题保存重写凭据。
 fn external_cli_agents_changed(previous: &Settings, next: &Settings) -> bool {
     previous.chat.external_cli_agents != next.chat.external_cli_agents
-}
-
-fn apply_external_agent_settings(previous: &Settings, settings: &Settings) -> Result<(), String> {
-    crate::external_agents::overrides::sync_from_settings(settings);
-    if !external_cli_agents_changed(previous, settings) {
-        return Ok(());
-    }
-    crate::external_agents::provider_profile::materialize_all()
 }
 
 fn read_settings_document(
@@ -3534,29 +3500,38 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
         serde_json::to_value(&to_persist).map_err(|e| e.to_string())?,
     );
     let external_agents_changed = external_cli_agents_changed(&previous_settings, &canonical);
-    persist_then_apply_with_rollback(
-        || write_settings_document(&path, &next),
-        || Ok(()),
-        || apply_external_agent_settings(&previous_settings, &canonical),
-        || {
-            let disk_rollback = write_settings_document(&path, &previous);
-            crate::external_agents::overrides::sync_from_settings(&previous_settings);
-            // apply 只在配置变了时才写过原生文件；没写过就没有什么要还原。
-            let profile_rollback = if external_agents_changed {
-                crate::external_agents::provider_profile::materialize_all()
-            } else {
-                Ok(())
-            };
-            match (disk_rollback, profile_rollback) {
-                (Ok(()), Ok(())) => Ok(()),
-                (disk, profile) => Err(format!(
-                    "settings: {}; provider: {}",
-                    disk.err().unwrap_or_else(|| "none".to_string()),
-                    profile.err().unwrap_or_else(|| "none".to_string())
-                )),
-            }
-        },
-    )?;
+    crate::external_agents::provider_profile::retry_profile_recovery()?;
+    let _resource = if external_agents_changed {
+        Some(
+            crate::external_agents::session::live::ResourceLease::acquire(
+                crate::external_agents::provider_profile::settings_resource_keys(
+                    &previous_settings,
+                    &canonical,
+                ),
+                true,
+            )?,
+        )
+    } else {
+        None
+    };
+    let _launch_update =
+        crate::external_agents::overrides::begin_launch_update(&previous_settings, &canonical);
+    let result = if external_agents_changed {
+        crate::external_agents::session::live::MAINTENANCE_OWNER.sync_scope(
+            _resource.as_ref().expect("profile resource").clone(),
+            || {
+                crate::external_agents::provider_profile::persist_with_profiles(
+                    &previous_settings,
+                    &canonical,
+                    || write_settings_document(&path, &next),
+                )
+            },
+        )
+    } else {
+        write_settings_document(&path, &next)
+    };
+    result?;
+    crate::external_agents::overrides::sync_from_settings(&canonical);
 
     // 供应商可能变了：模型列表（300s）与可用性（600s）两个探测缓存都得作废。
     if let Some(state) = app.try_state::<crate::state::AppState>() {
@@ -3649,9 +3624,7 @@ pub fn load_settings(app: &AppHandle) -> Settings {
         .and_then(|mut document| document.remove("settings"))
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or_default();
-    let settings = sanitize_settings(settings);
-    crate::external_agents::overrides::sync_from_settings(&settings);
-    settings
+    sanitize_settings(settings)
 }
 
 // ========== 默认提示词生成 ==========
@@ -4181,56 +4154,6 @@ mod tests {
         provider.enabled = true;
         provider.enabled_models.clear();
         assert!(!provider_has_usable_config(&provider));
-    }
-
-    #[test]
-    fn failed_durable_save_does_not_apply_external_settings_side_effects() {
-        let applied = std::cell::Cell::new(false);
-        let cache_rolled_back = std::cell::Cell::new(false);
-        let durable_rolled_back = std::cell::Cell::new(false);
-
-        let result = persist_then_apply_with_rollback(
-            || Err("disk full".to_string()),
-            || {
-                cache_rolled_back.set(true);
-                Ok(())
-            },
-            || {
-                applied.set(true);
-                Ok(())
-            },
-            || {
-                durable_rolled_back.set(true);
-                Ok(())
-            },
-        );
-
-        assert_eq!(result.unwrap_err(), "disk full");
-        assert!(!applied.get());
-        assert!(cache_rolled_back.get());
-        assert!(!durable_rolled_back.get());
-    }
-
-    #[test]
-    fn failed_external_settings_apply_rolls_back_the_durable_save() {
-        let cache_rolled_back = std::cell::Cell::new(false);
-        let rolled_back = std::cell::Cell::new(false);
-        let result = persist_then_apply_with_rollback(
-            || Ok(()),
-            || {
-                cache_rolled_back.set(true);
-                Ok(())
-            },
-            || Err("profile write failed".to_string()),
-            || {
-                rolled_back.set(true);
-                Ok(())
-            },
-        );
-
-        assert_eq!(result.unwrap_err(), "profile write failed");
-        assert!(!cache_rolled_back.get());
-        assert!(rolled_back.get());
     }
 
     #[test]
@@ -6159,7 +6082,7 @@ mod external_cli_materialize_gate_tests {
     }
 
     /// 回归：`persist_settings` 是所有设置写盘的总出口。收藏模型 / 热键 / 主题这类
-    /// 与外部 CLI 无关的保存，不得触发 `materialize_all` 重写 `~/.grok/config.toml`
+    /// 与外部 CLI 无关的保存，不得重写原生配置文件。
     /// 之类的用户家目录文件。
     #[test]
     fn unrelated_settings_change_does_not_rematerialize() {

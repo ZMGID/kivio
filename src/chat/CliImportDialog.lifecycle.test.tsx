@@ -21,6 +21,7 @@ const session: ImportableCliSession = {
   cwd: '/repo',
   updatedAt: 1_700_000_000_000,
   messageCount: 2,
+  importHistory: 'native',
   alreadyImported: false,
 }
 
@@ -92,6 +93,17 @@ afterEach(async () => {
 })
 
 describe('CLI session import lifetime', () => {
+  it('warns about binding without readable history using the listed capability', async () => {
+    vi.mocked(chatApi.listImportableCliSessions).mockResolvedValue([
+      { ...session, agentId: 'test-cli', importHistory: 'fallback' },
+      { ...session, agentId: 'kimi', title: '带历史的会话' },
+    ])
+    render(<Harness onImported={vi.fn()} />)
+    const hint = await screen.findByText('不提供可读历史，导入后消息区为空，但续聊正常')
+    expect(hint.parentElement).toHaveTextContent('test-cli')
+    expect(screen.getByRole('button', { name: /带历史的会话/ })).toBeEnabled()
+  })
+
   it('dedupes session identities and ignores a second start while one is in flight', async () => {
     const gate = deferred<CliImportResult>()
     const importSessions = vi.spyOn(chatApi, 'importCliSessions').mockReturnValue(gate.promise)

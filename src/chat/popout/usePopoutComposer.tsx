@@ -1,3 +1,4 @@
+import { isPlainBlankConversation } from '../conversationFields'
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import {
   api,
@@ -21,7 +22,6 @@ import type { InputBarProps } from '../InputBar'
 import {
   deriveDshPresetModes,
   derivePermissionModes,
-  useDetectedExternalAgents,
   useDshCustomPresets,
 } from '../permissionModes'
 import { SessionUsageStrip } from '../SessionUsageStrip'
@@ -35,6 +35,7 @@ import type {
   ChatSet,
   Conversation,
   ConversationContextState,
+  DetectedExternalAgent,
   ModelRef,
   PendingAttachment,
   SkillMeta,
@@ -82,13 +83,6 @@ function normalizeSkill(skill: import('../../api/tauri').SkillMeta): SkillMeta {
   }
 }
 
-function isBlankConversation(conversation: Conversation | null): boolean {
-  return Boolean(
-    conversation
-    && conversation.messages.length === 0
-    && !(conversation.assistant_id ?? conversation.assistantId),
-  )
-}
 
 function applyConversationMeta(
   setConversation: Dispatch<SetStateAction<Conversation | null>>,
@@ -114,6 +108,7 @@ type UsePopoutComposerArgs = {
   usesChatRuntime: boolean
   usesExternalRuntime: boolean
   runtime: AgentRuntimeConfig
+  detectedExternalAgents: DetectedExternalAgent[]
   onSend: (
     content: string,
     attachments: PendingAttachment[],
@@ -135,6 +130,7 @@ export function usePopoutComposer({
   usesChatRuntime,
   usesExternalRuntime,
   runtime,
+  detectedExternalAgents,
   onSend,
   onCancel,
   cancelVisible,
@@ -165,7 +161,6 @@ export function usePopoutComposer({
   const [boundSet, setBoundSet] = useState<ChatSet | null>(null)
   const [gitWorkdir, setGitWorkdir] = useState('')
 
-  const detectedExternalAgents = useDetectedExternalAgents(conversationId)
   const dshCustomPresets = useDshCustomPresets(runtime)
   const activeAgentPlanMode = conversation?.agent_plan_state?.mode
     ?? conversation?.agentPlanState?.mode
@@ -613,7 +608,7 @@ export function usePopoutComposer({
     return ''
   }, [enabledToolCount, recommendedTools.length, toolsDisabledReason, toolsRequested, unavailableRecommendedTools])
 
-  const conversationBlank = isBlankConversation(conversation)
+  const conversationBlank = isPlainBlankConversation(conversation)
   const explicitWebSearch = conversation?.webSearchMode ?? conversation?.web_search_mode
   const webSearchMode: WebSearchMode = explicitWebSearch
     || loadLastWebSearchMode()

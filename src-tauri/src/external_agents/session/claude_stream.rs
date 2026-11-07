@@ -20,13 +20,14 @@
 //! - 中断走 stdin 的 `control_request` / `interrupt`（init 的 `capabilities` 里有
 //!   `interrupt_receipt_v1`），**中断后进程完好、下一轮正常返回** —— 这是常驻的核心收益。
 
+use crate::external_agents::session::live::TurnDelivery;
 use std::path::Path;
 use std::time::Duration;
 
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -143,6 +144,25 @@ enum ReadStep {
 /// 常驻之后 stdout 上不只有「本轮的内容」：控制通道（`control_request` /
 /// `control_response` / `control_cancel_request`）和心跳（`keep_alive`）与内容帧混在同一条流里。
 /// 白名单分流，剩下的交给流解析器 —— 但**绝不能对一条在等回复的 `control_request` 保持沉默**。
+fn decode_claude_frame(line: &str) -> Result<Value, String> {
+    let value: Value =
+        serde_json::from_str(line).map_err(|error| format!("invalid Claude JSON: {error}"))?;
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|kind| !kind.is_empty())
+        .ok_or("invalid Claude stream envelope")?;
+    if kind == "result" {
+        let subtype = value.get("subtype").and_then(Value::as_str);
+        if !subtype.is_some_and(|subtype| subtype == "success" || subtype.starts_with("error_"))
+            || value.get("is_error").is_some_and(|flag| !flag.is_boolean())
+        {
+            return Err("invalid Claude terminal result".into());
+        }
+    }
+    Ok(value)
+}
+
 enum InboundFrame {
     /// 交给流解析器（正文 / 工具 / usage / 轮次边界）。
     Stream,
@@ -208,8 +228,8 @@ const APPROVAL_INTERACTIVE_UNSUPPORTED: &str =
 /// 不是那条真机测试。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingApproval {
+    interaction_id: String,
     request_id: String,
-    tool_call_id: String,
     tool_name: String,
 }
 
@@ -421,7 +441,7 @@ fn approval_ask_from_request(request_id: &str, request: &Value) -> ApprovalAsk {
         .unwrap_or(request_id)
         .to_string();
     ApprovalAsk {
-        request_id: request_id.to_string(),
+        interaction_id: Uuid::new_v4().to_string(),
         tool_call_id,
         tool_name: request
             .get("tool_name")
@@ -477,7 +497,7 @@ pub const CLAUDE_ELICITATION: &str = "elicitation";
 
 fn elicitation_ask_from_request(request_id: &str, request: &Value) -> ApprovalAsk {
     ApprovalAsk {
-        request_id: request_id.to_string(),
+        interaction_id: Uuid::new_v4().to_string(),
         tool_call_id: format!("claude-elicitation-{request_id}"),
         tool_name: CLAUDE_ELICITATION.to_string(),
         input: request.clone(),
@@ -530,7 +550,7 @@ fn classify_inbound_frame(value: &Value, can_ask: bool) -> InboundFrame {
         // 工具调用永远不返回 ⇒ 本轮的 `result` 永远不来 ⇒ 轮次读循环永久挂死。
         //
         // **`can_use_tool` 是我们唯一实现的子型**：它只在 argv 带
-        // `--permission-prompt-tool stdio` 时才会到达（见 `defs::claude::claude_permission_prompt_args`；
+        // `--permission-prompt-tool stdio` 时才会到达（见 `providers::claude::claude_permission_prompt_args`；
         // 本机 2.1.220 实测：带这个 flag + `--permission-mode default` 让它写文件 ⇒ 收到
         // `can_use_tool`；不带 flag 的对照组一条都没有，权限被 CLI 直接拒）。
         // 二进制侧同一结论：`ekm(mode)` 里 `if(mode==="stdio") return createCanUseTool(...)`，
@@ -665,8 +685,8 @@ fn stale_frame_verdict(budget: u32, value: &Value) -> (bool, u32) {
 /// 一个活着的 claude stream-json 会话：一个进程服完整个对话。由它自己的 actor 任务独占。
 pub struct ClaudeStreamJsonSession {
     child: Child,
-    stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
     chat_mcp_config: Option<tempfile::NamedTempFile>,
     /// 跨轮存活：保留完成计数和 resolved model；逐请求用量在真正的 result 边界复位。
     handler: StreamHandler,
@@ -718,20 +738,20 @@ impl ClaudeStreamJsonSession {
         // 否则 Kivio 从某个 CLI 会话里启动时子进程会拒绝启动或报「未登录」。
         let mut command = cli_command(resolved_bin);
         crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
-        let mut child = command
-            .args(args)
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .no_console_window()
-            .kill_on_drop(true)
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
-            .map_err(|e| format!("spawn: {e}"))?;
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(
+            command
+                .args(args)
+                .current_dir(cwd)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .no_console_window()
+                .kill_on_drop(true),
+        )
+        .map_err(|e| format!("spawn: {e}"))?;
         let stderr_tail = spawn_stderr_tail(child.stderr.take());
 
-        let mut take_pipes = || -> Result<(ChildStdin, ChildStdout), String> {
+        let mut take_pipes = || -> Result<(AgentStdin, AgentStdout), String> {
             let stdin = child
                 .stdin
                 .take()
@@ -758,9 +778,13 @@ impl ClaudeStreamJsonSession {
                 reader: BufReader::new(stdout).lines(),
                 chat_mcp_config: None,
                 handler: create_stream_handler(StreamFormat::ClaudeStreamJson),
-                session_id: crate::external_agents::defs::claude::claude_session_id_from_args(args)
-                    .unwrap_or_default(),
-                active_model: crate::external_agents::defs::claude::claude_model_from_args(args),
+                session_id: crate::external_agents::providers::claude::claude_session_id_from_args(
+                    args,
+                )
+                .unwrap_or_default(),
+                active_model: crate::external_agents::providers::claude::claude_model_from_args(
+                    args,
+                ),
                 stderr_tail: Some(stderr_tail),
                 stale_frames_left: 0,
                 idle_handler: None,
@@ -914,22 +938,28 @@ impl ClaudeStreamJsonSession {
 
     pub async fn run_turn(
         &mut self,
+        delivery: &TurnDelivery,
         prompt: &str,
         model: Option<&str>,
         images: &[ImageBlock],
         events: &mpsc::Sender<UnifiedAgentEvent>,
         control: &mut mpsc::Receiver<SessionCommand>,
         approvals: Option<ApprovalBridge>,
+        turn_cancelled: Option<&tokio_util::sync::CancellationToken>,
     ) -> Result<(), String> {
         // 换模型：先在**会话内**试一次 `set_model`，不行才退回换进程。
         // 必须排在写 prompt 之前 —— 否则这一轮的问题已经喂给旧模型了。
         self.apply_model_change(model, control).await?;
 
+        if turn_cancelled.is_some_and(|token| token.is_cancelled()) {
+            return Err("cancelled".into());
+        }
         let mut user: Value = serde_json::from_str(&stream_json_user_line(prompt, images)?)
             .map_err(|e| e.to_string())?;
         let mut active_input_uuid = Uuid::new_v4().to_string();
         user["uuid"] = json!(active_input_uuid);
         let payload = format!("{user}\n");
+        delivery.mark_possibly_sent();
         if let Err(err) = self.stdin.write_all(payload.as_bytes()).await {
             return Err(self
                 .fold_tail(format!("写入 claude stdin 失败: {err}"))
@@ -1012,7 +1042,7 @@ impl ClaudeStreamJsonSession {
                 for entry in &pending {
                     let _ = events
                         .send(UnifiedAgentEvent::InteractionResolved {
-                            tool_call_id: entry.tool_call_id.clone(),
+                            interaction_id: entry.interaction_id.clone(),
                         })
                         .await;
                 }
@@ -1114,7 +1144,7 @@ impl ClaudeStreamJsonSession {
                 while let Ok(decision) = rx.try_recv() {
                     let Some(index) = pending
                         .iter()
-                        .position(|entry| entry.request_id == decision.request_id)
+                        .position(|entry| entry.interaction_id == decision.interaction_id)
                     else {
                         // 已经被 `control_cancel_request` 撤回、或已在别处答过：不能重复回复。
                         continue;
@@ -1125,7 +1155,7 @@ impl ClaudeStreamJsonSession {
                             (true, Some(result)) => result,
                             _ => json!({ "action": "decline" }),
                         };
-                        let line = elicitation_response_line(&decision.request_id, &result);
+                        let line = elicitation_response_line(&entry.request_id, &result);
                         let _ = self.stdin.write_all(line.as_bytes()).await;
                         let _ = self.stdin.flush().await;
                         continue;
@@ -1144,7 +1174,7 @@ impl ClaudeStreamJsonSession {
                         pending_mode_switch = Some((request_id, mode.to_string()));
                     }
                     let line = approval_response_line_with_permissions(
-                        &decision.request_id,
+                        &entry.request_id,
                         decision.approved,
                         APPROVAL_DENIED_MESSAGE,
                         decision.updated_input.as_ref(),
@@ -1188,16 +1218,12 @@ impl ClaudeStreamJsonSession {
 
             // 解析一次，然后按帧类型分流（控制通道 vs 内容）。非 JSON 行交给解析器唯一那条
             // `Raw` 出口，别在这里另开一份（spec 第 2 / 10 条）。
-            let value = match serde_json::from_str::<Value>(line.trim()) {
+            let value = match decode_claude_frame(line.trim()) {
                 Ok(value) => value,
-                Err(_) => {
-                    let mut buf: Vec<UnifiedAgentEvent> = Vec::new();
-                    self.handler
-                        .handle_line(&line, &mut |event| buf.push(event));
-                    for event in buf {
-                        let _ = events.send(event).await;
-                    }
-                    continue;
+                Err(error) => {
+                    self.reject_pending(&mut pending, APPROVAL_ABORTED_MESSAGE)
+                        .await;
+                    return Err(error);
                 }
             };
             if value["type"] == "system"
@@ -1302,9 +1328,15 @@ impl ClaudeStreamJsonSession {
                 }
                 // 「这个工具能用吗」——送去问用户，挂起等答复。
                 InboundFrame::Ask(ask) => {
-                    let request_id = ask.request_id.clone();
+                    let request_id = value["request_id"]
+                        .as_str()
+                        .expect("classified request")
+                        .to_string();
+                    if pending.iter().any(|entry| entry.request_id == request_id) {
+                        continue;
+                    }
+                    let interaction_id = ask.interaction_id.clone();
                     let tool_name = ask.tool_name.clone();
-                    let tool_call_id = ask.tool_call_id.clone();
                     // 当场就能定的（需要在卡片上作答的交互式工具）直接拒，不打扰用户。
                     let immediate_deny = match approval_verdict(&ask) {
                         Err(reason) => Some(reason),
@@ -1330,8 +1362,8 @@ impl ClaudeStreamJsonSession {
                             let _ = self.stdin.flush().await;
                         }
                         None => pending.push(PendingApproval {
+                            interaction_id,
                             request_id,
-                            tool_call_id,
                             tool_name,
                         }),
                     }
@@ -1345,7 +1377,7 @@ impl ClaudeStreamJsonSession {
                     {
                         let _ = events
                             .send(UnifiedAgentEvent::InteractionResolved {
-                                tool_call_id: entry.tool_call_id.clone(),
+                                interaction_id: entry.interaction_id.clone(),
                             })
                             .await;
                     }
@@ -1507,6 +1539,9 @@ impl ClaudeStreamJsonSession {
     /// 交给 sink 落成一条助手消息。窗口外的杂帧（取消残留等）直接丢弃——它们属于
     /// 已收尾的轮次，攒进正文会污染唤醒消息。
     async fn read_idle_frame(&mut self) -> IdlePump {
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return IdlePump::Dead;
+        }
         let line = match self.next_line().await {
             ReadStep::Line(line) => line,
             ReadStep::Idle => return IdlePump::Quiet,
@@ -1604,7 +1639,7 @@ impl ClaudeStreamJsonSession {
     /// （落盘会话、关掉自己拉起的 MCP 子进程）。到点还赖着不走才升级到
     /// `kill_agent_process_tree`（spec 第 8c 条：杀整棵树，不然漏一批孤儿 MCP 进程）。
     ///
-    /// **`shutdown()` 之后必须 `drop(stdin)`**：tokio 的 `ChildStdin::poll_shutdown` 只 flush，
+    /// **`shutdown()` 之后必须 `drop(stdin)`**：tokio 的 `AgentStdin::poll_shutdown` 只 flush，
     /// **不关句柄** —— 句柄要到 drop 才关。少了这一行，子进程永远收不到 EOF，每次关停都要
     /// 白等满 `CLAUDE_SHUTDOWN_TIMEOUT` 再被杀掉（真机测试的耗时从 53s 涨到 169s 才暴露）。
     /// acp / codex 的 `close()` 是 `shutdown()` 紧跟 `start_kill()`，掩盖了同一个问题。
@@ -1668,7 +1703,7 @@ pub type BackgroundTaskSink = std::sync::Arc<dyn Fn(IdleSideEffect) + Send + Syn
 /// Spawn the actor task that owns a connected session and serves `SessionCommand`s.
 pub fn spawn_claude_stream_session_actor(
     session: ClaudeStreamJsonSession,
-) -> mpsc::Sender<SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     spawn_claude_stream_session_actor_with_sink(session, None)
 }
 
@@ -1684,13 +1719,13 @@ pub fn spawn_claude_stream_session_actor(
 pub fn spawn_claude_stream_session_actor_with_sink(
     mut session: ClaudeStreamJsonSession,
     sink: Option<BackgroundTaskSink>,
-) -> mpsc::Sender<SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     enum ActorStep {
         Cmd(Option<SessionCommand>),
         Idle(IdlePump),
     }
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
-    tokio::spawn(async move {
+    crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         // stdout 死了就停止空闲读（别对着死管道忙等）；会话的真实死因留给下一轮
         // RunTurn 的既有失败路径去发现和上报，这里不重复造报错出口。
         let mut idle_dead = false;
@@ -1716,7 +1751,7 @@ pub fn spawn_claude_stream_session_actor_with_sink(
                                 idle_dead = true;
                             }
                         }
-                        IdlePump::Dead => idle_dead = true,
+                        IdlePump::Dead => break,
                         IdlePump::Reply(line) => {
                             idle_hiccups = 0;
                             session.write_control_line(&line).await;
@@ -1735,6 +1770,8 @@ pub fn spawn_claude_stream_session_actor_with_sink(
             let Some(cmd) = cmd else { break };
             match cmd {
                 SessionCommand::RunTurn {
+                    delivery,
+                    cancelled,
                     prompt,
                     model,
                     images,
@@ -1743,18 +1780,26 @@ pub fn spawn_claude_stream_session_actor_with_sink(
                     approvals,
                     ..
                 } => {
+                    if done.is_closed()
+                        || cancelled.as_ref().is_some_and(|token| token.is_cancelled())
+                    {
+                        let _ = done.send(Err("cancelled".into()));
+                        continue;
+                    }
                     // Invariant (A4)：`run_turn` 在返回前发完所有 `event`，mpsc 保序，
                     // 所以调用方在 `done` 之后的 drain 能看到全部事件。`done.send` 永远最后。
                     // 半截的唤醒轮收集先清掉：prompt 一写入，后续帧都属于新轮次。
                     session.reset_idle_collector();
                     let result = session
                         .run_turn(
+                            &delivery,
                             &prompt,
                             model.as_deref(),
                             &images,
                             &events,
                             &mut rx,
                             approvals,
+                            cancelled.as_ref(),
                         )
                         .await;
                     let _ = done.send(result);
@@ -1775,12 +1820,32 @@ pub fn spawn_claude_stream_session_actor_with_sink(
             }
         }
         session.close().await;
-    });
-    tx
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stream_boundary_rejects_corruption_and_malformed_results() {
+        for line in [
+            "{",
+            "null",
+            "[]",
+            "{}",
+            r#"{"type":"result"}"#,
+            r#"{"type":"result","subtype":"success","is_error":"false"}"#,
+        ] {
+            assert!(decode_claude_frame(line).is_err(), "{line}");
+        }
+        assert!(decode_claude_frame(r#"{"type":"future_optional_event"}"#).is_ok());
+        assert!(decode_claude_frame(r#"{"type":"result","subtype":"success"}"#).is_ok());
+        let request = json!({"tool_name":"Bash","tool_use_id":"same-tool"});
+        assert_ne!(
+            approval_ask_from_request("same-native", &request).interaction_id,
+            approval_ask_from_request("same-native", &request).interaction_id
+        );
+    }
+
     #[test]
     fn priority_steer_peer() {
         if !std::env::args()
@@ -1789,6 +1854,8 @@ mod tests {
             return;
         }
         use std::io::{BufRead, Write};
+        println!("KIVIO_PEER_READY");
+        std::io::stdout().flush().unwrap();
         let mut input = std::io::stdin().lock().lines();
         let first: Value = serde_json::from_str(&input.next().unwrap().unwrap()).unwrap();
         let emit = |value: Value| {
@@ -1891,7 +1958,17 @@ mod tests {
         let mut session = ClaudeStreamJsonSession::connect(&exe, &args, dir.path())
             .await
             .unwrap();
-        let config = crate::external_agents::defs::claude::append_chat_mcp_args(
+        loop {
+            let line = timeout(Duration::from_secs(5), session.reader.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if line.ends_with("KIVIO_PEER_READY") {
+                break;
+            }
+        }
+        let config = crate::external_agents::providers::claude::append_chat_mcp_args(
             &mut Vec::new(),
             "http://127.0.0.1:1234/mcp",
             "Bearer secret",
@@ -1909,6 +1986,8 @@ mod tests {
         let (done, completion) = oneshot::channel();
         actor
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
+                cancelled: None,
                 prompt: "first".into(),
                 model: None,
                 reasoning: None,
@@ -1988,6 +2067,8 @@ mod tests {
         let (done, completion) = oneshot::channel();
         actor
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
+                cancelled: None,
                 prompt: "next".into(),
                 model: None,
                 reasoning: None,
@@ -2302,8 +2383,8 @@ mod tests {
 
         let lines = reject_pending_lines(
             &[PendingApproval {
+                interaction_id: Uuid::new_v4().to_string(),
                 request_id: "e1".to_string(),
-                tool_call_id: "tool-e1".to_string(),
                 tool_name: CLAUDE_ELICITATION.to_string(),
             }],
             "x",
@@ -2471,7 +2552,7 @@ mod tests {
         )
         .expect("有宿主时必须变成待答的询问");
         // 回复时要原样回显的那个 id。
-        assert_eq!(ask.request_id, "f4d4ddfd-1be4-4630-baec-2b764030870c");
+        assert!(Uuid::parse_str(&ask.interaction_id).is_ok());
         // 卡片 id 用 claude 的 tool_use_id ⇒ 审批卡与工具卡指向同一次调用。
         assert_eq!(ask.tool_call_id, "toolu_015Jc1MjkwjbJL6rsCoaG3q8");
         // 工具原名**不归一化**：`Write` 是 PascalCase，前端展示要的就是本名。
@@ -2550,8 +2631,8 @@ mod tests {
         let pending: Vec<PendingApproval> = ["r1", "r2", "r3", "r4", "r5"]
             .iter()
             .map(|id| PendingApproval {
+                interaction_id: Uuid::new_v4().to_string(),
                 request_id: (*id).to_string(),
-                tool_call_id: format!("tool-{id}"),
                 tool_name: "Bash".to_string(),
             })
             .collect();
@@ -2788,7 +2869,7 @@ mod tests {
 #[cfg(test)]
 mod live_tests {
     use super::*;
-    use crate::external_agents::defs::claude::{build_claude_args, CLAUDE_AGENT_DEF};
+    use crate::external_agents::providers::claude::{build_claude_args, CLAUDE_AGENT_DEF};
     use crate::external_agents::spawn::resolve_binary;
     use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext};
     use tokio::sync::oneshot;
@@ -2800,7 +2881,7 @@ mod live_tests {
 
     /// 同上，但指定权限档位。`Some("default")` = 用户在权限胶囊里选了「每次确认」，
     /// argv 会带上 `--permission-prompt-tool stdio`（见
-    /// `defs::claude::claude_permission_prompt_args`）。
+    /// `providers::claude::claude_permission_prompt_args`）。
     fn live_args_with_sandbox(
         session_id: &str,
         model: Option<&str>,
@@ -2824,7 +2905,7 @@ mod live_tests {
 
     /// 同上，但把会话 flag 换成 `--resume <session_id>`（用来构造「resume 一个不存在的会话」）。
     fn live_resume_args(session_id: &str) -> Vec<String> {
-        crate::external_agents::defs::claude::claude_args_resuming(
+        crate::external_agents::providers::claude::claude_args_resuming(
             &live_args(session_id, None),
             session_id,
         )
@@ -2855,6 +2936,8 @@ mod live_tests {
         let (dtx, drx) = oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
+                cancelled: None,
                 prompt: prompt.to_string(),
                 model: None,
                 reasoning: None,
@@ -2898,7 +2981,10 @@ mod live_tests {
     async fn connect_live(
         session_id: &str,
         model: Option<&str>,
-    ) -> Option<(mpsc::Sender<SessionCommand>, std::path::PathBuf)> {
+    ) -> Option<(
+        crate::external_agents::session::live::SessionControl,
+        std::path::PathBuf,
+    )> {
         let Some(bin) = resolve_binary(&CLAUDE_AGENT_DEF).await else {
             eprintln!("SKIP: 本机没有可用的 claude CLI");
             return None;
@@ -2924,7 +3010,10 @@ mod live_tests {
     /// 就会让每次关停白等满 `CLAUDE_SHUTDOWN_TIMEOUT` 再被杀。那个 bug 犯过一次，当初是靠
     /// 「测试耗时 53s → 169s」发现的 —— 被删掉的 `claude_persist_probe_tests` 里有条真断言，
     /// 搬过来时退化成了 `let _ =`，回归会重新变成静默通过。
-    async fn close_and_cleanup(control: mpsc::Sender<SessionCommand>, workdir: &std::path::Path) {
+    async fn close_and_cleanup(
+        control: crate::external_agents::session::live::SessionControl,
+        workdir: &std::path::Path,
+    ) {
         let _ = control.send(SessionCommand::Close).await;
         let closed = timeout(CLAUDE_SHUTDOWN_TIMEOUT, control.closed()).await;
         let _ = std::fs::remove_dir_all(workdir);
@@ -2945,6 +3034,8 @@ mod live_tests {
         let (dtx, drx) = oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
+                cancelled: None,
                 prompt: prompt.to_string(),
                 model: Some(model.to_string()),
                 reasoning: None,
@@ -2982,15 +3073,17 @@ mod live_tests {
     /// 同一条往返，跑在**默认档**（「完全」= `bypassPermissions`）上。
     ///
     /// 单测只能证明 argv 带上了 flag、以及带 flag 的 init 里有 `AskUserQuestion`
-    /// （`defs::claude::claude_permission_prompt_args` 的实测矩阵）。**它证明不了**这一档下
+    /// （`providers::claude::claude_permission_prompt_args` 的实测矩阵）。**它证明不了**这一档下
     /// CLI 真的会为 `AskUserQuestion` 发 `can_use_tool` —— bypass 的语义是「咨询回调之前就
     /// 放行」，若它对这个工具也照样短路，模型拿到的就是一份没有 answers 的原始入参。
     /// 那正是这条测试要证伪的东西：跑绿了才说明默认档的问用户是真的通的。
     #[tokio::test]
     #[ignore = "requires live claude login + network"]
     async fn live_ask_user_question_works_in_the_default_full_access_mode() {
-        live_ask_user_round_trip(crate::external_agents::defs::claude::DEFAULT_PERMISSION_MODE)
-            .await;
+        live_ask_user_round_trip(
+            crate::external_agents::providers::claude::DEFAULT_PERMISSION_MODE,
+        )
+        .await;
     }
 
     async fn live_ask_user_round_trip(sandbox: &str) {
@@ -3003,7 +3096,7 @@ mod live_tests {
         std::fs::create_dir_all(&workdir).expect("create workdir");
 
         // `AskUserQuestion` 只在带 `--permission-prompt-tool stdio` 时才出现在工具表里
-        // （档位无关，见 `defs::claude::claude_permission_prompt_args` 的实测矩阵）。
+        // （档位无关，见 `providers::claude::claude_permission_prompt_args` 的实测矩阵）。
         let args = live_args_with_sandbox(&session_id, None, Some(sandbox));
         let Ok(session) = ClaudeStreamJsonSession::connect(&bin, &args, &workdir).await else {
             eprintln!("SKIP: 连接失败（未登录 / 网络？）");
@@ -3061,7 +3154,7 @@ mod live_tests {
                 };
                 let sent = dec_tx
                     .send(crate::external_agents::session::live::ApprovalDecision {
-                        request_id: ask.request_id,
+                        interaction_id: ask.interaction_id,
                         approved: true,
                         updated_input,
                         set_permission_mode: None,
@@ -3161,7 +3254,7 @@ text={}",
                     is_exit_plan_mode(&ask.tool_name).then(|| "acceptEdits".to_string());
                 let sent = dec_tx
                     .send(crate::external_agents::session::live::ApprovalDecision {
-                        request_id: ask.request_id,
+                        interaction_id: ask.interaction_id,
                         approved: true,
                         updated_input: None,
                         set_permission_mode,
@@ -3296,7 +3389,7 @@ text={}",
                 };
                 let sent = dec_tx
                     .send(crate::external_agents::session::live::ApprovalDecision {
-                        request_id: ask.request_id,
+                        interaction_id: ask.interaction_id,
                         approved: true,
                         updated_input,
                         set_permission_mode: None,
@@ -3566,7 +3659,7 @@ text={}",
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "real-machine: spawns the installed claude CLI, needs login, costs tokens"]
     async fn live_reconnect_with_resume_keeps_answering_and_keeps_context() {
-        use crate::external_agents::defs::claude::claude_args_resuming;
+        use crate::external_agents::providers::claude::claude_args_resuming;
 
         let Some(bin) = resolve_binary(&CLAUDE_AGENT_DEF).await else {
             eprintln!("SKIP: 本机没有可用的 claude CLI");
@@ -3646,7 +3739,7 @@ text={}",
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "real-machine: spawns the installed claude CLI"]
     async fn live_resuming_a_missing_session_degrades_to_a_fresh_session() {
-        use crate::external_agents::defs::claude::claude_args_fresh_session;
+        use crate::external_agents::providers::claude::claude_args_fresh_session;
         use crate::external_agents::stream::claude::is_missing_session_error;
 
         let Some(bin) = resolve_binary(&CLAUDE_AGENT_DEF).await else {
@@ -3743,7 +3836,7 @@ text={}",
             while let Some(ask) = ask_rx.recv().await {
                 eprintln!(
                     "  ask: tool={} request_id={} tool_use_id={} input={}",
-                    ask.tool_name, ask.request_id, ask.tool_call_id, ask.input
+                    ask.tool_name, ask.interaction_id, ask.tool_call_id, ask.input
                 );
                 asked_for_task
                     .lock()
@@ -3751,7 +3844,7 @@ text={}",
                     .push(ask.tool_name.clone());
                 let sent = dec_tx
                     .send(crate::external_agents::session::live::ApprovalDecision {
-                        request_id: ask.request_id,
+                        interaction_id: ask.interaction_id,
                         approved: approve,
                         updated_input: None,
                         set_permission_mode: None,
@@ -3954,3 +4047,7 @@ text={}",
         close_and_cleanup(control, &workdir).await;
     }
 }
+
+#[cfg(test)]
+#[path = "claude_stream_replay_tests.rs"]
+mod replay_tests;

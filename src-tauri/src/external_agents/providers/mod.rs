@@ -1,7 +1,11 @@
-pub mod acp;
+mod acp;
 pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod dsh;
+pub mod gemini;
 pub mod grok;
+pub mod hermes;
+pub mod kimi;
+pub mod opencode;
 pub mod pi;

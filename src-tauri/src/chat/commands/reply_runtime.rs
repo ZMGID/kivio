@@ -100,7 +100,7 @@ impl Drop for ChatSendReservation<'_> {
 
 /// RAII 守卫：占住某条 run 的回复槽位与活跃 generation，函数任意退出路径都释放。
 /// 同一会话允许多条 run 并存（多模型一问多答），每条 run 各持一个守卫。
-pub(super) struct ChatReplyGuard<'a> {
+pub(crate) struct ChatReplyGuard<'a> {
     state: &'a AppState,
     conversation_id: String,
     run_id: String,
@@ -110,7 +110,7 @@ pub(super) struct ChatReplyGuard<'a> {
 impl<'a> ChatReplyGuard<'a> {
     /// 注册一条 run 的回复槽位。返回 None 表示同一 (conversation_id, run_id) 已在进行中。
     /// `generation` 一并登记，drop 时随槽位一起退役（不影响同会话其它在跑 run）。
-    pub(super) fn try_new(
+    pub(crate) fn try_new(
         state: &'a AppState,
         conversation_id: &str,
         run_id: &str,
@@ -134,6 +134,7 @@ impl<'a> ChatReplyGuard<'a> {
 
 impl Drop for ChatReplyGuard<'_> {
     fn drop(&mut self) {
+        self.state.chat_interactions().forget_answered_ask_user(&self.run_id);
         self.state.chat_runtime().finish_reply_generation(
             &self.conversation_id,
             &self.run_id,
@@ -170,6 +171,25 @@ pub(super) struct ArmReplyOutcome {
 mod tests {
     use super::*;
     use super::super::interaction::{cancel_user_generation, UserStopScope};
+
+    #[tokio::test]
+    async fn dropped_external_reply_retires_generation_and_allows_the_next_send() {
+        let state = crate::state::test_app_state();
+        let reservation = ChatSendReservation::try_acquire(&state, "external").unwrap();
+        let generation = state.chat_runtime().begin_reply_generation("external").unwrap();
+        let reply = async {
+            let _guard = ChatReplyGuard::try_new(&state, "external", "run", generation).unwrap();
+            std::future::pending::<()>().await;
+        };
+        let mut reply = Box::pin(reply);
+        assert!(futures::poll!(reply.as_mut()).is_pending());
+        assert!(state.chat_runtime().is_generation_active("external", generation));
+        drop(reply);
+        assert!(!state.chat_runtime().is_generation_active("external", generation));
+        drop(reservation);
+        assert!(!state.chat_runtime().has_active_reply("external"));
+        assert!(ChatSendReservation::try_acquire(&state, "external").is_some());
+    }
 
     #[test]
     fn stop_invalidates_reserved_turn_before_or_after_generation_admission() {

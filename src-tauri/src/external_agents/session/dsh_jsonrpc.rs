@@ -37,6 +37,7 @@
 //! `turn/end` 时落成一条助手消息，不能只留任务边沿。Kivio bridge 直接调用 dsh
 //! 公共的 `agents.resume()` 与 `agent.cancel()`，所以进程重建和用户停止都不会再丢失原生会话。
 
+use crate::external_agents::session::live::TurnDelivery;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -44,7 +45,7 @@ use std::time::{Duration, Instant};
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 use uuid::Uuid;
@@ -80,8 +81,8 @@ static DSH_PROFILE_BOOT_LOCK: Mutex<()> = Mutex::const_new(());
 /// 运行中的 dsh 连接：一个进程可承载同一个 session 的多轮 prompt。
 pub struct DshJsonRpcSession {
     child: Child,
-    stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
     stderr_tail: tokio::task::JoinHandle<String>,
     session_id: String,
     resumed: bool,
@@ -329,9 +330,7 @@ impl DshJsonRpcSession {
             .stderr(std::process::Stdio::piped())
             .no_console_window()
             .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(&mut command)
             .map_err(|e| format!("spawn dsh: {e}"))?;
         let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
         let mut stdin = match child.stdin.take() {
@@ -378,7 +377,8 @@ impl DshJsonRpcSession {
                     write_rpc(&mut stdin, id, "initialize", init_params.clone())
                         .await
                         .map_err(|e| format!("dsh initialize: {e}"))?;
-                    match read_until_response(&mut reader, id, INITIALIZE_TIMEOUT).await {
+                    match read_until_response(&mut reader, &mut stdin, id, INITIALIZE_TIMEOUT).await
+                    {
                         Ok(result) => {
                             initialized = Some(result);
                             break;
@@ -435,7 +435,7 @@ impl DshJsonRpcSession {
             )
             .await
             .map_err(|e| format!("dsh session/open: {e}"))?;
-            let opened = read_until_response(&mut reader, open_id, INITIALIZE_TIMEOUT)
+            let opened = read_until_response(&mut reader, &mut stdin, open_id, INITIALIZE_TIMEOUT)
                 .await
                 .map_err(|e| format!("dsh session/open: {e}"))?;
             let resumed = opened
@@ -467,8 +467,13 @@ impl DshJsonRpcSession {
             .await
             .is_ok()
             {
-                if let Ok(listed) =
-                    read_until_response(&mut reader, commands_id, SLASH_DISCOVERY_TIMEOUT).await
+                if let Ok(listed) = read_until_response(
+                    &mut reader,
+                    &mut stdin,
+                    commands_id,
+                    SLASH_DISCOVERY_TIMEOUT,
+                )
+                .await
                 {
                     slash_commands = parse_dsh_slash_commands(&listed);
                 }
@@ -520,6 +525,7 @@ impl DshJsonRpcSession {
     /// 没有用户 follow-up 时仍在**第一次** idle 返回，把 tool-jobs 的汇报留给空闲泵。
     pub async fn run_turn(
         &mut self,
+        delivery: &TurnDelivery,
         prompt: &str,
         model: Option<&str>,
         images: &[crate::external_agents::attachments::ImageBlock],
@@ -544,6 +550,7 @@ impl DshJsonRpcSession {
         self.next_id += 1;
         let is_slash = is_cli_slash_input(prompt);
         let (method, params) = turn_rpc(&self.session_id, prompt, images);
+        delivery.mark_possibly_sent();
         write_rpc(&mut self.stdin, prompt_id, method, params).await?;
 
         let mut started = false;
@@ -681,15 +688,27 @@ impl DshJsonRpcSession {
             if line.trim().is_empty() {
                 continue;
             }
-            let value: Value = match serde_json::from_str(line.trim()) {
-                Ok(value) => value,
-                Err(_) => {
-                    let _ = events.send(UnifiedAgentEvent::Raw { line }).await;
-                    continue;
-                }
-            };
+            let value: Value = serde_json::from_str(line.trim())
+                .map_err(|error| format!("invalid dsh JSON: {error}"))?;
+            let frame = decode_dsh_frame(&value)?;
 
-            if cancel_id.is_some() && value.get("id").and_then(Value::as_u64) == cancel_id {
+            if frame == DshFrame::Request {
+                handle_incoming_request(
+                    &mut self.stdin,
+                    &self.session_id,
+                    &value,
+                    approvals.as_deref_mut(),
+                    &mut pending_asks,
+                    &mut pending_user_question_calls,
+                )
+                .await?;
+                continue;
+            }
+
+            if frame == DshFrame::Response
+                && cancel_id.is_some()
+                && value.get("id").and_then(Value::as_u64) == cancel_id
+            {
                 if rpc_error_message(&value).is_some() {
                     crate::external_agents::spawn::kill_agent_process_tree(&mut self.child);
                     let _ = self.child.wait().await;
@@ -744,10 +763,15 @@ impl DshJsonRpcSession {
                 }
             }
 
-            if value.get("id").and_then(Value::as_u64) == Some(prompt_id) {
+            if frame == DshFrame::Response
+                && value.get("id").and_then(Value::as_u64) == Some(prompt_id)
+            {
                 if let Some(error) = rpc_error_message(&value) {
                     self.context_window = self.map_state.context_window;
                     return Err(error);
+                }
+                if !value["result"].is_object() {
+                    return Err("invalid dsh prompt result".into());
                 }
                 prompt_acknowledged = true;
                 if is_slash {
@@ -772,19 +796,6 @@ impl DshJsonRpcSession {
                     };
                 }
                 // `session/prompt` 的 result 只是入队回执（messageId），不是轮终点。
-                continue;
-            }
-
-            if is_incoming_rpc_request(&value) {
-                handle_incoming_request(
-                    &mut self.stdin,
-                    &self.session_id,
-                    &value,
-                    approvals.as_deref_mut(),
-                    &mut pending_asks,
-                    &mut pending_user_question_calls,
-                )
-                .await?;
                 continue;
             }
 
@@ -927,6 +938,9 @@ impl DshJsonRpcSession {
 
     /// 轮间空闲读一步：只读 + 分类，不写。写回（fail-closed 的 ask 回复）交给 actor。
     async fn read_idle_frame(&mut self) -> DshIdlePump {
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return DshIdlePump::Dead;
+        }
         let line = match self.next_line().await {
             ReadStep::Line(line) => line,
             ReadStep::Idle => return DshIdlePump::Quiet,
@@ -937,8 +951,11 @@ impl DshJsonRpcSession {
             return DshIdlePump::Quiet;
         }
         let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
-            return DshIdlePump::Quiet;
+            return DshIdlePump::Dead;
         };
+        if decode_dsh_frame(&value).is_err() {
+            return DshIdlePump::Dead;
+        }
         self.classify_idle_value(&value)
     }
 
@@ -1008,7 +1025,9 @@ impl DshJsonRpcSession {
 }
 
 /// actor 与其他常驻协议同契约：所有 event 先入队，`done` 最后发。
-pub fn spawn_dsh_session_actor(session: DshJsonRpcSession) -> mpsc::Sender<SessionCommand> {
+pub fn spawn_dsh_session_actor(
+    session: DshJsonRpcSession,
+) -> crate::external_agents::session::live::SessionControl {
     spawn_dsh_session_actor_with_sink(session, None, None)
 }
 
@@ -1021,14 +1040,14 @@ pub fn spawn_dsh_session_actor_with_sink(
     mut session: DshJsonRpcSession,
     sink: Option<DshIdleSink>,
     mut idle_approvals: Option<ApprovalBridge>,
-) -> mpsc::Sender<SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     enum ActorStep {
         Cmd(Option<SessionCommand>),
         Idle(DshIdlePump),
         IdleDecision(Option<ApprovalDecision>),
     }
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
-    tokio::spawn(async move {
+    crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         let mut idle_dead = false;
         let mut idle_hiccups = 0u32;
         let mut idle_pending_asks: HashMap<String, Value> = HashMap::new();
@@ -1078,14 +1097,8 @@ pub fn spawn_dsh_session_actor_with_sink(
                             }
                         }
                         DshIdlePump::Dead => {
-                            idle_dead = true;
-                            reject_pending_asks(
-                                &mut session.stdin,
-                                &mut idle_pending_asks,
-                                "ASK_ABORTED",
-                                "ask_user_question was aborted before the user answered",
-                            )
-                            .await;
+                            session.close().await;
+                            return;
                         }
                         DshIdlePump::Reply(line) => {
                             idle_hiccups = 0;
@@ -1133,6 +1146,8 @@ pub fn spawn_dsh_session_actor_with_sink(
             };
             match command {
                 SessionCommand::RunTurn {
+                    delivery,
+                    cancelled,
                     prompt,
                     model,
                     reasoning: _,
@@ -1142,8 +1157,15 @@ pub fn spawn_dsh_session_actor_with_sink(
                     mut approvals,
                     extra_writable_roots: _,
                 } => {
+                    if done.is_closed()
+                        || cancelled.as_ref().is_some_and(|token| token.is_cancelled())
+                    {
+                        let _ = done.send(Err("cancelled".into()));
+                        continue;
+                    }
                     let result = session
                         .run_turn(
+                            &delivery,
                             &prompt,
                             model.as_deref(),
                             &images,
@@ -1175,8 +1197,7 @@ pub fn spawn_dsh_session_actor_with_sink(
                 }
             }
         }
-    });
-    tx
+    })
 }
 
 const SESSION_ASK_METHOD: &str = "session/ask";
@@ -1283,6 +1304,54 @@ fn take_user_question_call(
     (request_id.to_string(), expected.to_string())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DshFrame {
+    Request,
+    Notification,
+    Response,
+}
+
+fn decode_dsh_frame(value: &Value) -> Result<DshFrame, String> {
+    let invalid = || "invalid dsh RPC envelope".to_string();
+    let object = value.as_object().ok_or_else(invalid)?;
+    if object
+        .get("jsonrpc")
+        .is_some_and(|version| version != "2.0")
+    {
+        return Err(invalid());
+    }
+    let id = object.get("id");
+    if id.is_some_and(|id| !id.is_string() && id.as_i64().is_none() && id.as_u64().is_none()) {
+        return Err(invalid());
+    }
+    if let Some(method) = object.get("method") {
+        if method.as_str().is_none_or(|method| method.is_empty())
+            || object.contains_key("result")
+            || object.contains_key("error")
+        {
+            return Err(invalid());
+        }
+        return Ok(if id.is_some() {
+            DshFrame::Request
+        } else {
+            DshFrame::Notification
+        });
+    }
+    if id.is_none() {
+        return Err(invalid());
+    }
+    match (object.get("result"), object.get("error")) {
+        (Some(_), None) => Ok(DshFrame::Response),
+        (None, Some(error))
+            if error.get("code").and_then(Value::as_i64).is_some()
+                && error.get("message").and_then(Value::as_str).is_some() =>
+        {
+            Ok(DshFrame::Response)
+        }
+        _ => Err(invalid()),
+    }
+}
+
 fn is_incoming_rpc_request(value: &Value) -> bool {
     value.get("method").and_then(Value::as_str).is_some() && rpc_id(value).is_some()
 }
@@ -1326,7 +1395,7 @@ fn rpc_id_key(id: &Value) -> Option<String> {
 }
 
 async fn handle_incoming_request(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     session_id: &str,
     value: &Value,
     approvals: Option<&mut ApprovalBridge>,
@@ -1393,13 +1462,17 @@ async fn handle_incoming_request(
         )
         .await;
     };
+    if pending_asks.values().any(|pending_id| pending_id == &id) {
+        return Ok(());
+    }
     let (tool_call_id, tool_name) =
         take_user_question_call(pending_user_question_calls, questions, &request_id);
-    pending_asks.insert(request_id.clone(), id.clone());
+    let interaction_id = uuid::Uuid::new_v4().to_string();
+    pending_asks.insert(interaction_id.clone(), id.clone());
     if bridge
         .requests
         .send(ApprovalAsk {
-            request_id: request_id.clone(),
+            interaction_id: interaction_id.clone(),
             tool_call_id,
             tool_name,
             input: json!({ "questions": questions }),
@@ -1410,7 +1483,7 @@ async fn handle_incoming_request(
         .await
         .is_err()
     {
-        pending_asks.remove(&request_id);
+        pending_asks.remove(&interaction_id);
         return write_rpc_error(
             stdin,
             &id,
@@ -1424,7 +1497,7 @@ async fn handle_incoming_request(
 }
 
 async fn drain_ask_decisions(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     pending_asks: &mut std::collections::HashMap<String, Value>,
     mut turn_approvals: Option<&mut ApprovalBridge>,
     mut idle_approvals: Option<&mut ApprovalBridge>,
@@ -1440,11 +1513,11 @@ async fn drain_ask_decisions(
 }
 
 async fn settle_session_ask(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     pending_asks: &mut std::collections::HashMap<String, Value>,
     decision: ApprovalDecision,
 ) -> Result<(), String> {
-    let Some(id) = pending_asks.remove(&decision.request_id) else {
+    let Some(id) = pending_asks.remove(&decision.interaction_id) else {
         return Ok(());
     };
     if decision.approved {
@@ -1471,7 +1544,7 @@ async fn settle_session_ask(
 }
 
 async fn reject_pending_asks(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     pending_asks: &mut std::collections::HashMap<String, Value>,
     code: &str,
     message: &str,
@@ -1482,7 +1555,7 @@ async fn reject_pending_asks(
     }
 }
 
-async fn write_rpc_result(stdin: &mut ChildStdin, id: &Value, result: Value) -> Result<(), String> {
+async fn write_rpc_result(stdin: &mut AgentStdin, id: &Value, result: Value) -> Result<(), String> {
     write_rpc_frame(
         stdin,
         json!({
@@ -1495,7 +1568,7 @@ async fn write_rpc_result(stdin: &mut ChildStdin, id: &Value, result: Value) -> 
 }
 
 async fn write_rpc_error(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     id: &Value,
     code: i64,
     message: &str,
@@ -1522,7 +1595,7 @@ async fn write_rpc_error(
     .await
 }
 
-async fn write_rpc_frame(stdin: &mut ChildStdin, payload: Value) -> Result<(), String> {
+async fn write_rpc_frame(stdin: &mut AgentStdin, payload: Value) -> Result<(), String> {
     let mut line = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     line.push('\n');
     stdin
@@ -1533,7 +1606,7 @@ async fn write_rpc_frame(stdin: &mut ChildStdin, payload: Value) -> Result<(), S
 }
 
 async fn write_rpc(
-    stdin: &mut ChildStdin,
+    stdin: &mut AgentStdin,
     id: u64,
     method: &str,
     params: Value,
@@ -1551,7 +1624,8 @@ async fn write_rpc(
 }
 
 async fn read_until_response(
-    reader: &mut Lines<BufReader<ChildStdout>>,
+    reader: &mut Lines<BufReader<AgentStdout>>,
+    stdin: &mut AgentStdin,
     target_id: u64,
     overall: Duration,
 ) -> Result<Value, String> {
@@ -1569,11 +1643,21 @@ async fn read_until_response(
         if line.trim().is_empty() {
             continue;
         }
-        let value: Value = match serde_json::from_str(line.trim()) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        if value.get("id").and_then(Value::as_u64) != Some(target_id) {
+        let value: Value = serde_json::from_str(line.trim())
+            .map_err(|error| format!("invalid dsh JSON: {error}"))?;
+        let frame = decode_dsh_frame(&value)?;
+        if frame == DshFrame::Request {
+            write_rpc_error(
+                stdin,
+                &value["id"],
+                -32601,
+                "unsupported request during handshake",
+                None,
+            )
+            .await?;
+            continue;
+        }
+        if frame != DshFrame::Response || value.get("id") != Some(&json!(target_id)) {
             continue;
         }
         if let Some(error) = rpc_error_message(&value) {
@@ -2702,6 +2786,152 @@ fn map_tool_results(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn correlation_protocol_peer() {
+        let Ok(mode) = std::env::var("KIVIO_DSH_CORRELATION_PEER") else {
+            return;
+        };
+        use std::io::{BufRead, Write};
+        let emit = |value: Value| {
+            println!("{value}");
+            std::io::stdout().flush().unwrap();
+        };
+        println!("KIVIO_PEER_READY");
+        std::io::stdout().flush().unwrap();
+        let mut lines = std::io::stdin().lock().lines();
+        for number in 1..=2 {
+            let request: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            emit(json!({"jsonrpc":"2.0","id":request["id"],"method":"future/request","params":{}}));
+            let reply: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            assert_eq!(reply["id"], request["id"]);
+            assert!(reply.get("error").is_some());
+            emit(json!({"jsonrpc":"2.0","id":999,"error":{"code":-1,"message":"foreign error"}}));
+            emit(
+                json!({"jsonrpc":"2.0","id":request["id"].to_string(),"error":{"code":-1,"message":"string error"}}),
+            );
+            emit(json!({"jsonrpc":"2.0","method":"future/notification","params":{}}));
+            if mode == "malformed" && number == 2 {
+                emit(json!({"jsonrpc":"2.0","id":request["id"]}));
+            } else {
+                emit(json!({"jsonrpc":"2.0","id":request["id"],"result":{"text":"done"}}));
+            }
+        }
+        let _ = lines.next();
+    }
+
+    #[tokio::test]
+    async fn reverse_requests_with_matching_ids_do_not_settle_handshake_or_slash_turn() {
+        for mode in ["valid", "malformed"] {
+            let exe = std::env::current_exe().unwrap();
+            let mut child = crate::external_agents::spawn::AgentChild::spawn(
+                tokio::process::Command::new(&exe)
+                    .args([
+                        "--exact",
+                        "external_agents::session::dsh_jsonrpc::tests::correlation_protocol_peer",
+                        "--nocapture",
+                    ])
+                    .env("KIVIO_DSH_CORRELATION_PEER", mode)
+                    .stdin(std::process::Stdio::piped())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .no_console_window()
+                    .kill_on_drop(true),
+            )
+            .unwrap();
+            let mut stdin = child.stdin.take().unwrap();
+            let mut reader = BufReader::new(child.stdout.take().unwrap()).lines();
+            loop {
+                let line = timeout(Duration::from_secs(5), reader.next_line())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                if line.ends_with("KIVIO_PEER_READY") {
+                    break;
+                }
+            }
+            write_rpc(&mut stdin, 1, "initialize", json!({}))
+                .await
+                .unwrap();
+            assert_eq!(
+                read_until_response(&mut reader, &mut stdin, 1, Duration::from_secs(5))
+                    .await
+                    .unwrap()["text"],
+                "done"
+            );
+            let mut session = DshJsonRpcSession {
+                stdin,
+                reader,
+                stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
+                child,
+                session_id: "session-1".into(),
+                resumed: false,
+                next_id: 2,
+                route: resolve_model_route_for_turn(None).unwrap(),
+                context_window: None,
+                map_state: MapSessionState::default(),
+                child_progress: HashMap::new(),
+                idle_wake: IdleWakeState::default(),
+                slash_commands: Vec::new(),
+            };
+            let (events, mut output) = mpsc::channel(16);
+            let (_tx, mut control) = mpsc::channel(8);
+            let delivery = TurnDelivery::default();
+            let result = timeout(
+                Duration::from_secs(5),
+                session.run_turn(
+                    &delivery,
+                    "/compact",
+                    None,
+                    &[],
+                    &events,
+                    &mut control,
+                    None,
+                    None,
+                    &mut HashMap::new(),
+                ),
+            )
+            .await
+            .unwrap();
+            assert!(delivery.possibly_sent());
+            if mode == "valid" {
+                assert!(result.is_ok(), "{result:?}");
+                assert!(
+                    matches!(output.try_recv().unwrap(), UnifiedAgentEvent::TextDelta { delta } if delta == "done")
+                );
+            } else {
+                assert!(result.unwrap_err().contains("invalid dsh"));
+            }
+            session.close().await;
+        }
+    }
+
+    #[test]
+    fn envelopes_classify_reverse_requests_before_correlated_replies() {
+        assert_eq!(
+            decode_dsh_frame(&json!({"id":1,"method":"session/ask","params":{}})).unwrap(),
+            DshFrame::Request
+        );
+        assert_eq!(
+            decode_dsh_frame(&json!({"id":1,"result":{}})).unwrap(),
+            DshFrame::Response
+        );
+        assert_eq!(
+            decode_dsh_frame(&json!({"method":"future/event"})).unwrap(),
+            DshFrame::Notification
+        );
+        for value in [
+            Value::Null,
+            json!([]),
+            json!({"id":1}),
+            json!({"id":1,"error":{}}),
+            json!({"id":1,"method":"session/ask","result":{}}),
+        ] {
+            assert!(decode_dsh_frame(&value).is_err(), "{value}");
+        }
+    }
+
     use std::path::PathBuf;
 
     use crate::external_agents::dsh_profile::KIVIO_PROFILE;
@@ -4018,7 +4248,7 @@ mod tests {
     #[ignore = "requires installed dsh; no model turn or account quota"]
     async fn live_dsh_profile_handshake_without_model_turn() {
         let bin = crate::external_agents::spawn::resolve_binary(
-            &crate::external_agents::defs::dsh::DSH_AGENT_DEF,
+            &crate::external_agents::providers::dsh::DSH_AGENT_DEF,
         )
         .await
         .expect("dsh binary");
@@ -4072,6 +4302,7 @@ mod tests {
         let (_control_tx, mut control_rx) = mpsc::channel(4);
         session
             .run_turn(
+                &TurnDelivery::default(),
                 "必须调用 bash 工具执行 `printf KIVIO_DSH_E2E`，然后只回答命令输出。",
                 Some("deepseek-v4-flash"),
                 &[],
@@ -4140,6 +4371,7 @@ mod tests {
         let (_control_tx, mut control_rx) = mpsc::channel(4);
         session
             .run_turn(
+                &TurnDelivery::default(),
                 "记住验证码 KIVIO-7429。只回答 ACK。",
                 Some("deepseek-v4-flash"),
                 &[],
@@ -4168,6 +4400,7 @@ mod tests {
         assert!(session.resumed(), "bridge created instead of resuming");
         session
             .run_turn(
+                &TurnDelivery::default(),
                 "上一轮的验证码是什么？只回答验证码。",
                 Some("deepseek-v4-flash"),
                 &[],
@@ -4236,6 +4469,7 @@ mod tests {
             .expect("queue early cancel");
         let error = session
             .run_turn(
+                &TurnDelivery::default(),
                 "写一篇很长的文章。",
                 Some("deepseek-v4-flash"),
                 &[],
@@ -4251,6 +4485,7 @@ mod tests {
         assert!(session.child.try_wait().expect("child status").is_none());
         session
             .run_turn(
+                &TurnDelivery::default(),
                 "只回答 READY。",
                 Some("deepseek-v4-flash"),
                 &[],
@@ -4265,3 +4500,7 @@ mod tests {
         session.close().await;
     }
 }
+
+#[cfg(test)]
+#[path = "dsh_jsonrpc_replay_tests.rs"]
+mod replay_tests;

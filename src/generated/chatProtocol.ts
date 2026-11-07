@@ -3,6 +3,30 @@ export const CHAT_PROTOCOL_VERSION = 1 as const
 
 export type JsonValue = unknown
 
+export type CapabilitySupport = "native" | "fallback" | "unavailable";
+
+export type ProviderCapabilities = { steering: CapabilitySupport,
+/**
+ * Fallback sends a normal next turn from Kivio's queue.
+ */
+followUp: CapabilitySupport,
+/**
+ * Fallback adds the attachment path to the prompt.
+ */
+imageInput: CapabilitySupport,
+/**
+ * A native attempt may fall back to a fresh session with visible history replayed.
+ */
+rewind: CapabilitySupport,
+/**
+ * Fallback copies the visible Kivio snapshot and opens an independent CLI context.
+ */
+conversationBranch: CapabilitySupport,
+/**
+ * Fallback binds the native session without replaying its history.
+ */
+importHistory: CapabilitySupport, account: CapabilitySupport, };
+
 export type AgentStatus = "running" | "idle" | "parked" | "aborted";
 
 export type SubagentView = { id: string, parentId: string, generation: number, displayName: string, agentType: string, status: AgentStatus, depth: number, lastActivity: number, activity: string | null, model: string | null, progress: JsonValue | null, revivable: boolean, reviveError: string | null, };
@@ -41,15 +65,15 @@ export type ChatToolArtifactPayload = { id: string | null, name: string, mimeTyp
 
 export type ChatToolPayload = { id: string, name: string, source: string, serverId: string | null, status: string, argumentsPreview: string, resultPreview: string | null, error: string | null, startedAt: number | null, completedAt: number | null, durationMs: number | null, round: number, sensitive: boolean, artifacts: Array<ChatToolArtifactPayload>, traceId: string | null, spanId: string | null, structuredContent: unknown, };
 
-export type ChatContextUsagePayload = { usedTokens: number, contextWindowTokens: number | null, tokenCountSource: string | null, cacheInputTokens: number | null, cacheReadTokens: number | null, 
+export type ChatContextUsagePayload = { usedTokens: number, contextWindowTokens: number | null, tokenCountSource: string | null, cacheInputTokens: number | null, cacheReadTokens: number | null,
 /**
  * Monotonic per conversation. A lower value must not replace a newer meter.
  */
-measurementSeq: number, 
+measurementSeq: number,
 /**
  * Bumped on model change, compaction, and context clear.
  */
-lifecycleId: number, 
+lifecycleId: number,
 /**
  * Request-bound categories. Null leaves the previous categories; an empty array clears them.
  */
@@ -95,9 +119,9 @@ export type ChatAskUserPromptPayload = { title: string | null, questions: Array<
 
 export type ChatRetryStatusPayload = { attempt: number, maxRetries: number, retryAtMs: number, reason: string, };
 
-export type ChatRunEvent = { "type": "run_started", recovery: ChatRunRecoveryMetadata | null, } | { "type": "text_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "text_segment_replaced", segmentId: string, text: string, content: string, } | { "type": "reasoning_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "stream_attempt_discarded", textChars: number, reasoningChars: number, segmentIds: Array<string>, toolIds: Array<string>, } | { "type": "tool_updated", tool: ChatToolPayload, } | { "type": "subagent_updated", parentToolCallId: string, taskId: string, name: string, model: string | null, generation?: number, childRunId?: string, progress?: JsonValue, depth: number, status: string, preview: string | null, steps: Array<string>, } | { "type": "context_usage_updated", usage: ChatContextUsagePayload, } | { "type": "compaction_updated", phase: string, trigger: string | null, boundary: ChatCompactionBoundaryPayload | null, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, } | { "type": "session_consent_requested" } | { "type": "tool_approval_requested", toolCallId: string, name: string, source: string, serverId: string | null, target: string | null, argumentsPreview: string, sensitivity: string, } | { "type": "tool_approval_withdrawn", toolCallId: string, } | { "type": "user_prompt_resolved", toolCallId: string, } | { "type": "user_prompt_requested", toolCallId: string, name: string, source: string, prompt: ChatAskUserPromptPayload, structuredContent: unknown, } | { "type": "hook_failed", hookName: string, event: string, message: string, } | { "type": "status_note_updated", note: string | null, retry?: ChatRetryStatusPayload, } | { "type": "queued_texts_restored", texts: Array<string>, } | { "type": "run_completed", full: string, conversationRevision: number, } | { "type": "run_failed", error: string, full: string, conversationRevision: number, } | { "type": "run_cancelled", full: string, conversationRevision: number, };
+export type ChatRunEvent = { "type": "run_started", recovery: ChatRunRecoveryMetadata | null, } | { "type": "text_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "text_segment_replaced", segmentId: string, text: string, content: string, } | { "type": "reasoning_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "stream_attempt_discarded", textChars: number, reasoningChars: number, segmentIds: Array<string>, toolIds: Array<string>, } | { "type": "tool_updated", tool: ChatToolPayload, } | { "type": "subagent_updated", parentToolCallId: string, externalSessionId?: string, taskId: string, name: string, model: string | null, generation?: number, childRunId?: string, progress?: JsonValue, depth: number, status: string, preview: string | null, steps: Array<string>, } | { "type": "context_usage_updated", usage: ChatContextUsagePayload, } | { "type": "compaction_updated", phase: string, trigger: string | null, boundary: ChatCompactionBoundaryPayload | null, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, } | { "type": "session_consent_requested" } | { "type": "tool_approval_requested", interactionId: string, toolCallId: string, name: string, source: string, serverId: string | null, target: string | null, argumentsPreview: string, sensitivity: string, } | { "type": "tool_approval_withdrawn", interactionId: string, } | { "type": "user_prompt_resolved", interactionId: string, } | { "type": "user_prompt_requested", interactionId: string, toolCallId: string, name: string, source: string, prompt: ChatAskUserPromptPayload, structuredContent: unknown, } | { "type": "hook_failed", hookName: string, event: string, message: string, } | { "type": "status_note_updated", note: string | null, retry?: ChatRetryStatusPayload, } | { "type": "queued_texts_restored", texts: Array<string>, } | { "type": "run_completed", full: string, conversationRevision: number, } | { "type": "run_failed", error: string, full: string, conversationRevision: number, } | { "type": "run_cancelled", full: string, conversationRevision: number, };
 
-export type ChatRunEventEnvelope = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, scope: "run", conversationId: string, runId: string, messageId: string, seq: number, baseRevision: number, } & ({ "type": "run_started", recovery: ChatRunRecoveryMetadata | null, } | { "type": "text_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "text_segment_replaced", segmentId: string, text: string, content: string, } | { "type": "reasoning_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "stream_attempt_discarded", textChars: number, reasoningChars: number, segmentIds: Array<string>, toolIds: Array<string>, } | { "type": "tool_updated", tool: ChatToolPayload, } | { "type": "subagent_updated", parentToolCallId: string, taskId: string, name: string, model: string | null, generation?: number, childRunId?: string, progress?: JsonValue, depth: number, status: string, preview: string | null, steps: Array<string>, } | { "type": "context_usage_updated", usage: ChatContextUsagePayload, } | { "type": "compaction_updated", phase: string, trigger: string | null, boundary: ChatCompactionBoundaryPayload | null, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, } | { "type": "session_consent_requested" } | { "type": "tool_approval_requested", toolCallId: string, name: string, source: string, serverId: string | null, target: string | null, argumentsPreview: string, sensitivity: string, } | { "type": "tool_approval_withdrawn", toolCallId: string, } | { "type": "user_prompt_resolved", toolCallId: string, } | { "type": "user_prompt_requested", toolCallId: string, name: string, source: string, prompt: ChatAskUserPromptPayload, structuredContent: unknown, } | { "type": "hook_failed", hookName: string, event: string, message: string, } | { "type": "status_note_updated", note: string | null, retry?: ChatRetryStatusPayload, } | { "type": "queued_texts_restored", texts: Array<string>, } | { "type": "run_completed", full: string, conversationRevision: number, } | { "type": "run_failed", error: string, full: string, conversationRevision: number, } | { "type": "run_cancelled", full: string, conversationRevision: number, });
+export type ChatRunEventEnvelope = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, scope: "run", conversationId: string, runId: string, messageId: string, seq: number, baseRevision: number, } & ({ "type": "run_started", recovery: ChatRunRecoveryMetadata | null, } | { "type": "text_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "text_segment_replaced", segmentId: string, text: string, content: string, } | { "type": "reasoning_delta", delta: string, segment: ChatSegmentPayload | null, } | { "type": "stream_attempt_discarded", textChars: number, reasoningChars: number, segmentIds: Array<string>, toolIds: Array<string>, } | { "type": "tool_updated", tool: ChatToolPayload, } | { "type": "subagent_updated", parentToolCallId: string, externalSessionId?: string, taskId: string, name: string, model: string | null, generation?: number, childRunId?: string, progress?: JsonValue, depth: number, status: string, preview: string | null, steps: Array<string>, } | { "type": "context_usage_updated", usage: ChatContextUsagePayload, } | { "type": "compaction_updated", phase: string, trigger: string | null, boundary: ChatCompactionBoundaryPayload | null, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, } | { "type": "session_consent_requested" } | { "type": "tool_approval_requested", interactionId: string, toolCallId: string, name: string, source: string, serverId: string | null, target: string | null, argumentsPreview: string, sensitivity: string, } | { "type": "tool_approval_withdrawn", interactionId: string, } | { "type": "user_prompt_resolved", interactionId: string, } | { "type": "user_prompt_requested", interactionId: string, toolCallId: string, name: string, source: string, prompt: ChatAskUserPromptPayload, structuredContent: unknown, } | { "type": "hook_failed", hookName: string, event: string, message: string, } | { "type": "status_note_updated", note: string | null, retry?: ChatRetryStatusPayload, } | { "type": "queued_texts_restored", texts: Array<string>, } | { "type": "run_completed", full: string, conversationRevision: number, } | { "type": "run_failed", error: string, full: string, conversationRevision: number, } | { "type": "run_cancelled", full: string, conversationRevision: number, });
 
 export type ChatConversationEvent = { "type": "subagent_activity_added" } | { "type": "title_updated", title: string, } | { "type": "context_updated", contextState: ChatContextStatePayload, } | { "type": "todo_updated", todoState: ChatTodoStatePayload, } | { "type": "plan_updated", planState: ChatPlanStatePayload, } | { "type": "goal_updated", goalState: ChatGoalStatePayload | null, };
 
@@ -107,17 +131,17 @@ export type ChatProtocolEvent = ChatRunEventEnvelope | ChatConversationEventEnve
 
 export type ChatRunStatus = "running" | "completed" | "failed" | "cancelled";
 
-export type ChatSubagentSnapshot = { "type": "subagent_updated", parentToolCallId: string, taskId: string, name: string, model: string | null, generation?: number, childRunId?: string, progress?: JsonValue, depth: number, status: string, preview: string | null, steps: Array<string>, };
+export type ChatSubagentSnapshot = { "type": "subagent_updated", parentToolCallId: string, externalSessionId?: string, taskId: string, name: string, model: string | null, generation?: number, childRunId?: string, progress?: JsonValue, depth: number, status: string, preview: string | null, steps: Array<string>, };
 
 export type ChatCompactionSnapshot = { "type": "compaction_updated", phase: string, trigger: string | null, boundary: ChatCompactionBoundaryPayload | null, };
 
-export type ChatPendingInteractionSnapshot = { "type": "session_consent_requested" } | { "type": "tool_approval_requested", toolCallId: string, name: string, source: string, serverId: string | null, target: string | null, argumentsPreview: string, sensitivity: string, } | { "type": "user_prompt_requested", toolCallId: string, name: string, source: string, prompt: ChatAskUserPromptPayload, structuredContent: unknown, };
+export type ChatPendingInteractionSnapshot = { "type": "session_consent_requested" } | { "type": "tool_approval_requested", interactionId: string, toolCallId: string, name: string, source: string, serverId: string | null, target: string | null, argumentsPreview: string, sensitivity: string, } | { "type": "user_prompt_requested", interactionId: string, toolCallId: string, name: string, source: string, prompt: ChatAskUserPromptPayload, structuredContent: unknown, };
 
 export type ChatWarningSnapshot = { "type": "hook_failed", hookName: string, event: string, message: string, };
 
 export type ChatTerminalSnapshot = { "type": "run_completed", full: string, conversationRevision: number, } | { "type": "run_failed", error: string, full: string, conversationRevision: number, } | { "type": "run_cancelled", full: string, conversationRevision: number, };
 
-export type ChatRunSnapshot = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, conversationId: string, runId: string, messageId: string, lastSeq: number, baseRevision: number, recovery: ChatRunRecoveryMetadata | null, status: ChatRunStatus, content: string, reasoning: string, segments: Array<ChatSegmentPayload>, tools: Array<ChatToolPayload>, contextUsage: ChatContextUsagePayload | null, subagents: Array<ChatSubagentSnapshot>, compaction: ChatCompactionSnapshot | null, todoState: ChatTodoStatePayload | null, planState: ChatPlanStatePayload | null, pendingInteractions: Array<ChatPendingInteractionSnapshot>, warnings: Array<ChatWarningSnapshot>, 
+export type ChatRunSnapshot = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, conversationId: string, runId: string, messageId: string, lastSeq: number, baseRevision: number, recovery: ChatRunRecoveryMetadata | null, status: ChatRunStatus, content: string, reasoning: string, segments: Array<ChatSegmentPayload>, tools: Array<ChatToolPayload>, contextUsage: ChatContextUsagePayload | null, subagents: Array<ChatSubagentSnapshot>, compaction: ChatCompactionSnapshot | null, todoState: ChatTodoStatePayload | null, planState: ChatPlanStatePayload | null, pendingInteractions: Array<ChatPendingInteractionSnapshot>, warnings: Array<ChatWarningSnapshot>,
 /**
  * 流状态行上的瞬态一行字（上游重试等）。见 `ChatRunEvent::StatusNoteUpdated`。
  */

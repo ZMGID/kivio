@@ -1,0 +1,7 @@
+{"type":"transcript_start","protocol":"claude.stream-json","version":"2.1.220","classification":"real excerpt with synthetic surrounding turn"}
+{"type":"expect_outbound","frame":{"type":"user","message":{"role":"user","content":[{"type":"text","text":"probe"}]}}}
+{"type":"emit_inbound","frame":{"type":"system","subtype":"init","session_id":"replay-session"}}
+{"type":"emit_inbound","frame":{"type":"control_request","request_id":"f4d4ddfd-1be4-4630-baec-2b764030870c","request":{"subtype":"can_use_tool","tool_name":"Write","display_name":"Write","input":{"file_path":"C:\\tmp\\probe.txt","content":"HELLO42"},"description":"probe.txt","permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}],"tool_use_id":"toolu_015Jc1MjkwjbJL6rsCoaG3q8"}},"source":"claude_stream.rs::a_can_use_tool_request_becomes_a_pending_ask_when_a_host_can_answer"}
+{"type":"expect_outbound","frame":{"type":"control_response","response":{"subtype":"error","request_id":"f4d4ddfd-1be4-4630-baec-2b764030870c"}}}
+{"type":"emit_inbound","frame":{"type":"assistant","uuid":"replay-answer","message":{"id":"replay-message","content":[{"type":"text","text":"permission unavailable"}]}}}
+{"type":"emit_inbound","frame":{"type":"result","subtype":"success","is_error":false,"result":"permission unavailable"}}

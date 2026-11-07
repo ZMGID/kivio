@@ -1,0 +1,2 @@
+{"type":"transcript_start","protocol":"dsh.jsonrpc","version":"synthetic rc.8 shape","classification":"synthetic"}
+{"type":"expect_outbound","frame":{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"replay-session","contentBlocks":[{"type":"text","text":"probe"}]}}}

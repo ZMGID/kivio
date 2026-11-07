@@ -166,7 +166,9 @@ const PATH_ENV_KEYS: &[&str] = &["CODEX_HOME", "DSH_HOME", "CLAUDE_CONFIG_DIR"];
 
 /// Translate a host env value into the path the CLI process actually understands.
 pub fn env_value_for_cli(cli_bin: &Path, key: &str, value: String) -> String {
-    if PATH_ENV_KEYS.iter().any(|candidate| *candidate == key) {
+    if PATH_ENV_KEYS.iter().any(|candidate| {
+        if cfg!(windows) { candidate.eq_ignore_ascii_case(key) } else { *candidate == key }
+    }) {
         path_for_cli(cli_bin, Path::new(&value))
             .to_string_lossy()
             .into_owned()
@@ -567,6 +569,11 @@ mod tests {
         assert_eq!(
             env_value_for_cli(&win, "CODEX_HOME", home.to_string()),
             home
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            env_value_for_cli(&wsl, "codex_home", home.to_string()),
+            "/mnt/c/Users/me/AppData/Roaming/kivio/codex-p1"
         );
         assert_eq!(
             env_value_for_cli(&wsl, "DSH_HOME", r"C:\Users\me\.dsh".into()),

@@ -5,11 +5,16 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, Command};
+use tokio::process::{Child, Command};
+use super::diagnostics::{AgentPipe, AgentStdin, AgentStdout, AgentStderr, ConnectionCapture, Direction};
 use tokio::time::timeout;
 
 use crate::external_agents::types::{AgentHomeStrategy, AgentLaunchPolicy, RuntimeAgentDef};
 use crate::proc::NoConsoleWindow;
+
+#[cfg(all(test, windows))]
+#[path = "spawn_windows_tests.rs"]
+pub(crate) mod windows_tests;
 
 pub(crate) fn bypass_loopback_proxy(command: &mut Command) {
     let mut no_proxy = String::new();
@@ -33,43 +38,104 @@ pub(crate) fn bypass_loopback_proxy(command: &mut Command) {
         .env("no_proxy", &no_proxy);
 }
 
-/// Owns the Unix CLI process group through normal exit, error and cancellation.
-/// On Windows, taskkill /T is best effort while the leader is still live;
-/// descendants surviving a normal leader exit need a separately validated Job
-/// owner. Tokio's kill_on_drop alone only kills the direct child.
+/// Owns the CLI process group or Windows Job from spawn through cleanup.
 pub struct AgentChild {
-    child: Option<Child>,
+    child: Option<Box<dyn process_wrap::tokio::ChildWrapper>>,
+    _maintenance: Option<super::session::live::ResourceLease>,
+    _resource: Option<super::session::live::ResourceLease>,
+    pub stdin: Option<AgentStdin>,
+    pub stdout: Option<AgentStdout>,
+    pub stderr: Option<AgentStderr>,
+    #[cfg(unix)]
     group: Option<u32>,
 }
 
-impl From<Child> for AgentChild {
-    fn from(child: Child) -> Self {
-        let group = child.id();
-        Self {
-            child: Some(child),
-            group,
-        }
-    }
-}
-
-impl std::ops::Deref for AgentChild {
-    type Target = Child;
-    fn deref(&self) -> &Child {
-        self.child.as_ref().expect("live CLI child")
-    }
-}
-impl std::ops::DerefMut for AgentChild {
-    fn deref_mut(&mut self) -> &mut Child {
-        self.child.as_mut().expect("live CLI child")
-    }
-}
 impl AgentChild {
+    pub fn id(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|child| child.id())
+    }
+
+    fn leader(&mut self) -> &mut Child {
+        // Only observe exit through this borrow; replacing the child would detach it from its Job.
+        unsafe {
+            self.child
+                .as_mut()
+                .expect("owned child")
+                .try_inner_child_mut()
+        }
+        .expect("native CLI child")
+    }
+
+    pub fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        let marker = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == "KIVIO_INTERNAL_CLI_RESOURCE")
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_owned());
+        command.env_remove("KIVIO_INTERNAL_CLI_RESOURCE");
+        let resource = marker
+            .map(|value| {
+                let (agent, binary, expected, revision): (
+                    Option<String>,
+                    PathBuf,
+                    String,
+                    Option<u64>,
+                ) = serde_json::from_str(&value.to_string_lossy())
+                    .map_err(std::io::Error::other)?;
+                if super::session::live::resource_path(&binary) != expected {
+                    return Err(std::io::Error::other("CLI executable changed before spawn"));
+                }
+                let keys = super::session::live::runtime_resources(agent.as_deref(), &binary);
+                let lease = super::session::live::ResourceLease::acquire(keys, false)
+                    .map_err(std::io::Error::other)?;
+                if agent.as_deref().is_some_and(|agent| {
+                    revision.is_none() || super::overrides::launch_revision(agent) != revision
+                }) {
+                    return Err(std::io::Error::other(
+                        "CLI configuration changed before spawn",
+                    ));
+                }
+                Ok(lease)
+            })
+            .transpose()?;
+        #[cfg(unix)]
+        command.process_group(0);
+        command.kill_on_drop(true);
+        let owned = std::mem::replace(command, Command::new(""));
+        let mut wrapped = process_wrap::tokio::CommandWrap::from(owned);
+        #[cfg(windows)]
+        {
+            let mut flags = process_wrap::tokio::CreationFlags(Default::default());
+            flags.0 .0 = crate::proc::CREATE_NO_WINDOW;
+            wrapped.wrap(flags).wrap(process_wrap::tokio::JobObject);
+        }
+        wrapped.wrap(process_wrap::tokio::KillOnDrop);
+        let child = wrapped.spawn();
+        *command = wrapped.into_command();
+        #[cfg(windows)]
+        command.creation_flags(crate::proc::CREATE_NO_WINDOW);
+        let mut child = child?;
+        let capture = ConnectionCapture::current();
+        Ok(Self {
+            #[cfg(unix)]
+            group: child.id(),
+            stdin: child.stdin().take().map(|pipe| AgentPipe::new(pipe, Direction::Stdin, capture.clone())),
+            stdout: child.stdout().take().map(|pipe| AgentPipe::new(pipe, Direction::Stdout, capture.clone())),
+            stderr: child.stderr().take().map(|pipe| AgentPipe::new(pipe, Direction::Stderr, capture)),
+            child: Some(child),
+            _maintenance: super::session::live::MAINTENANCE_OWNER
+                .try_with(Clone::clone)
+                .ok(),
+            _resource: resource,
+        })
+    }
     pub async fn wait_with_output(mut self) -> std::io::Result<std::process::Output> {
         use tokio::io::AsyncReadExt;
         let stdout = self.stdout.take();
         let stderr = self.stderr.take();
         self.stdin.take();
-        let read = |pipe: Option<tokio::process::ChildStdout>| async move {
+        let read = |pipe: Option<AgentStdout>| async move {
             let mut bytes = Vec::new();
             if let Some(mut pipe) = pipe {
                 pipe.read_to_end(&mut bytes).await?;
@@ -92,41 +158,54 @@ impl AgentChild {
             stderr,
         })
     }
-    fn retire_group(&mut self) {
+    fn retire_group(&mut self) -> std::io::Result<()> {
+        #[cfg(unix)]
         if let Some(pid) = self.group.take() {
-            #[cfg(windows)]
-            if self.child.as_ref().and_then(Child::id) != Some(pid) {
-                // A reaped leader no longer identifies its tree, and its PID may
-                // be reused. Do not taskkill another process after normal exit.
-                return;
-            }
             crate::native_tools::kill_process_group(pid);
         }
+        #[cfg(windows)]
+        self.child.as_mut().expect("owned child").start_kill()?;
+        Ok(())
     }
     pub fn start_kill(&mut self) -> std::io::Result<()> {
-        self.retire_group();
-        self.child.as_mut().expect("live CLI child").start_kill()
+        self.retire_group()?;
+        #[cfg(not(windows))]
+        self.child.as_mut().expect("owned child").start_kill()?;
+        Ok(())
     }
     pub async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        let result = self.child.as_mut().expect("live CLI child").wait().await;
-        if result.is_ok() {
-            self.retire_group();
-        }
-        result
+        self.stdin.take();
+        let status = self.leader().wait().await?;
+        self.retire_group()?;
+        Ok(status)
     }
     pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        let result = self.child.as_mut().expect("live CLI child").try_wait();
-        if matches!(result, Ok(Some(_))) {
-            self.retire_group();
+        let status = self.leader().try_wait()?;
+        if status.is_some() {
+            self.retire_group()?;
         }
-        result
+        Ok(status)
     }
 }
 impl Drop for AgentChild {
     fn drop(&mut self) {
-        self.retire_group();
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.start_kill();
+        let _ = self.start_kill();
+        if let Some(mut child) = self.child.take() {
+            let resource = self._resource.take();
+            let maintenance = self._maintenance.take();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    let _ = child.wait().await;
+                    drop(child);
+                    drop(resource);
+                    drop(maintenance);
+                });
+            } else {
+                // No runtime remains to reap. Keep exclusion until application exit.
+                drop(child);
+                std::mem::forget(resource);
+                std::mem::forget(maintenance);
+            }
         }
     }
 }
@@ -145,7 +224,7 @@ impl CliProcessOutput for Command {
         self.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
-        AgentChild::from(self.spawn()?).wait_with_output().await
+        AgentChild::spawn(self)?.wait_with_output().await
     }
 }
 
@@ -278,6 +357,8 @@ fn finish_codex_home(
 
 pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
     let program = program.as_ref();
+    let agent = resource_agent(Path::new(program));
+    let revision = agent.and_then(super::overrides::launch_revision);
     let mut command = command_for_program(program);
     #[cfg(unix)]
     command.process_group(0);
@@ -285,13 +366,55 @@ pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
     // 设置页里针对这个 CLI 填的环境变量覆盖（`ANTHROPIC_BASE_URL` 之类），按二进制名反查。
     // 必须用原始路径（UNC 的 file_stem 仍是 `claude`），不能用改写后的 `wsl.exe`。
     let extra = crate::external_agents::overrides::env_for_bin(Path::new(program));
-    let has_codex_home = extra.contains_key("CODEX_HOME");
+    let has_codex_home = extra.keys().any(|key| {
+        if cfg!(windows) { key.eq_ignore_ascii_case("CODEX_HOME") } else { key == "CODEX_HOME" }
+    });
     for (key, value) in extra {
         apply_env_for_cli(&mut command, Path::new(program), &key, value);
     }
     let launch = compatibility_launch_policy_for_bin(Path::new(program));
     finish_codex_home(&mut command, Path::new(program), launch, has_codex_home);
+    mark_resource(&mut command, agent, Path::new(program), revision);
     command
+}
+
+fn resource_agent(binary: &Path) -> Option<&'static str> {
+    super::registry::AGENT_DEFS
+        .iter()
+        .find(|def| {
+            super::overrides::custom_path(def.id).is_some_and(|path| {
+                super::session::live::resource_path(&path)
+                    == super::session::live::resource_path(binary)
+            }) || binary.file_stem().is_some_and(|stem| {
+                std::iter::once(def.bin)
+                    .chain(def.fallback_bins.iter().copied())
+                    .any(|name| {
+                        if cfg!(windows) {
+                            stem.to_string_lossy().eq_ignore_ascii_case(name)
+                        } else {
+                            stem == name
+                        }
+                    })
+            })
+        })
+        .map(|def| def.id)
+}
+pub(super) fn mark_resource(
+    command: &mut Command,
+    agent: Option<&str>,
+    binary: &Path,
+    revision: Option<u64>,
+) {
+    let marker = (
+        agent,
+        binary,
+        super::session::live::resource_path(binary),
+        revision,
+    );
+    command.env(
+        "KIVIO_INTERNAL_CLI_RESOURCE",
+        serde_json::to_string(&marker).expect("resource identity serializes"),
+    );
 }
 
 /// `cli_command` + 该 agent 的静态 `def.env`。有 `def` 在手时用它，覆盖按 id 精确取。
@@ -300,6 +423,7 @@ pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
 /// 只在跑轮次时注入的话，认证探测仍打官方端点，设置页会显示「未认证」而实际能用。
 pub fn agent_cli_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) -> Command {
     let program = program.as_ref();
+    let revision = super::overrides::launch_revision(def.id);
     let mut command = command_for_program(program);
     #[cfg(unix)]
     command.process_group(0);
@@ -310,10 +434,15 @@ pub fn agent_cli_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) -> C
         apply_env_for_cli(&mut command, Path::new(program), key, value.to_string());
     }
     for (key, value) in crate::external_agents::overrides::env_for(def.id) {
-        has_codex_home |= key == "CODEX_HOME";
+        has_codex_home |= if cfg!(windows) {
+            key.eq_ignore_ascii_case("CODEX_HOME")
+        } else {
+            key == "CODEX_HOME"
+        };
         apply_env_for_cli(&mut command, Path::new(program), &key, value);
     }
     finish_codex_home(&mut command, Path::new(program), def.launch, has_codex_home);
+    mark_resource(&mut command, Some(def.id), Path::new(program), revision);
     command
 }
 
@@ -342,24 +471,8 @@ pub fn agent_probe_command(def: &RuntimeAgentDef, program: impl AsRef<OsStr>) ->
     command
 }
 
-/// 结束一个外部 CLI 子进程**及其整棵进程树**。
-///
-/// 只 `start_kill()` 杀的是**直接子进程**：claude 会按用户的 `~/.claude.json` 把 MCP
-/// 服务器作为自己的子进程拉起来，每轮取消一次就可能漏一批孤儿 MCP 进程留在系统里。
-///
-/// 复用 `native_tools::kill_process_group`（unix `killpg` SIGTERM→SIGKILL、
-/// Windows `taskkill /T /F`），不写第二份（spec 第 2 条）。两步都做，缺一不可：
-/// - Windows 的 `taskkill /T` 按父子关系遍历整棵树，能覆盖子进程；
-/// - Unix CLI commands create an independent process group, so killpg reaches
-///   descendants too; start_kill also covers the direct child.
-///
-/// 副作用提醒：杀进程导致的退出码在 Windows 上恒为 1（`TerminateProcess`），
-/// 出口的「非零退出 = 失败」规则必须靠协议层完成标志豁免（spec 第 8b 条），
-/// 否则会凭空造出失败气泡。
-pub fn kill_agent_process_tree(child: &mut Child) {
-    if let Some(pid) = child.id() {
-        crate::native_tools::kill_process_group(pid);
-    }
+/// Terminates the process tree through its spawn-time owner.
+pub fn kill_agent_process_tree(child: &mut AgentChild) {
     let _ = child.start_kill();
 }
 
@@ -367,7 +480,7 @@ pub fn kill_agent_process_tree(child: &mut Child) {
 /// stderr doesn't (a) block on a full pipe while we read stdout, and (b) fail silently. Blank
 /// lines are dropped and the buffer is capped at `STDERR_CAP_CHARS` (keeping the tail — the last
 /// lines are usually the actual error). Call before the stdout read loop; await after `wait()`.
-pub fn drain_stderr(child: &mut Child) -> tokio::task::JoinHandle<String> {
+pub fn drain_stderr(child: &mut AgentChild) -> tokio::task::JoinHandle<String> {
     spawn_stderr_tail(child.stderr.take())
 }
 
@@ -375,7 +488,7 @@ pub fn drain_stderr(child: &mut Child) -> tokio::task::JoinHandle<String> {
 /// stderr is `take()`n separately from stdout, so we can't use `drain_stderr(&mut Child)`. Spawns a
 /// task that accumulates the tail (last `STDERR_CAP_CHARS`) until stderr hits EOF (i.e. the child
 /// dies / is killed), then returns it. Join the handle on close / error to fold into diagnostics.
-pub fn spawn_stderr_tail(stderr: Option<ChildStderr>) -> tokio::task::JoinHandle<String> {
+pub fn spawn_stderr_tail(stderr: Option<AgentStderr>) -> tokio::task::JoinHandle<String> {
     tokio::spawn(async move {
         match stderr {
             Some(stderr) => accumulate_tail(stderr, STDERR_CAP_CHARS).await,
@@ -386,10 +499,7 @@ pub fn spawn_stderr_tail(stderr: Option<ChildStderr>) -> tokio::task::JoinHandle
 
 const STDERR_CAP_CHARS: usize = 8192;
 
-/// How long to wait for stderr EOF after killing the child. `start_kill()` only
-/// terminates the direct child; on Windows `dsh.cmd` → `node` often leaves the
-/// grandchild holding the pipe, so a bare join blocks forever and wedgies the
-/// dsh profile boot lock (every later dsh turn then spins with no error).
+/// Bound pipe draining even if a descendant escaped its platform process group.
 const STDERR_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Kill the child tree (so its stderr hits EOF) and join the drain task to
@@ -397,14 +507,18 @@ const STDERR_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 /// error path (N1 + R2). Always returns — a stuck grandchild must not block
 /// the caller.
 pub async fn join_stderr_tail(
-    child: &mut Child,
-    stderr_tail: tokio::task::JoinHandle<String>,
+    child: &mut AgentChild,
+    mut stderr_tail: tokio::task::JoinHandle<String>,
 ) -> String {
     kill_agent_process_tree(child);
-    match timeout(STDERR_JOIN_TIMEOUT, stderr_tail).await {
+    match timeout(STDERR_JOIN_TIMEOUT, &mut stderr_tail).await {
         Ok(Ok(tail)) => tail,
         Ok(Err(_)) => String::new(),
-        Err(_) => String::new(),
+        Err(_) => {
+            stderr_tail.abort();
+            let _ = stderr_tail.await;
+            String::new()
+        }
     }
 }
 
@@ -497,7 +611,7 @@ fn probe_cache_key(path: &Path) -> Option<String> {
         .ok()?
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
-        .as_secs();
+        .as_nanos();
     Some(format!("{}|{mtime}|{}", path.display(), meta.len()))
 }
 
@@ -635,7 +749,7 @@ async fn probe_executable(path: &Path, version_args: &[&str]) -> (bool, Option<S
         .stderr(Stdio::null())
         .no_console_window()
         .kill_on_drop(true);
-    let child = match command.spawn().map(AgentChild::from) {
+    let child = match AgentChild::spawn(&mut command) {
         Ok(child) => child,
         // spawn 失败 = 这个候选不是个能跑的可执行文件（EACCES / ENOEXEC / ENOENT）。
         Err(_) => return (false, None),
@@ -722,11 +836,9 @@ pub async fn spawn_agent(
     for (key, value) in extra_env {
         command.env(key, value);
     }
-    let child = command
-        .spawn()
-        .map_err(|e| format!("spawn {}: {e}", def.id))?;
+    let child = AgentChild::spawn(&mut command).map_err(|e| format!("spawn {}: {e}", def.id))?;
     Ok(SpawnedAgent {
-        child: AgentChild::from(child),
+        child,
         resolved_bin: resolved_bin.to_path_buf(),
     })
 }
@@ -754,7 +866,7 @@ pub fn stream_json_user_line(
 }
 
 /// Minimal stdin write to elicit Claude `system/init` during slash-command probing.
-pub async fn write_probe_stdin(child: &mut Child) -> Result<(), String> {
+pub async fn write_probe_stdin(child: &mut AgentChild) -> Result<(), String> {
     let stdin = child
         .stdin
         .take()
@@ -808,6 +920,47 @@ pub fn parse_json_line(line: &str) -> Option<serde_json::Value> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn spawn_rejects_stale_command_revision_before_starting_process() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("missing-fixture");
+        let def = crate::external_agents::registry::get_agent_def("claude").unwrap();
+        let mut command = agent_cli_command(def, &binary);
+        mark_resource(&mut command, Some(def.id), &binary, Some(u64::MAX));
+        let error = match AgentChild::spawn(&mut command) {
+            Ok(_) => panic!("stale command spawned"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("configuration changed"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn resource_marker_recognizes_case_insensitive_fallback_names() {
+        let command = cli_command(r"C:\fixture\OpenCode.cmd");
+        let marker = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == "KIVIO_INTERNAL_CLI_RESOURCE")
+            .and_then(|(_, value)| value)
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&marker.to_string_lossy()).unwrap();
+        assert_eq!(value[0], "opencode");
+    }
+
+    #[test]
+    fn probe_identity_detects_same_size_replacement_within_one_second() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cli");
+        std::fs::write(&path, b"old").unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        let timestamp = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        file.set_times(std::fs::FileTimes::new().set_modified(timestamp)).unwrap();
+        let before = probe_cache_key(&path).unwrap();
+        std::fs::write(&path, b"new").unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(timestamp + Duration::from_millis(100))).unwrap();
+        assert_ne!(before, probe_cache_key(&path).unwrap());
+    }
+
     #[test]
     fn loopback_bypasses_proxy_without_discarding_command_settings() {
         let mut command = Command::new("agent");
@@ -830,7 +983,7 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn discovery_reads_models_without_starting_updater_but_normal_cli_can_update() {
-        use crate::external_agents::defs::antigravity::ANTIGRAVITY_AGENT_DEF;
+        use crate::external_agents::providers::antigravity::ANTIGRAVITY_AGENT_DEF;
 
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("fake cli.cmd");
@@ -948,7 +1101,7 @@ mod tests {
             .args(["-c", "sleep 60 & echo $!; wait"])
             .stdout(Stdio::piped())
             .kill_on_drop(true);
-        let mut child = AgentChild::from(command.spawn().unwrap());
+        let mut child = AgentChild::spawn(&mut command).unwrap();
         let pid = child.id().unwrap();
         let mut reader = BufReader::new(child.stdout.take().unwrap());
         let mut line = String::new();
@@ -1025,8 +1178,8 @@ mod tests {
 
     #[test]
     fn agent_cli_command_uses_the_definition_home_policy_not_the_binary_name() {
-        use crate::external_agents::defs::claude::CLAUDE_AGENT_DEF;
-        use crate::external_agents::defs::codex::CODEX_AGENT_DEF;
+        use crate::external_agents::providers::claude::CLAUDE_AGENT_DEF;
+        use crate::external_agents::providers::codex::CODEX_AGENT_DEF;
 
         let codex_bin = PathBuf::from(r"\\wsl$\Ubuntu\usr\bin\codex");
         let codex = agent_cli_command(&CODEX_AGENT_DEF, &codex_bin);
@@ -1176,13 +1329,12 @@ mod tests {
             command.arg("60");
             command
         };
-        let mut child = command
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
-            .no_console_window()
-            .spawn()
-            .expect("spawn long-lived child");
+            .no_console_window();
+        let mut child = AgentChild::spawn(&mut command).expect("spawn long-lived child");
         let tail = spawn_stderr_tail(child.stderr.take());
         let started = std::time::Instant::now();
         let _ = join_stderr_tail(&mut child, tail).await;

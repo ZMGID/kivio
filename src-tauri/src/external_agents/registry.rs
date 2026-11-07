@@ -1,14 +1,16 @@
-use crate::external_agents::defs::{acp, antigravity, claude, codex, dsh, grok, pi};
+use crate::external_agents::providers::{
+    antigravity, claude, codex, dsh, gemini, grok, hermes, kimi, opencode, pi,
+};
 use crate::external_agents::types::RuntimeAgentDef;
 
 pub const AGENT_DEFS: &[RuntimeAgentDef] = &[
     claude::CLAUDE_AGENT_DEF,
     codex::CODEX_AGENT_DEF,
-    acp::OPENCODE_AGENT_DEF,
-    acp::GEMINI_AGENT_DEF,
-    acp::KIMI_AGENT_DEF,
+    opencode::OPENCODE_AGENT_DEF,
+    gemini::GEMINI_AGENT_DEF,
+    kimi::KIMI_AGENT_DEF,
     pi::PI_AGENT_DEF,
-    acp::HERMES_AGENT_DEF,
+    hermes::HERMES_AGENT_DEF,
     grok::GROK_AGENT_DEF,
     dsh::DSH_AGENT_DEF,
     antigravity::ANTIGRAVITY_AGENT_DEF,
@@ -198,15 +200,34 @@ mod tests {
         assert!(get_agent_def("unknown").is_none());
     }
 
-    /// 原生 follow-up（当前轮结束后自动开下一轮）目前只有 Pi RPC 与 dsh `session/prompt`。
     #[test]
-    fn pi_and_dsh_claim_native_follow_up() {
-        let follow_up: Vec<&str> = AGENT_DEFS
-            .iter()
-            .filter(|def| def.supports_follow_up)
-            .map(|def| def.id)
-            .collect();
-        assert_eq!(follow_up, vec!["pi", "dsh"]);
+    fn provider_capabilities_describe_existing_paths() {
+        use crate::external_agents::types::CapabilitySupport::{Fallback, Native, Unavailable};
+
+        let cases = [
+            // ID, steering, follow-up, image, rewind, import, account.
+            ("claude", Native, Fallback, Native, Native, Native, Native),
+            ("codex", Native, Fallback, Native, Native, Native, Native),
+            ("opencode", Unavailable, Fallback, Native, Fallback, Native, Unavailable),
+            ("gemini", Unavailable, Fallback, Native, Fallback, Unavailable, Unavailable),
+            ("kimi", Unavailable, Fallback, Native, Fallback, Native, Unavailable),
+            ("pi", Native, Native, Native, Native, Unavailable, Unavailable),
+            ("hermes", Unavailable, Fallback, Native, Fallback, Unavailable, Unavailable),
+            ("grok", Unavailable, Fallback, Native, Fallback, Native, Native),
+            ("dsh", Native, Native, Native, Fallback, Unavailable, Unavailable),
+            ("antigravity", Unavailable, Fallback, Fallback, Fallback, Unavailable, Unavailable),
+        ];
+        assert_eq!(cases.len(), AGENT_DEFS.len());
+        for (id, steering, follow_up, image_input, rewind, import_history, account) in cases {
+            let capabilities = get_agent_def(id).unwrap().capabilities();
+            assert_eq!(
+                (capabilities.steering, capabilities.follow_up, capabilities.image_input,
+                 capabilities.rewind, capabilities.import_history, capabilities.account),
+                (steering, follow_up, image_input, rewind, import_history, account),
+                "{id}"
+            );
+            assert_eq!(capabilities.conversation_branch, Fallback, "{id}");
+        }
     }
 
     #[test]

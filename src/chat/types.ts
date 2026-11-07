@@ -1,5 +1,5 @@
 // Chat 前端类型定义
-import type { ChatSegmentKind } from '../generated/chatProtocol'
+import type { CapabilitySupport, ChatSegmentKind } from '../generated/chatProtocol'
 
 export type ToolCallStatus =
   | 'pending'
@@ -521,6 +521,7 @@ export interface ImportableCliSession {
   updatedAt?: number | null
   /** `null` = 来源给不出条数（ACP `session/list` 不返回），界面显示"未知"而不是 0。 */
   messageCount?: number | null
+  importHistory: CapabilitySupport
   /** 由导入功能带进来的。 */
   alreadyImported: boolean
   /**
@@ -540,6 +541,7 @@ export interface CliImportResult {
 
 export type { NativeProviderSummary, DetectedExternalAgent } from '../api/externalCliSettings'
 export interface Conversation {
+  runtime_locked?: boolean
   id: string
   revision: number
   title: string

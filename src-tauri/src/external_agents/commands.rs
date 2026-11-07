@@ -55,7 +55,7 @@ pub async fn chat_detect_external_agents(
         {
             return Ok(serde_json::json!({
                 "success": true,
-                "agents": stamp_disabled(agents),
+                "agents": stamp_availability(agents),
                 "cached": true,
             }));
         }
@@ -66,7 +66,7 @@ pub async fn chat_detect_external_agents(
             spawn_availability_refresh(app);
             return Ok(serde_json::json!({
                 "success": true,
-                "agents": stamp_disabled(agents),
+                "agents": stamp_availability(agents),
                 "cached": true,
             }));
         }
@@ -84,7 +84,7 @@ pub async fn chat_detect_external_agents(
         {
             return Ok(serde_json::json!({
                 "success": true,
-                "agents": stamp_disabled(agents),
+                "agents": stamp_availability(agents),
                 "cached": true,
             }));
         }
@@ -96,7 +96,7 @@ pub async fn chat_detect_external_agents(
     save_availability_snapshot(&state, &agents);
     Ok(serde_json::json!({
         "success": true,
-        "agents": stamp_disabled(agents),
+        "agents": stamp_availability(agents),
         "cached": false,
     }))
 }
@@ -116,29 +116,9 @@ fn spawn_availability_refresh(app: AppHandle) {
         save_availability_snapshot(&state, &agents);
         let _ = app.emit(
             "external-agents-updated",
-            serde_json::json!({ "agents": stamp_disabled(agents) }),
+            serde_json::json!({ "agents": stamp_availability(agents) }),
         );
     });
-}
-
-/// 删除供应商时清掉它物化出来的文件（不影响任何设置，纯清理）。
-///
-/// 「保存设置 → 物化 + 清缓存」那条路在 `settings::persist_settings` 里，不需要前端调命令；
-/// 删除是唯一一个保存后**没有任何东西会去动那些文件**的操作，所以单独留一个口。
-#[tauri::command]
-pub async fn chat_external_cli_provider_cleanup(
-    agent_id: String,
-    provider_id: String,
-    native_provider_id: Option<String>,
-    provider_name: Option<String>,
-) -> Result<(), String> {
-    crate::external_agents::provider_profile::cleanup(
-        &agent_id,
-        &provider_id,
-        native_provider_id.as_deref(),
-        provider_name.as_deref(),
-    );
-    Ok(())
 }
 
 /// 解析 Pi 实际使用的 agent 目录（认 `PI_CODING_AGENT_DIR`）。
@@ -165,22 +145,23 @@ pub async fn chat_external_cli_scan_cc_switch() -> Result<serde_json::Value, Str
     let scan = crate::external_agents::cc_switch::scan()?;
     serde_json::to_value(scan).map_err(|e| e.to_string())
 }
+#[tauri::command]
+pub async fn chat_external_cli_import_cc_switch(
+    selections: Vec<super::cc_switch::ImportSelection>,
+) -> Result<Vec<super::cc_switch::ImportedProvider>, String> {
+    super::cc_switch::import_selected(&selections)
+}
 
-/// 把设置页的「停用」开关盖到（可能来自缓存的）可用性结果上。
 /// dsh 的供应商摘要只是读 `settings.yaml`，跟 binary/auth 探测无关，缓存命中也重读，
 /// 避免官方 DeepSeek / 用户刚改的 llm-pi-ai 要等 10 分钟才出现在「所有供应商」。
-fn stamp_disabled(
-    mut agents: Vec<crate::external_agents::types::DetectedAgent>,
-) -> Vec<crate::external_agents::types::DetectedAgent> {
+fn stamp_availability(
+    mut agents: Vec<DetectedAgent>,
+) -> Vec<DetectedAgent> {
     for agent in agents.iter_mut() {
         agent.disabled = crate::external_agents::overrides::is_disabled(&agent.id);
-        if let Some(def) = get_agent_def(&agent.id) {
-            agent.supports_steering = def.supports_steering;
-            agent.supports_follow_up = def.supports_follow_up;
-        }
-        agent.native_providers = get_agent_def(&agent.id)
-            .map(native_provider_summaries)
-            .unwrap_or_default();
+        let def = get_agent_def(&agent.id);
+        agent.capabilities = def.map(|def| def.capabilities()).unwrap_or_default();
+        agent.native_providers = def.map(native_provider_summaries).unwrap_or_default();
     }
     agents
 }
@@ -374,11 +355,6 @@ pub(crate) async fn set_agent_runtime(
     let persist_reasoning = agent_runtime.external_reasoning.clone();
     let conversation = crate::chat::repository::repository(app)
         .mutate(app, conversation_id, |conversation| {
-            check_runtime_switch_allowed(
-                &conversation.agent_runtime,
-                conversation.messages.is_empty(),
-                &agent_runtime,
-            )?;
             conversation.agent_runtime = agent_runtime;
             Ok(())
         })
@@ -399,15 +375,15 @@ pub(crate) async fn set_agent_runtime(
 /// Pure binding rule for `chat_set_agent_runtime` (extracted so it is unit-testable without a Tauri
 /// `AppHandle`). Returns `Err` with a user-facing message when the switch is forbidden.
 ///
-/// Rule: **one agent per conversation**. Empty conversations may switch freely; once any message
-/// exists, `kind` and `external_agent_id` are frozen (covers both local CLI *and* Kivio builtin).
+/// Rule: **one agent per conversation**. Only empty, unbound conversations may switch freely.
+/// Messages, native bindings and pending history freeze `kind` and `external_agent_id`.
 /// Same-agent model / reasoning / sandbox updates remain allowed.
-fn check_runtime_switch_allowed(
+pub(crate) fn check_runtime_switch_allowed(
     current: &AgentRuntimeConfig,
-    messages_is_empty: bool,
+    runtime_is_unbound: bool,
     next: &AgentRuntimeConfig,
 ) -> Result<(), String> {
-    if messages_is_empty {
+    if runtime_is_unbound {
         return Ok(());
     }
     let normalize_id = |id: &Option<String>| {
@@ -555,6 +531,29 @@ mod tests {
         assert_eq!(opts[2]["id"], "max");
         assert_eq!(payload["currentReasoning"], "high");
     }
+
+    #[test]
+    fn legacy_availability_snapshot_reports_current_capabilities() {
+        let snapshot = serde_json::json!([{
+            "id": "codex",
+            "name": "Codex CLI",
+            "available": true,
+            "path": "codex",
+            "version": "0.164.0",
+            "models": [],
+            "reasoningOptions": [],
+            "authStatus": null,
+            "supportsSteering": false,
+            "supportsFollowUp": true
+        }]);
+        let agents = serde_json::from_value(snapshot).unwrap();
+        let response = serde_json::to_value(super::stamp_availability(agents)).unwrap();
+        assert_eq!(response[0]["version"], "0.164.0");
+        assert_eq!(response[0]["capabilities"]["steering"], "native");
+        assert_eq!(response[0]["capabilities"]["followUp"], "fallback");
+        assert_eq!(response[0]["capabilities"]["account"], "native");
+        assert!(response[0].get("supportsSteering").is_none());
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -635,9 +634,11 @@ pub async fn chat_external_cli_account(
     conversation_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let def = get_agent_def(&agent_id).ok_or("未知 CLI")?;
+    let probe = def.account.ok_or("此 CLI 未提供账号额度查询")?;
+    let _resource = super::session::live::ResourceLease::pending(def.id)?;
     let cwd = resolve_detection_cwd(&app, conversation_id.as_deref())?;
     let bin = crate::external_agents::spawn::resolve_binary(def)
         .await
         .ok_or("CLI 未安装或不在 PATH")?;
-    crate::external_agents::account::probe(&agent_id, &bin, &cwd).await
+    crate::external_agents::account::probe(def, probe, &bin, &cwd).await
 }

@@ -99,6 +99,8 @@ pub fn load_conversation(app: &AppHandle, id: &str) -> Result<Conversation, Stri
     let pending = crate::chat::sub_agent::progress::pending(app, id)?;
     let mut conversation = read_conversation_file(&path, id)?;
     crate::chat::sub_agent::progress::apply(&mut conversation, &pending);
+    conversation.runtime_locked =
+        crate::external_agents::session::runtime_locked(app, &conversation);
     Ok(conversation)
 }
 
@@ -151,6 +153,8 @@ pub(crate) fn write_conversation_file(
     }
     let pending = crate::chat::sub_agent::progress::pending(app, &conversation.id)?;
     let applied = crate::chat::sub_agent::progress::apply(&mut conversation, &pending);
+    conversation.runtime_locked =
+        crate::external_agents::session::runtime_locked(app, &conversation);
     let persisted = write_conversation_file_at_path(&path, conversation)?;
     crate::chat::sub_agent::progress::clear_applied(&applied);
     Ok(persisted)
@@ -381,6 +385,7 @@ pub fn find_reusable_blank_conversation(
             continue;
         }
         if conversation.messages.is_empty()
+            && !conversation.runtime_locked
             && conversation.provider_id == provider_id
             && conversation.model == model
             && conversation.folder.as_deref() == folder
