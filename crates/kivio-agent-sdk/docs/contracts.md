@@ -4,11 +4,11 @@ This reference describes the SDK v2 working API (not yet published). [The README
 
 ## Public interfaces
 
-`agent::run_agent_loop` combines a `ModelRuntime`, `ToolExecutor`, `AgentHost`, `SessionPolicy`, `AgentEventSink`, and `AgentRunHandle`. `agent::RuntimeMessage` carries typed model history and opaque host source metadata. The `model` module provides normalized model types and standalone Chat, Responses, Anthropic and Gemini providers. The `tools` module provides tool definitions, argument schemas, and tool output.
+`agent::AgentSession` is the normal multi-turn entry point. Advanced hosts use `agent::run_agent_loop` to combine a `ModelRuntime`, `ToolExecutor`, `AgentHost`, `SessionPolicy`, `AgentEventSink`, and `AgentRunHandle` under their existing run owner. `agent::RuntimeMessage` carries typed model history and opaque host source metadata. The `model` module provides normalized model types and standalone Chat, Responses, Anthropic and Gemini providers. The `tools` module provides tool definitions, argument schemas, and tool output.
 
 Rustdoc lists the exported items. Other public modules contain lower-level stream, protocol, and loop helpers. Their visibility does not provide a stable compatibility guarantee during this alpha. Private and `pub(crate)` modules are implementation details. Consumers use the crate dependency and public imports, rather than compiling SDK source files directly.
 
-The application owns desktop IPC, settings, OAuth, credential lookup and rotation, billing, skills, Todo, OMP sub-agents, session storage, and UI approval. Those capabilities do not appear automatically in another host.
+The application owns desktop IPC, settings, OAuth, credential lookup and rotation, billing, Skill source selection and activation policy, Todo, OMP sub-agents, session storage, and UI approval. Those capabilities do not appear automatically in another host. SDK Skill discovery and MCP tool clients are explicit Cargo features.
 
 The existing hosts keep their admission and persistence owners while sharing the core:
 
@@ -235,3 +235,23 @@ The snapshot owns validated private history. `into_history()` is infallible and 
 `AgentSessionConfig::from_snapshot(runtime, snapshot)` requires saved session configuration. A history-only snapshot is restored by assigning `snapshot.into_history()` to a host-built configuration. Restoration starts with empty tools, an in-memory host, default limits and no policy. Hosts reinstall authorization, tools, hooks, persistence and vendor options. Standard options have a separate typed snapshot representation; arbitrary `provider_options` are excluded and rejected on import. Runtime clients, credentials, pending input queues, subscriptions, active futures, cancellation state and execution cursors are not serialized. Transcript text and source metadata can still contain sensitive data and remain subject to host storage policy.
 
 `AgentHost::checkpoint_runtime` now receives `&SessionHistory`; hosts that only need the projected messages use `.context()`. Before compaction, this includes original facts and an error vetoes replacement. `persist_partial_assistant` receives the same history after its existing generated-message argument. Predispatch drafts can have pending tool calls and are not valid active run snapshots; completed-round drafts include their results. A host may retain such facts as archival history, but must not resume unknown effects automatically. These checkpoints do not provide durable mid-run execution.
+
+## Migrate from the initial SDK
+
+The v2 design remains source-consumed `0.1.0-alpha.1`. Update callers together with the pinned SDK commit; do not treat this alpha as a stable binary or source contract. The independent consumer compiles public APIs without application dependencies and is also tested against the packaged crate.
+
+| Initial integration | Current integration |
+| --- | --- |
+| Host builds control, mailbox and event ownership for every ordinary session | Use `AgentSessionConfig` and `AgentSession`; existing desktop, automation and OMP owners can continue using the lower-level loop. |
+| `Vec<RuntimeMessage>` as the entire history | Construct `SessionHistory::from(messages)` once. Persist validated `SessionSnapshot` entries and active position; `.context()` is a model projection, not a lossless save format. |
+| `ToolExecutor::prepare` / `after` | Implement `before_tool_call` / `after_tool_call`; use explicit `ToolResultUpdate` fields. `call` receives `ToolProgress` for cancellation and cleanup. |
+| `SessionPolicy::before_finish` | Implement `finish_turn`. Use `prepare_request` and `transform_context` only for temporary request changes; `before_step` still admits canonical input. |
+| Projected-message checkpoint | Accept the full `SessionHistory` in `checkpoint_runtime` and `persist_partial_assistant`; preserve original facts and branch references. |
+| String-only error handling | Match `AgentRunError::Failed { cause, partial }`, retain completed effects and save `partial.history`; also inspect returned run status. |
+| Restore serialized runtime or prepared tools | Restore a validated snapshot with a new runtime, then rebind tools, authorization, hooks, host, limits and vendor options. Pending operations never resume automatically. |
+
+The five hooks use the existing conversion boundary rather than a second `convertToLlm` dispatcher. Tool authorization stays with the host, including after restore or catalog refresh. Loading a Skill or registering an MCP tool does not grant additional authority.
+
+Desktop migration remains application code. It reads existing typed transcripts first, validates legacy wire transcripts, and records any fallback to display messages with its migration version and source revision. It does not invent lost branches. The repository remains the sole durable writer; SDK history owns model facts while the App keeps multi-answer groups and archived display views. External CLI native history and OMP jobs retain their existing owners.
+
+Desktop removal means “remove from the current branch.” It retains original facts and other branches, preserves tool pairing and invalidates affected summaries. Full-tree attachment references still protect retained files. This is not permanent erasure. A snapshot restores history for a new run, never a paused state machine or a guarantee that an unknown remote effect is safe to repeat.

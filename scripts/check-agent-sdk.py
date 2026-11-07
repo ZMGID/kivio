@@ -1,9 +1,13 @@
 import argparse
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
+import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -42,27 +46,83 @@ def check_metadata(metadata, *, allow_mcp=False):
                 raise ValueError(f"SDK depends on an external local package: {manifest}")
 
 
-def check_package(path):
+def check_package(path, *, extract_to=None):
     with tarfile.open(path, "r:gz") as archive:
-        files = {
-            member.name.split("/", 1)[1]: member
-            for member in archive.getmembers()
-            if member.isfile() and "/" in member.name
-        }
-        required = {"Cargo.toml", "LICENSE", "README.md", "src/lib.rs"}
+        members = archive.getmembers()
+        files = {}
+        roots = set()
+        for member in members:
+            parts = PurePosixPath(member.name).parts
+            if (not parts or member.name.startswith("/") or "\\" in member.name
+                    or any(part in {".", ".."} or part.endswith((".", " ")) or ":" in part for part in parts)
+                    or not (member.isfile() or member.isdir())):
+                raise ValueError(f"SDK package has an unsafe member: {member.name}")
+            roots.add(parts[0])
+            if member.isfile() and len(parts) > 1:
+                name = "/".join(parts[1:])
+                if name in files:
+                    raise ValueError(f"SDK package has a duplicate file: {name}")
+                files[name] = member
+        if len(roots) != 1:
+            raise ValueError("SDK package must have one root directory")
+        required = {"Cargo.toml", "LICENSE", "README.md", "src/lib.rs", "docs/contracts.md"}
         missing = required - files.keys()
         if missing:
             raise ValueError(f"SDK package is missing files: {sorted(missing)}")
         if archive.extractfile(files["LICENSE"]).read() != (ROOT / "LICENSE").read_bytes():
             raise ValueError("SDK package license differs from the repository license")
+        if extract_to is not None:
+            for name, member in files.items():
+                destination = extract_to / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.extractfile(member) as source, destination.open("wb") as target:
+                    shutil.copyfileobj(source, target)
 
 
-def main():
+def rewrite_sdk_path(manifest, sdk):
+    original = tomllib.loads(manifest)
+    dependency = original["dependencies"]["kivio-agent-sdk"]
+    if not isinstance(dependency, dict) or "path" not in dependency:
+        raise ValueError("Consumer must have an inline SDK path dependency")
+    rewritten, count = re.subn(
+        r'(?m)^([ \t]*kivio-agent-sdk[ \t]*=[ \t]*\{[^\n]*?\bpath[ \t]*=[ \t]*)"[^"\n]*"',
+        lambda match: match[1] + json.dumps(sdk.resolve().as_posix()),
+        manifest,
+    )
+    dependency["path"] = sdk.resolve().as_posix()
+    if count != 1 or tomllib.loads(rewritten) != original:
+        raise ValueError("Consumer SDK path rewrite must preserve all other manifest values")
+    return rewritten
+
+
+def test_packaged_consumer(package):
+    with tempfile.TemporaryDirectory(prefix="kivio-agent-sdk-") as directory:
+        directory = Path(directory)
+        sdk = directory / "sdk"
+        check_package(package, extract_to=sdk)
+        consumer = directory / "consumer"
+        shutil.copytree(CONSUMER.parent, consumer, ignore=shutil.ignore_patterns("target"))
+        manifest = consumer / "Cargo.toml"
+        manifest.write_text(rewrite_sdk_path(manifest.read_text(encoding="utf-8"), sdk), encoding="utf-8")
+        lock = (consumer / "Cargo.lock").read_bytes()
+        subprocess.run(["cargo", "test", "--locked", "--manifest-path", str(manifest)], check=True)
+        if (consumer / "Cargo.lock").read_bytes() != lock:
+            raise ValueError("Packaged consumer test changed Cargo.lock")
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Check standalone SDK dependencies and packaging")
     parser.add_argument("--package", type=Path)
-    args = parser.parse_args()
+    parser.add_argument("--test-consumer", action="store_true", help="test the independent consumer against --package")
+    args = parser.parse_args(argv)
+    if args.test_consumer and not args.package:
+        parser.error("--test-consumer requires --package")
     if args.package:
-        check_package(args.package)
+        if args.test_consumer:
+            test_packaged_consumer(args.package)
+            print("Independent consumer passed against the extracted SDK package")
+        else:
+            check_package(args.package)
         print("SDK package files and license passed")
         return
     for manifest, features, allow_mcp in (
@@ -81,5 +141,5 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ValueError, subprocess.CalledProcessError) as error:
+    except (ValueError, OSError, tarfile.TarError, subprocess.CalledProcessError) as error:
         sys.exit(str(error))

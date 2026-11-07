@@ -2,20 +2,23 @@
 
 `kivio-agent-sdk` runs a model and tool loop in a Rust host without Tauri or the Kivio application. The desktop application uses this same crate through a path dependency.
 
-Version `0.1.0-alpha.1` is a source-consumed prerelease under [GPL-3.0-or-later](LICENSE). This repository does not publish the crate as part of the SDK migration. Public APIs can change between prereleases. Pin a repository commit and keep your lockfile when integrating this version. No minimum supported Rust version is declared.
+Version `0.1.0-alpha.1` is a source-consumed prerelease under [GPL-3.0-or-later](LICENSE). SDK v2 names the design iteration, not a published `2.0` release. This repository does not publish the crate as part of the migration or change its license. Public APIs can change between prereleases; pin a repository commit and keep your lockfile. External distribution requires a separate license-suitability decision by the project owner. No minimum supported Rust version is promised; local verification used Rust 1.96.0 on Windows.
 
 ## Run the examples without credentials
 
 Run these commands from the repository root with a current stable Rust toolchain.
 
 ```powershell
+cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example session_offline
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- minimal
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- cancel
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- inputs
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- continue
 ```
 
-The default example starts a bounded loopback HTTP server and calls the production `OpenAiChatProvider`. It does not read model credentials or application settings. Cargo may download locked dependencies on the first build.
+[The offline session example](examples/session_offline.rs) combines a custom model runtime, typed and explicitly authorized echo tool, request hook, host commits, forks and JSON snapshot restoration. Assertions verify the actual tool output, retained branches and exactly one tool execution across restoration. Its host keeps commits in memory; a durable host must atomically save before acknowledging a commit.
+
+The `agent` example starts a bounded loopback HTTP server and calls the production `OpenAiChatProvider`. Neither offline example reads model credentials or application settings. Cargo may download locked dependencies on the first build.
 
 The modes have these observable results.
 
@@ -33,6 +36,12 @@ The output includes the invocation ID, increasing event sequence numbers, tool s
 ## Integrate a Rust host
 
 Use a path dependency from your own project. Adjust the SDK path to your checkout.
+
+| Cargo feature | Scope |
+| --- | --- |
+| Default (empty) | Session, hooks, tools, four providers, context management and snapshots |
+| `skills` | Filesystem discovery and read-only activation; no additional feature dependencies |
+| `mcp` | rmcp transports and process dependencies for stdio and Streamable HTTP tools |
 
 ```toml
 [dependencies]
@@ -88,7 +97,7 @@ Call `session.snapshot()` after the run settles and serialize the returned `Sess
 
 `AgentSessionConfig::from_snapshot(runtime, snapshot)` restores saved model identity, standard generation settings and history. Reinstall tools, authorization, hooks, host persistence, run limits and vendor options before starting another run. Provider clients and credentials are supplied through the new runtime; pending queues and active execution are not restored. Message bodies and source metadata remain intact, so hosts still control sensitive transcript storage.
 
-Advanced hosts can use `history.snapshot()` without session configuration, then `snapshot.into_history()` with their own settings. `graft_branch` merges a concurrent run's selected suffix, remaps its entry references and returns the ID mapping without changing the destination selection. See [snapshot contracts](docs/contracts.md#session-snapshots) and [consumer tests](../../tests/fixtures/agent-sdk-consumer/tests/snapshot.rs).
+Advanced hosts can use `history.snapshot()` without session configuration, then `snapshot.into_history()` with their own settings. `graft_branch` merges all descendants below a concurrent run's shared anchor, including inactive paths. It reuses shared facts, remaps new entry references and returns their ID mapping without changing the destination selection. See [snapshot contracts](docs/contracts.md#session-snapshots) and [consumer tests](../../tests/fixtures/agent-sdk-consumer/tests/snapshot.rs).
 
 ## Run against a real provider
 
@@ -140,6 +149,8 @@ Each activation reads the selected file again, applies optional arguments and re
 
 Hosts with adapted Markdown sources can supply a discovery reader and `SkillBodyReader`. Kivio uses these seams for plugin metadata, body variables and live plugin availability while retaining its existing resource cache and approval flow.
 
+For a complete executable setup, use [the independent Skill consumer](../../tests/fixtures/agent-sdk-consumer/tests/skills.rs): `cargo test --locked --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml --test skills`.
+
 ## Connect MCP tools
 
 Enable the `mcp` Cargo feature for stdio and Streamable HTTP clients. The host supplies the transport configuration, resolved credentials and HTTP client. A client owns one connection and its tool catalog; it does not manage accounts or install servers.
@@ -171,6 +182,8 @@ client.close().await?;
 
 The supported MCP surface is tools, including image and structured tool results. Resources, resource templates, prompts, sampling and elicitation do not have SDK APIs in this version. Embedded resource blocks in a tool result do not imply resource discovery support. OAuth login, token refresh, credential storage, connection pools and UI remain host responsibilities.
 
+[The independent MCP consumer](../../tests/fixtures/agent-sdk-consumer/tests/mcp.rs) supplies real local stdio and HTTP servers and exercises registration, authorization, cancellation and cleanup: `cargo test --locked --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml --test mcp`.
+
 ## Verify the SDK and an independent consumer
 
 These checks do not start the desktop application or require model credentials.
@@ -179,15 +192,33 @@ These checks do not start the desktop application or require model credentials.
 cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml
 cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --features skills
 cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --all-features
-cargo check --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --examples
-cargo doc --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --no-deps
+cargo check --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --examples --all-features
+cargo doc --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --no-deps --all-features
 cargo test --locked --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml
+py -3 scripts/check-agent-sdk.test.py
+py -3 scripts/check-agent-sdk.py
 ```
 
-The [consumer fixture](../../tests/fixtures/agent-sdk-consumer) is a separate Cargo package. It imports only the public SDK, reqwest, serde_json, and Tokio. Its loopback HTTP tests cover tool results in subsequent requests, stream events, history continuation, steer and follow-up, cancelled connections, authorization rejection, and protocol failures. Run its CLI with the same explicitly supplied live environment.
+From a clean checkout, verify the actual distributable and run the same consumer against its extracted contents:
+
+```powershell
+cargo package --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml
+py -3 scripts/check-agent-sdk.py --package crates/kivio-agent-sdk/target/package/kivio-agent-sdk-0.1.0-alpha.1.crate --test-consumer
+```
+
+The [consumer fixture](../../tests/fixtures/agent-sdk-consumer) is a separate Cargo package using the public SDK, reqwest, serde, serde_json, schemars and Tokio. Its tests cover actual requests, tool results, events, queues, cancellation, authorization and protocol failures. The package check copies this fixture, changes only its SDK path and preserves its locked dependencies.
+
+| Integration | Executable public API reference |
+| --- | --- |
+| Custom model and request hooks | [request_hooks.rs](../../tests/fixtures/agent-sdk-consumer/tests/request_hooks.rs) |
+| Typed tool and explicit authorization | [registry_http.rs](../../tests/fixtures/agent-sdk-consumer/tests/registry_http.rs) |
+| Session lifecycle and host commit | [agent_session.rs](../../tests/fixtures/agent-sdk-consumer/tests/agent_session.rs) |
+| Tree snapshots and authority rebinding | [snapshot.rs](../../tests/fixtures/agent-sdk-consumer/tests/snapshot.rs) |
+
+Run its CLI with the same explicitly supplied live environment.
 
 ```powershell
 cargo run --locked --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml
 ```
 
-Windows is the locally verified SDK platform for this prerelease. The repository's SDK CI configures stable Rust checks on Windows, macOS, and Linux. A configured job is not evidence that a platform has passed. The recorded live smoke test used `deepseek-v4.1-flash`, executed echo once, and returned `Completed`. Compatibility with every OpenAI-compatible endpoint or model is not claimed. See [the SDK acceptance record](../../docs/prd/kivio-agent-sdk-plan.md) for the actual validation scope.
+Windows is the locally verified SDK platform for this prerelease. CI configures stable Rust tests and packaged consumption on Windows, macOS and Linux; current-commit three-platform runs remain unverified. The v2 live Chat smoke test used `deepseek-v4.1-flash`, executed echo once and returned `Completed`. This does not verify live Responses, Anthropic or Gemini compatibility, or desktop UI behavior. See [the v2 acceptance record](../../docs/prd/kivio-agent-sdk-v2-plan.md) and [migration guide](docs/contracts.md#migrate-from-the-initial-sdk) for the actual scope.
