@@ -45,6 +45,23 @@ node scripts/probe-chat-send.mjs --app-pid <Dev应用进程ID>
 
 手工请求可组合 `sendThroughIpc: true`、`skillId`、`cancelAfterMs`、`computeContextStats` 和已有的模式、联网搜索、外部运行时覆盖。IPC 路径由生产命令创建用户消息，probe 不重复插入；`conversationId` 仍用于续聊。
 
+Windows 工具栈回归使用独立 Test 构建和本机模拟模型、MCP 服务，不使用用户的服务商或密钥。先按 README 完成构建前置步骤，在一个终端运行 `npm run dev:ui`，另一个 PowerShell 终端执行：
+
+```powershell
+$env:TAURI_CONFIG = Get-Content src-tauri/tauri.test.conf.json -Raw
+cargo build --manifest-path src-tauri/Cargo.toml --bin kivio --no-default-features
+Remove-Item Env:TAURI_CONFIG
+node scripts/probe-chat-tools.mjs --exe src-tauri/target/debug/kivio.exe --app-data "$env:APPDATA\com.zmair.kivio.test"
+```
+
+脚本先检查可执行文件的 Test 产品标识及编译身份，再启动测试。它仅接受 `com.zmair.kivio.test` 数据目录，首次运行会创建目录和所有权标记；已有目录必须带 `.kivio-stack-fixture.json` 标记，内容为 `{"kind":"kivio-stack-fixture","identifier":"com.zmair.kivio.test","version":1}`。正式版与 Dev 设置不受影响。
+
+脚本启动并关闭本次 Test 进程，经真实 IPC 验证 native `web_search` → Exa MCP、直接 MCP、两个安全工具并行、等待工具时取消后恢复、工具失败后重试。每项核对 MCP 服务端调用和持久化工具记录，纯文本回答不能通过；取消后的迟到结果也不能改写已取消消息。日志与结果保存在 Test 数据目录的 `stack-fixture` 下。`--self-test` 只检查模拟服务协议和请求发布，不启动应用。
+
+Windows Dev 构建使用仓库的 `[profile.dev] opt-level = 1`，保留调试信息与断言。仅优化依赖不能控制应用内实例化的泛型代码，见 [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides-and-generics)。不要通过环境变量将应用优化级别降回 0 后沿用本验收结果。基础优化会增加构建时间，并影响调试器逐行执行的对应关系。
+
+工具回归还要求工作线程栈保持默认 2 MiB，且 native MCP 连接入口的每个采样至少剩余 1 MiB。该断言监测已复现路径的栈余量，不代表全程峰值或所有工具的栈上界。模拟服务验证真实客户端的协议与执行路径；真实服务商、其他工具和 release 安装包需要单独验证。
+
 ## 观察 / 调试
 
 每次 probe 的会话都**保留在会话列表**里（挂在自动创建的 **「Chat Probe」项目**下，标题 `🔬 <prompt 前 60 字>`），可在 GUI 里点开看完整消息 / 工具调用 / 流式轨迹。**不隔离、不删除**。

@@ -46,6 +46,8 @@ pub async fn call_tool_once(
     arguments: serde_json::Value,
     timeout: Duration,
 ) -> Result<super::types::McpToolCallResult, String> {
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("MCP tool connecting");
     let client = McpClient::connect(client_config(server), http.clone()).await?;
     let result = client
         .call_tool(name, arguments, timeout, std::future::pending())

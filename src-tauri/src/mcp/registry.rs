@@ -817,6 +817,8 @@ pub async fn call_tool(
     skill_context: Option<&crate::skills::SkillRunContext>,
     native_ctx: Option<NativeToolContext<'_>>,
 ) -> Result<McpToolCallResult, String> {
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("tool registry entered");
     if tool.source == "native" {
         return call_native_tool(app, state, tool, arguments, native_ctx).await;
     }
@@ -1119,6 +1121,9 @@ async fn call_native_tool(
     native_ctx: Option<NativeToolContext<'_>>,
 ) -> Result<McpToolCallResult, String> {
     use super::native_registry::{find_entry, text_tool_result, NativeCallCtx, NativeToolCall};
+
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("native tool entered");
 
     let Some(entry) = find_entry(&tool.name) else {
         return Err(format!("Unknown native tool: {}", tool.name));

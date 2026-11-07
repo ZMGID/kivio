@@ -10,30 +10,33 @@ use std::path::PathBuf;
 pub const APP_IDENTIFIER: &str = env!("KIVIO_APP_IDENTIFIER");
 
 pub const fn is_dev() -> bool {
-    matches!(APP_IDENTIFIER.as_bytes(), b"com.zmair.kivio.dev")
+    matches!(
+        APP_IDENTIFIER.as_bytes(),
+        b"com.zmair.kivio.dev" | b"com.zmair.kivio.test"
+    )
 }
 
 pub fn product_name() -> &'static str {
-    if is_dev() {
-        "Kivio Dev"
-    } else {
-        "Kivio Desktop"
+    match APP_IDENTIFIER {
+        "com.zmair.kivio.dev" => "Kivio Dev",
+        "com.zmair.kivio.test" => "Kivio Test",
+        _ => "Kivio Desktop",
     }
 }
 
 pub fn user_home_name() -> &'static str {
-    if is_dev() {
-        ".kivio-dev"
-    } else {
-        ".kivio"
+    match APP_IDENTIFIER {
+        "com.zmair.kivio.dev" => ".kivio-dev",
+        "com.zmair.kivio.test" => ".kivio-test",
+        _ => ".kivio",
     }
 }
 
 pub fn oauth_service() -> &'static str {
-    if is_dev() {
-        "Kivio.Dev.ModelOAuth"
-    } else {
-        "Kivio.ModelOAuth"
+    match APP_IDENTIFIER {
+        "com.zmair.kivio.dev" => "Kivio.Dev.ModelOAuth",
+        "com.zmair.kivio.test" => "Kivio.Test.ModelOAuth",
+        _ => "Kivio.ModelOAuth",
     }
 }
 
@@ -64,6 +67,13 @@ mod tests {
                 "Kivio.Dev.ModelOAuth",
                 true,
             ),
+            "com.zmair.kivio.test" => (
+                "com.zmair.kivio.test",
+                "Kivio Test",
+                ".kivio-test",
+                "Kivio.Test.ModelOAuth",
+                true,
+            ),
             "com.zmair.kivio" => (
                 "com.zmair.kivio",
                 "Kivio Desktop",
@@ -75,6 +85,7 @@ mod tests {
         };
         assert_eq!(context.config().product_name.as_deref(), Some(name));
         assert_eq!(APP_IDENTIFIER, identifier);
+        assert_eq!(is_dev(), dev);
         assert_eq!(product_name(), name);
         assert_eq!(user_home_name(), home);
         assert_eq!(oauth_service(), service);

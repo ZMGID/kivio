@@ -15,7 +15,10 @@ fn main() {
         .as_str()
         .unwrap_or_else(|| base["identifier"].as_str().unwrap());
     assert!(
-        matches!(identifier, "com.zmair.kivio" | "com.zmair.kivio.dev"),
+        matches!(
+            identifier,
+            "com.zmair.kivio" | "com.zmair.kivio.dev" | "com.zmair.kivio.test"
+        ),
         "unsupported Kivio identity"
     );
     println!("cargo:rustc-env=KIVIO_APP_IDENTIFIER={identifier}");
