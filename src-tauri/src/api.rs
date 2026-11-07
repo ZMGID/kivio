@@ -456,6 +456,8 @@ where
     F: Fn(&str) -> Fut,
     Fut: Future<Output = Result<reqwest::Response, reqwest::Error>>,
 {
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("send_model_with_failover entered");
     send_with_failover_cancelable(
         runtime,
         label,
@@ -682,6 +684,8 @@ where
                 ModelErrorKind::Cancelled,
             ));
         }
+        #[cfg(all(debug_assertions, target_os = "windows"))]
+        crate::chat::probe::log_stack("before transport await");
         let (mut error, retry_after, reason, retryable) = match send().await {
             Ok(response) => {
                 let status = response.status();

@@ -139,928 +139,1028 @@ pub(super) async fn complete_assistant_reply(
 /// 共享实现：`arm = None` 为单模型现状（直接落盘，返回 `Ok(())` 语义不变）；
 /// `arm = Some(..)` 为多模型臂（用臂的 provider/model、自动批准工具、**不落盘**，
 /// 把产出的 assistant 消息通过 `ArmReplyOutcome.message` 返回给协调者）。
-pub(super) async fn complete_assistant_reply_inner(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    conversation: &mut Conversation,
-    title_from_first_user: Option<&str>,
-    last_user_api_content: Option<&str>,
-    last_user_image_paths: &[PathBuf],
-    active_skill_id: Option<&str>,
+pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
+    app: &'a AppHandle,
+    state: &'a State<'state, AppState>,
+    conversation: &'a mut Conversation,
+    title_from_first_user: Option<&'a str>,
+    last_user_api_content: Option<&'a str>,
+    last_user_image_paths: &'a [PathBuf],
+    active_skill_id: Option<&'a str>,
     entry: crate::chat::agent::AgentRunEntry,
-    arm: Option<&ReplyArm>,
+    arm: Option<&'a ReplyArm>,
     probe: bool,
-    resumed_jobs: Option<&[String]>,
-) -> Result<ArmReplyOutcome, String> {
-    if conversation.agent_runtime.is_external() {
-        let latest_user = conversation
-            .messages
-            .iter()
-            .rev()
-            .find(|m| m.role == "user");
-        // 虚拟文本附件（memory://）正文只存在附件记录里、不在 message.content 中：
-        // 在此重建内联正文，外部 CLI 才能看到粘贴的长文本。磁盘附件仍走
-        // file_paths → file_attachments_note 的路径说明（run.rs），不进正文。
-        let latest_user_text = latest_user
-            .map(|m| {
-                let text_attachments = text_attachments_from_attachments(&m.attachments);
-                if text_attachments.is_empty() {
-                    m.content.clone()
-                } else {
-                    compose_text_attachments_for_api(&m.content, &text_attachments)
-                }
-            })
-            .unwrap_or_default();
-        // 外部 CLI 也要带附件：图片走各协议原生块 / 降级，文件走路径说明。图片路径已由调用方
-        // 算好（last_user_image_paths）；文件路径从最后一条 user 消息现解析（best-effort）。
-        let latest_user_file_paths = latest_user
-            .map(|m| {
-                crate::chat::attachments::stored_file_paths_for_attachments(
-                    app,
-                    &conversation.id,
-                    &m.attachments,
-                )
-                .unwrap_or_default()
-            })
-            .unwrap_or_default();
-        return crate::external_agents::run_external_cli_reply(
+    resumed_jobs: Option<&'a [String]>,
+) -> impl std::future::Future<Output = Result<ArmReplyOutcome, String>> + Send + 'a + use<'a, 'state>
+{
+    Box::pin(async move {
+        #[cfg(all(debug_assertions, target_os = "windows"))]
+        crate::chat::probe::log_stack("reply entered");
+        if conversation.agent_runtime.is_external() {
+            let latest_user = conversation
+                .messages
+                .iter()
+                .rev()
+                .find(|m| m.role == "user");
+            // 虚拟文本附件（memory://）正文只存在附件记录里、不在 message.content 中：
+            // 在此重建内联正文，外部 CLI 才能看到粘贴的长文本。磁盘附件仍走
+            // file_paths → file_attachments_note 的路径说明（run.rs），不进正文。
+            let latest_user_text = latest_user
+                .map(|m| {
+                    let text_attachments = text_attachments_from_attachments(&m.attachments);
+                    if text_attachments.is_empty() {
+                        m.content.clone()
+                    } else {
+                        compose_text_attachments_for_api(&m.content, &text_attachments)
+                    }
+                })
+                .unwrap_or_default();
+            // 外部 CLI 也要带附件：图片走各协议原生块 / 降级，文件走路径说明。图片路径已由调用方
+            // 算好（last_user_image_paths）；文件路径从最后一条 user 消息现解析（best-effort）。
+            let latest_user_file_paths = latest_user
+                .map(|m| {
+                    crate::chat::attachments::stored_file_paths_for_attachments(
+                        app,
+                        &conversation.id,
+                        &m.attachments,
+                    )
+                    .unwrap_or_default()
+                })
+                .unwrap_or_default();
+            return crate::external_agents::run_external_cli_reply(
+                app,
+                state,
+                conversation,
+                title_from_first_user,
+                &latest_user_text,
+                last_user_image_paths,
+                &latest_user_file_paths,
+                active_skill_id,
+                entry,
+            )
+            .await
+            .map(|outcome| match outcome {
+                crate::external_agents::ExternalCliTurnOutcome::Completed
+                | crate::external_agents::ExternalCliTurnOutcome::Failed(_)
+                | crate::external_agents::ExternalCliTurnOutcome::Cancelled => ArmReplyOutcome {
+                    history: None,
+                    message: None,
+                    run_id: None,
+                    error: None,
+                },
+            });
+        }
+
+        if conversation.builtin_history.is_none()
+            || crate::chat::session_history::needs_report_admission(conversation)
+        {
+            *conversation = crate::chat::repository::repository(app)
+                .mutate(app, &conversation.id, |latest| {
+                    crate::chat::session_history::ensure_migrated(latest)?;
+                    crate::chat::session_history::admit_pending_reports(latest)
+                })
+                .await
+                .map_err(crate::chat::repository::repository_error)?;
+        }
+        let source_branch_id = conversation
+            .builtin_history
+            .as_ref()
+            .expect("Migrated history")
+            .active_branch_id
+            .clone();
+        let settings = state.settings_read().clone();
+        // 多模型臂用自己的 provider/model；单模型用会话级（行为不变）。
+        // 提前转成 owned，避免对 `conversation` 的长期不可变借用挡住后续的 `&mut conversation`。
+        let resolved_provider_id = arm
+            .map(|a| a.provider_id.clone())
+            .unwrap_or_else(|| conversation.provider_id.clone());
+        let resolved_model = arm
+            .map(|a| a.model.clone())
+            .unwrap_or_else(|| conversation.model.clone());
+        let provider = settings
+            .get_provider(&resolved_provider_id)
+            .ok_or_else(|| "Chat provider not found".to_string())?
+            .clone();
+        if !provider.authentication_ready() {
+            return Err(format_chat_login_required_error(&provider.name));
+        }
+        if resolved_model.trim().is_empty() {
+            return Err(chat_missing_model_error());
+        }
+
+        let last_user_idx = conversation.messages.iter().rposition(|m| m.role == "user");
+        let video_plan =
+            crate::chat::video_analysis::plan(&settings, &provider, &resolved_model, conversation)?;
+        let has_video = video_plan.has_video;
+        if has_video {
+            if model_can_generate_images_directly(&provider, &resolved_model) {
+                return Err("视频输入请选择视频理解模型，直接生图模式暂不支持视频。".into());
+            }
+        }
+        let language = crate::settings::resolve_chat_language(&settings);
+        // Validate the conversation choice against model capabilities before generating.
+        let (thinking_enabled, thinking_level) = resolve_thinking(
+            conversation.thinking_level.as_deref(),
+            settings.chat.thinking_enabled,
+            Some(&provider),
+            &resolved_model,
+        )?;
+        let retry_attempts = if settings.retry_enabled {
+            settings.retry_attempts as usize
+        } else {
+            1
+        };
+        let chat_mode = conversation.agent_runtime.is_chat();
+        // Plan/Orchestrate only apply to the full Kivio Agent runtime, not Chat.
+        let plan_mode =
+            !chat_mode && crate::chat::plan::is_plan_mode(&conversation.agent_plan_state);
+        let orchestrate_mode =
+            !chat_mode && crate::chat::plan::is_orchestrate_mode(&conversation.agent_plan_state);
+        let direct_image_model =
+            !plan_mode && model_can_generate_images_directly(&provider, &resolved_model);
+        if direct_image_model
+            && conversation
+                .goal_state
+                .as_ref()
+                .is_some_and(|goal| crate::chat::goal::is_running(goal.status))
+        {
+            return Err(
+            "Goal mode requires a tool-capable text model; direct image models are not supported"
+                .into(),
+        );
+        }
+        let run_generation = state
+            .chat_runtime()
+            .begin_reply_generation(&conversation.id)
+            .ok_or_else(|| "cancelled".to_string())?;
+        let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
+        let assistant_message_id = format!("msg_{}", Uuid::new_v4());
+        if let Some(goal) = conversation
+            .goal_state
+            .as_ref()
+            .filter(|goal| crate::chat::goal::is_running(goal.status))
+            .cloned()
+        {
+            *conversation = crate::chat::goal::claim_run(
+                app,
+                &conversation.id,
+                &goal.id,
+                goal.version,
+                &run_id,
+            )
+            .await?;
+        }
+        let recovery = arm.map(|arm| crate::chat::protocol::ChatRunRecoveryMetadata {
+            group_id: arm.group_id.clone(),
+            group_size: arm.group_size as u32,
+            arm_index: arm.arm_index as u32,
+            provider_id: arm.provider_id.clone(),
+            model: arm.model.clone(),
+        });
+        crate::chat::protocol::register_run_with_recovery(
             app,
-            state,
-            conversation,
-            title_from_first_user,
-            &latest_user_text,
-            last_user_image_paths,
-            &latest_user_file_paths,
-            active_skill_id,
-            entry,
-        )
-        .await
-        .map(|outcome| match outcome {
-            crate::external_agents::ExternalCliTurnOutcome::Completed
-            | crate::external_agents::ExternalCliTurnOutcome::Failed(_)
-            | crate::external_agents::ExternalCliTurnOutcome::Cancelled => ArmReplyOutcome {
+            &conversation.id,
+            &run_id,
+            &assistant_message_id,
+            conversation.revision,
+            recovery,
+        );
+        let mut protocol_guard =
+            crate::chat::protocol::RegisteredRunGuard::new(app, &run_id, conversation.revision);
+        // per-run 回复槽位 + 活跃 generation 守卫：本函数任意退出路径（含早返回的直接生图 /
+        // 辅助视觉分支）都会 drop 它，释放该 run 的槽位并退役其 generation。同会话多模型并发时
+        // 每条 run 各持一个守卫，互不影响。`next_chat_generation` 已登记 generation，这里仅补登
+        // run_id 槽位；run_id 由 generation + uuid 拼成，必不重复，try_new 不会返回 None。
+        let _reply_guard =
+            ChatReplyGuard::try_new(state.inner(), &conversation.id, &run_id, run_generation);
+        if direct_image_model && arm.is_some() {
+            protocol_guard.defer_terminal();
+            return Ok(ArmReplyOutcome {
+                history: None,
+                message: None,
+                run_id: Some(run_id),
+                error: Some(
+                    "多模型并行回答暂不支持直接生图模型，请在多答选择中移除该模型。".to_string(),
+                ),
+            });
+        }
+        if direct_image_model {
+            return complete_direct_image_generation_reply(
+                app,
+                state,
+                &settings,
+                &provider,
+                conversation,
+                title_from_first_user,
+                last_user_api_content,
+                last_user_image_paths,
+                active_skill_id,
+                &run_id,
+                assistant_message_id,
+                run_generation,
+                retry_attempts,
+                entry,
+            )
+            .await
+            .map(|_| ArmReplyOutcome {
                 history: None,
                 message: None,
                 run_id: None,
                 error: None,
-            },
-        });
-    }
-
-    if conversation.builtin_history.is_none()
-        || crate::chat::session_history::needs_report_admission(conversation)
-    {
-        *conversation = crate::chat::repository::repository(app)
-            .mutate(app, &conversation.id, |latest| {
-                crate::chat::session_history::ensure_migrated(latest)?;
-                crate::chat::session_history::admit_pending_reports(latest)
-            })
-            .await
-            .map_err(crate::chat::repository::repository_error)?;
-    }
-    let source_branch_id = conversation
-        .builtin_history
-        .as_ref()
-        .expect("Migrated history")
-        .active_branch_id
-        .clone();
-    let settings = state.settings_read().clone();
-    // 多模型臂用自己的 provider/model；单模型用会话级（行为不变）。
-    // 提前转成 owned，避免对 `conversation` 的长期不可变借用挡住后续的 `&mut conversation`。
-    let resolved_provider_id = arm
-        .map(|a| a.provider_id.clone())
-        .unwrap_or_else(|| conversation.provider_id.clone());
-    let resolved_model = arm
-        .map(|a| a.model.clone())
-        .unwrap_or_else(|| conversation.model.clone());
-    let provider = settings
-        .get_provider(&resolved_provider_id)
-        .ok_or_else(|| "Chat provider not found".to_string())?
-        .clone();
-    if !provider.authentication_ready() {
-        return Err(format_chat_login_required_error(&provider.name));
-    }
-    if resolved_model.trim().is_empty() {
-        return Err(chat_missing_model_error());
-    }
-
-    let last_user_idx = conversation.messages.iter().rposition(|m| m.role == "user");
-    let video_plan =
-        crate::chat::video_analysis::plan(&settings, &provider, &resolved_model, conversation)?;
-    let has_video = video_plan.has_video;
-    if has_video {
-        if model_can_generate_images_directly(&provider, &resolved_model) {
-            return Err("视频输入请选择视频理解模型，直接生图模式暂不支持视频。".into());
+            });
         }
-    }
-    let language = crate::settings::resolve_chat_language(&settings);
-    // Validate the conversation choice against model capabilities before generating.
-    let (thinking_enabled, thinking_level) = resolve_thinking(
-        conversation.thinking_level.as_deref(),
-        settings.chat.thinking_enabled,
-        Some(&provider),
-        &resolved_model,
-    )?;
-    let retry_attempts = if settings.retry_enabled {
-        settings.retry_attempts as usize
-    } else {
-        1
-    };
-    let chat_mode = conversation.agent_runtime.is_chat();
-    // Plan/Orchestrate only apply to the full Kivio Agent runtime, not Chat.
-    let plan_mode = !chat_mode && crate::chat::plan::is_plan_mode(&conversation.agent_plan_state);
-    let orchestrate_mode =
-        !chat_mode && crate::chat::plan::is_orchestrate_mode(&conversation.agent_plan_state);
-    let direct_image_model =
-        !plan_mode && model_can_generate_images_directly(&provider, &resolved_model);
-    if direct_image_model
-        && conversation
-            .goal_state
-            .as_ref()
-            .is_some_and(|goal| crate::chat::goal::is_running(goal.status))
-    {
-        return Err(
-            "Goal mode requires a tool-capable text model; direct image models are not supported"
-                .into(),
-        );
-    }
-    let run_generation = state
-        .chat_runtime()
-        .begin_reply_generation(&conversation.id)
-        .ok_or_else(|| "cancelled".to_string())?;
-    let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
-    let assistant_message_id = format!("msg_{}", Uuid::new_v4());
-    if let Some(goal) = conversation
-        .goal_state
-        .as_ref()
-        .filter(|goal| crate::chat::goal::is_running(goal.status))
-        .cloned()
-    {
-        *conversation =
-            crate::chat::goal::claim_run(app, &conversation.id, &goal.id, goal.version, &run_id)
-                .await?;
-    }
-    let recovery = arm.map(|arm| crate::chat::protocol::ChatRunRecoveryMetadata {
-        group_id: arm.group_id.clone(),
-        group_size: arm.group_size as u32,
-        arm_index: arm.arm_index as u32,
-        provider_id: arm.provider_id.clone(),
-        model: arm.model.clone(),
-    });
-    crate::chat::protocol::register_run_with_recovery(
-        app,
-        &conversation.id,
-        &run_id,
-        &assistant_message_id,
-        conversation.revision,
-        recovery,
-    );
-    let mut protocol_guard =
-        crate::chat::protocol::RegisteredRunGuard::new(app, &run_id, conversation.revision);
-    // per-run 回复槽位 + 活跃 generation 守卫：本函数任意退出路径（含早返回的直接生图 /
-    // 辅助视觉分支）都会 drop 它，释放该 run 的槽位并退役其 generation。同会话多模型并发时
-    // 每条 run 各持一个守卫，互不影响。`next_chat_generation` 已登记 generation，这里仅补登
-    // run_id 槽位；run_id 由 generation + uuid 拼成，必不重复，try_new 不会返回 None。
-    let _reply_guard =
-        ChatReplyGuard::try_new(state.inner(), &conversation.id, &run_id, run_generation);
-    if direct_image_model && arm.is_some() {
-        protocol_guard.defer_terminal();
-        return Ok(ArmReplyOutcome {
-            history: None,
-            message: None,
-            run_id: Some(run_id),
-            error: Some(
-                "多模型并行回答暂不支持直接生图模型，请在多答选择中移除该模型。".to_string(),
-            ),
-        });
-    }
-    if direct_image_model {
-        return complete_direct_image_generation_reply(
-            app,
-            state,
+        let session = session_model_for_conversation(conversation);
+        let auxiliary_vision_model = auxiliary_vision_model_for_images(
             &settings,
-            &provider,
-            conversation,
-            title_from_first_user,
-            last_user_api_content,
+            Some(&provider),
+            &resolved_model,
             last_user_image_paths,
-            active_skill_id,
-            &run_id,
-            assistant_message_id,
-            run_generation,
-            retry_attempts,
-            entry,
-        )
-        .await
-        .map(|_| ArmReplyOutcome {
-            history: None,
-            message: None,
-            run_id: None,
-            error: None,
-        });
-    }
-    let session = session_model_for_conversation(conversation);
-    let auxiliary_vision_model = auxiliary_vision_model_for_images(
-        &settings,
-        Some(&provider),
-        &resolved_model,
-        last_user_image_paths,
-        Some(session),
-    );
-    let mut auxiliary_tool_records = Vec::new();
-    let auxiliary_vision_result = if let Some(auxiliary_vision_model) = auxiliary_vision_model {
-        let mut record = auxiliary_vision_tool_record(
-            &settings,
-            &auxiliary_vision_model,
-            last_user_image_paths.len(),
+            Some(session),
         );
-        let started = Instant::now();
-        emit_chat_stream_delta(
-            app,
-            &run_id,
-            "",
-            None,
-            Some(&tool_segment_for_record(&record, 100, None)),
-        );
-        emit_chat_tool_record(app, &run_id, &record);
-        let analysis = tokio::select! {
-            result = analyze_chat_images_with_auxiliary_model(
-                state,
+        let mut auxiliary_tool_records = Vec::new();
+        let auxiliary_vision_result = if let Some(auxiliary_vision_model) = auxiliary_vision_model {
+            let mut record = auxiliary_vision_tool_record(
                 &settings,
                 &auxiliary_vision_model,
-                &conversation.id,
-                &assistant_message_id,
-                last_user_api_content,
-                last_user_image_paths,
-                retry_attempts,
-                &language,
-            ) => result,
-            _ = wait_for_chat_cancel(state.inner(), &conversation.id, run_generation) => {
-                finish_auxiliary_vision_tool_record(
-                    &mut record,
-                    ToolCallStatus::Cancelled,
-                    started,
-                    None,
-                    Some("Mixer vision analysis cancelled".to_string()),
-                );
-                emit_chat_tool_record(app, &run_id, &record);
-                auxiliary_tool_records.push(record);
-                if arm.is_some() {
-                    protocol_guard.defer_terminal();
-                    return Ok(ArmReplyOutcome {
-                history: None,
-                        message: None,
-                        run_id: Some(run_id),
-                        error: Some("cancelled".to_string()),
-                    });
+                last_user_image_paths.len(),
+            );
+            let started = Instant::now();
+            emit_chat_stream_delta(
+                app,
+                &run_id,
+                "",
+                None,
+                Some(&tool_segment_for_record(&record, 100, None)),
+            );
+            emit_chat_tool_record(app, &run_id, &record);
+            let analysis = tokio::select! {
+                result = analyze_chat_images_with_auxiliary_model(
+                    state,
+                    &settings,
+                    &auxiliary_vision_model,
+                    &conversation.id,
+                    &assistant_message_id,
+                    last_user_api_content,
+                    last_user_image_paths,
+                    retry_attempts,
+                    &language,
+                ) => result,
+                _ = wait_for_chat_cancel(state.inner(), &conversation.id, run_generation) => {
+                    finish_auxiliary_vision_tool_record(
+                        &mut record,
+                        ToolCallStatus::Cancelled,
+                        started,
+                        None,
+                        Some("Mixer vision analysis cancelled".to_string()),
+                    );
+                    emit_chat_tool_record(app, &run_id, &record);
+                    auxiliary_tool_records.push(record);
+                    if arm.is_some() {
+                        protocol_guard.defer_terminal();
+                        return Ok(ArmReplyOutcome {
+                    history: None,
+                            message: None,
+                            run_id: Some(run_id),
+                            error: Some("cancelled".to_string()),
+                        });
+                    }
+                    crate::chat::protocol::finish_run(
+                        app,
+                        &run_id,
+                        "cancelled",
+                        "",
+                        conversation.revision,
+                    );
+                    return Err("cancelled".to_string());
                 }
-                crate::chat::protocol::finish_run(
+            };
+            match analysis {
+                Ok(result) => {
+                    finish_auxiliary_vision_tool_record(
+                        &mut record,
+                        ToolCallStatus::Success,
+                        started,
+                        Some(truncate_chars(result.content.trim(), 1000)),
+                        None,
+                    );
+                    emit_chat_tool_record(app, &run_id, &record);
+                    auxiliary_tool_records.push(record);
+                    Some(result)
+                }
+                Err(err) => {
+                    finish_auxiliary_vision_tool_record(
+                        &mut record,
+                        ToolCallStatus::Error,
+                        started,
+                        None,
+                        Some(err.clone()),
+                    );
+                    emit_chat_tool_record(app, &run_id, &record);
+                    auxiliary_tool_records.push(record);
+                    if arm.is_some() {
+                        protocol_guard.defer_terminal();
+                        return Ok(ArmReplyOutcome {
+                            history: None,
+                            message: None,
+                            run_id: Some(run_id),
+                            error: Some(err),
+                        });
+                    }
+                    return Err(err);
+                }
+            }
+        } else {
+            None
+        };
+        let empty_image_paths: &[PathBuf] = &[];
+        let main_image_paths = if auxiliary_vision_result.is_some() {
+            empty_image_paths
+        } else {
+            last_user_image_paths
+        };
+        let skill_cwd = crate::chat::storage::resolve_conversation_working_directory(
+            app,
+            conversation,
+            &settings.chat_tools.native_tools.working_directory,
+        )
+        .ok();
+        let resources = state
+            .chat_runtime()
+            .resource_catalog(
+                app,
+                &conversation.id,
+                &settings.chat_tools.skill_scan_paths,
+                skill_cwd.as_deref(),
+                false,
+            )
+            .await?;
+        let skill_registry = resources.skills.clone();
+        let mut effective_chat_tools = settings.chat_tools.clone();
+        // Read the stored text, before attachment/vision augmentation, so those
+        // documents never become slash arguments. This also covers edited retries.
+        let user_content = conversation
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.as_str())
+            .unwrap_or_default();
+        let requested_skill = active_skill_id.or(conversation.active_skill_id.as_deref());
+        let mut selected: Vec<String> = if conversation.agent_runtime.is_chat() {
+            Vec::new()
+        } else {
+            crate::chat::slash_commands::command_ranges(user_content)
+                .into_iter()
+                .filter_map(|range| skill_registry.find_by_trigger(&user_content[range]))
+                .map(|record| record.meta.id.clone())
+                .collect()
+        };
+        if let Some(record) = requested_skill.and_then(|id| skill_registry.find(id)) {
+            selected.push(record.meta.id.clone());
+        }
+        selected.retain(|id| {
+            agent_prepare::skill_allowed_for_conversation(
+                &effective_chat_tools,
+                conversation.assistant_snapshot.as_ref(),
+                id,
+            )
+        });
+        selected.sort();
+        selected.dedup();
+        let request_registry = if selected.is_empty() {
+            skill_registry.clone()
+        } else {
+            let catalog = skill_registry.clone();
+            std::sync::Arc::new(
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::skills::read_selected(&catalog, &selected)
+                })
+                .await
+                .map_err(|e| e.to_string())??,
+            )
+        };
+        let (skill_id, active_skill_detail) = resolve_request_skill(
+            &request_registry,
+            &mut effective_chat_tools,
+            conversation.assistant_snapshot.as_ref(),
+            if conversation.agent_runtime.is_chat() {
+                ""
+            } else {
+                user_content
+            },
+            active_skill_id.or(conversation.active_skill_id.as_deref()),
+        );
+        if skill_id.is_none() && conversation.active_skill_id.is_some() {
+            conversation.active_skill_id = None;
+        }
+        if probe {
+            // Explicitly requested headless probes have no GUI approval channel.
+            // Ordinary multi-answer arms retain the user's policy; the execution owner blocks
+            // operations requiring interactive approval instead of silently granting them.
+            effective_chat_tools.approval_policy = "auto".to_string();
+        }
+        let (memory_prompt, memory_warning) = chat_memory_prompt_for_request(app, &settings);
+        if let Some(warning) = memory_warning.as_ref() {
+            conversation.context_state.warning = Some(warning.clone());
+        }
+        let is_brain = crate::chat::voice_orchestrator::is_brain_conversation(conversation);
+        let tools_capable = agent_prepare::chat_tools_capable(
+            &effective_chat_tools,
+            settings.chat_memory.enabled,
+            crate::settings::chat_image_generation_enabled_for_session(
+                &settings,
+                Some(session_model_for_conversation(conversation)),
+            ),
+        ) || video_plan.model.is_some();
+        let tool_list = await_chat_tool_discovery(
+            state.inner(),
+            &conversation.id,
+            run_generation,
+            list_tools_for_chat(
+                app,
+                state.inner(),
+                &settings,
+                Some(session_model_for_conversation(conversation)),
+                allowed_mcp_server_ids(conversation, &settings),
+            ),
+        )
+        .await;
+        let tool_list = match tool_list {
+            Ok(tools) => tools,
+            Err(error) => {
+                return finish_reply_failure(
                     app,
+                    conversation,
+                    &assistant_message_id,
                     &run_id,
-                    "cancelled",
-                    "",
-                    conversation.revision,
-                );
-                return Err("cancelled".to_string());
+                    arm.is_some(),
+                    &mut protocol_guard,
+                    error,
+                )
+                .await;
             }
         };
-        match analysis {
-            Ok(result) => {
-                finish_auxiliary_vision_tool_record(
-                    &mut record,
-                    ToolCallStatus::Success,
-                    started,
-                    Some(truncate_chars(result.content.trim(), 1000)),
-                    None,
-                );
-                emit_chat_tool_record(app, &run_id, &record);
-                auxiliary_tool_records.push(record);
-                Some(result)
+        let unavailable_mcp_servers = tool_list.unavailable_mcp_servers;
+        let mut tools = tool_list.tools;
+        if video_plan.model.is_some() {
+            tools.push(crate::chat::video_analysis::tool_definition());
+        }
+        if !is_brain {
+            agent_prepare::apply_assistant_mcp_restrictions(
+                &mut tools,
+                conversation.assistant_snapshot.as_ref(),
+            );
+        }
+        let builder_mode = is_builder_conversation(conversation);
+        if builder_mode {
+            // 搭建会话只暴露 save_assistant,屏蔽文件/命令/MCP/技能等,保持聚焦。
+            tools.clear();
+            tools.push(crate::mcp::types::native_save_assistant_tool());
+        }
+        apply_inline_code_request_tool_filter(&mut tools, last_user_api_content);
+        let blocked_tool_calls = if chat_mode {
+            apply_chat_mode_tool_filter(&mut tools, true, &settings.chat.chat_mode)
+        } else {
+            apply_agent_plan_tool_filter(&mut tools, plan_mode)
+        };
+        // 会话级三态联网搜索（任务 07-23）：按有效模式收敛第三方 `search_web` 的暴露；
+        // 内置搜索走 `config.web_search_mode` → 各适配器请求体注入，不在工具列表里。
+        // builder 会话已清空工具（只留 save_assistant），不参与搜索门控。
+        let web_search_mode =
+            crate::chat::types::WebSearchMode::resolve(conversation.web_search_mode, &settings)
+                .for_provider(&provider);
+        if !builder_mode {
+            apply_web_search_mode_tool_filter(&mut tools, web_search_mode, &settings);
+        }
+        append_voice_orchestration_tools(&mut tools, is_brain);
+        crate::chat::plan_document::append_tools(
+            &mut tools,
+            plan_mode && !is_builder_conversation(conversation),
+        );
+        let user_tools_available = (tools_capable || is_brain) && !tools.is_empty();
+        agent_prepare::apply_skill_fallback_when_tools_unavailable(
+            &mut effective_chat_tools,
+            skill_id.as_deref(),
+            user_tools_available,
+        );
+        let ask_user_tools_available = append_agent_ask_user_tools(&mut tools);
+        if !chat_mode && !plan_mode {
+            append_agent_todo_tools(&mut tools);
+        }
+        let goal_tools_available = if !chat_mode && !plan_mode && !orchestrate_mode && arm.is_none()
+        {
+            append_goal_tools(&mut tools, conversation.goal_state.as_ref())
+        } else {
+            false
+        };
+        if settings.chat_tools.native_tools.scheduled_tasks
+            && !plan_mode
+            && !builder_mode
+            && arm.is_none()
+        {
+            crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
+        }
+        let project_prompt_context = project_prompt_context_for(app, conversation);
+        append_main_subagent_tools(
+            &mut tools,
+            &settings,
+            &resources.agents,
+            chat_mode,
+            builder_mode,
+        );
+        let runtime_tools_available = !tools.is_empty();
+        let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
+        let task_available = tools.iter().any(|tool| {
+            tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
+        });
+        let agent_ask_user_prompt = crate::chat::ask_user::format_prompt(ask_user_tools_available);
+        let runtime_prompts = agent_prepare::resolve_runtime_prompt_sources(
+            chat_mode,
+            settings.chat.system_prompt.as_str(),
+            settings.chat.chat_mode.system_prompt.as_str(),
+            &conversation.agent_plan_state,
+            task_available,
+        );
+        // Default workbench surfaced to the model. It is an ergonomic default, not
+        // a sandbox; explicit user paths continue to take precedence.
+        let workbench_dir = crate::chat::storage::resolve_conversation_working_directory(
+            app,
+            conversation,
+            &settings.chat_tools.native_tools.working_directory,
+        )
+        .ok()
+        .map(|path| path.display().to_string());
+        // 集的系统提示词：按对话 set_id 实时取（不冻结），随集编辑立即对集内对话生效。
+        let set_system_prompt = live_set_system_prompt(app, conversation);
+        let knowledge_base_prompt = crate::chat::knowledge_base::mount_system_prompt(
+            app,
+            &conversation.knowledge_base_ids,
+            conversation.force_knowledge_search,
+        );
+        let mut prepared_prompt = agent_prepare::build_chat_prompt(
+            &language,
+            !main_image_paths.is_empty(),
+            thinking_enabled,
+            &skill_registry,
+            &effective_chat_tools,
+            runtime_tools_available,
+            &available_builtin_tools,
+            skill_id.as_deref(),
+            active_skill_detail.as_ref(),
+            conversation.assistant_snapshot.as_ref(),
+            set_system_prompt.as_deref(),
+            runtime_prompts.custom_system_prompt.as_str(),
+            runtime_prompts.is_chat_runtime,
+            memory_prompt.as_deref(),
+            runtime_prompts.agent_plan_prompt.as_deref(),
+            Some(&agent_ask_user_prompt),
+            project_prompt_context.as_ref(),
+            workbench_dir.as_deref(),
+            knowledge_base_prompt.as_deref(),
+            &conversation.additional_directories,
+        );
+        let mut conversation_context = String::new();
+        if !settings.chat.default_language.trim().is_empty() {
+            conversation_context.push_str(&format!(
+            "\n\nResponse language: answer in {} unless the user explicitly asks for another language; this setting overrides matching the user's language.",
+            crate::utils::language_name(&language)
+        ));
+        }
+        // Study sources are reference material, not set instructions.
+        if let Some(source) = crate::reading::chat::source_prompt(app, &conversation.id)? {
+            conversation_context.push_str(&format!("\n\n{source}"));
+        }
+        if let Some(note) =
+            crate::mcp::registry::unavailable_mcp_servers_note(&unavailable_mcp_servers)
+        {
+            conversation_context.push_str(&format!("\n\n{note}"));
+        }
+        if let Some(jobs) = resumed_jobs {
+            conversation_context.push_str(
+                "\n\nThe previous process ended mid-turn. Continue the original user request from \
+             the recorded tool results. Do not repeat recorded tool effects. If an effect has no \
+             saved result, verify its state before attempting it again.",
+            );
+            if !jobs.is_empty() {
+                conversation_context.push_str(&format!(
+                " Restored subagent jobs: {}. Use wait for those assignments rather than dispatching them again.",
+                jobs.join(", ")
+            ));
             }
-            Err(err) => {
-                finish_auxiliary_vision_tool_record(
-                    &mut record,
-                    ToolCallStatus::Error,
-                    started,
-                    None,
-                    Some(err.clone()),
+        }
+
+        prepared_prompt.context.push_str(&conversation_context);
+        // Goal tools are absent from the provider-tools fallback, so only the tool run gets this.
+        if let Some(goal_prompt) =
+            crate::chat::goal::format_prompt(conversation.goal_state.as_ref())
+                .filter(|_| goal_tools_available)
+        {
+            prepared_prompt
+                .context
+                .push_str(&format!("\n\n{goal_prompt}"));
+        }
+
+        let mut history = crate::chat::session_history::history(conversation)?;
+        let source_anchor = history.active_leaf();
+        history.set_system_prompt(&prepared_prompt.system);
+        if let Some(result) = &auxiliary_vision_result {
+            history.push(crate::chat::agent::history::RuntimeMessage::text(
+                crate::chat::model::ModelRole::User,
+                user_content_with_auxiliary_vision_result(None, result, &language),
+            ));
+        }
+        let current_user_id = last_user_idx.map(|index| conversation.messages[index].id.clone());
+        let request_projection = crate::chat::context_policy::MainRequestProjection {
+            app: app.clone(),
+            include_video: video_plan.send_video,
+            image_omission: auxiliary_vision_result
+                .as_ref()
+                .and(current_user_id.clone()),
+            user_message_id: current_user_id,
+            video_reports: video_plan.reports.clone(),
+            language: language.clone(),
+        };
+        let mut fallback_chat_tools = effective_chat_tools.clone();
+        if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
+            fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
+        }
+        let fallback_plan_prompt = (!chat_mode)
+            .then(|| crate::chat::plan::format_prompt(&conversation.agent_plan_state, false));
+        let mut provider_tools_fallback_prompt = agent_prepare::build_chat_prompt(
+            &language,
+            !main_image_paths.is_empty(),
+            thinking_enabled,
+            &skill_registry,
+            &fallback_chat_tools,
+            false,
+            &[],
+            skill_id.as_deref(),
+            active_skill_detail.as_ref(),
+            conversation.assistant_snapshot.as_ref(),
+            set_system_prompt.as_deref(),
+            runtime_prompts.custom_system_prompt.as_str(),
+            runtime_prompts.is_chat_runtime,
+            memory_prompt.as_deref(),
+            fallback_plan_prompt.as_deref(),
+            Some(&crate::chat::ask_user::format_prompt(false)),
+            project_prompt_context.as_ref(),
+            workbench_dir.as_deref(),
+            knowledge_base_prompt.as_deref(),
+            &conversation.additional_directories,
+        );
+
+        provider_tools_fallback_prompt
+            .context
+            .push_str(&conversation_context);
+
+        let chat_host = ChatAgentHost {
+            source_anchor,
+            source_branch_id: source_branch_id.clone(),
+            workflow_hooks: if chat_mode {
+                Default::default()
+            } else {
+                let mut runtime = crate::plugins::packages::hook_runtime(
+                    &resources.hooks,
+                    workbench_dir
+                        .as_deref()
+                        .map(PathBuf::from)
+                        .unwrap_or_else(std::env::temp_dir),
+                    "main".into(),
+                    last_user_idx
+                        .and_then(|index| conversation.messages.get(index))
+                        .map(|m| m.content.clone()),
                 );
-                emit_chat_tool_record(app, &run_id, &record);
-                auxiliary_tool_records.push(record);
+                if resumed_jobs.is_some() {
+                    runtime
+                        .hooks
+                        .retain(|hook| hook.event != "UserPromptSubmit");
+                }
+                runtime
+            },
+            app: app.clone(),
+            state: state.inner(),
+            run_id: run_id.clone(),
+            // 多模型臂不直接落盘（最终由协调者统一 upsert + save），因此抑制 loop 的
+            // mid-run 部分快照写盘，避免 N 条并发 run 同写 conversations/{id}.json 的竞态。
+            suppress_partial_persist: arm.is_some(),
+            interactive_approval: arm.is_none(),
+            context_owner: arm.is_none()
+                || (resolved_provider_id == conversation.provider_id
+                    && resolved_model == conversation.model),
+            // 生命周期 Hooks：无启用条目时为 None，loop 完全不感知。先用 `any_enabled`
+            // 短路，没配 Hook 时连下面这几个 id / model 字符串都不分配（验收 6）。
+            hooks: crate::chat::hooks::HookDispatcher::any_enabled(&settings.chat_tools.hooks)
+                .then(|| {
+                    crate::chat::hooks::HookDispatcher::new(
+                        app.clone(),
+                        &settings.chat_tools.hooks,
+                        conversation.id.clone(),
+                        run_id.clone(),
+                        assistant_message_id.clone(),
+                        workbench_dir
+                            .as_deref()
+                            .map(PathBuf::from)
+                            .unwrap_or_else(std::env::temp_dir),
+                        format!("{}:{}", provider.id, resolved_model),
+                    )
+                })
+                .flatten(),
+        };
+        // probe（无头测试通道，仅 debug）：换用自动放行审批/consent/ask_user 的 host，
+        // 否则模型调用敏感工具或 ask_user 会 await GUI 应答而永久挂起。
+        #[cfg(debug_assertions)]
+        let probe_host = ProbeAgentHost {
+            run_id: run_id.clone(),
+            app: app.clone(),
+            state: state.inner(),
+        };
+        let host: &dyn crate::chat::tool_runtime::ApplicationHost = {
+            #[cfg(debug_assertions)]
+            {
+                if probe {
+                    &probe_host
+                } else {
+                    &chat_host
+                }
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                let _ = probe;
+                &chat_host
+            }
+        };
+        let executor = RegistryToolExecutor {
+            app: app.clone(),
+            state: state.inner(),
+            skills: crate::skills::for_run(
+                skill_registry.clone(),
+                conversation.assistant_snapshot.as_ref(),
+            ),
+            video_analysis: tokio::sync::Mutex::new(crate::chat::video_analysis::VideoTool::new(
+                conversation.clone(),
+                video_plan,
+            )),
+        };
+        let max_output_tokens = chat_max_output_tokens_on_wire(
+            Some(&provider),
+            &resolved_model,
+            settings.chat.max_output_tokens,
+        );
+        // 真实用量锚点：run 首次压缩检查前，用上一轮落盘 usage 把上下文占用锚定到 provider 实报值
+        // （对齐 pi/opencode 的 ground-truth 口径，避免字符估算低估导致压缩过晚/超窗）。
+        let (initial_anchor_total_tokens, initial_anchor_trailing_estimate) =
+            resolve_usage_anchor(conversation, Some(&provider));
+        state.chat_runtime().seed_context_measurement(
+            &conversation.id,
+            conversation.context_state.lifecycle_id,
+            conversation.context_state.measurement_seq,
+            conversation.context_state.request_measurement.as_ref(),
+        );
+        let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
+        let control = crate::chat::runtime_state::ChatRunControl::new(
+            state.chat_runtime(),
+            &conversation.id,
+            run_generation,
+        );
+        let handle = crate::chat::agent::control::AgentRunHandle::new(
+            crate::chat::agent::events::AgentRunIdentity {
+                conversation_id: &conversation.id,
+                run_id: &run_id,
+                message_id: &assistant_message_id,
+                generation: run_generation,
+            },
+            &control,
+        );
+        let events: &dyn crate::chat::agent::events::AgentEventSink = {
+            #[cfg(debug_assertions)]
+            {
+                if probe {
+                    &probe_host
+                } else {
+                    &chat_host
+                }
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                &chat_host
+            }
+        };
+        #[cfg(all(debug_assertions, target_os = "windows"))]
+        crate::chat::probe::log_stack("starting model session");
+        let result = crate::chat::session_policy::run_session(
+            crate::chat::session_policy::ApplicationRunConfig {
+                state: state.inner(),
+                provider_runtime: None,
+                todo_state: conversation.agent_todo_state.clone(),
+                conversation_id: conversation.id.clone(),
+                tool_conversation_id: conversation.id.clone(),
+                depth: 0,
+                interactive_host: !probe,
+                run_id: run_id.clone(),
+                message_id: assistant_message_id.clone(),
+                generation: run_generation,
+                provider,
+                model: resolved_model.clone(),
+                history,
+                runtime_context: Some(prepared_prompt.context),
+                request_projection: Some(request_projection),
+                tools,
+                blocked_tool_calls,
+                plan_state: if chat_mode {
+                    Default::default()
+                } else {
+                    conversation.agent_plan_state.clone()
+                },
+                mcp_tool_ids,
+                mcp_server_ids,
+                settings: settings.clone(),
+                effective_chat_tools,
+                language,
+                thinking_enabled,
+                thinking_level,
+                web_search_mode,
+                max_output_tokens,
+                retry_attempts,
+                provider_tools_fallback_prompt,
+                initial_cache_usage: super::context::conversation_cache_usage(
+                    conversation,
+                    &settings,
+                ),
+                initial_anchor_total_tokens,
+                initial_anchor_trailing_estimate,
+            },
+            host,
+            &executor,
+            events,
+            handle,
+        )
+        .await;
+        let (mut result, run_error) = match result {
+            Ok(result) => (result, None),
+            Err(crate::chat::session_policy::ApplicationRunError::Failed { cause, partial }) => {
+                (*partial, Some(cause.to_string()))
+            }
+            Err(error) => {
+                return finish_reply_failure(
+                    app,
+                    conversation,
+                    &assistant_message_id,
+                    &run_id,
+                    arm.is_some(),
+                    &mut protocol_guard,
+                    error.to_string(),
+                )
+                .await;
+            }
+        };
+
+        if let Some(error) = &run_error {
+            result
+                .degraded
+                .get_or_insert_with(|| crate::chat::recovery_policy::DegradedAnswer {
+                    kind: "unknown".into(),
+                    reason: error.clone(),
+                    detail: None,
+                    tool_summaries: Vec::new(),
+                    text: error.clone(),
+                });
+        }
+
+        let refreshed = crate::chat::repository::repository(app)
+            .get(app, &conversation.id)
+            .await
+            .map_err(crate::chat::repository::repository_error);
+        *conversation = match refreshed {
+            Ok(conversation) => conversation,
+            Err(error) => {
                 if arm.is_some() {
                     protocol_guard.defer_terminal();
                     return Ok(ArmReplyOutcome {
                         history: None,
                         message: None,
                         run_id: Some(run_id),
-                        error: Some(err),
+                        error: Some(error),
                     });
                 }
-                return Err(err);
+                return Err(error);
             }
-        }
-    } else {
-        None
-    };
-    let empty_image_paths: &[PathBuf] = &[];
-    let main_image_paths = if auxiliary_vision_result.is_some() {
-        empty_image_paths
-    } else {
-        last_user_image_paths
-    };
-    let skill_cwd = crate::chat::storage::resolve_conversation_working_directory(
-        app,
-        conversation,
-        &settings.chat_tools.native_tools.working_directory,
-    )
-    .ok();
-    let resources = state
-        .chat_runtime()
-        .resource_catalog(
-            app,
-            &conversation.id,
-            &settings.chat_tools.skill_scan_paths,
-            skill_cwd.as_deref(),
-            false,
-        )
-        .await?;
-    let skill_registry = resources.skills.clone();
-    let mut effective_chat_tools = settings.chat_tools.clone();
-    // Read the stored text, before attachment/vision augmentation, so those
-    // documents never become slash arguments. This also covers edited retries.
-    let user_content = conversation
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "user")
-        .map(|message| message.content.as_str())
-        .unwrap_or_default();
-    let requested_skill = active_skill_id.or(conversation.active_skill_id.as_deref());
-    let mut selected: Vec<String> = if conversation.agent_runtime.is_chat() {
-        Vec::new()
-    } else {
-        crate::chat::slash_commands::command_ranges(user_content)
-            .into_iter()
-            .filter_map(|range| skill_registry.find_by_trigger(&user_content[range]))
-            .map(|record| record.meta.id.clone())
-            .collect()
-    };
-    if let Some(record) = requested_skill.and_then(|id| skill_registry.find(id)) {
-        selected.push(record.meta.id.clone());
-    }
-    selected.retain(|id| {
-        agent_prepare::skill_allowed_for_conversation(
-            &effective_chat_tools,
-            conversation.assistant_snapshot.as_ref(),
-            id,
-        )
-    });
-    selected.sort();
-    selected.dedup();
-    let request_registry = if selected.is_empty() {
-        skill_registry.clone()
-    } else {
-        let catalog = skill_registry.clone();
-        std::sync::Arc::new(
-            tauri::async_runtime::spawn_blocking(move || {
-                crate::skills::read_selected(&catalog, &selected)
-            })
-            .await
-            .map_err(|e| e.to_string())??,
-        )
-    };
-    let (skill_id, active_skill_detail) = resolve_request_skill(
-        &request_registry,
-        &mut effective_chat_tools,
-        conversation.assistant_snapshot.as_ref(),
-        if conversation.agent_runtime.is_chat() {
-            ""
+        };
+        // A saved document, not the wording of the final response, identifies a plan.
+        let message_plan = if plan_mode
+            && result.tool_records.iter().any(|tool| {
+                tool.name == "save_plan"
+                    && tool.status == crate::chat::agent::content::AgentToolStatus::Success
+            }) {
+            let latest = crate::chat::storage::load_conversation(app, &conversation.id)?;
+            (crate::chat::plan::is_plan_mode(&latest.agent_plan_state)
+                && latest.agent_plan_state.document.is_some())
+            .then(|| latest.agent_plan_state.clone())
         } else {
-            user_content
-        },
-        active_skill_id.or(conversation.active_skill_id.as_deref()),
-    );
-    if skill_id.is_none() && conversation.active_skill_id.is_some() {
-        conversation.active_skill_id = None;
-    }
-    if probe {
-        // Explicitly requested headless probes have no GUI approval channel.
-        // Ordinary multi-answer arms retain the user's policy; the execution owner blocks
-        // operations requiring interactive approval instead of silently granting them.
-        effective_chat_tools.approval_policy = "auto".to_string();
-    }
-    let (memory_prompt, memory_warning) = chat_memory_prompt_for_request(app, &settings);
-    if let Some(warning) = memory_warning.as_ref() {
-        conversation.context_state.warning = Some(warning.clone());
-    }
-    let is_brain = crate::chat::voice_orchestrator::is_brain_conversation(conversation);
-    let tools_capable = agent_prepare::chat_tools_capable(
-        &effective_chat_tools,
-        settings.chat_memory.enabled,
-        crate::settings::chat_image_generation_enabled_for_session(
-            &settings,
-            Some(session_model_for_conversation(conversation)),
-        ),
-    ) || video_plan.model.is_some();
-    let tool_list = await_chat_tool_discovery(
-        state.inner(),
-        &conversation.id,
-        run_generation,
-        list_tools_for_chat(
-            app,
-            state.inner(),
-            &settings,
-            Some(session_model_for_conversation(conversation)),
-            allowed_mcp_server_ids(conversation, &settings),
-        ),
-    )
-    .await;
-    let tool_list = match tool_list {
-        Ok(tools) => tools,
-        Err(error) => {
-            return finish_reply_failure(
-                app,
-                conversation,
-                &assistant_message_id,
-                &run_id,
-                arm.is_some(),
-                &mut protocol_guard,
-                error,
-            )
-            .await;
-        }
-    };
-    let unavailable_mcp_servers = tool_list.unavailable_mcp_servers;
-    let mut tools = tool_list.tools;
-    if video_plan.model.is_some() {
-        tools.push(crate::chat::video_analysis::tool_definition());
-    }
-    if !is_brain {
-        agent_prepare::apply_assistant_mcp_restrictions(
-            &mut tools,
-            conversation.assistant_snapshot.as_ref(),
+            None
+        };
+        let (projected_tools, projected_blocks) = crate::chat::agent_presentation::project_snapshot(
+            &result.tool_records,
+            &result.segments,
+            Some(&run_id),
         );
-    }
-    let builder_mode = is_builder_conversation(conversation);
-    if builder_mode {
-        // 搭建会话只暴露 save_assistant,屏蔽文件/命令/MCP/技能等,保持聚焦。
-        tools.clear();
-        tools.push(crate::mcp::types::native_save_assistant_tool());
-    }
-    apply_inline_code_request_tool_filter(&mut tools, last_user_api_content);
-    let blocked_tool_calls = if chat_mode {
-        apply_chat_mode_tool_filter(&mut tools, true, &settings.chat.chat_mode)
-    } else {
-        apply_agent_plan_tool_filter(&mut tools, plan_mode)
-    };
-    // 会话级三态联网搜索（任务 07-23）：按有效模式收敛第三方 `search_web` 的暴露；
-    // 内置搜索走 `config.web_search_mode` → 各适配器请求体注入，不在工具列表里。
-    // builder 会话已清空工具（只留 save_assistant），不参与搜索门控。
-    let web_search_mode =
-        crate::chat::types::WebSearchMode::resolve(conversation.web_search_mode, &settings)
-            .for_provider(&provider);
-    if !builder_mode {
-        apply_web_search_mode_tool_filter(&mut tools, web_search_mode, &settings);
-    }
-    append_voice_orchestration_tools(&mut tools, is_brain);
-    crate::chat::plan_document::append_tools(
-        &mut tools,
-        plan_mode && !is_builder_conversation(conversation),
-    );
-    let user_tools_available = (tools_capable || is_brain) && !tools.is_empty();
-    agent_prepare::apply_skill_fallback_when_tools_unavailable(
-        &mut effective_chat_tools,
-        skill_id.as_deref(),
-        user_tools_available,
-    );
-    let ask_user_tools_available = append_agent_ask_user_tools(&mut tools);
-    if !chat_mode && !plan_mode {
-        append_agent_todo_tools(&mut tools);
-    }
-    let goal_tools_available = if !chat_mode && !plan_mode && !orchestrate_mode && arm.is_none() {
-        append_goal_tools(&mut tools, conversation.goal_state.as_ref())
-    } else {
-        false
-    };
-    if settings.chat_tools.native_tools.scheduled_tasks
-        && !plan_mode
-        && !builder_mode
-        && arm.is_none()
-    {
-        crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
-    }
-    let project_prompt_context = project_prompt_context_for(app, conversation);
-    append_main_subagent_tools(
-        &mut tools,
-        &settings,
-        &resources.agents,
-        chat_mode,
-        builder_mode,
-    );
-    let runtime_tools_available = !tools.is_empty();
-    let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
-    let task_available = tools
-        .iter()
-        .any(|tool| tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME);
-    let agent_ask_user_prompt = crate::chat::ask_user::format_prompt(ask_user_tools_available);
-    let runtime_prompts = agent_prepare::resolve_runtime_prompt_sources(
-        chat_mode,
-        settings.chat.system_prompt.as_str(),
-        settings.chat.chat_mode.system_prompt.as_str(),
-        &conversation.agent_plan_state,
-        task_available,
-    );
-    // Default workbench surfaced to the model. It is an ergonomic default, not
-    // a sandbox; explicit user paths continue to take precedence.
-    let workbench_dir = crate::chat::storage::resolve_conversation_working_directory(
-        app,
-        conversation,
-        &settings.chat_tools.native_tools.working_directory,
-    )
-    .ok()
-    .map(|path| path.display().to_string());
-    // 集的系统提示词：按对话 set_id 实时取（不冻结），随集编辑立即对集内对话生效。
-    let set_system_prompt = live_set_system_prompt(app, conversation);
-    let knowledge_base_prompt = crate::chat::knowledge_base::mount_system_prompt(
-        app,
-        &conversation.knowledge_base_ids,
-        conversation.force_knowledge_search,
-    );
-    let mut prepared_prompt = agent_prepare::build_chat_prompt(
-        &language,
-        !main_image_paths.is_empty(),
-        thinking_enabled,
-        &skill_registry,
-        &effective_chat_tools,
-        runtime_tools_available,
-        &available_builtin_tools,
-        skill_id.as_deref(),
-        active_skill_detail.as_ref(),
-        conversation.assistant_snapshot.as_ref(),
-        set_system_prompt.as_deref(),
-        runtime_prompts.custom_system_prompt.as_str(),
-        runtime_prompts.is_chat_runtime,
-        memory_prompt.as_deref(),
-        runtime_prompts.agent_plan_prompt.as_deref(),
-        Some(&agent_ask_user_prompt),
-        project_prompt_context.as_ref(),
-        workbench_dir.as_deref(),
-        knowledge_base_prompt.as_deref(),
-        &conversation.additional_directories,
-    );
-    let mut conversation_context = String::new();
-    if !settings.chat.default_language.trim().is_empty() {
-        conversation_context.push_str(&format!(
-            "\n\nResponse language: answer in {} unless the user explicitly asks for another language; this setting overrides matching the user's language.",
-            crate::utils::language_name(&language)
-        ));
-    }
-    // Study sources are reference material, not set instructions.
-    if let Some(source) = crate::reading::chat::source_prompt(app, &conversation.id)? {
-        conversation_context.push_str(&format!("\n\n{source}"));
-    }
-    if let Some(note) = crate::mcp::registry::unavailable_mcp_servers_note(&unavailable_mcp_servers)
-    {
-        conversation_context.push_str(&format!("\n\n{note}"));
-    }
-    if let Some(jobs) = resumed_jobs {
-        conversation_context.push_str(
-            "\n\nThe previous process ended mid-turn. Continue the original user request from \
-             the recorded tool results. Do not repeat recorded tool effects. If an effect has no \
-             saved result, verify its state before attempting it again.",
-        );
-        if !jobs.is_empty() {
-            conversation_context.push_str(&format!(
-                " Restored subagent jobs: {}. Use wait for those assignments rather than dispatching them again.",
-                jobs.join(", ")
-            ));
-        }
-    }
-
-    prepared_prompt.context.push_str(&conversation_context);
-    // Goal tools are absent from the provider-tools fallback, so only the tool run gets this.
-    if let Some(goal_prompt) = crate::chat::goal::format_prompt(conversation.goal_state.as_ref())
-        .filter(|_| goal_tools_available)
-    {
-        prepared_prompt
-            .context
-            .push_str(&format!("\n\n{goal_prompt}"));
-    }
-
-    let mut history = crate::chat::session_history::history(conversation)?;
-    let source_anchor = history.active_leaf();
-    history.set_system_prompt(&prepared_prompt.system);
-    if let Some(result) = &auxiliary_vision_result {
-        history.push(crate::chat::agent::history::RuntimeMessage::text(
-            crate::chat::model::ModelRole::User,
-            user_content_with_auxiliary_vision_result(None, result, &language),
-        ));
-    }
-    let current_user_id = last_user_idx.map(|index| conversation.messages[index].id.clone());
-    let request_projection = crate::chat::context_policy::MainRequestProjection {
-        app: app.clone(),
-        include_video: video_plan.send_video,
-        image_omission: auxiliary_vision_result
-            .as_ref()
-            .and(current_user_id.clone()),
-        user_message_id: current_user_id,
-        video_reports: video_plan.reports.clone(),
-        language: language.clone(),
-    };
-    let mut fallback_chat_tools = effective_chat_tools.clone();
-    if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
-        fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
-    }
-    let fallback_plan_prompt = (!chat_mode)
-        .then(|| crate::chat::plan::format_prompt(&conversation.agent_plan_state, false));
-    let mut provider_tools_fallback_prompt = agent_prepare::build_chat_prompt(
-        &language,
-        !main_image_paths.is_empty(),
-        thinking_enabled,
-        &skill_registry,
-        &fallback_chat_tools,
-        false,
-        &[],
-        skill_id.as_deref(),
-        active_skill_detail.as_ref(),
-        conversation.assistant_snapshot.as_ref(),
-        set_system_prompt.as_deref(),
-        runtime_prompts.custom_system_prompt.as_str(),
-        runtime_prompts.is_chat_runtime,
-        memory_prompt.as_deref(),
-        fallback_plan_prompt.as_deref(),
-        Some(&crate::chat::ask_user::format_prompt(false)),
-        project_prompt_context.as_ref(),
-        workbench_dir.as_deref(),
-        knowledge_base_prompt.as_deref(),
-        &conversation.additional_directories,
-    );
-
-    provider_tools_fallback_prompt
-        .context
-        .push_str(&conversation_context);
-
-    let chat_host = ChatAgentHost {
-        source_anchor,
-        source_branch_id: source_branch_id.clone(),
-        workflow_hooks: if chat_mode {
-            Default::default()
-        } else {
-            let mut runtime = crate::plugins::packages::hook_runtime(
-                &resources.hooks,
-                workbench_dir
-                    .as_deref()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(std::env::temp_dir),
-                "main".into(),
-                last_user_idx
-                    .and_then(|index| conversation.messages.get(index))
-                    .map(|m| m.content.clone()),
+        let mut segments = auxiliary_tool_segments(&auxiliary_tool_records);
+        segments.extend(projected_blocks);
+        let mut tool_records = auxiliary_tool_records;
+        tool_records.extend(projected_tools);
+        // 模型原生生成的图片（Gemini native image gen，任务 07-24）→ assistant 消息级 artifacts，
+        // 前端答案下方图片画廊直接展示（消费 message.artifacts）。空则无开销。
+        let artifacts = generated_image_artifacts(&result.images);
+        let run_entry = agent_run_entry_label(entry);
+        let history_commit = ReplyHistoryCommit {
+            history: result.history,
+            source_anchor,
+            branch_id: source_branch_id,
+        };
+        if let Some(arm) = arm {
+            // 多模型臂：构造 assistant 消息但**不落盘**，交协调者统一合并 + 一次性 save。
+            let message = build_assistant_message(
+                assistant_message_id,
+                result.content,
+                result.reasoning,
+                artifacts,
+                tool_records,
+                result.api_messages,
+                segments,
+                skill_id.as_deref(),
+                Some(run_entry),
+                Some(crate::chat::agent_presentation::run_status(&result.status)),
+                result.usage,
+                result.last_step_usage,
+                message_plan,
+                Some((
+                    arm.group_id.clone(),
+                    resolved_provider_id.clone(),
+                    resolved_model.clone(),
+                )),
             );
-            if resumed_jobs.is_some() {
-                runtime
-                    .hooks
-                    .retain(|hook| hook.event != "UserPromptSubmit");
-            }
-            runtime
-        },
-        app: app.clone(),
-        state: state.inner(),
-        run_id: run_id.clone(),
-        // 多模型臂不直接落盘（最终由协调者统一 upsert + save），因此抑制 loop 的
-        // mid-run 部分快照写盘，避免 N 条并发 run 同写 conversations/{id}.json 的竞态。
-        suppress_partial_persist: arm.is_some(),
-        interactive_approval: arm.is_none(),
-        context_owner: arm.is_none()
-            || (resolved_provider_id == conversation.provider_id
-                && resolved_model == conversation.model),
-        // 生命周期 Hooks：无启用条目时为 None，loop 完全不感知。先用 `any_enabled`
-        // 短路，没配 Hook 时连下面这几个 id / model 字符串都不分配（验收 6）。
-        hooks: crate::chat::hooks::HookDispatcher::any_enabled(&settings.chat_tools.hooks)
-            .then(|| {
-                crate::chat::hooks::HookDispatcher::new(
-                    app.clone(),
-                    &settings.chat_tools.hooks,
-                    conversation.id.clone(),
-                    run_id.clone(),
-                    assistant_message_id.clone(),
-                    workbench_dir
-                        .as_deref()
-                        .map(PathBuf::from)
-                        .unwrap_or_else(std::env::temp_dir),
-                    format!("{}:{}", provider.id, resolved_model),
-                )
-            })
-            .flatten(),
-    };
-    // probe（无头测试通道，仅 debug）：换用自动放行审批/consent/ask_user 的 host，
-    // 否则模型调用敏感工具或 ask_user 会 await GUI 应答而永久挂起。
-    #[cfg(debug_assertions)]
-    let probe_host = ProbeAgentHost {
-        run_id: run_id.clone(),
-        app: app.clone(),
-        state: state.inner(),
-    };
-    let host: &dyn crate::chat::tool_runtime::ApplicationHost = {
-        #[cfg(debug_assertions)]
-        {
-            if probe {
-                &probe_host
-            } else {
-                &chat_host
-            }
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            let _ = probe;
-            &chat_host
-        }
-    };
-    let executor = RegistryToolExecutor {
-        app: app.clone(),
-        state: state.inner(),
-        skills: crate::skills::for_run(
-            skill_registry.clone(),
-            conversation.assistant_snapshot.as_ref(),
-        ),
-        video_analysis: tokio::sync::Mutex::new(crate::chat::video_analysis::VideoTool::new(
-            conversation.clone(),
-            video_plan,
-        )),
-    };
-    let max_output_tokens = chat_max_output_tokens_on_wire(
-        Some(&provider),
-        &resolved_model,
-        settings.chat.max_output_tokens,
-    );
-    // 真实用量锚点：run 首次压缩检查前，用上一轮落盘 usage 把上下文占用锚定到 provider 实报值
-    // （对齐 pi/opencode 的 ground-truth 口径，避免字符估算低估导致压缩过晚/超窗）。
-    let (initial_anchor_total_tokens, initial_anchor_trailing_estimate) =
-        resolve_usage_anchor(conversation, Some(&provider));
-    state.chat_runtime().seed_context_measurement(
-        &conversation.id,
-        conversation.context_state.lifecycle_id,
-        conversation.context_state.measurement_seq,
-        conversation.context_state.request_measurement.as_ref(),
-    );
-    let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
-    let control = crate::chat::runtime_state::ChatRunControl::new(
-        state.chat_runtime(),
-        &conversation.id,
-        run_generation,
-    );
-    let handle = crate::chat::agent::control::AgentRunHandle::new(
-        crate::chat::agent::events::AgentRunIdentity {
-            conversation_id: &conversation.id,
-            run_id: &run_id,
-            message_id: &assistant_message_id,
-            generation: run_generation,
-        },
-        &control,
-    );
-    let events: &dyn crate::chat::agent::events::AgentEventSink = {
-        #[cfg(debug_assertions)]
-        {
-            if probe {
-                &probe_host
-            } else {
-                &chat_host
-            }
-        }
-        #[cfg(not(debug_assertions))]
-        {
-            &chat_host
-        }
-    };
-    let result = crate::chat::session_policy::run_session(
-        crate::chat::session_policy::ApplicationRunConfig {
-            state: state.inner(),
-            provider_runtime: None,
-            todo_state: conversation.agent_todo_state.clone(),
-            conversation_id: conversation.id.clone(),
-            tool_conversation_id: conversation.id.clone(),
-            depth: 0,
-            interactive_host: !probe,
-            run_id: run_id.clone(),
-            message_id: assistant_message_id.clone(),
-            generation: run_generation,
-            provider,
-            model: resolved_model.clone(),
-            history,
-            runtime_context: Some(prepared_prompt.context),
-            request_projection: Some(request_projection),
-            tools,
-            blocked_tool_calls,
-            plan_state: if chat_mode {
-                Default::default()
-            } else {
-                conversation.agent_plan_state.clone()
-            },
-            mcp_tool_ids,
-            mcp_server_ids,
-            settings: settings.clone(),
-            effective_chat_tools,
-            language,
-            thinking_enabled,
-            thinking_level,
-            web_search_mode,
-            max_output_tokens,
-            retry_attempts,
-            provider_tools_fallback_prompt,
-            initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
-            initial_anchor_total_tokens,
-            initial_anchor_trailing_estimate,
-        },
-        host,
-        &executor,
-        events,
-        handle,
-    )
-    .await;
-    let (mut result, run_error) = match result {
-        Ok(result) => (result, None),
-        Err(crate::chat::session_policy::ApplicationRunError::Failed { cause, partial }) => {
-            (*partial, Some(cause.to_string()))
-        }
-        Err(error) => {
-            return finish_reply_failure(
-                app,
-                conversation,
-                &assistant_message_id,
-                &run_id,
-                arm.is_some(),
-                &mut protocol_guard,
-                error.to_string(),
-            )
-            .await;
-        }
-    };
-
-    if let Some(error) = &run_error {
-        result
-            .degraded
-            .get_or_insert_with(|| crate::chat::recovery_policy::DegradedAnswer {
-                kind: "unknown".into(),
-                reason: error.clone(),
-                detail: None,
-                tool_summaries: Vec::new(),
-                text: error.clone(),
+            // 降级兜底的结构化描述挂到消息上，前端渲染成独立错误卡片（正文不再混故障文案）。
+            let mut message = message;
+            message.cache_pair_input = result.cache_pairs.map(|pair| pair.0);
+            message.cache_pair_read = result.cache_pairs.map(|pair| pair.1);
+            message.degraded = result.degraded;
+            protocol_guard.defer_terminal();
+            return Ok(ArmReplyOutcome {
+                history: Some(history_commit),
+                message: Some(message),
+                run_id: Some(run_id),
+                error: run_error,
             });
-    }
-
-    let refreshed = crate::chat::repository::repository(app)
-        .get(app, &conversation.id)
-        .await
-        .map_err(crate::chat::repository::repository_error);
-    *conversation = match refreshed {
-        Ok(conversation) => conversation,
-        Err(error) => {
-            if arm.is_some() {
-                protocol_guard.defer_terminal();
-                return Ok(ArmReplyOutcome {
-                    history: None,
-                    message: None,
-                    run_id: Some(run_id),
-                    error: Some(error),
-                });
-            }
-            return Err(error);
         }
-    };
-    // A saved document, not the wording of the final response, identifies a plan.
-    let message_plan = if plan_mode
-        && result.tool_records.iter().any(|tool| {
-            tool.name == "save_plan"
-                && tool.status == crate::chat::agent::content::AgentToolStatus::Success
-        }) {
-        let latest = crate::chat::storage::load_conversation(app, &conversation.id)?;
-        (crate::chat::plan::is_plan_mode(&latest.agent_plan_state)
-            && latest.agent_plan_state.document.is_some())
-        .then(|| latest.agent_plan_state.clone())
-    } else {
-        None
-    };
-    let (projected_tools, projected_blocks) = crate::chat::agent_presentation::project_snapshot(
-        &result.tool_records,
-        &result.segments,
-        Some(&run_id),
-    );
-    let mut segments = auxiliary_tool_segments(&auxiliary_tool_records);
-    segments.extend(projected_blocks);
-    let mut tool_records = auxiliary_tool_records;
-    tool_records.extend(projected_tools);
-    // 模型原生生成的图片（Gemini native image gen，任务 07-24）→ assistant 消息级 artifacts，
-    // 前端答案下方图片画廊直接展示（消费 message.artifacts）。空则无开销。
-    let artifacts = generated_image_artifacts(&result.images);
-    let run_entry = agent_run_entry_label(entry);
-    let history_commit = ReplyHistoryCommit {
-        history: result.history,
-        source_anchor,
-        branch_id: source_branch_id,
-    };
-    if let Some(arm) = arm {
-        // 多模型臂：构造 assistant 消息但**不落盘**，交协调者统一合并 + 一次性 save。
-        let message = build_assistant_message(
+        if let Some(boundary) = result.compaction_boundary.clone() {
+            conversation
+                .context_state
+                .compaction_boundaries
+                .push(boundary);
+        }
+        // L2 压缩对齐落盘路径：run 结束时把 L2 产出的 summary 写回 context_state.summary +
+        // compression_count（不再只 push boundary）。质量兜底已在 compaction 核心拦截，此处直接采用。
+        if let Some(mut summary) = result.compaction_summary.clone() {
+            // L2 产出的 summary.source_message_ids 为空（运行时侧拿不到完整 UI id 列表）——
+            // 在此按 source_until_message_id 从 conversation 累积（含旧 summary 覆盖范围），
+            // 与落盘路径 compress_conversation_context 口径一致。必须在替换 summary **之前**读旧 S1。
+            summary.source_message_ids =
+                accumulate_source_ids(conversation, &summary.source_until_message_id);
+            // Files-touched ledger: recompute cumulatively here (this L2 summary was
+            // built on the runtime Value stream, which lacks the Conversation). Same
+            // recompute as the disk path, so neither clobbers the other's ledger.
+            let ledger = crate::chat::file_ledger::build_for_boundary(
+                conversation,
+                &summary.source_until_message_id,
+            );
+            summary.file_ledger = (!ledger.is_empty()).then_some(ledger);
+            conversation.context_state.last_compressed_at = Some(summary.created_at);
+            conversation.context_state.compressed_message_count = summary.source_message_ids.len();
+            conversation.context_state.compression_count = conversation
+                .context_state
+                .compression_count
+                .saturating_add(1);
+            conversation.context_state.summary = Some(summary);
+            // R-4：多次链式压缩后提示准确性下降（与 compress_conversation_context 口径一致）。
+            conversation.context_state.warning = crate::chat::context_policy::decay_warning_for(
+                conversation.context_state.compression_count,
+            );
+        }
+        let terminal_content = result.content.clone();
+        let terminal_outcome =
+            crate::chat::agent_presentation::run_status(&result.status).to_string();
+        let goal_assistant_message_id = assistant_message_id.clone();
+        let goal_run = conversation
+            .goal_state
+            .as_ref()
+            .filter(|g| crate::chat::goal::is_running(g.status))
+            .map(|g| (g.id.clone(), g.version));
+        let goal_usage = result.usage.clone();
+        let run_plan_update = message_plan.clone();
+        push_assistant_message(
+            app,
+            state,
+            &settings,
+            conversation,
             assistant_message_id,
             result.content,
             result.reasoning,
@@ -1069,136 +1169,56 @@ pub(super) async fn complete_assistant_reply_inner(
             result.api_messages,
             segments,
             skill_id.as_deref(),
+            title_from_first_user,
             Some(run_entry),
             Some(crate::chat::agent_presentation::run_status(&result.status)),
             result.usage,
             result.last_step_usage,
             message_plan,
-            Some((
-                arm.group_id.clone(),
-                resolved_provider_id.clone(),
-                resolved_model.clone(),
-            )),
-        );
-        // 降级兜底的结构化描述挂到消息上，前端渲染成独立错误卡片（正文不再混故障文案）。
-        let mut message = message;
-        message.cache_pair_input = result.cache_pairs.map(|pair| pair.0);
-        message.cache_pair_read = result.cache_pairs.map(|pair| pair.1);
-        message.degraded = result.degraded;
-        protocol_guard.defer_terminal();
-        return Ok(ArmReplyOutcome {
-            history: Some(history_commit),
-            message: Some(message),
-            run_id: Some(run_id),
-            error: run_error,
-        });
-    }
-    if let Some(boundary) = result.compaction_boundary.clone() {
-        conversation
-            .context_state
-            .compaction_boundaries
-            .push(boundary);
-    }
-    // L2 压缩对齐落盘路径：run 结束时把 L2 产出的 summary 写回 context_state.summary +
-    // compression_count（不再只 push boundary）。质量兜底已在 compaction 核心拦截，此处直接采用。
-    if let Some(mut summary) = result.compaction_summary.clone() {
-        // L2 产出的 summary.source_message_ids 为空（运行时侧拿不到完整 UI id 列表）——
-        // 在此按 source_until_message_id 从 conversation 累积（含旧 summary 覆盖范围），
-        // 与落盘路径 compress_conversation_context 口径一致。必须在替换 summary **之前**读旧 S1。
-        summary.source_message_ids =
-            accumulate_source_ids(conversation, &summary.source_until_message_id);
-        // Files-touched ledger: recompute cumulatively here (this L2 summary was
-        // built on the runtime Value stream, which lacks the Conversation). Same
-        // recompute as the disk path, so neither clobbers the other's ledger.
-        let ledger = crate::chat::file_ledger::build_for_boundary(
-            conversation,
-            &summary.source_until_message_id,
-        );
-        summary.file_ledger = (!ledger.is_empty()).then_some(ledger);
-        conversation.context_state.last_compressed_at = Some(summary.created_at);
-        conversation.context_state.compressed_message_count = summary.source_message_ids.len();
-        conversation.context_state.compression_count = conversation
-            .context_state
-            .compression_count
-            .saturating_add(1);
-        conversation.context_state.summary = Some(summary);
-        // R-4：多次链式压缩后提示准确性下降（与 compress_conversation_context 口径一致）。
-        conversation.context_state.warning = crate::chat::context_policy::decay_warning_for(
-            conversation.context_state.compression_count,
-        );
-    }
-    let terminal_content = result.content.clone();
-    let terminal_outcome = crate::chat::agent_presentation::run_status(&result.status).to_string();
-    let goal_assistant_message_id = assistant_message_id.clone();
-    let goal_run = conversation
-        .goal_state
-        .as_ref()
-        .filter(|g| crate::chat::goal::is_running(g.status))
-        .map(|g| (g.id.clone(), g.version));
-    let goal_usage = result.usage.clone();
-    let run_plan_update = message_plan.clone();
-    push_assistant_message(
-        app,
-        state,
-        &settings,
-        conversation,
-        assistant_message_id,
-        result.content,
-        result.reasoning,
-        artifacts,
-        tool_records,
-        result.api_messages,
-        segments,
-        skill_id.as_deref(),
-        title_from_first_user,
-        Some(run_entry),
-        Some(crate::chat::agent_presentation::run_status(&result.status)),
-        result.usage,
-        result.last_step_usage,
-        message_plan,
-        result.degraded,
-        None,
-        Some(history_commit),
-    )
-    .await?;
-    if let Some((goal_id, goal_version)) = goal_run {
-        *conversation = crate::chat::goal::record_run(
-            app,
-            &conversation.id,
-            &goal_id,
-            goal_version,
-            &run_id,
-            &goal_assistant_message_id,
-            &terminal_content,
-            goal_usage.as_ref(),
-            last_user_api_content.is_none(),
+            result.degraded,
+            None,
+            Some(history_commit),
         )
         .await?;
-    }
-    if let Some(plan_state) = run_plan_update {
-        crate::chat::protocol::emit_run_event(
+        if let Some((goal_id, goal_version)) = goal_run {
+            *conversation = crate::chat::goal::record_run(
+                app,
+                &conversation.id,
+                &goal_id,
+                goal_version,
+                &run_id,
+                &goal_assistant_message_id,
+                &terminal_content,
+                goal_usage.as_ref(),
+                last_user_api_content.is_none(),
+            )
+            .await?;
+        }
+        if let Some(plan_state) = run_plan_update {
+            crate::chat::protocol::emit_run_event(
+                app,
+                &run_id,
+                crate::chat::protocol::ChatRunEvent::PlanUpdated {
+                    plan_state: (&plan_state).into(),
+                },
+            );
+        }
+        crate::chat::protocol::finish_run(
             app,
             &run_id,
-            crate::chat::protocol::ChatRunEvent::PlanUpdated {
-                plan_state: (&plan_state).into(),
-            },
+            &terminal_outcome,
+            &terminal_content,
+            conversation.revision,
         );
-    }
-    crate::chat::protocol::finish_run(
-        app,
-        &run_id,
-        &terminal_outcome,
-        &terminal_content,
-        conversation.revision,
-    );
-    if let Some(error) = run_error {
-        return Err(error);
-    }
-    Ok(ArmReplyOutcome {
-        history: None,
-        message: None,
-        run_id: None,
-        error: None,
+        if let Some(error) = run_error {
+            return Err(error);
+        }
+        Ok(ArmReplyOutcome {
+            history: None,
+            message: None,
+            run_id: None,
+            error: None,
+        })
     })
 }
 

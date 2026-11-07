@@ -1,10 +1,11 @@
 //! 无头测试通道（probe）——仅 debug 构建。
 //!
 //! 自动化写 `<app_data>/chat_probe/request.json`（字段见 [`ProbeRequest`]）；运行中的 app
-//! 轮询到后，走**与聊天窗口完全相同的生成路径**
+//! 轮询到后，默认直接调用聊天生成核心
 //! （`commands::run_chat_probe` → `complete_assistant_reply_inner(probe=true)` →
 //! `run_agent_loop` + 全量工具集，ProbeAgentHost 自动放行；会话若绑外部 CLI 运行时则走
-//! `run_external_cli_reply`），把结果写到
+//! `run_external_cli_reply`）。`sendThroughIpc` 改由真实 WebView 调用 `chat_send_message`，
+//! 包含 IPC 包装和发送预留，保留生产审批行为。结果写到
 //! `<app_data>/chat_probe/result.json`（带 `id` 时另写 `result-<id>.json`，字段见 [`ProbeResult`]）。
 //!
 //! **多轮**：把 result 里的 `conversationId` 填回下一次请求，即续聊同一会话——跨轮记忆、
@@ -25,8 +26,29 @@ use tauri::{AppHandle, Manager};
 use crate::chat::types::{ConversationContextState, ToolCallStatus};
 use crate::state::AppState;
 
+#[cfg(target_os = "windows")]
+#[inline(never)]
+pub(crate) fn log_stack(point: &str) {
+    use windows::Win32::System::Threading::{GetCurrentThreadId, GetCurrentThreadStackLimits};
+
+    let mut low = 0usize;
+    let mut high = 0usize;
+    let thread_id = unsafe {
+        GetCurrentThreadStackLimits(&mut low, &mut high);
+        GetCurrentThreadId()
+    };
+    let current = std::ptr::addr_of!(low) as usize;
+    debug_assert!(low <= current && current < high);
+    eprintln!(
+        "[send-stack-live] point={point} thread_id={thread_id} low={low:#x} high={high:#x} current={current:#x} total_bytes={} used_bytes={} remaining_bytes={}",
+        high - low,
+        high - current,
+        current - low,
+    );
+}
+
 /// 单次生成超时（无 GUI 应答，靠这个兜底避免 watcher 永久卡住）。
-/// orchestrate 编排流程（多子代理并行多轮）常超 2 分钟，放宽到 6 分钟。
+/// 长任务可通过请求的 timeoutSeconds 覆盖，最长一小时。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(360);
 /// 轮询间隔——调试用途，延迟无所谓。
 const POLL_INTERVAL: Duration = Duration::from_millis(700);
@@ -40,11 +62,16 @@ pub(crate) struct ProbeRequest {
     /// Writes models-result.json instead of creating a chat turn.
     #[serde(default)]
     pub(crate) probe_models: bool,
+    /// Invoke chat_send_message in a real WebView, including its IPC wrapper and send reservation.
+    #[serde(default)]
+    pub(crate) send_through_ipc: bool,
     pub(crate) prompt: String,
     #[serde(default)]
     pub(crate) provider: Option<String>,
     #[serde(default)]
     pub(crate) model: Option<String>,
+    #[serde(default)]
+    pub(crate) timeout_seconds: Option<u64>,
     #[serde(default)]
     pub(crate) skill_id: Option<String>,
     /// agent 运行模式（act/plan/orchestrate），省略 = act。用于验证模式提示词。
@@ -333,8 +360,13 @@ async fn handle_probe_request(app: &AppHandle, req: ProbeRequest) -> ProbeResult
                 context_window_tokens: usage.context_window_tokens,
             });
     })));
+    let timeout = Duration::from_secs(
+        req.timeout_seconds
+            .unwrap_or(PROBE_TIMEOUT.as_secs())
+            .clamp(1, 3600),
+    );
     let run = crate::chat::commands::run_chat_probe(app, &state, &req);
-    let outcome = tokio::time::timeout(PROBE_TIMEOUT, run).await;
+    let outcome = tokio::time::timeout(timeout, run).await;
     crate::chat::protocol::set_protocol_debug_sink(None);
     let live_usage_ticks =
         std::mem::take(&mut *live_ticks.lock().unwrap_or_else(|err| err.into_inner()));
@@ -384,7 +416,7 @@ async fn handle_probe_request(app: &AppHandle, req: ProbeRequest) -> ProbeResult
             let mut result = failed_result(
                 id,
                 None,
-                format!("probe generation timed out after {PROBE_TIMEOUT:?}"),
+                format!("probe generation timed out after {timeout:?}"),
                 duration_ms,
             );
             result.stream_outcome = Some("timeout".to_string());
@@ -510,25 +542,29 @@ mod tests {
             serde_json::from_str(r#"{"prompt":"hi","skillId":"pdf"}"#).expect("parse");
         assert_eq!(req.prompt, "hi");
         assert_eq!(req.skill_id.as_deref(), Some("pdf"));
+        assert!(req.timeout_seconds.is_none());
         assert!(req.id.is_none() && req.provider.is_none() && req.model.is_none());
         // 新探点的缺省必须是「什么都不做」：取消不触发，上下文状态不额外计算。
         assert!(req.cancel_after_ms.is_none());
         assert!(!req.compute_context_stats);
         assert!(!req.probe_models);
+        assert!(!req.send_through_ipc);
         assert!(req.external_model.is_none() && req.external_sandbox.is_none());
     }
 
     #[test]
     fn probe_request_parses_the_new_probes() {
         let req: ProbeRequest = serde_json::from_str(
-            r#"{"prompt":"hi","cancelAfterMs":1500,"computeContextStats":true,"probeModels":true,
+            r#"{"prompt":"hi","timeoutSeconds":3000,"cancelAfterMs":1500,"computeContextStats":true,"probeModels":true,"sendThroughIpc":true,
                 "externalAgentId":"claude","externalModel":"sonnet",
                 "externalReasoning":"high","externalSandbox":"bypassPermissions"}"#,
         )
         .expect("parse");
         assert_eq!(req.cancel_after_ms, Some(1500));
+        assert_eq!(req.timeout_seconds, Some(3000));
         assert!(req.compute_context_stats);
         assert!(req.probe_models);
+        assert!(req.send_through_ipc);
         assert_eq!(req.external_agent_id.as_deref(), Some("claude"));
         assert_eq!(req.external_model.as_deref(), Some("sonnet"));
         assert_eq!(req.external_reasoning.as_deref(), Some("high"));

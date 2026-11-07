@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Listener, Manager, State};
 use uuid::Uuid;
 
 use crate::chat::probe::ProbeRequest;
@@ -28,9 +28,42 @@ pub(crate) struct ProbeRunError {
     pub(crate) error: String,
 }
 
+#[cfg(debug_assertions)]
+struct ProbeIpcListener {
+    app: AppHandle,
+    id: tauri::EventId,
+    pending_conversation: Option<String>,
+}
+
+#[cfg(debug_assertions)]
+impl Drop for ProbeIpcListener {
+    fn drop(&mut self) {
+        self.app.unlisten(self.id);
+        if let Some(conversation_id) = &self.pending_conversation {
+            super::interaction::cancel_user_generation(
+                self.app.state::<AppState>().inner(),
+                conversation_id,
+                super::interaction::UserStopScope::Generation,
+                || (),
+            );
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+struct ProbeCancelTask(tauri::async_runtime::JoinHandle<()>);
+
+#[cfg(debug_assertions)]
+impl Drop for ProbeCancelTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// 无头测试通道的一次生成编排（仅 debug）：把 scratch 会话绑到一个**固定复用**的
 /// 「Chat Probe」项目（根为请求的 cwd，使文件工具相对路径可解析）→ 推入 user 消息 →
-/// 走与 GUI 完全相同的生成核心（`complete_assistant_reply_inner`，probe=true 自动放行）→
+/// 默认直接走生成核心（`complete_assistant_reply_inner`，probe=true 自动放行），
+/// `sendThroughIpc` 则由 WebView 调用生产发送命令 →
 /// 取回生成的 assistant 消息。**会话与项目都保留**（不删除），以便在会话列表里观察调试。
 ///
 /// `conversationId = Some(..)` 续聊已有会话（不新建、不改标题/项目/运行时）。**多轮场景
@@ -105,7 +138,7 @@ pub(crate) async fn run_chat_probe(
             other => return Err(fail(format!("invalid webSearchMode: {other}"))),
         });
     }
-    let user_message = ChatMessage {
+    let user_message = (!req.send_through_ipc).then(|| ChatMessage {
         irc_message: None,
         id: format!("msg_{}", Uuid::new_v4()),
         role: "user".to_string(),
@@ -130,7 +163,7 @@ pub(crate) async fn run_chat_probe(
         model: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
-    };
+    });
     let runtime = conversation.agent_runtime.clone();
     let plan_state = conversation.agent_plan_state.clone();
     let web_search_mode = conversation.web_search_mode;
@@ -143,7 +176,9 @@ pub(crate) async fn run_chat_probe(
                 latest.agent_runtime = runtime;
                 latest.agent_plan_state = plan_state;
                 latest.web_search_mode = web_search_mode;
-                latest.messages.push(user_message);
+                if let Some(message) = user_message {
+                    latest.messages.push(message);
+                }
                 Ok(())
             },
         )
@@ -151,24 +186,34 @@ pub(crate) async fn run_chat_probe(
         .map_err(crate::chat::repository::repository_error)
         .map_err(&fail)?;
 
-    if let Some(delay_ms) = req.cancel_after_ms {
-        schedule_probe_cancel(app, &conversation.id, Duration::from_millis(delay_ms));
-    }
+    let _cancel_task = req.cancel_after_ms.map(|delay_ms| {
+        schedule_probe_cancel(app, &conversation.id, Duration::from_millis(delay_ms))
+    });
 
-    let gen_result = complete_assistant_reply_inner(
-        app,
-        state,
-        &mut conversation,
-        None,
-        Some(req.prompt.as_str()),
-        &[],
-        req.skill_id.as_deref(),
-        crate::chat::agent::AgentRunEntry::Send,
-        None,
-        /* probe */ true,
-        None,
-    )
-    .await;
+    let gen_result = if req.send_through_ipc {
+        send_probe_through_ipc(app, &conversation.id, req)
+            .await
+            .map_err(&fail)?;
+        conversation = load_conversation(app, &conversation.id).map_err(&fail)?;
+        Ok(())
+    } else {
+        complete_assistant_reply_inner(
+            app,
+            state,
+            &mut conversation,
+            None,
+            Some(req.prompt.as_str()),
+            &[],
+            req.skill_id.as_deref(),
+            crate::chat::agent::AgentRunEntry::Send,
+            None,
+            /* probe */ true,
+            None,
+        )
+        .await
+        .map(|_| ())
+    };
+    drop(_cancel_task);
 
     // 拿到最后一条 assistant 消息（complete_assistant_reply_inner 已 push+save 到会话）。
     // 会话与项目都保留在列表里，供观察调试——不删除。
@@ -176,6 +221,7 @@ pub(crate) async fn run_chat_probe(
         .messages
         .iter()
         .rev()
+        .take_while(|message| message.role != "user")
         .find(|m| m.role == "assistant")
         .cloned();
 
@@ -194,6 +240,68 @@ pub(crate) async fn run_chat_probe(
         message,
         context_state,
     })
+}
+
+#[cfg(debug_assertions)]
+async fn send_probe_through_ipc(
+    app: &AppHandle,
+    conversation_id: &str,
+    req: &ProbeRequest,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("chat")
+        .or_else(|| app.get_webview_window("main"))
+        .ok_or("Missing chat webview for IPC probe")?;
+    let event_name = format!("chat-probe-ipc-result-{}", Uuid::new_v4());
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let listener_id = app.once(event_name.clone(), move |event| {
+        let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+            .map_err(|error| error.to_string());
+        let _ = sender.send(payload);
+    });
+    let mut listener = ProbeIpcListener {
+        app: app.clone(),
+        id: listener_id,
+        pending_conversation: Some(conversation_id.to_string()),
+    };
+    let args = serde_json::json!({
+        "conversationId": conversation_id,
+        "content": req.prompt,
+        "attachments": [],
+        "textAttachments": [],
+        "activeSkillId": req.skill_id,
+        "planMessageId": null,
+        "userMessageId": null,
+    });
+    let event_json = serde_json::to_string(&event_name).map_err(|error| error.to_string())?;
+    let script = format!(
+        r#"void (async () => {{
+            let payload;
+            try {{
+                payload = {{result: await window.__TAURI_INTERNALS__.invoke("chat_send_message", {args})}};
+            }} catch (error) {{
+                payload = {{error: String(error)}};
+            }}
+            await window.__TAURI_INTERNALS__.invoke("plugin:event|emit", {{event: {event_json}, payload}});
+        }})();"#
+    );
+    window.eval(&script).map_err(|error| error.to_string())?;
+    let received = receiver.await.map_err(|error| error.to_string())?;
+    listener.pending_conversation = None;
+    let payload = received?;
+    let outcome = payload.get("result").ok_or_else(|| {
+        payload
+            .get("error")
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "Missing IPC probe result".into())
+    })?;
+    if outcome.get("success").and_then(|value| value.as_bool()) != Some(true) {
+        return Err(outcome
+            .get("error")
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "IPC send failed".into()));
+    }
+    Ok(())
 }
 
 /// 把请求里的外部运行时覆盖写进会话配置。空串按「不覆盖」处理（JSON 里省略字段与写空串
@@ -252,14 +360,18 @@ async fn compute_context_state_for_probe(
 /// generation 集合清空，在登记之前调用是**空操作**，取消会静默失效（而测试会看到一轮正常
 /// 完成的回答，最难排查的那种假绿）。
 #[cfg(debug_assertions)]
-fn schedule_probe_cancel(app: &AppHandle, conversation_id: &str, delay: Duration) {
+fn schedule_probe_cancel(
+    app: &AppHandle,
+    conversation_id: &str,
+    delay: Duration,
+) -> ProbeCancelTask {
     /// 等待 generation 登记的上限。超时就放弃并明确打日志——静默不取消是最坏的结果。
     const ARM_TIMEOUT: Duration = Duration::from_secs(60);
     const ARM_POLL: Duration = Duration::from_millis(50);
 
     let app = app.clone();
     let conversation_id = conversation_id.to_string();
-    tauri::async_runtime::spawn(async move {
+    ProbeCancelTask(tauri::async_runtime::spawn(async move {
         let armed = tokio::time::timeout(ARM_TIMEOUT, async {
             loop {
                 let active = app
@@ -284,7 +396,7 @@ fn schedule_probe_cancel(app: &AppHandle, conversation_id: &str, delay: Duration
         app.state::<AppState>()
             .cancel_chat_generation(&conversation_id);
         eprintln!("[chat-probe] cancelAfterMs: cancelled {conversation_id}");
-    });
+    }))
 }
 
 /// 新建一次 probe 会话：绑到固定复用的「Chat Probe」项目（根为 cwd，使文件工具相对路径可解析），

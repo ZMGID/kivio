@@ -87,6 +87,8 @@ pub(crate) async fn chat_send_message(
     user_message_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     // Busy 拒绝：该会话仍有任意一条 run 在跑（含多模型并发组）时不允许再发新消息。
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("command entered");
     // 用原子的哨兵预留替代「先 check 后 register」，关闭并发发送同时通过 busy 检查的 TOCTOU 窗口。
     // 哨兵在本命令返回前一直存活；实际的 per-run 槽位 / generation 在 `complete_assistant_reply`
     // 内 run_id 生成处额外注册，与哨兵按不同 run_id 共存。
@@ -522,6 +524,8 @@ async fn send_reserved(
     interruption_epoch: u64,
     on_user_message_saved: Option<&(dyn Fn() + Send + Sync)>,
 ) -> Result<serde_json::Value, String> {
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("send_reserved entered");
     let user_message_id = match user_message_id {
         Some(id)
             if id
@@ -856,7 +860,8 @@ async fn send_reserved(
             serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
         );
     }
-
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("message saved; computing context");
     match compute_context_state(
         &app,
         &state,
@@ -887,7 +892,8 @@ async fn send_reserved(
             eprintln!("Context usage estimate failed before send: {err}");
         }
     }
-
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("context computed");
     let forced_skill_id = active_skill_id
         .as_deref()
         .map(str::trim)
@@ -935,7 +941,8 @@ async fn send_reserved(
             })),
         };
     }
-
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    crate::chat::probe::log_stack("starting reply");
     let reply_outcome = complete_assistant_reply(
         &app,
         &state,
