@@ -1522,7 +1522,7 @@ where
     let mut pending_error: Option<String> = None;
     // Special RPC commands can finish on their response while Pi still flushes a late
     // `agent_settled`. A reused reader must not let that stale boundary finish the next prompt.
-    let mut current_turn_seen = manual_compact;
+    let mut current_turn_seen = false;
     // A handled input starts no run. Keep waiting only if the extension already started
     // independent work, or /btw still needs its persisted entry for display.
     let mut prompt_handled = false;
@@ -1596,7 +1596,10 @@ where
             } else {
                 false
             };
-            current_turn_seen = matches!(kind, "agent_start" | "turn_start" | "message_start")
+            current_turn_seen = matches!(
+                kind,
+                "agent_start" | "turn_start" | "message_start" | "compaction_start"
+            )
                 || response_is_pending_control
                 || (kind == "response"
                     && value.get("command").and_then(Value::as_str) == Some("prompt")
