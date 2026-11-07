@@ -104,7 +104,7 @@ pub fn handle(control: &Control) -> AgentRunHandle<'_> {
 
 pub fn config(
     runtime: &dyn kivio_agent_sdk::agent::provider_runtime::ModelRuntime,
-    history: Vec<RuntimeMessage>,
+    history: impl Into<kivio_agent_sdk::agent::SessionHistory>,
 ) -> AgentRunConfig<'_> {
     AgentRunConfig {
         provider_runtime: runtime,
@@ -116,7 +116,7 @@ pub fn config(
         provider_label: "OpenAI compatible".into(),
         api_format: "chat".into(),
         model: "test-model".into(),
-        runtime_messages: history,
+        history: history.into(),
         tools: vec![echo_definition()],
         blocked_tool_calls: vec![],
         options: kivio_agent_sdk::model::GenerateOptions {

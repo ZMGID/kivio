@@ -5,6 +5,7 @@
 //! run control, event observation, transport configuration, and persistence.
 
 pub mod agent;
+pub mod context;
 pub mod dsml_tools;
 pub mod model;
 #[cfg(feature = "mcp")]

@@ -20,6 +20,7 @@ use super::{
     host::{AgentHost, AgentHostFuture},
     provider_runtime::ModelRuntime,
     session::{NoSessionPolicy, SessionPolicy},
+    session_history::{complete_tool_rounds, SessionEntry, SessionHistory},
     types::{AgentRunConfig, AgentRunResult, AgentRunStatus, RunLimits},
     SteeringMessage,
 };
@@ -37,7 +38,7 @@ pub struct AgentSessionConfig {
     pub options: GenerateOptions,
     pub capabilities: ModelCapabilities,
     pub conversation_id: String,
-    pub history: Vec<RuntimeMessage>,
+    pub history: SessionHistory,
     pub tools: ToolRegistry,
     pub host: Arc<dyn AgentHost>,
     pub limits: RunLimits,
@@ -55,7 +56,7 @@ impl AgentSessionConfig {
             options: GenerateOptions::default(),
             capabilities: ModelCapabilities::default(),
             conversation_id: uuid::Uuid::new_v4().to_string(),
-            history: vec![],
+            history: SessionHistory::default(),
             tools: ToolRegistry::new(),
             host: Arc::new(MemoryHost),
             limits: RunLimits::default(),
@@ -97,7 +98,7 @@ struct SessionInner {
 }
 
 struct SessionState {
-    history: Vec<RuntimeMessage>,
+    history: SessionHistory,
     tools: ToolRegistry,
     generation: u64,
     active: Option<Arc<Invocation>>,
@@ -172,10 +173,14 @@ impl AgentSession {
             if state.active.is_some() {
                 return SessionRun::rejected(AgentAdmissionError::Busy);
             }
-            if !complete_tool_rounds(&state.history)
+            if !complete_tool_rounds(state.history.context())
                 || (input.is_none()
                     && !matches!(
-                        state.history.last().and_then(RuntimeMessage::role),
+                        state
+                            .history
+                            .context()
+                            .last()
+                            .and_then(RuntimeMessage::role),
                         Some(ModelRole::User | ModelRole::Tool)
                     ))
             {
@@ -225,13 +230,24 @@ impl AgentSession {
             .unwrap_or(SessionStatus::Idle)
     }
 
-    pub fn history(&self) -> Vec<RuntimeMessage> {
+    pub fn context(&self) -> Vec<RuntimeMessage> {
         self.inner
             .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .history
-            .clone()
+            .context()
+            .to_vec()
+    }
+
+    pub fn entries(&self) -> Vec<SessionEntry> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .history
+            .entries()
+            .to_vec()
     }
 
     pub fn steer(&self, message: SteeringMessage) -> InputAdmission {
@@ -510,7 +526,7 @@ impl Drop for SessionRun {
 async fn run_session(
     inner: Arc<SessionInner>,
     invocation: Arc<Invocation>,
-    history: Vec<RuntimeMessage>,
+    history: SessionHistory,
     tools: ToolRegistry,
     sender: oneshot::Sender<Result<AgentRunResult, AgentRunError>>,
 ) {
@@ -531,7 +547,7 @@ async fn run_session(
         provider_label: cfg.provider_label.clone(),
         api_format: cfg.api_format.clone(),
         model: cfg.model.clone(),
-        runtime_messages: history.clone(),
+        history: history.clone(),
         tools: tools.definitions(),
         blocked_tool_calls: vec![],
         options: cfg.options.clone(),
@@ -643,7 +659,7 @@ async fn run_session(
     let _ = sender.send(result);
 }
 
-fn worker_failure(history: Vec<RuntimeMessage>) -> AgentRunError {
+fn worker_failure(history: SessionHistory) -> AgentRunError {
     let cause = AgentFailure::Host {
         operation: "session.worker",
         message: "Session worker stopped before returning a result".into(),
@@ -668,38 +684,4 @@ fn worker_failure(history: Vec<RuntimeMessage>) -> AgentRunError {
             pending_follow_up: vec![],
         }),
     }
-}
-
-fn complete_tool_rounds(history: &[RuntimeMessage]) -> bool {
-    let mut pending = HashSet::new();
-    for message in history.iter().filter_map(RuntimeMessage::model_message) {
-        if message.role != ModelRole::Tool && !pending.is_empty() {
-            return false;
-        }
-        if message.role == ModelRole::Tool
-            && !message
-                .content
-                .iter()
-                .any(|part| matches!(part, MessagePart::ToolResult { .. }))
-        {
-            return false;
-        }
-        for part in &message.content {
-            match part {
-                MessagePart::ToolCall { id, .. } if message.role == ModelRole::Assistant => {
-                    if !pending.insert(id.as_str()) {
-                        return false;
-                    }
-                }
-                MessagePart::ToolResult { tool_call_id, .. } if message.role == ModelRole::Tool => {
-                    if !pending.remove(tool_call_id.as_str()) {
-                        return false;
-                    }
-                }
-                MessagePart::ToolCall { .. } | MessagePart::ToolResult { .. } => return false,
-                _ => {}
-            }
-        }
-    }
-    pending.is_empty()
 }

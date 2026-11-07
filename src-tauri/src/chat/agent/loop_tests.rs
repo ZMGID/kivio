@@ -3692,6 +3692,11 @@ async fn run_loop_layer2_replaces_old_history_with_summary() {
     }));
     let huge = "B".repeat(80_000);
     config.runtime_messages.push(serde_json::json!({
+        "role": "assistant", "content": "",
+        "tool_calls": [{"id": "old_call", "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"}}]
+    }));
+    config.runtime_messages.push(serde_json::json!({
         "role": "tool", "tool_call_id": "old_call", "content": huge
     }));
     for i in 0..8 {
@@ -3784,6 +3789,11 @@ async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
         "role": "user", "content": large_non_tool
     }));
     let huge = "C".repeat(80_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "assistant", "content": "",
+        "tool_calls": [{"id": "old_call", "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"}}]
+    }));
     config.runtime_messages.push(serde_json::json!({
         "role": "tool", "tool_call_id": "old_call", "content": huge
     }));
@@ -7480,10 +7490,10 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
         provider_label: provider.name.clone(),
         api_format: provider.api_format.clone(),
         model: "test-model".into(),
-        runtime_messages: vec![RuntimeMessage::text(
+        history: vec![RuntimeMessage::text(
             crate::chat::model::ModelRole::User,
             "Use the registered tool",
-        )],
+        )].into(),
         tools: vec![tool],
         blocked_tool_calls: Vec::new(),
         options: crate::chat::model::GenerateOptions {

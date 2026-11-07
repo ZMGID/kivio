@@ -38,8 +38,8 @@ pub(crate) async fn run_tool_round(
     let config = env.config;
     let host = env.host;
     let assistant_message = RuntimeMessage::model(planned.message);
-    state.runtime_messages.push(assistant_message.clone());
-    state.runtime_len_at_last_call = state.runtime_messages.len();
+    state.history.push(assistant_message.clone());
+    state.runtime_len_at_last_call = state.history.context().len();
     state.generated_api_messages.push(assistant_message);
     let mut task_records = planned.tool_calls.iter().filter_map(|call| {
         let tool = match_tool_call(&state.tools, &call.function_name)?;
@@ -82,7 +82,7 @@ pub(crate) async fn run_tool_round(
         .into_iter()
         .map(RuntimeMessage::model)
         .collect::<Vec<_>>();
-    state.runtime_messages.extend(responses.iter().cloned());
+    state.history.extend(responses.iter().cloned());
     state.generated_api_messages.extend(responses);
     state.tool_records.extend(round_result.tool_records);
     if let Some(failure) = round_result.failure {

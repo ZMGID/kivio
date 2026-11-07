@@ -98,13 +98,27 @@ The standalone provider cancels an HTTP read when its generation future is dropp
 
 ## History and persistence
 
-`AgentRunConfig.runtime_messages` is an owned input snapshot. The core owns its working copy during the invocation. `AgentRunResult.history` is the canonical returned history for continuation, including applied context changes. `generated_history` contains messages generated or admitted for append during this invocation. Appending it to `history` duplicates messages. Appending it blindly to the original input can also ignore compaction or host-persisted input.
+`AgentRunConfig.history` is an owned `SessionHistory`. The core owns its working copy during the invocation and returns it as `AgentRunResult.history`. Continue with that owner to retain both original facts and applied context changes. `history.entries()` exposes the immutable facts; `history.context()` exposes the current model projection. Rebuilding an owner from that projection discards the older facts and compaction origins.
+
+`generated_history` contains messages generated or admitted for append during this invocation. Appending it to the returned history duplicates messages. Appending it blindly to the original input can also ignore compaction or host-persisted input. `AgentSession` retains the history owner across runs and exposes `entries()` and `context()` separately. Run and context hook snapshots continue to contain the current projection.
 
 `AgentHost::checkpoint_runtime` can persist a checkpoint and return `SessionInput`. `InputPersistence::Append` includes the new message in both working history and the generated append set. `AlreadyPersisted` includes the message in working history while excluding it from that append set. The host chooses the variant according to its durable write, rather than source metadata or a later guess.
 
 `SessionPolicy` owns optional context and product decisions. `NoSessionPolicy` enables none. Before adopting a compacted history, the core checkpoints the original history. A checkpoint error prevents that replacement. The host still owns durable commits, version checks, conflict handling, draft persistence, and attachment storage. A successful core return is not a transaction against the host store.
 
 Continuation rebuilds model context from saved messages and completed tool results, then starts new model work under current authorization. It does not replay tool records as an execution queue. A crash between an external effect and its durable result leaves an uncertain outcome. The SDK provides no exactly-once guarantee for files, commands, or remote operations. Hosts and tools reconcile target state or use their own idempotency keys before retrying uncertain work.
+
+## Context budgets and compaction
+
+`BudgetContextPolicy` implements the context hooks with token estimates, provider usage anchors, bounded summary requests and request-only image pruning. Supply a resolved summary `ModelRuntime` and `SummaryOptions`. When the main model differs, set the policy's `model`, `window`, `max_output_tokens` and `api_format` for the main request separately. Summary options describe only summary calls. The host owns model lookup, credentials and billing.
+
+`summarize_history` can also be used directly. Its `CompactionPlan.covered` is a nonempty range in the supplied `RuntimeMessage` projection. `replacement` contains only the summary and supplemental context for that range. Apply it through `SessionHistory::compact`; do not replace the entire history with it. Summary calls reject tool execution, truncated output and partial coverage. Oversized transcripts use bounded consecutive batches and fail without installing a partial summary when their limits are exhausted.
+
+Compaction records retain original entries, the replaced origins and the first retained origin. Repeated compaction can cover an earlier summary, but cannot split its replacement or a tool call/result round. `ContextUpdate::SendView` records an explicit context reset. `transform_context` is temporary request shaping and creates no history entry. Run-specific system prompt changes affect the projection without rewriting its source entry.
+
+The core checkpoints before installing a plan. Failed or cancelled checkpoints preserve the prior context; admitted checkpoint inputs retain their append/persisted distinction. The budget policy checks the resulting context again after those inputs arrive. Summary reminders precede the unchanged retained tail, so retained message identity stays intact. Skill instructions removed by compaction must be loaded again through the authorized Skill tool.
+
+The desktop uses the shared algorithms but retains its existing full replacement replay and UI cutoffs. Exact SDK entry coverage is separate from those legacy cutoffs. This stage introduces neither disk snapshots nor mid-run recovery.
 
 ## Skill resources
 

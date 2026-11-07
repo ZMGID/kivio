@@ -66,13 +66,15 @@ Advanced hosts with existing admission and persistence owners can compose the lo
 1. Construct `OpenAiChatProvider` with your HTTP client and an `OpenAiChatConfig` containing the complete Chat Completions endpoint URL.
 2. Implement `AgentRunControl` for one invocation's input mailbox and stop signal. Create an `AgentRunHandle`, and clone that handle for controls that target the same invocation.
 3. Implement `ToolExecutor::before_tool_call` to authorize the registered tool and validate its arguments. Implement `call` to execute only the prepared operation.
-4. Set `AgentRunConfig.runtime_messages`, model, tools, and host-supplied identity. Use matching identity values when constructing the handle.
+4. Set `AgentRunConfig.history` to a `SessionHistory`, plus model, tools, and host-supplied identity. Use matching identity values when constructing the handle.
 5. Call `run_agent_loop(config, &host, &executor, &mut NoSessionPolicy, &events, handle).await`.
 6. Check both the returned `Result` and `AgentRunResult.status`. Persist `AgentRunResult.history` in your own session store before releasing your application's run capacity.
 
 Start with `NoSessionPolicy` and an empty `AgentHost` implementation, as the example does. These enable no product policies or persistence. Add checkpoints, context management, or recovery only when your host needs them. A host with no tools still supplies a `ToolExecutor` implementation, but sets `tools` to an empty vector.
 
 The SDK does not register desktop tools or load permissions from Kivio settings. Registering a `ToolDefinition` advertises a model-visible tool. Authorization remains an explicit operation in your executor. See [the API and lifecycle contracts](docs/contracts.md) before adding tools with external effects.
+
+For automatic context management, use `context::BudgetContextPolicy` with a resolved summary runtime and `SummaryOptions`. Set its main-request model, window and output budget explicitly when they differ from the summary model. Install it with `AgentSessionConfig::with_policy`. Original facts remain available through `session.entries()` while `session.context()` returns the current projection. See [context contracts](docs/contracts.md#context-budgets-and-compaction) and the [independent consumer tests](../../tests/fixtures/agent-sdk-consumer/tests/context.rs) for repeated compaction, cancellation and Skill reload examples.
 
 ## Run against a real provider
 

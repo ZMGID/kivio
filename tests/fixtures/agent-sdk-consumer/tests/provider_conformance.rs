@@ -755,7 +755,7 @@ async fn session_tool_authorization_and_later_prompt_do_not_reexecute_history() 
             assert_eq!(executor.call_count(), executions, "{case:?}");
             assert_eq!(server.count(), 3, "{case:?}");
             assert_eq!(
-                session.history().last().unwrap().text_content(),
+                session.context().last().unwrap().text_content(),
                 "continued"
             );
             let requests = server.requests.lock().unwrap();
@@ -795,7 +795,7 @@ async fn gemini_tool_signatures_survive_persistence_and_only_replay_to_their_sou
     );
     assert_eq!(executor.call_count(), 1);
     let mut replay = request_from_history(
-        &session.history(),
+        &session.context(),
         "test-model",
         vec![echo_definition().model],
         Default::default(),

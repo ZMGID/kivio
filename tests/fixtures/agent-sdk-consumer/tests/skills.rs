@@ -101,7 +101,7 @@ fn tools(context: SkillRunContext, allowed: bool) -> ToolRegistry {
 fn session(server: &support::Server, tools: ToolRegistry, catalog: String) -> AgentSession {
     let mut config = AgentSessionConfig::new(Arc::new(server.provider()), "test-model");
     config.tools = tools;
-    config.history = vec![RuntimeMessage::system(catalog)];
+    config.history = vec![RuntimeMessage::system(catalog)].into();
     config.options.thinking_enabled = false;
     AgentSession::new(config)
 }

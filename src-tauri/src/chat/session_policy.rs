@@ -454,7 +454,7 @@ pub(crate) async fn run_session(
         provider_label: config.provider.name.clone(),
         api_format: config.provider.api_format.clone(),
         model: config.model.clone(),
-        runtime_messages: import_history(std::mem::take(&mut config.runtime_messages)),
+        history: import_history(std::mem::take(&mut config.runtime_messages)).into(),
         tools: config
             .tools
             .iter()
@@ -521,9 +521,9 @@ pub(crate) async fn run_session(
             }
             Err(error) => return Err(error.to_string()),
         };
-    let (compaction_boundary, compaction_summary) = policy.context.finish_run(&result.history);
+    let (compaction_boundary, compaction_summary) = policy.context.finish_run(result.history.context());
     let degraded = policy.recovery.take_degraded();
-    let compacted_history = result.compacted.then(|| export_history(&result.history));
+    let compacted_history = result.compacted.then(|| export_history(result.history.context()));
     Ok(ApplicationRunResult {
         content: result.content,
         reasoning: result.reasoning,

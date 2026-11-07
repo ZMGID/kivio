@@ -38,7 +38,7 @@ pub struct AgentRunConfig<'a> {
     pub provider_label: String,
     pub api_format: String,
     pub model: String,
-    pub runtime_messages: Vec<super::history::RuntimeMessage>,
+    pub history: super::SessionHistory,
     pub tools: Vec<crate::tools::ToolDefinition>,
     pub blocked_tool_calls: Vec<crate::tools::ToolDefinition>,
     pub options: crate::model::GenerateOptions,
@@ -191,7 +191,7 @@ pub struct AgentRunResult {
     pub cache_pairs: Option<(u64, u64)>,
     /// Usage from the latest model request, separate from accumulated billing usage.
     pub last_step_usage: Option<crate::model::ModelUsage>,
-    pub history: Vec<super::history::RuntimeMessage>,
+    pub history: super::SessionHistory,
     pub compacted: bool,
     /// Generated image payloads accumulated during this run. The host owns persistence.
     pub images: Vec<crate::model::GeneratedImageData>,

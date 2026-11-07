@@ -251,7 +251,7 @@ async fn known_unsupported_requests_fail_before_entering_the_provider() {
             "vision" => {
                 config.capabilities.vision = Some(false);
                 config
-                    .runtime_messages
+                    .history
                     .push(kivio_agent_sdk::agent::RuntimeMessage::model(
                         ModelMessage {
                             role: ModelRole::User,

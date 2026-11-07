@@ -184,9 +184,10 @@ async fn request_hooks_run_in_order_without_changing_canonical_history() {
         request.system,
         "Use echo when needed.\n\nrequest-only system"
     );
-    assert_eq!(result.history.len(), 3);
+    assert_eq!(result.history.context().len(), 3);
     assert!(!result
         .history
+        .context()
         .iter()
         .any(|entry| entry.text_content().contains("temporary")
             || entry.text_content().contains("request-only")));
@@ -213,7 +214,7 @@ async fn finish_turn_runs_once_after_tools_and_can_stop_without_another_request(
     assert_eq!(policy.finish_count, 1);
     assert_eq!(executor.call_count(), 1);
     assert_eq!(result.tool_records.len(), 1);
-    assert_eq!(result.history.len(), 4);
+    assert_eq!(result.history.context().len(), 4);
     assert_eq!(
         *log.lock().unwrap(),
         vec!["prepare", "transform", "provider", "finish"]
@@ -244,7 +245,7 @@ async fn hook_failures_keep_their_source_and_completed_assistant_facts() {
         assert!(matches!(cause, AgentFailure::Hook { hook: source, .. } if source == hook));
         if hook == "finish_turn" {
             assert_eq!(
-                partial.history.last().unwrap().text_content(),
+                partial.history.context().last().unwrap().text_content(),
                 "completed answer"
             );
             assert_eq!(partial.generated_history.len(), 1);
@@ -336,7 +337,7 @@ async fn input_hook_failure_returns_every_taken_unconsumed_message_in_order() {
             .collect::<Vec<_>>(),
         ["one", "two"]
     );
-    assert_eq!(partial.history.len(), 2);
+    assert_eq!(partial.history.context().len(), 2);
 }
 
 struct Blocking(&'static str);
@@ -438,7 +439,10 @@ async fn timeout_cancels_awaiting_hooks_without_dispatching_late_requests_or_los
         ));
         let finished = hook == "finish_turn";
         assert_eq!(model.calls.lock().unwrap().len(), usize::from(finished));
-        assert_eq!(partial.history.len(), if finished { 3 } else { 2 });
+        assert_eq!(
+            partial.history.context().len(),
+            if finished { 3 } else { 2 }
+        );
         if finished {
             assert_eq!(partial.content, "completed");
         }
@@ -490,7 +494,10 @@ async fn cancelled_input_hooks_return_steering_and_follow_up_queues_in_order() {
                 .collect::<Vec<_>>(),
             ["one", "two"]
         );
-        assert_eq!(partial.history.len(), if follow_up { 3 } else { 2 });
+        assert_eq!(
+            partial.history.context().len(),
+            if follow_up { 3 } else { 2 }
+        );
     }
 }
 
@@ -542,6 +549,7 @@ async fn hook_model_change_uses_effective_model_when_projecting_opaque_reasoning
         );
         assert!(result
             .history
+            .context()
             .iter()
             .filter_map(RuntimeMessage::model_message)
             .any(|message| message.content.iter().any(|part| matches!(

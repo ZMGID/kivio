@@ -93,11 +93,12 @@ async fn model_failure_retains_completed_work_usage_and_provider_identity() {
     assert_eq!(executor.call_count(), 1);
     assert_eq!(partial.tool_records.len(), 1);
     assert_eq!(partial.usage.as_ref().unwrap().input_tokens, Some(12));
-    assert_eq!(partial.history.len(), 4);
+    assert_eq!(partial.history.context().len(), 4);
     assert_eq!(partial.generated_history.len(), 2);
     assert_eq!(
         partial
             .history
+            .context()
             .last()
             .unwrap()
             .model_message()
@@ -172,7 +173,7 @@ async fn boundary_failure_retains_the_answer_that_already_completed() {
             panic!("started failure")
         };
         assert_eq!(
-            partial.history.last().unwrap().text_content(),
+            partial.history.context().last().unwrap().text_content(),
             "completed answer"
         );
         assert_eq!(
@@ -254,7 +255,7 @@ async fn host_failure_preserves_input_and_does_not_become_a_provider_error() {
             message: "disk full".into()
         }
     );
-    assert_eq!(partial.history, initial_history());
+    assert_eq!(partial.history.context(), initial_history());
     assert!(partial.generated_history.is_empty());
     assert_eq!(
         *events.0.lock().unwrap(),

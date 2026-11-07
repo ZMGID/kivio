@@ -15,7 +15,6 @@ use super::rounds::{run_tool_round, ToolRoundOutcome};
 use super::steering::{
     follow_up_pending, inject_follow_up_messages, inject_steering_messages, steering_pending,
 };
-use super::stop::patch_system_message;
 use super::synthesis::{synthesis_step, SynthesisCompleted, SynthesisFlow};
 use super::types::{AgentRunConfig, AgentRunResult};
 
@@ -29,7 +28,7 @@ pub(crate) struct LoopEnv<'a> {
 
 /// Mutable accumulators threaded through the loop phases.
 pub(crate) struct RunState {
-    pub(crate) runtime_messages: Vec<RuntimeMessage>,
+    pub(crate) history: super::SessionHistory,
     pub(crate) tools: Vec<ToolDefinition>,
     pub(crate) blocked_tool_calls: Vec<ToolDefinition>,
     pub(crate) generated_api_messages: Vec<RuntimeMessage>,
@@ -58,9 +57,6 @@ pub(crate) struct RunState {
     /// 实报值，只对锚点之后新增的消息做字符估算（对齐 pi/opencode 的 ground-truth 口径）。
     /// 压缩发生后清空（消息序列已变，旧锚点失真），下次模型调用重新填充。
     pub(crate) last_step_usage: Option<crate::model::ModelUsage>,
-    /// 记录锚点**响应 push 之后** `runtime_messages` 的长度——`runtime_messages[该值..]` =
-    /// 锚点响应之后新增的消息（工具结果等），即 trailing 增量。在 `rounds.rs` push 完 assistant
-    /// 响应后设置（而非 merge_usage 时），使 trailing 严格「响应之后」、不与锚点 output 双算。
     pub(crate) runtime_len_at_last_call: usize,
     /// `config.initial_anchor_*`（来自上一轮落盘 usage）是否仍可用：run 首次压缩检查前为 true；
     /// 一旦发生压缩即失效（回落纯估算，直到本轮模型调用产生新的 `last_step_usage`）。
@@ -77,7 +73,7 @@ pub(crate) struct RunState {
 impl RunState {
     pub(crate) fn snapshot(&self) -> super::session::RunSnapshot<'_> {
         super::session::RunSnapshot {
-            history: &self.runtime_messages,
+            history: self.history.context(),
             tools: &self.tools,
             tool_records: &self.tool_records,
         }
@@ -424,9 +420,9 @@ impl Answer {
                 })
             }
         };
-        state.runtime_messages.push(message.clone());
+        state.history.push(message.clone());
         state.generated_api_messages.push(message);
-        state.runtime_len_at_last_call = state.runtime_messages.len();
+        state.runtime_len_at_last_call = state.history.context().len();
     }
 
     fn finish(self, state: &mut RunState) -> Result<AgentRunResult, AgentFailure> {
@@ -442,7 +438,7 @@ impl Answer {
     fn cancel(self, state: &mut RunState) -> Result<AgentRunResult, AgentFailure> {
         let mut result = self.finish(state)?;
         result.status = super::types::AgentRunStatus::Cancelled;
-        Ok(attach_usage(result, state))
+        Ok(record_final_message(result, state))
     }
 }
 
@@ -476,13 +472,13 @@ async fn admit_step(
         .checkpoint_runtime(
             &env.config.conversation_id,
             &env.config.run_id,
-            &state.runtime_messages,
+            state.history.context(),
             false,
         )
         .await
         .map_err(AgentFailure::host("checkpoint_runtime"))?;
     state
-        .runtime_messages
+        .history
         .extend(incoming.iter().map(|input| input.message.clone()));
     state.generated_api_messages.extend(
         incoming
@@ -493,7 +489,7 @@ async fn admit_step(
     if env.host.control.active() {
         let inputs = session.before_step(state.snapshot());
         if env.host.control.active() {
-            state.runtime_messages.extend(inputs.iter().cloned());
+            state.history.extend(inputs.iter().cloned());
             state.generated_api_messages.extend(inputs);
         }
     }
@@ -510,7 +506,7 @@ async fn answer_boundary(
     if !env.host.control.active() {
         return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
     }
-    let mut history = state.runtime_messages.clone();
+    let mut history = state.history.context().to_vec();
     history.push(answer.message());
     let decision = tokio::select! {
         biased;
@@ -533,7 +529,7 @@ async fn answer_boundary(
         }
         Ok(super::session::TurnDecision::Continue(messages)) => {
             answer.absorb(state);
-            state.runtime_messages.extend(messages.iter().cloned());
+            state.history.extend(messages.iter().cloned());
             state.generated_api_messages.extend(messages);
             return Ok(AnswerBoundary::Continue);
         }
@@ -545,7 +541,7 @@ async fn answer_boundary(
         .checkpoint_runtime(
             &env.config.conversation_id,
             &env.config.run_id,
-            &state.runtime_messages,
+            state.history.context(),
             true,
         )
         .await
@@ -568,7 +564,7 @@ async fn answer_boundary(
                 .extend(result.final_message.clone().map(RuntimeMessage::model));
         }
         state
-            .runtime_messages
+            .history
             .extend(incoming.iter().map(|input| input.message.clone()));
         result.generated_history.extend(
             incoming
@@ -581,7 +577,7 @@ async fn answer_boundary(
     if !incoming.is_empty() {
         answer.absorb(state);
         state
-            .runtime_messages
+            .history
             .extend(incoming.iter().map(|input| input.message.clone()));
         state.generated_api_messages.extend(
             incoming
@@ -636,7 +632,7 @@ async fn run_agent_loop_inner(
     deadline: Option<tokio::time::Instant>,
 ) -> Result<AgentRunResult, AgentRunError> {
     let mut state = RunState {
-        runtime_messages: std::mem::take(&mut config.runtime_messages),
+        history: std::mem::take(&mut config.history),
         tools: std::mem::take(&mut config.tools),
         blocked_tool_calls: std::mem::take(&mut config.blocked_tool_calls),
         generated_api_messages: Vec::new(),
@@ -671,7 +667,7 @@ async fn run_agent_loop_inner(
         if !host.control.active() {
             return Ok(cancelled_run_result_from_state(&mut state));
         }
-        state.runtime_messages.extend(inputs.iter().cloned());
+        state.history.extend(inputs.iter().cloned());
         state.generated_api_messages.extend(inputs);
         let env = LoopEnv {
             config: &config,
@@ -727,11 +723,11 @@ async fn run_agent_loop_inner(
                         let mut records = std::mem::take(&mut state.tool_records);
                         records.append(&mut result.tool_records);
                         result.tool_records = records;
-                        return Ok(attach_usage(result, &mut state));
+                        return Ok(record_final_message(result, &mut state));
                     }
                     PlanningStepOutcome::Recovered(result) => {
                         if result.status != super::types::AgentRunStatus::Recovered {
-                            return Ok(attach_usage(result, &mut state));
+                            return Ok(record_final_message(result, &mut state));
                         }
                         restore_completed_result(&mut state, &result);
                         match answer_boundary(
@@ -749,7 +745,7 @@ async fn run_agent_loop_inner(
                         }
                     }
                     PlanningStepOutcome::Cancelled(result) => {
-                        return Ok(attach_usage(result, &mut state));
+                        return Ok(record_final_message(result, &mut state));
                     }
                     PlanningStepOutcome::ToolCalls(planned) => planned,
                 };
@@ -762,7 +758,7 @@ async fn run_agent_loop_inner(
                     }
                     ToolRoundOutcome::Failed(failure) => return Err(failure),
                     ToolRoundOutcome::Cancelled(result) => {
-                        return Ok(attach_usage(result, &mut state));
+                        return Ok(record_final_message(result, &mut state));
                     }
                 }
                 let decision = tokio::select! {
@@ -775,7 +771,7 @@ async fn run_agent_loop_inner(
                     match decision {
                         super::session::TurnDecision::Default => {}
                         super::session::TurnDecision::Continue(messages) => {
-                            state.runtime_messages.extend(messages.iter().cloned());
+                            state.history.extend(messages.iter().cloned());
                             state.generated_api_messages.extend(messages);
                         }
                         super::session::TurnDecision::Stop => {
@@ -807,13 +803,13 @@ async fn run_agent_loop_inner(
                     .checkpoint_runtime(
                         &config.conversation_id,
                         &config.run_id,
-                        &state.runtime_messages,
+                        state.history.context(),
                         false,
                     )
                     .await
                     .map_err(AgentFailure::host("checkpoint_runtime"))?;
                 state
-                    .runtime_messages
+                    .history
                     .extend(incoming.iter().map(|input| input.message.clone()));
                 state.generated_api_messages.extend(
                     incoming
@@ -836,13 +832,13 @@ async fn run_agent_loop_inner(
             .checkpoint_runtime(
                 &config.conversation_id,
                 &config.run_id,
-                &state.runtime_messages,
+                state.history.context(),
                 true,
             )
             .await
             .map_err(AgentFailure::host("checkpoint_runtime"))?;
         state
-            .runtime_messages
+            .history
             .extend(incoming.iter().map(|input| input.message.clone()));
         state.generated_api_messages.extend(
             incoming
@@ -852,9 +848,9 @@ async fn run_agent_loop_inner(
         );
 
         if let Some(prompt) = state.fallback_prompt.take() {
-            patch_system_message(&mut state.runtime_messages, &prompt.system);
+            state.history.set_system_prompt(&prompt.system);
             if let Some(message) = prompt.context {
-                state.runtime_messages.push(message.clone());
+                state.history.push(message.clone());
                 state.generated_api_messages.push(message);
             }
         }
@@ -862,7 +858,7 @@ async fn run_agent_loop_inner(
         if let Some(message) = planning_final {
             return message
                 .finish(&mut state)
-                .map(|result| attach_usage(result, &mut state));
+                .map(|result| record_final_message(result, &mut state));
         }
 
         loop {
@@ -880,7 +876,7 @@ async fn run_agent_loop_inner(
             let completed = match synthesis_step(&env, &mut state, session).await? {
                 SynthesisFlow::Early(result) => {
                     if result.status != super::types::AgentRunStatus::Recovered {
-                        return Ok(attach_usage(result, &mut state));
+                        return Ok(record_final_message(result, &mut state));
                     }
                     restore_completed_result(&mut state, &result);
                     match answer_boundary(
@@ -896,7 +892,7 @@ async fn run_agent_loop_inner(
                         AnswerBoundary::Finish(answer) => {
                             return answer
                                 .finish(&mut state)
-                                .map(|result| attach_usage(result, &mut state))
+                                .map(|result| record_final_message(result, &mut state))
                         }
                         AnswerBoundary::Cancelled(result) => return Ok(result),
                     }
@@ -920,7 +916,7 @@ async fn run_agent_loop_inner(
                 AnswerBoundary::Finish(answer) => {
                     return answer
                         .finish(&mut state)
-                        .map(|result| attach_usage(result, &mut state))
+                        .map(|result| record_final_message(result, &mut state))
                 }
                 AnswerBoundary::Cancelled(result) => return Ok(result),
             }
@@ -947,24 +943,19 @@ async fn run_agent_loop_inner(
         })
 }
 
-/// 把本轮累计的 provider usage 挂到运行结果上（finalize 构造器们不感知 usage）。
-/// 同时：本轮若发生过 L2 压缩，把压缩后的完整历史 +最终 assistant 回答回传到
-/// `compacted_history`，供跨轮调用方替换其累积历史（finalize 构造器们也不感知压缩）。
-fn attach_usage(result: AgentRunResult, state: &mut RunState) -> AgentRunResult {
+fn record_final_message(result: AgentRunResult, state: &mut RunState) -> AgentRunResult {
     if let Some(final_message) = result.final_message.clone().or_else(|| {
         (!result.content.is_empty() || result.reasoning.is_some()).then(|| {
             super::stop::final_assistant_message(&result.content, result.reasoning.as_deref())
         })
     }) {
-        state
-            .runtime_messages
-            .push(RuntimeMessage::model(final_message));
+        state.history.push(RuntimeMessage::model(final_message));
     }
     result
 }
 
 fn attach_run_state(mut result: AgentRunResult, state: &mut RunState) -> AgentRunResult {
-    result.history = std::mem::take(&mut state.runtime_messages);
+    result.history = std::mem::take(&mut state.history);
     result.usage = state.usage.take();
     result.cache_pairs = state.cache_pairs.take();
     result.last_step_usage = state.last_step_usage.take();

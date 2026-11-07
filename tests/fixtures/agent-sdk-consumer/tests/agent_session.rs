@@ -126,13 +126,13 @@ async fn minimal_session_owns_two_turns_without_a_host_or_executor() {
     let session = AgentSession::new(AgentSessionConfig::new(model.clone(), "test-model"));
     let first = session.prompt("first question");
     assert_eq!(session.status(), SessionStatus::Running);
-    assert_eq!(messages(&session.history()), ["first question"]);
+    assert_eq!(messages(&session.context()), ["first question"]);
     assert_eq!(bounded(first).await.unwrap().content, "first answer");
     let second = bounded(session.prompt("second question")).await.unwrap();
     assert_eq!(second.content, "second answer");
     assert_eq!(session.status(), SessionStatus::Idle);
     assert_eq!(
-        messages(&session.history()),
+        messages(&session.context()),
         [
             "first question",
             "first answer",
@@ -140,7 +140,7 @@ async fn minimal_session_owns_two_turns_without_a_host_or_executor() {
             "second answer"
         ]
     );
-    assert_eq!(second.history, session.history());
+    assert_eq!(second.history.context(), session.context());
     assert_eq!(
         messages(&model.calls.lock().unwrap()[1].history),
         ["first question", "first answer", "second question"]
@@ -161,7 +161,7 @@ async fn invalid_prompts_leave_an_idle_session_unchanged() {
             AgentAdmissionError::EmptyInput,
         );
     }
-    assert!(session.history().is_empty());
+    assert!(session.context().is_empty());
     assert_eq!(session.status(), SessionStatus::Idle);
     assert_eq!(session.abort(), StopAdmission::Inactive);
     assert_eq!(
@@ -180,7 +180,7 @@ fn prompt_without_a_runtime_is_rejected_without_mutating_history() {
     let model = Model::new(vec![]);
     let session = AgentSession::new(AgentSessionConfig::new(model.clone(), "test"));
     let run = session.prompt("question");
-    assert!(session.history().is_empty());
+    assert!(session.context().is_empty());
     assert_eq!(session.status(), SessionStatus::Idle);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -208,10 +208,10 @@ async fn busy_rejection_does_not_append_a_second_prompt() {
         bounded(session.continue_run()).await.unwrap_err(),
         AgentAdmissionError::Busy,
     );
-    assert_eq!(messages(&session.history()), ["accepted"]);
+    assert_eq!(messages(&session.context()), ["accepted"]);
     gate.release.notify_one();
     bounded(run).await.unwrap();
-    assert_eq!(messages(&session.history()), ["accepted", "answer"]);
+    assert_eq!(messages(&session.context()), ["accepted", "answer"]);
     assert_eq!(model.calls.lock().unwrap().len(), 1);
 }
 
@@ -416,7 +416,7 @@ async fn abort_and_dropped_run_keep_admission_busy_until_tool_drain_and_commit_f
             );
         }
         assert!(session
-            .history()
+            .context()
             .iter()
             .any(|message| message.role() == Some(ModelRole::Tool)));
         let fresh = session.prompt("fresh");
@@ -487,8 +487,8 @@ async fn input_hook_failure_retains_each_queue_without_replaying_it_in_a_fresh_r
             panic!("expected hook failure")
         };
         assert!(matches!(cause, AgentFailure::Hook { hook: "input", .. }));
-        assert_eq!(partial.history, session.history());
-        assert!(!messages(&session.history())
+        assert_eq!(partial.history.context(), session.context());
+        assert!(!messages(&session.context())
             .iter()
             .any(|value| value.starts_with("queued")));
         let pending = session.unconsumed_inputs();
@@ -526,7 +526,7 @@ async fn failed_commit_reports_failure_and_keeps_the_complete_partial_history() 
     let run = session.prompt("question");
     bounded(gate.entered.notified()).await;
     assert_eq!(
-        messages(&session.history()),
+        messages(&session.context()),
         ["question", "retained answer"]
     );
     gate.release.notify_one();
@@ -542,7 +542,7 @@ async fn failed_commit_reports_failure_and_keeps_the_complete_partial_history() 
     ));
     assert_eq!(partial.status, AgentRunStatus::Failed(cause));
     assert_eq!(partial.content, "retained answer");
-    assert_eq!(partial.history, session.history());
+    assert_eq!(partial.history.context(), session.context());
     assert_eq!(session.status(), SessionStatus::Idle);
 }
 
@@ -567,7 +567,7 @@ async fn synchronous_commit_panic_settles_the_session_and_preserves_history() {
     else {
         panic!("expected commit failure")
     };
-    assert_eq!(messages(&partial.history), ["question", "answer"]);
+    assert_eq!(messages(&partial.history.context()), ["question", "answer"]);
     assert_eq!(session.status(), SessionStatus::Idle);
     bounded(session.wait_inactive()).await;
 }
@@ -599,8 +599,8 @@ async fn panic_after_tool_execution_keeps_completed_tool_facts() {
     };
     assert_eq!(executor.call_count(), 1);
     assert_eq!(partial.tool_records.len(), 1);
-    assert_eq!(partial.history.len(), 3);
-    assert_eq!(partial.history, session.history());
+    assert_eq!(partial.history.context().len(), 3);
+    assert_eq!(partial.history.context(), session.context());
     assert_eq!(session.status(), SessionStatus::Idle);
 }
 
@@ -611,7 +611,7 @@ struct ReentrantSink {
 }
 impl AgentEventSink for ReentrantSink {
     fn on_event(&self, _: &AgentEvent<'_>) -> EventDelivery {
-        self.session.upgrade().unwrap().history();
+        self.session.upgrade().unwrap().context();
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.closed {
             EventDelivery::Closed
@@ -671,19 +671,19 @@ async fn continuation_rejects_invalid_histories_and_resumes_a_finished_tool_roun
     ] {
         let model = Model::new(vec![]);
         let mut cfg = AgentSessionConfig::new(model.clone(), "test");
-        cfg.history = history.clone();
+        cfg.history = history.clone().into();
         let session = AgentSession::new(cfg);
         admission(
             bounded(session.continue_run()).await.unwrap_err(),
             AgentAdmissionError::InvalidContinuation,
         );
-        assert_eq!(session.history(), history);
+        assert_eq!(session.context(), history);
         assert!(model.calls.lock().unwrap().is_empty());
     }
     let model = Model::new(vec![text("finished")]);
     let executor = Arc::new(EchoTool::new(true));
     let mut cfg = AgentSessionConfig::new(model.clone(), "test");
-    cfg.history = vec![user, assistant, result];
+    cfg.history = vec![user, assistant, result].into();
     cfg.tools
         .register_dynamic(echo_definition(), executor.clone())
         .unwrap();
@@ -693,7 +693,7 @@ async fn continuation_rejects_invalid_histories_and_resumes_a_finished_tool_roun
     assert_eq!(executor.call_count(), 0);
     assert_eq!(model.calls.lock().unwrap().len(), 1);
     assert_eq!(
-        messages(&session.history()),
+        messages(&session.context()),
         ["question", "", "already executed", "finished"]
     );
 }
@@ -734,13 +734,13 @@ async fn duplicate_input_ids_are_consumed_once_across_both_input_kinds() {
     let outcome = bounded(run).await.unwrap();
     assert_eq!(*consumed.lock().unwrap(), ["same"]);
     assert_eq!(
-        messages(&outcome.history)
+        messages(&outcome.history.context())
             .iter()
             .filter(|value| *value == "once")
             .count(),
         1
     );
-    assert!(!messages(&outcome.history)
+    assert!(!messages(&outcome.history.context())
         .iter()
         .any(|value| value == "twice" || value == "third"));
     assert!(session.unconsumed_inputs().is_empty());

@@ -20,9 +20,16 @@ pub struct ContextSnapshot<'a> {
     pub completed_tool_rounds: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct CompactionPlan {
+    /// Exact range in the ContextSnapshot that produced this plan.
+    pub covered: std::ops::Range<usize>,
+    pub replacement: Vec<RuntimeMessage>,
+}
+
 pub enum ContextUpdate {
     SendView(Vec<RuntimeMessage>),
-    Compacted(Vec<RuntimeMessage>),
+    Compacted(CompactionPlan),
 }
 
 #[derive(Default)]

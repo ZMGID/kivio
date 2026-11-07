@@ -600,6 +600,7 @@ async fn loop_hook_failure_returns_partial_paired_history_and_cancellation_never
         };
         let ids = partial
             .history
+            .context()
             .iter()
             .filter_map(|message| message.model_message())
             .flat_map(|message| message.content.iter())
@@ -723,6 +724,7 @@ async fn hook_panics_keep_paired_partial_history_and_never_rerun_executed_tools(
             assert!(message.contains("panicked"));
             let results = partial
                 .history
+                .context()
                 .iter()
                 .filter_map(|message| message.model_message())
                 .flat_map(|message| message.content.iter())
@@ -763,6 +765,7 @@ async fn hook_panics_keep_paired_partial_history_and_never_rerun_executed_tools(
                 assert_eq!(results[0].1, "raw:original");
                 assert!(partial
                     .history
+                    .context()
                     .iter()
                     .any(|message| message.text_content() == "original follow-up"));
             }

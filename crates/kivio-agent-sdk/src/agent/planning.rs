@@ -533,7 +533,7 @@ mod tests {
                 capabilities: None,
                 provider_id: String::new(),
                 model: String::new(),
-                history: Vec::new(),
+                history: Default::default(),
                 tools: Vec::new(),
                 options: Default::default(),
                 metadata: Default::default(),

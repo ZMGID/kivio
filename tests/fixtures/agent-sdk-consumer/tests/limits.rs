@@ -109,7 +109,7 @@ async fn model_step_limit_keeps_completed_tools_without_a_second_model_call() {
     assert_eq!(model.calls.load(Ordering::SeqCst), 1);
     assert_eq!(executor.call_count(), 1);
     assert_eq!(partial.tool_records.len(), 1);
-    assert_eq!(partial.history.len(), 4);
+    assert_eq!(partial.history.context().len(), 4);
 }
 
 #[derive(Default)]
@@ -232,7 +232,7 @@ async fn timeout_requests_stop_and_waits_for_managed_tool_cleanup() {
     assert!(!control.active());
     assert_eq!(model.calls.load(Ordering::SeqCst), 1);
     assert_eq!(partial.tool_records.len(), 1);
-    assert_eq!(partial.history.len(), 4);
+    assert_eq!(partial.history.context().len(), 4);
 }
 
 struct ReadyModel(AtomicUsize);

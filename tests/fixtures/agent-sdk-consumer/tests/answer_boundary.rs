@@ -133,7 +133,7 @@ async fn in_flight_steering_preserves_identical_canonical_answers_and_segments_o
         calls[1].history[calls[1].history.len() - 2].model_message(),
         Some(&canonical)
     );
-    for history in [&result.history, &result.generated_history] {
+    for history in [result.history.context(), &result.generated_history] {
         assert_eq!(
             history
                 .iter()
@@ -329,6 +329,7 @@ async fn plain_host_delivery_and_child_wait_preserve_persistence_ownership() {
         assert_eq!(
             result
                 .history
+                .context()
                 .iter()
                 .filter(|message| message.text_content() == text)
                 .count(),
@@ -382,6 +383,7 @@ async fn cancellation_during_plain_input_admission_makes_no_request() {
     assert!(model.calls.lock().unwrap().is_empty());
     assert!(!result
         .history
+        .context()
         .iter()
         .any(|message| message.text_content() == "do not consume"));
 }
@@ -427,6 +429,7 @@ async fn cancellation_in_finish_policy_retains_answer_and_cancelled_outcome() {
         assert_eq!(
             result
                 .history
+                .context()
                 .iter()
                 .filter(|message| message.role() == Some(ModelRole::Assistant))
                 .count(),
@@ -476,6 +479,7 @@ async fn cancellation_during_child_wait_keeps_completed_answer_once() {
     assert_eq!(
         result
             .history
+            .context()
             .iter()
             .filter(|message| message.role() == Some(ModelRole::Assistant))
             .count(),
@@ -550,7 +554,7 @@ async fn cancellation_at_finishing_checkpoint_retains_answer_then_delivered_inpu
         .unwrap();
         assert_eq!(result.status, AgentRunStatus::Cancelled);
         assert_eq!(model.calls.lock().unwrap().len(), 1);
-        for history in [&result.history, &result.generated_history] {
+        for history in [result.history.context(), &result.generated_history] {
             assert_eq!(history[history.len() - 2].model_message(), Some(&canonical));
             assert_eq!(history.last().unwrap().text_content(), "delivered at stop");
             assert_eq!(
@@ -591,7 +595,7 @@ async fn cancellation_in_follow_up_hook_does_not_reconstruct_prior_reasoning_as_
     .unwrap();
     assert_eq!(result.status, AgentRunStatus::Cancelled);
     assert_eq!(model.calls.lock().unwrap().len(), 1);
-    for history in [&result.history, &result.generated_history] {
+    for history in [result.history.context(), &result.generated_history] {
         let assistants = history
             .iter()
             .filter(|message| message.role() == Some(ModelRole::Assistant))
@@ -645,6 +649,7 @@ async fn queued_plain_inputs_keep_one_per_step_and_steer_precedes_follow_up() {
         assert_eq!(
             result
                 .history
+                .context()
                 .iter()
                 .filter(|message| message.text_content() == text)
                 .count(),

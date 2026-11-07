@@ -34,7 +34,7 @@ pub enum FallbackReason {
 
 pub(crate) fn snapshot(state: &super::loop_::RunState) -> RecoverySnapshot<'_> {
     RecoverySnapshot {
-        history: &state.runtime_messages,
+        history: state.history.context(),
         tool_records: &state.tool_records,
         last_step_usage: state.last_step_usage.as_ref(),
     }

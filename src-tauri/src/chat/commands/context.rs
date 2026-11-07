@@ -5,8 +5,8 @@ use tauri::{AppHandle, State};
 
 use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::context_policy::{
-    decay_warning_for, estimate_messages_tokens, replacement_body, summarize_history,
-    CompactOutcome, SUMMARY_OUTPUT_TOKENS,
+    decay_warning_for, estimate_messages_tokens, replacement_body, summarize_runtime_history,
+    SUMMARY_OUTPUT_TOKENS,
 };
 use crate::chat::model::openai_messages_from_model_messages;
 use crate::chat::model_metadata::{chat_max_output_tokens_for_model, context_window_for_model};
@@ -709,11 +709,12 @@ pub(super) async fn compress_conversation_context(
         .ok_or("没有足够的历史可以压缩")?
         .id
         .clone();
-    let outcome = summarize_history(
+    let runtime_messages = crate::chat::agent::history::import_history(messages.clone());
+    let outcome = summarize_runtime_history(
         state.inner(),
         provider,
         &model,
-        &messages,
+        &runtime_messages,
         false,
         &[],
         chat_max_output_tokens_for_model(Some(provider), &model).unwrap_or(SUMMARY_OUTPUT_TOKENS),
@@ -724,9 +725,17 @@ pub(super) async fn compress_conversation_context(
     )
     .await;
     let (compacted, text) = match outcome {
-        CompactOutcome::Compacted(compacted, text) => (compacted, text),
-        CompactOutcome::Skipped => return Ok(false),
-        CompactOutcome::Cancelled | CompactOutcome::Failed => {
+        kivio_agent_sdk::context::CompactOutcome::Compacted(plan, text) => {
+            let mut projected = runtime_messages;
+            projected.splice(plan.covered, plan.replacement);
+            (
+                crate::chat::agent::history::export_history(&projected),
+                text,
+            )
+        }
+        kivio_agent_sdk::context::CompactOutcome::Skipped => return Ok(false),
+        kivio_agent_sdk::context::CompactOutcome::Cancelled
+        | kivio_agent_sdk::context::CompactOutcome::Failed => {
             return Err("上下文压缩失败，原有历史保持不变".into())
         }
     };

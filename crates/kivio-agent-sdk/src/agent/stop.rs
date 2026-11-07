@@ -1,6 +1,5 @@
 use serde_json::Value;
 
-use super::history::{RuntimeBody, RuntimeMessage};
 #[cfg(test)]
 use crate::model::is_tools_unsupported_error;
 use crate::model::{GenerateOutput, MessagePart, ModelMessage, ModelRole, PendingToolCall};
@@ -92,16 +91,6 @@ pub fn empty_assistant_response_error(scope: &str) -> String {
     format!("{scope} returned an empty assistant response")
 }
 
-pub(crate) fn patch_system_message(messages: &mut [RuntimeMessage], prompt: &str) {
-    if let Some(RuntimeMessage {
-        body: RuntimeBody::System(content),
-        ..
-    }) = messages.first_mut()
-    {
-        *content = prompt.to_string();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,16 +164,5 @@ mod tests {
             final_response_from_planning_message(&message, &[]).unwrap_err(),
             "Chat tools planning returned an empty assistant response"
         );
-    }
-
-    #[test]
-    fn patch_system_message_preserves_other_entries() {
-        let mut messages = vec![
-            RuntimeMessage::system("old"),
-            RuntimeMessage::text(ModelRole::User, "hi"),
-        ];
-        patch_system_message(&mut messages, "new prompt");
-        assert_eq!(messages[0].text_content(), "new prompt");
-        assert_eq!(messages[1].text_content(), "hi");
     }
 }
