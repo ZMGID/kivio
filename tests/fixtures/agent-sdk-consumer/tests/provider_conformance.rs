@@ -10,6 +10,7 @@ use kivio_agent_sdk::{
         AgentSession, AgentSessionConfig,
     },
     model::{
+        anthropic::{AnthropicMessagesConfig, AnthropicMessagesProvider},
         openai::{OpenAiChatConfig, OpenAiChatProvider},
         responses::{OpenAiResponsesConfig, OpenAiResponsesProvider},
         GenerateOutput, GenerateRequest, LanguageModelProvider, ModelError, ModelErrorKind,
@@ -28,9 +29,14 @@ impl<T: LanguageModelProvider + ModelRuntime> ConformanceProvider for T {}
 enum ProtocolCase {
     Chat,
     Responses,
+    Anthropic,
 }
 
-const CASES: &[ProtocolCase] = &[ProtocolCase::Chat, ProtocolCase::Responses];
+const CASES: &[ProtocolCase] = &[
+    ProtocolCase::Chat,
+    ProtocolCase::Responses,
+    ProtocolCase::Anthropic,
+];
 
 impl ProtocolCase {
     fn provider(self, server: &Server) -> Arc<dyn ConformanceProvider> {
@@ -44,6 +50,7 @@ impl ProtocolCase {
                 "reasoning_effort":"low","vendor":"default"}),
             Self::Responses => json!({"temperature":0.1,"max_output_tokens":1,
                 "reasoning":{"effort":"low"},"vendor":"default"}),
+            Self::Anthropic => json!({"temperature":0.1,"max_tokens":1,"vendor":"default"}),
         };
         match self {
             Self::Chat => {
@@ -66,6 +73,16 @@ impl ProtocolCase {
                 config.options.extra_body = extra;
                 Arc::new(OpenAiResponsesProvider::new(client, config))
             }
+            Self::Anthropic => {
+                let mut config = AnthropicMessagesConfig::new(server.endpoint.clone());
+                config.api_key = Some("fixture-key".into());
+                config
+                    .headers
+                    .insert("x-consumer", "standalone".parse().unwrap());
+                config.options.temperature = Some(0.2);
+                config.options.extra_body = extra;
+                Arc::new(AnthropicMessagesProvider::new(client, config))
+            }
         }
     }
 
@@ -73,6 +90,9 @@ impl ProtocolCase {
         match self {
             Self::Chat => support::text_delta(text),
             Self::Responses => event(json!({"type":"response.output_text.delta","delta":text})),
+            Self::Anthropic => event(
+                json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":text}}),
+            ),
         }
     }
 
@@ -82,6 +102,21 @@ impl ProtocolCase {
                 "prompt_tokens_details":{"cached_tokens":4},"completion_tokens_details":{"reasoning_tokens":2}}),
             Self::Responses => json!({"input_tokens":12,"output_tokens":5,"total_tokens":17,
                 "input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":2}}),
+            Self::Anthropic => json!({"input_tokens":12,"output_tokens":5,
+                "cache_read_input_tokens":4,"cache_creation_input_tokens":2}),
+        }
+    }
+
+    fn overrides(self) -> Value {
+        match self {
+            Self::Chat => json!({"temperature":0.9,"max_tokens":999,"reasoning_effort":"xhigh",
+                "vendor":"call","tools":[{"type":"web_search"}],"tool_choice":"auto"}),
+            Self::Responses => {
+                json!({"temperature":0.9,"max_output_tokens":999,"reasoning":{"effort":"xhigh"},
+                "vendor":"call","tools":[{"type":"web_search"}],"tool_choice":"auto"})
+            }
+            Self::Anthropic => json!({"temperature":0.9,"max_tokens":999,"vendor":"call",
+                "tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"auto"}}),
         }
     }
 
@@ -97,6 +132,14 @@ impl ProtocolCase {
                 json!({"type":"response.completed","response":{"status":"completed",
                 "output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}],"usage":self.usage()}}),
             ),
+            Self::Anthropic => format!(
+                "{}{}{}",
+                event(json!({"type":"content_block_stop","index":1})),
+                event(
+                    json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":self.usage()})
+                ),
+                event(json!({"type":"message_stop"}))
+            ),
         }
     }
 
@@ -108,6 +151,14 @@ impl ProtocolCase {
             Self::Responses => {
                 event(json!({"type":"response.reasoning_summary_text.delta","delta":"considered"}))
             }
+            Self::Anthropic => [
+                event(json!({"type":"message_start","message":{"id":"msg_42","role":"assistant","content":[],"usage":self.usage()}})),
+                event(json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}})),
+                event(json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"considered"}})),
+                event(json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed-reasoning"}})),
+                event(json!({"type":"content_block_stop","index":0})),
+                event(json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}})),
+            ].concat(),
         };
         Response::Sse(format!(
             "{reasoning}{}{}",
@@ -125,6 +176,11 @@ impl ProtocolCase {
                 {"type":"reasoning","summary":[{"type":"summary_text","text":"considered"}]},
                 {"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]}],
                 "usage":self.usage()})),
+            Self::Anthropic => {
+                Response::Json(json!({"id":"msg_42","type":"message","role":"assistant",
+                "content":[{"type":"thinking","thinking":"considered","signature":"signed-reasoning"},{"type":"text","text":text}],
+                "stop_reason":"end_turn","usage":self.usage()}))
+            }
         }
     }
 
@@ -144,6 +200,14 @@ impl ProtocolCase {
                     )
                 ))
             }
+            Self::Anthropic => Response::Sse([
+                event(json!({"type":"message_start","message":{"id":"msg_42","role":"assistant","content":[],"usage":self.usage()}})),
+                event(json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call-42","name":"echo","input":{}}})),
+                event(json!({"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":arguments}})),
+                event(json!({"type":"content_block_stop","index":0})),
+                event(json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":self.usage()})),
+                event(json!({"type":"message_stop"})),
+            ].concat()),
         }
     }
 
@@ -171,6 +235,25 @@ impl ProtocolCase {
                 assert_eq!(result["call_id"], "call-42");
                 assert!(result["output"].as_str().unwrap().contains(expected));
             }
+            Self::Anthropic => {
+                let blocks = body["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|message| message["content"].as_array().unwrap())
+                    .collect::<Vec<_>>();
+                let call = blocks
+                    .iter()
+                    .find(|block| block["type"] == "tool_use")
+                    .unwrap();
+                assert_eq!(call["id"], "call-42");
+                let result = blocks
+                    .iter()
+                    .find(|block| block["type"] == "tool_result")
+                    .unwrap();
+                assert_eq!(result["tool_use_id"], "call-42");
+                assert!(result["content"].as_str().unwrap().contains(expected));
+            }
         }
     }
 }
@@ -188,6 +271,32 @@ fn request() -> GenerateRequest {
 fn normalized(output: &GenerateOutput) -> Value {
     json!({"text":output.text,"reasoning":output.reasoning,"tools":output.tool_calls,
         "usage":output.usage,"finish":output.finish_reason,"reasoning_items":output.reasoning_items})
+}
+
+fn anthropic_pause(streamed: bool) -> Response {
+    let usage = json!({"input_tokens":8,"output_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":0});
+    let content = json!([
+        {"type":"server_tool_use","id":"srv_42","name":"web_search","input":{"query":"fixture query"}},
+        {"type":"web_search_tool_result","tool_use_id":"srv_42","content":[]}
+    ]);
+    if !streamed {
+        return Response::Json(json!({"id":"msg_pause","type":"message","role":"assistant",
+            "content":content,"stop_reason":"pause_turn","usage":usage}));
+    }
+    let mut events = event(
+        json!({"type":"message_start","message":{"id":"msg_pause","role":"assistant","content":[],"usage":usage}}),
+    );
+    for (index, block) in content.as_array().unwrap().iter().enumerate() {
+        events.push_str(&event(
+            json!({"type":"content_block_start","index":index,"content_block":block}),
+        ));
+        events.push_str(&event(json!({"type":"content_block_stop","index":index})));
+    }
+    events.push_str(&event(
+        json!({"type":"message_delta","delta":{"stop_reason":"pause_turn"},"usage":usage}),
+    ));
+    events.push_str(&event(json!({"type":"message_stop"})));
+    Response::Sse(events)
 }
 
 #[derive(Default)]
@@ -272,7 +381,21 @@ async fn streamed_collected_and_buffered_results_share_the_public_contract() {
             );
             assert_eq!(
                 (usage.cached_input_tokens, usage.reasoning_tokens),
-                (Some(4), Some(2)),
+                (
+                    Some(4),
+                    match case {
+                        ProtocolCase::Anthropic => None,
+                        _ => Some(2),
+                    }
+                ),
+                "{case:?}"
+            );
+            assert_eq!(
+                usage.cache_creation_input_tokens,
+                match case {
+                    ProtocolCase::Anthropic => Some(2),
+                    _ => None,
+                },
                 "{case:?}"
             );
             outputs.push(normalized(&output));
@@ -300,6 +423,97 @@ async fn responses_buffered_generation_accepts_sse_only_endpoints() {
 }
 
 #[tokio::test]
+async fn anthropic_native_continuations_keep_final_usage_separate_from_billing() {
+    let case = ProtocolCase::Anthropic;
+    for streamed in [false, true] {
+        let final_answer = if streamed {
+            case.answer("answer")
+        } else {
+            case.buffered("answer")
+        };
+        let server = Server::start_at(
+            "/native-messages",
+            vec![anthropic_pause(streamed), final_answer],
+        )
+        .await;
+        let provider = case.provider(&server);
+        let mut sink = Sink::default();
+        let output = if streamed {
+            LanguageModelProvider::stream(provider.as_ref(), request(), &mut sink)
+                .await
+                .unwrap()
+        } else {
+            LanguageModelProvider::generate(provider.as_ref(), request())
+                .await
+                .unwrap()
+        };
+        assert_eq!(output.text, "answer");
+        assert!(output.tool_calls.is_empty());
+        let usage = output.usage.unwrap();
+        assert_eq!(
+            (usage.input_tokens, usage.output_tokens, usage.total_tokens),
+            (Some(12), Some(5), Some(17))
+        );
+        let bill = output.billing_usage.unwrap();
+        assert_eq!(
+            (bill.input_tokens, bill.output_tokens, bill.total_tokens),
+            (Some(20), Some(7), Some(27))
+        );
+        assert_eq!(
+            (bill.cached_input_tokens, bill.cache_creation_input_tokens),
+            (Some(7), Some(2))
+        );
+        if streamed {
+            assert_eq!(
+                sink.parts
+                    .iter()
+                    .filter(|part| matches!(part, StreamPart::Finish { .. }))
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(server.count(), 2);
+        let requests = server.requests.lock().unwrap();
+        let messages = requests[1].body["messages"].as_array().unwrap();
+        let replay = messages.last().unwrap();
+        assert_eq!(replay["role"], "assistant");
+        assert_eq!(replay["content"][0]["type"], "server_tool_use");
+        assert_eq!(replay["content"][1]["tool_use_id"], "srv_42");
+    }
+    let server = Server::start_at(
+        "/bounded-native-messages",
+        (0..9).map(|_| anthropic_pause(false)).collect(),
+    )
+    .await;
+    let provider = case.provider(&server);
+    assert!(timeout(
+        LIMIT,
+        LanguageModelProvider::generate(provider.as_ref(), request())
+    )
+    .await
+    .unwrap()
+    .is_err());
+    assert_eq!(server.count(), 9);
+}
+
+#[tokio::test]
+async fn anthropic_thinking_omits_temperature_on_the_wire() {
+    let case = ProtocolCase::Anthropic;
+    let server = Server::start_at("/thinking-messages", vec![case.answer("answer")]).await;
+    let provider = case.provider(&server);
+    let mut request = request();
+    request.options.temperature = Some(0.7);
+    request.options.thinking_level = Some("high".into());
+    LanguageModelProvider::stream(provider.as_ref(), request, &mut |_| Ok(()))
+        .await
+        .unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert!(requests[0].body.get("temperature").is_none());
+    assert_eq!(requests[0].body["thinking"]["type"], "adaptive");
+    assert_eq!(requests[0].body["output_config"]["effort"], "high");
+}
+
+#[tokio::test]
 async fn explicit_endpoint_headers_and_call_overrides_reach_the_wire() {
     for case in CASES {
         let server = Server::start_at(
@@ -315,17 +529,13 @@ async fn explicit_endpoint_headers_and_call_overrides_reach_the_wire() {
         for (temperature, overrides) in [
             (None, json!({})),
             (Some(0.7), json!({})),
-            (
-                Some(0.7),
-                json!({"temperature":0.9,"max_tokens":999,"max_output_tokens":999,
-                    "reasoning_effort":"xhigh","reasoning":{"effort":"xhigh"},
-                    "vendor":"call","tools":[{"type":"web_search"}],"tool_choice":"auto"}),
-            ),
+            (Some(0.7), case.overrides()),
         ] {
             let mut request = request();
             request.options.temperature = temperature;
             request.options.max_tokens = 321;
             request.options.thinking_level = Some("high".into());
+            request.options.thinking_enabled = !matches!(case, ProtocolCase::Anthropic);
             request.options.tool_choice = ToolChoice::None;
             request.options.builtin_web_search = true;
             request.options.provider_options = overrides;
@@ -344,25 +554,34 @@ async fn explicit_endpoint_headers_and_call_overrides_reach_the_wire() {
                 headers.starts_with("post /gateway/custom-generation http/1.1"),
                 "{case:?}"
             );
-            assert!(
-                headers.contains("authorization: bearer fixture-key"),
-                "{case:?}"
-            );
+            let auth_header = match case {
+                ProtocolCase::Anthropic => "x-api-key: fixture-key",
+                _ => "authorization: bearer fixture-key",
+            };
+            assert!(headers.contains(auth_header), "{case:?}");
+            if matches!(case, ProtocolCase::Anthropic) {
+                assert!(headers.contains("anthropic-version: 2023-06-01"));
+            }
             assert!(headers.contains("x-consumer: standalone"), "{case:?}");
             assert_eq!(received.body["temperature"], temperature, "{case:?}");
             assert_eq!(received.body["vendor"], vendor, "{case:?}");
             let token_field = match case {
                 ProtocolCase::Chat => "max_tokens",
                 ProtocolCase::Responses => "max_output_tokens",
+                ProtocolCase::Anthropic => "max_tokens",
             };
             assert_eq!(received.body[token_field], max_tokens, "{case:?}");
-            let reasoning = match case {
-                ProtocolCase::Chat => &received.body["reasoning_effort"],
-                ProtocolCase::Responses => &received.body["reasoning"]["effort"],
-            };
-            assert_eq!(reasoning, effort, "{case:?}");
+            match case {
+                ProtocolCase::Chat => assert_eq!(received.body["reasoning_effort"], effort),
+                ProtocolCase::Responses => assert_eq!(received.body["reasoning"]["effort"], effort),
+                ProtocolCase::Anthropic => {}
+            }
             assert!(received.body.get("tools").is_none(), "{case:?}");
-            assert_eq!(received.body["tool_choice"], "none", "{case:?}");
+            let prohibited = match case {
+                ProtocolCase::Anthropic => json!({"type":"none"}),
+                _ => json!("none"),
+            };
+            assert_eq!(received.body["tool_choice"], prohibited, "{case:?}");
         }
     }
 }
@@ -427,11 +646,22 @@ async fn http_errors_keep_status_code_and_retry_after_without_retrying() {
             (401, "invalid_api_key", ModelErrorKind::Auth),
             (429, "rate_limit_exceeded", ModelErrorKind::RateLimited),
         ] {
+            let code = match (case, status) {
+                (ProtocolCase::Anthropic, 401) => "authentication_error",
+                (ProtocolCase::Anthropic, 429) => "rate_limit_error",
+                _ => code,
+            };
+            let body = match case {
+                ProtocolCase::Anthropic => {
+                    json!({"type":"error","error":{"type":code,"message":"fixture failure"}})
+                }
+                _ => json!({"error":{"code":code,"message":"fixture failure"}}),
+            };
             let server = Server::start_at(
                 "/conformance",
                 vec![Response::HttpHeaders(
                     status,
-                    json!({"error":{"code":code,"message":"fixture failure"}}).to_string(),
+                    body.to_string(),
                     vec![("Retry-After", "7")],
                 )],
             )

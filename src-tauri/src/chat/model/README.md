@@ -9,7 +9,7 @@ accepts `GenerateRequest` and returns `GenerateOutput` plus `StreamPart` events.
 The application `AppAgentModel` implements the SDK's `ModelRuntime`, resolves application
 request policy and owns its shared retry budget. Its history adapter retains Workbench
 prompt normalization. OpenAI Chat, Responses, Anthropic and Gemini use the same SDK
-model contracts. The application and standalone SDK providers share Chat and Responses
+model contracts. The application and standalone SDK providers share Chat, Responses and Anthropic
 request encoders, SSE decoders and usage parsers. See the
 [SDK consumption guide](../../../../crates/kivio-agent-sdk/README.md) for the standalone scope.
 

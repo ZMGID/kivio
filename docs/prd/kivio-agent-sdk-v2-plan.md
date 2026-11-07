@@ -337,13 +337,15 @@ T1 按第 4.1 节确定身份、历史投影、配对、压缩覆盖范围和提
 
 - [ ] 用同一套参数化 conformance fixture 固定四协议公共请求、增量与收集结果、工具回放、usage/cache/reasoning、错误及终态契约。复用已有 SSE、usage、消息类型和 ModelRuntime 适配，协议差异放在 fixture 参数中。
 - [x] 提取 Responses，验证 encrypted reasoning、store:false、SSE-only、缓存降级和原生搜索兼容。
-- [ ] 提取 Anthropic，验证 signed、redacted、native blocks、工具名映射、pause_turn 有界续轮，以及最终用量和累计计费。
+- [x] 提取 Anthropic，验证 signed、redacted、native blocks、工具名映射、pause_turn 有界续轮，以及最终用量和累计计费。
 - [ ] 提取 Gemini，验证 thoughtSignature、2.5/3.x 思考选项、图片、函数调用、grounding 和既有 Antigravity 适配。
 - [ ] 每个协议同步迁移聊天、标题、提示优化、压缩、视觉、自动化和子代理调用。应用保留账号、OAuth、密钥轮换、计费、请求日志和业务重试，删除重复编解码实现。
 
 验收采用第 6 节公共与专属矩阵。每种协议必须由独立消费者完成工具循环和后续对话，比较迁移前后夹具的请求与规范结果。真实供应商 smoke 单独记录，缺凭据的项目不得标记通过。
 
 Responses 子步骤验收（2026-11-07）：SDK 146 项、独立消费者 77 项、桌面 Rust 3168 项通过，56 项忽略；33 项原协议测试随实现移入 SDK，桌面测试数量相应减少。Chat 与 Responses 共用参数化消费者矩阵；补齐普通 JSON reasoning summary 与 SSE 的一致性。桌面类型检查、示例、rustdoc 和依赖边界通过。下一协议为 Anthropic；T3 尚未整体验收。
+
+Anthropic 子步骤验收（2026-11-07）：SDK 164 项、独立消费者 79 项、桌面 Rust 3155 项通过，56 项忽略；13 项原协议测试随实现移入 SDK，并新增 5 项协议边界测试。三协议共用消费者矩阵，新增 JSON/SSE 原生续轮、8 次续轮上限和最终用量与累计计费的区分。桌面类型检查、示例、rustdoc 和依赖边界通过。Claude Code 工具名、模型配置和请求计费保留原应用负责人；下一协议为 Gemini。真实供应商 smoke 未执行。
 
 ### T4a 交付 Skill 加载
 

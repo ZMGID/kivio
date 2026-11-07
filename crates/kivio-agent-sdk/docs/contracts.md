@@ -4,7 +4,7 @@ This reference describes the SDK v2 working API (not yet published). [The README
 
 ## Public interfaces
 
-`agent::run_agent_loop` combines a `ModelRuntime`, `ToolExecutor`, `AgentHost`, `SessionPolicy`, `AgentEventSink`, and `AgentRunHandle`. `agent::RuntimeMessage` carries typed model history and opaque host source metadata. The `model` module provides normalized model types and `model::openai::OpenAiChatProvider` and `model::responses::OpenAiResponsesProvider`. The `tools` module provides tool definitions, argument schemas, and tool output.
+`agent::run_agent_loop` combines a `ModelRuntime`, `ToolExecutor`, `AgentHost`, `SessionPolicy`, `AgentEventSink`, and `AgentRunHandle`. `agent::RuntimeMessage` carries typed model history and opaque host source metadata. The `model` module provides normalized model types and standalone Chat, Responses and Anthropic providers. The `tools` module provides tool definitions, argument schemas, and tool output.
 
 Rustdoc lists the exported items. Other public modules contain lower-level stream, protocol, and loop helpers. Their visibility does not provide a stable compatibility guarantee during this alpha. Private and `pub(crate)` modules are implementation details. Consumers use the crate dependency and public imports, rather than compiling SDK source files directly.
 
@@ -121,6 +121,12 @@ The standalone Chat and Responses providers call the supplied client's `send()` 
 `OpenAiResponsesConfig` uses the same explicit transport fields and a complete Responses URL. Its `options` selects OpenAI or xAI wire format, encrypted reasoning replay, cache fields, resolved temperature and default extra body fields. Video input is rejected before sending; unsupported content is not silently substituted. Both providers apply host defaults before encoded call options, then explicit `provider_options`, with tool prohibition last.
 
 Responses JSON summaries and encrypted replay items are separate outputs and both survive decoding. A complete JSON response may omit `status`, as in the [official Response type](https://github.com/openai/openai-node/blob/master/src/resources/responses/responses.ts); the SDK retains that compatibility. Streamed responses still require their terminal event, including when SSE is returned to buffered generation.
+
+`AnthropicMessagesConfig` takes a complete Messages URL and the same explicit client, headers, credential and buffered timeout inputs. It uses `x-api-key` authentication. `AnthropicMessagesOptions` selects resolved thinking mode, default token limit, cache TTL and compatibility fields without a model catalogue. Video input is rejected before HTTP. Tool prohibition remains the final request override.
+
+Anthropic's public generation completes at most eight native `pause_turn` continuations after the initial request. Each HTTP request sends once without an SDK transport retry. It replays completed native assistant blocks, rejects unresolved client tools at that boundary, and suppresses intermediate finish events. `usage` describes the last request; `billing_usage` sums the continuation requests. Hosts must not use the cumulative bill as a context-size anchor.
+
+Anthropic native output records its model and optional opaque `provider_id`. Replay excludes blocks from a different model or an explicitly different provider identity. Legacy blocks without provenance remain readable. Hosts that need provider isolation supply a stable identity; the SDK does not derive it from credentials. Application adapters share the encoder, decoders and bounded continuation helper while retaining authentication, tool-name policy, retry budgets and accounting.
 
 The host supplies `reqwest::Client` and selects proxy behavior, TLS, connection limits, and stream timeouts. `OpenAiChatConfig.request_timeout` applies only to buffered generation. The agent runtime uses streaming generation, including collected delivery, so it relies on the client configuration for its timeout.
 
