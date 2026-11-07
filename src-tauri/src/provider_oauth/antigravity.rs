@@ -56,14 +56,6 @@ pub(crate) fn model_includes_effort(model: &str) -> bool {
         )
     })
 }
-pub fn unwrap_response(mut value: Value) -> Value {
-    if value.get("response").is_some() && value.get("error").is_none() {
-        value["response"].take()
-    } else {
-        value
-    }
-}
-
 pub(super) async fn start(proxy: bool) -> Result<Login, String> {
     let mut active = sessions().lock().await;
     active.retain(|_, s| s.expires > now());

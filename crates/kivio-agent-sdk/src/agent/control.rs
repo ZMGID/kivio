@@ -11,6 +11,7 @@ static NEXT_INVOCATION_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputAdmission {
     Accepted,
+    Duplicate,
     Inactive,
     /// This host receives input through a separate application operation, such as IRC.
     Unsupported,

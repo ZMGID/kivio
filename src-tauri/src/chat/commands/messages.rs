@@ -13,6 +13,7 @@ use crate::state::AppState;
 
 use super::context::{compute_context_state, emit_chat_context_state};
 use super::interaction::emit_chat_plan_state;
+use super::reply_runtime::ReplyHistoryCommit;
 use super::title::{generate_title, is_auto_title};
 use super::{
     AgentPlanState, ChatMessage, ChatMessageSegment, ChatMessageSegmentKind,
@@ -189,11 +190,7 @@ pub(super) fn build_assistant_message(
     let stored_content = content_from_segments(&segments).unwrap_or_else(|| content.clone());
     let stored_reasoning = reasoning_from_segments(&segments).or(reasoning);
 
-    // model_messages 是规范回放源（build_chat_api_messages 优先用它）。算好后，若它
-    // 非空就丢弃冗余的 api_messages（OpenAI 线格式）——回放/编辑路径仅在 model_messages
-    // 为空时才回落 api_messages，前端更是从不读它。省 RAM/磁盘/IPC。为空兜底（罕见：
-    // 转换产出空）才保留 api_messages，避免丢工具上下文。中断草稿走另一条路
-    // (persist_partial_assistant_snapshot)，那里仍保留 api_messages 以保「继续」可回放。
+    // Legacy callers retain message transcripts; canonical commits clear this compatibility copy.
     let model_messages = assistant_model_messages_for_storage(
         &stored_content,
         stored_reasoning.as_deref(),
@@ -290,6 +287,7 @@ pub(crate) async fn push_assistant_message(
     // 降级兜底的结构化描述；Some 时前端渲染成独立错误卡片。
     degraded: Option<crate::chat::recovery_policy::DegradedAnswer>,
     history_attempt: Option<&crate::external_agents::session::HistoryAttempt>,
+    history_commit: Option<ReplyHistoryCommit>,
 ) -> Result<(), String> {
     let message = build_assistant_message(
         message_id,
@@ -379,8 +377,15 @@ pub(crate) async fn push_assistant_message(
     let message_plan = message.agent_plan.clone();
     let plan_update = message_plan.clone();
     let conversation_id = conversation.id.clone();
-    let mut persisted = crate::chat::repository::repository(app)
+    let source_branch_id = conversation
+        .builtin_history
+        .as_ref()
+        .map(|history| history.active_branch_id.clone());
+    let persisted_result = crate::chat::repository::repository(app)
         .mutate(app, &conversation_id, |latest| {
+            if let Some(branch_id) = source_branch_id.as_deref() {
+                validate_reply_history_branch(latest, branch_id)?;
+            }
             if let Some(attempt) = history_attempt {
                 if message.stream_outcome.as_deref() == Some("completed")
                     && state
@@ -391,7 +396,25 @@ pub(crate) async fn push_assistant_message(
                 }
             }
             adopt_compacted_context(latest, conversation, &message.id);
+            let message_id = message.id.clone();
+            let direct_image_content = (!is_external
+                && history_commit.is_none()
+                && message.stream_outcome.as_deref() == Some("completed"))
+            .then(|| message.content.clone());
+            if let Some(content) = direct_image_content {
+                crate::chat::session_history::admit_input(
+                    latest,
+                    &message_id,
+                    vec![crate::chat::agent::history::RuntimeMessage::text(
+                        ModelRole::Assistant,
+                        content,
+                    )],
+                )?;
+            }
             upsert_assistant_message(latest, message);
+            if let Some(commit) = history_commit {
+                commit_reply_history(app, latest, &message_id, commit, true)?;
+            }
             if let Some(title) = generated_title {
                 let title_is_still_auto = is_auto_title(&latest.title, first_user.as_deref());
                 if title_is_still_auto {
@@ -403,8 +426,16 @@ pub(crate) async fn push_assistant_message(
             }
             Ok(())
         })
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
+        .await;
+    let (mut persisted, warning) = match persisted_result {
+        Ok(persisted) => (persisted, None),
+        Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+            let (persisted, warning) =
+                crate::chat::repository::recover_committed(app, error).await?;
+            (persisted, Some(warning))
+        }
+        Err(error) => return Err(crate::chat::repository::repository_error(error)),
+    };
 
     // 终态已落主文件,run 期间的草稿日志随即失效(见 chat::draft_journal)。
     crate::chat::draft_journal::clear_draft(app, &conversation_id);
@@ -452,6 +483,15 @@ pub(crate) async fn push_assistant_message(
         }
     }
 
+    if let Some(warning) = warning {
+        persisted.context_state.warning = Some(warning);
+        emit_chat_context_state(
+            app,
+            &conversation_id,
+            persisted.revision,
+            &persisted.context_state,
+        );
+    }
     *conversation = persisted;
     if let Some(first_user) = background_title_user {
         super::title::schedule_auto_title_summary(
@@ -468,12 +508,56 @@ pub(crate) async fn push_assistant_message(
     Ok(())
 }
 
+pub(super) fn validate_reply_history_branch(
+    conversation: &Conversation,
+    branch_id: &str,
+) -> Result<(), String> {
+    if conversation
+        .builtin_history
+        .as_ref()
+        .map(|state| state.active_branch_id.as_str())
+        != Some(branch_id)
+    {
+        return Err("Conversation branch changed while the reply was running".into());
+    }
+    Ok(())
+}
+
+pub(super) fn commit_reply_history(
+    app: &AppHandle,
+    conversation: &mut Conversation,
+    message_id: &str,
+    mut commit: ReplyHistoryCommit,
+    select: bool,
+) -> Result<(), String> {
+    validate_reply_history_branch(conversation, &commit.branch_id)?;
+    commit.history =
+        crate::chat::draft_journal::interrupted_snapshot(&commit.history)?.into_history();
+    crate::chat::attachments::externalize_history_media(
+        app,
+        &conversation.id,
+        &mut commit.history,
+    )?;
+    crate::chat::session_history::commit_completed_run(
+        conversation,
+        message_id,
+        &commit.history,
+        commit.source_anchor,
+        select,
+    )
+}
+
 /// Insert an assistant message, replacing any existing message that already
 /// carries the same id. The agent loop's per-round crash-safety checkpoint
 /// writes a draft assistant message under the run's `message_id`; both that
 /// draft path and the final write go through here so a completed run cleanly
 /// overwrites its own draft instead of appending a duplicate.
 pub(super) fn upsert_assistant_message(conversation: &mut Conversation, mut message: ChatMessage) {
+    if let Some(history) = conversation.builtin_history.as_mut() {
+        message.api_messages.clear();
+        message.model_messages.clear();
+        history.bindings.entry(message.id.clone()).or_insert(None);
+    }
     if let Some(pos) = conversation
         .messages
         .iter()
@@ -486,16 +570,7 @@ pub(super) fn upsert_assistant_message(conversation: &mut Conversation, mut mess
     }
 }
 
-/// Write a best-effort snapshot of the in-progress assistant turn to disk so a
-/// mid-run crash / forced exit doesn't discard the whole reply. Reloads the
-/// conversation (to pick up todo/plan/user state already persisted by other
-/// paths), upserts a draft assistant message keyed by `message_id`, and saves.
-/// The draft is marked `interrupted`; the loop's final write replaces it with
-/// the completed message. `api_messages` carries the loop's accumulated
-/// provider messages (assistant tool_calls + tool results) so the draft stays
-/// replayable on a later "continue" — `model_messages` are derived from them
-/// exactly as the final write does, keeping the storage shape consistent. No-op
-/// when nothing has been produced yet.
+/// Builds the interrupted UI view. The journal separately stores the SDK tree.
 pub(super) fn build_partial_assistant_snapshot(
     message_id: &str,
     tool_records: &[ToolCallRecord],
@@ -554,6 +629,9 @@ pub(super) async fn persist_partial_assistant_snapshot(
     tool_records: &[ToolCallRecord],
     segments: &[ChatMessageSegment],
     api_messages: &[crate::chat::agent::history::RuntimeMessage],
+    history: &kivio_agent_sdk::agent::SessionHistory,
+    source_anchor: Option<kivio_agent_sdk::agent::EntryId>,
+    source_branch_id: &str,
 ) -> Result<(), String> {
     let Some(draft) =
         build_partial_assistant_snapshot(message_id, tool_records, segments, api_messages)
@@ -564,8 +642,17 @@ pub(super) async fn persist_partial_assistant_snapshot(
     // 主会话文件与索引在 run 期间完全不动;终态写入后 push_assistant_message 清日志。
     let app_handle = app.clone();
     let conversation_id = conversation_id.to_string();
+    let history = history.clone();
+    let source_branch_id = source_branch_id.to_string();
     tauri::async_runtime::spawn_blocking(move || {
-        crate::chat::draft_journal::append_draft(&app_handle, &conversation_id, draft)
+        crate::chat::draft_journal::append_session_draft(
+            &app_handle,
+            &conversation_id,
+            draft,
+            history,
+            source_anchor,
+            source_branch_id,
+        )
     })
     .await
     .map_err(|e| format!("draft journal task failed: {e}"))?

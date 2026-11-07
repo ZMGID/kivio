@@ -12,6 +12,8 @@ pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct ModelCall {
     pub provider_id: String,
     pub model: String,
+    /// Optional capability snapshot for this request. A changed model otherwise has unknown capabilities.
+    pub capabilities: Option<crate::model::ModelCapabilities>,
     pub history: Vec<RuntimeMessage>,
     pub tools: Vec<ModelTool>,
     pub options: GenerateOptions,
@@ -41,6 +43,26 @@ pub trait ModelOutputSink: StreamSink {
     fn retry(&mut self, status: RetryStatus);
     fn reset_attempt(&mut self);
     fn draft_snapshot(&self) -> Vec<(String, String)>;
+}
+
+pub(crate) async fn generate_with_provider(
+    provider: &(dyn crate::model::LanguageModelProvider + Sync),
+    call: ModelCall,
+    sink: &mut dyn ModelOutputSink,
+) -> Result<GenerateOutput, ModelError> {
+    sink.request_started(&call);
+    let request = super::history::request_from_history(
+        &call.history,
+        &call.model,
+        call.tools,
+        call.options,
+        call.metadata,
+    );
+    if call.delivery == ModelDelivery::Collected {
+        provider.stream(request, &mut |_part| Ok(())).await
+    } else {
+        provider.stream(request, sink).await
+    }
 }
 
 pub struct DiscardModelSink;

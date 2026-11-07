@@ -5,8 +5,7 @@ use std::{fs::File, io::Read, path::Path};
 
 /// Leaves room for base64 expansion inside a 20 MB request.
 pub(crate) const MAX_VIDEO_BYTES: usize = 14 * 1024 * 1024;
-// Generate Content documents 20 MB, not 20 MiB. Use decimal bytes conservatively.
-pub(crate) const MAX_VIDEO_REQUEST_BYTES: usize = 20_000_000;
+pub(crate) use kivio_agent_sdk::model::validate_video_body as validate_body;
 
 pub(crate) fn has_video(request: &super::model::GenerateRequest) -> bool {
     request
@@ -91,29 +90,6 @@ pub(crate) fn reject_unimplemented_transport(
     Ok(())
 }
 
-pub(crate) fn validate_body(body: &Value) -> Result<(), super::model::ModelError> {
-    // A counting writer avoids allocating another full copy of the encoded video.
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0 += bytes.len();
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter(0);
-    serde_json::to_writer(&mut counter, body)
-        .map_err(|e| super::model::ModelError::new(e.to_string()))?;
-    if counter.0 > MAX_VIDEO_REQUEST_BYTES {
-        return Err(super::model::ModelError::new(
-            "包含视频的请求超过 20 MB，请裁剪视频或减少附件及上下文。",
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,12 +119,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn video_body_limit_counts_json_bytes_in_decimal_mb() {
-        // JSON quotes also count: the first body is exactly 20,000,000 bytes.
-        assert!(validate_body(&Value::String("x".repeat(19_999_998))).is_ok());
-        assert!(validate_body(&Value::String("x".repeat(19_999_999))).is_err());
     }
 }

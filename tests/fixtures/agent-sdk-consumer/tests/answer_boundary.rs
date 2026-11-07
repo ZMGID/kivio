@@ -6,7 +6,7 @@ use kivio_agent_sdk::{
         host::{AgentHost, AgentHostFuture, InputPersistence, SessionInput},
         provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
         run_agent_loop,
-        session::{NoSessionPolicy, PolicyFuture, RunSnapshot, SessionPolicy},
+        session::{NoSessionPolicy, PolicyFuture, RunSnapshot, SessionPolicy, TurnDecision},
         types::AgentRunStatus,
         RuntimeMessage, SteeringMessage,
     },
@@ -133,7 +133,7 @@ async fn in_flight_steering_preserves_identical_canonical_answers_and_segments_o
         calls[1].history[calls[1].history.len() - 2].model_message(),
         Some(&canonical)
     );
-    for history in [&result.history, &result.generated_history] {
+    for history in [result.history.context(), &result.generated_history] {
         assert_eq!(
             history
                 .iter()
@@ -186,16 +186,37 @@ struct Reminders {
     finishes: usize,
 }
 impl SessionPolicy for Reminders {
-    fn before_step(&mut self, _: RunSnapshot<'_>) -> Vec<RuntimeMessage> {
-        self.steps += 1;
-        vec![RuntimeMessage::text(
-            ModelRole::User,
-            format!("step {}", self.steps),
-        )]
+    fn prepare_request<'a>(
+        &'a mut self,
+        _: RunSnapshot<'a>,
+        request: &'a mut ModelCall,
+        _: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.steps += 1;
+            request.history.push(RuntimeMessage::text(
+                ModelRole::User,
+                format!("step {}", self.steps),
+            ));
+            Ok(())
+        })
     }
-    fn before_finish(&mut self, _: RunSnapshot<'_>) -> Option<RuntimeMessage> {
-        self.finishes += 1;
-        (self.finishes == 1).then(|| RuntimeMessage::text(ModelRole::User, "finish reminder"))
+    fn finish_turn<'a>(
+        &'a mut self,
+        _: RunSnapshot<'a>,
+        _: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
+        Box::pin(async move {
+            self.finishes += 1;
+            Ok(if self.finishes == 1 {
+                TurnDecision::Continue(vec![RuntimeMessage::text(
+                    ModelRole::User,
+                    "finish reminder",
+                )])
+            } else {
+                TurnDecision::Default
+            })
+        })
     }
 }
 
@@ -241,7 +262,7 @@ impl AgentHost for Deliveries {
         &'a self,
         _: &'a str,
         _: &'a str,
-        _: &'a [RuntimeMessage],
+        _: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -308,6 +329,7 @@ async fn plain_host_delivery_and_child_wait_preserve_persistence_ownership() {
         assert_eq!(
             result
                 .history
+                .context()
                 .iter()
                 .filter(|message| message.text_content() == text)
                 .count(),
@@ -361,6 +383,7 @@ async fn cancellation_during_plain_input_admission_makes_no_request() {
     assert!(model.calls.lock().unwrap().is_empty());
     assert!(!result
         .history
+        .context()
         .iter()
         .any(|message| message.text_content() == "do not consume"));
 }
@@ -368,9 +391,15 @@ async fn cancellation_during_plain_input_admission_makes_no_request() {
 struct CancelFinish<'a>(AgentRunHandle<'a>);
 
 impl SessionPolicy for CancelFinish<'_> {
-    fn before_finish(&mut self, _: RunSnapshot<'_>) -> Option<RuntimeMessage> {
-        assert_eq!(self.0.stop(), StopAdmission::Requested);
-        None
+    fn finish_turn<'a>(
+        &'a mut self,
+        _: RunSnapshot<'a>,
+        _: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
+        Box::pin(async move {
+            assert_eq!(self.0.stop(), StopAdmission::Requested);
+            Ok(TurnDecision::Default)
+        })
     }
 }
 
@@ -400,6 +429,7 @@ async fn cancellation_in_finish_policy_retains_answer_and_cancelled_outcome() {
         assert_eq!(
             result
                 .history
+                .context()
                 .iter()
                 .filter(|message| message.role() == Some(ModelRole::Assistant))
                 .count(),
@@ -449,6 +479,7 @@ async fn cancellation_during_child_wait_keeps_completed_answer_once() {
     assert_eq!(
         result
             .history
+            .context()
             .iter()
             .filter(|message| message.role() == Some(ModelRole::Assistant))
             .count(),
@@ -476,7 +507,7 @@ impl AgentHost for CancelCheckpoint<'_> {
         &'a self,
         _: &'a str,
         _: &'a str,
-        _: &'a [RuntimeMessage],
+        _: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -523,7 +554,7 @@ async fn cancellation_at_finishing_checkpoint_retains_answer_then_delivered_inpu
         .unwrap();
         assert_eq!(result.status, AgentRunStatus::Cancelled);
         assert_eq!(model.calls.lock().unwrap().len(), 1);
-        for history in [&result.history, &result.generated_history] {
+        for history in [result.history.context(), &result.generated_history] {
             assert_eq!(history[history.len() - 2].model_message(), Some(&canonical));
             assert_eq!(history.last().unwrap().text_content(), "delivered at stop");
             assert_eq!(
@@ -564,7 +595,7 @@ async fn cancellation_in_follow_up_hook_does_not_reconstruct_prior_reasoning_as_
     .unwrap();
     assert_eq!(result.status, AgentRunStatus::Cancelled);
     assert_eq!(model.calls.lock().unwrap().len(), 1);
-    for history in [&result.history, &result.generated_history] {
+    for history in [result.history.context(), &result.generated_history] {
         let assistants = history
             .iter()
             .filter(|message| message.role() == Some(ModelRole::Assistant))
@@ -618,6 +649,7 @@ async fn queued_plain_inputs_keep_one_per_step_and_steer_precedes_follow_up() {
         assert_eq!(
             result
                 .history
+                .context()
                 .iter()
                 .filter(|message| message.text_content() == text)
                 .count(),

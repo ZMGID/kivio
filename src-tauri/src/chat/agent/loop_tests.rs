@@ -6,14 +6,12 @@ use crate::chat::agent::events::{
 };
 use crate::chat::agent::history::{export_history, import_history, RuntimeMessage};
 use crate::chat::agent::host::{InputPersistence, SessionInput};
-use crate::chat::model::FinishKind;
+use crate::chat::model::{FinishKind, MessagePart, ModelMessage};
 use crate::chat::recovery_policy::{
     empty_synthesis_fallback_response, synthesis_failed_fallback_response,
     tool_planning_failed_fallback_response,
 };
-use crate::chat::session_policy::{
-    ApplicationRunConfig as AgentRunConfig, ApplicationRunResult as AgentRunResult,
-};
+use crate::chat::session_policy::{ApplicationRunConfig, ApplicationRunResult as AgentRunResult};
 use crate::chat::tool_runtime::{
     ApplicationHost, ApplicationToolExecutor, ToolAuthority, ToolDispatcher as ToolExecutor,
     ToolExecutionContext,
@@ -85,6 +83,7 @@ pub(crate) struct TestHost {
     compaction_phases: Mutex<Vec<String>>,
     capture_compaction: bool,
     fail_compaction_checkpoint: bool,
+    fail_finishing_checkpoint: bool,
     compaction_checkpoints: Mutex<Vec<Vec<Value>>>,
     compaction_incoming: Mutex<Option<Value>>,
     finishing_inputs: Mutex<std::collections::VecDeque<Vec<Value>>>,
@@ -175,7 +174,7 @@ impl AgentHost for TestHost {
         &'a self,
         _conversation: &'a str,
         _run: &'a str,
-        history: &'a [RuntimeMessage],
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> crate::chat::agent::host::AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -211,7 +210,7 @@ impl AgentHost for TestHost {
                 self.compaction_checkpoints
                     .lock()
                     .unwrap()
-                    .push(export_history(history));
+                    .push(export_history(history.context()));
                 if self.fail_compaction_checkpoint {
                     return Err("checkpoint persistence failed".into());
                 }
@@ -225,6 +224,9 @@ impl AgentHost for TestHost {
                 ));
             }
             if finishing {
+                if self.fail_finishing_checkpoint {
+                    return Err("final checkpoint persistence failed".into());
+                }
                 return Ok(session_inputs(
                     self.finishing_inputs
                         .lock()
@@ -244,6 +246,7 @@ impl AgentHost for TestHost {
         tool_records: &'a [AgentToolCall],
         segments: &'a [ContentBlock],
         api_messages: &'a [RuntimeMessage],
+        _history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> super::super::host::AgentHostFuture<'a, ()> {
         let (tool_records, segments) =
             crate::chat::agent_presentation::project_snapshot(tool_records, segments, Some("run"));
@@ -468,6 +471,7 @@ impl RecordingExecutor {
 impl ToolExecutor for RecordingExecutor {
     fn call<'a>(
         &'a self,
+        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
@@ -521,12 +525,16 @@ struct PreviewFeedbackExecutor<'a> {
 impl ToolExecutor for PreviewFeedbackExecutor<'_> {
     fn call<'a>(
         &'a self,
+        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         Box::pin(async move {
-            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(
+                ctx,
+                progress.control.clone(),
+            );
             let mut result = crate::mcp::result::parse_tool_result(serde_json::json!({
                 "content": [
                     {"type": "text", "text": "Preview captured."},
@@ -763,42 +771,72 @@ pub(crate) fn test_provider(base_url: &str) -> ModelProvider {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct AgentRunConfig<'a> {
+    config: ApplicationRunConfig<'a>,
+    pub runtime_messages: Vec<Value>,
+}
+
+impl<'a> AgentRunConfig<'a> {
+    pub(crate) fn into_application(mut self) -> ApplicationRunConfig<'a> {
+        self.config.history = import_history(self.runtime_messages).into();
+        self.config
+    }
+}
+
+impl<'a> std::ops::Deref for AgentRunConfig<'a> {
+    type Target = ApplicationRunConfig<'a>;
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+
+impl std::ops::DerefMut for AgentRunConfig<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.config
+    }
+}
+
 pub(crate) fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a> {
     AgentRunConfig {
-        state,
-        provider_runtime: None,
-        todo_state: Default::default(),
-        conversation_id: "conversation".to_string(),
-        tool_conversation_id: "conversation".to_string(),
-        depth: 0,
-        interactive_host: false,
-        run_id: "run".to_string(),
-        message_id: "message".to_string(),
-        generation: 1,
-        provider: test_provider(base_url),
-        model: "test-model".to_string(),
         runtime_messages: vec![
             serde_json::json!({ "role": "system", "content": "system prompt" }),
             serde_json::json!({ "role": "user", "content": "请读取文件" }),
         ],
-        tools: vec![native_read_file_tool()],
-        blocked_tool_calls: Vec::new(),
-        plan_state: Default::default(),
-        mcp_tool_ids: Vec::new(),
-        mcp_server_ids: Vec::new(),
-        settings: Settings::default(),
-        effective_chat_tools: ChatToolsConfig::default(),
-        language: "zh-CN".to_string(),
-        thinking_enabled: false,
-        thinking_level: None,
-        web_search_mode: crate::chat::types::WebSearchMode::Off,
-        max_output_tokens: 1024,
-        retry_attempts: 1,
-        runtime_context: None,
-        provider_tools_fallback_prompt: Default::default(),
-        initial_cache_usage: None,
-        initial_anchor_total_tokens: None,
-        initial_anchor_trailing_estimate: 0,
+        config: ApplicationRunConfig {
+            state,
+            provider_runtime: None,
+            todo_state: Default::default(),
+            conversation_id: "conversation".to_string(),
+            tool_conversation_id: "conversation".to_string(),
+            depth: 0,
+            interactive_host: false,
+            run_id: "run".to_string(),
+            message_id: "message".to_string(),
+            generation: 1,
+            provider: test_provider(base_url),
+            model: "test-model".to_string(),
+            history: Default::default(),
+            tools: vec![native_read_file_tool()],
+            blocked_tool_calls: Vec::new(),
+            plan_state: Default::default(),
+            mcp_tool_ids: Vec::new(),
+            mcp_server_ids: Vec::new(),
+            settings: Settings::default(),
+            effective_chat_tools: ChatToolsConfig::default(),
+            language: "zh-CN".to_string(),
+            thinking_enabled: false,
+            thinking_level: None,
+            web_search_mode: crate::chat::types::WebSearchMode::Off,
+            max_output_tokens: 1024,
+            retry_attempts: 1,
+            runtime_context: None,
+            request_projection: None,
+            provider_tools_fallback_prompt: Default::default(),
+            initial_cache_usage: None,
+            initial_anchor_total_tokens: None,
+            initial_anchor_trailing_estimate: 0,
+        },
     }
 }
 
@@ -996,7 +1034,7 @@ async fn disabled_tool_feedback_lists_remaining_tools_without_disabling_file_acc
         ],
     )
     .await;
-    let feedback = result.response_messages[0]["content"].as_str().unwrap();
+    let feedback = result.response_messages[0].text_content();
     assert!(feedback.contains("Available tools: read"), "{feedback}");
     assert!(feedback.contains("this tool only"), "{feedback}");
     assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
@@ -1010,12 +1048,16 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
     impl ToolExecutor for InspectContext {
         fn call<'a>(
             &'a self,
+            progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
             ctx: &'a ToolExecutionContext<'a>,
             _: &'a ChatToolDefinition,
             _: Value,
         ) -> super::super::execute::ToolExecutorFuture<'a> {
             Box::pin(async move {
-                let native = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                let native = crate::mcp::registry::NativeToolContext::from_execution(
+                    ctx,
+                    progress.control.clone(),
+                );
                 assert_eq!(
                     native.plan_state.mode,
                     crate::chat::types::AgentPlanMode::Orchestrate
@@ -1028,6 +1070,10 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
                 assert_eq!(native.mcp_server_ids[0], "allowed");
                 assert_eq!(native.approval_policy, "readonly_auto_sensitive_confirm");
                 assert!(native.interactive_host);
+                assert_eq!(
+                    native.control.as_ref().unwrap().invocation_id(),
+                    progress.control.invocation_id()
+                );
                 Ok(super::super::execute::AgentToolOutput::default())
             })
         }
@@ -1078,10 +1124,14 @@ fn test_mcp_tool(name: &str, annotations: Value) -> ChatToolDefinition {
     }
 }
 
-fn tool_call_ids(messages: &[Value]) -> Vec<&str> {
+fn tool_call_ids(messages: &[ModelMessage]) -> Vec<&str> {
     messages
         .iter()
-        .filter_map(|message| message.get("tool_call_id").and_then(Value::as_str))
+        .flat_map(|message| &message.content)
+        .filter_map(|part| match part {
+            MessagePart::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
         .collect()
 }
 
@@ -1117,15 +1167,16 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
         .await;
         assert!(!result.cancelled);
         assert_eq!(result.response_messages.len(), 3);
-        assert_eq!(result.response_messages[0]["tool_call_id"], "call_read");
+        assert_eq!(tool_call_ids(&result.response_messages)[0], "call_read");
         assert_eq!(
-            result.response_messages[1]["tool_call_id"], "call_next",
+            tool_call_ids(&result.response_messages)[1],
+            "call_next",
             "No tool output found for call_next before image turn ({trailing})"
         );
-        assert_eq!(
-            result.response_messages[2]["content"][0]["type"],
-            "image_url"
-        );
+        assert!(matches!(
+            result.response_messages[2].content[0],
+            MessagePart::Image { .. }
+        ));
     }
 }
 
@@ -1164,15 +1215,11 @@ async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_o
     );
     assert_eq!(result.response_messages.len(), 2);
     assert_eq!(
-        result.response_messages[0]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
+        tool_call_ids(&result.response_messages).get(0).copied(),
         Some("call_read")
     );
     assert_eq!(
-        result.response_messages[1]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
+        tool_call_ids(&result.response_messages).get(1).copied(),
         Some("call_fetch")
     );
     assert_eq!(result.tool_records.len(), 2);
@@ -1451,9 +1498,9 @@ async fn tool_round_preserves_unknown_and_invalid_call_order() {
     let unknown_message = result
         .response_messages
         .iter()
-        .find(|message| message["tool_call_id"] == "call_missing")
+        .find(|message| matches!(&message.content[0], MessagePart::ToolResult { tool_call_id, .. } if tool_call_id == "call_missing"))
         .expect("unknown tool response present");
-    let content = unknown_message["content"].as_str().unwrap_or_default();
+    let content = unknown_message.text_content();
     assert!(content.contains("Unknown tool: missing_tool"), "{content}");
     assert!(content.contains("Available tools:"), "{content}");
     assert!(content.contains("read"), "{content}");
@@ -1518,9 +1565,7 @@ async fn tool_round_records_plan_blocked_tool_as_skipped() {
     assert_eq!(executor.max_active(), 0);
     assert_eq!(result.response_messages.len(), 1);
     assert!(result.response_messages[0]
-        .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
+        .text_content()
         .contains("blocked in Plan mode"));
     assert_eq!(result.tool_records.len(), 1);
     let record = &result.tool_records[0];
@@ -1614,15 +1659,11 @@ async fn tool_round_keeps_serial_only_tools_non_overlapping() {
     );
     assert_eq!(result.response_messages.len(), 2);
     assert_eq!(
-        result.response_messages[0]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
+        tool_call_ids(&result.response_messages).get(0).copied(),
         Some("call_bash_1")
     );
     assert_eq!(
-        result.response_messages[1]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
+        tool_call_ids(&result.response_messages).get(1).copied(),
         Some("call_bash_2")
     );
 }
@@ -1736,6 +1777,7 @@ async fn stream_request_none_reaches_provider_wire() {
     let output = runtime
         .generate(
             ModelCall {
+                capabilities: None,
                 provider_id: provider.id.clone(),
                 model: "test-model".into(),
                 history: vec![RuntimeMessage::text(
@@ -1800,6 +1842,7 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
         let result = runtime
             .generate(
                 ModelCall {
+                    capabilities: None,
                     provider_id: provider.id.clone(),
                     model: "test-model".into(),
                     history: vec![RuntimeMessage::text(
@@ -2542,6 +2585,7 @@ struct HugeResultExecutor {
 impl ToolExecutor for HugeResultExecutor {
     fn call<'a>(
         &'a self,
+        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
@@ -2960,6 +3004,7 @@ async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provid
     impl ToolExecutor for CheckpointExecutor<'_> {
         fn call<'a>(
             &'a self,
+            _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -3689,6 +3734,11 @@ async fn run_loop_layer2_replaces_old_history_with_summary() {
     }));
     let huge = "B".repeat(80_000);
     config.runtime_messages.push(serde_json::json!({
+        "role": "assistant", "content": "",
+        "tool_calls": [{"id": "old_call", "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"}}]
+    }));
+    config.runtime_messages.push(serde_json::json!({
         "role": "tool", "tool_call_id": "old_call", "content": huge
     }));
     for i in 0..8 {
@@ -3781,6 +3831,11 @@ async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
         "role": "user", "content": large_non_tool
     }));
     let huge = "C".repeat(80_000);
+    config.runtime_messages.push(serde_json::json!({
+        "role": "assistant", "content": "",
+        "tool_calls": [{"id": "old_call", "type": "function",
+            "function": {"name": "read_file", "arguments": "{}"}}]
+    }));
     config.runtime_messages.push(serde_json::json!({
         "role": "tool", "tool_call_id": "old_call", "content": huge
     }));
@@ -4673,6 +4728,7 @@ impl AgentHost for HookedHost {
         tool_records: &'a [AgentToolCall],
         segments: &'a [ContentBlock],
         api_messages: &'a [RuntimeMessage],
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> super::super::host::AgentHostFuture<'a, ()> {
         self.inner.persist_partial_assistant(
             conversation_id,
@@ -4680,6 +4736,7 @@ impl AgentHost for HookedHost {
             tool_records,
             segments,
             api_messages,
+            history,
         )
     }
 
@@ -5611,10 +5668,13 @@ async fn compaction_fix_overflow_finish_exhaustion_preserves_original_history() 
 /// does not repeat it on later steps.
 #[tokio::test]
 async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
-    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
-        r#"{"choices":[{"delta":{"content":"继续推进。"}}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ])]);
+    let response = || {
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"继续推进。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ])
+    };
+    let server = MockModelServer::start(vec![response(), response()]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.push(crate::chat::todo::todo_write_tool());
@@ -5631,6 +5691,7 @@ async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
     let executor = RecordingExecutor::default();
 
     config.todo_state = initial_todo;
+    let mut reopened = config.clone();
     let result = run_agent_loop(config, &host, &executor)
         .await
         .expect("run completes");
@@ -5662,6 +5723,79 @@ async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
         1,
         "the reminder is persisted with the turn so later turns see it was sent"
     );
+    reopened.runtime_messages.extend(result.api_messages);
+    reopened
+        .runtime_messages
+        .push(serde_json::json!({"role":"user","content":"继续"}));
+    let result = run_agent_loop(reopened, &host, &executor)
+        .await
+        .expect("reopened run completes");
+    assert!(!result.api_messages.iter().any(|message| message["content"]
+        .as_str()
+        .is_some_and(|text| text.starts_with("<todo-reminder>"))));
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 2);
+    let body: serde_json::Value = serde_json::from_str(&bodies[1]).expect("reopened request");
+    assert_eq!(
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("<todo-reminder>")))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn queued_follow_ups_without_tool_calls_keep_periodic_todo_reminders() {
+    let server = MockModelServer::start(
+        (0..12)
+            .map(|_| {
+                MockResponse::Sse(vec![
+                    r#"{"choices":[{"delta":{"content":"answer"}}]}"#.to_string(),
+                    "[DONE]".to_string(),
+                ])
+            })
+            .collect(),
+    );
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.tools.push(crate::chat::todo::todo_write_tool());
+    let host = TestHost::with_follow_up_batches(vec![(0..11)
+        .map(|index| SteeringMessage::new(format!("follow-{index}"), "continue").unwrap())
+        .collect()]);
+    let executor = RecordingExecutor::default();
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("queued run completes");
+    let bodies: Vec<serde_json::Value> = server
+        .captured_bodies()
+        .iter()
+        .map(|body| serde_json::from_str(body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 12);
+    assert!(!serde_json::to_string(&bodies[9])
+        .unwrap()
+        .contains("<todo-reminder>"));
+    let reminder = bodies[10]["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(reminder.starts_with("<todo-reminder>"));
+    assert!(reminder.contains("hasn't been used recently"));
+    assert_eq!(
+        result
+            .api_messages
+            .iter()
+            .filter(|message| message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("<todo-reminder>")))
+            .count(),
+        1
+    );
+    assert!(executor.events().is_empty());
 }
 
 /// A run that did work and is about to end with todo items still open gets one
@@ -5833,10 +5967,11 @@ async fn automatic_compaction_rejects_insufficient_headroom() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     use_large_summary_model(&mut config);
+    let model = config.model.clone();
     config
         .provider
         .model_overrides
-        .entry(config.model.clone())
+        .entry(model)
         .or_default()
         .context_window = Some(40_000);
     config.runtime_messages = tool_round_history();
@@ -5934,10 +6069,11 @@ async fn text_only_summary_model_does_not_strip_retained_recent_images() {
     ])]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
+    let model = config.model.clone();
     config
         .provider
         .model_overrides
-        .entry(config.model.clone())
+        .entry(model)
         .or_default()
         .capabilities = Some(crate::settings::ModelCapabilities {
         vision: Some(false),
@@ -6341,8 +6477,9 @@ async fn issue_62_incremental_summary_failure_or_cancel_preserves_original_histo
         ]);
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
+        let model = config.model.clone();
         config.provider.model_overrides.insert(
-            config.model.clone(),
+            model,
             crate::settings::ModelInfo {
                 context_window: Some(32_000),
                 max_output: Some(1_024),
@@ -7095,7 +7232,9 @@ fn present_result(result: AgentRunResult) -> PresentedRunResult {
         stream_outcome: crate::chat::agent_presentation::run_status(&result.status).to_string(),
         usage: result.usage,
         last_step_usage: result.last_step_usage,
-        compacted_history: result.compacted_history,
+        compacted_history: result
+            .compacted
+            .then(|| export_history(result.history.context())),
         compaction_summary: result.compaction_summary,
         degraded: result.degraded,
         images: result.images,
@@ -7114,13 +7253,20 @@ async fn run_agent_loop<H: ApplicationHost + AgentEventSink + AgentRunControl>(
         generation: config.generation,
     };
     let control = AgentRunHandle::new(identity, host);
-    crate::chat::session_policy::run_session(config, host, executor, host, control)
-        .await
-        .map(present_result)
+    crate::chat::session_policy::run_session(
+        config.into_application(),
+        host,
+        executor,
+        host,
+        control,
+    )
+    .await
+    .map(present_result)
+    .map_err(|error| error.to_string())
 }
 struct PresentedRoundResult {
     tool_records: Vec<ToolCallRecord>,
-    response_messages: Vec<Value>,
+    response_messages: Vec<ModelMessage>,
     cancelled: bool,
 }
 impl<'a> ToolRoundContext<'a> {
@@ -7257,7 +7403,7 @@ async fn sdk04_stopped_stream_does_not_accept_provider_aggregate() {
         EventDelivery::Accepted
     };
     let result = crate::chat::session_policy::run_session(
-        config,
+        config.into_application(),
         &host,
         &RecordingExecutor::default(),
         &sink,
@@ -7280,11 +7426,106 @@ async fn sdk04_stopped_stream_does_not_accept_provider_aggregate() {
 }
 
 #[tokio::test]
+async fn application_failure_returns_full_history_with_branches_compaction_and_tool_results() {
+    use crate::chat::model::ModelRole;
+    use crate::chat::session_policy::ApplicationRunError;
+    use kivio_agent_sdk::agent::{AgentFailure, SessionEntryKind, SessionHistory};
+
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec![
+            serde_json::json!({"choices":[{"delta":{"content":"finished"},"finish_reason":"stop"}]})
+                .to_string(),
+            "[DONE]".into(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url).into_application();
+    let mut history = SessionHistory::from(vec![
+        RuntimeMessage::system("system prompt"),
+        RuntimeMessage::text(ModelRole::User, "old question"),
+    ]);
+    let anchor = history.active_leaf().unwrap();
+    history.push(RuntimeMessage::text(
+        ModelRole::Assistant,
+        "inactive answer",
+    ));
+    let inactive = history.active_leaf().unwrap();
+    history.fork(anchor).unwrap();
+    history.push(RuntimeMessage::text(
+        ModelRole::Assistant,
+        "selected answer",
+    ));
+    history
+        .compact(crate::chat::agent::session::CompactionPlan {
+            covered: 1..3,
+            replacement: vec![RuntimeMessage::text(ModelRole::User, "old summary")],
+        })
+        .unwrap();
+    history.push(RuntimeMessage::text(ModelRole::User, "read the file"));
+    let original = history.entries().to_vec();
+    config.history = history;
+    let host = TestHost {
+        fail_finishing_checkpoint: true,
+        ..Default::default()
+    };
+    let executor = RecordingExecutor::default();
+    let control = AgentRunHandle::new(
+        AgentRunIdentity {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation: 1,
+        },
+        &host,
+    );
+    let ApplicationRunError::Failed { cause, partial } =
+        crate::chat::session_policy::run_session(config, &host, &executor, &host, control)
+            .await
+            .unwrap_err()
+    else {
+        panic!("an admitted run must return its partial result");
+    };
+    assert!(matches!(cause, AgentFailure::Host { .. }));
+    assert_eq!(cause.to_string(), "final checkpoint persistence failed");
+    assert_eq!(&partial.history.entries()[..original.len()], &original);
+    assert!(partial.history.leaves().contains(&inactive));
+    assert!(partial
+        .history
+        .entries()
+        .iter()
+        .any(|entry| matches!(entry.kind, SessionEntryKind::Compaction { .. })));
+    assert_eq!(partial.tool_records.len(), 1);
+    assert_eq!(
+        partial.tool_records[0].output.as_deref(),
+        Some("result:read")
+    );
+    let context = export_history(partial.history.context());
+    assert!(context
+        .iter()
+        .any(|message| message["content"] == "old summary"));
+    assert!(context.iter().any(|message| message["role"] == "tool"
+        && message["tool_call_id"] == "call_read"
+        && message["content"] == "result:read"));
+    assert!(!context
+        .iter()
+        .any(|message| message["content"] == "inactive answer"));
+    assert!(host
+        .persisted_drafts
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(tools, messages)| tools.len() == 1
+            && messages.iter().any(|message| message["role"] == "tool")));
+}
+
+#[tokio::test]
 async fn sdk04_recovery_request_uses_formatted_bounded_tool_summary() {
     struct SearchResultExecutor;
     impl ToolExecutor for SearchResultExecutor {
         fn call<'a>(
             &'a self,
+            _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -7343,16 +7584,16 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
     };
     struct RegisteredTool(AtomicUsize);
     impl crate::chat::agent::execute::ToolExecutor for RegisteredTool {
-        fn prepare<'a>(
+        fn before_tool_call<'a>(
             &'a self,
             _: &'a ToolProgress<'a>,
             _: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
             _: &'a crate::chat::tools::ToolDefinition,
             call: PendingToolCall,
             record: AgentToolCall,
-        ) -> ToolFuture<'a, ToolPreparation> {
+        ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
             Box::pin(async move {
-                ToolPreparation::Ready(PreparedToolCall {
+                Ok(ToolPreparation::Ready(PreparedToolCall {
                     record,
                     arguments: call.arguments,
                     timeout_ms: None,
@@ -7360,11 +7601,12 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
                     output_limit: None,
                     drain_on_cancel: false,
                     feedback: Vec::new(),
-                })
+                }))
             })
         }
         fn call<'a>(
             &'a self,
+            _: &'a ToolProgress<'a>,
             _: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
             _: &'a crate::chat::tools::ToolDefinition,
             _: Value,
@@ -7398,18 +7640,22 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
         provider_label: provider.name.clone(),
         api_format: provider.api_format.clone(),
         model: "test-model".into(),
-        runtime_messages: vec![RuntimeMessage::text(
+        history: vec![RuntimeMessage::text(
             crate::chat::model::ModelRole::User,
             "Use the registered tool",
-        )],
+        )]
+        .into(),
         tools: vec![tool],
         blocked_tool_calls: Vec::new(),
-        thinking_enabled: false,
-        thinking_level: None,
-        builtin_web_search: false,
-        max_output_tokens: 1024,
+        options: crate::chat::model::GenerateOptions {
+            thinking_enabled: false,
+            max_tokens: 1024,
+            ..Default::default()
+        },
+        capabilities: Default::default(),
         initial_cache_usage: None,
         report_context: false,
+        limits: Default::default(),
     };
     let host = TestHost::default();
     let identity = AgentRunIdentity {
@@ -7486,7 +7732,7 @@ async fn core_completion_closes_handle_before_application_releases_capacity() {
     assert!(futures::poll!(waiting.as_mut()).is_pending());
     let host = TestHost::default();
     crate::chat::session_policy::run_session(
-        test_run_config(&state, &server.base_url),
+        test_run_config(&state, &server.base_url).into_application(),
         &host,
         &RecordingExecutor::default(),
         &host,

@@ -53,7 +53,7 @@ async fn real_loop_workflow_projection_output_and_history_reload() {
     };
     let handle = AgentRunHandle::new(event(AgentEventKind::RunStarted).identity, &control);
     let executor = RecordingExecutor::default();
-    let result = run_session(config, &host, &executor, &sink, handle)
+    let result = run_session(config.into_application(), &host, &executor, &sink, handle)
         .await
         .unwrap();
     assert!(tools

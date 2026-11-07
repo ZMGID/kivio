@@ -1,4 +1,5 @@
 use super::content::ContentKind;
+use super::error::AgentFailure;
 use super::history::RuntimeMessage;
 use crate::model::{
     GenerateOutput, ModelError, ModelErrorKind, ModelMessage, StreamPart, StreamSink,
@@ -33,7 +34,7 @@ pub(crate) async fn synthesis_step(
     env: &LoopEnv<'_>,
     state: &mut RunState,
     session: &mut dyn SessionPolicy,
-) -> Result<SynthesisFlow, String> {
+) -> Result<SynthesisFlow, AgentFailure> {
     let config = env.config;
     let host = env.host;
     state.step_number = state.step_number.saturating_add(1);
@@ -109,7 +110,11 @@ pub(crate) async fn synthesis_step(
             call: config.model_call(
                 send_messages,
                 Vec::new(),
-                crate::model::ToolChoice::Auto,
+                if phase == AgentPhase::Plain {
+                    crate::model::ToolChoice::Auto
+                } else {
+                    crate::model::ToolChoice::None
+                },
                 "Chat stream",
                 ModelDelivery::Streamed,
             ),
@@ -125,7 +130,7 @@ pub(crate) async fn synthesis_step(
     .await;
     let mut stream = match stream {
         Ok(stream) => stream,
-        Err(err) if !state.tool_records.is_empty() => {
+        Err(AgentFailure::Model { source: err, .. }) if !state.tool_records.is_empty() => {
             eprintln!("Chat synthesis stream failed after tool records; recovering: {err}");
             let recovered = recover_synthesis(env, state, &err, session).await?;
             let replay = recovered.replay;
@@ -148,7 +153,7 @@ pub(crate) async fn synthesis_step(
                     ),
             ));
         }
-        Err(err) => return Err(err.message),
+        Err(err) => return Err(err),
     };
     if stream.cancelled {
         let partial = if state.tool_records.is_empty() {
@@ -226,7 +231,9 @@ pub(crate) async fn synthesis_step(
             });
             (content, reasoning, final_reasoning_for_api)
         } else {
-            return Err(empty_assistant_response_error("Chat stream"));
+            return Err(AgentFailure::InvalidOutput(empty_assistant_response_error(
+                "Chat stream",
+            )));
         }
     } else {
         let message = stream.replay_message();
@@ -289,9 +296,9 @@ pub(crate) async fn recover_synthesis(
     state: &mut RunState,
     failure: &ModelError,
     session: &mut dyn SessionPolicy,
-) -> Result<RecoveredAnswer, String> {
+) -> Result<RecoveredAnswer, AgentFailure> {
     let input = match session.recover(recovery::snapshot(state), failure) {
-        RecoveryDecision::Surface => return Err(failure.message.clone()),
+        RecoveryDecision::Surface => return Err(AgentFailure::model("recovery", failure.clone())),
         RecoveryDecision::Complete(text) => return Ok(RecoveredAnswer::fallback(text)),
         RecoveryDecision::Retry(input) => input,
     };
@@ -314,10 +321,10 @@ pub(crate) async fn recover_synthesis(
     } else {
         "Chat synthesis recovery"
     };
-    let call = env.config.model_call(
+    let mut call = env.config.model_call(
         history,
         Vec::new(),
-        crate::model::ToolChoice::Auto,
+        crate::model::ToolChoice::None,
         label,
         ModelDelivery::Collected,
     );
@@ -325,6 +332,7 @@ pub(crate) async fn recover_synthesis(
         host: env.host,
         report_context: display,
     };
+    super::loop_::prepare_model_request(env, state, session, &mut call).await?;
     let result = tokio::select! {
         result = env.config.provider_runtime.generate(call, &mut sink) => result,
         _ = env.host.control.wait_inactive() => Err(ModelError::with_kind("cancelled", ModelErrorKind::Cancelled)),

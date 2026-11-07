@@ -118,54 +118,24 @@ fn json<T: Serialize>(value: &T) -> Result<String, String> {
 }
 
 fn file_paths(conversation: &Conversation) -> HashSet<String> {
-    let mut paths = HashSet::new();
-    for message in &conversation.messages {
-        for model_message in &message.model_messages {
-            for part in &model_message.content {
-                if let crate::chat::model::MessagePart::Image {
-                    path: Some(path), ..
-                }
-                | crate::chat::model::MessagePart::Video {
-                    path: Some(path), ..
-                } = part
-                {
-                    paths.insert(path.clone());
-                }
-            }
-        }
-        fn collect_uris(value: &Value, paths: &mut HashSet<String>) {
-            match value {
-                Value::String(raw) => {
-                    if let Some(uri) = raw.strip_prefix("kivio-attachment://") {
-                        if let Some((_, filename)) = uri.rsplit_once('/') {
-                            paths.insert(filename.to_string());
-                        }
-                    }
-                }
-                Value::Array(values) => values.iter().for_each(|v| collect_uris(v, paths)),
-                Value::Object(values) => values.values().for_each(|v| collect_uris(v, paths)),
-                _ => {}
-            }
-        }
-        for message in &message.api_messages {
-            collect_uris(message, &mut paths);
-        }
-        for attachment in &message.attachments {
-            if attachment.attachment_type != "folder" && !attachment.path.starts_with("memory://") {
-                paths.insert(attachment.path.clone());
-            }
-        }
-        for artifact in message
-            .artifacts
-            .iter()
-            .chain(message.tool_calls.iter().flat_map(|t| &t.artifacts))
-        {
-            if let Some(path) = &artifact.path {
-                paths.insert(path.clone());
-            }
-        }
-    }
-    paths
+    let folders: HashSet<_> = conversation
+        .messages
+        .iter()
+        .chain(conversation.builtin_history.iter().flat_map(|state| {
+            state
+                .archived_branches
+                .iter()
+                .flat_map(|branch| &branch.messages)
+        }))
+        .flat_map(|message| &message.attachments)
+        .filter(|attachment| attachment.attachment_type == "folder")
+        .map(|attachment| attachment.path.as_str())
+        .collect();
+    crate::chat::gc::referenced_attachment_names(conversation)
+        .into_iter()
+        .filter(|path| !folders.contains(path.as_str()))
+        .filter_map(|path| crate::chat::gc::local_attachment_reference(&path).map(str::to_owned))
+        .collect()
 }
 
 fn resolve_file(dir: &Path, id: &str, raw: &str) -> Result<PathBuf, String> {
@@ -263,7 +233,7 @@ pub(crate) fn export_in(root: &Path, set_id: &str, path: &Path) -> Result<(), St
     }
     let backup = SetBackup {
         app: "kivio".into(),
-        version: 1,
+        version: 2,
         kind: "set-backup".into(),
         set,
         assistants,
@@ -299,25 +269,6 @@ fn unique_name(name: &str, existing: &HashSet<String>, limit: usize) -> String {
     unreachable!()
 }
 
-// Replace exact stored path values only; never rewrite user prose or substrings.
-fn rewrite_paths(value: &mut Value, paths: &HashMap<String, String>) {
-    match value {
-        Value::Array(items) => items.iter_mut().for_each(|v| rewrite_paths(v, paths)),
-        Value::Object(items) => {
-            for (key, value) in items {
-                if matches!(key.as_str(), "path" | "file_path" | "url") {
-                    if let Some(next) = value.as_str().and_then(|s| paths.get(s)) {
-                        *value = Value::String(next.clone());
-                    }
-                } else {
-                    rewrite_paths(value, paths);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 fn binding_key(record: &Value) -> Option<(String, String)> {
     let agent = record
         .get("agentId")
@@ -341,7 +292,7 @@ pub(crate) fn import_in(root: &Path, path: &Path) -> Result<ChatSet, String> {
     }
     let mut backup: SetBackup = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| format!("集备份无法解析: {e}"))?;
-    if backup.app != "kivio" || backup.kind != "set-backup" || backup.version != 1 {
+    if backup.app != "kivio" || backup.kind != "set-backup" || !matches!(backup.version, 1 | 2) {
         return Err("不支持的集备份格式或版本".into());
     }
     sets::validate_set_id(&backup.set.id)?;
@@ -583,10 +534,9 @@ pub(crate) fn import_in(root: &Path, path: &Path) -> Result<ChatSet, String> {
                 goal.active_run_id = None;
             }
         }
-        let mut value = serde_json::to_value(&conversation).map_err(|e| e.to_string())?;
-        rewrite_paths(&mut value, &paths);
-        let conversation: Conversation =
-            serde_json::from_value(value).map_err(|e| e.to_string())?;
+        super::migration::map_conversation_resource_paths(&mut conversation, |raw| {
+            paths.get(raw).cloned()
+        })?;
         index
             .conversations
             .push(ConversationListItem::from(&conversation));
@@ -692,6 +642,75 @@ fn commit_import(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn set_backup_round_trip_keeps_inactive_tree_media_and_archived_ui_paths() {
+        let source = tempfile::tempdir().unwrap();
+        fixture(source.path());
+        let attachment_dir = source.path().join("conversations/conv_one_attachments");
+        let mut conversation = crate::chat::attachments::all_tree_resource_fixture();
+        let state = conversation.builtin_history.as_mut().unwrap();
+        let mut history = state.snapshot.clone().into_history();
+        crate::chat::attachments::externalize_history_media_in_dir(&attachment_dir, &mut history)
+            .unwrap();
+        state.snapshot = history.snapshot().unwrap();
+        let archived_path = attachment_dir.join("archived.pdf");
+        fs::write(&archived_path, b"archived UI bytes").unwrap();
+        conversation.messages.push(serde_json::from_value(json!({
+            "id":"archived-ui", "role":"assistant", "content":"archived", "timestamp":1,
+            "artifacts":[{"name":"archived.pdf", "mime_type":"application/pdf", "data_url":"", "path":archived_path}],
+        })).unwrap());
+        crate::chat::session_history::archive_branch(&mut conversation).unwrap();
+        conversation.messages.clear();
+        fs::write(
+            source.path().join("conversations/conv_one.json"),
+            json(&conversation).unwrap(),
+        )
+        .unwrap();
+        let backup = source.path().join("backup.json");
+        export_in(source.path(), "set_one", &backup).unwrap();
+        let raw: Value = serde_json::from_slice(&fs::read(&backup).unwrap()).unwrap();
+        assert_eq!(raw["version"], 2);
+        let target = tempfile::tempdir().unwrap();
+        import_in(target.path(), &backup).unwrap();
+        let ids =
+            index::conversation_file_ids_in_dir(&target.path().join("conversations")).unwrap();
+        let restored = read_conversation_file(
+            &target.path().join(format!("conversations/{}.json", ids[0])),
+            &ids[0],
+        )
+        .unwrap();
+        let old = conversation.builtin_history.unwrap();
+        let state = restored.builtin_history.as_ref().unwrap();
+        assert_eq!(state.snapshot.entries().len(), old.snapshot.entries().len());
+        assert_eq!(state.snapshot.active_leaf(), old.snapshot.active_leaf());
+        assert_eq!(
+            state.snapshot.history().leaves(),
+            old.snapshot.history().leaves()
+        );
+        assert_eq!(state.snapshot.history().attachment_references().len(), 6);
+        for path in file_paths(&restored) {
+            assert!(
+                resolve_file(&target.path().join("conversations"), &restored.id, &path)
+                    .unwrap()
+                    .is_file(),
+                "{path}"
+            );
+        }
+        let path = state.archived_branches[0].messages[0].artifacts[0]
+            .path
+            .as_deref()
+            .unwrap();
+        assert_eq!(fs::read(path).unwrap(), b"archived UI bytes");
+        assert!(Path::new(path).starts_with(target.path()));
+        // The SDK's version gate must fire before creating the restore directory.
+        let mut invalid = raw;
+        invalid["conversations"][0]["builtin_history"]["snapshot"]["version"] = json!(999);
+        fs::write(&backup, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        let rejected = target.path().join("rejected");
+        assert!(import_in(&rejected, &backup).is_err());
+        assert!(!rejected.exists());
+    }
 
     fn fixture(root: &Path) {
         let dir = root.join("conversations");

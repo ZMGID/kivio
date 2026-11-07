@@ -244,6 +244,7 @@ struct WorkflowToolExecutor {
 impl ToolExecutor for WorkflowToolExecutor {
     fn call<'a>(
         &'a self,
+        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -251,7 +252,10 @@ impl ToolExecutor for WorkflowToolExecutor {
         Box::pin(async move {
             let result_arguments = arguments.clone();
             let output: crate::mcp::types::McpToolCallResult = async {
-                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(
+                    ctx,
+                    progress.control.clone(),
+                );
                 crate::mcp::registry::call_tool(
                     &self.app,
                     &self.app.state::<AppState>(),
@@ -425,9 +429,10 @@ async fn run_builtin_agent_node(
         .await?;
     let catalog = registry.clone();
     let selected = spec.skill_ids.clone();
-    let loaded = tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected))
-        .await
-        .map_err(|e| e.to_string())??;
+    let loaded =
+        tauri::async_runtime::spawn_blocking(move || skills::read_selected(&catalog, &selected))
+            .await
+            .map_err(|e| e.to_string())??;
     let active_skill_id = spec.skill_ids.first().map(|id| id.as_str());
     let active_skill_detail = active_skill_id
         .and_then(|id| loaded.find(id))
@@ -481,7 +486,7 @@ async fn run_builtin_agent_node(
     let events = WorkflowAgentEvents::default();
     let executor = WorkflowToolExecutor {
         app: app.clone(),
-        skills: skills::SkillRunContext::for_run(registry.clone(), None),
+        skills: skills::for_run(registry.clone(), None),
     };
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
@@ -505,8 +510,9 @@ async fn run_builtin_agent_node(
         generation,
         provider,
         model,
-        runtime_messages,
+        history: crate::chat::agent::history::import_history(runtime_messages).into(),
         runtime_context: Some(system_prompt.context.clone()),
+        request_projection: None,
         tools,
         blocked_tool_calls: Vec::new(),
         plan_state: Default::default(),
@@ -552,7 +558,7 @@ async fn run_builtin_agent_node(
         .ok()
         .map(|text| text.clone())
         .unwrap_or_default();
-    builtin_agent_node_output(outcome, fallback)
+    builtin_agent_node_output(outcome.map_err(|error| error.to_string()), fallback)
 }
 
 fn builtin_agent_node_output(
@@ -651,7 +657,7 @@ fn extra_skill_bodies(
         return None;
     }
     let registry = skills::build_registry_in(app, scan_paths, workdir).ok()?;
-    let loaded = registry.read_selected(skill_ids).ok()?;
+    let loaded = skills::read_selected(&registry, skill_ids).ok()?;
     extra_loaded_skill_bodies(&loaded, skill_ids)
 }
 
@@ -824,6 +830,7 @@ async fn load_or_create_external_conversation(
 
     let now = chrono::Local::now().timestamp();
     let conversation = Conversation {
+        builtin_history: None,
         external_history: None,
         external_cwd: None,
         runtime_locked: false,

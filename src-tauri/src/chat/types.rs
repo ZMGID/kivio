@@ -669,6 +669,8 @@ impl ExternalHistoryTransition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin_history: Option<Box<crate::chat::session_history::BuiltinHistory>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_history: Option<ExternalHistoryTransition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_cwd: Option<String>,

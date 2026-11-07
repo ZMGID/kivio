@@ -1,21 +1,20 @@
-mod catalog;
 mod discover;
-pub mod parse;
 mod runtime;
 mod types;
 
-pub use catalog::format_catalog;
 pub(crate) use discover::build_registry_with_plugins;
 pub use discover::{
     build_registry, build_registry_in, home_agents_skills_dir, kivio_skills_dir,
     legacy_app_data_skills_dir, read_skill_record, user_skills_dir,
 };
-pub use parse::parse_skill_markdown;
-pub use runtime::{
-    activate_skill, extract_skill_name, lookup_skill, substitute_arguments, SkillRunContext,
+pub use kivio_agent_sdk::skills::{
+    activate_skill, extract_skill_name, format_catalog, parse, slugify, substitute_arguments,
+    SkillTool,
 };
+pub use parse::parse_skill_markdown;
+pub use runtime::{for_run, read_selected, SkillRunContext};
 pub use types::{
-    slugify, SkillDetail, SkillImportResult, SkillListResult, SkillMeta, SkillOpenFolderResult,
+    SkillDetail, SkillImportResult, SkillListResult, SkillMeta, SkillOpenFolderResult,
     SkillReadResult, SkillRecord, SkillRegistry,
 };
 
@@ -517,68 +516,5 @@ mod tests {
         assert!(leftovers.is_empty(), "bad zip left files behind");
 
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn parse_skill_supports_recommended_tools_and_mcp_tools_alias() {
-        let raw = r#"---
-name: test-skill
-description: Uses selected tools.
-recommended-tools:
-  - web_search
-mcp-tools:
-  - fetch
-  - web_search
-allowed-tools: Bash(git:*)
----
-# Body
-"#;
-
-        let parsed = parse_skill_markdown(raw, "user", None, Vec::new()).unwrap();
-
-        assert!(parsed.meta.recommended_tools.contains(&"fetch".to_string()));
-        assert!(parsed
-            .meta
-            .recommended_tools
-            .contains(&"web_search".to_string()));
-        assert!(parsed
-            .meta
-            .recommended_tools
-            .iter()
-            .any(|tool| tool.contains("Bash")));
-    }
-
-    #[test]
-    fn parse_skill_requires_name_and_description() {
-        let err = parse_skill_markdown(
-            r#"---
-description: Missing name.
----
-# Body
-"#,
-            "user",
-            None,
-            Vec::new(),
-        )
-        .expect_err("missing name should be rejected");
-
-        assert!(err.contains("name"));
-    }
-
-    #[test]
-    fn disable_model_invocation_parses_from_frontmatter() {
-        let parsed = parse_skill_markdown(
-            r#"---
-name: manual-only
-description: Only when invoked explicitly.
-disable-model-invocation: true
----
-"#,
-            "user",
-            None,
-            Vec::new(),
-        )
-        .unwrap();
-        assert!(parsed.meta.disable_model_invocation);
     }
 }

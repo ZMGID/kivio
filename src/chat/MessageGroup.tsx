@@ -41,6 +41,7 @@ interface MessageGroupProps {
   replyOccupiedModels?: ModelRef[]
   onForkMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
+  deleteLabel?: string
   onSaveMessageToNote?: (messageId: string) => Promise<boolean>
   outlineEligible?: boolean
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
@@ -231,6 +232,7 @@ function GroupFooter({
   markContext,
   onSelectChip,
   onDeleteMessage,
+  deleteLabel,
 }: {
   columns: GroupColumn[]
   viewMode: 'tabs' | 'columns'
@@ -241,6 +243,7 @@ function GroupFooter({
   markContext: boolean
   onSelectChip: (messageId: string) => void
   onDeleteMessage?: (messageId: string) => Promise<void>
+  deleteLabel?: string
 }) {
   const t = useT()
   return (
@@ -296,7 +299,7 @@ function GroupFooter({
                 <IconButton
                   variant="ghost"
                   size="xs"
-                  label={`${t.dialogDelete} ${shortLabel}`}
+                  label={`${deleteLabel ?? t.chatMessageRemoveFromBranch} ${shortLabel}`}
                   onClick={() => { void onDeleteMessage(message.id) }}
                 >
                   <Trash2 size={12} />
@@ -323,6 +326,7 @@ function MessageGroupBase({
   replyOccupiedModels,
   onForkMessage,
   onDeleteMessage,
+  deleteLabel,
   onSaveMessageToNote,
   outlineEligible = false,
   onOutlineSourceChange,
@@ -440,6 +444,7 @@ function MessageGroupBase({
         markContext={!live}
         onSelectChip={handleChipClick}
         onDeleteMessage={!live ? onDeleteMessage : undefined}
+        deleteLabel={deleteLabel}
       />
     </div>
   )

@@ -6,6 +6,7 @@
 //! Consumed input is retained as an ordered content block and in both replay histories.
 
 use super::content::{ContentBlock, ContentKind, ContentPhase};
+use super::error::AgentFailure;
 use serde::{Deserialize, Serialize};
 
 use super::history::RuntimeMessage;
@@ -43,24 +44,23 @@ impl SteeringMessage {
 /// 信箱里新到的插话全部拉进 RunState 本地队列，再只弹**一条**注入本轮。模型逐条应对，
 /// 多条排队的插话不会一次灌进同一轮；剩余的由后续轮次边界与 FinalAnswer 边界的
 /// [`steering_pending`] 检查保证送达（队列清空前 loop 不收束）。
-///
-/// 两处 push 都是必须的：`runtime_messages` 让**本轮**模型看见，`generated_api_messages` 让它
-/// 随 assistant 消息落盘（`model_messages_from_openai_messages` 认 `"user"` role），**下一轮回放
-/// 不丢**。工具结果之后紧跟一条 user 文本对三种线格式都安全：Anthropic / Gemini 适配器各有
-/// `merge_consecutive_*_roles` 把它合进同一个 turn，OpenAI 系天然接受连续 user。
 pub(crate) async fn inject_steering_messages(
     env: &LoopEnv<'_>,
     state: &mut RunState,
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<(), String> {
+) -> Result<(), AgentFailure> {
     state
         .pending_steering
         .extend(env.host.control.take_steering());
-    let Some(message) = state.pending_steering.pop_front() else {
+    let Some(message) = state.pending_steering.front().cloned() else {
         return Ok(());
     };
     apply_prompt_hooks(env, state, &message.text, session).await?;
+    if !env.host.control.active() {
+        return Ok(());
+    }
+    state.pending_steering.pop_front();
     append_injected_user_turn(
         env,
         state,
@@ -96,11 +96,15 @@ pub(crate) async fn inject_follow_up_messages(
     state: &mut RunState,
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<(), String> {
-    let Some(message) = state.pending_follow_up.pop_front() else {
+) -> Result<(), AgentFailure> {
+    let Some(message) = state.pending_follow_up.front().cloned() else {
         return Ok(());
     };
     apply_prompt_hooks(env, state, &message.text, session).await?;
+    if !env.host.control.active() {
+        return Ok(());
+    }
+    state.pending_follow_up.pop_front();
     append_injected_user_turn(
         env,
         state,
@@ -116,9 +120,17 @@ async fn apply_prompt_hooks(
     state: &mut RunState,
     prompt: &str,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<(), String> {
-    let inputs = session.input(prompt, env.host.control.clone()).await?;
-    state.runtime_messages.extend(inputs.iter().cloned());
+) -> Result<(), AgentFailure> {
+    let inputs = tokio::select! {
+        biased;
+        _ = env.host.control.wait_inactive() => return Ok(()),
+        inputs = session.input(prompt, env.host.control.clone()) =>
+            inputs.map_err(AgentFailure::hook("input"))?,
+    };
+    if !env.host.control.active() {
+        return Ok(());
+    }
+    state.history.extend(inputs.iter().cloned());
     state.generated_api_messages.extend(inputs);
     Ok(())
 }
@@ -131,7 +143,7 @@ fn append_injected_user_turn(
     kind: super::content::InputKind,
 ) {
     let injected = RuntimeMessage::text(ModelRole::User, message.text.clone());
-    state.runtime_messages.push(injected.clone());
+    state.history.push(injected.clone());
     state.generated_api_messages.push(injected);
 
     let block = ContentBlock {

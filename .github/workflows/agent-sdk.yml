@@ -66,10 +66,12 @@ jobs:
           cargo fmt --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml --all -- --check
 
       - name: Test SDK
-        run: cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml
+        run: |
+          cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml
+          cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --all-features
 
       - name: Check examples
-        run: cargo check --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --examples
+        run: cargo check --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --examples --all-features
 
       - name: Run offline examples
         run: |
@@ -77,17 +79,17 @@ jobs:
           cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- cancel
           cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- inputs
           cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- continue
+          cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example session_offline --all-features
 
       - name: Build API documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --no-deps
+        run: cargo doc --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --no-deps --all-features
 
       - name: Test independent consumer
         run: cargo test --locked --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml
 
       - name: Verify distributable package
-        if: runner.os == 'Linux'
         run: |
           cargo package --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml
-          python scripts/check-agent-sdk.py --package crates/kivio-agent-sdk/target/package/kivio-agent-sdk-*.crate
+          python scripts/check-agent-sdk.py --package crates/kivio-agent-sdk/target/package/kivio-agent-sdk-*.crate --test-consumer
