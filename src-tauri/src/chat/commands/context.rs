@@ -5,15 +5,14 @@ use tauri::{AppHandle, State};
 
 use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::context_policy::{
-    decay_warning_for, estimate_messages_tokens, replacement_body, summarize_runtime_history,
-    SUMMARY_OUTPUT_TOKENS,
+    decay_warning_for, estimate_messages_tokens, summarize_runtime_history, SUMMARY_OUTPUT_TOKENS,
 };
 use crate::chat::model::openai_messages_from_model_messages;
 use crate::chat::model_metadata::{chat_max_output_tokens_for_model, context_window_for_model};
 use crate::chat::storage::load_conversation;
 use crate::chat::{
-    ChatMessage, CompactionBoundaryRecord, CompactionReplay, ContextClearBoundaryRecord,
-    ContextUsageSegment, Conversation, ConversationContextState, ConversationContextSummary,
+    ChatMessage, CompactionBoundaryRecord, ContextClearBoundaryRecord, ContextUsageSegment,
+    Conversation, ConversationContextState, ConversationContextSummary,
 };
 use crate::external_agents::detection::{
     EXTERNAL_AGENT_MODELS_CACHE_TTL, EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
@@ -178,6 +177,9 @@ pub(crate) async fn chat_clear_context(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
+    let _reservation =
+        super::reply_runtime::ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+            .ok_or(super::reply_runtime::CHAT_REPLY_BUSY_ERROR)?;
     let mut conversation = load_conversation(&app, &conversation_id)?;
     apply_context_clear(&mut conversation)?;
     finalize_local_context_change(&app, &state, &conversation_id, conversation, None).await
@@ -229,17 +231,29 @@ async fn finalize_local_context_change(
     let repository = crate::chat::repository::repository(app);
     let mut expected_revision = conversation.revision;
     let mut attempts = 0;
+    let mut warning = None;
     conversation = loop {
         match repository
-            .update_context(
-                app,
-                conversation_id,
-                expected_revision,
-                context_state.clone(),
-            )
+            .mutate_expected(app, conversation_id, Some(expected_revision), |latest| {
+                latest.context_state = context_state.clone();
+                latest.builtin_history = conversation.builtin_history.clone();
+                if latest.builtin_history.is_some() {
+                    for message in &mut latest.messages {
+                        message.model_messages.clear();
+                        message.api_messages.clear();
+                    }
+                }
+                Ok(())
+            })
             .await
         {
             Ok(updated) => break updated,
+            Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+                let (updated, message) =
+                    crate::chat::repository::recover_committed(app, error).await?;
+                warning = Some(message);
+                break updated;
+            }
             Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
                 if generation.is_some() && attempts < 3 =>
             {
@@ -262,6 +276,7 @@ async fn finalize_local_context_change(
         "success": true,
         "contextState": crate::chat::protocol::ChatContextStatePayload::from(&context_state),
         "conversation": conversation,
+        "warning": warning,
     }))
 }
 
@@ -277,6 +292,7 @@ pub(super) fn apply_context_clear(conversation: &mut Conversation) -> Result<(),
     if conversation.context_clear_until_index() == Some(conversation.messages.len() - 1) {
         return Err("当前已是空上下文".to_string());
     }
+    crate::chat::session_history::reset_context(conversation)?;
     let created_at = chrono::Local::now().timestamp();
     conversation
         .context_state
@@ -361,7 +377,7 @@ pub(super) fn accumulate_source_ids(conversation: &Conversation, until_id: &str)
     ids
 }
 
-fn summary_message(summary: &ConversationContextSummary) -> Value {
+pub(crate) fn summary_message(summary: &ConversationContextSummary) -> Value {
     let mut content = format!(
         "{}\n{}",
         crate::chat::context_policy::PERSISTED_SUMMARY_PREFIX,
@@ -401,7 +417,7 @@ fn prune_clear_boundaries_if_needed(conversation: &mut Conversation) {
         });
 }
 
-pub(super) fn mark_summary_stale_if_needed(conversation: &mut Conversation, changed_index: usize) {
+pub(crate) fn mark_summary_stale_if_needed(conversation: &mut Conversation, changed_index: usize) {
     prune_clear_boundaries_if_needed(conversation);
     conversation.invalidate_summary_from(changed_index);
 }
@@ -690,6 +706,7 @@ pub(super) async fn compress_conversation_context(
     state: &State<'_, AppState>,
     conversation: &mut Conversation,
 ) -> Result<bool, String> {
+    crate::chat::session_history::ensure_migrated(conversation)?;
     let settings = state.settings_read().clone();
     let (provider_id, model) =
         settings.effective_compression_model_for_session(Some(crate::settings::SessionModel {
@@ -726,6 +743,13 @@ pub(super) async fn compress_conversation_context(
     .await;
     let (compacted, text) = match outcome {
         kivio_agent_sdk::context::CompactOutcome::Compacted(plan, text) => {
+            let mut history = crate::chat::session_history::history(conversation)?;
+            history.compact(plan.clone())?;
+            conversation
+                .builtin_history
+                .as_mut()
+                .expect("Migrated history")
+                .snapshot = history.snapshot()?;
             let mut projected = runtime_messages;
             projected.splice(plan.covered, plan.replacement);
             (
@@ -756,10 +780,7 @@ pub(super) async fn compress_conversation_context(
         model,
         stale: false,
         file_ledger: (!ledger.is_empty()).then_some(ledger),
-        replay: Some(CompactionReplay {
-            through_message_id: until.clone(),
-            messages: replacement_body(&compacted),
-        }),
+        replay: None,
     });
     conversation.context_state.last_compressed_at = Some(created_at);
     conversation.context_state.compressed_message_count = source_ids.len();
@@ -965,6 +986,90 @@ pub(crate) fn build_chat_api_messages(
 }
 
 /// Text-only replay must not reopen or encode historical videos just to discard them later.
+pub(crate) fn project_canonical_history(
+    app: Option<&AppHandle>,
+    conversation_id: &str,
+    history: &[crate::chat::agent::history::RuntimeMessage],
+    include_video: bool,
+) -> Result<Vec<crate::chat::agent::history::RuntimeMessage>, String> {
+    use crate::chat::model::MessagePart;
+    let mut projected = history.to_vec();
+    let mut remaining_video_bytes = crate::chat::video::MAX_VIDEO_BYTES;
+    for message in &mut projected {
+        let Some(model) = message.model_message_mut() else {
+            continue;
+        };
+        for part in &mut model.content {
+            if let MessagePart::Text { text } | MessagePart::ToolResult { content: text, .. } = part
+            {
+                *text = sanitize_image_payloads_for_model(text);
+            }
+        }
+        if !include_video {
+            for part in &mut model.content {
+                if let MessagePart::Video { path, .. } = part {
+                    *part = MessagePart::Text { text: format!("[Video attachment: {}. Raw video is not included. Use saved observations or video analysis when needed. Never invent contents.]", path.as_deref().unwrap_or("video")) };
+                }
+            }
+        }
+        if let Some(app) = app {
+            for part in &mut model.content {
+                if let MessagePart::Video {
+                    data,
+                    path: Some(reference),
+                    ..
+                } = part
+                {
+                    if data.is_empty() {
+                        let directory = crate::chat::storage::conversation_attachments_dir(
+                            app,
+                            conversation_id,
+                        )?;
+                        let reference_path = PathBuf::from(reference.as_str());
+                        let relative = if reference_path.is_absolute() {
+                            reference_path.strip_prefix(&directory).map_err(|_| {
+                                "Video reference is outside conversation attachments"
+                            })?
+                        } else {
+                            reference_path.as_path()
+                        };
+                        if relative.components().count() != 1
+                            || !matches!(
+                                relative.components().next(),
+                                Some(std::path::Component::Normal(_))
+                            )
+                        {
+                            return Err("Invalid conversation video reference".into());
+                        }
+                        let path = crate::chat::attachments::resolve_attachment_file_path(
+                            app,
+                            Some(conversation_id),
+                            reference,
+                        )?;
+                        let value =
+                            crate::chat::video::content_part(&path, &mut remaining_video_bytes)?;
+                        let parsed = crate::chat::session_history::import_legacy(
+                            &serde_json::json!({"role":"user", "content":[value]}),
+                        )?;
+                        let mut hydrated =
+                            parsed.model_message().expect("Video model message").content[0].clone();
+                        if let MessagePart::Video { path, .. } = &mut hydrated {
+                            *path = Some(reference.clone());
+                        }
+                        *part = hydrated;
+                    }
+                }
+            }
+            crate::chat::attachments::rehydrate_model_message_images(
+                app,
+                conversation_id,
+                std::slice::from_mut(model),
+            );
+        }
+    }
+    Ok(projected)
+}
+
 pub(crate) fn build_chat_api_messages_with_video(
     app: Option<&AppHandle>,
     system_prompt: &str,
@@ -974,6 +1079,13 @@ pub(crate) fn build_chat_api_messages_with_video(
     last_user_image_paths: &[PathBuf],
     include_video: bool,
 ) -> Result<Vec<Value>, String> {
+    if let Some(canonical) = &conversation.builtin_history {
+        let mut history = canonical.snapshot.history().clone();
+        history.set_system_prompt(system_prompt);
+        return Ok(crate::chat::agent::history::export_history(
+            &project_canonical_history(app, &conversation.id, history.context(), include_video)?,
+        ));
+    }
     let mut messages = vec![serde_json::json!({
         "role": "system",
         "content": system_prompt,

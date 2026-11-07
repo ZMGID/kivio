@@ -74,7 +74,7 @@ pub struct SessionEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraftedBranch {
     pub leaf: Option<EntryId>,
-    /// Fresh IDs for the appended suffix. Shared ancestors keep their IDs.
+    /// Fresh IDs for imported entries. Already shared facts keep their IDs.
     pub ids: HashMap<EntryId, EntryId>,
 }
 
@@ -150,7 +150,7 @@ impl SessionHistory {
         Ok(history)
     }
 
-    /// Copies the source's selected suffix, retaining this history's selection.
+    /// Copies the source tree below its anchor, retaining this history's selection.
     pub fn graft_branch(
         &mut self,
         source: &Self,
@@ -172,8 +172,28 @@ impl SessionHistory {
         }
         let mut candidate = self.clone();
         let mut ids = HashMap::new();
-        candidate.active_leaf = source_anchor;
-        for entry in &source_path[prefix_len..] {
+        let mut descendants = HashSet::new();
+        for entry in source.entries() {
+            if source_anchor.is_some()
+                && entry.parent_id != source_anchor
+                && !entry
+                    .parent_id
+                    .is_some_and(|parent| descendants.contains(&parent))
+            {
+                continue;
+            }
+            descendants.insert(entry.id);
+            let parent = entry
+                .parent_id
+                .map(|id| ids.get(&id).copied().unwrap_or(id));
+            if parent == entry.parent_id
+                && self
+                    .entry_indices
+                    .get(&entry.id)
+                    .is_some_and(|index| self.entries[*index] == *entry)
+            {
+                continue;
+            }
             let remap = |id: EntryId| ids.get(&id).copied().unwrap_or(id);
             let range = |value: EntryRange| EntryRange {
                 first: remap(value.first),
@@ -198,10 +218,14 @@ impl SessionHistory {
                 }
                 *retained_after = retained_after.map(origin);
             }
+            candidate.active_leaf = parent;
             let id = candidate.record(kind);
             ids.insert(entry.id, id);
         }
-        let leaf = candidate.active_leaf;
+        let leaf = source
+            .active_leaf
+            .map(|id| ids.get(&id).copied().unwrap_or(id));
+        Self::from_entries(candidate.entries.clone(), leaf)?;
         let mut candidate = Self::from_entries(candidate.entries, self.active_leaf)?;
         candidate.system_override.clone_from(&self.system_override);
         candidate.apply_system_override();
@@ -472,7 +496,9 @@ impl SessionHistory {
         Ok(())
     }
 
-    pub(crate) fn set_system_prompt(&mut self, prompt: &str) {
+    /// Overrides the first projected system message without changing stored facts.
+    /// Histories without a system message are unchanged.
+    pub fn set_system_prompt(&mut self, prompt: &str) {
         self.system_override = self
             .context
             .iter()
@@ -692,6 +718,66 @@ mod tests {
         let encoded = serde_json::to_string(&destination.snapshot().unwrap()).unwrap();
         let restored: super::super::SessionSnapshot = serde_json::from_str(&encoded).unwrap();
         assert_eq!(restored.into_history().context(), source.context());
+    }
+
+    #[test]
+    fn graft_retains_colliding_pending_tips_and_shared_future_facts() {
+        let mut destination = SessionHistory::from(vec![message("shared")]);
+        let anchor = destination.active_leaf();
+        destination.push(message("existing future"));
+        let original = destination.clone();
+        let mut first = destination.clone();
+        first.switch_branch(anchor).unwrap();
+        first.extend(tool_round());
+        first
+            .compact(CompactionPlan {
+                covered: 1..3,
+                replacement: vec![RuntimeMessage::system("first summary")],
+            })
+            .unwrap();
+        let completed = first.active_leaf();
+        first.push(tool_round().remove(0));
+        let pending = first.active_leaf().unwrap();
+        first.switch_branch(completed).unwrap();
+        let mut second = original.clone();
+        second.switch_branch(anchor).unwrap();
+        second.extend(import_history(vec![
+            json!({"role":"assistant", "tool_calls":[{"id":"second-call", "type":"function", "function":{"name":"echo", "arguments":"{}"}}]}),
+            json!({"role":"tool", "tool_call_id":"second-call", "content":"second result"}),
+        ]));
+        second.push(RuntimeMessage::text(ModelRole::Assistant, "second answer"));
+        let first_graft = destination.graft_branch(&first, anchor).unwrap();
+        let second_graft = destination.graft_branch(&second, anchor).unwrap();
+        assert_eq!(destination.active_leaf(), original.active_leaf());
+        assert_eq!(destination.context(), original.context());
+        assert_eq!(
+            destination.entries().len(),
+            original.entries().len() + 4 + 3
+        );
+        assert!(!first_graft.ids.contains_key(&EntryId(1)));
+        assert_ne!(first_graft.ids[&EntryId(2)], second_graft.ids[&EntryId(2)]);
+        assert_eq!(
+            destination
+                .entries()
+                .iter()
+                .find(|entry| entry.id == first_graft.ids[&pending])
+                .unwrap()
+                .kind,
+            first.entry(pending).unwrap().kind
+        );
+        let before = destination.clone();
+        assert!(destination
+            .switch_branch(Some(first_graft.ids[&pending]))
+            .is_err());
+        assert_eq!(destination, before);
+        destination.switch_branch(first_graft.leaf).unwrap();
+        assert_eq!(destination.context(), first.context());
+        let restored: super::super::SessionSnapshot =
+            serde_json::from_str(&serde_json::to_string(&destination.snapshot().unwrap()).unwrap())
+                .unwrap();
+        destination = restored.into_history();
+        destination.switch_branch(second_graft.leaf).unwrap();
+        assert_eq!(destination.context(), second.context());
     }
 
     #[test]

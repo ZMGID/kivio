@@ -719,6 +719,8 @@ pub fn run() {
             chat::commands::mutations::chat_update_message,
             chat::commands::mutations::chat_delete_message,
             chat::commands::mutations::chat_set_group_selection,
+            chat::commands::mutations::chat_get_branches,
+            chat::commands::mutations::chat_switch_branch,
             chat::commands::mutations::chat_reply_with_model,
             chat::commands::mutations::chat_regenerate_message,
             chat::commands::mutations::chat_rewind_to_message,

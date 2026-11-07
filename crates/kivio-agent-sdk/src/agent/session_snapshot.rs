@@ -82,6 +82,10 @@ impl SessionSnapshot {
         self.history.entries()
     }
 
+    pub fn history(&self) -> &SessionHistory {
+        &self.history
+    }
+
     pub fn active_leaf(&self) -> Option<EntryId> {
         self.history.active_leaf()
     }

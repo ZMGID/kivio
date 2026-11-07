@@ -50,6 +50,9 @@ pub(super) fn remove_assistant_answer(
     if conversation.messages[idx].role != "assistant" {
         return Err("仅支持删除助手回复".to_string());
     }
+    if !conversation.agent_runtime.is_external() {
+        return crate::chat::session_history::delete_answer(conversation, message_id);
+    }
     let changes_pending_history = conversation
         .external_history
         .as_ref()
@@ -239,7 +242,7 @@ pub(super) fn apply_reply_with_model_result(
     conversation: &mut Conversation,
     prep: &ReplyWithModelPrep,
     message: ChatMessage,
-) {
+) -> Result<(), String> {
     for sibling_id in &prep.sibling_ids {
         if let Some(existing) = conversation
             .messages
@@ -269,7 +272,7 @@ pub(super) fn apply_reply_with_model_result(
     }
     let new_id = message.id.clone();
     upsert_assistant_message(conversation, message);
-    conversation.select_group_answer(prep.group_id.clone(), new_id);
+    crate::chat::session_history::select_group_answer(conversation, &prep.group_id, &new_id)
 }
 
 /// 更新单条消息（仅助手回复）
@@ -285,38 +288,51 @@ pub(crate) async fn chat_update_message(
     if trimmed.is_empty() {
         return Err("消息内容不能为空".to_string());
     }
+    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    else {
+        return Ok(serde_json::json!({ "success": false, "error": CHAT_REPLY_BUSY_ERROR }));
+    };
     let repository = crate::chat::repository::repository(&app);
     let mut snapshot = repository
         .get(&app, &conversation_id)
         .await
         .map_err(crate::chat::repository::repository_error)?;
     let mut attempt = 0;
+    let mut warning = None;
     let (mut conversation, context_state) = loop {
         let mut candidate = snapshot.clone();
         let idx = find_message_index(&candidate, &message_id)?;
         if candidate.messages[idx].role != "assistant" {
             return Err("仅支持编辑助手回复".to_string());
         }
-        mark_summary_stale_if_needed(&mut candidate, idx);
+        if !candidate.agent_runtime.is_external() {
+            crate::chat::session_history::edit_message(&mut candidate, &message_id, trimmed)?;
+        } else {
+            mark_summary_stale_if_needed(&mut candidate, idx);
+        }
         replace_final_text_segments_for_edit(&mut candidate.messages[idx], trimmed);
+        if candidate.builtin_history.is_some() {
+            candidate.messages[idx].model_messages.clear();
+            candidate.messages[idx].api_messages.clear();
+        }
         candidate.messages[idx].timestamp = chrono::Local::now().timestamp();
         super::context::invalidate_context_measurement(&state, &mut candidate);
         let context_state = compute_context_state(&app, &state, &candidate, None, &[]).await?;
-        let edited_message = candidate.messages[idx].clone();
+        candidate.context_state = context_state.clone();
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
-                let latest_idx = find_message_index(latest, &message_id)?;
-                if latest.messages[latest_idx].role != "assistant" {
-                    return Err("仅支持编辑助手回复".to_string());
-                }
-                mark_summary_stale_if_needed(latest, latest_idx);
-                latest.messages[latest_idx] = edited_message;
-                latest.context_state = context_state.clone();
+                *latest = candidate;
                 Ok(())
             })
             .await
         {
             Ok(latest) => break (latest, context_state),
+            Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+                let (latest, message) =
+                    crate::chat::repository::recover_committed(&app, error).await?;
+                warning = Some(message);
+                break (latest, context_state);
+            }
             Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
                 if attempt == 0 =>
             {
@@ -340,6 +356,7 @@ pub(crate) async fn chat_update_message(
     Ok(serde_json::json!({
         "success": true,
         "conversation": conversation,
+        "warning": warning,
     }))
 }
 
@@ -366,6 +383,14 @@ pub(crate) fn apply_regenerate_truncation(
     idx: usize,
     new_content: Option<String>,
 ) -> Result<(), String> {
+    if !conversation.agent_runtime.is_external() {
+        let message_id = conversation.messages[idx].id.clone();
+        return crate::chat::session_history::prepare_regenerate(
+            conversation,
+            &message_id,
+            new_content.as_deref(),
+        );
+    }
     let current_turn = !conversation.messages[idx + 1..]
         .iter()
         .any(|message| message.role == "user");
@@ -460,6 +485,7 @@ pub(crate) async fn chat_regenerate_message(
         .await
         .map_err(crate::chat::repository::repository_error)?;
     let mut attempt = 0;
+    let mut warning = None;
     let mut conversation = loop {
         let next_content = new_content.clone();
         match repository
@@ -491,6 +517,12 @@ pub(crate) async fn chat_regenerate_message(
                 );
                 break latest;
             }
+            Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+                let (latest, message) =
+                    crate::chat::repository::recover_committed(&app, error).await?;
+                warning = Some(message);
+                break latest;
+            }
             Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
                 if attempt == 0 =>
             {
@@ -508,7 +540,9 @@ pub(crate) async fn chat_regenerate_message(
         .resume_user_turn(&conversation_id, interruption_epoch)
     {
         strip_transcripts_for_frontend(&mut conversation);
-        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
+        return Ok(
+            serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
+        );
     }
 
     let last_user_api_content = last_turn_user(&conversation.messages).map(|message| {
@@ -587,7 +621,9 @@ pub(crate) async fn chat_regenerate_message(
     }
     if state.sub_agents.user_interrupted(&conversation_id) {
         strip_transcripts_for_frontend(&mut conversation);
-        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
+        return Ok(
+            serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
+        );
     }
     let reply_outcome = complete_assistant_reply(
         &app,
@@ -606,10 +642,12 @@ pub(crate) async fn chat_regenerate_message(
         Ok(()) => Ok(serde_json::json!({
             "success": true,
             "conversation": conversation,
+            "warning": warning,
         })),
         Err(err) if err == "cancelled" => Ok(serde_json::json!({
             "success": true,
             "conversation": conversation,
+            "warning": warning,
         })),
         Err(err) => Ok(serde_json::json!({
             "success": false,
@@ -642,20 +680,27 @@ pub(crate) async fn chat_delete_message(
         .await
         .map_err(crate::chat::repository::repository_error)?;
     let mut attempt = 0;
+    let mut warning = None;
     let (mut conversation, context_state) = loop {
         let mut candidate = snapshot.clone();
         remove_assistant_answer(&mut candidate, &message_id)?;
         super::context::invalidate_context_measurement(&state, &mut candidate);
         let context_state = compute_context_state(&app, &state, &candidate, None, &[]).await?;
+        candidate.context_state = context_state.clone();
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
-                remove_assistant_answer(latest, &message_id)?;
-                latest.context_state = context_state.clone();
+                *latest = candidate;
                 Ok(())
             })
             .await
         {
             Ok(latest) => break (latest, context_state),
+            Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+                let (latest, message) =
+                    crate::chat::repository::recover_committed(&app, error).await?;
+                warning = Some(message);
+                break (latest, context_state);
+            }
             Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
                 if attempt == 0 =>
             {
@@ -691,6 +736,7 @@ pub(crate) async fn chat_delete_message(
     Ok(serde_json::json!({
         "success": true,
         "conversation": conversation,
+        "warning": warning,
     }))
 }
 
@@ -729,6 +775,7 @@ pub(crate) async fn chat_rewind_to_message(
         None
     };
     let mut attempt = 0;
+    let mut warning = None;
     let (mut conversation, content) = loop {
         let idx = find_message_index(&snapshot, &message_id)?;
         if snapshot.messages[idx].role != "user" {
@@ -741,15 +788,17 @@ pub(crate) async fn chat_rewind_to_message(
                 if latest.messages[latest_idx].role != "user" {
                     return Err("仅支持回到用户提问".to_string());
                 }
-                mark_summary_stale_if_needed(latest, latest_idx);
-                latest.messages.truncate(latest_idx);
                 if latest.agent_runtime.is_external() {
+                    mark_summary_stale_if_needed(latest, latest_idx);
+                    latest.messages.truncate(latest_idx);
                     latest.external_cwd = original_cwd.clone();
                     latest.external_history =
                         Some(crate::chat::types::ExternalHistoryTransition::new(
                             latest,
                             crate::chat::types::ExternalHistoryMethod::NativeRewind,
                         ));
+                } else {
+                    crate::chat::session_history::truncate_before(latest, &message_id)?;
                 }
                 let existing_ids: std::collections::HashSet<String> = latest
                     .messages
@@ -776,6 +825,12 @@ pub(crate) async fn chat_rewind_to_message(
                 state
                     .chat_runtime()
                     .set_auto_compact_failures(&conversation_id, 0);
+                break (latest, content);
+            }
+            Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+                let (latest, message) =
+                    crate::chat::repository::recover_committed(&app, error).await?;
+                warning = Some(message);
                 break (latest, content);
             }
             Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
@@ -808,6 +863,7 @@ pub(crate) async fn chat_rewind_to_message(
         "success": true,
         "conversation": conversation,
         "content": content,
+        "warning": warning,
     }))
 }
 
@@ -902,6 +958,11 @@ async fn fork_conversation_owned(
             .map_err(crate::chat::repository::repository_error)?;
         crate::chat::goal::emit_goal_state(&app, &source);
     }
+    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    else {
+        return Ok(serde_json::json!({ "success": false, "error": CHAT_REPLY_BUSY_ERROR }));
+    };
+    crate::chat::session_history::ensure_migrated(&mut source)?;
     let anchor_idx = find_message_index(&source, &message_id)?;
 
     let now = chrono::Local::now().timestamp();
@@ -952,7 +1013,16 @@ async fn fork_conversation_owned(
 
     // The branch keeps the todo list as it stood at the fork point.
     let agent_todo_state = crate::chat::todo::state_from_messages(&messages, &group_selections);
+    let builtin_history = if source.agent_runtime.is_external() {
+        None
+    } else {
+        Some(crate::chat::session_history::fork_prefix(
+            &mut source,
+            &messages,
+        )?)
+    };
     let mut conversation = Conversation {
+        builtin_history,
         external_history: None,
         external_cwd: None,
         runtime_locked: false,
@@ -973,7 +1043,11 @@ async fn fork_conversation_owned(
         folder: source.folder.clone(),
         project_id: source.project_id.clone(),
         set_id: source.set_id.clone(),
-        context_state: ConversationContextState::default(),
+        context_state: if source.agent_runtime.is_external() {
+            ConversationContextState::default()
+        } else {
+            source.context_state.clone()
+        },
         agent_todo_state,
         agent_plan_state: AgentPlanState::default(),
         goal_state: None,
@@ -998,12 +1072,55 @@ async fn fork_conversation_owned(
             crate::chat::types::ExternalHistoryMethod::Replay,
         ));
         conversation.runtime_locked = true;
+    } else {
+        let retained: std::collections::HashSet<_> = conversation
+            .messages
+            .iter()
+            .map(|message| message.id.clone())
+            .collect();
+        conversation
+            .context_state
+            .clear_boundaries
+            .retain(|boundary| retained.contains(&boundary.source_until_message_id));
+        conversation
+            .context_state
+            .compaction_boundaries
+            .retain(|boundary| {
+                retained.contains(
+                    boundary
+                        .display_after_message_id
+                        .as_ref()
+                        .unwrap_or(&boundary.source_until_message_id),
+                )
+            });
+        if conversation
+            .context_state
+            .summary
+            .as_ref()
+            .is_some_and(|summary| !retained.contains(&summary.source_until_message_id))
+        {
+            conversation.context_state.summary = None;
+        }
+        super::context::invalidate_context_measurement(&state, &mut conversation);
+        crate::chat::attachments::copy_builtin_conversation_resources(
+            app,
+            &conversation_id,
+            &mut conversation,
+        )?;
     }
 
-    let conversation = crate::chat::repository::repository(&app)
+    let created = crate::chat::repository::repository(&app)
         .create(&app, conversation)
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
+        .await;
+    let (conversation, warning) = match created {
+        Ok(conversation) => (conversation, None),
+        Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+            let (conversation, warning) =
+                crate::chat::repository::recover_committed(app, error).await?;
+            (conversation, Some(warning))
+        }
+        Err(error) => return Err(crate::chat::repository::repository_error(error)),
+    };
 
     let mut conversation = conversation;
     // 与 chat_get_conversation 一致：返回前做读时孤立工具分段对账（必须在 strip 之前——
@@ -1014,6 +1131,7 @@ async fn fork_conversation_owned(
     Ok(serde_json::json!({
         "success": true,
         "conversation": conversation,
+        "warning": warning,
     }))
 }
 
@@ -1786,7 +1904,11 @@ pub(super) fn apply_group_selection(
     if conversation.group_selections.get(&group_id) == Some(&message_id) {
         return Ok(());
     }
-    conversation.select_group_answer(group_id, message_id);
+    if conversation.agent_runtime.is_external() {
+        conversation.select_group_answer(group_id, message_id);
+    } else {
+        crate::chat::session_history::select_group_answer(conversation, &group_id, &message_id)?;
+    }
     if !conversation.agent_runtime.is_external() {
         super::context::invalidate_context_measurement(state, conversation);
         conversation.context_state.cache_hit_rate =
@@ -1812,12 +1934,24 @@ pub(crate) async fn chat_set_group_selection(
     if group_id.is_empty() || message_id.is_empty() {
         return Err("group_id 与 message_id 不能为空".to_string());
     }
-    let mut conversation = crate::chat::repository::repository(&app)
+    let Some(_send_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    else {
+        return Ok(serde_json::json!({ "success": false, "error": CHAT_REPLY_BUSY_ERROR }));
+    };
+    let selected = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, |conversation| {
             apply_group_selection(&state, conversation, group_id, message_id)
         })
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
+        .await;
+    let (mut conversation, warning) = match selected {
+        Ok(conversation) => (conversation, None),
+        Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+            let (conversation, warning) =
+                crate::chat::repository::recover_committed(&app, error).await?;
+            (conversation, Some(warning))
+        }
+        Err(error) => return Err(crate::chat::repository::repository_error(error)),
+    };
 
     emit_chat_context_state(
         &app,
@@ -1829,7 +1963,83 @@ pub(crate) async fn chat_set_group_selection(
     Ok(serde_json::json!({
         "success": true,
         "conversation": conversation,
+        "warning": warning,
     }))
+}
+
+#[tauri::command]
+pub(crate) async fn chat_get_branches(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<serde_json::Value, String> {
+    let conversation = crate::chat::repository::repository(&app)
+        .get(&app, &conversation_id)
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
+    let Some(history) = &conversation.builtin_history else {
+        return Ok(serde_json::json!({"success":true,"branches":[]}));
+    };
+    let label = |messages: &[ChatMessage]| {
+        messages
+            .iter()
+            .rev()
+            .find(|message| !message.content.trim().is_empty())
+            .map(|message| truncate_chars(message.content.trim(), 48))
+            .unwrap_or_else(|| "空白分支".into())
+    };
+    let mut branches: Vec<_> = history.archived_branches.iter().map(|branch| serde_json::json!({"id":branch.id,"label":label(&branch.messages),"active":false})).collect();
+    branches.push(serde_json::json!({"id":history.active_branch_id,"label":label(&conversation.messages),"active":true}));
+    Ok(serde_json::json!({"success":true,"branches":branches}))
+}
+
+#[tauri::command]
+pub(crate) async fn chat_switch_branch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    conversation_id: String,
+    branch_id: String,
+) -> Result<serde_json::Value, String> {
+    let Some(_reservation) = ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+    else {
+        return Ok(serde_json::json!({"success":false,"error":CHAT_REPLY_BUSY_ERROR}));
+    };
+    let result = crate::chat::repository::repository(&app)
+        .mutate(&app, &conversation_id, |conversation| {
+            crate::chat::session_history::switch_branch(conversation, &branch_id)?;
+            restore_todo_state_from_history(conversation);
+            if let Some(goal) = conversation
+                .goal_state
+                .as_mut()
+                .filter(|goal| crate::chat::goal::is_running(goal.status))
+            {
+                goal.version += 1;
+                goal.status = crate::chat::types::GoalStatus::Paused;
+                goal.status_reason = Some("Paused before switching history branch".into());
+                goal.active_run_id = None;
+                goal.updated_at = chrono::Local::now().timestamp();
+            }
+            super::context::invalidate_context_measurement(&state, conversation);
+            Ok(())
+        })
+        .await;
+    let (mut conversation, warning) = match result {
+        Ok(conversation) => (conversation, None),
+        Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+            let (conversation, warning) =
+                crate::chat::repository::recover_committed(&app, error).await?;
+            (conversation, Some(warning))
+        }
+        Err(error) => return Err(crate::chat::repository::repository_error(error)),
+    };
+    emit_chat_context_state(
+        &app,
+        &conversation.id,
+        conversation.revision,
+        &conversation.context_state,
+    );
+    crate::chat::goal::emit_goal_state(&app, &conversation);
+    strip_transcripts_for_frontend(&mut conversation);
+    Ok(serde_json::json!({"success":true,"conversation":conversation,"warning":warning}))
 }
 
 /// 对最后一轮同一问题再请一个模型作答。已有回答保留，新回答作为多答组的一列。
@@ -1914,6 +2124,16 @@ pub(crate) async fn chat_reply_with_model(
     arm_conversation
         .messages
         .extend(removed.into_iter().filter(is_subagent_report));
+    if !arm_conversation.agent_runtime.is_external() {
+        let mut prefix = crate::chat::session_history::fork_prefix(
+            &mut conversation.clone(),
+            &arm_conversation.messages,
+        )?;
+        if let Some(history) = &conversation.builtin_history {
+            prefix.active_branch_id = history.active_branch_id.clone();
+        }
+        arm_conversation.builtin_history = Some(prefix);
+    }
 
     let arm = ReplyArm {
         group_id: prep.group_id.clone(),
@@ -1938,7 +2158,7 @@ pub(crate) async fn chat_reply_with_model(
     )
     .await;
 
-    let (produced, terminal) = match outcome {
+    let (produced, history, terminal) = match outcome {
         Ok(result) if result.message.is_some() => {
             let message = result.message.expect("checked");
             let outcome_label = message
@@ -1948,6 +2168,7 @@ pub(crate) async fn chat_reply_with_model(
             let content = message.content.clone();
             (
                 Some(message),
+                result.history,
                 result.run_id.map(|id| (id, outcome_label, content)),
             )
         }
@@ -1984,6 +2205,7 @@ pub(crate) async fn chat_reply_with_model(
             let content = message.content.clone();
             (
                 Some(message),
+                result.history,
                 result.run_id.map(|id| (id, "error".to_string(), content)),
             )
         }
@@ -2007,7 +2229,7 @@ pub(crate) async fn chat_reply_with_model(
                 run_entry,
                 user_skill_id.as_deref(),
             );
-            (Some(message), None)
+            (Some(message), None, None)
         }
     };
 
@@ -2025,9 +2247,17 @@ pub(crate) async fn chat_reply_with_model(
     };
 
     let group_id_for_apply = prep.group_id.clone();
+    let source_branch_id = conversation
+        .builtin_history
+        .as_ref()
+        .map(|history| history.active_branch_id.clone());
     let state_ref = state.inner();
-    let mut latest = repository
+    let app_ref = &app;
+    let applied = repository
         .mutate(&app, &conversation_id, move |latest| {
+            if let Some(branch_id) = source_branch_id.as_deref() {
+                super::messages::validate_reply_history_branch(latest, branch_id)?;
+            }
             let prep = prepare_reply_with_model(
                 latest,
                 &message_id,
@@ -2035,14 +2265,30 @@ pub(crate) async fn chat_reply_with_model(
                 &model,
                 Some(&group_id_for_apply),
             )?;
-            apply_reply_with_model_result(latest, &prep, produced);
+            if let Some(history) = history {
+                super::messages::commit_reply_history(
+                    app_ref,
+                    latest,
+                    &produced.id,
+                    history,
+                    false,
+                )?;
+            }
+            apply_reply_with_model_result(latest, &prep, produced)?;
             if !latest.agent_runtime.is_external() {
                 super::context::invalidate_context_measurement(state_ref, latest);
             }
             Ok(())
         })
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
+        .await;
+    let (mut latest, warning) = match applied {
+        Ok(latest) => (latest, None),
+        Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+            let (latest, warning) = crate::chat::repository::recover_committed(&app, error).await?;
+            (latest, Some(warning))
+        }
+        Err(error) => return Err(crate::chat::repository::repository_error(error)),
+    };
 
     for attempt in 0..2 {
         match compute_context_state(&app, &state, &latest, None, &[]).await {
@@ -2090,5 +2336,6 @@ pub(crate) async fn chat_reply_with_model(
     Ok(serde_json::json!({
         "success": true,
         "conversation": latest,
+        "warning": warning,
     }))
 }

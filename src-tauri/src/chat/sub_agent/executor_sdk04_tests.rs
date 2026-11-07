@@ -179,7 +179,7 @@ async fn child_checkpoint_input_survives_final_history_with_parent_persistence_f
     let config = test_run_config(&state, &server.base_url);
     let mut history = config.runtime_messages.clone();
     let result = run_session(
-        config,
+        config.into_application(),
         &host,
         &RecordingExecutor::default(),
         &host,
@@ -235,7 +235,7 @@ async fn real_loop_omp_projection_journal_replay_and_slot_release() {
     let initial_history = config.runtime_messages.clone();
     let executor = RecordingExecutor::default();
     let result = run_session(
-        config,
+        config.into_application(),
         &host,
         &executor,
         &host,
@@ -336,7 +336,7 @@ async fn omp_journal_failure_is_sticky_and_preserves_history_cursor() {
     let host = JournalHost::new(missing.clone());
     let config = test_run_config(&state, "http://127.0.0.1:1/v1");
     let result = run_session(
-        config,
+        config.into_application(),
         &host,
         &RecordingExecutor::default(),
         &host,
@@ -345,6 +345,7 @@ async fn omp_journal_failure_is_sticky_and_preserves_history_cursor() {
     .await;
     assert!(result
         .unwrap_err()
+        .to_string()
         .contains("Cannot open subagent transcript"));
     assert!(matches!(
         host.outcomes.lock().unwrap().as_slice(),
@@ -487,7 +488,7 @@ async fn stopped_managed_tool_keeps_slot_busy_until_cleanup_and_journal_finish()
     };
     let config = test_run_config(&state, &server.base_url);
     let initial_history = config.runtime_messages.clone();
-    let run = run_session(config, &host, &executor, &host, handle.clone());
+    let run = run_session(config.into_application(), &host, &executor, &host, handle.clone());
     tokio::pin!(run);
     tokio::select! {
         _ = executor.started.notified() => {},

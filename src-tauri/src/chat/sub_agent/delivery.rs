@@ -171,6 +171,7 @@ fn report_inputs(
         .filter(|(id, _)| !seen.contains(id.as_str()))
         .map(|(id, content)| {
             let mut input = report_input(&content);
+            input["_ui_message_id"] = Value::String(id.clone());
             input[REPORT_MESSAGE_ID_KEY] = Value::String(id);
             RuntimeMessage::from_legacy(input).expect("report input is a model message")
         })
@@ -492,6 +493,7 @@ mod tests {
             ]),
         );
         assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].source.get("_ui_message_id").and_then(Value::as_str), Some(new[0].0.as_str()));
         assert_eq!(
             inputs[0]
                 .source

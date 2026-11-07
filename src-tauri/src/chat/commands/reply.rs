@@ -29,16 +29,14 @@ use super::agent_host::{ChatAgentHost, RegistryToolExecutor};
 use super::catalog::{
     chat_memory_prompt_for_request, is_builder_conversation, project_prompt_context_for,
 };
-use super::context::{
-    accumulate_source_ids, build_chat_api_messages_with_video, resolve_usage_anchor,
-};
+use super::context::{accumulate_source_ids, resolve_usage_anchor};
 use super::direct_image::complete_direct_image_generation_reply;
 use super::interaction::{emit_chat_stream_delta, emit_chat_tool_record, wait_for_chat_cancel};
 use super::messages::{
     auxiliary_tool_segments, build_assistant_message, push_assistant_message,
     tool_segment_for_record,
 };
-use super::reply_runtime::{ArmReplyOutcome, ChatReplyGuard, ReplyArm};
+use super::reply_runtime::{ArmReplyOutcome, ChatReplyGuard, ReplyArm, ReplyHistoryCommit};
 use super::resolve_thinking;
 use super::tooling::{
     allowed_mcp_server_ids, append_agent_ask_user_tools, append_agent_todo_tools,
@@ -201,6 +199,7 @@ pub(super) async fn complete_assistant_reply_inner(
             crate::external_agents::ExternalCliTurnOutcome::Completed
             | crate::external_agents::ExternalCliTurnOutcome::Failed(_)
             | crate::external_agents::ExternalCliTurnOutcome::Cancelled => ArmReplyOutcome {
+                history: None,
                 message: None,
                 run_id: None,
                 error: None,
@@ -208,6 +207,23 @@ pub(super) async fn complete_assistant_reply_inner(
         });
     }
 
+    if conversation.builtin_history.is_none()
+        || crate::chat::session_history::needs_report_admission(conversation)
+    {
+        *conversation = crate::chat::repository::repository(app)
+            .mutate(app, &conversation.id, |latest| {
+                crate::chat::session_history::ensure_migrated(latest)?;
+                crate::chat::session_history::admit_pending_reports(latest)
+            })
+            .await
+            .map_err(crate::chat::repository::repository_error)?;
+    }
+    let source_branch_id = conversation
+        .builtin_history
+        .as_ref()
+        .expect("Migrated history")
+        .active_branch_id
+        .clone();
     let settings = state.settings_read().clone();
     // 多模型臂用自己的 provider/model；单模型用会话级（行为不变）。
     // 提前转成 owned，避免对 `conversation` 的长期不可变借用挡住后续的 `&mut conversation`。
@@ -310,6 +326,7 @@ pub(super) async fn complete_assistant_reply_inner(
     if direct_image_model && arm.is_some() {
         protocol_guard.defer_terminal();
         return Ok(ArmReplyOutcome {
+            history: None,
             message: None,
             run_id: Some(run_id),
             error: Some(
@@ -336,6 +353,7 @@ pub(super) async fn complete_assistant_reply_inner(
         )
         .await
         .map(|_| ArmReplyOutcome {
+            history: None,
             message: None,
             run_id: None,
             error: None,
@@ -390,6 +408,7 @@ pub(super) async fn complete_assistant_reply_inner(
                 if arm.is_some() {
                     protocol_guard.defer_terminal();
                     return Ok(ArmReplyOutcome {
+                history: None,
                         message: None,
                         run_id: Some(run_id),
                         error: Some("cancelled".to_string()),
@@ -431,6 +450,7 @@ pub(super) async fn complete_assistant_reply_inner(
                 if arm.is_some() {
                     protocol_guard.defer_terminal();
                     return Ok(ArmReplyOutcome {
+                        history: None,
                         message: None,
                         run_id: Some(run_id),
                         error: Some(err),
@@ -448,12 +468,6 @@ pub(super) async fn complete_assistant_reply_inner(
     } else {
         last_user_image_paths
     };
-    let augmented_last_user_content = auxiliary_vision_result.as_ref().map(|result| {
-        user_content_with_auxiliary_vision_result(last_user_api_content, result, &language)
-    });
-    let last_user_content_for_main = augmented_last_user_content
-        .as_deref()
-        .or(last_user_api_content);
     let skill_cwd = crate::chat::storage::resolve_conversation_working_directory(
         app,
         conversation,
@@ -733,35 +747,26 @@ pub(super) async fn complete_assistant_reply_inner(
             .push_str(&format!("\n\n{goal_prompt}"));
     }
 
-    let mut runtime_messages = match build_chat_api_messages_with_video(
-        Some(app),
-        &prepared_prompt.system,
-        conversation,
-        last_user_idx,
-        last_user_content_for_main,
-        main_image_paths,
-        video_plan.send_video,
-    ) {
-        Ok(messages) => messages,
-        Err(error) => {
-            if arm.is_some() {
-                protocol_guard.defer_terminal();
-                return Ok(ArmReplyOutcome {
-                    message: None,
-                    run_id: Some(run_id),
-                    error: Some(error),
-                });
-            }
-            return Err(error);
-        }
-    };
-    if !video_plan.send_video && !video_plan.reports.is_empty() {
-        crate::chat::video_analysis::apply_saved_reports(
-            &mut runtime_messages,
-            &video_plan.reports,
-            &language,
-        );
+    let mut history = crate::chat::session_history::history(conversation)?;
+    let source_anchor = history.active_leaf();
+    history.set_system_prompt(&prepared_prompt.system);
+    if let Some(result) = &auxiliary_vision_result {
+        history.push(crate::chat::agent::history::RuntimeMessage::text(
+            crate::chat::model::ModelRole::User,
+            user_content_with_auxiliary_vision_result(None, result, &language),
+        ));
     }
+    let current_user_id = last_user_idx.map(|index| conversation.messages[index].id.clone());
+    let request_projection = crate::chat::context_policy::MainRequestProjection {
+        app: app.clone(),
+        include_video: video_plan.send_video,
+        image_omission: auxiliary_vision_result
+            .as_ref()
+            .and(current_user_id.clone()),
+        user_message_id: current_user_id,
+        video_reports: video_plan.reports.clone(),
+        language: language.clone(),
+    };
     let mut fallback_chat_tools = effective_chat_tools.clone();
     if skill_id.is_some() && fallback_chat_tools.skill_fallback_mode == "progressive" {
         fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
@@ -796,6 +801,8 @@ pub(super) async fn complete_assistant_reply_inner(
         .push_str(&conversation_context);
 
     let chat_host = ChatAgentHost {
+        source_anchor,
+        source_branch_id: source_branch_id.clone(),
         workflow_hooks: if chat_mode {
             Default::default()
         } else {
@@ -939,8 +946,9 @@ pub(super) async fn complete_assistant_reply_inner(
             generation: run_generation,
             provider,
             model: resolved_model.clone(),
-            runtime_messages,
+            history,
             runtime_context: Some(prepared_prompt.context),
+            request_projection: Some(request_projection),
             tools,
             blocked_tool_calls,
             plan_state: if chat_mode {
@@ -969,8 +977,11 @@ pub(super) async fn complete_assistant_reply_inner(
         handle,
     )
     .await;
-    let result = match result {
-        Ok(result) => result,
+    let (mut result, run_error) = match result {
+        Ok(result) => (result, None),
+        Err(crate::chat::session_policy::ApplicationRunError::Failed { cause, partial }) => {
+            (*partial, Some(cause.to_string()))
+        }
         Err(error) => {
             return finish_reply_failure(
                 app,
@@ -979,11 +990,23 @@ pub(super) async fn complete_assistant_reply_inner(
                 &run_id,
                 arm.is_some(),
                 &mut protocol_guard,
-                error,
+                error.to_string(),
             )
             .await;
         }
     };
+
+    if let Some(error) = &run_error {
+        result
+            .degraded
+            .get_or_insert_with(|| crate::chat::recovery_policy::DegradedAnswer {
+                kind: "unknown".into(),
+                reason: error.clone(),
+                detail: None,
+                tool_summaries: Vec::new(),
+                text: error.clone(),
+            });
+    }
 
     let refreshed = crate::chat::repository::repository(app)
         .get(app, &conversation.id)
@@ -995,6 +1018,7 @@ pub(super) async fn complete_assistant_reply_inner(
             if arm.is_some() {
                 protocol_guard.defer_terminal();
                 return Ok(ArmReplyOutcome {
+                    history: None,
                     message: None,
                     run_id: Some(run_id),
                     error: Some(error),
@@ -1029,6 +1053,11 @@ pub(super) async fn complete_assistant_reply_inner(
     // 前端答案下方图片画廊直接展示（消费 message.artifacts）。空则无开销。
     let artifacts = generated_image_artifacts(&result.images);
     let run_entry = agent_run_entry_label(entry);
+    let history_commit = ReplyHistoryCommit {
+        history: result.history,
+        source_anchor,
+        branch_id: source_branch_id,
+    };
     if let Some(arm) = arm {
         // 多模型臂：构造 assistant 消息但**不落盘**，交协调者统一合并 + 一次性 save。
         let message = build_assistant_message(
@@ -1058,9 +1087,10 @@ pub(super) async fn complete_assistant_reply_inner(
         message.degraded = result.degraded;
         protocol_guard.defer_terminal();
         return Ok(ArmReplyOutcome {
+            history: Some(history_commit),
             message: Some(message),
             run_id: Some(run_id),
-            error: None,
+            error: run_error,
         });
     }
     if let Some(boundary) = result.compaction_boundary.clone() {
@@ -1128,6 +1158,7 @@ pub(super) async fn complete_assistant_reply_inner(
         message_plan,
         result.degraded,
         None,
+        Some(history_commit),
     )
     .await?;
     if let Some((goal_id, goal_version)) = goal_run {
@@ -1160,7 +1191,11 @@ pub(super) async fn complete_assistant_reply_inner(
         &terminal_content,
         conversation.revision,
     );
+    if let Some(error) = run_error {
+        return Err(error);
+    }
     Ok(ArmReplyOutcome {
+        history: None,
         message: None,
         run_id: None,
         error: None,
@@ -1198,6 +1233,7 @@ async fn finish_reply_failure(
     if is_arm {
         protocol_guard.defer_terminal();
         return Ok(ArmReplyOutcome {
+            history: None,
             message: None,
             run_id: Some(run_id.to_string()),
             error: Some(error),

@@ -17,6 +17,84 @@ use crate::chat::types::{
 use crate::state::AppState;
 use serde_json::{json, Value};
 
+#[derive(Clone)]
+pub(crate) struct MainRequestProjection {
+    pub app: tauri::AppHandle,
+    pub include_video: bool,
+    pub image_omission: Option<String>,
+    pub user_message_id: Option<String>,
+    pub video_reports: Vec<String>,
+    pub language: String,
+}
+
+impl MainRequestProjection {
+    fn project(
+        &self,
+        conversation_id: &str,
+        history: &[RuntimeMessage],
+    ) -> Result<Vec<RuntimeMessage>, String> {
+        let mut input = history.to_vec();
+        adapt_main_user_input(
+            &mut input,
+            self.image_omission.as_deref(),
+            self.user_message_id.as_deref(),
+            if self.include_video {
+                &[]
+            } else {
+                &self.video_reports
+            },
+            &self.language,
+        )?;
+        let messages = crate::chat::commands::context::project_canonical_history(
+            Some(&self.app),
+            conversation_id,
+            &input,
+            self.include_video,
+        )?;
+        Ok(messages)
+    }
+}
+
+fn adapt_main_user_input(
+    messages: &mut [RuntimeMessage],
+    image_omission: Option<&str>,
+    user_message_id: Option<&str>,
+    video_reports: &[String],
+    language: &str,
+) -> Result<(), String> {
+    for message in messages.iter_mut() {
+        let id = message.source.get("_ui_message_id").and_then(Value::as_str);
+        if image_omission.is_some_and(|omitted| id == Some(omitted)) {
+            if let Some(model) = message.model_message_mut() {
+                model.content.retain(|part| {
+                    !matches!(
+                        part,
+                        crate::chat::model::MessagePart::Image { .. }
+                            | crate::chat::model::MessagePart::ImageUrl { .. }
+                    )
+                });
+            }
+        }
+    }
+    if !video_reports.is_empty() {
+        if let Some(message) = messages.iter_mut().find(|message| {
+            message.role() == Some(crate::chat::model::ModelRole::User)
+                && user_message_id.is_some_and(|id| {
+                    message.source.get("_ui_message_id").and_then(Value::as_str) == Some(id)
+                })
+        }) {
+            message
+                .model_message_mut()
+                .expect("User model message")
+                .content
+                .push(crate::chat::model::MessagePart::Text {
+                    text: crate::chat::video_analysis::saved_reports_note(video_reports, language),
+                });
+        }
+    }
+    Ok(())
+}
+
 pub(crate) struct ContextPolicy<'a> {
     state: &'a AppState,
     host: &'a dyn crate::chat::tool_runtime::ApplicationHost,
@@ -31,6 +109,7 @@ pub(crate) struct ContextPolicy<'a> {
     candidate: Option<CompactionCandidate>,
     boundary: Option<CompactionBoundaryRecord>,
     summary: Option<ConversationContextSummary>,
+    projection: Option<MainRequestProjection>,
 }
 
 struct CompactionCandidate {
@@ -70,6 +149,7 @@ impl<'a> ContextPolicy<'a> {
             candidate: None,
             boundary: None,
             summary: None,
+            projection: config.request_projection.clone(),
         }
     }
 
@@ -80,10 +160,20 @@ impl<'a> ContextPolicy<'a> {
         progress.compaction("failed", Some(trigger), None);
     }
 
-    pub(crate) fn transform_context(&self, history: &[RuntimeMessage]) -> Vec<RuntimeMessage> {
-        let mut messages = history.to_vec();
+    pub(crate) fn transform_context(
+        &self,
+        history: &[RuntimeMessage],
+    ) -> Result<Vec<RuntimeMessage>, String> {
+        let mut messages = self.project(history)?;
         prune_runtime_images(&mut messages, IMAGE_BYTES_BUDGET);
-        messages
+        Ok(messages)
+    }
+
+    fn project(&self, history: &[RuntimeMessage]) -> Result<Vec<RuntimeMessage>, String> {
+        match &self.projection {
+            Some(projection) => projection.project(&self.conversation_id, history),
+            None => Ok(history.to_vec()),
+        }
     }
 
     pub(crate) async fn prepare_context(
@@ -93,7 +183,7 @@ impl<'a> ContextPolicy<'a> {
         control: AgentRunHandle<'_>,
         progress: &dyn PolicyProgress,
     ) -> Result<ContextPreparation, String> {
-        let mut messages = run.history.to_vec();
+        let mut messages = self.project(run.history)?;
         let saved_bytes = prune_runtime_images(&mut messages, IMAGE_BYTES_BUDGET);
         let window = context_window_for_model(Some(&self.provider), &self.model).0;
         let window = if window == 0 { 200_000 } else { window };
@@ -168,6 +258,7 @@ impl<'a> ContextPolicy<'a> {
                 });
                 let mut compacted = run.history.to_vec();
                 compacted.splice(plan.covered.clone(), plan.replacement.clone());
+                let mut compacted = self.project(&compacted)?;
                 prune_runtime_images(&mut compacted, IMAGE_BYTES_BUDGET);
                 let after =
                     estimate_runtime_request_tokens(&compacted, &self.provider, &self.model)
@@ -214,6 +305,9 @@ impl<'a> ContextPolicy<'a> {
         let mut request = Vec::with_capacity(history.len() + additional.len());
         request.extend_from_slice(history);
         request.extend_from_slice(additional);
+        let Ok(mut request) = self.project(&request) else {
+            return true;
+        };
         prune_runtime_images(&mut request, IMAGE_BYTES_BUDGET);
         estimate_runtime_request_tokens(&request, &self.provider, &self.model)
             .saturating_add(self.tool_schema_tokens)
@@ -595,6 +689,35 @@ pub(crate) fn estimate_chat_message_tokens(message: &ChatMessage) -> usize {
 mod tests {
     use super::*;
     use crate::chat::agent::loop_::tests::{test_app_state, test_run_config, TestHost};
+
+    #[test]
+    fn media_observations_only_adapt_the_target_user_request() {
+        let facts = import_history(vec![
+            json!({"role":"user", "content":[{"type":"text", "text":"look"}, {"type":"image_url", "image_url":{"url":"https://example.org/a.png"}}], "_ui_message_id":"u1"}),
+            json!({"role":"assistant", "tool_calls":[{"id":"call", "type":"function", "function":{"name":"read", "arguments":"{}"}}]}),
+            json!({"role":"tool", "tool_call_id":"call", "content":"saved result"}),
+            json!({"role":"user", "content":"<kivio_runtime_context>resources</kivio_runtime_context>"}),
+        ]);
+        let mut request = facts.clone();
+        adapt_main_user_input(
+            &mut request,
+            Some("u1"),
+            Some("u1"),
+            &["The car is blue".into()],
+            "en",
+        )
+        .unwrap();
+        assert_eq!(request.len(), facts.len());
+        assert_eq!(&request[1..], &facts[1..]);
+        assert_eq!(request[0].source, facts[0].source);
+        let wire = export_history(&request);
+        assert!(wire[0].to_string().contains("The car is blue"));
+        assert!(!wire[0].to_string().contains("image_url"));
+        assert!(export_history(&facts)[0].to_string().contains("image_url"));
+        assert!(!export_history(&facts)[0]
+            .to_string()
+            .contains("The car is blue"));
+    }
 
     #[test]
     fn request_budget_includes_input_received_after_summary() {

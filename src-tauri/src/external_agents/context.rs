@@ -522,6 +522,7 @@ mod tests {
 
     fn empty_conversation() -> Conversation {
         Conversation {
+            builtin_history: None,
             external_history: None,
             external_cwd: None,
             runtime_locked: false,

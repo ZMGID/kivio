@@ -184,7 +184,7 @@ async fn sdk04_desktop_real_loop_projects_checkpoints_and_saved_history() {
     let handle = AgentRunHandle::new(identity(config.generation), &control);
     let host = DesktopHost::new(dir.path().join("draft.jsonl"));
     let executor = CountingExecutor::default();
-    let result = run_session(config, &host, &executor, &host, handle.clone())
+    let result = run_session(config.into_application(), &host, &executor, &host, handle.clone())
         .await
         .unwrap();
     assert_eq!(result.content, "完成🙂");
@@ -332,7 +332,7 @@ async fn sdk04_closed_observation_does_not_authorize_a_tool() {
     host.approve = false;
     host.closed = true;
     let executor = CountingExecutor::default();
-    let result = run_session(config, &host, &executor, &host, handle.clone())
+    let result = run_session(config.into_application(), &host, &executor, &host, handle.clone())
         .await
         .unwrap();
     assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
@@ -356,7 +356,7 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
     let handle = AgentRunHandle::new(identity(config.generation), &control);
     let executor = CountingExecutor::default();
-    let mut future = Box::pin(run_session(config, &host, &executor, &host, handle.clone()));
+    let mut future = Box::pin(run_session(config.into_application(), &host, &executor, &host, handle.clone()));
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(50), &mut future)
             .await
@@ -380,9 +380,16 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     config.generation = state.chat_runtime().begin_generation("conversation");
     let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
     let handle = AgentRunHandle::new(identity(config.generation), &control);
-    assert!(run_session(config, &host, &executor, &host, handle)
+    let error = run_session(config.into_application(), &host, &executor, &host, handle)
         .await
-        .is_err());
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::chat::session_policy::ApplicationRunError::Failed {
+            cause: kivio_agent_sdk::agent::AgentFailure::Model { source, .. },
+            partial,
+        } if source.message.contains("bad request") && !partial.history.entries().is_empty()
+    ));
     let outcomes = host.outcomes.lock().unwrap();
     assert_eq!(outcomes.len(), 1);
     assert!(

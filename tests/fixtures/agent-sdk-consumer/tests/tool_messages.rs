@@ -255,7 +255,9 @@ async fn cancellation_during_preparation_does_not_execute_side_effects() {
             record: AgentToolCall,
         ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
             Box::pin(async move {
-                let prepared = ImageTool.before_tool_call(progress, ctx, tool, call, record).await?;
+                let prepared = ImageTool
+                    .before_tool_call(progress, ctx, tool, call, record)
+                    .await?;
                 progress.control.stop();
                 let ToolPreparation::Ready(mut ready) = prepared else {
                     unreachable!()

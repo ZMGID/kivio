@@ -12,7 +12,7 @@ use crate::chat::recovery_policy::{
     tool_planning_failed_fallback_response,
 };
 use crate::chat::session_policy::{
-    ApplicationRunConfig as AgentRunConfig, ApplicationRunResult as AgentRunResult,
+    ApplicationRunConfig, ApplicationRunResult as AgentRunResult,
 };
 use crate::chat::tool_runtime::{
     ApplicationHost, ApplicationToolExecutor, ToolAuthority, ToolDispatcher as ToolExecutor,
@@ -85,6 +85,7 @@ pub(crate) struct TestHost {
     compaction_phases: Mutex<Vec<String>>,
     capture_compaction: bool,
     fail_compaction_checkpoint: bool,
+    fail_finishing_checkpoint: bool,
     compaction_checkpoints: Mutex<Vec<Vec<Value>>>,
     compaction_incoming: Mutex<Option<Value>>,
     finishing_inputs: Mutex<std::collections::VecDeque<Vec<Value>>>,
@@ -225,6 +226,9 @@ impl AgentHost for TestHost {
                 ));
             }
             if finishing {
+                if self.fail_finishing_checkpoint {
+                    return Err("final checkpoint persistence failed".into());
+                }
                 return Ok(session_inputs(
                     self.finishing_inputs
                         .lock()
@@ -766,42 +770,72 @@ pub(crate) fn test_provider(base_url: &str) -> ModelProvider {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct AgentRunConfig<'a> {
+    config: ApplicationRunConfig<'a>,
+    pub runtime_messages: Vec<Value>,
+}
+
+impl<'a> AgentRunConfig<'a> {
+    pub(crate) fn into_application(mut self) -> ApplicationRunConfig<'a> {
+        self.config.history = import_history(self.runtime_messages).into();
+        self.config
+    }
+}
+
+impl<'a> std::ops::Deref for AgentRunConfig<'a> {
+    type Target = ApplicationRunConfig<'a>;
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+
+impl std::ops::DerefMut for AgentRunConfig<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.config
+    }
+}
+
 pub(crate) fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a> {
     AgentRunConfig {
-        state,
-        provider_runtime: None,
-        todo_state: Default::default(),
-        conversation_id: "conversation".to_string(),
-        tool_conversation_id: "conversation".to_string(),
-        depth: 0,
-        interactive_host: false,
-        run_id: "run".to_string(),
-        message_id: "message".to_string(),
-        generation: 1,
-        provider: test_provider(base_url),
-        model: "test-model".to_string(),
         runtime_messages: vec![
             serde_json::json!({ "role": "system", "content": "system prompt" }),
             serde_json::json!({ "role": "user", "content": "请读取文件" }),
         ],
-        tools: vec![native_read_file_tool()],
-        blocked_tool_calls: Vec::new(),
-        plan_state: Default::default(),
-        mcp_tool_ids: Vec::new(),
-        mcp_server_ids: Vec::new(),
-        settings: Settings::default(),
-        effective_chat_tools: ChatToolsConfig::default(),
-        language: "zh-CN".to_string(),
-        thinking_enabled: false,
-        thinking_level: None,
-        web_search_mode: crate::chat::types::WebSearchMode::Off,
-        max_output_tokens: 1024,
-        retry_attempts: 1,
-        runtime_context: None,
-        provider_tools_fallback_prompt: Default::default(),
-        initial_cache_usage: None,
-        initial_anchor_total_tokens: None,
-        initial_anchor_trailing_estimate: 0,
+        config: ApplicationRunConfig {
+            state,
+            provider_runtime: None,
+            todo_state: Default::default(),
+            conversation_id: "conversation".to_string(),
+            tool_conversation_id: "conversation".to_string(),
+            depth: 0,
+            interactive_host: false,
+            run_id: "run".to_string(),
+            message_id: "message".to_string(),
+            generation: 1,
+            provider: test_provider(base_url),
+            model: "test-model".to_string(),
+            history: Default::default(),
+            tools: vec![native_read_file_tool()],
+            blocked_tool_calls: Vec::new(),
+            plan_state: Default::default(),
+            mcp_tool_ids: Vec::new(),
+            mcp_server_ids: Vec::new(),
+            settings: Settings::default(),
+            effective_chat_tools: ChatToolsConfig::default(),
+            language: "zh-CN".to_string(),
+            thinking_enabled: false,
+            thinking_level: None,
+            web_search_mode: crate::chat::types::WebSearchMode::Off,
+            max_output_tokens: 1024,
+            retry_attempts: 1,
+            runtime_context: None,
+            request_projection: None,
+            provider_tools_fallback_prompt: Default::default(),
+            initial_cache_usage: None,
+            initial_anchor_total_tokens: None,
+            initial_anchor_trailing_estimate: 0,
+        },
     }
 }
 
@@ -5926,10 +5960,11 @@ async fn automatic_compaction_rejects_insufficient_headroom() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     use_large_summary_model(&mut config);
+    let model = config.model.clone();
     config
         .provider
         .model_overrides
-        .entry(config.model.clone())
+        .entry(model)
         .or_default()
         .context_window = Some(40_000);
     config.runtime_messages = tool_round_history();
@@ -6027,10 +6062,11 @@ async fn text_only_summary_model_does_not_strip_retained_recent_images() {
     ])]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
+    let model = config.model.clone();
     config
         .provider
         .model_overrides
-        .entry(config.model.clone())
+        .entry(model)
         .or_default()
         .capabilities = Some(crate::settings::ModelCapabilities {
         vision: Some(false),
@@ -6434,8 +6470,9 @@ async fn issue_62_incremental_summary_failure_or_cancel_preserves_original_histo
         ]);
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
+        let model = config.model.clone();
         config.provider.model_overrides.insert(
-            config.model.clone(),
+            model,
             crate::settings::ModelInfo {
                 context_window: Some(32_000),
                 max_output: Some(1_024),
@@ -7188,7 +7225,7 @@ fn present_result(result: AgentRunResult) -> PresentedRunResult {
         stream_outcome: crate::chat::agent_presentation::run_status(&result.status).to_string(),
         usage: result.usage,
         last_step_usage: result.last_step_usage,
-        compacted_history: result.compacted_history,
+        compacted_history: result.compacted.then(|| export_history(result.history.context())),
         compaction_summary: result.compaction_summary,
         degraded: result.degraded,
         images: result.images,
@@ -7207,9 +7244,10 @@ async fn run_agent_loop<H: ApplicationHost + AgentEventSink + AgentRunControl>(
         generation: config.generation,
     };
     let control = AgentRunHandle::new(identity, host);
-    crate::chat::session_policy::run_session(config, host, executor, host, control)
+    crate::chat::session_policy::run_session(config.into_application(), host, executor, host, control)
         .await
         .map(present_result)
+        .map_err(|error| error.to_string())
 }
 struct PresentedRoundResult {
     tool_records: Vec<ToolCallRecord>,
@@ -7350,7 +7388,7 @@ async fn sdk04_stopped_stream_does_not_accept_provider_aggregate() {
         EventDelivery::Accepted
     };
     let result = crate::chat::session_policy::run_session(
-        config,
+        config.into_application(),
         &host,
         &RecordingExecutor::default(),
         &sink,
@@ -7370,6 +7408,100 @@ async fn sdk04_stopped_stream_does_not_accept_provider_aggregate() {
     assert!(!serde_json::to_string(&result.api_messages)
         .unwrap()
         .contains("LATE_TAIL"));
+}
+
+#[tokio::test]
+async fn application_failure_returns_full_history_with_branches_compaction_and_tool_results() {
+    use crate::chat::model::ModelRole;
+    use crate::chat::session_policy::ApplicationRunError;
+    use kivio_agent_sdk::agent::{AgentFailure, SessionEntryKind, SessionHistory};
+
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec![
+            serde_json::json!({"choices":[{"delta":{"content":"finished"},"finish_reason":"stop"}]})
+                .to_string(),
+            "[DONE]".into(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url).into_application();
+    let mut history = SessionHistory::from(vec![
+        RuntimeMessage::system("system prompt"),
+        RuntimeMessage::text(ModelRole::User, "old question"),
+    ]);
+    let anchor = history.active_leaf().unwrap();
+    history.push(RuntimeMessage::text(
+        ModelRole::Assistant,
+        "inactive answer",
+    ));
+    let inactive = history.active_leaf().unwrap();
+    history.fork(anchor).unwrap();
+    history.push(RuntimeMessage::text(
+        ModelRole::Assistant,
+        "selected answer",
+    ));
+    history
+        .compact(crate::chat::agent::session::CompactionPlan {
+            covered: 1..3,
+            replacement: vec![RuntimeMessage::text(ModelRole::User, "old summary")],
+        })
+        .unwrap();
+    history.push(RuntimeMessage::text(ModelRole::User, "read the file"));
+    let original = history.entries().to_vec();
+    config.history = history;
+    let host = TestHost {
+        fail_finishing_checkpoint: true,
+        ..Default::default()
+    };
+    let executor = RecordingExecutor::default();
+    let control = AgentRunHandle::new(
+        AgentRunIdentity {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation: 1,
+        },
+        &host,
+    );
+    let ApplicationRunError::Failed { cause, partial } =
+        crate::chat::session_policy::run_session(config, &host, &executor, &host, control)
+            .await
+            .unwrap_err()
+    else {
+        panic!("an admitted run must return its partial result");
+    };
+    assert!(matches!(cause, AgentFailure::Host { .. }));
+    assert_eq!(cause.to_string(), "final checkpoint persistence failed");
+    assert_eq!(&partial.history.entries()[..original.len()], &original);
+    assert!(partial.history.leaves().contains(&inactive));
+    assert!(partial
+        .history
+        .entries()
+        .iter()
+        .any(|entry| matches!(entry.kind, SessionEntryKind::Compaction { .. })));
+    assert_eq!(partial.tool_records.len(), 1);
+    assert_eq!(
+        partial.tool_records[0].output.as_deref(),
+        Some("result:read")
+    );
+    let context = export_history(partial.history.context());
+    assert!(context
+        .iter()
+        .any(|message| message["content"] == "old summary"));
+    assert!(context.iter().any(|message| message["role"] == "tool"
+        && message["tool_call_id"] == "call_read"
+        && message["content"] == "result:read"));
+    assert!(!context
+        .iter()
+        .any(|message| message["content"] == "inactive answer"));
+    assert!(host
+        .persisted_drafts
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(tools, messages)| tools.len() == 1
+            && messages.iter().any(|message| message["role"] == "tool")));
 }
 
 #[tokio::test]
@@ -7584,7 +7716,7 @@ async fn core_completion_closes_handle_before_application_releases_capacity() {
     assert!(futures::poll!(waiting.as_mut()).is_pending());
     let host = TestHost::default();
     crate::chat::session_policy::run_session(
-        test_run_config(&state, &server.base_url),
+        test_run_config(&state, &server.base_url).into_application(),
         &host,
         &RecordingExecutor::default(),
         &host,

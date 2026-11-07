@@ -29,10 +29,54 @@ fn session_input(message: RuntimeMessage) -> SessionInput {
     }
 }
 
+fn checkpoint_facts(history: &kivio_agent_sdk::agent::SessionHistory) -> Vec<RuntimeMessage> {
+    history
+        .active_path()
+        .into_iter()
+        .filter_map(|entry| match &entry.kind {
+            kivio_agent_sdk::agent::SessionEntryKind::Message(message) => Some(message.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn compacted_report_keeps_its_dedup_identity_and_ui_owner() {
+        use kivio_agent_sdk::agent::{session::CompactionPlan, SessionHistory};
+        let report = RuntimeMessage::from_legacy(serde_json::json!({
+            "role":"developer", "content":"child result", "_ui_message_id":"subagent-result-job",
+            "_subagent_result_id":"subagent-result-job", "subagent_parent_persisted":true
+        }))
+        .unwrap();
+        let mut history =
+            SessionHistory::from(vec![RuntimeMessage::system("system"), report.clone()]);
+        history
+            .compact(CompactionPlan {
+                covered: 1..2,
+                replacement: vec![RuntimeMessage::system("summary")],
+            })
+            .unwrap();
+        assert!(!history.context().contains(&report));
+        assert!(checkpoint_facts(&history).contains(&report));
+        let input = session_input(report);
+        assert_eq!(input.persistence, InputPersistence::AlreadyPersisted);
+        assert_eq!(
+            input.message.source["_ui_message_id"],
+            "subagent-result-job"
+        );
+    }
+}
+
 pub(super) struct ChatAgentHost<'a> {
     pub(super) app: AppHandle,
     pub(super) state: &'a AppState,
     pub(super) run_id: String,
+    pub(super) source_anchor: Option<kivio_agent_sdk::agent::EntryId>,
+    pub(super) source_branch_id: String,
     /// 多模型臂置 true：抑制 mid-run 部分快照落盘（协调者统一落盘）。默认 false（现状）。
     pub(super) suppress_partial_persist: bool,
     pub(super) context_owner: bool,
@@ -243,7 +287,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
                 &self.app,
                 conversation_id,
                 run_id,
-                history.context(),
+                &checkpoint_facts(history),
             )
             .await?
             .into_iter()
@@ -259,7 +303,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         tool_records: &'a [crate::chat::agent::content::AgentToolCall],
         segments: &'a [crate::chat::agent::content::ContentBlock],
         api_messages: &'a [RuntimeMessage],
-        _history: &'a kivio_agent_sdk::agent::SessionHistory,
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
             if self.suppress_partial_persist {
@@ -277,6 +321,9 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
                 &tool_records,
                 &segments,
                 api_messages,
+                history,
+                self.source_anchor,
+                &self.source_branch_id,
             )
             .await
             {
@@ -444,7 +491,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
                 &self.app,
                 conversation_id,
                 run_id,
-                history.context(),
+                &checkpoint_facts(history),
             )
             .await?
             .into_iter()
@@ -462,9 +509,22 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         tool_records: &'a [crate::chat::agent::content::AgentToolCall],
         segments: &'a [crate::chat::agent::content::ContentBlock],
         api_messages: &'a [RuntimeMessage],
-        _history: &'a kivio_agent_sdk::agent::SessionHistory,
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
+            let source = match crate::chat::repository::repository(&self.app)
+                .get(&self.app, conversation_id)
+                .await
+            {
+                Ok(conversation) => conversation.builtin_history,
+                Err(error) => {
+                    eprintln!("probe: cannot load draft source: {error}");
+                    return;
+                }
+            };
+            let Some(source) = source else {
+                return;
+            };
             let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(
                 tool_records,
                 segments,
@@ -477,6 +537,9 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
                 &tool_records,
                 &segments,
                 api_messages,
+                history,
+                source.snapshot.active_leaf(),
+                &source.active_branch_id,
             )
             .await
             {

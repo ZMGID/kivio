@@ -7,6 +7,7 @@ import { recordChatPerfSample } from './chatPerformanceProbe'
 import { historyReferenceArtifacts, historyWindowStart, type ConversationHistoryPage } from './conversationHistoryWindow'
 import { resolveCompactionBoundaries } from './compactionBoundary'
 import { externalCliSettingsApi } from '../api/externalCliSettings'
+import { notifyError } from '../components/appNoticeStore'
 import type { ConversationPin } from './conversationPins'
 import type {
   AgentRuntimeConfig,
@@ -28,6 +29,11 @@ import type { ThinkingLevel, WebSearchMode, ModelRef, AdditionalDirectory } from
 import type { CliImportResult, ImportableCliSession } from './types'
 
 export type { AgentRuntimeConfig }
+export interface ConversationBranch {
+  id: string
+  label: string
+  active: boolean
+}
 export type { DetectedExternalAgent } from '../api/externalCliSettings'
 
 async function invokeGoalMutation(command: string, conversationId: string, extra: Record<string, unknown> = {}): Promise<Conversation> {
@@ -1587,7 +1593,7 @@ export const chatApi = {
     const textAttachments = attachments
       .filter((a): a is PendingAttachment & { content: string } => a.content !== undefined)
       .map((a) => ({ name: a.name, content: a.content }))
-    const result = await invoke<{ success: boolean; conversation?: Conversation; error?: string }>(
+    const result = await invoke<{ success: boolean; conversation?: Conversation; warning?: string; error?: string }>(
       'chat_send_message',
       {
         conversationId,
@@ -1599,6 +1605,7 @@ export const chatApi = {
         userMessageId,
       }
     )
+    if (result.warning) notifyError(result.warning)
     if (!result.success || !result.conversation) {
       const error: Error & { conversation?: Conversation } = new Error(
         result.error || 'Failed to send message',
@@ -1770,11 +1777,13 @@ export const chatApi = {
     const result = await invoke<{
       success: boolean
       conversation?: Conversation
+      warning?: string
       error?: string
     }>('chat_update_message', { conversationId, messageId, content })
     if (!result.success || !result.conversation) {
       throw new Error(result.error || 'Failed to update message')
     }
+    if (result.warning) notifyError(result.warning)
     return result.conversation
   },
 
@@ -1785,11 +1794,13 @@ export const chatApi = {
     const result = await invoke<{
       success: boolean
       conversation?: Conversation
+      warning?: string
       error?: string
     }>('chat_delete_message', { conversationId, messageId })
     if (!result.success || !result.conversation) {
       throw new Error(result.error || 'Failed to delete message')
     }
+    if (result.warning) notifyError(result.warning)
     return result.conversation
   },
 
@@ -1805,11 +1816,32 @@ export const chatApi = {
     const result = await invoke<{
       success: boolean
       conversation?: Conversation
+      warning?: string
       error?: string
     }>('chat_set_group_selection', { conversationId, groupId, messageId })
     if (!result.success || !result.conversation) {
       throw new Error(result.error || 'Failed to set group selection')
     }
+    if (result.warning) notifyError(result.warning)
+    return result.conversation
+  },
+
+  async getBranches(conversationId: string): Promise<ConversationBranch[]> {
+    if (!isTauriRuntime()) return []
+    const result = await invoke<{ success: boolean; branches: ConversationBranch[]; error?: string }>(
+      'chat_get_branches', { conversationId },
+    )
+    if (!result.success) throw new Error(result.error || 'Failed to load branches')
+    return result.branches
+  },
+
+  async switchBranch(conversationId: string, branchId: string): Promise<Conversation> {
+    if (!isTauriRuntime()) throw new Error('Branch switching requires the desktop runtime')
+    const result = await invoke<{ success: boolean; conversation?: Conversation; warning?: string; error?: string }>(
+      'chat_switch_branch', { conversationId, branchId },
+    )
+    if (!result.success || !result.conversation) throw new Error(result.error || 'Failed to switch branch')
+    if (result.warning) notifyError(result.warning)
     return result.conversation
   },
 
@@ -1820,11 +1852,13 @@ export const chatApi = {
     const result = await invoke<{
       success: boolean
       conversation?: Conversation
+      warning?: string
       error?: string
     }>('chat_regenerate_message', { conversationId, messageId, newContent: newContent ?? null })
     if (!result.success || !result.conversation) {
       throw new Error(result.error || 'Failed to regenerate message')
     }
+    if (result.warning) notifyError(result.warning)
     return result.conversation
   },
 
@@ -1841,6 +1875,7 @@ export const chatApi = {
     const result = await invoke<{
       success: boolean
       conversation?: Conversation
+      warning?: string
       error?: string
     }>('chat_reply_with_model', {
       conversationId,
@@ -1852,6 +1887,7 @@ export const chatApi = {
     if (!result.success || !result.conversation) {
       throw new Error(result.error || 'Failed to reply with model')
     }
+    if (result.warning) notifyError(result.warning)
     return result.conversation
   },
 
@@ -1867,11 +1903,13 @@ export const chatApi = {
       success: boolean
       conversation?: Conversation
       content?: string
+      warning?: string
       error?: string
     }>('chat_rewind_to_message', { conversationId, messageId })
     if (!result.success || !result.conversation) {
       throw new Error(result.error || 'Failed to rewind conversation')
     }
+    if (result.warning) notifyError(result.warning)
     return { conversation: result.conversation, content: result.content ?? '' }
   },
 
@@ -1883,11 +1921,13 @@ export const chatApi = {
     const result = await invoke<{
       success: boolean
       conversation?: Conversation
+      warning?: string
       error?: string
     }>('chat_fork_conversation', { conversationId, messageId, excludeAnchor: null })
     if (!result.success || !result.conversation) {
       throw new Error(result.error || 'Failed to fork conversation')
     }
+    if (result.warning) notifyError(result.warning)
     return result.conversation
   },
 
@@ -1925,11 +1965,13 @@ export const chatApi = {
       success: boolean
       contextState?: ConversationContextState
       conversation?: Conversation
+      warning?: string
       error?: string
     }>('chat_clear_context', { conversationId })
     if (!result.success || !result.contextState || !result.conversation) {
       throw new Error(result.error || 'Failed to clear context')
     }
+    if (result.warning) notifyError(result.warning)
     return { contextState: result.contextState, conversation: result.conversation }
   },
 

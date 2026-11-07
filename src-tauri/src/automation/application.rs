@@ -508,8 +508,9 @@ async fn run_builtin_agent_node(
         generation,
         provider,
         model,
-        runtime_messages,
+        history: crate::chat::agent::history::import_history(runtime_messages).into(),
         runtime_context: Some(system_prompt.context.clone()),
+        request_projection: None,
         tools,
         blocked_tool_calls: Vec::new(),
         plan_state: Default::default(),
@@ -555,7 +556,7 @@ async fn run_builtin_agent_node(
         .ok()
         .map(|text| text.clone())
         .unwrap_or_default();
-    builtin_agent_node_output(outcome, fallback)
+    builtin_agent_node_output(outcome.map_err(|error| error.to_string()), fallback)
 }
 
 fn builtin_agent_node_output(
@@ -827,6 +828,7 @@ async fn load_or_create_external_conversation(
 
     let now = chrono::Local::now().timestamp();
     let conversation = Conversation {
+        builtin_history: None,
         external_history: None,
         external_cwd: None,
         runtime_locked: false,

@@ -224,14 +224,17 @@ describe('useConversationContext: compaction', () => {
 
 describe('useConversationContext: clear + live usage', () => {
   it('clears context, flashes the clear boundary and refreshes the sidebar', async () => {
+    const committed = { ...conversation(), revision: 2, title: 'Confirmed clear' }
     mockClear.mockResolvedValue({
       contextState: state({ clear_boundaries: [{ id: 'clr', created_at: 1 }] } as Partial<ConversationContextState>),
-      conversation: conversation(),
+      conversation: committed,
     })
     const { result, refreshSidebar } = setup()
     await act(async () => { await result.current.ctx.clearCurrent() })
     expect(result.current.ctx.animateClearBoundaryId).toBe('clr')
     expect(refreshSidebar).toHaveBeenCalledTimes(1)
+    expect(result.current.current?.revision).toBe(2)
+    expect(result.current.current?.title).toBe('Confirmed clear')
   })
 
   it('applies live token usage on top of the existing snapshot for the current conversation only', async () => {

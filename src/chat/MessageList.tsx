@@ -117,6 +117,7 @@ export interface MessageListProps {
   onForkMessage?: (messageId: string) => Promise<void>
   onRewindMessage?: (messageId: string) => Promise<void>
   onDeleteMessage?: (messageId: string) => Promise<void>
+  messageDeleteLabel?: string
   onSaveMessageToNote?: (messageId: string) => Promise<boolean>
   onExecuteAgentPlan?: (messageId: string) => Promise<void> | void
   // 失败发送后线程末尾留下的孤儿用户消息：点「重试」用它的 id 重新生成。
@@ -249,6 +250,7 @@ function MessageListBase({
   onForkMessage,
   onRewindMessage,
   onDeleteMessage,
+  messageDeleteLabel,
   onSaveMessageToNote,
   onExecuteAgentPlan,
   onRetryLastUser,
@@ -2517,6 +2519,7 @@ function MessageListBase({
               }
               onForkMessage={streaming || streamFrozen ? undefined : onForkMessage}
               onDeleteMessage={streaming || streamFrozen ? undefined : onDeleteMessage}
+              deleteLabel={messageDeleteLabel}
               onSaveMessageToNote={onSaveMessageToNote}
               outlineEligible={!streamFrozen}
               onOutlineSourceChange={handleOutlineSourceChange}
@@ -2604,6 +2607,7 @@ function MessageListBase({
       onForkMessage,
       onRewindMessage,
       onDeleteMessage,
+      messageDeleteLabel,
       onSaveMessageToNote,
       onExecuteAgentPlan,
       onRetryLastUser,

@@ -776,7 +776,7 @@ pub(super) fn image_bytes_content_part(bytes: &[u8]) -> Result<serde_json::Value
     }))
 }
 
-fn image_mime_for_path(path: &Path) -> &'static str {
+pub(crate) fn image_mime_for_path(path: &Path) -> &'static str {
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())

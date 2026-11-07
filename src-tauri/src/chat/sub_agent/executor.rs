@@ -3102,11 +3102,12 @@ async fn execute(
         generation,
         provider,
         model,
-        runtime_messages: initial,
+        history: import_history(initial).into(),
         plan_state: host.plan_state.clone(),
         mcp_tool_ids,
         mcp_server_ids,
         runtime_context: Some(prompt.context.clone()),
+        request_projection: None,
         tools,
         blocked_tool_calls: Vec::new(),
         settings,
@@ -3162,7 +3163,7 @@ async fn execute(
             .await;
             if attempt
                 .as_ref()
-                .is_err_and(|error| error == PREWALK_HANDOFF)
+                .is_err_and(|error| error.to_string() == PREWALK_HANDOFF)
             {
                 let target = worker
                     .policies
@@ -3197,13 +3198,12 @@ async fn execute(
                 config.thinking_level = level;
                 config.provider = provider;
                 config.model = target.model;
-                config.runtime_messages = export_history(&host.lock().history);
-                config
-                    .runtime_messages
-                    .retain(|message| message["_subagent_prewalk"] != true);
-                host.save_history(&import_history(config.runtime_messages.clone()))
-                    .await?;
-                host.lock().history = import_history(config.runtime_messages.clone());
+                let mut history = export_history(&host.lock().history);
+                history.retain(|message| message["_subagent_prewalk"] != true);
+                let history = import_history(history);
+                host.save_history(&history).await?;
+                host.lock().history = history.clone();
+                config.history = history.into();
                 config.runtime_context = None;
                 config.initial_cache_usage = None;
                 config.initial_anchor_total_tokens = None;
@@ -3243,11 +3243,10 @@ async fn execute(
             };
             if budget_stop {
                 let mut history = match &attempt {
-                    Ok(result) => result.compacted_history.clone().unwrap_or_else(|| {
-                        let mut history = config.runtime_messages.clone();
-                        history.extend(result.api_messages.iter().cloned());
-                        history
-                    }),
+                    Ok(result) => export_history(result.history.context()),
+                    Err(crate::chat::session_policy::ApplicationRunError::Failed { partial, .. }) => {
+                        export_history(partial.history.context())
+                    }
                     Err(_) => export_history(&host.lock().history),
                 };
                 if !host.active() {
@@ -3274,12 +3273,13 @@ async fn execute(
                 history.push(json!({"role": "user", "content": budget_reminder()}));
                 host.lock().history = import_history(history.clone());
                 host.save_history(&import_history(history.clone())).await?;
-                config.runtime_messages = history;
+                config.history = import_history(history).into();
                 config.runtime_context = None;
                 config.tools.clear();
                 continue;
             }
             let result = attempt.map_err(|error| {
+                let error = error.to_string();
                 if error.contains("empty assistant response") {
                     EMPTY_FINAL.to_string()
                 } else if error == "cancelled"
@@ -3291,11 +3291,7 @@ async fn execute(
                     attribute_model_error(&error, &config.provider.id, &config.model)
                 }
             })?;
-            let mut history = result.compacted_history.clone().unwrap_or_else(|| {
-                let mut history = config.runtime_messages.clone();
-                history.extend(result.api_messages.iter().cloned());
-                history
-            });
+            let mut history = export_history(result.history.context());
             if matches!(
                 result.status,
                 crate::chat::agent::types::AgentRunStatus::Cancelled
@@ -3367,7 +3363,7 @@ async fn execute(
                         .map(|input| input.message)
                         .collect::<Vec<_>>(),
                 ));
-                config.runtime_messages = history;
+                config.history = import_history(history).into();
                 config.runtime_context = None;
                 continue;
             }

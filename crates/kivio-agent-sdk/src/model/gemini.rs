@@ -713,10 +713,7 @@ fn normalize_gemini_schema(schema: Value) -> Value {
     }
 }
 
-fn output_from_gemini_response(
-    value: &Value,
-    label: &str,
-) -> Result<GenerateOutput, ModelError> {
+fn output_from_gemini_response(value: &Value, label: &str) -> Result<GenerateOutput, ModelError> {
     if let Some(msg) = gemini_error_message(value) {
         let code = provider_error_code(&value["error"]);
         return Err(ModelError::from_provider_payload(

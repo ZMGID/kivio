@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api/tauri'
 import { chatApi } from '../api'
+import { getNotices, dismissNotice } from '../../components/appNoticeStore'
 import { insertTextIntoComposer } from '../composerInsert'
 import { getCoarse, setCoarse } from '../streamingStore'
 import type { Conversation } from '../types'
@@ -9,12 +10,14 @@ import { noteTitleFromContent, useMessageActions } from './useMessageActions'
 
 vi.mock('../../api/tauri', () => ({ api: { notesCreate: vi.fn() } }))
 vi.mock('../api', () => ({
+  normalizeAgentRuntime: (conv: Conversation) => conv.agent_runtime ?? { kind: 'builtin' },
   chatApi: {
     updateMessage: vi.fn(),
     deleteMessage: vi.fn(),
     rewindToMessage: vi.fn(),
     forkConversation: vi.fn(),
     setGroupSelection: vi.fn(),
+    switchBranch: vi.fn(),
   },
 }))
 vi.mock('../composerInsert', () => ({ insertTextIntoComposer: vi.fn() }))
@@ -36,7 +39,11 @@ function setup(current: Conversation | null = conversation()) {
     isConversationCreationCurrent: vi.fn(() => true),
     commitCreatedConversation: vi.fn(() => true),
   }
-  const applyConversationIfCurrent = vi.fn((expectedId: string) => currentConversationRef.current?.id === expectedId)
+  const applyConversationIfCurrent = vi.fn((expectedId: string, updated: Conversation) => {
+    if (currentConversationRef.current?.id !== expectedId) return false
+    currentConversationRef.current = updated
+    return true
+  })
   const applyConversationMeta = vi.fn()
   const setStreamErrorForConversation = vi.fn()
   const setAssistantStreamStatsByMessageId = vi.fn()
@@ -63,7 +70,8 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(window, 'confirm').mockReturnValue(true)
-  setCoarse({ streamError: '' })
+  setCoarse({ streaming: false, streamFrozen: false, cancelling: false, streamError: '' })
+  getNotices().forEach(notice => dismissNotice(notice.id))
 })
 
 describe('noteTitleFromContent', () => {
@@ -78,6 +86,58 @@ describe('noteTitleFromContent', () => {
 })
 
 describe('useMessageActions', () => {
+  it('confirms branch-local removal while retaining external CLI wording', async () => {
+    vi.mocked(chatApi.deleteMessage).mockResolvedValue(conversation())
+    const builtin = setup()
+    await act(async () => { await builtin.result.current.deleteMessage('m2') })
+    expect(window.confirm).toHaveBeenLastCalledWith('将这条回复从当前分支移除？原始记录仍会保留。')
+    const external = setup(conversation({ agent_runtime: { kind: 'external', externalAgentId: 'codex' } }))
+    await act(async () => { await external.result.current.deleteMessage('m2') })
+    expect(window.confirm).toHaveBeenLastCalledWith('确定删除这条消息吗？')
+  })
+
+  it('switches the current conversation only after the backend confirms', async () => {
+    const updated = conversation({ revision: 2 })
+    vi.mocked(chatApi.switchBranch).mockResolvedValue(updated)
+    const view = setup()
+    await act(async () => { expect(await view.result.current.switchBranch('branch-2')).toBe(true) })
+    expect(view.applyConversationIfCurrent).toHaveBeenCalledWith('c1', updated)
+    expect(view.currentConversationRef.current).toBe(updated)
+    expect(view.setAssistantStreamStatsByMessageId).toHaveBeenCalledWith({})
+  })
+
+  it('keeps the old view when switching fails', async () => {
+    vi.mocked(chatApi.switchBranch).mockRejectedValue(new Error('branch unavailable'))
+    const view = setup()
+    await act(async () => { expect(await view.result.current.switchBranch('branch-2')).toBe(false) })
+    expect(view.applyConversationIfCurrent).not.toHaveBeenCalled()
+    expect(view.currentConversationRef.current?.revision).toBe(1)
+    expect(getNotices().map(notice => notice.message)).toContain('branch unavailable')
+  })
+
+  it('ignores a switch result after another conversation opens', async () => {
+    let resolve: (value: Conversation) => void = () => {}
+    vi.mocked(chatApi.switchBranch).mockReturnValue(new Promise(done => { resolve = done }))
+    const view = setup()
+    let pending: Promise<boolean>
+    act(() => { pending = view.result.current.switchBranch('branch-2') })
+    view.currentConversationRef.current = conversation({ id: 'c2' })
+    await act(async () => {
+      resolve(conversation({ revision: 2 }))
+      expect(await pending).toBe(false)
+    })
+    expect(view.setAssistantStreamStatsByMessageId).not.toHaveBeenCalled()
+    expect(view.refreshSidebar).not.toHaveBeenCalled()
+    expect(view.currentConversationRef.current?.id).toBe('c2')
+  })
+
+  it.each(['streaming', 'streamFrozen', 'cancelling'] as const)('does not switch while %s', async state => {
+    const view = setup()
+    setCoarse({ [state]: true })
+    await act(async () => { expect(await view.result.current.switchBranch('branch-2')).toBe(false) })
+    expect(chatApi.switchBranch).not.toHaveBeenCalled()
+  })
+
   it('edits a message and refreshes the sidebar', async () => {
     const updated = conversation({ revision: 2 })
     vi.mocked(chatApi.updateMessage).mockResolvedValue(updated)

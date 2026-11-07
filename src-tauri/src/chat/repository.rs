@@ -20,6 +20,12 @@ pub enum ConversationRepositoryError {
         expected: u64,
         actual: u64,
     },
+    /// The body is committed and verified; callers must recover it rather than retry the mutation.
+    Committed {
+        id: String,
+        revision: u64,
+        message: String,
+    },
     Storage(String),
 }
 
@@ -34,7 +40,7 @@ impl fmt::Display for ConversationRepositoryError {
                 f,
                 "conversation revision conflict ({id}): expected {expected}, actual {actual}"
             ),
-            Self::Storage(message) => f.write_str(message),
+            Self::Committed { message, .. } | Self::Storage(message) => f.write_str(message),
         }
     }
 }
@@ -215,6 +221,41 @@ fn commit_html_render(
         html,
         "HTML render",
     )
+}
+
+async fn publish_conversation_index<F, Fut>(
+    persisted: Conversation,
+    path: &Path,
+    mut publish: F,
+) -> RepositoryResult<Conversation>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = RepositoryResult<()>>,
+{
+    for attempt in 0..2 {
+        match publish().await {
+            Ok(()) => return Ok(persisted),
+            Err(error) => {
+                let body = super::storage::read_conversation_file(path, &persisted.id)?;
+                if body.id != persisted.id || body.revision != persisted.revision {
+                    return Err(ConversationRepositoryError::Storage(format!(
+                        "Conversation publication could not be verified: {error}"
+                    )));
+                }
+                if attempt == 1 {
+                    return Err(ConversationRepositoryError::Committed {
+                        message: format!(
+                            "Conversation {} committed at revision {}; index repair failed: {error}",
+                            persisted.id, persisted.revision
+                        ),
+                        id: persisted.id,
+                        revision: persisted.revision,
+                    });
+                }
+            }
+        }
+    }
+    Ok(persisted)
 }
 
 /// Process-local equivalent of Pi's keyed operation queue. The barrier is held
@@ -728,7 +769,7 @@ impl ConversationRepository {
         let lock = self.conversation_lock(id);
         let _conversation = lock.lock().await;
         let mut latest = super::storage::load_conversation(app, id)?;
-        if !super::storage::rewrite_conversation_artifact_paths(&mut latest, &mappings) {
+        if !super::storage::rewrite_conversation_artifact_paths(&mut latest, &mappings)? {
             return Ok(latest);
         }
         increment_revision(&mut latest)?;
@@ -815,7 +856,7 @@ impl ConversationRepository {
             if super::storage::rewrite_conversation_artifact_paths(
                 &mut latest,
                 &[(legacy, target.clone())],
-            ) {
+            )? {
                 increment_revision(&mut latest)?;
                 latest.updated_at = chrono::Local::now().timestamp();
                 self.persist_locked(app, latest).await?;
@@ -957,10 +998,11 @@ impl ConversationRepository {
         // 读侧的 `load_index_or_scan` 只读不写（否则会绕开这把锁 lost update），所以残缺索引
         // 的落盘自愈只能在这里发生：这一步既拿到了对账过的索引，末尾的 save_index 又把它写回。
         let item = ConversationListItem::from(&persisted);
-        for attempt in 0..2 {
+        let path = super::storage::conversation_file_path(app, &persisted.id)?;
+        publish_conversation_index(persisted, &path, || {
             let app_for_index = app.clone();
             let item = item.clone();
-            let result = Self::spawn_storage(
+            Self::spawn_storage(
                 move || {
                     let mut index = super::storage::load_index_or_scan(&app_for_index)?;
                     if let Some(position) = index
@@ -976,26 +1018,8 @@ impl ConversationRepository {
                 },
                 "save conversation index",
             )
-            .await;
-            match result {
-                Ok(()) => return Ok(persisted),
-                Err(error) => {
-                    let path = super::storage::conversation_file_path(app, &persisted.id)?;
-                    let body = super::storage::read_conversation_file(&path, &persisted.id)?;
-                    if body.revision != persisted.revision {
-                        return Err(ConversationRepositoryError::Storage(format!(
-                            "Conversation publication could not be verified: {error}"
-                        )));
-                    }
-                    if attempt == 1 {
-                        return Err(ConversationRepositoryError::Storage(format!(
-                            "Conversation {} committed at revision {}; index repair failed, retry to recover: {error}",
-                            persisted.id, persisted.revision)));
-                    }
-                }
-            }
-        }
-        Ok(persisted)
+        })
+        .await
     }
 
     pub async fn append_message(
@@ -1169,6 +1193,20 @@ pub fn repository_error(error: ConversationRepositoryError) -> String {
     error.to_string()
 }
 
+pub(crate) async fn recover_committed(
+    app: &AppHandle,
+    error: ConversationRepositoryError,
+) -> Result<(Conversation, String), String> {
+    let ConversationRepositoryError::Committed { id, revision, message } = error else {
+        return Err(error.to_string());
+    };
+    let latest = repository(app).get(app, &id).await.map_err(repository_error)?;
+    if latest.id != id || latest.revision < revision {
+        return Err(format!("Committed conversation could not be verified: {message}"));
+    }
+    Ok((latest, message))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1196,6 +1234,116 @@ mod tests {
             "timestamp": 1
         }))
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn index_publication_failure_reports_durable_conversation_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("conv_test.json");
+        let index_path = temp.path().join("index.json");
+        let mut current = conversation();
+        super::super::storage::write_conversation_file_at_path(&path, current.clone()).unwrap();
+        increment_revision(&mut current).unwrap();
+        current.title = "committed change".into();
+        let persisted =
+            super::super::storage::write_conversation_file_at_path(&path, current).unwrap();
+        std::fs::create_dir(&index_path).unwrap();
+        let mut attempts = 0;
+        let error = publish_conversation_index(persisted, &path, || {
+            attempts += 1;
+            std::future::ready(
+                super::super::storage::atomic_write(&index_path, "{}", "index").map_err(Into::into),
+            )
+        })
+        .await
+        .unwrap_err();
+        let stored = super::super::storage::read_conversation_file(&path, "conv_test").unwrap();
+        assert_eq!(stored.revision, 11);
+        assert_eq!(stored.title, "committed change");
+        assert_eq!(attempts, 2);
+        let ConversationRepositoryError::Committed {
+            id,
+            revision,
+            message,
+        } = error
+        else {
+            panic!("expected a verified commit, got {error:?}");
+        };
+        assert_eq!(id, stored.id);
+        assert_eq!(revision, stored.revision);
+        assert!(message.contains("index repair failed"));
+        assert!(message.contains("write index file"));
+    }
+
+    #[tokio::test]
+    async fn index_publication_retry_returns_the_existing_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("conv_test.json");
+        let index_path = temp.path().join("index.json");
+        let persisted =
+            super::super::storage::write_conversation_file_at_path(&path, conversation()).unwrap();
+        let index = serde_json::to_string(&super::super::ConversationIndex {
+            conversations: vec![ConversationListItem::from(&persisted)],
+        })
+        .unwrap();
+        std::fs::create_dir(&index_path).unwrap();
+        let mut attempts = 0;
+        let result = publish_conversation_index(persisted, &path, || {
+            attempts += 1;
+            let result = super::super::storage::atomic_write(&index_path, &index, "index");
+            if attempts == 1 {
+                std::fs::remove_dir(&index_path).unwrap();
+            }
+            std::future::ready(result.map_err(Into::into))
+        })
+        .await
+        .unwrap();
+        assert_eq!(attempts, 2);
+        assert_eq!(result.revision, 10);
+        let stored = super::super::storage::read_conversation_file(&path, &result.id).unwrap();
+        assert_eq!(stored.revision, result.revision);
+        let index: super::super::ConversationIndex =
+            serde_json::from_str(&std::fs::read_to_string(index_path).unwrap()).unwrap();
+        assert_eq!(index.conversations[0].revision, Some(stored.revision));
+    }
+
+    #[tokio::test]
+    async fn index_publication_failure_with_unverified_body_remains_storage_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("conv_test.json");
+        for damage in ["revision", "identity", "missing", "corrupt"] {
+            let persisted =
+                super::super::storage::write_conversation_file_at_path(&path, conversation())
+                    .unwrap();
+            match damage {
+                "revision" | "identity" => {
+                    let mut other = persisted.clone();
+                    if damage == "revision" {
+                        increment_revision(&mut other).unwrap();
+                    } else {
+                        other.id = "conv_other".into();
+                    }
+                    super::super::storage::write_conversation_file_at_path(&path, other).unwrap();
+                }
+                "missing" => std::fs::remove_file(&path).unwrap(),
+                "corrupt" => std::fs::write(&path, "invalid JSON").unwrap(),
+                _ => unreachable!(),
+            }
+            let mut attempts = 0;
+            let error = publish_conversation_index(persisted, &path, || {
+                attempts += 1;
+                std::future::ready(Err(ConversationRepositoryError::Storage(
+                    "index failed".into(),
+                )))
+            })
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(error, ConversationRepositoryError::Storage(_)),
+                "{damage}"
+            );
+            assert_eq!(attempts, 1, "{damage}");
+        }
     }
 
     #[test]

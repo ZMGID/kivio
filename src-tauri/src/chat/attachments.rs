@@ -314,6 +314,25 @@ fn externalize_model_message_images_in_dir(
     let mut changed = false;
     for model_message in messages.iter_mut() {
         for part in model_message.content.iter_mut() {
+            if let MessagePart::ImageUrl { url, .. } = part {
+                let mut wire = vec![
+                    serde_json::json!({"content":[{"type":"image_url", "image_url":{"url":url}}]}),
+                ];
+                if externalize_api_message_images_in_dir(dir, &mut wire) {
+                    *url = wire[0]["content"][0]["image_url"]["url"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned();
+                    changed = true;
+                }
+                continue;
+            }
+            if let MessagePart::ToolResult { artifacts, .. } = part {
+                for artifact in artifacts {
+                    changed |= externalize_artifact_in_dir(dir, artifact);
+                }
+                continue;
+            }
             let (MessagePart::Image {
                 mime_type,
                 data,
@@ -356,6 +375,14 @@ fn externalize_model_message_images_in_dir(
 pub(crate) fn message_has_model_message_image_to_externalize(message: &ChatMessage) -> bool {
     message.model_messages.iter().any(|model_message| {
         model_message.content.iter().any(|part| {
+            if let MessagePart::ToolResult { artifacts, .. } = part {
+                return artifacts
+                    .iter()
+                    .any(|artifact| parse_data_url(artifact.data_url.trim()).is_some());
+            }
+            if let MessagePart::ImageUrl { url, .. } = part {
+                return parse_data_url(url).is_some();
+            }
             matches!(
                 part,
                 MessagePart::Image { data, path, .. } | MessagePart::Video { data, path, .. }
@@ -363,6 +390,177 @@ pub(crate) fn message_has_model_message_image_to_externalize(message: &ChatMessa
             )
         })
     })
+}
+
+pub(crate) fn externalize_history_media(
+    app: &AppHandle,
+    conversation_id: &str,
+    history: &mut kivio_agent_sdk::agent::SessionHistory,
+) -> Result<(), String> {
+    let Ok(dir) = conversation_attachments_dir(app, conversation_id) else {
+        return Ok(());
+    };
+    externalize_history_media_in_dir(&dir, history)
+}
+
+pub(crate) fn externalize_history_media_in_dir(
+    dir: &Path,
+    history: &mut kivio_agent_sdk::agent::SessionHistory,
+) -> Result<(), String> {
+    super::session_history::map_history_messages(history, |message| {
+        if let Some(model) = message.model_message_mut() {
+            externalize_model_message_images_in_dir(dir, std::slice::from_mut(model));
+        }
+    })
+}
+
+pub(crate) fn copy_builtin_conversation_resources(
+    app: &AppHandle,
+    source_id: &str,
+    conversation: &mut super::Conversation,
+) -> Result<(), String> {
+    let Some(state) = &conversation.builtin_history else {
+        return Ok(());
+    };
+    let source = conversation_attachments_dir(app, source_id)?;
+    let target = conversation_attachments_dir(app, &conversation.id)?;
+    copy_history_resources_in_dirs(&source, &target, state.snapshot.history())?;
+    super::storage::rewrite_conversation_artifact_paths(conversation, &[(source, target)])?;
+    Ok(())
+}
+
+fn copy_history_resources_in_dirs(
+    source: &Path,
+    target: &Path,
+    history: &kivio_agent_sdk::agent::SessionHistory,
+) -> Result<(), String> {
+    let mut copied = std::collections::HashSet::new();
+    for reference in history.attachment_references() {
+        let Some(raw) = super::gc::local_attachment_reference(reference.reference) else {
+            continue;
+        };
+        let path = Path::new(raw);
+        let name = if path.is_absolute() {
+            let Ok(relative) = path.strip_prefix(source) else {
+                continue;
+            };
+            relative
+        } else {
+            path
+        };
+        if !matches!(
+            name.components().next(),
+            Some(std::path::Component::Normal(_))
+        ) || name.components().count() != 1
+            || name
+                .to_str()
+                .is_none_or(|name| name.contains(['/', '\\', ':']))
+        {
+            return Err(format!("Invalid session attachment reference: {raw}"));
+        }
+        if !copied.insert(name.to_path_buf()) {
+            continue;
+        }
+        match fs::copy(source.join(name), target.join(name)) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("fork: missing session attachment {raw}: {error}");
+            }
+            Err(error) => return Err(format!("Copy session attachment {raw}: {error}")),
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn externalize_builtin_history_media(
+    app: &AppHandle,
+    conversation_id: &str,
+    state: &mut super::session_history::BuiltinHistory,
+) -> Result<(), String> {
+    let Ok(dir) = conversation_attachments_dir(app, conversation_id) else {
+        return Ok(());
+    };
+    super::session_history::map_runtime_messages(state, |message| {
+        if let Some(model) = message.model_message_mut() {
+            externalize_model_message_images_in_dir(&dir, std::slice::from_mut(model));
+        }
+    })?;
+    for branch in &mut state.archived_branches {
+        for message in &mut branch.messages {
+            externalize_message_artifacts(app, conversation_id, message);
+        }
+        if let Some(replay) = branch
+            .context_state
+            .summary
+            .as_mut()
+            .and_then(|s| s.replay.as_mut())
+        {
+            externalize_api_message_images_in_dir(&dir, &mut replay.messages);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn all_tree_resource_fixture() -> super::Conversation {
+    use crate::chat::model::{ModelMessage, ModelRole};
+    use kivio_agent_sdk::agent::{session::CompactionPlan, RuntimeMessage, SessionHistory};
+    let image = |bytes: &[u8]| {
+        RuntimeMessage::model(ModelMessage {
+            role: ModelRole::User,
+            content: vec![MessagePart::Image {
+                mime_type: "image/png".into(),
+                data: general_purpose::STANDARD.encode(bytes),
+                path: None,
+                detail: None,
+            }],
+        })
+    };
+    let mut history = SessionHistory::default();
+    history.push(image(b"root"));
+    let root = history.active_leaf();
+    history.push(RuntimeMessage::model(ModelMessage {
+        role: ModelRole::User,
+        content: vec![MessagePart::Video {
+            mime_type: "video/mp4".into(),
+            data: general_purpose::STANDARD.encode(b"inactive"),
+            path: None,
+        }],
+    }));
+    history.push(RuntimeMessage::from_legacy(serde_json::json!({
+        "role":"assistant", "content":"", "tool_calls":[{"id":"artifact-call", "type":"function", "function":{"name":"report", "arguments":"{}"}}],
+    })).unwrap());
+    history.push(RuntimeMessage::from_legacy(serde_json::json!({
+        "role":"tool", "tool_call_id":"artifact-call", "content":"report", "artifacts":[{
+            "name":"report.pdf", "mime_type":"application/pdf", "data_url":format!("data:application/pdf;base64,{}", general_purpose::STANDARD.encode(b"%PDF-tree")),
+        }],
+    })).unwrap());
+    history.switch_branch(root).unwrap();
+    history.push(RuntimeMessage::model(ModelMessage {
+        role: ModelRole::User,
+        content: vec![MessagePart::ImageUrl {
+            url: format!(
+                "data:image/png;base64,{}",
+                general_purpose::STANDARD.encode(b"active")
+            ),
+            detail: None,
+        }],
+    }));
+    history
+        .compact(CompactionPlan {
+            covered: 0..2,
+            replacement: vec![image(b"compaction")],
+        })
+        .unwrap();
+    history.reset_context(vec![image(b"reset")]).unwrap();
+    let mut conversation: super::Conversation = serde_json::from_value(serde_json::json!({
+        "id":"conv_one", "title":"tree", "provider_id":"p", "model":"m", "set_id":"set_one",
+        "created_at":1, "updated_at":2, "messages":[],
+    }))
+    .unwrap();
+    super::session_history::ensure_migrated(&mut conversation).unwrap();
+    conversation.builtin_history.as_mut().unwrap().snapshot = history.snapshot().unwrap();
+    conversation
 }
 
 /// [`externalize_model_message_images`] 的逆操作：按 `path` 读盘把 base64 填回 `data`，
@@ -377,6 +575,9 @@ pub(crate) fn rehydrate_model_message_images(
 ) {
     if !messages.iter().any(|model_message| {
         model_message.content.iter().any(|part| {
+            if let MessagePart::ImageUrl { url, .. } = part {
+                return url.starts_with(ATTACHMENT_URI_SCHEME);
+            }
             matches!(part, MessagePart::Image { data, path, .. } | MessagePart::Video { data, path, .. }
                 if data.is_empty() && path.as_deref().is_some_and(|p| !p.is_empty()))
         })
@@ -396,6 +597,20 @@ fn rehydrate_model_message_images_in_dir(
 ) {
     for model_message in messages.iter_mut() {
         for part in model_message.content.iter_mut() {
+            if let MessagePart::ImageUrl { url, detail } = part {
+                if let Some((mime_type, file_name)) = parse_attachment_uri(url) {
+                    let data = fs::read(dir.join(file_name))
+                        .map(|bytes| general_purpose::STANDARD.encode(bytes))
+                        .unwrap_or_default();
+                    *part = MessagePart::Image {
+                        mime_type,
+                        data,
+                        path: Some(file_name.to_owned()),
+                        detail: detail.clone(),
+                    };
+                }
+                continue;
+            }
             let (MessagePart::Image { data, path, .. } | MessagePart::Video { data, path, .. }) =
                 part
             else {
@@ -407,12 +622,25 @@ fn rehydrate_model_message_images_in_dir(
             let Some(file_name) = path.as_deref().filter(|p| !p.is_empty()) else {
                 continue;
             };
-            // 只信文件名（外置时我们自己生成的），任何分隔符都拒绝——别让历史脏数据
-            // 变成路径穿越。
-            if Path::new(file_name).components().count() != 1 {
+            let path = Path::new(file_name);
+            let relative = if path.is_absolute() {
+                let Ok(relative) = path.strip_prefix(dir) else {
+                    continue;
+                };
+                relative
+            } else {
+                path
+            };
+            // Persisted absolute references must stay directly inside this conversation's directory.
+            if relative.components().count() != 1
+                || !matches!(
+                    relative.components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+            {
                 continue;
             }
-            if let Ok(bytes) = fs::read(dir.join(file_name)) {
+            if let Ok(bytes) = fs::read(dir.join(relative)) {
                 *data = general_purpose::STANDARD.encode(bytes);
             }
         }
@@ -1236,6 +1464,138 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn all_tree_media_survives_externalization_gc_and_fork_copy() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let mut conversation = all_tree_resource_fixture();
+        let state = conversation.builtin_history.as_mut().unwrap();
+        let mut history = state.snapshot.clone().into_history();
+        let topology: Vec<_> = history
+            .entries()
+            .iter()
+            .map(|entry| (entry.id, entry.parent_id))
+            .collect();
+        externalize_history_media_in_dir(source.path(), &mut history).unwrap();
+        assert_eq!(
+            history
+                .entries()
+                .iter()
+                .map(|entry| (entry.id, entry.parent_id))
+                .collect::<Vec<_>>(),
+            topology
+        );
+        assert_eq!(history.attachment_references().len(), 6);
+        for part in history
+            .entries()
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                kivio_agent_sdk::agent::SessionEntryKind::Message(runtime) => {
+                    runtime.model_message()
+                }
+                _ => None,
+            })
+            .flat_map(|model| &model.content)
+        {
+            if let MessagePart::Image { data, path, .. } = part {
+                assert!(data.is_empty());
+                assert!(source.path().join(path.as_ref().unwrap()).is_file());
+            }
+        }
+        state.snapshot = history.snapshot().unwrap();
+        let referenced = crate::chat::gc::referenced_attachment_names(&conversation);
+        let mut files: Vec<_> = fs::read_dir(source.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.push("msgimg-orphan.png".into());
+        assert_eq!(
+            crate::chat::gc::unreferenced_attachment_names(source.path(), &files, &referenced),
+            vec!["msgimg-orphan.png"]
+        );
+        copy_history_resources_in_dirs(source.path(), target.path(), &history).unwrap();
+        assert_eq!(fs::read_dir(target.path()).unwrap().count(), 6);
+        crate::chat::storage::rewrite_conversation_artifact_paths(
+            &mut conversation,
+            &[(source.path().to_path_buf(), target.path().to_path_buf())],
+        )
+        .unwrap();
+        for reference in conversation
+            .builtin_history
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .history()
+            .attachment_references()
+        {
+            let raw = crate::chat::gc::local_attachment_reference(reference.reference)
+                .expect("fixture has local media references");
+            let path = Path::new(raw);
+            let path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                target.path().join(path)
+            };
+            assert!(
+                path.is_file(),
+                "missing copied attachment {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn all_tree_externalization_keeps_inline_bytes_when_write_fails() {
+        let source = tempfile::tempdir().unwrap();
+        let blocked = source.path().join("not-a-directory");
+        fs::write(&blocked, b"blocked").unwrap();
+        let conversation = all_tree_resource_fixture();
+        let mut history = conversation
+            .builtin_history
+            .unwrap()
+            .snapshot
+            .into_history();
+        let before = serde_json::to_value(history.snapshot().unwrap()).unwrap();
+        externalize_history_media_in_dir(&blocked, &mut history).unwrap();
+        assert_eq!(
+            serde_json::to_value(history.snapshot().unwrap()).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn missing_inactive_media_does_not_block_loading_or_forking_history() {
+        let source = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let mut conversation = all_tree_resource_fixture();
+        let state = conversation.builtin_history.as_mut().unwrap();
+        let mut history = state.snapshot.clone().into_history();
+        externalize_history_media_in_dir(source.path(), &mut history).unwrap();
+        let inactive = history
+            .attachment_references()
+            .into_iter()
+            .find(|reference| reference.reference.ends_with(".mp4"))
+            .unwrap()
+            .reference
+            .to_owned();
+        fs::remove_file(source.path().join(&inactive)).unwrap();
+        state.snapshot = history.snapshot().unwrap();
+        let expected = serde_json::to_value(&*state).unwrap();
+        let disk = source.path().join("conv_one.json");
+        fs::write(&disk, serde_json::to_vec(&conversation).unwrap()).unwrap();
+        let restored = crate::chat::storage::read_conversation_file(&disk, "conv_one").unwrap();
+        assert_eq!(
+            serde_json::to_value(restored.builtin_history.unwrap()).unwrap(),
+            expected
+        );
+        copy_history_resources_in_dirs(source.path(), target.path(), &history).unwrap();
+        assert_eq!(fs::read_dir(target.path()).unwrap().count(), 5);
+        assert!(history
+            .attachment_references()
+            .iter()
+            .any(|reference| reference.reference == inactive));
+    }
 
     #[test]
     fn svg_attachment_preview_preserves_mime_and_content() {

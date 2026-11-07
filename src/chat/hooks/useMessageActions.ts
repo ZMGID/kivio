@@ -1,10 +1,11 @@
 import { useCallback, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import { api } from '../../api/tauri'
-import { chatApi } from '../api'
+import { chatApi, normalizeAgentRuntime } from '../api'
+import { notifyError } from '../../components/appNoticeStore'
 import type { createChatNavigationController } from '../chatNavigationController'
 import { insertTextIntoComposer } from '../composerInsert'
 import type { AssistantStreamStats } from '../MessageList'
-import { setCoarse as setStreamCoarse } from '../streamingStore'
+import { getCoarse, setCoarse as setStreamCoarse } from '../streamingStore'
 import type { Conversation } from '../types'
 import { i18n, type Lang } from '../../components/i18n'
 import { confirmDialog } from '../../components/dialogQueue'
@@ -82,7 +83,12 @@ export function useMessageActions({
     const conv = currentConversationRef.current
     if (!conv) return
     const t = tRef.current
-    if (!(await confirmDialog({ message: t.chatMessageDeleteConfirm, confirmLabel: t.dialogDelete, danger: true }))) return
+    const external = normalizeAgentRuntime(conv).kind === 'external'
+    if (!(await confirmDialog({
+      message: external ? t.chatMessageDeleteConfirm : t.chatMessageRemoveFromBranchConfirm,
+      confirmLabel: external ? t.dialogDelete : t.chatMessageRemoveFromBranch,
+      danger: true,
+    }))) return
     try {
       const updated = await chatApi.deleteMessage(conv.id, messageId)
       if (applyConversationIfCurrent(conv.id, updated)) {
@@ -103,7 +109,7 @@ export function useMessageActions({
   ])
 
   // 一键 rewind（「回到这里」）：截掉这条提问及其之后的所有消息，原文塞回输入框，用户改完再自己发。
-  // 破坏性且不可撤销 → 先 confirm（与删除消息同一把关）。
+  // 改变当前可见历史前先确认，避免误点。
   const rewindToMessage = useCallback(async (messageId: string) => {
     const conv = currentConversationRef.current
     if (!conv) return
@@ -176,5 +182,22 @@ export function useMessageActions({
     }
   }, [applyConversationMeta, currentConversationRef, setStreamErrorForConversation])
 
-  return { updateMessage, deleteMessage, rewindToMessage, forkAtMessage, saveMessageToNote, setGroupSelection }
+  const switchBranch = useCallback(async (branchId: string): Promise<boolean> => {
+    const conv = currentConversationRef.current
+    const { streaming, streamFrozen, cancelling } = getCoarse()
+    if (!conv || normalizeAgentRuntime(conv).kind === 'external' || streaming || streamFrozen || cancelling) return false
+    try {
+      const updated = await chatApi.switchBranch(conv.id, branchId)
+      if (!applyConversationIfCurrent(conv.id, updated)) return false
+      setAssistantStreamStatsByMessageId({})
+      setStreamError('')
+      refreshSidebar()
+      return true
+    } catch (err) {
+      notifyError(errorMessage(err, tRef.current.chatBranchSwitchFailed))
+      return false
+    }
+  }, [applyConversationIfCurrent, currentConversationRef, refreshSidebar, setAssistantStreamStatsByMessageId])
+
+  return { updateMessage, deleteMessage, rewindToMessage, forkAtMessage, saveMessageToNote, setGroupSelection, switchBranch }
 }

@@ -285,7 +285,7 @@ fn is_accepted_task_record(call: &ToolCallRecord) -> bool {
     }
 }
 
-fn resumable_checkpoint(draft: &ChatMessage) -> bool {
+fn resumable_checkpoint(conversation: &Conversation, draft: &ChatMessage) -> bool {
     if draft.stream_outcome.as_deref() != Some("interrupted")
         || draft.tool_calls.iter().any(|call| {
             matches!(
@@ -295,6 +295,14 @@ fn resumable_checkpoint(draft: &ChatMessage) -> bool {
         })
     {
         return false;
+    }
+    if let Some(state) = &conversation.builtin_history {
+        let Some(range) = state.bindings.get(&draft.id).copied().flatten() else {
+            return false;
+        };
+        let path = state.snapshot.history().active_path();
+        return path.iter().any(|entry| entry.id == range.first)
+            && path.iter().any(|entry| entry.id == range.last);
     }
     let fallback;
     let messages = if draft.model_messages.is_empty() {
@@ -328,10 +336,62 @@ async fn register_recovered_children(
     }
 }
 
+fn prepared_user_fact(
+    content: &str,
+    attachments: &[Attachment],
+) -> crate::chat::agent::history::RuntimeMessage {
+    let mut fact = crate::chat::agent::history::RuntimeMessage::text(
+        crate::chat::model::ModelRole::User,
+        content,
+    );
+    let parts = &mut fact.model_message_mut().expect("User message").content;
+    for attachment in attachments {
+        if attachment.attachment_type == "image" {
+            parts.push(crate::chat::model::MessagePart::Image {
+                mime_type: crate::chat::vision::image_mime_for_path(std::path::Path::new(
+                    &attachment.name,
+                ))
+                .to_string(),
+                data: String::new(),
+                path: Some(attachment.path.clone()),
+                detail: None,
+            });
+        } else if let Some(mime) = crate::chat::video::mime_for_name(&attachment.name) {
+            parts.push(crate::chat::model::MessagePart::Video {
+                mime_type: mime.to_string(),
+                data: String::new(),
+                path: Some(attachment.path.clone()),
+            });
+        }
+    }
+    fact
+}
+
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
     use serde_json::{json, Value};
+
+    #[test]
+    fn prepared_media_keeps_typed_attachment_references_and_enriched_input() {
+        let attachments: Vec<Attachment> = serde_json::from_value(json!([
+            {"id":"image", "type":"image", "name":"photo.jpeg", "path":"att-photo.jpeg"},
+            {"id":"video", "type":"video", "name":"clip.mp4", "path":"att-clip.mp4"}
+        ]))
+        .unwrap();
+        let fact = prepared_user_fact("question plus inline document", &attachments);
+        let model = fact.model_message().unwrap();
+        assert_eq!(model.role, crate::chat::model::ModelRole::User);
+        assert!(
+            matches!(&model.content[0], crate::chat::model::MessagePart::Text { text } if text == "question plus inline document")
+        );
+        assert!(
+            matches!(&model.content[1], crate::chat::model::MessagePart::Image { mime_type, data, path, .. } if mime_type == "image/jpeg" && data.is_empty() && path.as_deref() == Some("att-photo.jpeg"))
+        );
+        assert!(
+            matches!(&model.content[2], crate::chat::model::MessagePart::Video { data, path, .. } if data.is_empty() && path.as_deref() == Some("att-clip.mp4"))
+        );
+    }
 
     fn checkpoint(id: &str, run: &str, outcome: &str) -> Value {
         json!({
@@ -373,7 +433,7 @@ mod recovery_tests {
             recovery.child_calls,
             vec![("current-run".to_string(), "dispatch".to_string())]
         );
-        assert!(resumable_checkpoint(recovery.checkpoint));
+        assert!(resumable_checkpoint(&conversation, recovery.checkpoint));
 
         conversation
             .messages
@@ -412,18 +472,38 @@ mod recovery_tests {
     fn only_paired_checkpoint_without_pending_tool_effects_can_continue() {
         let mut draft: ChatMessage =
             serde_json::from_value(checkpoint("draft", "run", "interrupted")).unwrap();
-        assert!(resumable_checkpoint(&draft));
+        let source = conversation(vec![user("user")]);
+        assert!(resumable_checkpoint(&source, &draft));
         draft.tool_calls[0].status = ToolCallStatus::Running;
-        assert!(!resumable_checkpoint(&draft));
+        assert!(!resumable_checkpoint(&source, &draft));
         draft.tool_calls[0].status = ToolCallStatus::Success;
         draft.api_messages.pop();
-        assert!(!resumable_checkpoint(&draft));
+        assert!(!resumable_checkpoint(&source, &draft));
 
         let stopped = conversation(vec![
             user("user"),
             checkpoint("stopped", "run", "cancelled"),
         ]);
         assert!(main_recovery(&stopped).is_none());
+    }
+
+    #[test]
+    fn canonical_checkpoint_uses_its_selected_binding_after_ui_transcripts_are_removed() {
+        let mut source = conversation(vec![
+            user("user"),
+            checkpoint("draft", "run", "interrupted"),
+        ]);
+        crate::chat::session_history::ensure_migrated(&mut source).unwrap();
+        assert!(source.messages[1].model_messages.is_empty());
+        assert!(source.messages[1].api_messages.is_empty());
+        assert!(resumable_checkpoint(&source, &source.messages[1]));
+        source
+            .builtin_history
+            .as_mut()
+            .unwrap()
+            .bindings
+            .remove("draft");
+        assert!(!resumable_checkpoint(&source, &source.messages[1]));
     }
 }
 
@@ -496,7 +576,7 @@ async fn send_reserved(
     if let Some(scope) = recovery.as_ref().filter(|scope| {
         continue_requested
             && scope.user.attachments.is_empty()
-            && resumable_checkpoint(scope.checkpoint)
+            && resumable_checkpoint(&conversation, scope.checkpoint)
     }) {
         let outcome = if state
             .sub_agents
@@ -677,6 +757,8 @@ async fn send_reserved(
         degraded: None,
     };
 
+    let user_fact = prepared_user_fact(&api_content, &user_message.attachments);
+
     conversation.messages.push(user_message.clone());
     conversation.updated_at = chrono::Local::now().timestamp();
     let provisional_title = {
@@ -690,7 +772,7 @@ async fn send_reserved(
             None
         }
     };
-    conversation = crate::chat::repository::repository(&app)
+    let saved = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, {
             let user_message = user_message.clone();
             let provisional_title = provisional_title.clone();
@@ -705,6 +787,11 @@ async fn send_reserved(
                     .any(|item| item.id == user_message.id)
                 {
                     return Err(format!("message already exists: {}", user_message.id));
+                }
+                if !latest.agent_runtime.is_external() {
+                    crate::chat::session_history::ensure_migrated(latest)?;
+                    crate::chat::session_history::admit_pending_reports(latest)?;
+                    crate::chat::session_history::admit_input(latest, &user_message.id, vec![user_fact])?;
                 }
                 latest.messages.push(user_message);
                 // 往归档对话里继续发 = 重新启用。否则侧栏排除归档后，乐观行一剪这条就消失。
@@ -741,8 +828,19 @@ async fn send_reserved(
                 Ok(())
             }
         })
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
+        .await;
+    let warning = match saved {
+        Ok(saved) => {
+            conversation = saved;
+            None
+        }
+        Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
+            let (saved, warning) = crate::chat::repository::recover_committed(&app, error).await?;
+            conversation = saved;
+            Some(warning)
+        }
+        Err(error) => return Err(crate::chat::repository::repository_error(error)),
+    };
     let resumed = state
         .sub_agents
         .resume_user_turn(&conversation_id, interruption_epoch);
@@ -754,7 +852,9 @@ async fn send_reserved(
     }
     if !resumed {
         strip_transcripts_for_frontend(&mut conversation);
-        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
+        return Ok(
+            serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
+        );
     }
 
     match compute_context_state(
@@ -796,7 +896,9 @@ async fn send_reserved(
 
     if state.sub_agents.user_interrupted(&conversation_id) {
         strip_transcripts_for_frontend(&mut conversation);
-        return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
+        return Ok(
+            serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
+        );
     }
 
     if let Some(calls) = idle_parent_calls {
@@ -819,16 +921,16 @@ async fn send_reserved(
         return match fan_out_outcome {
             Ok(()) => Ok(serde_json::json!({
                 "success": true,
-                "conversation": conversation,
+                "conversation": conversation, "warning": warning,
             })),
             // 全部臂都失败（非取消）才算硬失败；部分成功在 run_reply_fan_out 内已合并落盘并返回 Ok。
             Err(err) if err == "cancelled" => Ok(serde_json::json!({
                 "success": true,
-                "conversation": conversation,
+                "conversation": conversation, "warning": warning,
             })),
             Err(err) => Ok(serde_json::json!({
                 "success": false,
-                "conversation": conversation,
+                "conversation": conversation, "warning": warning,
                 "error": err,
             })),
         };
@@ -853,14 +955,14 @@ async fn send_reserved(
             strip_transcripts_for_frontend(&mut conversation);
             Ok(serde_json::json!({
                 "success": true,
-                "conversation": conversation,
+                "conversation": conversation, "warning": warning,
             }))
         }
         Err(err) if err == "cancelled" => {
             strip_transcripts_for_frontend(&mut conversation);
             Ok(serde_json::json!({
                 "success": true,
-                "conversation": conversation,
+                "conversation": conversation, "warning": warning,
             }))
         }
         Err(err) => {
@@ -871,7 +973,7 @@ async fn send_reserved(
             strip_transcripts_for_frontend(&mut conversation);
             Ok(serde_json::json!({
                 "success": false,
-                "conversation": conversation,
+                "conversation": conversation, "warning": warning,
                 "error": err,
             }))
         }
