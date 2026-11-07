@@ -1,3 +1,4 @@
+use super::error::AgentFailure;
 use super::{
     history::RuntimeMessage,
     loop_::{LoopEnv, RunState},
@@ -10,7 +11,7 @@ pub(crate) async fn maybe_compact_send_view(
     state: &mut RunState,
     tools: &[ModelTool],
     session: &mut dyn SessionPolicy,
-) -> Result<Vec<RuntimeMessage>, String> {
+) -> Result<Vec<RuntimeMessage>, AgentFailure> {
     compact_send_view(env, state, false, tools, session).await
 }
 
@@ -20,7 +21,7 @@ pub(crate) async fn compact_send_view(
     force: bool,
     tools: &[ModelTool],
     session: &mut dyn SessionPolicy,
-) -> Result<Vec<RuntimeMessage>, String> {
+) -> Result<Vec<RuntimeMessage>, AgentFailure> {
     let prepared = session
         .prepare_context(
             if force {
@@ -39,7 +40,8 @@ pub(crate) async fn compact_send_view(
             env.host.control.clone(),
             env.host,
         )
-        .await?;
+        .await
+        .map_err(AgentFailure::host("session.prepare_context"))?;
     state.compaction_blocked |= prepared.blocked;
     match prepared.update {
         None => {}
@@ -63,7 +65,7 @@ pub(crate) async fn compact_send_view(
                 Ok(incoming) => incoming,
                 Err(error) => {
                     session.context_rejected("failed", env.host);
-                    return Err(error);
+                    return Err(AgentFailure::host("checkpoint_runtime")(error));
                 }
             };
             if !env.host.control.active() {

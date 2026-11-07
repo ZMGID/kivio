@@ -34,17 +34,88 @@ pub struct AgentRunConfig<'a> {
     pub runtime_messages: Vec<super::history::RuntimeMessage>,
     pub tools: Vec<crate::tools::ToolDefinition>,
     pub blocked_tool_calls: Vec<crate::tools::ToolDefinition>,
-    pub thinking_enabled: bool,
-    pub thinking_level: Option<String>,
-    pub builtin_web_search: bool,
-    pub max_output_tokens: u32,
+    pub options: crate::model::GenerateOptions,
+    pub capabilities: crate::model::ModelCapabilities,
     pub initial_cache_usage: Option<(u64, u64)>,
     pub report_context: bool,
 }
 
 impl AgentRunConfig<'_> {
+    pub(crate) fn validate_call(
+        &self,
+        call: &super::provider_runtime::ModelCall,
+    ) -> Result<(), crate::model::ModelError> {
+        use crate::model::{MessagePart, ModelError, ModelErrorKind, ToolChoice};
+        let tools_enabled = call.options.tool_choice != ToolChoice::None;
+        let native_tools = call
+            .options
+            .provider_options
+            .get("tools")
+            .and_then(serde_json::Value::as_array);
+        let native_functions = native_tools.is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                tool.get("type").and_then(serde_json::Value::as_str) == Some("function")
+            })
+        });
+        if tools_enabled
+            && self.capabilities.tools == Some(false)
+            && (!call.tools.is_empty() || native_functions)
+        {
+            return Err(ModelError::with_kind(
+                "Selected model does not support tools",
+                ModelErrorKind::ToolsUnsupported,
+            ));
+        }
+        let reasoning = call
+            .options
+            .thinking_level
+            .as_deref()
+            .is_some_and(|level| !matches!(level, "none" | "off"));
+        if self.capabilities.reasoning == Some(false) && reasoning {
+            return Err(ModelError::with_kind(
+                "Selected model does not support reasoning",
+                ModelErrorKind::InvalidRequest,
+            ));
+        }
+        let native_search = native_tools.is_some_and(|tools| {
+            tools.iter().any(|tool| {
+                matches!(
+                    tool.get("type").and_then(serde_json::Value::as_str),
+                    Some("web_search" | "web_search_preview")
+                )
+            })
+        });
+        if tools_enabled
+            && self.capabilities.builtin_web_search == Some(false)
+            && (call.options.builtin_web_search || native_search)
+        {
+            return Err(ModelError::with_kind(
+                "Selected model does not support built-in web search",
+                ModelErrorKind::InvalidRequest,
+            ));
+        }
+        if self.capabilities.vision == Some(false)
+            && call
+                .history
+                .iter()
+                .filter_map(|entry| entry.model_message())
+                .any(|message| {
+                    message.content.iter().any(|part| {
+                        matches!(part, MessagePart::Image { data, .. } if !data.is_empty())
+                            || matches!(part, MessagePart::ImageUrl { .. })
+                    })
+                })
+        {
+            return Err(ModelError::with_kind(
+                "Selected model does not support image input",
+                ModelErrorKind::InvalidRequest,
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn builtin_web_search_active(&self) -> bool {
-        self.builtin_web_search
+        self.options.builtin_web_search
     }
 
     pub(crate) fn model_call(
@@ -62,12 +133,12 @@ impl AgentRunConfig<'_> {
             tools,
             delivery,
             options: crate::model::GenerateOptions {
-                thinking_enabled: self.thinking_enabled,
-                thinking_level: self.thinking_level.clone(),
-                builtin_web_search: self.builtin_web_search,
-                tool_choice,
-                max_tokens: self.max_output_tokens,
-                ..Default::default()
+                tool_choice: if tool_choice == crate::model::ToolChoice::None {
+                    crate::model::ToolChoice::None
+                } else {
+                    self.options.tool_choice
+                },
+                ..self.options.clone()
             },
             metadata: crate::model::RequestMetadata {
                 label: label.into(),
@@ -85,7 +156,7 @@ pub enum AgentRunStatus {
     Recovered,
     CompactionBlocked,
     Cancelled,
-    Failed(String),
+    Failed(super::error::AgentFailure),
 }
 
 #[derive(Debug, Clone)]

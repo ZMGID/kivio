@@ -1176,7 +1176,7 @@ fn test_context(host: &ExecuteTestHost) -> AgentContext<'_> {
     AgentContext::new(host, host, control)
 }
 
-async fn execute_tool_call(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> (ToolCallRecord, String, Vec<Value>) {
+async fn execute_tool_call(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> (ToolCallRecord, String, Vec<crate::chat::model::ModelMessage>) {
     let context = test_context(host);
     let tools = std::slice::from_ref(tool);
     let adapter = ApplicationToolExecutor { settings, authority: ToolAuthority::from_context(ctx), tools, host, dispatcher: executor };

@@ -384,6 +384,6 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     let outcomes = host.outcomes.lock().unwrap();
     assert_eq!(outcomes.len(), 1);
     assert!(
-        matches!(&outcomes[0], AgentRunOutcome::Failed(error) if error.contains("bad request"))
+        matches!(&outcomes[0], AgentRunOutcome::Failed(error) if error.to_string().contains("bad request"))
     );
 }

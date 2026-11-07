@@ -142,7 +142,6 @@ async fn prepare_tool_call(
             record.status = AgentToolStatus::Skipped;
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some("Plugin has been disabled".into());
-            host.tool_updated(&record);
             return ToolPreparation::Complete(
                 record,
                 "Plugin has been disabled".into(),
@@ -183,7 +182,6 @@ async fn prepare_tool_call(
             };
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some(reason.clone());
-            host.tool_updated(&record);
             return ToolPreparation::Complete(
                 record,
                 format!("Workflow hook: {reason}"),
@@ -201,7 +199,6 @@ async fn prepare_tool_call(
         record.duration_ms = Some(0);
         record.completed_at = Some(chrono::Local::now().timestamp());
         record.error = Some(err.clone());
-        host.tool_updated(&record);
         return ToolPreparation::Complete(record, format!("Tool arguments failed schema validation: {err}. Retry this tool call with arguments that match the declared JSON schema."), Vec::new());
     }
 
@@ -215,7 +212,6 @@ async fn prepare_tool_call(
         record.duration_ms = Some(0);
         record.completed_at = Some(chrono::Local::now().timestamp());
         record.error = Some(reason.into());
-        host.tool_updated(&record);
         return ToolPreparation::Complete(record, reason.into(), Vec::new());
     }
 
@@ -225,7 +221,6 @@ async fn prepare_tool_call(
             record.status = AgentToolStatus::Skipped;
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some("Workflow hook approval was declined".into());
-            host.tool_updated(&record);
             return ToolPreparation::Complete(
                 record,
                 "Workflow hook approval was declined".into(),
@@ -263,13 +258,11 @@ async fn prepare_tool_call(
         if policy == "always_confirm" {
             if !host.request_tool_approval(ctx, &record).await {
                 skip(&mut record, "Tool call was not approved");
-                host.tool_updated(&record);
                 let content = record.error.clone().unwrap_or_default();
                 return ToolPreparation::Complete(record, content, Vec::new());
             }
         } else if policy != "auto" && !host.request_session_consent(ctx).await {
             skip(&mut record, "用户未授权本会话使用文件 / 命令工具");
-            host.tool_updated(&record);
             let content = record.error.clone().unwrap_or_default();
             return ToolPreparation::Complete(record, content, Vec::new());
         }
@@ -277,7 +270,6 @@ async fn prepare_tool_call(
         let approved = host.request_tool_approval(ctx, &record).await;
         if !approved {
             skip(&mut record, "Tool call was not approved");
-            host.tool_updated(&record);
             let content = record.error.clone().unwrap_or_default();
             return ToolPreparation::Complete(record, content, Vec::new());
         }
@@ -349,7 +341,6 @@ async fn execute_ask_user_call(
             record.duration_ms = Some(0);
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some(err.clone());
-            host.tool_updated(&record);
             return (
                 record,
                 format!("Invalid ask_user prompt: {err}. Retry with a valid questions payload."),
@@ -402,7 +393,6 @@ async fn execute_ask_user_call(
             ));
         }
     }
-    host.tool_updated(&record);
     (
         record,
         limit_tool_text_for_model(&content, settings.chat_tools.max_tool_output_chars),

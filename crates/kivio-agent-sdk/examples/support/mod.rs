@@ -117,10 +117,12 @@ pub fn config(
         runtime_messages: history,
         tools: vec![echo_definition()],
         blocked_tool_calls: vec![],
-        thinking_enabled: false,
-        thinking_level: None,
-        builtin_web_search: false,
-        max_output_tokens: 128,
+        options: kivio_agent_sdk::model::GenerateOptions {
+            thinking_enabled: false,
+            max_tokens: 128,
+            ..Default::default()
+        },
+        capabilities: Default::default(),
         initial_cache_usage: None,
         report_context: false,
     }
@@ -163,7 +165,7 @@ impl EchoTool {
 impl ToolExecutor for EchoTool {
     fn prepare<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
+        _progress: &'a ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
@@ -195,7 +197,6 @@ impl ToolExecutor for EchoTool {
                 Err(error) => {
                     record.status = AgentToolStatus::Error;
                     record.error = Some(error.clone());
-                    progress.updated(&record);
                     ToolPreparation::Complete(record, error, vec![])
                 }
             }

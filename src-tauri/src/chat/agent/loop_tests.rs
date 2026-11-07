@@ -6,7 +6,7 @@ use crate::chat::agent::events::{
 };
 use crate::chat::agent::history::{export_history, import_history, RuntimeMessage};
 use crate::chat::agent::host::{InputPersistence, SessionInput};
-use crate::chat::model::FinishKind;
+use crate::chat::model::{FinishKind, MessagePart, ModelMessage};
 use crate::chat::recovery_policy::{
     empty_synthesis_fallback_response, synthesis_failed_fallback_response,
     tool_planning_failed_fallback_response,
@@ -996,7 +996,7 @@ async fn disabled_tool_feedback_lists_remaining_tools_without_disabling_file_acc
         ],
     )
     .await;
-    let feedback = result.response_messages[0]["content"].as_str().unwrap();
+    let feedback = result.response_messages[0].text_content();
     assert!(feedback.contains("Available tools: read"), "{feedback}");
     assert!(feedback.contains("this tool only"), "{feedback}");
     assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
@@ -1078,10 +1078,14 @@ fn test_mcp_tool(name: &str, annotations: Value) -> ChatToolDefinition {
     }
 }
 
-fn tool_call_ids(messages: &[Value]) -> Vec<&str> {
+fn tool_call_ids(messages: &[ModelMessage]) -> Vec<&str> {
     messages
         .iter()
-        .filter_map(|message| message.get("tool_call_id").and_then(Value::as_str))
+        .flat_map(|message| &message.content)
+        .filter_map(|part| match part {
+            MessagePart::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
+            _ => None,
+        })
         .collect()
 }
 
@@ -1117,15 +1121,16 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
         .await;
         assert!(!result.cancelled);
         assert_eq!(result.response_messages.len(), 3);
-        assert_eq!(result.response_messages[0]["tool_call_id"], "call_read");
+        assert_eq!(tool_call_ids(&result.response_messages)[0], "call_read");
         assert_eq!(
-            result.response_messages[1]["tool_call_id"], "call_next",
+            tool_call_ids(&result.response_messages)[1],
+            "call_next",
             "No tool output found for call_next before image turn ({trailing})"
         );
-        assert_eq!(
-            result.response_messages[2]["content"][0]["type"],
-            "image_url"
-        );
+        assert!(matches!(
+            result.response_messages[2].content[0],
+            MessagePart::Image { .. }
+        ));
     }
 }
 
@@ -1164,15 +1169,11 @@ async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_o
     );
     assert_eq!(result.response_messages.len(), 2);
     assert_eq!(
-        result.response_messages[0]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
+        tool_call_ids(&result.response_messages).get(0).copied(),
         Some("call_read")
     );
     assert_eq!(
-        result.response_messages[1]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
+        tool_call_ids(&result.response_messages).get(1).copied(),
         Some("call_fetch")
     );
     assert_eq!(result.tool_records.len(), 2);
@@ -1451,9 +1452,9 @@ async fn tool_round_preserves_unknown_and_invalid_call_order() {
     let unknown_message = result
         .response_messages
         .iter()
-        .find(|message| message["tool_call_id"] == "call_missing")
+        .find(|message| matches!(&message.content[0], MessagePart::ToolResult { tool_call_id, .. } if tool_call_id == "call_missing"))
         .expect("unknown tool response present");
-    let content = unknown_message["content"].as_str().unwrap_or_default();
+    let content = unknown_message.text_content();
     assert!(content.contains("Unknown tool: missing_tool"), "{content}");
     assert!(content.contains("Available tools:"), "{content}");
     assert!(content.contains("read"), "{content}");
@@ -1518,9 +1519,7 @@ async fn tool_round_records_plan_blocked_tool_as_skipped() {
     assert_eq!(executor.max_active(), 0);
     assert_eq!(result.response_messages.len(), 1);
     assert!(result.response_messages[0]
-        .get("content")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
+        .text_content()
         .contains("blocked in Plan mode"));
     assert_eq!(result.tool_records.len(), 1);
     let record = &result.tool_records[0];
@@ -1614,15 +1613,11 @@ async fn tool_round_keeps_serial_only_tools_non_overlapping() {
     );
     assert_eq!(result.response_messages.len(), 2);
     assert_eq!(
-        result.response_messages[0]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
+        tool_call_ids(&result.response_messages).get(0).copied(),
         Some("call_bash_1")
     );
     assert_eq!(
-        result.response_messages[1]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
+        tool_call_ids(&result.response_messages).get(1).copied(),
         Some("call_bash_2")
     );
 }
@@ -7120,7 +7115,7 @@ async fn run_agent_loop<H: ApplicationHost + AgentEventSink + AgentRunControl>(
 }
 struct PresentedRoundResult {
     tool_records: Vec<ToolCallRecord>,
-    response_messages: Vec<Value>,
+    response_messages: Vec<ModelMessage>,
     cancelled: bool,
 }
 impl<'a> ToolRoundContext<'a> {
@@ -7404,10 +7399,12 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
         )],
         tools: vec![tool],
         blocked_tool_calls: Vec::new(),
-        thinking_enabled: false,
-        thinking_level: None,
-        builtin_web_search: false,
-        max_output_tokens: 1024,
+        options: crate::chat::model::GenerateOptions {
+            thinking_enabled: false,
+            max_tokens: 1024,
+            ..Default::default()
+        },
+        capabilities: Default::default(),
         initial_cache_usage: None,
         report_context: false,
     };

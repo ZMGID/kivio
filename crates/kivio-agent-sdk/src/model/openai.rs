@@ -9,8 +9,8 @@ use super::{
 };
 use serde_json::Value;
 
-/// Host-resolved wire options. Per-call provider_options override extra_body;
-/// ToolChoice::None has final precedence over both.
+/// Host-resolved wire defaults. Encoded call options override extra_body,
+/// then per-call provider_options apply; ToolChoice::None has final precedence.
 #[derive(Clone, Debug, Default)]
 pub struct OpenAiChatOptions {
     /// Resolved temperature; None omits the field in request_body.
@@ -97,11 +97,30 @@ impl OpenAiChatProvider {
         })?;
         let status = response.status();
         if !status.is_success() {
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| {
+                    value
+                        .parse::<u64>()
+                        .ok()
+                        .map(std::time::Duration::from_secs)
+                        .or_else(|| {
+                            chrono::DateTime::parse_from_rfc2822(value)
+                                .ok()
+                                .map(|date| {
+                                    (date.with_timezone(&chrono::Utc) - chrono::Utc::now())
+                                        .to_std()
+                                        .unwrap_or_default()
+                                })
+                        })
+                });
             let body = response
                 .text()
                 .await
                 .map_err(|error| stream_read_error("Chat error body", &error))?;
-            return Err(ModelError::from_provider_http(
+            let mut error = ModelError::from_provider_http(
                 status.as_u16(),
                 &body,
                 format!(
@@ -109,7 +128,9 @@ impl OpenAiChatProvider {
                     status.as_u16(),
                     body.chars().take(500).collect::<String>()
                 ),
-            ));
+            );
+            error.retry_after = retry_after;
+            return Err(error);
         }
         Ok(response)
     }
@@ -171,12 +192,6 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
         "model": request.model,
         "messages": openai_messages_from_generate_request(request),
     });
-    if request.options.max_tokens > 0 {
-        body["max_tokens"] = Value::from(request.options.max_tokens);
-    }
-    if let Some(temperature) = options.temperature {
-        body["temperature"] = serde_json::json!(temperature);
-    }
     if stream {
         body["stream"] = Value::Bool(true);
         // usage 随流返回（OpenAI 标准参数；AI SDK/opencode 同款）。缺省时部分
@@ -203,6 +218,22 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
             body["prompt_cache_retention"] = Value::String(retention.clone());
         }
     }
+    // 模型级额外请求体字段（model_overrides[model].extra_body）：原样 merge 进 body 根部，
+    // 给严格端点塞标准 schema 外的私有旋钮（NVIDIA NIM / vLLM `chat_template_kwargs` 等）。
+    // 放在单次 provider_options 之前，让显式的单次覆盖仍然最后生效。
+    if let Some(extra) = options.extra_body.as_object() {
+        for (key, value) in extra {
+            body[key] = value.clone();
+        }
+    }
+    if request.options.max_tokens > 0 {
+        body["max_tokens"] = Value::from(request.options.max_tokens);
+    } else {
+        body.as_object_mut().unwrap().remove("max_tokens");
+    }
+    if let Some(temperature) = options.temperature {
+        body["temperature"] = serde_json::json!(temperature);
+    }
     let native_thinking_switch = options.native_thinking_switch;
     if !request.options.thinking_enabled {
         if native_thinking_switch {
@@ -217,14 +248,6 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
     // 代理普遍接受;不发 Qwen/vLLM 私有的 enable_thinking / chat_template_kwargs。
     if let Some(effort) = request.options.thinking_level.as_deref() {
         body["reasoning_effort"] = Value::String(effort.to_string());
-    }
-    // 模型级额外请求体字段（model_overrides[model].extra_body）：原样 merge 进 body 根部，
-    // 给严格端点塞标准 schema 外的私有旋钮（NVIDIA NIM / vLLM `chat_template_kwargs` 等）。
-    // 放在单次 provider_options 之前，让显式的单次覆盖仍然最后生效。
-    if let Some(extra) = options.extra_body.as_object() {
-        for (key, value) in extra {
-            body[key] = value.clone();
-        }
     }
     if let Some(overrides) = request.options.provider_options.as_object() {
         for (key, value) in overrides {

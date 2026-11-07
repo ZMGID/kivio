@@ -906,6 +906,8 @@ version = "0.0.0"
 dependencies = [
  "kivio-agent-sdk",
  "reqwest",
+ "schemars",
+ "serde",
  "serde_json",
  "tokio",
 ]

@@ -432,10 +432,17 @@ pub(crate) async fn run_session(
             .iter()
             .map(|tool| tool.for_run(&config.settings))
             .collect(),
-        thinking_enabled: config.thinking_enabled,
-        thinking_level: config.thinking_level.clone(),
-        builtin_web_search: config.builtin_web_search_active(),
-        max_output_tokens: config.max_output_tokens,
+        options: crate::chat::model::GenerateOptions {
+            thinking_enabled: config.thinking_enabled,
+            thinking_level: config.thinking_level.clone(),
+            builtin_web_search: config.builtin_web_search_active(),
+            max_tokens: config.max_output_tokens,
+            ..Default::default()
+        },
+        capabilities: crate::chat::model_metadata::agent_model_capabilities(
+            &config.provider,
+            &config.model,
+        ),
         initial_cache_usage: config.initial_cache_usage,
         report_context: config.depth == 0,
     };
@@ -458,8 +465,28 @@ pub(crate) async fn run_session(
     };
     let mut policy = AppSessionPolicy::new(&config, host);
     let result =
-        crate::chat::agent::run_agent_loop(core, host, &executor, &mut policy, sink, control)
-            .await?;
+        match crate::chat::agent::run_agent_loop(core, host, &executor, &mut policy, sink, control)
+            .await
+        {
+            Ok(result) => result,
+            Err(kivio_agent_sdk::agent::AgentRunError::Failed { cause, partial }) => {
+                if !partial.generated_history.is_empty()
+                    || !partial.tool_records.is_empty()
+                    || !partial.segments.is_empty()
+                {
+                    host.persist_partial_assistant(
+                        &config.conversation_id,
+                        &config.message_id,
+                        &partial.tool_records,
+                        &partial.segments,
+                        &partial.generated_history,
+                    )
+                    .await;
+                }
+                return Err(cause.to_string());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
     let (compaction_boundary, compaction_summary) = policy.context.finish_run(&result.history);
     let degraded = policy.recovery.take_degraded();
     let compacted_history = result.compacted.then(|| export_history(&result.history));

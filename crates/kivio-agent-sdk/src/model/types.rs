@@ -214,6 +214,17 @@ pub enum ToolChoice {
     None,
 }
 
+/// Host-resolved capabilities of the selected model. `None` means unknown;
+/// only `Some(false)` explicitly rules out a capability. The SDK does not infer model names.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCapabilities {
+    /// Function tool calling, separate from provider-side web search.
+    pub tools: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub builtin_web_search: Option<bool>,
+    pub vision: Option<bool>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateOptions {
     /// Per-call temperature. Providers may use an explicitly configured fallback when absent.
@@ -231,6 +242,8 @@ pub struct GenerateOptions {
     pub builtin_web_search: bool,
     #[serde(default)]
     pub tool_choice: ToolChoice,
+    /// Per-call protocol extensions override provider defaults and encoded options;
+    /// mandatory tool prohibition applies last. Hosts validate unknown vendor fields.
     #[serde(default)]
     pub provider_options: Value,
 }

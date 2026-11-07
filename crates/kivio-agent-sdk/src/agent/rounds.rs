@@ -1,7 +1,6 @@
 use super::content::{AgentToolCall, AgentToolStatus};
-use super::history::{import_history, RuntimeMessage};
-use crate::model::FinishKind;
-use serde_json::Value;
+use super::history::RuntimeMessage;
+use crate::model::{FinishKind, MessagePart, ModelMessage, ModelRole};
 
 use crate::model::PendingToolCall;
 
@@ -76,7 +75,11 @@ pub(crate) async fn run_tool_round(
     )
     .await;
     let round_cancelled = round_result.cancelled;
-    let responses = import_history(round_result.response_messages);
+    let responses = round_result
+        .response_messages
+        .into_iter()
+        .map(RuntimeMessage::model)
+        .collect::<Vec<_>>();
     state.runtime_messages.extend(responses.iter().cloned());
     state.generated_api_messages.extend(responses);
     state.tool_records.extend(round_result.tool_records);
@@ -101,18 +104,29 @@ pub struct ToolRoundContext<'a> {
 }
 
 pub struct ToolRoundResult {
-    pub response_messages: Vec<Value>,
+    pub response_messages: Vec<ModelMessage>,
     pub tool_records: Vec<AgentToolCall>,
     pub cancelled: bool,
 }
 
 struct ToolExecutionResult {
-    response_message: Value,
+    response_message: ModelMessage,
     record: Option<AgentToolCall>,
     cancelled: bool,
-    /// Extra user-role messages (OpenAI shape) appended after ALL results in the
-    /// round — used by `read` to feed an image to a vision model.
-    follow_up_messages: Vec<Value>,
+    follow_up_messages: Vec<ModelMessage>,
+}
+
+#[derive(Default)]
+struct ToolMessages {
+    results: Vec<ModelMessage>,
+    follow_ups: Vec<ModelMessage>,
+}
+
+impl ToolMessages {
+    fn finish(mut self) -> Vec<ModelMessage> {
+        self.results.append(&mut self.follow_ups);
+        self.results
+    }
 }
 
 struct ExecutableToolCall<'a> {
@@ -150,20 +164,20 @@ pub async fn execute_tool_round(
     // 但语义残缺」（写文件只写了半个 content、编辑少了半条 edit），逐个看解析是否成功不可靠。
     // 整批作废、一个都不执行，让模型带着完整参数重发。
     if ctx.finish_reason == Some(FinishKind::Length) && !tool_calls.is_empty() {
-        let mut response_messages = Vec::new();
+        let mut response_messages = ToolMessages::default();
         let mut tool_records = Vec::new();
         for tool_call in tool_calls {
             let result = truncated_tool_call_result(host, &ctx, tools, tool_call);
             push_tool_execution_result(result, &mut response_messages, &mut tool_records);
         }
         return ToolRoundResult {
-            response_messages,
+            response_messages: response_messages.finish(),
             tool_records,
             cancelled: false,
         };
     }
 
-    let mut response_messages = Vec::new();
+    let mut response_messages = ToolMessages::default();
     let mut tool_records = Vec::new();
     let mut parallel_batch: Vec<ExecutableToolCall<'_>> = Vec::new();
     let mut cancelled = false;
@@ -335,7 +349,7 @@ pub async fn execute_tool_round(
     }
 
     ToolRoundResult {
-        response_messages,
+        response_messages: response_messages.finish(),
         tool_records,
         cancelled,
     }
@@ -343,28 +357,23 @@ pub async fn execute_tool_round(
 
 fn push_tool_execution_result(
     result: ToolExecutionResult,
-    response_messages: &mut Vec<Value>,
+    response_messages: &mut ToolMessages,
     tool_records: &mut Vec<AgentToolCall>,
 ) -> bool {
     let cancelled = result.cancelled;
     if let Some(record) = result.record {
         tool_records.push(record);
     }
-    // A round may span parallel batches, serial calls, errors and cancellation.
-    // Answer every call before any image/user turn, including follow-ups already
-    // collected from an earlier batch. Preserve order within both groups.
-    let result_end = response_messages
-        .iter()
-        .position(|message| message["role"] != "tool")
-        .unwrap_or(response_messages.len());
-    response_messages.insert(result_end, result.response_message);
-    response_messages.extend(result.follow_up_messages);
+    response_messages.results.push(result.response_message);
+    response_messages
+        .follow_ups
+        .extend(result.follow_up_messages);
     cancelled
 }
 
 async fn flush_parallel_batch(
     batch: &mut Vec<ExecutableToolCall<'_>>,
-    response_messages: &mut Vec<Value>,
+    response_messages: &mut ToolMessages,
     tool_records: &mut Vec<AgentToolCall>,
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
@@ -458,7 +467,15 @@ async fn execute_tool_call_result(
     lifecycle.cancelled = matches!(record.status, AgentToolStatus::Cancelled);
     let cancelled = matches!(record.status, AgentToolStatus::Cancelled);
     ToolExecutionResult {
-        response_message: tool_message(tool_call_id.clone(), tool_content),
+        response_message: ModelMessage {
+            role: ModelRole::Tool,
+            content: vec![MessagePart::ToolResult {
+                tool_call_id: tool_call_id.clone(),
+                content: tool_content,
+                is_error: !matches!(record.status, AgentToolStatus::Success),
+                artifacts: record.artifacts.clone(),
+            }],
+        },
         record: Some(record),
         cancelled,
         follow_up_messages,
@@ -470,7 +487,7 @@ fn push_cancelled_tool_calls(
     ctx: &ToolRoundContext<'_>,
     tools: &[ToolDefinition],
     tool_calls: impl IntoIterator<Item = PendingToolCall>,
-    response_messages: &mut Vec<Value>,
+    response_messages: &mut ToolMessages,
     tool_records: &mut Vec<AgentToolCall>,
 ) {
     for tool_call in tool_calls {
@@ -483,7 +500,7 @@ fn push_cancelled_tool_call(
     ctx: &ToolRoundContext<'_>,
     tools: &[ToolDefinition],
     tool_call: PendingToolCall,
-    response_messages: &mut Vec<Value>,
+    response_messages: &mut ToolMessages,
     tool_records: &mut Vec<AgentToolCall>,
 ) {
     let tool = match_tool_call(tools, &tool_call.function_name);
@@ -523,7 +540,7 @@ fn cancelled_tool_result(
     };
     host.tool_updated(&record);
     ToolExecutionResult {
-        response_message: tool_message(tool_call.id.clone(), "Tool call cancelled"),
+        response_message: tool_error_message(tool_call.id.clone(), "Tool call cancelled"),
         record: Some(record),
         cancelled: true,
         follow_up_messages: Vec::new(),
@@ -543,7 +560,7 @@ fn unknown_or_disabled_tool_result(
         let record = skipped_tool_record(ctx, &tool_call, tool, error.clone());
         host.tool_updated(&record);
         return ToolExecutionResult {
-            response_message: tool_message(tool_call.id, error),
+            response_message: tool_error_message(tool_call.id, error),
             record: Some(record),
             cancelled: false,
             follow_up_messages: Vec::new(),
@@ -571,7 +588,7 @@ fn unknown_or_disabled_tool_result(
         format!("{reason} Available tools: {}. Use a declared tool with its exact name if it can perform the requested work.", available.join(", "))
     };
     ToolExecutionResult {
-        response_message: tool_message(tool_call.id, content),
+        response_message: tool_error_message(tool_call.id, content),
         record,
         cancelled: false,
         follow_up_messages: Vec::new(),
@@ -642,7 +659,7 @@ fn invalid_tool_arguments_result(
     let record = invalid_tool_arguments_record(tool_call, tool, ctx.round, record_error);
     host.tool_updated(&record);
     ToolExecutionResult {
-        response_message: tool_message(tool_call.id.clone(), model_hint),
+        response_message: tool_error_message(tool_call.id.clone(), model_hint),
         record: Some(record),
         cancelled: false,
         follow_up_messages: Vec::new(),
@@ -673,69 +690,108 @@ fn truncated_tool_call_result(
     };
     host.tool_updated(&record);
     ToolExecutionResult {
-        response_message: tool_message(tool_call.id, model_hint),
+        response_message: tool_error_message(tool_call.id, model_hint),
         record: Some(record),
         cancelled: false,
         follow_up_messages: Vec::new(),
     }
 }
 
-pub(crate) fn tool_message(tool_call_id: String, content: impl Into<String>) -> Value {
-    serde_json::json!({
-        "role": "tool",
-        "tool_call_id": tool_call_id,
-        "content": content.into(),
-    })
+fn tool_error_message(tool_call_id: String, content: impl Into<String>) -> ModelMessage {
+    ModelMessage {
+        role: ModelRole::Tool,
+        content: vec![MessagePart::ToolResult {
+            tool_call_id,
+            content: content.into(),
+            is_error: true,
+            artifacts: Vec::new(),
+        }],
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn follow_up_messages_are_appended_after_tool_result() {
         // Mirrors `read` feeding an image to a vision model: the tool result is
         // text, the actual image rides as a follow-up user message that must
         // land right after the tool message so the tool_call_id is answered.
-        let image_msg = json!({
-            "role": "user",
-            "content": [{
-                "type": "image_url",
-                "image_url": { "url": "data:image/png;base64,AAAA" }
-            }]
-        });
+        let image_msg = ModelMessage {
+            role: ModelRole::User,
+            content: vec![MessagePart::Image {
+                mime_type: "image/png".into(),
+                data: "AAAA".into(),
+                path: Some("x.png".into()),
+                detail: Some("high".into()),
+            }],
+        };
         let result = ToolExecutionResult {
-            response_message: tool_message("call_1".to_string(), "已读取图片 x.png，见下方。"),
+            response_message: tool_error_message(
+                "call_1".to_string(),
+                "已读取图片 x.png，见下方。",
+            ),
             record: None,
             cancelled: false,
             follow_up_messages: vec![image_msg.clone()],
         };
-        let mut response_messages = Vec::new();
+        let mut response_messages = ToolMessages::default();
         let mut tool_records = Vec::new();
         let cancelled =
             push_tool_execution_result(result, &mut response_messages, &mut tool_records);
 
         assert!(!cancelled);
+        let response_messages = response_messages.finish();
         assert_eq!(response_messages.len(), 2);
-        assert_eq!(response_messages[0]["role"], "tool");
-        assert_eq!(response_messages[0]["tool_call_id"], "call_1");
+        assert_eq!(response_messages[0].role, ModelRole::Tool);
+        assert!(
+            matches!(&response_messages[0].content[0], MessagePart::ToolResult { tool_call_id, .. } if tool_call_id == "call_1")
+        );
         assert_eq!(response_messages[1], image_msg);
     }
 
     #[test]
     fn no_follow_up_leaves_single_tool_result() {
         let result = ToolExecutionResult {
-            response_message: tool_message("call_2".to_string(), "plain text"),
+            response_message: tool_error_message("call_2".to_string(), "plain text"),
             record: None,
             cancelled: false,
             follow_up_messages: Vec::new(),
         };
-        let mut response_messages = Vec::new();
+        let mut response_messages = ToolMessages::default();
         let mut tool_records = Vec::new();
         push_tool_execution_result(result, &mut response_messages, &mut tool_records);
 
+        let response_messages = response_messages.finish();
         assert_eq!(response_messages.len(), 1);
-        assert_eq!(response_messages[0]["role"], "tool");
+        assert_eq!(response_messages[0].role, ModelRole::Tool);
+    }
+
+    #[test]
+    fn follow_up_role_does_not_change_round_order() {
+        let follow_up = ModelMessage::text(ModelRole::Tool, "follow-up");
+        let mut messages = ToolMessages::default();
+        let mut records = Vec::new();
+        for id in ["first", "second"] {
+            push_tool_execution_result(
+                ToolExecutionResult {
+                    response_message: tool_error_message(id.into(), id),
+                    record: None,
+                    cancelled: false,
+                    follow_up_messages: if id == "first" {
+                        vec![follow_up.clone()]
+                    } else {
+                        vec![]
+                    },
+                },
+                &mut messages,
+                &mut records,
+            );
+        }
+        let messages = messages.finish();
+        assert_eq!(messages[0].text_content(), "first");
+        assert_eq!(messages[1].text_content(), "second");
+        assert_eq!(messages[2], follow_up);
     }
 }

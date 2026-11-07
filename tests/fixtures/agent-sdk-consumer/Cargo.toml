@@ -9,4 +9,6 @@ publish = false
 kivio-agent-sdk = { path = "../../../crates/kivio-agent-sdk" }
 reqwest = { version = "0.13", features = ["json", "rustls", "stream"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+schemars = "1.2.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }

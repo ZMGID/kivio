@@ -1,6 +1,6 @@
 # SDK API and lifecycle contracts
 
-This reference describes `0.1.0-alpha.1`. [The README](../README.md) provides commands and a runnable integration.
+This reference describes the SDK v2 working API (not yet published). [The README](../README.md) provides commands and a runnable integration.
 
 ## Public interfaces
 
@@ -10,13 +10,23 @@ Rustdoc lists the exported items. Other public modules contain lower-level strea
 
 The application owns desktop IPC, settings, OAuth, credential lookup and rotation, billing, skills, Todo, OMP sub-agents, session storage, and UI approval. Those capabilities do not appear automatically in another host.
 
+The existing hosts keep their admission and persistence owners while sharing the core:
+
+| Host | Admission, execution and completion |
+|---|---|
+| Desktop chat | `commands/reply.rs` reserves its run, calls `session_policy::run_session`, saves the assistant through the repository, then finishes the application protocol. `agent_host.rs` saves partial drafts and admits persisted incoming input. |
+| Automation | `automation/application.rs` starts its generation, calls the same adapter, ends that generation, then converts the result into node output. Workflow storage and capacity remain outside the SDK. |
+| OMP | `sub_agent/executor.rs` owns worker/job identity, metered requests, mailbox and session file; it calls the same adapter and saves history before final job/IRC delivery. Core inactivity does not release a worker slot. |
+
+The adapter saves the supplied partial draft before rendering a structured core failure into the application's existing error path. The SDK retains the machine-readable cause; product retry and error presentation stay in the application.
+
 ## Tool registration and authorization
 
 `AgentRunConfig.tools` advertises model-visible definitions. Each `ToolDefinition` supplies a schema and execution metadata. The core matches calls to registered definitions and reports unknown or blocked tools. A schema describes valid arguments. It does not grant permission to execute them.
 
 `ToolExecutor::prepare` is the host's authorization and validation boundary. The host selects an authorization policy explicitly, parses untrusted model arguments, and validates them before returning `ToolPreparation::Ready`. The echo example allows exactly its registered echo tool and calls `tools::schema::validate_arguments` before execution. It has no desktop approval dialog and no filesystem, shell, or network tools.
 
-An executor can await host approval in `prepare`. The SDK event observer does not grant that approval. Missing or closed event observers cannot approve tools. When `prepare` returns `ToolPreparation::Complete`, it publishes the final record with `ToolProgress::updated` first. A rejected call produces feedback for the model without calling the tool implementation.
+An executor can await host approval in `prepare`. The SDK event observer does not grant that approval. Missing or closed event observers cannot approve tools. When `prepare` returns `ToolPreparation::Complete`, the core publishes the final record exactly once. Executors must not publish that terminal update themselves. A rejected call produces feedback for the model without calling the tool implementation.
 
 Tool authors own validation that depends on real resources, such as permitted paths and target state. Timeouts and cancellation do not undo effects already performed by a tool.
 
@@ -40,7 +50,7 @@ Within one invocation, sequence numbers increase strictly. `RunStarted` precedes
 
 When an adapter retries a visible stream, `AttemptDiscarded` identifies text, reasoning, blocks, and tools withdrawn from the failed attempt. A consumer that renders tentative output must apply that withdrawal before rendering the next attempt. The standalone HTTP provider has no SDK-level retry loop. Its supplied HTTP client owns transport retries and redirects.
 
-`RunEnded` is emitted once after paired inner scopes end. No later facts reach the sink. Its outcome is `Completed`, `Cancelled`, `Failed(String)`, or `Dropped`. `Completed` describes core completion and also covers results such as `Recovered` and `CompactionBlocked`. The returned `AgentRunResult.status` carries that more specific status.
+`RunEnded` is emitted once after paired inner scopes end. No later facts reach the sink. Its outcome is `Completed`, `Recovered`, `CompactionBlocked`, `Cancelled`, `Failed(AgentFailure)`, or `Dropped`. Returned status and terminal event use the same completion reason.
 
 Core completion does not report successful outer persistence. The host awaits the loop, writes the final result, finishes resource cleanup, and only then releases its run slot or publishes its own durable completion notification.
 
@@ -64,9 +74,9 @@ Continuation rebuilds model context from saved messages and completed tool resul
 
 ## Errors and retries
 
-Provider calls return `ModelError` with `kind`, an optional HTTP `status`, an optional `provider_code`, and a diagnostic `message`. Kinds distinguish authentication, rate limits, timeouts, transport errors, invalid requests, unsupported tools, context overflow, moderation, cancellation, and other failures. Retry classification is information for the runtime owner. It is not an automatic retry promise.
+Provider calls return `ModelError` with `kind`, an optional HTTP `status`, an optional `provider_code`, an optional `retry_after` duration, and a diagnostic `message`. Kinds distinguish authentication, rate limits, timeouts, transport errors, invalid requests, unsupported tools, context overflow, moderation, cancellation, and other failures. Retry classification is information for the runtime owner. It is not an automatic retry promise.
 
-`run_agent_loop` returns `Result<AgentRunResult, String>`. Its error string is not a stable machine-readable provider error contract. A successful Rust `Result` can still have status `Cancelled`, `Failed(String)`, or `CompactionBlocked`. `Recovered` identifies a policy-assisted recovery. Consumers inspect the status as well as the outer result. Tool failures appear in tool records and feedback, so a model can finish after a failed tool.
+`run_agent_loop` returns `Result<AgentRunResult, AgentRunError>`. `Admission` means no run lifecycle started. `Failed { cause, partial }` retains completed tool work, history, segments, images and reported usage. The caller owns saving that partial result. `AgentFailure::Model` preserves `ModelError` and the failure stage; `Host` identifies the failed host operation; `InvalidOutput` identifies invalid final output. A successful Rust `Result` can still have status `Cancelled`, `Failed(AgentFailure)`, or `CompactionBlocked`. `Recovered` identifies a policy-assisted recovery. Consumers inspect the status as well as the outer result. Tool failures appear in tool records and feedback, so a model can finish after a failed tool.
 
 The standalone `OpenAiChatProvider` calls the supplied client's `send()` once per provider invocation. It performs no SDK-level retry, key rotation, or cache fallback. The client can still retry or follow redirects. Reqwest's default retry policy includes safe protocol failures; a host that requires retries to be disabled sets `ClientBuilder::retry(reqwest::retry::never())`. Redirect policy is configured separately. The agent loop can issue further requests for tool rounds, queued input, empty-response handling, or policy-directed recovery. Hosts own the combined retry budget and output withdrawal.
 
@@ -77,3 +87,29 @@ The standalone `OpenAiChatProvider` calls the supplied client's `send()` once pe
 The host supplies `reqwest::Client` and selects proxy behavior, TLS, connection limits, and stream timeouts. `OpenAiChatConfig.request_timeout` applies only to buffered generation. The agent runtime uses streaming generation, including collected delivery, so it relies on the client configuration for its timeout.
 
 Events can contain model context, tool arguments, and output. Provider diagnostics can include remote response text. The host selects what to retain or redact before logs, telemetry, or UI display.
+
+## Registry and generation options
+
+`ToolRegistry` owns ordered definitions and their executors. `register_static` derives the existing `StaticTool` schema and requires explicit `ToolAuthorization`; `register_dynamic` adapts a host executor without moving its approval or preparation rules. Duplicate keys and ambiguous names are rejected. Take a registry snapshot before constructing a run and use that snapshot both for `definitions()` and execution. Later registrations affect only later snapshots.
+
+Static registration uses a 60-second execution timeout, no output truncation and ordinary cancellation. Dynamic preparation owns those settings when different behavior is needed. All typed follow-up messages follow all tool results in a round, including across parallel batches. Tool errors and artifacts remain in typed history. Cancellation observed after preparation prevents execution, including managed tools that have not started.
+
+`AgentRunConfig.options` carries the complete `GenerateOptions`. Planning and plain requests retain the caller's tool choice. Final synthesis and recovery prohibit tools. Provider defaults are applied before call options and explicit `provider_options`; an effective `ToolChoice::None` is enforced last and removes native tools too. Host-resolved `ModelCapabilities` distinguish unknown (`None`) from explicitly unsupported (`Some(false)`). No model-name catalogue is embedded in the SDK. Vendor extensions not recognized by capability checks remain the host's responsibility.
+
+An absent thinking level retains the existing automatic/default behavior, including models without a reasoning parameter. An explicit unsupported reasoning level is rejected. Context-window and additional modality configuration remain with the existing context policy until their extraction uses them; T1 does not add unused capability fields.
+
+## Entry and projection design contract
+
+The following defines T5's history migration; it does not claim the tree API is implemented in T1. An entry has a stable session-local ID, a parent ID and a payload. Message entries reuse `RuntimeMessage`, including tool calls and results; compaction entries record a summary and a covered ancestor range. `active_leaf` selects a path independently of the most recently appended entry. Parent links define topology; a second mandatory `branch_id` is unnecessary.
+
+Projection selects the active parent chain, applies valid compaction ranges, then calls `request_from_history`. It preserves complete tool rounds and provider-native replay blocks. `RuntimeSource` survives export but never enters a model request. UI metadata does not become model text. An unknown model payload is an import error, not silently discarded UI metadata. Imported history never executes tools.
+
+| Input facts and active position | Expected model projection |
+|---|---|
+| `s(system) -> u(user) -> a(assistant)`, leaf `a` | System `s`, messages `[u, a]` |
+| `u -> a(call c) -> t(result c)`, leaf `t` | `[u, a, t]`; exactly one result for `c`; navigation cannot split the round |
+| `u1 -> a1 -> u2 -> a2 -> compact(summary, covers u1..a1, retain u2)`, leaf `compact` | Summary plus `[u2, a2]`; original entries remain available |
+| `u -> a1` and `u -> a2`, leaf `a1` or `a2` | `[u, a1]` or `[u, a2]`; switching alone changes and persists the selected leaf |
+| `u` with source `{message_id, UI selection}`, plus a signed native assistant block | User text without source; native block retained only for its compatible provider/model |
+
+A compaction range must be on the selected ancestor chain. Rewinding before it restores the earlier projection. Entry snapshots store history and selection, never credentials, active futures, execution cursors or tool execution capabilities. Host CAS and atomic persistence remain authoritative.

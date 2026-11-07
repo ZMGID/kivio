@@ -3,6 +3,7 @@ use super::history::RuntimeMessage;
 
 use crate::tools::ToolDefinition;
 
+use super::error::{AgentAdmissionError, AgentFailure, AgentRunError};
 use super::execute::ToolExecutor;
 use super::finalize::{
     cancelled_run_result_from_state, finalize_completed, finalize_planning_final, SegmentBuilder,
@@ -207,7 +208,7 @@ pub async fn run_agent_loop(
     session: &mut dyn super::session::SessionPolicy,
     sink: &dyn super::events::AgentEventSink,
     control: super::control::AgentRunHandle<'_>,
-) -> Result<AgentRunResult, String> {
+) -> Result<AgentRunResult, AgentRunError> {
     use super::events::{AgentEventKind, AgentRunOutcome};
     let identity = control.identity();
     if identity.conversation_id != config.conversation_id
@@ -215,9 +216,13 @@ pub async fn run_agent_loop(
         || identity.message_id != config.message_id
         || identity.generation != config.generation
     {
-        return Err("agent run control identity does not match configuration".into());
+        return Err(AgentRunError::Admission(
+            AgentAdmissionError::IdentityMismatch,
+        ));
     }
-    control.begin_core().map_err(|error| error.to_string())?;
+    control
+        .begin_core()
+        .map_err(|error| AgentRunError::Admission(AgentAdmissionError::Control(error)))?;
     let host = super::context::AgentContext::new(operations, sink, control);
     host.events.emit(AgentEventKind::RunStarted);
     let mut guard = RunGuard {
@@ -229,10 +234,12 @@ pub async fn run_agent_loop(
         Ok(result) => match &result.status {
             super::types::AgentRunStatus::Cancelled => AgentRunOutcome::Cancelled,
             super::types::AgentRunStatus::Failed(error) => AgentRunOutcome::Failed(error.clone()),
+            super::types::AgentRunStatus::Recovered => AgentRunOutcome::Recovered,
+            super::types::AgentRunStatus::CompactionBlocked => AgentRunOutcome::CompactionBlocked,
             _ => AgentRunOutcome::Completed,
         },
-        Err(_) if !host.control.active() => AgentRunOutcome::Cancelled,
-        Err(error) => AgentRunOutcome::Failed(error.clone()),
+        Err(AgentRunError::Failed { cause, .. }) => AgentRunOutcome::Failed(cause.clone()),
+        Err(AgentRunError::Admission(_)) => unreachable!("admission precedes RunStarted"),
     };
     result
 }
@@ -267,14 +274,16 @@ impl Answer {
         state.runtime_len_at_last_call = state.runtime_messages.len();
     }
 
-    fn finish(self, state: &mut RunState) -> Result<AgentRunResult, String> {
+    fn finish(self, state: &mut RunState) -> Result<AgentRunResult, AgentFailure> {
         match self {
-            Self::Planning(output) => finalize_planning_final(state, output),
+            Self::Planning(output) => {
+                finalize_planning_final(state, output).map_err(AgentFailure::InvalidOutput)
+            }
             Self::Synthesis(completed) => Ok(finalize_completed(state, completed)),
         }
     }
 
-    fn cancel(self, state: &mut RunState) -> Result<AgentRunResult, String> {
+    fn cancel(self, state: &mut RunState) -> Result<AgentRunResult, AgentFailure> {
         let mut result = self.finish(state)?;
         result.status = super::types::AgentRunStatus::Cancelled;
         Ok(attach_usage(result, state))
@@ -292,7 +301,7 @@ async fn admit_step(
     state: &mut RunState,
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<(), String> {
+) -> Result<(), AgentFailure> {
     inject_steering_messages(env, state, round, session).await?;
     if !env.host.control.active() {
         return Ok(());
@@ -305,7 +314,8 @@ async fn admit_step(
             &state.runtime_messages,
             false,
         )
-        .await?;
+        .await
+        .map_err(AgentFailure::host("checkpoint_runtime"))?;
     state
         .runtime_messages
         .extend(incoming.iter().map(|input| input.message.clone()));
@@ -329,11 +339,11 @@ async fn answer_boundary(
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
     answer: Answer,
-) -> Result<AnswerBoundary, String> {
+) -> Result<AnswerBoundary, AgentFailure> {
     if !env.host.control.active() {
         return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
     }
-    let incoming = env
+    let incoming = match env
         .host
         .checkpoint_runtime(
             &env.config.conversation_id,
@@ -341,7 +351,14 @@ async fn answer_boundary(
             &state.runtime_messages,
             true,
         )
-        .await?;
+        .await
+    {
+        Ok(incoming) => incoming,
+        Err(message) => {
+            answer.absorb(state);
+            return Err(AgentFailure::host("checkpoint_runtime")(message));
+        }
+    };
     if !env.host.control.active() {
         let mut result = answer.cancel(state)?;
         if result.generated_history.is_empty()
@@ -386,14 +403,21 @@ async fn answer_boundary(
         inject_follow_up_messages(env, state, round, session).await?;
         return Ok(AnswerBoundary::Continue);
     }
-    let child_activity = env
+    let child_activity = match env
         .host
         .wait_for_child_results(
             &env.config.conversation_id,
             &env.config.run_id,
             env.config.generation,
         )
-        .await?;
+        .await
+    {
+        Ok(activity) => activity,
+        Err(message) => {
+            answer.absorb(state);
+            return Err(AgentFailure::host("wait_for_child_results")(message));
+        }
+    };
     if !env.host.control.active() {
         return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
     }
@@ -422,7 +446,7 @@ async fn run_agent_loop_inner(
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<AgentRunResult, String> {
+) -> Result<AgentRunResult, AgentRunError> {
     let mut state = RunState {
         runtime_messages: std::mem::take(&mut config.runtime_messages),
         tools: std::mem::take(&mut config.tools),
@@ -447,199 +471,217 @@ async fn run_agent_loop_inner(
         compaction_blocked: false,
         generated_images: Vec::new(),
     };
-    let tool_loop_ran = !state.tools.is_empty();
-    let inputs = session
-        .start(state.snapshot(), host.control.clone())
-        .await?;
-    state.runtime_messages.extend(inputs.iter().cloned());
-    state.generated_api_messages.extend(inputs);
-    let env = LoopEnv {
-        config: &config,
-        host,
-        executor,
-    };
-    let mut round = 0u32;
-    let planning_final = if tool_loop_ran {
+    let result: Result<AgentRunResult, AgentFailure> = async {
+        let tool_loop_ran = !state.tools.is_empty();
+        let inputs = session
+            .start(state.snapshot(), host.control.clone())
+            .await
+            .map_err(AgentFailure::host("session.start"))?;
+        state.runtime_messages.extend(inputs.iter().cloned());
+        state.generated_api_messages.extend(inputs);
+        let env = LoopEnv {
+            config: &config,
+            host,
+            executor,
+        };
+        let mut round = 0u32;
+        let planning_final = if tool_loop_ran {
+            loop {
+                round = round.saturating_add(1);
+                state.step_number = state.step_number.saturating_add(1);
+                if !host.control.active() {
+                    // Cancelled at the loop top (before this round's planning call).
+                    // Preserve whatever previous rounds already accumulated
+                    // (tool_records / segments / api_messages) by ending with
+                    // Ok(cancelled_result) instead of a bare Err("cancelled") — the
+                    // latter skipped persistence and dropped the whole turn.
+                    let result = cancelled_run_result_from_state(&mut state);
+                    return Ok(attach_run_state(result, &mut state));
+                }
+
+                // 本轮的 turn_start / message_start 由 guard 构造时发；turn_end / message_end
+                // 由它的 Drop 补齐，所以下面任何一条 return / continue / `?` 都不会漏配对。
+                let mut turn = HookTurnGuard::new(&host.events, round);
+
+                admit_step(&env, &mut state, round, session).await?;
+                if !host.control.active() {
+                    let result = cancelled_run_result_from_state(&mut state);
+                    return Ok(attach_run_state(result, &mut state));
+                }
+
+                let planned = match planning_step(&env, &mut state, round, session).await? {
+                    PlanningStepOutcome::FinalAnswer(message) => {
+                        match answer_boundary(
+                            &env,
+                            &mut state,
+                            round,
+                            session,
+                            Answer::Planning(message),
+                        )
+                        .await?
+                        {
+                            AnswerBoundary::Continue => continue,
+                            AnswerBoundary::Finish(answer) => break Some(answer),
+                            AnswerBoundary::Cancelled(result) => return Ok(result),
+                        }
+                    }
+                    PlanningStepOutcome::ToolsUnsupported => break None,
+                    PlanningStepOutcome::RetryWithTools => continue,
+                    PlanningStepOutcome::RetryEmptyResponse => continue,
+                    PlanningStepOutcome::DraftFailed(mut result) => {
+                        let mut records = std::mem::take(&mut state.tool_records);
+                        records.append(&mut result.tool_records);
+                        result.tool_records = records;
+                        return Ok(attach_usage(result, &mut state));
+                    }
+                    PlanningStepOutcome::Recovered(result) => {
+                        return Ok(attach_usage(result, &mut state));
+                    }
+                    PlanningStepOutcome::Cancelled(result) => {
+                        return Ok(attach_usage(result, &mut state));
+                    }
+                    PlanningStepOutcome::ToolCalls(planned) => planned,
+                };
+                // 消息（含工具调用决策）到此产出完毕，但本轮要等工具跑完才算结束。
+                turn.end_message();
+
+                match run_tool_round(&env, &mut state, round, planned).await {
+                    ToolRoundOutcome::Continue => {
+                        state.completed_tool_rounds += 1;
+                    }
+                    ToolRoundOutcome::Cancelled(result) => {
+                        return Ok(attach_usage(result, &mut state));
+                    }
+                }
+                // 本轮到此完整结束（turn_end 随 guard 落地），再落盘快照。
+                drop(turn);
+                // Crash-safety checkpoint: persist a best-effort snapshot of the
+                // partial assistant message after each completed tool round. The
+                // final assistant message is otherwise written only once, after this
+                // loop returns (`push_assistant_message`); if the process dies mid-run
+                // the whole turn — including files just written by tools this round —
+                // vanishes. Persisting here keeps the work recoverable on next load.
+                // The final write replaces this draft (same `message_id`), so there
+                // is no duplication on the normal success path.
+                host.persist_partial_assistant(
+                    &config.conversation_id,
+                    &config.message_id,
+                    &state.tool_records,
+                    state.segment_builder.segments(),
+                    &state.generated_api_messages,
+                )
+                .await;
+                let incoming = host
+                    .checkpoint_runtime(
+                        &config.conversation_id,
+                        &config.run_id,
+                        &state.runtime_messages,
+                        false,
+                    )
+                    .await
+                    .map_err(AgentFailure::host("checkpoint_runtime"))?;
+                state
+                    .runtime_messages
+                    .extend(incoming.iter().map(|input| input.message.clone()));
+                state.generated_api_messages.extend(
+                    incoming
+                        .into_iter()
+                        .filter(|input| input.persistence == super::host::InputPersistence::Append)
+                        .map(|input| input.message),
+                );
+            }
+        } else {
+            None
+        };
+
+        // A managed tool may finish cleanup after cancellation. Recheck before
+        // synthesis.
+        if !host.control.active() {
+            let result = cancelled_run_result_from_state(&mut state);
+            return Ok(attach_run_state(result, &mut state));
+        }
+        let incoming = host
+            .checkpoint_runtime(
+                &config.conversation_id,
+                &config.run_id,
+                &state.runtime_messages,
+                true,
+            )
+            .await
+            .map_err(AgentFailure::host("checkpoint_runtime"))?;
+        state
+            .runtime_messages
+            .extend(incoming.iter().map(|input| input.message.clone()));
+        state.generated_api_messages.extend(
+            incoming
+                .into_iter()
+                .filter(|input| input.persistence == super::host::InputPersistence::Append)
+                .map(|input| input.message),
+        );
+
+        if let Some(prompt) = state.fallback_prompt.take() {
+            patch_system_message(&mut state.runtime_messages, &prompt.system);
+            if let Some(message) = prompt.context {
+                state.runtime_messages.push(message.clone());
+                state.generated_api_messages.push(message);
+            }
+        }
+
+        if let Some(message) = planning_final {
+            return message
+                .finish(&mut state)
+                .map(|result| attach_usage(result, &mut state));
+        }
+
         loop {
-            round = round.saturating_add(1);
-            state.step_number = state.step_number.saturating_add(1);
             if !host.control.active() {
-                // Cancelled at the loop top (before this round's planning call).
-                // Preserve whatever previous rounds already accumulated
-                // (tool_records / segments / api_messages) by ending with
-                // Ok(cancelled_result) instead of a bare Err("cancelled") — the
-                // latter skipped persistence and dropped the whole turn.
                 let result = cancelled_run_result_from_state(&mut state);
                 return Ok(attach_run_state(result, &mut state));
             }
-
-            // 本轮的 turn_start / message_start 由 guard 构造时发；turn_end / message_end
-            // 由它的 Drop 补齐，所以下面任何一条 return / continue / `?` 都不会漏配对。
-            let mut turn = HookTurnGuard::new(&host.events, round);
-
+            round = round.saturating_add(1);
+            let _turn = HookTurnGuard::new(&host.events, round);
             admit_step(&env, &mut state, round, session).await?;
             if !host.control.active() {
                 let result = cancelled_run_result_from_state(&mut state);
                 return Ok(attach_run_state(result, &mut state));
             }
-
-            let planned = match planning_step(&env, &mut state, round, session).await? {
-                PlanningStepOutcome::FinalAnswer(message) => {
-                    match answer_boundary(
-                        &env,
-                        &mut state,
-                        round,
-                        session,
-                        Answer::Planning(message),
-                    )
-                    .await?
-                    {
-                        AnswerBoundary::Continue => continue,
-                        AnswerBoundary::Finish(answer) => break Some(answer),
-                        AnswerBoundary::Cancelled(result) => return Ok(result),
-                    }
+            let completed = match synthesis_step(&env, &mut state, session).await? {
+                SynthesisFlow::Early(result) => return Ok(attach_usage(result, &mut state)),
+                SynthesisFlow::CancelledState => {
+                    let result = cancelled_run_result_from_state(&mut state);
+                    return Ok(attach_run_state(result, &mut state));
                 }
-                PlanningStepOutcome::ToolsUnsupported => break None,
-                PlanningStepOutcome::RetryWithTools => continue,
-                PlanningStepOutcome::RetryEmptyResponse => continue,
-                PlanningStepOutcome::DraftFailed(result) => {
-                    return Ok(attach_usage(result, &mut state))
-                }
-                PlanningStepOutcome::Recovered(result) => {
-                    return Ok(attach_usage(result, &mut state));
-                }
-                PlanningStepOutcome::Cancelled(result) => {
-                    return Ok(attach_usage(result, &mut state));
-                }
-                PlanningStepOutcome::ToolCalls(planned) => planned,
+                SynthesisFlow::Completed(completed) => completed,
             };
-            // 消息（含工具调用决策）到此产出完毕，但本轮要等工具跑完才算结束。
-            turn.end_message();
-
-            match run_tool_round(&env, &mut state, round, planned).await {
-                ToolRoundOutcome::Continue => {
-                    state.completed_tool_rounds += 1;
-                }
-                ToolRoundOutcome::Cancelled(result) => {
-                    return Ok(attach_usage(result, &mut state));
-                }
-            }
-            // 本轮到此完整结束（turn_end 随 guard 落地），再落盘快照。
-            drop(turn);
-            // Crash-safety checkpoint: persist a best-effort snapshot of the
-            // partial assistant message after each completed tool round. The
-            // final assistant message is otherwise written only once, after this
-            // loop returns (`push_assistant_message`); if the process dies mid-run
-            // the whole turn — including files just written by tools this round —
-            // vanishes. Persisting here keeps the work recoverable on next load.
-            // The final write replaces this draft (same `message_id`), so there
-            // is no duplication on the normal success path.
-            host.persist_partial_assistant(
-                &config.conversation_id,
-                &config.message_id,
-                &state.tool_records,
-                state.segment_builder.segments(),
-                &state.generated_api_messages,
+            match answer_boundary(
+                &env,
+                &mut state,
+                round,
+                session,
+                Answer::Synthesis(completed),
             )
-            .await;
-            let incoming = host
-                .checkpoint_runtime(
-                    &config.conversation_id,
-                    &config.run_id,
-                    &state.runtime_messages,
-                    false,
-                )
-                .await?;
-            state
-                .runtime_messages
-                .extend(incoming.iter().map(|input| input.message.clone()));
-            state.generated_api_messages.extend(
-                incoming
-                    .into_iter()
-                    .filter(|input| input.persistence == super::host::InputPersistence::Append)
-                    .map(|input| input.message),
-            );
-        }
-    } else {
-        None
-    };
-
-    // A managed tool may finish cleanup after cancellation. Recheck before
-    // synthesis.
-    if !host.control.active() {
-        let result = cancelled_run_result_from_state(&mut state);
-        return Ok(attach_run_state(result, &mut state));
-    }
-    let incoming = host
-        .checkpoint_runtime(
-            &config.conversation_id,
-            &config.run_id,
-            &state.runtime_messages,
-            true,
-        )
-        .await?;
-    state
-        .runtime_messages
-        .extend(incoming.iter().map(|input| input.message.clone()));
-    state.generated_api_messages.extend(
-        incoming
-            .into_iter()
-            .filter(|input| input.persistence == super::host::InputPersistence::Append)
-            .map(|input| input.message),
-    );
-
-    if let Some(prompt) = state.fallback_prompt.take() {
-        patch_system_message(&mut state.runtime_messages, &prompt.system);
-        if let Some(message) = prompt.context {
-            state.runtime_messages.push(message.clone());
-            state.generated_api_messages.push(message);
-        }
-    }
-
-    if let Some(message) = planning_final {
-        return message
-            .finish(&mut state)
-            .map(|result| attach_usage(result, &mut state));
-    }
-
-    loop {
-        if !host.control.active() {
-            let result = cancelled_run_result_from_state(&mut state);
-            return Ok(attach_run_state(result, &mut state));
-        }
-        round = round.saturating_add(1);
-        let _turn = HookTurnGuard::new(&host.events, round);
-        admit_step(&env, &mut state, round, session).await?;
-        if !host.control.active() {
-            let result = cancelled_run_result_from_state(&mut state);
-            return Ok(attach_run_state(result, &mut state));
-        }
-        let completed = match synthesis_step(&env, &mut state, session).await? {
-            SynthesisFlow::Early(result) => return Ok(attach_usage(result, &mut state)),
-            SynthesisFlow::CancelledState => {
-                let result = cancelled_run_result_from_state(&mut state);
-                return Ok(attach_run_state(result, &mut state));
+            .await?
+            {
+                AnswerBoundary::Continue => continue,
+                AnswerBoundary::Finish(answer) => {
+                    return answer
+                        .finish(&mut state)
+                        .map(|result| attach_usage(result, &mut state))
+                }
+                AnswerBoundary::Cancelled(result) => return Ok(result),
             }
-            SynthesisFlow::Completed(completed) => completed,
-        };
-        match answer_boundary(
-            &env,
-            &mut state,
-            round,
-            session,
-            Answer::Synthesis(completed),
-        )
-        .await?
-        {
-            AnswerBoundary::Continue => continue,
-            AnswerBoundary::Finish(answer) => {
-                return answer
-                    .finish(&mut state)
-                    .map(|result| attach_usage(result, &mut state))
-            }
-            AnswerBoundary::Cancelled(result) => return Ok(result),
         }
     }
+    .await;
+    result.or_else(|cause| {
+        let mut partial = cancelled_run_result_from_state(&mut state);
+        if !host.control.active() {
+            return Ok(attach_run_state(partial, &mut state));
+        }
+        partial.status = super::types::AgentRunStatus::Failed(cause.clone());
+        let partial = Box::new(attach_run_state(partial, &mut state));
+        Err(AgentRunError::Failed { cause, partial })
+    })
 }
 
 /// 把本轮累计的 provider usage 挂到运行结果上（finalize 构造器们不感知 usage）。

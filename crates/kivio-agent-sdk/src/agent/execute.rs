@@ -4,7 +4,7 @@ use super::{
     events::AgentEvents,
 };
 use crate::{
-    model::{ModelArtifact, PendingToolCall},
+    model::{ModelArtifact, ModelMessage, PendingToolCall},
     tools::{ToolDefinition, ToolOutput},
 };
 use serde_json::Value;
@@ -52,11 +52,11 @@ pub struct PreparedToolCall {
 
 pub enum ToolPreparation {
     Ready(PreparedToolCall),
-    Complete(AgentToolCall, String, Vec<Value>),
+    Complete(AgentToolCall, String, Vec<ModelMessage>),
 }
 
 pub trait ToolExecutor: Send + Sync {
-    /// Authorize and validate the call. Before returning `Complete`, publish its final record with `progress.updated`.
+    /// Authorize and validate the call. The core publishes the final `Complete` record.
     fn prepare<'a>(
         &'a self,
         progress: &'a ToolProgress<'a>,
@@ -204,7 +204,7 @@ pub async fn execute_tool_call(
     ctx: &ToolExecutionContext<'_>,
     tool: &ToolDefinition,
     call: PendingToolCall,
-) -> (AgentToolCall, String, Vec<Value>) {
+) -> (AgentToolCall, String, Vec<ModelMessage>) {
     let record = pending_tool_record(tool, &call, ctx.round);
     host.tool_updated(&record);
     let progress = ToolProgress {
@@ -214,11 +214,20 @@ pub async fn execute_tool_call(
     let prepared = executor.prepare(&progress, ctx, tool, call, record).await;
     let mut prepared = match prepared {
         ToolPreparation::Complete(record, content, follow_ups) => {
-            return (record, content, follow_ups)
+            host.tool_updated(&record);
+            return (record, content, follow_ups);
         }
         ToolPreparation::Ready(prepared) => prepared,
     };
     let mut record = prepared.record;
+    if !host.control.active() {
+        record.status = AgentToolStatus::Cancelled;
+        record.duration_ms = Some(0);
+        record.completed_at = Some(chrono::Local::now().timestamp());
+        record.error = Some("Tool call cancelled".into());
+        host.tool_updated(&record);
+        return (record, "Tool call cancelled".into(), Vec::new());
+    }
     record.status = AgentToolStatus::Running;
     host.tool_updated(&record);
     let started = Instant::now();
@@ -254,20 +263,18 @@ pub async fn execute_tool_call(
     record.completed_at = Some(chrono::Local::now().timestamp());
     let mut follow_ups = Vec::new();
     let mut content = match result {
-        Ok(Ok(output)) if !output.is_error => {
-            record.status = AgentToolStatus::Success;
+        Ok(Ok(output)) => {
             record.artifacts = output.host_data;
             record.structured_content = output.structured_content;
-            follow_ups =
-                crate::model::openai_messages_from_model_messages(&output.follow_up_messages);
-            record.output = Some(output.content.clone());
-            record.output_limit = prepared.output_limit;
-            limit_tool_text_for_model(&output.content, prepared.output_limit)
-        }
-        Ok(Ok(output)) => {
-            record.status = AgentToolStatus::Error;
-            record.structured_content = output.structured_content;
-            record.error = Some(truncate_chars(&output.content, 1000));
+            follow_ups = output.follow_up_messages;
+            if output.is_error {
+                record.status = AgentToolStatus::Error;
+                record.error = Some(truncate_chars(&output.content, 1000));
+            } else {
+                record.status = AgentToolStatus::Success;
+                record.output = Some(output.content.clone());
+                record.output_limit = prepared.output_limit;
+            }
             limit_tool_text_for_model(&output.content, prepared.output_limit)
         }
         Ok(Err(error)) => {

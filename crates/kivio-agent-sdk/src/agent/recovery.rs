@@ -1,3 +1,4 @@
+use super::error::AgentFailure;
 use crate::model::{FinishKind, ModelError, ModelErrorKind};
 
 #[derive(Clone, Copy)]
@@ -81,9 +82,12 @@ pub(crate) async fn stream_with_truncation_recovery(
     state: &mut super::loop_::RunState,
     mut request: StreamRequest<'_>,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<crate::model::GenerateOutput, crate::model::ModelError> {
+) -> Result<crate::model::GenerateOutput, AgentFailure> {
     let mut attempted = false;
     loop {
+        env.config
+            .validate_call(&request.call)
+            .map_err(|error| AgentFailure::model("request", error))?;
         let result = super::planning::stream_model_call(
             env.config.provider_runtime,
             env.host,
@@ -98,13 +102,12 @@ pub(crate) async fn stream_with_truncation_recovery(
         .await;
         let output = match result {
             Ok(output) => output,
-            Err(error) if attempted => {
-                return Err(ModelError::with_kind(
-                    format!("Truncated response recovery failed: {error}"),
-                    ModelErrorKind::TruncationRecoveryFailed,
-                ))
+            Err(mut error) if attempted => {
+                error.message = format!("Truncated response recovery failed: {error}");
+                error.kind = ModelErrorKind::TruncationRecoveryFailed;
+                return Err(AgentFailure::model("truncation_recovery", error));
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(AgentFailure::model("stream", error)),
         };
         let recoverable = is_recoverable_text_length(&output, request.call.options.max_tokens);
         if !recoverable {
@@ -118,18 +121,17 @@ pub(crate) async fn stream_with_truncation_recovery(
             true,
         );
         if attempted {
-            return Err(ModelError::with_kind("Truncated response recovery failed after one compact-and-retry attempt. Please reduce context or switch models.", ModelErrorKind::TruncationRecoveryFailed));
+            return Err(AgentFailure::model("truncation_recovery", ModelError::with_kind("Truncated response recovery failed after one compact-and-retry attempt. Please reduce context or switch models.", ModelErrorKind::TruncationRecoveryFailed)));
         }
         attempted = true;
         let compacted =
             super::compaction::compact_send_view(env, state, true, &request.call.tools, session)
-                .await
-                .map_err(ModelError::new)?;
+                .await?;
         if !env.host.control.active() {
             return Ok(crate::model::GenerateOutput::cancelled(String::new(), None));
         }
         if state.compaction_blocked || compacted == request.call.history {
-            return Err(ModelError::with_kind("Truncated response recovery failed: context could not be compacted. Please reduce context or switch models.", ModelErrorKind::TruncationRecoveryFailed));
+            return Err(AgentFailure::model("truncation_recovery", ModelError::with_kind("Truncated response recovery failed: context could not be compacted. Please reduce context or switch models.", ModelErrorKind::TruncationRecoveryFailed)));
         }
         request.call.history = compacted;
     }

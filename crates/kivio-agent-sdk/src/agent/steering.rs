@@ -6,6 +6,7 @@
 //! Consumed input is retained as an ordered content block and in both replay histories.
 
 use super::content::{ContentBlock, ContentKind, ContentPhase};
+use super::error::AgentFailure;
 use serde::{Deserialize, Serialize};
 
 use super::history::RuntimeMessage;
@@ -53,7 +54,7 @@ pub(crate) async fn inject_steering_messages(
     state: &mut RunState,
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<(), String> {
+) -> Result<(), AgentFailure> {
     state
         .pending_steering
         .extend(env.host.control.take_steering());
@@ -96,7 +97,7 @@ pub(crate) async fn inject_follow_up_messages(
     state: &mut RunState,
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<(), String> {
+) -> Result<(), AgentFailure> {
     let Some(message) = state.pending_follow_up.pop_front() else {
         return Ok(());
     };
@@ -116,8 +117,11 @@ async fn apply_prompt_hooks(
     state: &mut RunState,
     prompt: &str,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<(), String> {
-    let inputs = session.input(prompt, env.host.control.clone()).await?;
+) -> Result<(), AgentFailure> {
+    let inputs = session
+        .input(prompt, env.host.control.clone())
+        .await
+        .map_err(AgentFailure::host("session.input"))?;
     state.runtime_messages.extend(inputs.iter().cloned());
     state.generated_api_messages.extend(inputs);
     Ok(())
