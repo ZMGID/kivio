@@ -201,7 +201,7 @@ describe('skill store install lifetime', () => {
     })
     render(<SkillStoreBrowser />)
     expect(await screen.findByText('network down')).toBeTruthy()
-    const retry = screen.getByRole('button', { name: '安装' })
+    const retry = await screen.findByRole('button', { name: '安装' })
     expect(retry).toBeEnabled()
 
     const retryGate = deferred<InstallResult>()
