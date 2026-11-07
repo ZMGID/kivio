@@ -10,23 +10,26 @@ use std::{
 
 use kivio_agent_sdk::{
     agent::{
-        content::{AgentToolCall, ContentKind},
+        content::{AgentToolCall, AgentToolStatus, ContentKind},
         control::{AgentRunHandle, InputAdmission, StopAdmission},
         events::{
             AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery, InputKind,
         },
-        execute::{ToolFuture, ToolPreparation, ToolProgress},
+        execute::{ToolFuture, ToolPreparation, ToolProgress, ToolResultUpdate},
         provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
-        session::{PolicyFuture, RunSnapshot, SessionPolicy, TurnDecision},
+        run_agent_loop,
+        session::{NoSessionPolicy, PolicyFuture, RunSnapshot, SessionPolicy, TurnDecision},
         types::{AgentRunResult, AgentRunStatus},
         AgentAdmissionError, AgentFailure, AgentHost, AgentHostFuture, AgentRunError, AgentSession,
         AgentSessionConfig, RuntimeMessage, SessionStatus, SteeringMessage, ToolExecutionContext,
         ToolExecutor, ToolExecutorFuture,
     },
-    model::{GenerateOutput, ModelError, ModelRole, PendingToolCall},
+    model::{GenerateOutput, MessagePart, ModelError, ModelRole, PendingToolCall},
     tools::{ToolDefinition, ToolOutput, ToolRegistry},
 };
-use kivio_agent_sdk_consumer::{echo_definition, EchoTool};
+use kivio_agent_sdk_consumer::{
+    config, echo_definition, handle, initial_history, Control, EchoTool, Events, Host,
+};
 use serde_json::{json, Value};
 use tokio::sync::Notify;
 
@@ -118,6 +121,209 @@ fn input(id: &str, value: &str) -> SteeringMessage {
 }
 fn admission(error: AgentRunError, expected: AgentAdmissionError) {
     assert!(matches!(error, AgentRunError::Admission(actual) if actual == expected));
+}
+
+struct PanickingTool {
+    delegate: EchoTool,
+    synchronous: bool,
+    gate: Option<Arc<Gate>>,
+    after: Mutex<Vec<String>>,
+}
+impl ToolExecutor for PanickingTool {
+    fn before_tool_call<'a>(
+        &'a self,
+        progress: &'a ToolProgress<'a>,
+        ctx: &'a ToolExecutionContext<'a>,
+        tool: &'a ToolDefinition,
+        call: PendingToolCall,
+        record: AgentToolCall,
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
+        Box::pin(async move {
+            let mut prepared = self
+                .delegate
+                .before_tool_call(progress, ctx, tool, call, record)
+                .await?;
+            if let ToolPreparation::Ready(ready) = &mut prepared {
+                ready.drain_on_cancel = self.gate.is_some();
+            }
+            Ok(prepared)
+        })
+    }
+    fn call<'a>(
+        &'a self,
+        progress: &'a ToolProgress<'a>,
+        ctx: &'a ToolExecutionContext<'a>,
+        tool: &'a ToolDefinition,
+        args: Value,
+    ) -> ToolExecutorFuture<'a> {
+        assert!(
+            !(ctx.tool_call_id == "echo-2" && self.synchronous),
+            "tool construction panic"
+        );
+        Box::pin(async move {
+            assert_ne!(ctx.tool_call_id, "echo-2", "tool polling panic");
+            if ctx.tool_call_id == "echo-1" {
+                if let Some(gate) = &self.gate {
+                    gate.hold().await;
+                }
+            }
+            self.delegate.call(progress, ctx, tool, args).await
+        })
+    }
+    fn after_tool_call<'a>(
+        &'a self,
+        _: &'a ToolProgress<'a>,
+        ctx: &'a ToolExecutionContext<'a>,
+        _: &'a ToolDefinition,
+        _: Value,
+        _: &'a str,
+        _: Vec<String>,
+    ) -> ToolFuture<'a, Result<ToolResultUpdate, String>> {
+        Box::pin(async move {
+            self.after.lock().unwrap().push(ctx.tool_call_id.into());
+            Ok(ToolResultUpdate::default())
+        })
+    }
+}
+
+#[tokio::test]
+async fn direct_executor_panics_are_contained_during_future_construction_and_polling() {
+    for synchronous in [true, false] {
+        let mut step = tool();
+        step.output.tool_calls[0].id = "echo-2".into();
+        let model = Model::new(vec![step]);
+        let executor = PanickingTool {
+            delegate: EchoTool::new(true),
+            synchronous,
+            gate: None,
+            after: Mutex::new(vec![]),
+        };
+        let control = Control::default();
+        let error = bounded(run_agent_loop(
+            config(model.as_ref(), initial_history()),
+            &Host,
+            &executor,
+            &mut NoSessionPolicy,
+            &Events::default(),
+            handle(&control),
+        ))
+        .await
+        .unwrap_err();
+        let AgentRunError::Failed { cause, partial } = error else {
+            panic!("expected a tool execution failure")
+        };
+        assert!(matches!(
+            cause,
+            AgentFailure::Host {
+                operation: "tool.call",
+                ..
+            }
+        ));
+        assert_eq!(partial.tool_records.len(), 1);
+        assert_eq!(partial.tool_records[0].status, AgentToolStatus::Error);
+        partial.history.snapshot().unwrap();
+        assert!(executor.after.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn tool_execution_panics_preserve_results_and_allow_continuation_without_replay() {
+    for synchronous in [true, false] {
+        for parallel in [false, true] {
+            let count = if parallel { 13 } else { 3 };
+            let mut step = tool();
+            let template = step.output.tool_calls[0].clone();
+            step.output.tool_calls = (1..=count)
+                .map(|index| PendingToolCall {
+                    id: format!("echo-{index}"),
+                    ..template.clone()
+                })
+                .collect();
+            let model = Model::new(vec![step, text("continued")]);
+            let executor = Arc::new(PanickingTool {
+                delegate: EchoTool::new(true),
+                synchronous,
+                gate: parallel.then(|| Arc::new(Gate::default())),
+                after: Mutex::new(vec![]),
+            });
+            let mut cfg = AgentSessionConfig::new(model.clone(), "test");
+            let mut definition = echo_definition();
+            definition.parallel_safe = parallel;
+            cfg.tools
+                .register_dynamic(definition.clone(), executor.clone())
+                .unwrap();
+            let session = AgentSession::new(cfg);
+            let run = session.prompt("run tools");
+            if let Some(gate) = &executor.gate {
+                bounded(gate.entered.notified()).await;
+                tokio::task::yield_now().await;
+                assert_eq!(session.status(), SessionStatus::Running);
+                gate.release.notify_one();
+            }
+            let AgentRunError::Failed { cause, partial } = bounded(run).await.unwrap_err() else {
+                panic!("expected a tool execution failure")
+            };
+            assert_eq!(partial.tool_records.len(), count);
+            assert!(
+                matches!(cause, AgentFailure::Host { operation: "tool.call", message } if message.contains("panicked"))
+            );
+            assert_eq!(partial.tool_records[0].status, AgentToolStatus::Success);
+            assert_eq!(partial.tool_records[0].output.as_deref(), Some("executed"));
+            assert_eq!(partial.tool_records[1].status, AgentToolStatus::Error);
+            assert!(partial.tool_records[1]
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("panicked"));
+            assert_eq!(
+                partial.tool_records[count - 1].status,
+                AgentToolStatus::Skipped
+            );
+            let executed = if parallel { 11 } else { 1 };
+            assert_eq!(executor.delegate.call_count(), executed);
+            let after = executor.after.lock().unwrap().clone();
+            assert_eq!(after.len(), executed);
+            assert!(!after.iter().any(|id| id == "echo-2"));
+            assert_eq!(model.calls.lock().unwrap().len(), 1);
+            let context = session.context();
+            let paired = context
+                .iter()
+                .filter_map(RuntimeMessage::model_message)
+                .flat_map(|message| &message.content)
+                .filter_map(|part| match part {
+                    MessagePart::ToolResult { tool_call_id, .. } => Some(tool_call_id.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                paired,
+                (1..=count)
+                    .map(|index| format!("echo-{index}"))
+                    .collect::<Vec<_>>()
+            );
+            let snapshot =
+                serde_json::from_slice(&serde_json::to_vec(&session.snapshot().unwrap()).unwrap())
+                    .unwrap();
+            assert_eq!(
+                bounded(session.continue_run()).await.unwrap().content,
+                "continued"
+            );
+            let restored_model = Model::new(vec![text("restored")]);
+            let mut restored_cfg =
+                AgentSessionConfig::from_snapshot(restored_model.clone(), snapshot).unwrap();
+            restored_cfg
+                .tools
+                .register_dynamic(definition, executor.clone())
+                .unwrap();
+            let restored = AgentSession::new(restored_cfg);
+            assert_eq!(
+                bounded(restored.continue_run()).await.unwrap().content,
+                "restored"
+            );
+            assert_eq!(restored_model.calls.lock().unwrap()[0].history, context);
+            assert_eq!(executor.delegate.call_count(), executed);
+        }
+    }
 }
 
 #[tokio::test]

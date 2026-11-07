@@ -288,7 +288,12 @@ pub async fn execute_tool_call(
         return interrupted_tool_call(host, record, None);
     }
     let started = Instant::now();
-    let call_fut = executor.call(&progress, ctx, tool, prepared.arguments.clone());
+    let call_fut = AssertUnwindSafe(async {
+        executor
+            .call(&progress, ctx, tool, prepared.arguments.clone())
+            .await
+    })
+    .catch_unwind();
     let result = if prepared.drain_on_cancel {
         Ok(call_fut.await)
     } else {
@@ -319,8 +324,9 @@ pub async fn execute_tool_call(
     record.duration_ms = Some(started.elapsed().as_millis() as u64);
     record.completed_at = Some(chrono::Local::now().timestamp());
     let mut follow_ups = Vec::new();
+    let mut failure = None;
     let mut content = match result {
-        Ok(Ok(output)) => {
+        Ok(Ok(Ok(output))) => {
             record.artifacts = output.host_data;
             record.structured_content = output.structured_content;
             follow_ups = output.follow_up_messages;
@@ -334,10 +340,20 @@ pub async fn execute_tool_call(
             }
             limit_tool_text_for_model(&output.content, prepared.output_limit)
         }
-        Ok(Err(error)) => {
+        Ok(Ok(Err(error))) => {
             record.status = AgentToolStatus::Error;
             record.error = Some(error.clone());
             limit_tool_text_for_model(&error, prepared.output_limit)
+        }
+        Ok(Err(_)) => {
+            let message = "Tool call panicked".to_string();
+            record.status = AgentToolStatus::Error;
+            record.error = Some(message.clone());
+            failure = Some(super::error::AgentFailure::Host {
+                operation: "tool.call",
+                message: message.clone(),
+            });
+            message
         }
         Err(_) => {
             record.status = AgentToolStatus::Error;
@@ -346,8 +362,7 @@ pub async fn execute_tool_call(
         }
     };
     // Managed tools retain their real completion even when cancellation arrived in-flight.
-    let mut failure = None;
-    if host.control.active() {
+    if failure.is_none() && host.control.active() {
         let after = AssertUnwindSafe(async {
             executor
                 .after_tool_call(
