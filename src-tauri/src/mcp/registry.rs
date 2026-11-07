@@ -19,7 +19,7 @@ use super::types::{
 
 #[derive(Clone)]
 pub struct NativeToolContext<'a> {
-    pub control: Option<crate::chat::agent::control::AgentRunHandle<'a>>,
+    pub control: Option<crate::chat::agent::control::AgentRunHandle>,
     pub conversation_id: String,
     pub message_id: String,
     pub provider: &'a crate::settings::ModelProvider,
@@ -48,7 +48,7 @@ pub struct NativeToolContext<'a> {
 impl<'a> NativeToolContext<'a> {
     pub(crate) fn from_execution(
         ctx: &crate::chat::tool_runtime::ToolExecutionContext<'a>,
-        control: crate::chat::agent::control::AgentRunHandle<'a>,
+        control: crate::chat::agent::control::AgentRunHandle,
     ) -> Self {
         Self {
             control: Some(control),
@@ -1427,13 +1427,19 @@ async fn resolve_native_workspace(
     ) {
         return workspace;
     }
-    let conversation = crate::chat::storage::load_conversation(app, &native_ctx.conversation_id)
-        .map_err(|err| {
-            format!(
-                "Resolve native tool workspace failed for conversation {}: {err}",
-                native_ctx.conversation_id
-            )
-        })?;
+    let (owned_app, id) = (app.clone(), native_ctx.conversation_id.clone());
+    let conversation = tokio::task::spawn_blocking(move || {
+        crate::chat::storage::load_conversation(&owned_app, &id)
+    })
+    .await
+    .map_err(|err| err.to_string())
+    .and_then(|loaded| loaded)
+    .map_err(|err| {
+        format!(
+            "Resolve native tool workspace failed for conversation {}: {err}",
+            native_ctx.conversation_id
+        )
+    })?;
     let Some(project) = crate::chat::storage::resolve_conversation_project(app, &conversation)?
     else {
         let directory = crate::chat::repository::repository(app)

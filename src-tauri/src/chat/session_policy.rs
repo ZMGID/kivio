@@ -175,7 +175,7 @@ impl<'a> AppSessionPolicy<'a> {
     async fn prompt_context(
         &self,
         prompt: &str,
-        control: AgentRunHandle<'_>,
+        control: AgentRunHandle,
     ) -> Result<Vec<String>, String> {
         let Some(runtime) = self
             .host
@@ -210,7 +210,7 @@ impl SessionPolicy for AppSessionPolicy<'_> {
     fn start<'a>(
         &'a mut self,
         run: RunSnapshot<'a>,
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
             let mut messages = Vec::new();
@@ -249,7 +249,7 @@ impl SessionPolicy for AppSessionPolicy<'_> {
     fn input<'a>(
         &'a mut self,
         prompt: &'a str,
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
             let context = self.prompt_context(prompt, control).await?;
@@ -315,7 +315,7 @@ impl SessionPolicy for AppSessionPolicy<'_> {
         &'a mut self,
         reason: ContextReason,
         run: ContextSnapshot<'a>,
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
         progress: &'a dyn PolicyProgress,
     ) -> PolicyFuture<'a, Result<ContextPreparation, String>> {
         Box::pin(self.context.prepare_context(reason, run, control, progress))
@@ -324,7 +324,7 @@ impl SessionPolicy for AppSessionPolicy<'_> {
     fn context_applied<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
         progress: &'a dyn PolicyProgress,
     ) -> PolicyFuture<'a, (Vec<RuntimeMessage>, bool)> {
         Box::pin(async move {
@@ -354,7 +354,7 @@ impl SessionPolicy for AppSessionPolicy<'_> {
     fn transform_context<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move { self.context.transform_context(history) })
     }
@@ -362,7 +362,7 @@ impl SessionPolicy for AppSessionPolicy<'_> {
     fn finish_turn<'a>(
         &'a mut self,
         run: RunSnapshot<'a>,
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async move {
             let tool_turn = run
@@ -450,14 +450,14 @@ mod tests {
 }
 
 pub(crate) async fn run_session(
-    mut config: ApplicationRunConfig<'_>,
-    host: &dyn crate::chat::tool_runtime::ApplicationHost,
-    dispatcher: &dyn crate::chat::tool_runtime::ToolDispatcher,
+    mut config: Box<ApplicationRunConfig<'_>>,
+    host: std::sync::Arc<dyn crate::chat::tool_runtime::ApplicationHost>,
+    dispatcher: std::sync::Arc<dyn crate::chat::tool_runtime::ToolDispatcher>,
     sink: &dyn crate::chat::agent::events::AgentEventSink,
-    control: crate::chat::agent::control::AgentRunHandle<'_>,
+    control: crate::chat::agent::control::AgentRunHandle,
 ) -> Result<ApplicationRunResult, ApplicationRunError> {
     use crate::chat::agent::types::AgentRunConfig;
-    use crate::chat::tool_runtime::{ApplicationToolExecutor, ToolAuthority};
+    use crate::chat::tool_runtime::{ApplicationToolExecutor, RunToolSnapshot};
     config
         .settings
         .chat_tools
@@ -504,53 +504,60 @@ pub(crate) async fn run_session(
         report_context: config.depth == 0,
         limits: Default::default(),
     };
-    let executor = ApplicationToolExecutor {
-        settings: &config.settings,
-        authority: ToolAuthority {
-            provider: &config.provider,
-            model: &config.model,
-            depth: config.depth,
-            tool_conversation_id: &config.tool_conversation_id,
-            plan_state: &config.plan_state,
-            mcp_tool_ids: &config.mcp_tool_ids,
-            mcp_server_ids: &config.mcp_server_ids,
-            approval_policy: &config.effective_chat_tools.approval_policy,
-            interactive_host: config.interactive_host,
-        },
-        tools: &config.tools,
-        host,
+    let snapshot = std::sync::Arc::new(RunToolSnapshot {
+        settings: config.settings.clone(),
+        provider: config.provider.clone(),
+        model: config.model.clone(),
+        depth: config.depth,
+        tool_conversation_id: config.tool_conversation_id.clone(),
+        plan_state: config.plan_state.clone(),
+        mcp_tool_ids: config.mcp_tool_ids.clone(),
+        mcp_server_ids: config.mcp_server_ids.clone(),
+        approval_policy: config.effective_chat_tools.approval_policy.clone(),
+        interactive_host: config.interactive_host,
+        tools: config.tools.clone(),
+    });
+    let executor = std::sync::Arc::new(ApplicationToolExecutor {
+        snapshot,
+        host: host.clone(),
         dispatcher,
+    });
+    let mut policy = AppSessionPolicy::new(&config, host.as_ref());
+    let result = match crate::chat::agent::run_agent_loop(
+        core,
+        host.as_ref(),
+        executor,
+        &mut policy,
+        sink,
+        control,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(kivio_agent_sdk::agent::AgentRunError::Failed { cause, partial }) => {
+            if !partial.generated_history.is_empty()
+                || !partial.tool_records.is_empty()
+                || !partial.segments.is_empty()
+            {
+                host.persist_partial_assistant(
+                    &config.conversation_id,
+                    &config.message_id,
+                    &partial.tool_records,
+                    &partial.segments,
+                    &partial.generated_history,
+                    &partial.history,
+                )
+                .await;
+            }
+            return Err(ApplicationRunError::Failed {
+                cause,
+                partial: Box::new(application_result(*partial, &mut policy)),
+            });
+        }
+        Err(kivio_agent_sdk::agent::AgentRunError::Admission(error)) => {
+            return Err(ApplicationRunError::Admission(error));
+        }
     };
-    let mut policy = AppSessionPolicy::new(&config, host);
-    let result =
-        match crate::chat::agent::run_agent_loop(core, host, &executor, &mut policy, sink, control)
-            .await
-        {
-            Ok(result) => result,
-            Err(kivio_agent_sdk::agent::AgentRunError::Failed { cause, partial }) => {
-                if !partial.generated_history.is_empty()
-                    || !partial.tool_records.is_empty()
-                    || !partial.segments.is_empty()
-                {
-                    host.persist_partial_assistant(
-                        &config.conversation_id,
-                        &config.message_id,
-                        &partial.tool_records,
-                        &partial.segments,
-                        &partial.generated_history,
-                        &partial.history,
-                    )
-                    .await;
-                }
-                return Err(ApplicationRunError::Failed {
-                    cause,
-                    partial: Box::new(application_result(*partial, &mut policy)),
-                });
-            }
-            Err(kivio_agent_sdk::agent::AgentRunError::Admission(error)) => {
-                return Err(ApplicationRunError::Admission(error));
-            }
-        };
     Ok(application_result(result, &mut policy))
 }
 

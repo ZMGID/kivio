@@ -15,7 +15,7 @@ use kivio_agent_sdk::{
         },
         host::{AgentHost, AgentHostFuture, SpeculativeTaskScope},
         rounds::{execute_tool_round, ToolRoundContext},
-        SteeringMessage, ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
+        SteeringMessage, ToolExecutionContext, ToolExecutor, ToolExecutorFuture, ToolInvocation,
     },
     model::{ModelArtifact, ModelMessage, ModelRole, ModelTool, PendingToolCall},
     tools::{
@@ -56,14 +56,14 @@ fn identity() -> AgentRunIdentity<'static> {
     }
 }
 
-fn context() -> ToolExecutionContext<'static> {
+fn context() -> ToolExecutionContext {
     ToolExecutionContext {
-        conversation_id: "conversation",
-        run_id: "run",
-        message_id: "message",
+        conversation_id: "conversation".into(),
+        run_id: "run".into(),
+        message_id: "message".into(),
         generation: 1,
         round: 1,
-        tool_call_id: "call",
+        tool_call_id: "call".into(),
     }
 }
 
@@ -93,8 +93,8 @@ struct Authorization {
 impl ToolAuthorization for Authorization {
     fn authorize<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        _: &'a ToolExecutionContext,
         _: &'a ToolDefinition,
         _: &'a Value,
     ) -> ToolFuture<'a, Result<(), ToolError>> {
@@ -168,7 +168,11 @@ async fn static_registration_generates_schema_and_returns_typed_output_after_aut
     );
     let host = Host;
     let sink = |_: &AgentEvent<'_>| EventDelivery::Accepted;
-    let host = AgentContext::new(&host, &sink, AgentRunHandle::new(identity(), &host));
+    let host = AgentContext::new(
+        &host,
+        &sink,
+        AgentRunHandle::new(identity(), Arc::new(Host)),
+    );
     let ToolCallResult {
         record,
         content,
@@ -176,7 +180,7 @@ async fn static_registration_generates_schema_and_returns_typed_output_after_aut
         ..
     } = execute_tool_call(
         &host,
-        &registry,
+        &(Arc::new(registry.clone()) as Arc<dyn ToolExecutor>),
         &context(),
         &definitions[0],
         pending("sum", json!({"values":[2,3]})),
@@ -228,14 +232,18 @@ async fn schema_and_authorization_rejections_never_execute_the_static_tool() {
             }
             EventDelivery::Accepted
         };
-        let host = AgentContext::new(&host, &sink, AgentRunHandle::new(identity(), &host));
+        let host = AgentContext::new(
+            &host,
+            &sink,
+            AgentRunHandle::new(identity(), Arc::new(Host)),
+        );
         let ToolCallResult {
             record,
             follow_up_messages: follow_ups,
             ..
         } = execute_tool_call(
             &host,
-            &registry,
+            &(Arc::new(registry.clone()) as Arc<dyn ToolExecutor>),
             &context(),
             &definitions[0],
             pending("sum", arguments),
@@ -262,8 +270,8 @@ struct Dynamic {
 impl ToolExecutor for Dynamic {
     fn before_tool_call<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        _: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
@@ -281,23 +289,17 @@ impl ToolExecutor for Dynamic {
             }))
         })
     }
-    fn call<'a>(
-        &'a self,
-        _progress: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
-        _: &'a ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(self: Arc<Self>, invocation: ToolInvocation) -> ToolExecutorFuture<'static> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(arguments, json!({"after_approval":true}));
+            assert_eq!(invocation.arguments, json!({"after_approval":true}));
             Ok(ToolOutput::text("dynamic output"))
         })
     }
     fn after_tool_call<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        _: &'a ToolExecutionContext,
         _: &'a ToolDefinition,
         _: Value,
         content: &'a str,
@@ -320,7 +322,7 @@ impl ToolExecutor for Dynamic {
     }
     fn start_speculation(
         &self,
-        _: &ToolExecutionContext<'_>,
+        _: &ToolExecutionContext,
         tools: &[ToolDefinition],
     ) -> Option<Box<dyn SpeculativeTaskScope>> {
         assert!(tools.iter().any(|tool| tool.speculative));
@@ -341,10 +343,14 @@ async fn dynamic_executor_keeps_validation_order_limits_feedback_and_alias_dispa
     let definitions = registry.definitions();
     let host = Host;
     let sink = |_: &AgentEvent<'_>| EventDelivery::Accepted;
-    let host = AgentContext::new(&host, &sink, AgentRunHandle::new(identity(), &host));
+    let host = AgentContext::new(
+        &host,
+        &sink,
+        AgentRunHandle::new(identity(), Arc::new(Host)),
+    );
     let result = execute_tool_round(
         &host,
-        &registry,
+        &(Arc::new(registry.clone()) as Arc<dyn ToolExecutor>),
         ToolRoundContext {
             conversation_id: "conversation",
             run_id: "run",
@@ -417,10 +423,14 @@ async fn registry_rejects_ambiguous_identifiers_and_snapshot_keeps_its_definitio
     assert_eq!(snapshot.definitions()[0].key, "internal-read");
     let host = Host;
     let sink = |_: &AgentEvent<'_>| EventDelivery::Accepted;
-    let host = AgentContext::new(&host, &sink, AgentRunHandle::new(identity(), &host));
+    let host = AgentContext::new(
+        &host,
+        &sink,
+        AgentRunHandle::new(identity(), Arc::new(Host)),
+    );
     let result = execute_tool_call(
         &host,
-        &snapshot,
+        &(Arc::new(snapshot) as Arc<dyn ToolExecutor>),
         &context(),
         &registry.definitions()[1],
         pending("write", json!({"after_approval":true})),

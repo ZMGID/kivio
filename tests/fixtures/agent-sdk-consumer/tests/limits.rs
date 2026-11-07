@@ -93,12 +93,12 @@ async fn model_step_limit_keeps_completed_tools_without_a_second_model_call() {
     let model = Model::new(vec![Ok(tool())]);
     let mut cfg = config(&model, initial_history());
     cfg.limits = limits(1);
-    let control = Control::default();
-    let executor = EchoTool::new(true);
+    let control = std::sync::Arc::new(Control::default());
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let error = run_agent_loop(
         cfg,
         &Host,
-        &executor,
+        executor.clone(),
         &mut NoSessionPolicy,
         &Events::default(),
         handle(&control),
@@ -120,7 +120,7 @@ impl SessionPolicy for Recover {
     fn finish_turn<'a>(
         &'a mut self,
         _: RunSnapshot<'a>,
-        _: kivio_agent_sdk::agent::control::AgentRunHandle<'a>,
+        _: kivio_agent_sdk::agent::control::AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async move {
             self.finishes += 1;
@@ -141,12 +141,12 @@ async fn collected_recovery_counts_against_the_same_step_limit() {
         ]);
         let mut cfg = config(&model, initial_history());
         cfg.limits = limits(max);
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let mut recovery = Recover::default();
         let result = run_agent_loop(
             cfg,
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut recovery,
             &Events::default(),
             handle(&control),
@@ -162,16 +162,16 @@ async fn collected_recovery_counts_against_the_same_step_limit() {
     }
 }
 
-struct Managed<'a> {
-    control: &'a Control,
-    delegate: EchoTool,
+struct Managed {
+    control: std::sync::Arc<Control>,
+    delegate: std::sync::Arc<EchoTool>,
     cleaned: AtomicBool,
 }
-impl ToolExecutor for Managed<'_> {
+impl ToolExecutor for Managed {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
@@ -187,13 +187,16 @@ impl ToolExecutor for Managed<'_> {
             Ok(prepared)
         })
     }
-    fn call<'a>(
-        &'a self,
-        _progress: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
-        _: &'a ToolDefinition,
-        _: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(
+        self: std::sync::Arc<Self>,
+        invocation: kivio_agent_sdk::agent::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
+        let kivio_agent_sdk::agent::ToolInvocation {
+            progress: _progress,
+            context: _,
+            tool: _,
+            arguments: _,
+        } = invocation;
         Box::pin(async move {
             self.control.wait_inactive().await;
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -207,18 +210,18 @@ async fn timeout_requests_stop_and_waits_for_managed_tool_cleanup() {
     let model = Model::new(vec![Ok(tool())]);
     let mut cfg = config(&model, initial_history());
     cfg.limits.timeout = Some(Duration::from_millis(20));
-    let control = Control::default();
-    let executor = Managed {
-        control: &control,
-        delegate: EchoTool::new(true),
+    let control = std::sync::Arc::new(Control::default());
+    let executor = std::sync::Arc::new(Managed {
+        control: control.clone(),
+        delegate: std::sync::Arc::new(EchoTool::new(true)),
         cleaned: AtomicBool::new(false),
-    };
+    });
     let error = tokio::time::timeout(
         Duration::from_secs(2),
         run_agent_loop(
             cfg,
             &Host,
-            &executor,
+            executor.clone(),
             &mut NoSessionPolicy,
             &Events::default(),
             handle(&control),
@@ -254,7 +257,7 @@ impl SessionPolicy for ContinueForever {
     fn finish_turn<'a>(
         &'a mut self,
         _: RunSnapshot<'a>,
-        _: kivio_agent_sdk::agent::control::AgentRunHandle<'a>,
+        _: kivio_agent_sdk::agent::control::AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async { Ok(TurnDecision::Continue(vec![])) })
     }
@@ -266,11 +269,11 @@ async fn timeout_bounds_always_ready_model_loops_and_zero_prevents_requests() {
         let mut cfg = config(&model, initial_history());
         cfg.tools.clear();
         cfg.limits.timeout = Some(timeout);
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let error = run_agent_loop(
             cfg,
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut ContinueForever,
             &Events::default(),
             handle(&control),

@@ -90,7 +90,7 @@ impl SessionPolicy for Hooks {
         &'a mut self,
         _: RunSnapshot<'a>,
         call: &'a mut ModelCall,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.log.lock().unwrap().push("prepare");
@@ -110,7 +110,7 @@ impl SessionPolicy for Hooks {
     fn transform_context<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
             self.log.lock().unwrap().push("transform");
@@ -125,7 +125,7 @@ impl SessionPolicy for Hooks {
     fn finish_turn<'a>(
         &'a mut self,
         run: RunSnapshot<'a>,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async move {
             self.log.lock().unwrap().push("finish");
@@ -151,11 +151,11 @@ async fn request_hooks_run_in_order_without_changing_canonical_history() {
     let log = Arc::default();
     let model = Model::new(vec![text("answer")], Arc::clone(&log));
     let mut policy = Hooks::new(Arc::clone(&log));
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let result = run_agent_loop(
         config(&model, initial_history()),
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut policy,
         &Events::default(),
         handle(&control),
@@ -199,12 +199,12 @@ async fn finish_turn_runs_once_after_tools_and_can_stop_without_another_request(
     let model = Model::new(vec![tool()], Arc::clone(&log));
     let mut policy = Hooks::new(Arc::clone(&log));
     policy.stop = true;
-    let executor = EchoTool::new(true);
-    let control = Control::default();
+    let executor = std::sync::Arc::new(EchoTool::new(true));
+    let control = std::sync::Arc::new(Control::default());
     let result = run_agent_loop(
         config(&model, initial_history()),
         &Host,
-        &executor,
+        executor.clone(),
         &mut policy,
         &Events::default(),
         handle(&control),
@@ -228,11 +228,11 @@ async fn hook_failures_keep_their_source_and_completed_assistant_facts() {
         let model = Model::new(vec![text("completed answer")], Arc::clone(&log));
         let mut policy = Hooks::new(log);
         policy.fail = Some(hook);
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let error = run_agent_loop(
             config(&model, initial_history()),
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut policy,
             &Events::default(),
             handle(&control),
@@ -271,11 +271,11 @@ async fn changed_model_uses_its_explicit_capabilities_or_unknown() {
         policy.capabilities = capabilities.clone();
         let mut cfg = config(&model, initial_history());
         cfg.capabilities.tools = Some(false);
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let result = run_agent_loop(
             cfg,
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut policy,
             &Events::default(),
             handle(&control),
@@ -299,7 +299,7 @@ impl SessionPolicy for RejectInput {
     fn input<'a>(
         &'a mut self,
         _: &'a str,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async { Err("input rejected".into()) })
     }
@@ -308,7 +308,7 @@ impl SessionPolicy for RejectInput {
 async fn input_hook_failure_returns_every_taken_unconsumed_message_in_order() {
     let log = Arc::default();
     let model = Model::new(vec![], log);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     for id in ["one", "two"] {
         assert_eq!(
@@ -319,7 +319,7 @@ async fn input_hook_failure_returns_every_taken_unconsumed_message_in_order() {
     let error = run_agent_loop(
         config(&model, initial_history()),
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut RejectInput,
         &Events::default(),
         run,
@@ -345,7 +345,7 @@ impl SessionPolicy for Blocking {
     fn start<'a>(
         &'a mut self,
         _: RunSnapshot<'a>,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
             if self.0 == "start" {
@@ -358,7 +358,7 @@ impl SessionPolicy for Blocking {
     fn input<'a>(
         &'a mut self,
         _: &'a str,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(std::future::pending())
     }
@@ -366,7 +366,7 @@ impl SessionPolicy for Blocking {
         &'a mut self,
         _: RunSnapshot<'a>,
         _: &'a mut ModelCall,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<(), String>> {
         Box::pin(async move {
             if self.0 == "prepare_request" {
@@ -379,7 +379,7 @@ impl SessionPolicy for Blocking {
     fn transform_context<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
             if self.0 == "transform_context" {
@@ -392,7 +392,7 @@ impl SessionPolicy for Blocking {
     fn finish_turn<'a>(
         &'a mut self,
         _: RunSnapshot<'a>,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async move {
             if self.0 == "finish_turn" {
@@ -415,13 +415,13 @@ async fn timeout_cancels_awaiting_hooks_without_dispatching_late_requests_or_los
     ] {
         let log = Arc::default();
         let model = Model::new(vec![text("completed")], log);
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let mut cfg = config(&model, initial_history());
         cfg.limits.timeout = Some(std::time::Duration::from_millis(5));
         let error = run_agent_loop(
             cfg,
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut Blocking(hook),
             &Events::default(),
             handle(&control),
@@ -454,7 +454,7 @@ async fn cancelled_input_hooks_return_steering_and_follow_up_queues_in_order() {
     for follow_up in [false, true] {
         let log = Arc::default();
         let model = Model::new(vec![text("completed")], log);
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let run = handle(&control);
         for id in ["one", "two"] {
             let message = SteeringMessage::new(id.into(), id).unwrap();
@@ -472,7 +472,7 @@ async fn cancelled_input_hooks_return_steering_and_follow_up_queues_in_order() {
         let error = run_agent_loop(
             cfg,
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut Blocking("input"),
             &Events::default(),
             run,
@@ -519,11 +519,11 @@ async fn hook_model_change_uses_effective_model_when_projecting_opaque_reasoning
         }));
         let mut policy = Hooks::new(log);
         policy.switch_model = switch_model;
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let result = run_agent_loop(
             config(&model, history),
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut policy,
             &Events::default(),
             handle(&control),

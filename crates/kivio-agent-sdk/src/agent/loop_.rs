@@ -1,6 +1,7 @@
 use super::content::AgentToolCall;
 use super::history::RuntimeMessage;
 use futures::FutureExt;
+use std::sync::Arc;
 
 use crate::tools::ToolDefinition;
 
@@ -22,7 +23,7 @@ use super::types::{AgentRunConfig, AgentRunResult};
 pub(crate) struct LoopEnv<'a> {
     pub(crate) config: &'a AgentRunConfig<'a>,
     pub(crate) host: &'a super::context::AgentContext<'a>,
-    pub(crate) executor: &'a dyn ToolExecutor,
+    pub(crate) executor: &'a Arc<dyn ToolExecutor>,
     deadline: Option<tokio::time::Instant>,
 }
 
@@ -238,7 +239,7 @@ impl Drop for RunGuard<'_> {
                 outcome: self.outcome.clone(),
             });
         self.host
-            .run_ended(self.host.events.identity.conversation_id);
+            .run_ended(&self.host.events.identity.conversation_id);
     }
 }
 
@@ -277,10 +278,10 @@ impl Drop for HookTurnGuard<'_> {
 pub async fn run_agent_loop(
     config: AgentRunConfig<'_>,
     operations: &dyn AgentHost,
-    executor: &dyn ToolExecutor,
+    executor: Arc<dyn ToolExecutor>,
     session: &mut dyn super::session::SessionPolicy,
     sink: &dyn super::events::AgentEventSink,
-    control: super::control::AgentRunHandle<'_>,
+    control: super::control::AgentRunHandle,
 ) -> Result<AgentRunResult, AgentRunError> {
     use super::events::{AgentEventKind, AgentRunOutcome};
     let identity = control.identity();
@@ -627,7 +628,7 @@ async fn answer_boundary(
 async fn run_agent_loop_inner(
     mut config: AgentRunConfig<'_>,
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
+    executor: Arc<dyn ToolExecutor>,
     session: &mut dyn super::session::SessionPolicy,
     deadline: Option<tokio::time::Instant>,
 ) -> Result<AgentRunResult, AgentRunError> {
@@ -672,7 +673,7 @@ async fn run_agent_loop_inner(
         let env = LoopEnv {
             config: &config,
             host,
-            executor,
+            executor: &executor,
             deadline,
         };
         let mut round = 0u32;

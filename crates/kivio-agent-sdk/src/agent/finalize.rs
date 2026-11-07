@@ -478,7 +478,11 @@ mod tests {
             message_id: "message",
             generation: 1,
         };
-        AgentContext::new(host, host, AgentRunHandle::new(identity, host))
+        AgentContext::new(
+            host,
+            host,
+            AgentRunHandle::new(identity, std::sync::Arc::new(TestHost::default())),
+        )
     }
     #[test]
     fn reasoning_segment_order_precedes_text_in_same_step() {

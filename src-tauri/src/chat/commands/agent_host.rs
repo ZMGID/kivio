@@ -1,5 +1,5 @@
 use serde_json::Value;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::chat::agent::history::RuntimeMessage;
 use crate::chat::agent::host::{InputPersistence, SessionInput};
@@ -71,9 +71,8 @@ mod checkpoint_tests {
     }
 }
 
-pub(super) struct ChatAgentHost<'a> {
+pub(super) struct ChatAgentHost {
     pub(super) app: AppHandle,
-    pub(super) state: &'a AppState,
     pub(super) run_id: String,
     pub(super) source_anchor: Option<kivio_agent_sdk::agent::EntryId>,
     pub(super) source_branch_id: String,
@@ -86,7 +85,7 @@ pub(super) struct ChatAgentHost<'a> {
     pub(super) workflow_hooks: crate::chat::workflow_hooks::Runtime,
 }
 
-impl ChatAgentHost<'_> {
+impl ChatAgentHost {
     fn emit_compaction_status(
         &self,
         conversation_id: &str,
@@ -115,7 +114,8 @@ impl ChatAgentHost<'_> {
         if !self.context_owner {
             return;
         }
-        let runtime = self.state.chat_runtime();
+        let state = self.app.state::<AppState>();
+        let runtime = state.chat_runtime();
         let cache = runtime
             .context_measurement(conversation_id)
             .filter(|live| live.message_id == message_id)
@@ -123,7 +123,7 @@ impl ChatAgentHost<'_> {
         // One walk of the request that is about to be sent. No event and no
         // disk write: categories ride the first provider report. Until then,
         // refreshes retain the last reported request's total and categories.
-        let settings = self.state.settings_read();
+        let settings = state.settings_read();
         let segments = crate::chat::context_measure::measure_prepared_request(
             messages,
             tools,
@@ -145,7 +145,8 @@ impl ChatAgentHost<'_> {
         if !self.context_owner {
             return;
         }
-        self.state
+        self.app
+            .state::<AppState>()
             .chat_runtime()
             .note_context_run_cache(conversation_id, &self.run_id, run_cache);
     }
@@ -154,7 +155,8 @@ impl ChatAgentHost<'_> {
             return;
         }
         let Some(live) = self
-            .state
+            .app
+            .state::<AppState>()
             .chat_runtime()
             .finish_unreported_context(conversation_id, &self.run_id)
         else {
@@ -186,7 +188,8 @@ impl ChatAgentHost<'_> {
         if !self.context_owner {
             return;
         }
-        let runtime = self.state.chat_runtime();
+        let state = self.app.state::<AppState>();
+        let runtime = state.chat_runtime();
         let (live, segments_once) = if token_count_source.is_some() {
             let Some((live, include_segments)) =
                 runtime.report_context_tokens(conversation_id, &self.run_id, used_tokens)
@@ -212,7 +215,7 @@ impl ChatAgentHost<'_> {
         );
     }
 }
-impl crate::chat::agent::events::AgentEventSink for ChatAgentHost<'_> {
+impl crate::chat::agent::events::AgentEventSink for ChatAgentHost {
     fn on_event(
         &self,
         event: &crate::chat::agent::events::AgentEvent<'_>,
@@ -270,7 +273,7 @@ impl crate::chat::agent::events::AgentEventSink for ChatAgentHost<'_> {
         crate::chat::agent::events::EventDelivery::Accepted
     }
 }
-impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
+impl crate::chat::agent::AgentHost for ChatAgentHost {
     fn run_ended(&self, conversation_id: &str) {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
@@ -339,15 +342,17 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
     }
 }
 
-impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
+impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost {
     fn auto_compact_failures(&self, conversation_id: &str) -> u32 {
-        self.state
+        self.app
+            .state::<AppState>()
             .chat_runtime()
             .auto_compact_failures(conversation_id)
     }
 
     fn set_auto_compact_failures(&self, conversation_id: &str, failures: u32) {
-        self.state
+        self.app
+            .state::<AppState>()
             .chat_runtime()
             .set_auto_compact_failures(conversation_id, failures);
     }
@@ -385,7 +390,7 @@ impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
             let record = crate::chat::agent_presentation::project_tool(record, Some(ctx.run_id));
             request_tool_approval(
                 &self.app,
-                self.state,
+                &self.app.state::<AppState>(),
                 ctx.conversation_id,
                 ctx.run_id,
                 ctx.generation,
@@ -403,7 +408,7 @@ impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
         Box::pin(async move {
             request_session_consent(
                 &self.app,
-                self.state,
+                &self.app.state::<AppState>(),
                 ctx.tool_conversation_id,
                 ctx.run_id,
                 ctx.generation,
@@ -419,17 +424,18 @@ impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
         prompt: crate::chat::ask_user::AskUserPromptPayload,
     ) -> crate::chat::agent::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
         Box::pin(async move {
-            let _waiting = self.state.sub_agents.awaits.hold(
+            let state = self.app.state::<AppState>();
+            let _waiting = state.sub_agents.awaits.hold(
                 ctx.tool_conversation_id,
                 crate::chat::sub_agent::MAIN_AGENT_ID,
                 vec!["@user".into()],
-                self.state.sub_agents.irc.mark(),
+                self.app.state::<AppState>().sub_agents.irc.mark(),
                 false,
             );
             let record = crate::chat::agent_presentation::project_tool(record, Some(ctx.run_id));
             request_user_response(
                 &self.app,
-                self.state,
+                &self.app.state::<AppState>(),
                 ctx.conversation_id,
                 ctx.run_id,
                 ctx.generation,
@@ -447,14 +453,13 @@ impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
 /// 会话 consent → 允许，`ask_user` → 取消态（不阻塞）。事件发射 no-op（结果从落盘的 assistant
 /// 消息内联读取，不靠事件）。generation 相关沿用标准机制，保证超时/取消能生效。
 #[cfg(debug_assertions)]
-pub(super) struct ProbeAgentHost<'a> {
+pub(super) struct ProbeAgentHost {
     pub(super) run_id: String,
     pub(super) app: AppHandle,
-    pub(super) state: &'a AppState,
 }
 
 #[cfg(debug_assertions)]
-impl crate::chat::agent::events::AgentEventSink for ProbeAgentHost<'_> {
+impl crate::chat::agent::events::AgentEventSink for ProbeAgentHost {
     fn on_event(
         &self,
         event: &crate::chat::agent::events::AgentEvent<'_>,
@@ -474,7 +479,7 @@ impl crate::chat::agent::events::AgentEventSink for ProbeAgentHost<'_> {
     }
 }
 #[cfg(debug_assertions)]
-impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
+impl crate::chat::agent::AgentHost for ProbeAgentHost {
     fn run_ended(&self, conversation_id: &str) {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
@@ -549,7 +554,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
     }
 }
 
-impl crate::chat::tool_runtime::ApplicationHost for ProbeAgentHost<'_> {
+impl crate::chat::tool_runtime::ApplicationHost for ProbeAgentHost {
     fn start_speculation(
         &self,
         settings: &crate::settings::Settings,
@@ -585,16 +590,15 @@ impl crate::chat::tool_runtime::ApplicationHost for ProbeAgentHost<'_> {
     }
 }
 
-pub(super) struct RegistryToolExecutor<'a> {
+pub(super) struct RegistryToolExecutor {
     pub(super) app: AppHandle,
-    pub(super) state: &'a AppState,
     pub(super) skills: skills::SkillRunContext,
     pub(super) video_analysis: tokio::sync::Mutex<crate::chat::video_analysis::VideoTool>,
 }
-impl crate::chat::tool_runtime::ToolDispatcher for RegistryToolExecutor<'_> {
+impl crate::chat::tool_runtime::ToolDispatcher for RegistryToolExecutor {
     fn call<'a>(
         &'a self,
-        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        progress: &'a crate::chat::agent::execute::ToolProgress,
         ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -603,8 +607,12 @@ impl crate::chat::tool_runtime::ToolDispatcher for RegistryToolExecutor<'_> {
             let result_arguments = arguments.clone();
             let output: crate::mcp::types::McpToolCallResult = async {
                 if ctx.depth == 0 {
-                    if let Ok(conversation) =
-                        crate::chat::storage::load_conversation(&self.app, ctx.conversation_id)
+                    let (app, id) = (self.app.clone(), ctx.conversation_id.to_string());
+                    // Full-file read + deserialize: keep it off the async worker's stack and thread.
+                    if let Ok(Ok(conversation)) = tokio::task::spawn_blocking(move || {
+                        crate::chat::storage::load_conversation(&app, &id)
+                    })
+                    .await
                     {
                         if conversation.goal_state.as_ref().is_some_and(|goal| {
                             goal.status == crate::chat::types::GoalStatus::Completed
@@ -622,13 +630,13 @@ impl crate::chat::tool_runtime::ToolDispatcher for RegistryToolExecutor<'_> {
                         .video_analysis
                         .lock()
                         .await
-                        .call(&self.app, self.state, ctx, &arguments)
+                        .call(&self.app, &self.app.state::<AppState>(), ctx, &arguments)
                         .await;
                 }
                 let native_ctx = mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
                 let result = mcp::registry::call_tool(
                     &self.app,
-                    self.state,
+                    &self.app.state::<AppState>(),
                     tool,
                     arguments,
                     Some(&self.skills),

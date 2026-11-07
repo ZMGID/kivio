@@ -71,8 +71,8 @@ struct Authorization(bool);
 impl ToolAuthorization for Authorization {
     fn authorize<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        _: &'a ToolExecutionContext,
         _: &'a ToolDefinition,
         _: &'a Value,
     ) -> ToolFuture<'a, Result<(), ToolError>> {

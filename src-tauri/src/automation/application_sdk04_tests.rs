@@ -7,6 +7,7 @@ use crate::chat::agent::loop_::tests::{
     test_app_state, test_run_config, MockModelServer, MockResponse, RecordingExecutor, TestHost,
 };
 use crate::chat::session_policy::run_session;
+use std::sync::Arc;
 
 fn event(kind: AgentEventKind<'_>) -> AgentEvent<'_> {
     AgentEvent {
@@ -38,8 +39,8 @@ async fn real_loop_workflow_projection_output_and_history_reload() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = WorkflowAgentHost;
-    let control = TestHost::default();
+    let host = Arc::new(WorkflowAgentHost);
+    let control = Arc::new(TestHost::default());
     let events = WorkflowAgentEvents::default();
     let tools = Mutex::new(Vec::new());
     let sink = |fact: &AgentEvent<'_>| {
@@ -51,11 +52,17 @@ async fn real_loop_workflow_projection_output_and_history_reload() {
         }
         EventDelivery::Accepted
     };
-    let handle = AgentRunHandle::new(event(AgentEventKind::RunStarted).identity, &control);
-    let executor = RecordingExecutor::default();
-    let result = run_session(config.into_application(), &host, &executor, &sink, handle)
-        .await
-        .unwrap();
+    let handle = AgentRunHandle::new(event(AgentEventKind::RunStarted).identity, control.clone());
+    let executor = Arc::new(RecordingExecutor::default());
+    let result = run_session(
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        &sink,
+        handle,
+    )
+    .await
+    .unwrap();
     assert!(tools
         .lock()
         .unwrap()

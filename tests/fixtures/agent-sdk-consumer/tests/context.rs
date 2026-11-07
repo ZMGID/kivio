@@ -165,8 +165,8 @@ struct AllowSkill;
 impl ToolAuthorization for AllowSkill {
     fn authorize<'a>(
         &'a self,
-        _: &'a kivio_agent_sdk::agent::execute::ToolProgress<'a>,
-        _: &'a kivio_agent_sdk::agent::ToolExecutionContext<'a>,
+        _: &'a kivio_agent_sdk::agent::execute::ToolProgress,
+        _: &'a kivio_agent_sdk::agent::ToolExecutionContext,
         _: &'a ToolDefinition,
         _: &'a Value,
     ) -> ToolFuture<'a, Result<(), ToolError>> {
@@ -565,7 +565,7 @@ impl SessionPolicy for PolicyWithInput {
         &'a mut self,
         reason: ContextReason,
         run: ContextSnapshot<'a>,
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
         progress: &'a dyn PolicyProgress,
     ) -> PolicyFuture<'a, Result<ContextPreparation, String>> {
         self.inner.prepare_context(reason, run, control, progress)
@@ -574,7 +574,7 @@ impl SessionPolicy for PolicyWithInput {
     fn context_applied<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
         progress: &'a dyn PolicyProgress,
     ) -> PolicyFuture<'a, (Vec<RuntimeMessage>, bool)> {
         Box::pin(async move {

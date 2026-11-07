@@ -137,6 +137,21 @@ fn app_context() -> tauri::Context<tauri::Wry> {
 /// 应用入口函数
 /// 初始化 Tauri Builder，加载插件，配置窗口事件处理，设置全局状态、热键和托盘
 pub fn run() {
+    // Agent runs await IPC → reply → session → loop in one task; tools run in their own tasks.
+    // 8 MiB is reserved headroom, not committed memory. Debug builds accept a smaller value so the
+    // stack regression can prove the structure on the 2 MiB default instead of relying on headroom.
+    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+        let stack = cfg!(debug_assertions)
+            .then(|| std::env::var("KIVIO_WORKER_STACK_BYTES").ok()?.parse().ok())
+            .flatten()
+            .unwrap_or(8 * 1024 * 1024);
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_stack_size(stack)
+            .build()
+            .expect("failed to build the async runtime")
+    });
+    tauri::async_runtime::set(RUNTIME.handle().clone());
     let context = app_context();
     assert_eq!(
         context.config().identifier,

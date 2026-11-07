@@ -2,6 +2,7 @@ use super::content::{AgentToolCall, AgentToolStatus};
 use super::error::AgentFailure;
 use super::history::RuntimeMessage;
 use crate::model::{FinishKind, MessagePart, ModelMessage, ModelRole};
+use std::sync::Arc;
 
 use crate::model::PendingToolCall;
 
@@ -144,7 +145,7 @@ struct ExecutableToolCall<'a> {
 }
 
 pub fn visible_tool_segment_calls(
-    executor: &dyn ToolExecutor,
+    executor: &Arc<dyn ToolExecutor>,
     tools: &[ToolDefinition],
     blocked_tool_calls: &[ToolDefinition],
     tool_calls: &[PendingToolCall],
@@ -162,7 +163,7 @@ pub fn visible_tool_segment_calls(
 
 pub async fn execute_tool_round(
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
+    executor: &Arc<dyn ToolExecutor>,
     ctx: ToolRoundContext<'_>,
     tools: &[ToolDefinition],
     blocked_tool_calls: &[ToolDefinition],
@@ -392,7 +393,7 @@ async fn flush_parallel_batch(
     response_messages: &mut ToolMessages,
     tool_records: &mut Vec<AgentToolCall>,
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
+    executor: &Arc<dyn ToolExecutor>,
     ctx: &ToolRoundContext<'_>,
 ) -> bool {
     if batch.is_empty() {
@@ -426,7 +427,7 @@ async fn flush_parallel_batch(
 
 async fn execute_parallel_chunk(
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
+    executor: &Arc<dyn ToolExecutor>,
     ctx: &ToolRoundContext<'_>,
     chunk: &mut [ExecutableToolCall<'_>],
 ) -> Vec<ToolExecutionResult> {
@@ -443,7 +444,7 @@ async fn execute_parallel_chunk(
 
 async fn execute_parallel_tool_call(
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
+    executor: &Arc<dyn ToolExecutor>,
     ctx: &ToolRoundContext<'_>,
     item: &ExecutableToolCall<'_>,
 ) -> ToolExecutionResult {
@@ -452,7 +453,7 @@ async fn execute_parallel_tool_call(
 
 async fn execute_serial_tool_call(
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
+    executor: &Arc<dyn ToolExecutor>,
     ctx: &ToolRoundContext<'_>,
     tool: &ToolDefinition,
     tool_call: PendingToolCall,
@@ -462,19 +463,19 @@ async fn execute_serial_tool_call(
 
 async fn execute_tool_call_result(
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
+    executor: &Arc<dyn ToolExecutor>,
     round_ctx: &ToolRoundContext<'_>,
     tool: &ToolDefinition,
     tool_call: PendingToolCall,
 ) -> ToolExecutionResult {
     let tool_call_id = tool_call.id.clone();
     let execution_ctx = ToolExecutionContext {
-        conversation_id: round_ctx.conversation_id,
-        run_id: round_ctx.run_id,
-        message_id: round_ctx.message_id,
+        conversation_id: round_ctx.conversation_id.into(),
+        run_id: round_ctx.run_id.into(),
+        message_id: round_ctx.message_id.into(),
         generation: round_ctx.generation,
         round: round_ctx.round,
-        tool_call_id: &tool_call_id,
+        tool_call_id: tool_call_id.clone().into(),
     };
     // 单点：串行与并行两条路径都经过这里，所以 start/end 一定成对。并行 chunk 里多个
     // 工具的事件会交错——那是真实语义，脚本靠 toolCallId 自己配对，不做重排。
@@ -589,7 +590,7 @@ fn not_executed_tool_result(
 
 fn unknown_or_disabled_tool_result(
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
+    executor: &Arc<dyn ToolExecutor>,
     ctx: &ToolRoundContext<'_>,
     tools: &[ToolDefinition],
     blocked_tool_calls: &[ToolDefinition],

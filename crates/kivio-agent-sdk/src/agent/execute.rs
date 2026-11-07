@@ -13,6 +13,7 @@ use std::{
     future::Future,
     panic::AssertUnwindSafe,
     pin::Pin,
+    sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::time::timeout;
@@ -22,24 +23,51 @@ pub type ToolExecutorFuture<'a> =
     Pin<Box<dyn Future<Output = Result<AgentToolOutput, String>> + Send + 'a>>;
 pub type ToolFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-pub struct ToolExecutionContext<'a> {
-    pub conversation_id: &'a str,
-    pub run_id: &'a str,
-    pub message_id: &'a str,
+#[derive(Clone)]
+pub struct ToolExecutionContext {
+    pub conversation_id: Arc<str>,
+    pub run_id: Arc<str>,
+    pub message_id: Arc<str>,
     pub generation: u64,
     pub round: u32,
-    pub tool_call_id: &'a str,
+    pub tool_call_id: Arc<str>,
 }
 
-pub struct ToolProgress<'a> {
-    pub control: AgentRunHandle<'a>,
-    events: &'a AgentEvents<'a>,
+#[derive(Clone)]
+pub struct ToolProgress {
+    pub control: AgentRunHandle,
+    updates: tokio::sync::mpsc::Sender<AgentToolCall>,
 }
-impl ToolProgress<'_> {
-    pub fn updated(&self, record: &AgentToolCall) {
-        self.events
-            .emit(super::events::AgentEventKind::ToolUpdated(record));
+impl ToolProgress {
+    /// Applies bounded backpressure; updates stop when the owning call is dropped.
+    pub async fn updated(&self, record: &AgentToolCall) {
+        let _ = self.updates.send(record.clone()).await;
     }
+}
+
+pub struct ToolInvocation {
+    pub progress: ToolProgress,
+    pub context: ToolExecutionContext,
+    pub tool: ToolDefinition,
+    pub arguments: Value,
+}
+
+async fn forward_progress<T>(
+    events: &AgentEvents<'_>,
+    updates: &mut tokio::sync::mpsc::Receiver<AgentToolCall>,
+    future: impl Future<Output = T>,
+) -> T {
+    tokio::pin!(future);
+    let output = loop {
+        tokio::select! {
+            output = &mut future => break output,
+            Some(record) = updates.recv() => events.emit(super::events::AgentEventKind::ToolUpdated(&record)),
+        }
+    };
+    while let Ok(record) = updates.try_recv() {
+        events.emit(super::events::AgentEventKind::ToolUpdated(&record));
+    }
+    output
 }
 
 pub struct PreparedToolCall {
@@ -89,25 +117,20 @@ pub trait ToolExecutor: Send + Sync {
     /// Rejection returns `Complete`; a hook error fails the run. The core publishes terminal records.
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
     ) -> ToolFuture<'a, Result<ToolPreparation, String>>;
-    fn call<'a>(
-        &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
-        tool: &'a ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a>;
+    /// Called and polled inside a task owned by the SDK until completion or joined cancellation.
+    fn call(self: Arc<Self>, invocation: ToolInvocation) -> ToolExecutorFuture<'static>;
     /// Replace model-facing fields before the terminal event and history commit.
     /// Errors retain the original result and fail the run without retrying the tool.
     fn after_tool_call<'a>(
         &'a self,
-        _progress: &'a ToolProgress<'a>,
-        _ctx: &'a ToolExecutionContext<'a>,
+        _progress: &'a ToolProgress,
+        _ctx: &'a ToolExecutionContext,
         _tool: &'a ToolDefinition,
         _arguments: Value,
         _content: &'a str,
@@ -117,7 +140,7 @@ pub trait ToolExecutor: Send + Sync {
     }
     fn start_speculation(
         &self,
-        _ctx: &ToolExecutionContext<'_>,
+        _ctx: &ToolExecutionContext,
         _tools: &[ToolDefinition],
     ) -> Option<Box<dyn super::host::SpeculativeTaskScope>> {
         None
@@ -233,16 +256,17 @@ pub(crate) fn pending_tool_record(
 
 pub async fn execute_tool_call(
     host: &super::context::AgentContext<'_>,
-    executor: &dyn ToolExecutor,
-    ctx: &ToolExecutionContext<'_>,
+    executor: &Arc<dyn ToolExecutor>,
+    ctx: &ToolExecutionContext,
     tool: &ToolDefinition,
     call: PendingToolCall,
 ) -> ToolCallResult {
     let record = pending_tool_record(tool, &call, ctx.round);
     host.tool_updated(&record);
+    let (updates, mut receiver) = tokio::sync::mpsc::channel(32);
     let progress = ToolProgress {
         control: host.control.clone(),
-        events: &host.events,
+        updates,
     };
     if !host.control.active() {
         return interrupted_tool_call(host, record, None);
@@ -254,11 +278,11 @@ pub async fn execute_tool_call(
             .await
     })
     .catch_unwind();
-    let prepared = tokio::select! {
+    let prepared = forward_progress(&host.events, &mut receiver, async { tokio::select! {
         biased;
-        _ = host.control.wait_inactive() => return interrupted_tool_call(host, record, None),
+        _ = host.control.wait_inactive() => Err("Tool call cancelled".into()),
         prepared = before => prepared.unwrap_or_else(|_| Err("before_tool_call hook panicked".into())),
-    };
+    }}).await;
     if !host.control.active() {
         return interrupted_tool_call(host, record, None);
     }
@@ -288,28 +312,56 @@ pub async fn execute_tool_call(
         return interrupted_tool_call(host, record, None);
     }
     let started = Instant::now();
-    let call_fut = AssertUnwindSafe(async {
-        executor
-            .call(&progress, ctx, tool, prepared.arguments.clone())
-            .await
-    })
-    .catch_unwind();
+    // JoinSet aborts on future drop; cooperative stop below additionally awaits cleanup.
+    let mut tasks = tokio::task::JoinSet::new();
+    let invocation = ToolInvocation {
+        progress: progress.clone(),
+        context: ctx.clone(),
+        tool: tool.clone(),
+        arguments: prepared.arguments.clone(),
+    };
+    let executor_task = executor.clone();
+    tasks.spawn(async move { executor_task.call(invocation).await });
     let result = if prepared.drain_on_cancel {
-        Ok(call_fut.await)
+        Ok(
+            forward_progress(&host.events, &mut receiver, tasks.join_next())
+                .await
+                .unwrap(),
+        )
     } else {
-        tokio::select! {
-            result = async {
-                if let Some(timeout_ms) = prepared.timeout_ms {
-                    timeout(Duration::from_millis(timeout_ms), call_fut).await
-                } else { Ok(call_fut.await) }
-            } => result,
-            _ = host.control.wait_inactive() => {
-                record.status = AgentToolStatus::Cancelled;
-                record.duration_ms = Some(started.elapsed().as_millis() as u64);
-                record.completed_at = Some(chrono::Local::now().timestamp());
-                record.error = Some("Tool call cancelled".into());
-                host.tool_updated(&record);
-                return ToolCallResult::new(record, "Tool call cancelled".into(), Vec::new());
+        let joined = forward_progress(&host.events, &mut receiver, async {
+            tokio::select! {
+                biased;
+                result = async {
+                    if let Some(timeout_ms) = prepared.timeout_ms {
+                        timeout(Duration::from_millis(timeout_ms), tasks.join_next()).await
+                    } else { Ok(tasks.join_next().await) }
+                } => Some(result),
+                _ = host.control.wait_inactive() => None,
+            }
+        })
+        .await;
+        match joined {
+            Some(Ok(result)) => Ok(result.unwrap()),
+            interrupted => {
+                tasks.abort_all();
+                forward_progress(&host.events, &mut receiver, tasks.join_next()).await;
+                match interrupted {
+                    Some(Err(error)) => Err(error),
+                    None => {
+                        record.status = AgentToolStatus::Cancelled;
+                        record.duration_ms = Some(started.elapsed().as_millis() as u64);
+                        record.completed_at = Some(chrono::Local::now().timestamp());
+                        record.error = Some("Tool call cancelled".into());
+                        host.tool_updated(&record);
+                        return ToolCallResult::new(
+                            record,
+                            "Tool call cancelled".into(),
+                            Vec::new(),
+                        );
+                    }
+                    Some(Ok(_)) => unreachable!(),
+                }
             }
         }
     };
@@ -376,11 +428,11 @@ pub async fn execute_tool_call(
                 .await
         })
         .catch_unwind();
-        let update = tokio::select! {
+        let update = forward_progress(&host.events, &mut receiver, async { tokio::select! {
             biased;
             _ = host.control.wait_inactive() => None,
             update = after => Some(update.unwrap_or_else(|_| Err("after_tool_call hook panicked".into()))),
-        };
+        }}).await;
         if host.control.active() {
             match update {
                 Some(Ok(update)) => {

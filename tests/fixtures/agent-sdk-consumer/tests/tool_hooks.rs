@@ -71,8 +71,8 @@ struct Authorization(Arc<Mutex<Vec<String>>>);
 impl ToolAuthorization for Authorization {
     fn authorize<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        _: &'a ToolExecutionContext,
         _: &'a ToolDefinition,
         args: &'a Value,
     ) -> ToolFuture<'a, Result<(), ToolError>> {
@@ -125,8 +125,8 @@ fn reject(mut record: AgentToolCall, status: AgentToolStatus, message: String) -
 impl ToolExecutor for Policy {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         mut call: PendingToolCall,
         mut record: AgentToolCall,
@@ -171,25 +171,35 @@ impl ToolExecutor for Policy {
             Ok(prepared)
         })
     }
-    fn call<'a>(
-        &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
-        tool: &'a ToolDefinition,
-        args: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(
+        self: std::sync::Arc<Self>,
+        invocation: kivio_agent_sdk::agent::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
+        let kivio_agent_sdk::agent::ToolInvocation {
+            progress: progress,
+            context: ctx,
+            tool: tool,
+            arguments: args,
+        } = invocation;
         Box::pin(async move {
             if let Some(control) = &self.cancel {
                 control.stop();
                 tokio::task::yield_now().await;
             }
-            self.inner.call(progress, ctx, tool, args).await
+            std::sync::Arc::new(self.inner.clone())
+                .call(kivio_agent_sdk::agent::ToolInvocation {
+                    progress,
+                    context: ctx,
+                    tool,
+                    arguments: args,
+                })
+                .await
         })
     }
     fn after_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         _: &'a ToolDefinition,
         _: Value,
         _: &'a str,
@@ -278,7 +288,7 @@ fn call(id: &str, path: &str) -> PendingToolCall {
 }
 async fn run(
     registry: &ToolRegistry,
-    control: &Control,
+    control: &std::sync::Arc<Control>,
     calls: Vec<PendingToolCall>,
 ) -> ToolRoundResult {
     let terminals = Mutex::new(vec![]);
@@ -299,7 +309,7 @@ async fn run(
     let context = AgentContext::new(&Host, &events, handle(control));
     let result = execute_tool_round(
         &context,
-        registry,
+        &(std::sync::Arc::new(registry.clone()) as std::sync::Arc<dyn ToolExecutor>),
         ToolRoundContext {
             conversation_id: "consumer",
             run_id: "run",
@@ -364,7 +374,12 @@ async fn before_rejection_is_paired_and_rewritten_arguments_are_validated_and_au
         ),
     ] {
         let (registry, log) = registry(before, After::Keep, false, None);
-        let result = run(&registry, &Control::default(), vec![call("a", "original")]).await;
+        let result = run(
+            &registry,
+            &std::sync::Arc::new(Control::default()),
+            vec![call("a", "original")],
+        )
+        .await;
         assert_eq!(paired_ids(&result), vec!["a"]);
         assert_eq!(result.tool_records[0].status, status);
         assert!(result.failure.is_none());
@@ -376,7 +391,12 @@ async fn before_rejection_is_paired_and_rewritten_arguments_are_validated_and_au
 async fn after_replaces_only_explicit_model_fields_and_keeps_raw_execution_facts() {
     for after in [After::Replace, After::ClearFollowUps] {
         let (registry, log) = registry(Before::Pass, after, false, None);
-        let result = run(&registry, &Control::default(), vec![call("a", "original")]).await;
+        let result = run(
+            &registry,
+            &std::sync::Arc::new(Control::default()),
+            vec![call("a", "original")],
+        )
+        .await;
         let record = &result.tool_records[0];
         assert_eq!(record.output.as_deref(), Some("raw:original"));
         assert_eq!(
@@ -416,7 +436,7 @@ async fn hook_failures_preserve_facts_pair_remaining_calls_and_never_retry_side_
         let (registry, log) = registry(before, after, false, None);
         let result = run(
             &registry,
-            &Control::default(),
+            &std::sync::Arc::new(Control::default()),
             vec![call("a", "original"), call("b", "unstarted")],
         )
         .await;
@@ -456,7 +476,7 @@ async fn cancellation_during_hooks_discards_late_values_and_stops_next_calls() {
             std::time::Duration::from_secs(1),
             run(
                 &registry,
-                &Control::default(),
+                &std::sync::Arc::new(Control::default()),
                 vec![call("a", "original"), call("b", "unstarted")],
             ),
         )
@@ -485,7 +505,7 @@ async fn parallel_hook_failure_drains_completed_tools_and_preserves_model_result
     let calls = (0..13)
         .map(|index| call(&index.to_string(), if index == 0 { "slow" } else { "fast" }))
         .collect();
-    let result = run(&registry, &Control::default(), calls).await;
+    let result = run(&registry, &std::sync::Arc::new(Control::default()), calls).await;
     assert_eq!(
         paired_ids(&result),
         (0..13).map(|index| index.to_string()).collect::<Vec<_>>()
@@ -574,11 +594,11 @@ async fn loop_hook_failure_returns_partial_paired_history_and_cancellation_never
         let mut cfg = config(&model, initial_history());
         cfg.tools = registry.definitions();
         let events = Events::default();
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let result = run_agent_loop(
             cfg,
             &Host,
-            &registry,
+            std::sync::Arc::new(registry.clone()),
             &mut NoSessionPolicy,
             &events,
             handle(&control),
@@ -639,8 +659,8 @@ struct PanickingHook {
 impl ToolExecutor for PanickingHook {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
@@ -656,19 +676,27 @@ impl ToolExecutor for PanickingHook {
                 .await
         })
     }
-    fn call<'a>(
-        &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
-        tool: &'a ToolDefinition,
-        args: Value,
-    ) -> ToolExecutorFuture<'a> {
-        self.inner.call(progress, ctx, tool, args)
+    fn call(
+        self: std::sync::Arc<Self>,
+        invocation: kivio_agent_sdk::agent::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
+        let kivio_agent_sdk::agent::ToolInvocation {
+            progress: progress,
+            context: ctx,
+            tool: tool,
+            arguments: args,
+        } = invocation;
+        std::sync::Arc::new(self.inner.clone()).call(kivio_agent_sdk::agent::ToolInvocation {
+            progress,
+            context: ctx,
+            tool,
+            arguments: args,
+        })
     }
     fn after_tool_call<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        _: &'a ToolExecutionContext,
         _: &'a ToolDefinition,
         _: Value,
         _: &'a str,
@@ -690,16 +718,16 @@ async fn hook_panics_keep_paired_partial_history_and_never_rerun_executed_tools(
             let (inner, log) = registry(Before::Pass, After::Keep, false, None);
             let mut cfg = config(&model, initial_history());
             cfg.tools = inner.definitions();
-            let executor = PanickingHook {
+            let executor = std::sync::Arc::new(PanickingHook {
                 inner,
                 before,
                 synchronous,
-            };
-            let control = Control::default();
+            });
+            let control = std::sync::Arc::new(Control::default());
             let error = run_agent_loop(
                 cfg,
                 &Host,
-                &executor,
+                executor.clone(),
                 &mut NoSessionPolicy,
                 &Events::default(),
                 handle(&control),

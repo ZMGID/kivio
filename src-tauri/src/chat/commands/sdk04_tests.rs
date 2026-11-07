@@ -28,7 +28,7 @@ use crate::chat::{
 use serde_json::json;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Mutex,
+    Arc, Mutex,
 };
 
 struct DesktopHost {
@@ -135,7 +135,7 @@ struct CountingExecutor {
 impl ToolDispatcher for CountingExecutor {
     fn call<'a>(
         &'a self,
-        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        progress: &'a crate::chat::agent::execute::ToolProgress,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a crate::mcp::ChatToolDefinition,
         arguments: serde_json::Value,
@@ -180,15 +180,19 @@ async fn sdk04_desktop_real_loop_projects_checkpoints_and_saved_history() {
     config.retry_attempts = 2;
     config.generation = state.chat_runtime().begin_generation("conversation");
     let reply = ChatReplyGuard::try_new(&state, "conversation", "run", config.generation).unwrap();
-    let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
-    let handle = AgentRunHandle::new(identity(config.generation), &control);
-    let host = DesktopHost::new(dir.path().join("draft.jsonl"));
-    let executor = CountingExecutor::default();
+    let control = Arc::new(ChatRunControl::new(
+        state.chat_runtime(),
+        "conversation",
+        config.generation,
+    ));
+    let handle = AgentRunHandle::new(identity(config.generation), control.clone());
+    let host = Arc::new(DesktopHost::new(dir.path().join("draft.jsonl")));
+    let executor = Arc::new(CountingExecutor::default());
     let result = run_session(
-        config.into_application(),
-        &host,
-        &executor,
-        &host,
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
         handle.clone(),
     )
     .await
@@ -324,6 +328,55 @@ async fn sdk04_desktop_real_loop_projects_checkpoints_and_saved_history() {
     );
 }
 
+/// The desktop session loop plus an owned tool task must fit the 2 MiB stack Windows gives
+/// Tokio workers by default; a native overflow aborts the test binary instead of passing.
+#[test]
+fn sdk04_tool_round_fits_default_two_mib_worker_stacks() {
+    const STACK: usize = 2 * 1024 * 1024;
+    std::thread::Builder::new()
+        .stack_size(STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(STACK)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let dir = tempfile::tempdir().unwrap();
+                    let server = MockModelServer::start(vec![tool_step(), answer("done")]);
+                    let state = test_app_state();
+                    let mut config = test_run_config(&state, &server.base_url);
+                    config.generation = state.chat_runtime().begin_generation("conversation");
+                    let _reply =
+                        ChatReplyGuard::try_new(&state, "conversation", "run", config.generation)
+                            .unwrap();
+                    let control = Arc::new(ChatRunControl::new(
+                        state.chat_runtime(),
+                        "conversation",
+                        config.generation,
+                    ));
+                    let handle = AgentRunHandle::new(identity(config.generation), control);
+                    let host = Arc::new(DesktopHost::new(dir.path().join("draft.jsonl")));
+                    let executor = Arc::new(CountingExecutor::default());
+                    let result = run_session(
+                        Box::new(config.into_application()),
+                        host.clone(),
+                        executor.clone(),
+                        host.as_ref(),
+                        handle,
+                    )
+                    .await
+                    .unwrap();
+                    assert_eq!(result.content, "done");
+                    assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+                })
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 #[tokio::test]
 async fn sdk04_closed_observation_does_not_authorize_a_tool() {
     let dir = tempfile::tempdir().unwrap();
@@ -332,17 +385,21 @@ async fn sdk04_closed_observation_does_not_authorize_a_tool() {
     let mut config = test_run_config(&state, &server.base_url);
     config.generation = state.chat_runtime().begin_generation("conversation");
     config.effective_chat_tools.approval_policy = "always_confirm".into();
-    let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
-    let handle = AgentRunHandle::new(identity(config.generation), &control);
-    let mut host = DesktopHost::new(dir.path().join("draft.jsonl"));
-    host.approve = false;
-    host.closed = true;
-    let executor = CountingExecutor::default();
+    let control = Arc::new(ChatRunControl::new(
+        state.chat_runtime(),
+        "conversation",
+        config.generation,
+    ));
+    let handle = AgentRunHandle::new(identity(config.generation), control.clone());
+    let mut host = Arc::new(DesktopHost::new(dir.path().join("draft.jsonl")));
+    Arc::get_mut(&mut host).unwrap().approve = false;
+    Arc::get_mut(&mut host).unwrap().closed = true;
+    let executor = Arc::new(CountingExecutor::default());
     let result = run_session(
-        config.into_application(),
-        &host,
-        &executor,
-        &host,
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
         handle.clone(),
     )
     .await
@@ -361,18 +418,22 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
     let dir = tempfile::tempdir().unwrap();
     let state = test_app_state();
     let server = MockModelServer::start(vec![MockResponse::SseThenHang(Vec::new())]);
-    let host = DesktopHost::new(dir.path().join("drop.jsonl"));
+    let host = Arc::new(DesktopHost::new(dir.path().join("drop.jsonl")));
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.clear();
     config.generation = state.chat_runtime().begin_generation("conversation");
-    let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
-    let handle = AgentRunHandle::new(identity(config.generation), &control);
-    let executor = CountingExecutor::default();
+    let control = Arc::new(ChatRunControl::new(
+        state.chat_runtime(),
+        "conversation",
+        config.generation,
+    ));
+    let handle = AgentRunHandle::new(identity(config.generation), control.clone());
+    let executor = Arc::new(CountingExecutor::default());
     let mut future = Box::pin(run_session(
-        config.into_application(),
-        &host,
-        &executor,
-        &host,
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
         handle.clone(),
     ));
     assert!(
@@ -392,15 +453,25 @@ async fn sdk04_dropped_and_failed_real_loops_have_one_typed_terminal() {
         400,
         "{\"error\":{\"message\":\"bad request\"}}".into(),
     )]);
-    let host = DesktopHost::new(dir.path().join("failure.jsonl"));
+    let host = Arc::new(DesktopHost::new(dir.path().join("failure.jsonl")));
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.clear();
     config.generation = state.chat_runtime().begin_generation("conversation");
-    let control = ChatRunControl::new(state.chat_runtime(), "conversation", config.generation);
-    let handle = AgentRunHandle::new(identity(config.generation), &control);
-    let error = run_session(config.into_application(), &host, &executor, &host, handle)
-        .await
-        .unwrap_err();
+    let control = Arc::new(ChatRunControl::new(
+        state.chat_runtime(),
+        "conversation",
+        config.generation,
+    ));
+    let handle = AgentRunHandle::new(identity(config.generation), control.clone());
+    let error = run_session(
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
+        handle,
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(
         error,
         crate::chat::session_policy::ApplicationRunError::Failed {

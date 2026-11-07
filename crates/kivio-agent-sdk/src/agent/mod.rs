@@ -35,7 +35,7 @@ pub mod stream;
 pub(crate) mod synthesis;
 pub mod types;
 
-pub use execute::{ToolExecutionContext, ToolExecutor, ToolExecutorFuture};
+pub use execute::{ToolExecutionContext, ToolExecutor, ToolExecutorFuture, ToolInvocation};
 pub use history::{RuntimeBody, RuntimeMessage, RuntimeSource};
 pub use host::{AgentHost, AgentHostFuture};
 pub use loop_::run_agent_loop;

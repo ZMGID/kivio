@@ -95,7 +95,7 @@ async fn in_flight_steering_preserves_identical_canonical_answers_and_segments_o
     second.reasoning = Some("second thought".into());
     second.images.clear();
     let model = Model::new(vec![first, second]);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     let queued = AtomicBool::new(false);
     let events = Events::default();
@@ -116,7 +116,7 @@ async fn in_flight_steering_preserves_identical_canonical_answers_and_segments_o
     let result = run_agent_loop(
         cfg,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &sink,
         run.clone(),
@@ -190,7 +190,7 @@ impl SessionPolicy for Reminders {
         &'a mut self,
         _: RunSnapshot<'a>,
         request: &'a mut ModelCall,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.steps += 1;
@@ -204,7 +204,7 @@ impl SessionPolicy for Reminders {
     fn finish_turn<'a>(
         &'a mut self,
         _: RunSnapshot<'a>,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async move {
             self.finishes += 1;
@@ -223,14 +223,14 @@ impl SessionPolicy for Reminders {
 #[tokio::test]
 async fn plain_policy_reminders_continue_at_answer_boundaries() {
     let model = Model::new(vec![output("first"), output("last")]);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let mut cfg = config(&model, initial_history());
     cfg.tools.clear();
     let mut policy = Reminders::default();
     let result = run_agent_loop(
         cfg,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut policy,
         &Events::default(),
         handle(&control),
@@ -300,7 +300,7 @@ impl AgentHost for Deliveries {
 #[tokio::test]
 async fn plain_host_delivery_and_child_wait_preserve_persistence_ownership() {
     let model = Model::new(vec![output("first"), output("second"), output("last")]);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let mut cfg = config(&model, initial_history());
     cfg.tools.clear();
     let host = Deliveries {
@@ -311,7 +311,7 @@ async fn plain_host_delivery_and_child_wait_preserve_persistence_ownership() {
     let result = run_agent_loop(
         cfg,
         &host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &Events::default(),
         handle(&control),
@@ -351,7 +351,7 @@ impl SessionPolicy for CancelInput {
     fn input<'a>(
         &'a mut self,
         _: &'a str,
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
             assert_eq!(control.stop(), StopAdmission::Requested);
@@ -363,7 +363,7 @@ impl SessionPolicy for CancelInput {
 #[tokio::test]
 async fn cancellation_during_plain_input_admission_makes_no_request() {
     let model = Model::new(vec![]);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     run.steer(SteeringMessage::new("cancel".into(), "cancel in hook").unwrap());
     run.follow_up(SteeringMessage::new("queued".into(), "do not consume").unwrap());
@@ -372,7 +372,7 @@ async fn cancellation_during_plain_input_admission_makes_no_request() {
     let result = run_agent_loop(
         cfg,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut CancelInput,
         &Events::default(),
         run,
@@ -388,13 +388,13 @@ async fn cancellation_during_plain_input_admission_makes_no_request() {
         .any(|message| message.text_content() == "do not consume"));
 }
 
-struct CancelFinish<'a>(AgentRunHandle<'a>);
+struct CancelFinish(AgentRunHandle);
 
-impl SessionPolicy for CancelFinish<'_> {
+impl SessionPolicy for CancelFinish {
     fn finish_turn<'a>(
         &'a mut self,
         _: RunSnapshot<'a>,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async move {
             assert_eq!(self.0.stop(), StopAdmission::Requested);
@@ -407,7 +407,7 @@ impl SessionPolicy for CancelFinish<'_> {
 async fn cancellation_in_finish_policy_retains_answer_and_cancelled_outcome() {
     for with_tools in [false, true] {
         let model = Model::new(vec![output("completed")]);
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let run = handle(&control);
         let mut cfg = config(&model, initial_history());
         if !with_tools {
@@ -416,7 +416,7 @@ async fn cancellation_in_finish_policy_retains_answer_and_cancelled_outcome() {
         let result = run_agent_loop(
             cfg,
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut CancelFinish(run.clone()),
             &Events::default(),
             run,
@@ -438,9 +438,9 @@ async fn cancellation_in_finish_policy_retains_answer_and_cancelled_outcome() {
     }
 }
 
-struct CancelWait<'a>(AgentRunHandle<'a>);
+struct CancelWait(AgentRunHandle);
 
-impl AgentHost for CancelWait<'_> {
+impl AgentHost for CancelWait {
     fn wait_for_child_results<'a>(
         &'a self,
         _: &'a str,
@@ -459,7 +459,7 @@ async fn cancellation_during_child_wait_keeps_completed_answer_once() {
     let mut answer = output("completed");
     answer.reasoning = Some("thought".into());
     let model = Model::new(vec![answer]);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     let mut cfg = config(&model, initial_history());
     cfg.tools.clear();
@@ -467,7 +467,7 @@ async fn cancellation_during_child_wait_keeps_completed_answer_once() {
     let result = run_agent_loop(
         cfg,
         &CancelWait(run.clone()),
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &events,
         run,
@@ -498,11 +498,11 @@ async fn cancellation_during_child_wait_keeps_completed_answer_once() {
     );
 }
 
-struct CancelCheckpoint<'a> {
-    control: AgentRunHandle<'a>,
+struct CancelCheckpoint {
+    control: AgentRunHandle,
     finishes: AtomicUsize,
 }
-impl AgentHost for CancelCheckpoint<'_> {
+impl AgentHost for CancelCheckpoint {
     fn checkpoint_runtime<'a>(
         &'a self,
         _: &'a str,
@@ -533,7 +533,7 @@ async fn cancellation_at_finishing_checkpoint_retains_answer_then_delivered_inpu
             answer.canonical_message = Some(canonical.clone());
         }
         let model = Model::new(vec![answer]);
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let run = handle(&control);
         run.follow_up(SteeringMessage::new("queued".into(), "do not consume").unwrap());
         let mut cfg = config(&model, initial_history());
@@ -545,7 +545,7 @@ async fn cancellation_at_finishing_checkpoint_retains_answer_then_delivered_inpu
         let result = run_agent_loop(
             cfg,
             &host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
             &Events::default(),
             run,
@@ -578,7 +578,7 @@ async fn cancellation_in_follow_up_hook_does_not_reconstruct_prior_reasoning_as_
     let canonical = answer.replay_message();
     answer.canonical_message = Some(canonical.clone());
     let model = Model::new(vec![answer]);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     run.follow_up(SteeringMessage::new("cancel".into(), "cancel in hook").unwrap());
     let mut cfg = config(&model, initial_history());
@@ -586,7 +586,7 @@ async fn cancellation_in_follow_up_hook_does_not_reconstruct_prior_reasoning_as_
     let result = run_agent_loop(
         cfg,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut CancelInput,
         &Events::default(),
         run,
@@ -613,7 +613,7 @@ async fn queued_plain_inputs_keep_one_per_step_and_steer_precedes_follow_up() {
         output("three"),
         output("four"),
     ]);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     for text in ["steer one", "steer two"] {
         assert_eq!(
@@ -632,7 +632,7 @@ async fn queued_plain_inputs_keep_one_per_step_and_steer_precedes_follow_up() {
     let result = run_agent_loop(
         cfg,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &Events::default(),
         run,

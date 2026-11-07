@@ -44,7 +44,7 @@ struct RegisteredExecutor(Mutex<Vec<String>>);
 impl ToolDispatcher for RegisteredExecutor {
     fn call<'a>(
         &'a self,
-        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        _progress: &'a crate::chat::agent::execute::ToolProgress,
         _: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -151,18 +151,24 @@ async fn registered_typed_and_dynamic_tools_share_the_real_loop() {
         definition("slow"),
     ];
     config.settings.chat_tools.tool_timeout_ms = 10;
-    let executor = RegisteredExecutor::default();
-    let host = TestHost::default();
+    let executor = Arc::new(RegisteredExecutor::default());
+    let host = Arc::new(TestHost::default());
     let identity = AgentRunIdentity {
         conversation_id: "conversation",
         run_id: "run",
         message_id: "message",
         generation: 1,
     };
-    let handle = AgentRunHandle::new(identity, &host);
-    let result = run_session(config.into_application(), &host, &executor, &host, handle)
-        .await
-        .unwrap();
+    let handle = AgentRunHandle::new(identity, host.clone());
+    let result = run_session(
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
+        handle,
+    )
+    .await
+    .unwrap();
     assert_eq!(result.content, "finished");
     assert_eq!(
         *executor.0.lock().unwrap(),

@@ -444,7 +444,7 @@ impl<'a> McpManager<'a> {
         server: &ChatMcpServer,
         name: &str,
         arguments: Value,
-        control: Option<&AgentRunHandle<'_>>,
+        control: Option<&AgentRunHandle>,
     ) -> Result<McpToolCallResult, String> {
         if control.is_some_and(|control| !control.active()) {
             return Err("MCP tool call cancelled before dispatch".into());
@@ -859,7 +859,7 @@ async fn close_transport(client: Option<Arc<McpClient>>) {
     }
 }
 
-async fn wait_cancelled(control: Option<&AgentRunHandle<'_>>) {
+async fn wait_cancelled(control: Option<&AgentRunHandle>) {
     match control {
         Some(control) => control.wait_inactive().await,
         None => std::future::pending().await,

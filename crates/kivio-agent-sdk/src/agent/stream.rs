@@ -77,7 +77,7 @@ impl ToolCallDraftTracker {
     pub(crate) fn enable_speculation(
         &self,
         executor: &dyn super::execute::ToolExecutor,
-        context: &super::execute::ToolExecutionContext<'_>,
+        context: &super::execute::ToolExecutionContext,
         effective_tools: &[crate::model::ModelTool],
     ) {
         let tools: Vec<_> = self
@@ -320,7 +320,7 @@ pub struct AgentStreamSink<'a> {
     request_started: bool,
     speculation: Option<(
         &'a dyn super::execute::ToolExecutor,
-        &'a super::execute::ToolExecutionContext<'a>,
+        &'a super::execute::ToolExecutionContext,
     )>,
 }
 
@@ -358,7 +358,7 @@ impl<'a> AgentStreamSink<'a> {
         mut self,
         speculation: Option<(
             &'a dyn super::execute::ToolExecutor,
-            &'a super::execute::ToolExecutionContext<'a>,
+            &'a super::execute::ToolExecutionContext,
         )>,
     ) -> Self {
         self.speculation = speculation;
@@ -826,7 +826,7 @@ mod tests {
     };
     use crate::agent::execute::ToolExecutionContext;
     use crate::agent::execute::{
-        ToolExecutor, ToolExecutorFuture, ToolFuture, ToolPreparation, ToolProgress,
+        ToolExecutor, ToolExecutorFuture, ToolFuture, ToolInvocation, ToolPreparation, ToolProgress,
     };
     use crate::agent::host::{AgentHost, AgentHostFuture, SpeculativeTaskScope};
     use crate::agent::provider_runtime::{ModelCall, ModelDelivery, ModelOutputSink};
@@ -847,13 +847,13 @@ mod tests {
         tool
     }
 
-    #[derive(Default)]
+    #[derive(Clone, Default)]
     struct TestHost {
-        stopped: AtomicBool,
+        stopped: Arc<AtomicBool>,
         scope_drops: Option<Arc<AtomicUsize>>,
-        records: Mutex<Vec<AgentToolCall>>,
-        segments: Mutex<Vec<ContentBlock>>,
-        searches: Mutex<Vec<ContentBlock>>,
+        records: Arc<Mutex<Vec<AgentToolCall>>>,
+        segments: Arc<Mutex<Vec<ContentBlock>>>,
+        searches: Arc<Mutex<Vec<ContentBlock>>>,
     }
 
     struct TestScope(Arc<AtomicUsize>);
@@ -873,26 +873,20 @@ mod tests {
     impl ToolExecutor for TestHost {
         fn before_tool_call<'a>(
             &'a self,
-            _: &'a ToolProgress<'a>,
-            _: &'a ToolExecutionContext<'a>,
+            _: &'a ToolProgress,
+            _: &'a ToolExecutionContext,
             _: &'a ToolDefinition,
             _: PendingToolCall,
             _: AgentToolCall,
         ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
             unreachable!("stream tests do not execute tools")
         }
-        fn call<'a>(
-            &'a self,
-            _progress: &'a ToolProgress<'a>,
-            _: &'a ToolExecutionContext<'a>,
-            _: &'a ToolDefinition,
-            _: Value,
-        ) -> ToolExecutorFuture<'a> {
+        fn call(self: Arc<Self>, _invocation: ToolInvocation) -> ToolExecutorFuture<'static> {
             unreachable!("stream tests do not execute tools")
         }
         fn start_speculation(
             &self,
-            _: &ToolExecutionContext<'_>,
+            _: &ToolExecutionContext,
             tools: &[ToolDefinition],
         ) -> Option<Box<dyn SpeculativeTaskScope>> {
             if !tools.iter().any(|tool| tool.speculative) {
@@ -1353,7 +1347,7 @@ mod tests {
             message_id: "message",
             generation: 1,
         };
-        let control = AgentRunHandle::new(identity, host);
+        let control = AgentRunHandle::new(identity, Arc::new(host.clone()));
         AgentContext::new(host, host, control)
     }
 
@@ -1392,12 +1386,12 @@ mod tests {
         };
         let agent = test_context(&host);
         let context = ToolExecutionContext {
-            conversation_id: "conversation",
-            run_id: "run",
-            message_id: "message",
+            conversation_id: "conversation".into(),
+            run_id: "run".into(),
+            message_id: "message".into(),
             generation: 1,
             round: 1,
-            tool_call_id: "",
+            tool_call_id: "".into(),
         };
         let mut tool = ToolDefinition::new(crate::model::ModelTool {
             name: "task".into(),
@@ -1459,12 +1453,12 @@ mod tests {
             };
             let agent = test_context(&host);
             let context = ToolExecutionContext {
-                conversation_id: "conversation",
-                run_id: "run",
-                message_id: "message",
+                conversation_id: "conversation".into(),
+                run_id: "run".into(),
+                message_id: "message".into(),
                 generation: 1,
                 round: 1,
-                tool_call_id: "",
+                tool_call_id: "".into(),
             };
             let tracker = ToolCallDraftTracker::new(vec![tool], 1, None, 0);
             {

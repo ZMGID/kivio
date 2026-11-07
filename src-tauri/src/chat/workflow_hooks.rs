@@ -501,7 +501,7 @@ fn session_cell(runtime: &Runtime, session: &str) -> SessionCell {
 /// Cancellation covers stdin, process output and all handlers, not only tool execution.
 pub async fn run_for_host(
     host: &dyn crate::chat::tool_runtime::ApplicationHost,
-    control: crate::chat::agent::control::AgentRunHandle<'_>,
+    control: crate::chat::agent::control::AgentRunHandle,
     event: &str,
     input: Value,
 ) -> Result<Outcome, String> {
@@ -519,7 +519,7 @@ pub async fn run_for_host(
 
 pub async fn start_context(
     host: &dyn crate::chat::tool_runtime::ApplicationHost,
-    control: crate::chat::agent::control::AgentRunHandle<'_>,
+    control: crate::chat::agent::control::AgentRunHandle,
     session: &str,
     resumed: bool,
     subagent: bool,
@@ -574,7 +574,7 @@ pub async fn remember_context(runtime: &Runtime, session: &str, context: &[Strin
 
 pub async fn compact_context(
     host: &dyn crate::chat::tool_runtime::ApplicationHost,
-    control: crate::chat::agent::control::AgentRunHandle<'_>,
+    control: crate::chat::agent::control::AgentRunHandle,
     session: &str,
 ) -> Result<Vec<String>, String> {
     let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) else {

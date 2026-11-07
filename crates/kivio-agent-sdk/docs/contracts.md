@@ -50,6 +50,10 @@ The order is input admission, request preparation, context transformation, exist
 
 Hooks are asynchronous and receive the current cancellation handle. Cancellation discards late modifications and prevents new tool execution. Returned hook errors become `AgentFailure::Hook`, retain paired history and completed effects, and use normal cleanup. After-hook failure does not rerun a tool. Different tools retain the existing parallel execution rules; one tool's before/call/after phases remain ordered. Managed tool cleanup is awaited even after cancellation or a deadline.
 
+`ToolExecutor::call(self: Arc<Self>, invocation: ToolInvocation)` returns a `ToolExecutorFuture<'static>`. The invocation owns its context, definition, arguments, progress sender and run control. The SDK constructs and polls the call future inside a separately scheduled Tokio task. Before and after hooks remain borrowed futures polled by the parent. Parallel execution remains capped at 12 calls per round, and history retains input order even when calls complete in a different order.
+
+`ToolProgress::updated(&record).await` sends through a bounded channel with capacity 32 per call. The parent forwards updates while polling hooks, awaiting execution, and draining cancellation, then flushes queued updates before the terminal record. Slow observation applies backpressure. Tool implementations must await updates and must not retain the sender for detached work after the call returns. Event callbacks and mutable core state remain in the parent.
+
 `SessionPolicy::start` and `input` retain workflow injection; `prepare_context` retains explicit reset/compaction and checkpoint coordination; recovery remains with its existing owner. The application moves transient image pruning into request projection. Todo reminders remain canonical messages admitted through the existing `before_step` lifecycle operation, preserving cadence across runs and queued follow-ups. Todo final checks use `finish_turn`. `ContextUpdate::SendView` remains an explicit history reset, distinct from `transform_context`'s temporary view. `before_step` remains the synchronous canonical-input admission operation; it is not interchangeable with the temporary `prepare_request` view. The old `before_finish` method is removed. Executors migrate `prepare` to `before_tool_call` and `after` to `after_tool_call` with explicit result fields.
 
 `RunLimits` optionally sets `max_model_steps: NonZeroU32` and `timeout: Duration`. Both are unlimited by default to preserve existing desktop behavior. Step limits cover loop-owned planning, synthesis, and recovery model requests; a custom policy must bound any independent I/O it performs. Exhaustion returns `AgentFailure::LimitExceeded` and partial history. The deadline requests cancellation and awaits managed cleanup, so elapsed wall time can exceed the deadline while cleanup finishes. It is not a durable execution checkpoint or an automatic retry policy.
@@ -66,7 +70,7 @@ Tool authors own validation that depends on real resources, such as permitted pa
 
 ## Identity, admission, and input consumption
 
-The host supplies a conversation ID, run ID, result message ID, and generation. Generation isolates a process-local run from later runs. Durable history revisions belong to the host's session store. Each new `AgentRunHandle` also receives a process-local invocation ID. Clones retain that invocation ID and share its completion state.
+The host supplies a conversation ID, run ID, result message ID, and generation. `AgentRunHandle::new` copies these identity strings and owns an `Arc<dyn AgentRunControl>`; the handle has no borrowed lifetime. `identity()` returns a borrowed view. Generation isolates a process-local run from later runs. Durable history revisions belong to the host's session store. Each new `AgentRunHandle` also receives a process-local invocation ID. Clones retain that invocation ID and share its completion state.
 
 A handle starts at most one core invocation. Reusing a running or finished handle returns an error. A fresh invocation uses a fresh handle and a control bound to that invocation. The example allocates a fresh mailbox for continuation. A host that reuses its own mailbox must isolate generations and clear unconsumed input during cancellation and cleanup.
 
@@ -78,7 +82,7 @@ The SDK does not reserve application-wide run capacity. The host prevents confli
 
 ## Event order and completion
 
-`AgentEventSink::on_event` is a synchronous, serialized callback. There is no internal event backlog. Slow callbacks delay the producer. Callbacks must return and must not re-enter the same invocation's event producer. Returning `EventDelivery::Closed` detaches that observer. It does not cancel the run, bypass approval, or stop host lifecycle hooks.
+`AgentEventSink::on_event` is a synchronous, serialized callback. Tool tasks reach it through the bounded progress channel described above; other core events are direct. Slow callbacks delay the producer. Callbacks must return and must not re-enter the same invocation's event producer. Returning `EventDelivery::Closed` detaches that observer. It does not cancel the run, bypass approval, or stop host lifecycle hooks.
 
 Within one invocation, sequence numbers increase strictly. `RunStarted` precedes step, model message, and tool facts. Step and message events have matching end events. Tool events pair by round and call ID. Concurrent tool work can interleave facts, so consumers use these identities instead of assuming adjacent pairs.
 
@@ -92,9 +96,9 @@ Core completion does not report successful outer persistence. The host awaits th
 
 `AgentRunHandle::stop()` requests cooperative cancellation and returns `Requested` or `Inactive`. It does not wait for cleanup. `wait_inactive()` observes host inactivity or core completion. A stop can make it return while cleanup is still running. Awaiting `run_agent_loop` is the core cleanup boundary.
 
-Ordinary cancelled tool calls stop accepting results and drop the in-flight tool future. `PreparedToolCall::drain_on_cancel` makes the core await that tool instead. This flag also bypasses the ordinary core timeout around `call`, so the tool must bound its own I/O and cleanup. A host that requires tool completion preserves its own outer cleanup ordering. Drained work can report actual completion in the old invocation before its terminal event. Cancellation prevents a new model step from using late output.
+Ordinary cancelled or timed-out tool calls abort their owned task and await its termination before publishing the terminal result. `PreparedToolCall::drain_on_cancel` makes the core await that tool cooperatively instead. This flag also bypasses the ordinary core timeout around `call`, so the tool must bound its own I/O and cleanup. A host that requires tool completion preserves its own outer cleanup ordering. Drained work reports actual completion in the old invocation even when cancellation races with completion. Cancellation prevents a new model step from using late output. A panic during call construction or polling becomes the existing typed `AgentFailure::Host` for `tool.call`.
 
-The standalone provider cancels an HTTP read when its generation future is dropped. Dropping the entire loop future closes paired event scopes and emits `RunEnded::Dropped` when the loop has started. Dropping does not await asynchronous tool cleanup or save a final result. Tools that spawn work outside their futures require host-owned cancellation and joining. Hosts that need drain guarantees request stop and await the loop instead of aborting it.
+The standalone provider cancels an HTTP read when its generation future is dropped. Dropping the entire loop future closes paired event scopes and emits `RunEnded::Dropped` when the loop has started. Its task owner aborts unfinished tool tasks as a safety net. Rust `Drop` cannot await their termination, drain managed tools, or save a final result. Tools that spawn work outside their futures require host-owned cancellation and joining. Hosts that need drain guarantees request stop and await the loop instead of aborting it.
 
 ## History and persistence
 

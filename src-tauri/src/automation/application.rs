@@ -244,7 +244,7 @@ struct WorkflowToolExecutor {
 impl ToolExecutor for WorkflowToolExecutor {
     fn call<'a>(
         &'a self,
-        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        progress: &'a crate::chat::agent::execute::ToolProgress,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -482,12 +482,12 @@ async fn run_builtin_agent_node(
         serde_json::json!({ "role": "user", "content": prompt }),
     ];
 
-    let host = WorkflowAgentHost;
+    let host = std::sync::Arc::new(WorkflowAgentHost);
     let events = WorkflowAgentEvents::default();
-    let executor = WorkflowToolExecutor {
+    let executor = std::sync::Arc::new(WorkflowToolExecutor {
         app: app.clone(),
         skills: skills::for_run(registry.clone(), None),
-    };
+    });
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
     } else {
@@ -546,9 +546,9 @@ async fn run_builtin_agent_node(
             message_id: &message_id,
             generation,
         },
-        &control,
+        std::sync::Arc::new(control),
     );
-    let outcome = run_agent_loop(config, &host, &executor, &events, handle).await;
+    let outcome = run_agent_loop(Box::new(config), host, executor, &events, handle).await;
     state
         .chat_runtime()
         .end_generation(&conversation_id, generation);

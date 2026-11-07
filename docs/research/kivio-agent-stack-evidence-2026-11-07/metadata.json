@@ -1,0 +1,16 @@
+{
+  "source_commit": "36655fa18f8d63a35f11256714af807bdc299086",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "profile": "dev, opt-level=0",
+  "worker_stack_bytes": 2097152,
+  "operating_system": "Windows x86_64",
+  "sdk_features": [
+    "skills",
+    "mcp"
+  ],
+  "jsonschema": "0.60.2, default-features=false",
+  "source_sha256": "944B9EBB13BC0447E37ECAA3D4916F669A676B6127C6419B7B8571AA2694A45A",
+  "lockfile_sha256": "974512154CF14383BE23A1CDE05858405DD3BA3FED903193F1AD50FD17EFC44C",
+  "executable_sha256": "7720520C09186701C4B8E09E5732E913DB0B28110779A6D1A121B41C4E9528D6",
+  "limitations": "Diagnostic uses real SDK public API; not a desktop IPC reproduction, not a first-regression bisect, not a universal overflow threshold."
+}

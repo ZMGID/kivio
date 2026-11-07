@@ -98,11 +98,11 @@ async fn planning_keeps_all_options_and_the_callers_tool_choice() {
         let mut config = config(&model, initial_history());
         config.options = options(choice);
         config.model = "gpt-unknown-model".into();
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let result = run_agent_loop(
             config,
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
             &Events::default(),
             handle(&control),
@@ -132,11 +132,11 @@ async fn plain_answer_preserves_the_callers_tool_prohibition() {
     let mut config = config(&model, initial_history());
     config.tools.clear();
     config.options = options(ToolChoice::None);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let result = run_agent_loop(
         config,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &Events::default(),
         handle(&control),
@@ -161,11 +161,11 @@ async fn plain_auto_allows_native_search_without_function_calling_capability() {
     config.capabilities.tools = Some(false);
     config.capabilities.builtin_web_search = Some(true);
     config.options = options(ToolChoice::Auto);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let result = run_agent_loop(
         config,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &Events::default(),
         handle(&control),
@@ -210,12 +210,12 @@ async fn recovery_forces_no_tools_and_retains_options_after_completed_tool_work(
     ]);
     let mut config = config(&model, initial_history());
     config.options = options(ToolChoice::Auto);
-    let control = Control::default();
-    let executor = EchoTool::new(true);
+    let control = std::sync::Arc::new(Control::default());
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let result = run_agent_loop(
         config,
         &Host,
-        &executor,
+        executor.clone(),
         &mut Retry,
         &Events::default(),
         handle(&control),
@@ -266,11 +266,11 @@ async fn known_unsupported_requests_fail_before_entering_the_provider() {
             }
             _ => unreachable!(),
         }
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let error = run_agent_loop(
             config,
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
             &Events::default(),
             handle(&control),
@@ -295,12 +295,12 @@ async fn known_unsupported_tools_use_the_existing_plain_fallback() {
     let mut config = config(&model, initial_history());
     config.capabilities.tools = Some(false);
     config.options = options(ToolChoice::Auto);
-    let control = Control::default();
-    let executor = EchoTool::new(true);
+    let control = std::sync::Arc::new(Control::default());
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let result = run_agent_loop(
         config,
         &Host,
-        &executor,
+        executor.clone(),
         &mut NoSessionPolicy,
         &Events::default(),
         handle(&control),
@@ -322,11 +322,11 @@ async fn non_reasoning_models_accept_the_desktop_default_without_a_reasoning_par
     config.options.thinking_enabled = true;
     config.options.thinking_level = None;
     config.capabilities.reasoning = Some(false);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let result = run_agent_loop(
         config,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &Events::default(),
         handle(&control),
@@ -352,11 +352,11 @@ async fn tool_prohibition_disables_native_search_even_when_capabilities_are_fals
     config.options = options(ToolChoice::None);
     config.options.thinking_enabled = false;
     config.options.thinking_level = Some("off".into());
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let result = run_agent_loop(
         config,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &Events::default(),
         handle(&control),

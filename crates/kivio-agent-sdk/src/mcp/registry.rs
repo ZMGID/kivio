@@ -3,7 +3,7 @@ use crate::{
     agent::{
         content::{AgentToolCall, AgentToolStatus},
         execute::{PreparedToolCall, ToolPreparation, ToolProgress},
-        ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
+        ToolExecutionContext, ToolExecutor, ToolExecutorFuture, ToolInvocation,
     },
     model::{ModelTool, PendingToolCall},
     tools::{
@@ -11,6 +11,7 @@ use crate::{
         ToolOutput, ToolRegistry,
     },
 };
+#[cfg(test)]
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 
@@ -145,8 +146,8 @@ struct RegisteredMcp {
 impl ToolExecutor for RegisteredMcp {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
@@ -181,14 +182,14 @@ impl ToolExecutor for RegisteredMcp {
         })
     }
 
-    fn call<'a>(
-        &'a self,
-        progress: &'a ToolProgress<'a>,
-        _ctx: &'a ToolExecutionContext<'a>,
-        tool: &'a ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(self: Arc<Self>, invocation: ToolInvocation) -> ToolExecutorFuture<'static> {
         Box::pin(async move {
+            let ToolInvocation {
+                progress,
+                tool,
+                arguments,
+                ..
+            } = invocation;
             validate_arguments(&tool.model.input_schema, &arguments)?;
             let result = self
                 .client

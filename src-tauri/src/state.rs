@@ -42,7 +42,7 @@ pub struct AppState {
     #[cfg(target_os = "macos")]
     frontmost_apps: crate::window_focus::FrontmostAppState,
     /// Chat 运行、输入信箱与创建协调；索引由 chat 领域私有持有。
-    chat_runtime: crate::chat::runtime_state::ChatRuntimeState,
+    chat_runtime: std::sync::Arc<crate::chat::runtime_state::ChatRuntimeState>,
     /// Sequenced replay hub and live IPC subscribers share one protocol owner.
     chat_protocol: crate::chat::protocol::ChatProtocolState,
     /// Chat 审批、会话授权与 ask-user 的瞬态状态。领域句柄私有持有所有 map/lock，
@@ -153,7 +153,9 @@ impl AppState {
         &self.external_discovery
     }
 
-    pub(crate) fn chat_runtime(&self) -> &crate::chat::runtime_state::ChatRuntimeState {
+    pub(crate) fn chat_runtime(
+        &self,
+    ) -> &std::sync::Arc<crate::chat::runtime_state::ChatRuntimeState> {
         &self.chat_runtime
     }
 
@@ -200,7 +202,9 @@ impl AppState {
             lens_runtime: crate::lens::LensRuntimeState::default(),
             #[cfg(target_os = "macos")]
             frontmost_apps: crate::window_focus::FrontmostAppState::default(),
-            chat_runtime: crate::chat::runtime_state::ChatRuntimeState::default(),
+            chat_runtime: std::sync::Arc::new(
+                crate::chat::runtime_state::ChatRuntimeState::default(),
+            ),
             chat_protocol: crate::chat::protocol::ChatProtocolState::default(),
             chat_interactions: crate::chat::interaction_state::ChatInteractionState::default(),
             external_discovery:
@@ -383,7 +387,7 @@ impl AppState {
         server: &crate::settings::ChatMcpServer,
         name: &str,
         arguments: serde_json::Value,
-        control: Option<&crate::chat::agent::control::AgentRunHandle<'_>>,
+        control: Option<&crate::chat::agent::control::AgentRunHandle>,
     ) -> Result<crate::mcp::types::McpToolCallResult, String> {
         self.mcp_manager()
             .mcp_call_tool(sink, server, name, arguments, control)

@@ -14,12 +14,12 @@ use crate::chat::{ask_user, model::PendingToolCall, tools::ArgumentPolicy};
 use crate::mcp::ChatToolDefinition;
 use crate::settings::Settings;
 use serde_json::Value;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 pub trait ToolDispatcher: Send + Sync {
     fn call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
+        progress: &'a ToolProgress,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
@@ -101,8 +101,8 @@ pub trait ApplicationHost: AgentHost {
 
 struct ApplicationToolContext<'a> {
     host: &'a dyn ApplicationHost,
-    control: crate::chat::agent::control::AgentRunHandle<'a>,
-    progress: &'a ToolProgress<'a>,
+    control: crate::chat::agent::control::AgentRunHandle,
+    progress: &'a ToolProgress,
 }
 impl<'a> std::ops::Deref for ApplicationToolContext<'a> {
     type Target = dyn ApplicationHost + 'a;
@@ -111,8 +111,8 @@ impl<'a> std::ops::Deref for ApplicationToolContext<'a> {
     }
 }
 impl ApplicationToolContext<'_> {
-    fn tool_updated(&self, record: &AgentToolCall) {
-        self.progress.updated(record);
+    async fn tool_updated(&self, record: &AgentToolCall) {
+        self.progress.updated(record).await;
     }
 }
 
@@ -366,7 +366,7 @@ async fn execute_ask_user_call(
         ask_user::ASK_USER_PHASE_AWAITING,
         &Default::default(),
     ));
-    host.tool_updated(&record);
+    host.tool_updated(&record).await;
 
     let started = Instant::now();
     let response = host
@@ -505,95 +505,98 @@ fn timeout_argument_summary(arguments: &Value) -> String {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct ToolAuthority<'a> {
-    pub provider: &'a crate::settings::ModelProvider,
-    pub model: &'a str,
+pub struct RunToolSnapshot {
+    pub settings: Settings,
+    pub provider: crate::settings::ModelProvider,
+    pub model: String,
     pub depth: u8,
-    pub tool_conversation_id: &'a str,
-    pub plan_state: &'a crate::chat::types::AgentPlanState,
-    pub mcp_tool_ids: &'a [(String, String)],
-    pub mcp_server_ids: &'a [String],
-    pub approval_policy: &'a str,
+    pub tool_conversation_id: String,
+    pub plan_state: crate::chat::types::AgentPlanState,
+    pub mcp_tool_ids: Vec<(String, String)>,
+    pub mcp_server_ids: Vec<String>,
+    pub approval_policy: String,
     pub interactive_host: bool,
+    pub tools: Vec<ChatToolDefinition>,
 }
-
-impl<'a> ToolAuthority<'a> {
+impl RunToolSnapshot {
     #[cfg(test)]
-    pub fn from_context(ctx: &'a ToolExecutionContext<'a>) -> Self {
+    pub fn from_context(
+        settings: &Settings,
+        ctx: &ToolExecutionContext<'_>,
+        tools: &[ChatToolDefinition],
+    ) -> Self {
         Self {
-            provider: ctx.provider,
-            model: ctx.model,
+            settings: settings.clone(),
+            provider: ctx.provider.clone(),
+            model: ctx.model.into(),
             depth: ctx.depth,
-            tool_conversation_id: ctx.tool_conversation_id,
-            plan_state: ctx.plan_state,
-            mcp_tool_ids: ctx.mcp_tool_ids,
-            mcp_server_ids: ctx.mcp_server_ids,
-            approval_policy: ctx.approval_policy,
+            tool_conversation_id: ctx.tool_conversation_id.into(),
+            plan_state: ctx.plan_state.clone(),
+            mcp_tool_ids: ctx.mcp_tool_ids.to_vec(),
+            mcp_server_ids: ctx.mcp_server_ids.to_vec(),
+            approval_policy: ctx.approval_policy.into(),
             interactive_host: ctx.interactive_host,
+            tools: tools.to_vec(),
         }
     }
-
-    fn context<'b>(
-        &'b self,
-        ctx: &'b crate::chat::agent::execute::ToolExecutionContext<'b>,
-    ) -> ToolExecutionContext<'b> {
+    fn context<'a>(
+        &'a self,
+        ctx: &'a crate::chat::agent::execute::ToolExecutionContext,
+    ) -> ToolExecutionContext<'a> {
         ToolExecutionContext {
-            conversation_id: ctx.conversation_id,
-            run_id: ctx.run_id,
-            message_id: ctx.message_id,
+            conversation_id: &ctx.conversation_id,
+            run_id: &ctx.run_id,
+            message_id: &ctx.message_id,
             generation: ctx.generation,
             round: ctx.round,
-            tool_call_id: ctx.tool_call_id,
-            provider: self.provider,
-            model: self.model,
+            tool_call_id: &ctx.tool_call_id,
+            provider: &self.provider,
+            model: &self.model,
             depth: self.depth,
-            tool_conversation_id: self.tool_conversation_id,
-            plan_state: self.plan_state,
-            mcp_tool_ids: self.mcp_tool_ids,
-            mcp_server_ids: self.mcp_server_ids,
-            approval_policy: self.approval_policy,
+            tool_conversation_id: &self.tool_conversation_id,
+            plan_state: &self.plan_state,
+            mcp_tool_ids: &self.mcp_tool_ids,
+            mcp_server_ids: &self.mcp_server_ids,
+            approval_policy: &self.approval_policy,
             interactive_host: self.interactive_host,
         }
     }
 }
-
-pub struct ApplicationToolExecutor<'a> {
-    pub settings: &'a Settings,
-    pub authority: ToolAuthority<'a>,
-    pub tools: &'a [ChatToolDefinition],
-    pub host: &'a dyn ApplicationHost,
-    pub dispatcher: &'a dyn ToolDispatcher,
+pub struct ApplicationToolExecutor {
+    pub snapshot: Arc<RunToolSnapshot>,
+    pub host: Arc<dyn ApplicationHost>,
+    pub dispatcher: Arc<dyn ToolDispatcher>,
 }
 
-impl ApplicationToolExecutor<'_> {
+impl ApplicationToolExecutor {
     fn definition(&self, tool: &crate::chat::tools::ToolDefinition) -> &ChatToolDefinition {
-        self.tools
+        self.snapshot
+            .tools
             .iter()
             .find(|candidate| candidate.id == tool.key)
             .expect("registered tool has application definition")
     }
 }
 
-impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
+impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a crate::chat::agent::execute::ToolExecutionContext,
         tool: &'a crate::chat::tools::ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
     ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
         Box::pin(async move {
             let host = ApplicationToolContext {
-                host: self.host,
+                host: self.host.as_ref(),
                 control: progress.control.clone(),
                 progress,
             };
             before_tool_call(
                 &host,
-                self.settings,
-                &self.authority.context(ctx),
+                &self.snapshot.settings,
+                &self.snapshot.context(ctx),
                 self.definition(tool),
                 call,
                 record,
@@ -602,20 +605,17 @@ impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
         })
     }
 
-    fn call<'a>(
-        &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
-        tool: &'a crate::chat::tools::ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(
+        self: Arc<Self>,
+        invocation: crate::chat::agent::execute::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
         Box::pin(async move {
             self.dispatcher
                 .call(
-                    progress,
-                    &self.authority.context(ctx),
-                    self.definition(tool),
-                    arguments,
+                    &invocation.progress,
+                    &self.snapshot.context(&invocation.context),
+                    self.definition(&invocation.tool),
+                    invocation.arguments,
                 )
                 .await
         })
@@ -623,8 +623,8 @@ impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
 
     fn after_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a crate::chat::agent::execute::ToolExecutionContext,
         tool: &'a crate::chat::tools::ToolDefinition,
         arguments: Value,
         content: &'a str,
@@ -632,13 +632,13 @@ impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
     ) -> ToolFuture<'a, Result<ToolResultUpdate, String>> {
         Box::pin(async move {
             let host = ApplicationToolContext {
-                host: self.host,
+                host: self.host.as_ref(),
                 control: progress.control.clone(),
                 progress,
             };
             after_tool_call(
                 &host,
-                &self.authority.context(ctx),
+                &self.snapshot.context(ctx),
                 self.definition(tool),
                 arguments,
                 content,
@@ -650,15 +650,18 @@ impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
 
     fn start_speculation(
         &self,
-        ctx: &crate::chat::agent::execute::ToolExecutionContext<'_>,
+        ctx: &crate::chat::agent::execute::ToolExecutionContext,
         tools: &[crate::chat::tools::ToolDefinition],
     ) -> Option<Box<dyn SpeculativeTaskScope>> {
         let definitions: Vec<_> = tools
             .iter()
             .map(|tool| self.definition(tool).clone())
             .collect();
-        self.host
-            .start_speculation(self.settings, &definitions, &self.authority.context(ctx))
+        self.host.start_speculation(
+            &self.snapshot.settings,
+            &definitions,
+            &self.snapshot.context(ctx),
+        )
     }
 
     fn blocked_feedback(&self, tool: &crate::chat::tools::ToolDefinition) -> String {

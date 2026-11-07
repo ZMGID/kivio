@@ -93,12 +93,23 @@ pub fn coerce_arguments(schema: &Value, value: Value) -> Value {
     else {
         return value;
     };
-    Coercion { schema, validators }.coerce("#", value, &mut Vec::new())
+    Coercion {
+        schema,
+        validators,
+        work: std::cell::Cell::new(MAX_COERCION_STEPS),
+    }
+    .coerce("#", value, &mut Vec::new(), 0)
 }
+
+/// Nested schema/instance steps one coercion may follow; beyond it the value is left for validation.
+const MAX_COERCION_DEPTH: usize = 128;
+/// Total steps across all branches, so anyOf fan-out cannot turn into exponential work.
+const MAX_COERCION_STEPS: usize = 10_000;
 
 struct Coercion<'a> {
     schema: &'a Value,
     validators: jsonschema::ValidatorMap,
+    work: std::cell::Cell<usize>,
 }
 
 impl Coercion<'_> {
@@ -108,10 +119,20 @@ impl Coercion<'_> {
             .is_some_and(|validator| validator.is_valid(value))
     }
 
-    fn coerce(&self, path: &str, mut value: Value, active: &mut Vec<String>) -> Value {
-        if active.iter().any(|seen| seen == path) {
+    fn coerce(
+        &self,
+        path: &str,
+        mut value: Value,
+        active: &mut Vec<String>,
+        depth: usize,
+    ) -> Value {
+        if depth > MAX_COERCION_DEPTH
+            || self.work.get() == 0
+            || active.iter().any(|seen| seen == path)
+        {
             return value;
         }
+        self.work.set(self.work.get() - 1);
         let mut scope = path.strip_prefix('#').unwrap_or(path);
         while !scope.is_empty() {
             if self
@@ -133,12 +154,12 @@ impl Coercion<'_> {
         // shortcut: Coercion follows local pointers; extend it when tools use scoped or anchor refs.
         if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
             if reference.starts_with('#') {
-                value = self.coerce(reference, value, active);
+                value = self.coerce(reference, value, active, depth + 1);
             }
         }
         if let Some(all_of) = schema.get("allOf").and_then(Value::as_array) {
             for index in 0..all_of.len() {
-                value = self.coerce(&format!("{path}/allOf/{index}"), value, active);
+                value = self.coerce(&format!("{path}/allOf/{index}"), value, active, depth + 1);
             }
         }
         for keyword in ["anyOf", "oneOf"] {
@@ -148,7 +169,7 @@ impl Coercion<'_> {
                     .collect();
                 if !paths.iter().any(|option| self.is_valid(option, &value)) {
                     for option in paths {
-                        let candidate = self.coerce(&option, value.clone(), active);
+                        let candidate = self.coerce(&option, value.clone(), active, depth + 1);
                         if self.is_valid(&option, &candidate) {
                             value = candidate;
                             break;
@@ -190,7 +211,7 @@ impl Coercion<'_> {
                             }
                             object.insert(
                                 key.clone(),
-                                self.coerce(&child_path, child, &mut Vec::new()),
+                                self.coerce(&child_path, child, &mut Vec::new(), depth + 1),
                             );
                         }
                     }
@@ -212,6 +233,7 @@ impl Coercion<'_> {
                                     &format!("{path}/additionalProperties"),
                                     child,
                                     &mut Vec::new(),
+                                    depth + 1,
                                 ),
                             );
                         }
@@ -226,6 +248,7 @@ impl Coercion<'_> {
                         &format!("{path}/items"),
                         std::mem::take(item),
                         &mut Vec::new(),
+                        depth + 1,
                     );
                 }
             }
@@ -421,6 +444,42 @@ mod tests {
         assert_eq!(value, json!({"count":1,"next":{"count":2}}));
         assert!(validate_arguments(&schema, &value).is_ok());
         assert_eq!(coerce_arguments(&json!({"$ref":"#"}), json!(1)), json!(1));
+    }
+
+    #[test]
+    fn long_reference_chains_stop_at_the_budget_on_a_small_stack() {
+        // 1024 distinct chained refs overflowed a 2 MiB thread before the depth budget.
+        let mut definitions = serde_json::Map::new();
+        for index in 0..1024 {
+            definitions.insert(
+                format!("d{index}"),
+                if index == 1023 {
+                    json!({"type":"integer"})
+                } else {
+                    json!({"$ref": format!("#/$defs/d{}", index + 1)})
+                },
+            );
+        }
+        let long = json!({"$ref":"#/$defs/d0", "$defs": definitions});
+        let short =
+            json!({"$ref":"#/$defs/a", "$defs":{"a":{"$ref":"#/$defs/b"}, "b":{"type":"integer"}}});
+        let (long, short) = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                (
+                    coerce_arguments(&long, json!("7")),
+                    coerce_arguments(&short, json!("7")),
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            long,
+            json!("7"),
+            "beyond the budget the value is left for validation"
+        );
+        assert_eq!(short, json!(7));
     }
 
     #[test]

@@ -60,7 +60,7 @@ node scripts/probe-chat-tools.mjs --exe src-tauri/target/debug/kivio.exe --app-d
 
 Windows Dev 构建使用仓库的 `[profile.dev] opt-level = 1`，保留调试信息与断言。仅优化依赖不能控制应用内实例化的泛型代码，见 [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html#overrides-and-generics)。不要通过环境变量将应用优化级别降回 0 后沿用本验收结果。基础优化会增加构建时间，并影响调试器逐行执行的对应关系。
 
-工具回归还要求工作线程栈保持默认 2 MiB，且 native MCP 连接入口的每个采样至少剩余 1 MiB。该断言监测已复现路径的栈余量，不代表全程峰值或所有工具的栈上界。模拟服务验证真实客户端的协议与执行路径；真实服务商、其他工具和 release 安装包需要单独验证。
+应用自建 tokio 运行时，工作线程栈为 8 MiB（`lib.rs` 的 `run`），Windows EXE 主线程栈 reserve 为 8 MiB（`build.rs` 的 `/STACK`）。SDK 把每次工具执行放进独立 Tokio 任务，工具链不再叠加在发送与 reply 的 poll 链上；schema 参数转换有深度与总步数上限。debug 构建可用 `KIVIO_WORKER_STACK_BYTES` 缩小工作线程栈，脚本的 `--worker-stack-bytes 2097152` 用它在默认 2 MiB 上验证结构而非余量。工具回归断言采样的线程栈与请求值一致，且 native MCP 连接入口至少剩余 1 MiB。该断言监测已复现路径的栈余量，不代表全程峰值或所有工具的栈上界。模拟服务验证真实客户端的协议与执行路径；真实服务商、其他工具和 release 安装包需要单独验证。
 
 ## 观察 / 调试
 

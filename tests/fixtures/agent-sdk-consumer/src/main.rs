@@ -14,15 +14,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .timeout(Duration::from_secs(60))
         .build()?;
     let provider = OpenAiChatProvider::new(client, transport);
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let events = Events::default();
     let mut run_config = config(&provider, initial_history());
     run_config.model = model;
-    let executor = EchoTool::new(true);
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let result = run_agent_loop(
         run_config,
         &Host,
-        &executor,
+        executor.clone(),
         &mut NoSessionPolicy,
         &events,
         handle(&control),

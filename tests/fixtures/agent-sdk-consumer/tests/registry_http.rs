@@ -48,8 +48,8 @@ struct Authorization(bool);
 impl ToolAuthorization for Authorization {
     fn authorize<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        _: &'a ToolExecutionContext,
         _: &'a ToolDefinition,
         _: &'a Value,
     ) -> ToolFuture<'a, Result<(), ToolError>> {
@@ -88,11 +88,11 @@ async fn registered_static_tool_completes_http_roundtrip_without_a_custom_execut
         let snapshot = registry.snapshot();
         let mut cfg = config(&provider, initial_history());
         cfg.tools = snapshot.definitions();
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let result = run_agent_loop(
             cfg,
             &Host,
-            &snapshot,
+            std::sync::Arc::new(snapshot.clone()),
             &mut NoSessionPolicy,
             &Events::default(),
             handle(&control),

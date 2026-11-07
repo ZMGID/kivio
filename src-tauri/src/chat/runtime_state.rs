@@ -640,37 +640,37 @@ fn is_generation_active(indexes: &ChatRunIndexes, conversation_id: &str, generat
 }
 
 /// Desktop conversation inputs remain shared across deliberate sibling answer arms.
-pub(crate) struct ChatRunControl<'a> {
-    runtime: &'a ChatRuntimeState,
-    conversation_id: &'a str,
+pub(crate) struct ChatRunControl {
+    runtime: std::sync::Arc<ChatRuntimeState>,
+    conversation_id: String,
     generation: u64,
 }
 
-impl<'a> ChatRunControl<'a> {
+impl ChatRunControl {
     pub(crate) fn new(
-        runtime: &'a ChatRuntimeState,
-        conversation_id: &'a str,
+        runtime: &std::sync::Arc<ChatRuntimeState>,
+        conversation_id: &str,
         generation: u64,
     ) -> Self {
         Self {
-            runtime,
-            conversation_id,
+            runtime: runtime.clone(),
+            conversation_id: conversation_id.into(),
             generation,
         }
     }
 }
 
-impl super::agent::control::AgentRunControl for ChatRunControl<'_> {
+impl super::agent::control::AgentRunControl for ChatRunControl {
     fn active(&self) -> bool {
         self.runtime
-            .is_generation_active(self.conversation_id, self.generation)
+            .is_generation_active(&self.conversation_id, self.generation)
     }
 
     fn stop(&self) -> super::agent::control::StopAdmission {
         use super::agent::control::StopAdmission;
         if self
             .runtime
-            .cancel_generation(self.conversation_id, self.generation)
+            .cancel_generation(&self.conversation_id, self.generation)
         {
             StopAdmission::Requested
         } else {
@@ -686,12 +686,12 @@ impl super::agent::control::AgentRunControl for ChatRunControl<'_> {
         use super::agent::{control::InputAdmission, events::InputKind};
         let accepted = match kind {
             InputKind::Steer => self.runtime.push_steering_for_generation(
-                self.conversation_id,
+                &self.conversation_id,
                 self.generation,
                 message,
             ),
             InputKind::FollowUp => self.runtime.push_follow_up_for_generation(
-                self.conversation_id,
+                &self.conversation_id,
                 self.generation,
                 message,
             ),
@@ -707,17 +707,17 @@ impl super::agent::control::AgentRunControl for ChatRunControl<'_> {
         match kind {
             super::agent::events::InputKind::Steer => self
                 .runtime
-                .take_steering_for_generation(self.conversation_id, self.generation),
+                .take_steering_for_generation(&self.conversation_id, self.generation),
             super::agent::events::InputKind::FollowUp => self
                 .runtime
-                .take_follow_up_for_generation(self.conversation_id, self.generation),
+                .take_follow_up_for_generation(&self.conversation_id, self.generation),
         }
     }
 
     fn wait_inactive(&self) -> super::agent::AgentHostFuture<'_, ()> {
         Box::pin(
             self.runtime
-                .wait_for_generation_inactive(self.conversation_id, self.generation),
+                .wait_for_generation_inactive(&self.conversation_id, self.generation),
         )
     }
 }
@@ -848,7 +848,7 @@ mod tests {
     async fn stopped_sdk_handle_cannot_reach_replacement_input() {
         use crate::chat::agent::control::{AgentRunHandle, InputAdmission, StopAdmission};
         use crate::chat::agent::events::AgentRunIdentity;
-        let runtime = ChatRuntimeState::default();
+        let runtime = std::sync::Arc::new(ChatRuntimeState::default());
         let old_generation = runtime.begin_generation("conversation");
         let old_cancellation = runtime
             .generation_cancellation("conversation", old_generation)
@@ -860,7 +860,7 @@ mod tests {
             message_id: "message",
             generation,
         };
-        let old = AgentRunHandle::new(identity(old_generation), &old_control);
+        let old = AgentRunHandle::new(identity(old_generation), std::sync::Arc::new(old_control));
         let message = |id: &str| SteeringMessage::new(id.into(), id).unwrap();
         assert_eq!(old.steer(message("old")), InputAdmission::Accepted);
         assert_eq!(old.follow_up(message("old")), InputAdmission::Accepted);
@@ -875,7 +875,8 @@ mod tests {
             .generation_cancellation("conversation", generation)
             .unwrap();
         let current_control = ChatRunControl::new(&runtime, "conversation", generation);
-        let current = AgentRunHandle::new(identity(generation), &current_control);
+        let current =
+            AgentRunHandle::new(identity(generation), std::sync::Arc::new(current_control));
         assert!(current.take_steering().is_empty());
         assert!(current.take_follow_up().is_empty());
         assert_eq!(current.steer(message("new")), InputAdmission::Accepted);

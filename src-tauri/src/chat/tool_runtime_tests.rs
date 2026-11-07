@@ -116,7 +116,7 @@ impl ExecuteTestHost {
 
     impl ToolExecutor for ExecuteTestExecutor {
         fn call<'a>(
-            &'a self, _progress: &'a ToolProgress<'a>,
+            &'a self, _progress: &'a ToolProgress,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -293,8 +293,8 @@ impl ExecuteTestHost {
 
     #[tokio::test]
     async fn schema_validation_fails_before_approval_or_execution() {
-        let host = ExecuteTestHost::default();
-        let executor = ExecuteTestExecutor::default();
+        let host = Arc::new(ExecuteTestHost::default());
+        let executor = Arc::new(ExecuteTestExecutor::default());
         let settings = Settings::default();
         let tool = sensitive_test_tool();
         let call = test_pending_call("call_invalid", "write", serde_json::json!({}));
@@ -328,7 +328,7 @@ impl ExecuteTestHost {
         struct TaskExecutor(Mutex<Vec<Value>>);
         impl ToolExecutor for TaskExecutor {
             fn call<'a>(
-                &'a self, _progress: &'a ToolProgress<'a>,
+                &'a self, _progress: &'a ToolProgress,
                 _ctx: &'a ToolExecutionContext<'a>,
                 tool: &'a ChatToolDefinition,
                 arguments: Value,
@@ -349,8 +349,8 @@ impl ExecuteTestHost {
         });
         let mut settings = Settings::default();
         settings.chat_tools.approval_policy = "always_confirm".into();
-        let executor = TaskExecutor(Mutex::new(Vec::new()));
-        let denied = ExecuteTestHost { deny_approval: true, ..Default::default() };
+        let executor = Arc::new(TaskExecutor(Mutex::new(Vec::new())));
+        let denied = Arc::new(ExecuteTestHost { deny_approval: true, ..Default::default() });
         let (record, _, _) = execute_tool_call(
             &denied, &executor, &settings, &test_execution_context(), &tool,
             test_pending_call("denied", "task", arguments.clone()),
@@ -359,7 +359,7 @@ impl ExecuteTestHost {
         assert_eq!(denied.approvals.load(Ordering::SeqCst), 1);
         assert!(executor.0.lock().unwrap().is_empty());
 
-        let allowed = ExecuteTestHost::default();
+        let allowed = Arc::new(ExecuteTestHost::default());
         let (record, content, _) = execute_tool_call(
             &allowed, &executor, &settings, &test_execution_context(), &tool,
             test_pending_call("allowed", "task", arguments.clone()),
@@ -406,12 +406,12 @@ impl ExecuteTestHost {
     #[tokio::test]
     async fn workflow_hook_denial_never_reaches_executor() {
         let dir = tempfile::tempdir().unwrap();
-        let host = host_with_hook(
+        let host = Arc::new(host_with_hook(
             dir.path(),
             "PreToolUse",
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"protected"}}),
-        );
-        let executor = ExecuteTestExecutor::default();
+        ));
+        let executor = Arc::new(ExecuteTestExecutor::default());
         let (record, _, _) = execute_tool_call(
             &host,
             &executor,
@@ -435,8 +435,8 @@ impl ExecuteTestHost {
     async fn workflow_hook_errors_fail_with_source_and_preserve_executed_tool_results() {
         for (event, hook, calls) in [("PreToolUse", "before_tool_call", 0), ("PostToolUse", "after_tool_call", 1)] {
             let dir = tempfile::tempdir().unwrap();
-            let host = host_with_hook(dir.path(), event, serde_json::json!({"hookSpecificOutput":{"hookEventName":"invalid"}}));
-            let executor = ExecuteTestExecutor { structured_content: Some(serde_json::json!({"raw":true})), ..Default::default() };
+            let host = Arc::new(host_with_hook(dir.path(), event, serde_json::json!({"hookSpecificOutput":{"hookEventName":"invalid"}})));
+            let executor = Arc::new(ExecuteTestExecutor { structured_content: Some(serde_json::json!({"raw":true})), ..Default::default() });
             let mut settings = Settings::default();
             settings.chat_tools.approval_policy = "auto".into();
             let result = execute_tool_result(&host, &executor, &settings, &test_execution_context(), &sensitive_test_tool(), test_pending_call("c", "write", serde_json::json!({"path":"file","content":"text"}))).await;
@@ -456,12 +456,12 @@ impl ExecuteTestHost {
     #[tokio::test]
     async fn workflow_hook_changes_are_validated_before_approval() {
         let dir = tempfile::tempdir().unwrap();
-        let host = host_with_hook(
+        let host = Arc::new(host_with_hook(
             dir.path(),
             "PreToolUse",
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"content":"missing path"}}}),
-        );
-        let executor = ExecuteTestExecutor::default();
+        ));
+        let executor = Arc::new(ExecuteTestExecutor::default());
         let (record, _, _) = execute_tool_call(
             &host,
             &executor,
@@ -484,13 +484,13 @@ impl ExecuteTestHost {
     #[tokio::test]
     async fn workflow_hook_allow_cannot_bypass_host_consent() {
         let dir = tempfile::tempdir().unwrap();
-        let mut host = host_with_hook(
+        let mut host = Arc::new(host_with_hook(
             dir.path(),
             "PreToolUse",
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"allow","updatedInput":{"path":"changed","content":"text"}}}),
-        );
-        host.deny_consent = true;
-        let executor = ExecuteTestExecutor::default();
+        ));
+        Arc::get_mut(&mut host).unwrap().deny_consent = true;
+        let executor = Arc::new(ExecuteTestExecutor::default());
         let mut settings = Settings::default();
         settings.chat_tools.approval_policy = "readonly_auto_sensitive_confirm".into();
         let (record, _, _) = execute_tool_call(
@@ -517,11 +517,11 @@ impl ExecuteTestHost {
 
     #[tokio::test]
     async fn parallel_answer_approval_never_executes_sensitive_or_remote_tools_implicitly() {
-        let host = ExecuteTestHost {
+        let host = Arc::new(ExecuteTestHost {
             parallel_arm: true,
             ..Default::default()
-        };
-        let executor = ExecuteTestExecutor::default();
+        });
+        let executor = Arc::new(ExecuteTestExecutor::default());
         let mut settings = Settings::default();
         let tool = sensitive_test_tool();
         let call = || {
@@ -576,12 +576,12 @@ impl ExecuteTestHost {
     #[tokio::test]
     async fn workflow_hook_ask_requires_approval_even_under_auto_policy() {
         let dir = tempfile::tempdir().unwrap();
-        let mut host = host_with_hook(
+        let mut host = Arc::new(host_with_hook(
             dir.path(),
             "PreToolUse",
             serde_json::json!({"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":"review"}}),
-        );
-        let executor = ExecuteTestExecutor::default();
+        ));
+        let executor = Arc::new(ExecuteTestExecutor::default());
         let mut settings = Settings::default();
         settings.chat_tools.approval_policy = "auto".into();
         let (record, _, _) = execute_tool_call(
@@ -600,7 +600,7 @@ impl ExecuteTestHost {
         assert!(matches!(record.status, ToolCallStatus::Success));
         assert_eq!(host.approvals.load(Ordering::SeqCst), 1);
         assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
-        host.parallel_arm = true;
+        Arc::get_mut(&mut host).unwrap().parallel_arm = true;
         let (record, _, _) = execute_tool_call(
             &host,
             &executor,
@@ -635,11 +635,11 @@ impl ExecuteTestHost {
 
     #[tokio::test]
     async fn successful_tool_records_trace_and_structured_content() {
-        let host = ExecuteTestHost::default();
-        let executor = ExecuteTestExecutor {
+        let host = Arc::new(ExecuteTestHost::default());
+        let executor = Arc::new(ExecuteTestExecutor {
             calls: AtomicUsize::new(0),
             structured_content: Some(serde_json::json!({ "answer": 42 })),
-        };
+        });
         let settings = Settings::default();
         let mut tool = sensitive_test_tool();
         tool.sensitive = false;
@@ -674,11 +674,11 @@ impl ExecuteTestHost {
 
     #[tokio::test]
     async fn file_tool_skipped_when_session_consent_denied() {
-        let host = ExecuteTestHost {
+        let host = Arc::new(ExecuteTestHost {
             deny_consent: true,
             ..Default::default()
-        };
-        let executor = ExecuteTestExecutor::default();
+        });
+        let executor = Arc::new(ExecuteTestExecutor::default());
         let mut settings = Settings::default();
         // Exercise the per-conversation consent gate (default policy is now "auto",
         // which bypasses it).
@@ -709,8 +709,8 @@ impl ExecuteTestHost {
 
     #[tokio::test]
     async fn file_tool_uses_session_consent_not_per_call_approval() {
-        let host = ExecuteTestHost::default(); // grants consent
-        let executor = ExecuteTestExecutor::default();
+        let host = Arc::new(ExecuteTestHost::default()); // grants consent
+        let executor = Arc::new(ExecuteTestExecutor::default());
         let mut settings = Settings::default();
         // Per-conversation consent policy (default is now "auto", which bypasses it).
         settings.chat_tools.approval_policy = "readonly_auto_sensitive_confirm".to_string();
@@ -740,11 +740,11 @@ impl ExecuteTestHost {
     #[tokio::test]
     async fn task_obeys_session_consent_before_execution() {
         for denied in [true, false] {
-            let host = ExecuteTestHost {
+            let host = Arc::new(ExecuteTestHost {
                 deny_consent: denied,
                 ..Default::default()
-            };
-            let executor = ExecuteTestExecutor::default();
+            });
+            let executor = Arc::new(ExecuteTestExecutor::default());
             let mut settings = Settings::default();
             settings.chat_tools.approval_policy = "readonly_auto_sensitive_confirm".into();
             let tool = crate::chat::sub_agent::task::tool_definition(&[], &settings);
@@ -772,11 +772,11 @@ impl ExecuteTestHost {
     /// 必须进入模型可见文本（除非文本已含同样 JSON）。
     #[tokio::test]
     async fn mcp_tool_content_still_carries_structured_content() {
-        let host = ExecuteTestHost::default();
-        let executor = ExecuteTestExecutor {
+        let host = Arc::new(ExecuteTestHost::default());
+        let executor = Arc::new(ExecuteTestExecutor {
             calls: AtomicUsize::new(0),
             structured_content: Some(serde_json::json!({ "answer": 42 })),
-        };
+        });
         let settings = Settings::default();
         let mut tool = sensitive_test_tool();
         tool.sensitive = false;
@@ -914,7 +914,7 @@ impl ExecuteTestHost {
         struct SlowTask;
         impl ToolExecutor for SlowTask {
             fn call<'a>(
-                &'a self, _progress: &'a ToolProgress<'a>, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
+                &'a self, _progress: &'a ToolProgress, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
                 _arguments: Value,
             ) -> ToolExecutorFuture<'a> {
                 Box::pin(async {
@@ -931,7 +931,7 @@ impl ExecuteTestHost {
             "context": "shared", "tasks": [{"task": "work", "solutionSpace": "one fix"}]
         }));
         let (record, content, _) = execute_tool_call(
-            &ExecuteTestHost::default(), &SlowTask, &settings, &test_execution_context(), &tool, call,
+            &Arc::new(ExecuteTestHost::default()), &Arc::new(SlowTask), &settings, &test_execution_context(), &tool, call,
         ).await;
         assert!(matches!(record.status, ToolCallStatus::Success), "{content}");
         assert_eq!(content, "completed child result");
@@ -1196,24 +1196,24 @@ impl AgentEventSink for ExecuteTestHost {
         EventDelivery::Accepted
     }
 }
-fn test_context(host: &ExecuteTestHost) -> AgentContext<'_> {
+fn test_context(host: &Arc<ExecuteTestHost>) -> AgentContext<'_> {
     let identity = AgentRunIdentity { conversation_id: "conversation", run_id: "run", message_id: "message", generation: 1 };
-    let control = AgentRunHandle::new(identity, host);
-    AgentContext::new(host, host, control)
+    let control = AgentRunHandle::new(identity, host.clone());
+    AgentContext::new(host.as_ref(), host.as_ref(), control)
 }
 
-async fn execute_tool_call(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> (ToolCallRecord, String, Vec<crate::chat::model::ModelMessage>) {
+async fn execute_tool_call<D: ToolExecutor + 'static>(host: &Arc<ExecuteTestHost>, executor: &Arc<D>, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> (ToolCallRecord, String, Vec<crate::chat::model::ModelMessage>) {
     let result = execute_tool_result(host, executor, settings, ctx, tool, call).await;
     (crate::chat::agent_presentation::project_tool(&result.record, Some(ctx.run_id)), result.content, result.follow_up_messages)
 }
 
-async fn execute_tool_result(host: &ExecuteTestHost, executor: &dyn ToolExecutor, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> crate::chat::agent::execute::ToolCallResult {
+async fn execute_tool_result<D: ToolExecutor + 'static>(host: &Arc<ExecuteTestHost>, executor: &Arc<D>, settings: &Settings, ctx: &ToolExecutionContext<'_>, tool: &ChatToolDefinition, call: PendingToolCall) -> crate::chat::agent::execute::ToolCallResult {
     let context = test_context(host);
     let tools = std::slice::from_ref(tool);
-    let adapter = ApplicationToolExecutor { settings, authority: ToolAuthority::from_context(ctx), tools, host, dispatcher: executor };
+    let adapter: Arc<dyn crate::chat::agent::execute::ToolExecutor> = Arc::new(ApplicationToolExecutor { snapshot: Arc::new(RunToolSnapshot::from_context(settings, ctx, tools)), host: host.clone(), dispatcher: executor.clone() });
     let core_ctx = crate::chat::agent::execute::ToolExecutionContext {
-        conversation_id: ctx.conversation_id, run_id: ctx.run_id, message_id: ctx.message_id,
-        generation: ctx.generation, round: ctx.round, tool_call_id: ctx.tool_call_id,
+        conversation_id: ctx.conversation_id.into(), run_id: ctx.run_id.into(), message_id: ctx.message_id.into(),
+        generation: ctx.generation, round: ctx.round, tool_call_id: ctx.tool_call_id.into(),
     };
     crate::chat::agent::execute::execute_tool_call(&context, &adapter, &core_ctx, &tool.for_run(settings), call).await
 }
@@ -1228,7 +1228,7 @@ fn match_tool_call<'a>(tools: &'a [ChatToolDefinition], name: &str) -> Option<&'
     async fn stopped_host_discards_ordinary_completion_but_drains_mcp_and_required_completion() {
         struct StoppingExecutor;
         impl ToolExecutor for StoppingExecutor {
-            fn call<'a>(&'a self, progress: &'a ToolProgress<'a>, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition, _arguments: Value) -> ToolExecutorFuture<'a> {
+            fn call<'a>(&'a self, progress: &'a ToolProgress, _ctx: &'a ToolExecutionContext<'a>, _tool: &'a ChatToolDefinition, _arguments: Value) -> ToolExecutorFuture<'a> {
                 Box::pin(async move {
                     progress.control.stop();
                     progress.control.wait_inactive().await;
@@ -1238,7 +1238,7 @@ fn match_tool_call<'a>(tools: &'a [ChatToolDefinition], name: &str) -> Option<&'
             }
         }
         for (finish_tool, mcp) in [(false, false), (true, false), (false, true)] {
-            let host = ExecuteTestHost { finish_tool, ..Default::default() };
+            let host = Arc::new(ExecuteTestHost { finish_tool, ..Default::default() });
             let mut tool = named_test_tool("echo");
             if mcp {
                 tool.source = "mcp".into();
@@ -1246,7 +1246,7 @@ fn match_tool_call<'a>(tools: &'a [ChatToolDefinition], name: &str) -> Option<&'
             let mut settings = Settings::default();
             settings.chat_tools.approval_policy = "auto".into();
             let name = tool.openai_tool_name();
-            let (record, content, follow_ups) = execute_tool_call(&host, &StoppingExecutor, &settings, &test_execution_context(), &tool, test_pending_call("call", &name, serde_json::json!({}))).await;
+            let (record, content, follow_ups) = execute_tool_call(&host, &Arc::new(StoppingExecutor), &settings, &test_execution_context(), &tool, test_pending_call("call", &name, serde_json::json!({}))).await;
             let drained = finish_tool || mcp;
             assert!(host.stopped.load(Ordering::SeqCst), "dispatcher must use the issuing run control");
             assert_eq!(record.status, if drained { ToolCallStatus::Success } else { ToolCallStatus::Cancelled });
@@ -1254,6 +1254,72 @@ fn match_tool_call<'a>(tools: &'a [ChatToolDefinition], name: &str) -> Option<&'
             assert_eq!(content, if drained { "late result" } else { "Tool call cancelled" });
             assert!(follow_ups.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn owned_executor_keeps_the_advertised_definition_and_run_authority() {
+        struct InspectSnapshot;
+        impl ToolExecutor for InspectSnapshot {
+            fn call<'a>(&'a self, _: &'a ToolProgress, ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition, _: Value) -> ToolExecutorFuture<'a> {
+                Box::pin(async move {
+                    assert_eq!(ctx.provider.id, "frozen-provider");
+                    assert_eq!(ctx.model, "frozen-model");
+                    assert_eq!(ctx.depth, 2);
+                    assert_eq!(ctx.tool_conversation_id, "parent-conversation");
+                    assert_eq!(ctx.plan_state.plan.as_deref(), Some("frozen plan"));
+                    assert_eq!(ctx.mcp_tool_ids, &[("server".into(), "selected-tool".into())]);
+                    assert_eq!(ctx.mcp_server_ids, &["server"]);
+                    assert_eq!(ctx.approval_policy, "auto");
+                    assert!(!ctx.interactive_host);
+                    assert_eq!(tool.description, "frozen definition");
+                    Ok(crate::chat::tools::ToolOutput::text("frozen authority"))
+                })
+            }
+        }
+        let mut settings = Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        let mut provider = test_execution_context().provider.clone();
+        provider.id = "frozen-provider".into();
+        let mut plan = crate::chat::types::AgentPlanState::default();
+        plan.plan = Some("frozen plan".into());
+        let mut grants = vec![("server".into(), "selected-tool".into())];
+        let mut servers = vec!["server".into()];
+        let mut tool = named_test_tool("echo");
+        tool.description = "frozen definition".into();
+        tool.sensitive = true;
+        let advertised = tool.for_run(&settings);
+        let snapshot = {
+            let ctx = ToolExecutionContext {
+                provider: &provider, model: "frozen-model", depth: 2,
+                tool_conversation_id: "parent-conversation", plan_state: &plan,
+                mcp_tool_ids: &grants, mcp_server_ids: &servers,
+                ..test_execution_context()
+            };
+            Arc::new(RunToolSnapshot::from_context(&settings, &ctx, std::slice::from_ref(&tool)))
+        };
+        settings.chat_tools.approval_policy = "always_confirm".into();
+        provider.id = "replacement-provider".into();
+        plan.plan = None;
+        grants.clear();
+        servers.clear();
+        tool.description = "replacement definition".into();
+        tool.input_schema = serde_json::json!({"type":"object", "required":["new-field"]});
+        let host = Arc::new(ExecuteTestHost { deny_approval: true, ..Default::default() });
+        let executor: Arc<dyn crate::chat::agent::execute::ToolExecutor> = Arc::new(ApplicationToolExecutor {
+            snapshot, host: host.clone(), dispatcher: Arc::new(InspectSnapshot),
+        });
+        let context = test_context(&host);
+        let ctx = crate::chat::agent::execute::ToolExecutionContext {
+            conversation_id: "child".into(), run_id: "run".into(), message_id: "message".into(),
+            generation: 1, round: 2, tool_call_id: "call".into(),
+        };
+        let result = crate::chat::agent::execute::execute_tool_call(
+            &context, &executor, &ctx, &advertised,
+            test_pending_call("call", &advertised.model.name, serde_json::json!({})),
+        ).await;
+        assert_eq!(result.record.status, AgentToolStatus::Success);
+        assert_eq!(result.content, "frozen authority");
+        assert_eq!(host.approvals.load(Ordering::SeqCst), 0);
     }
 
 }

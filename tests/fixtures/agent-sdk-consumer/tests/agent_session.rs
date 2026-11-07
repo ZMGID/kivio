@@ -124,7 +124,7 @@ fn admission(error: AgentRunError, expected: AgentAdmissionError) {
 }
 
 struct PanickingTool {
-    delegate: EchoTool,
+    delegate: std::sync::Arc<EchoTool>,
     synchronous: bool,
     gate: Option<Arc<Gate>>,
     after: Mutex<Vec<String>>,
@@ -132,8 +132,8 @@ struct PanickingTool {
 impl ToolExecutor for PanickingTool {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
@@ -149,38 +149,52 @@ impl ToolExecutor for PanickingTool {
             Ok(prepared)
         })
     }
-    fn call<'a>(
-        &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
-        tool: &'a ToolDefinition,
-        args: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(
+        self: std::sync::Arc<Self>,
+        invocation: kivio_agent_sdk::agent::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
+        let kivio_agent_sdk::agent::ToolInvocation {
+            progress: progress,
+            context: ctx,
+            tool: tool,
+            arguments: args,
+        } = invocation;
         assert!(
-            !(ctx.tool_call_id == "echo-2" && self.synchronous),
+            !(ctx.tool_call_id.as_ref() == "echo-2" && self.synchronous),
             "tool construction panic"
         );
         Box::pin(async move {
-            assert_ne!(ctx.tool_call_id, "echo-2", "tool polling panic");
-            if ctx.tool_call_id == "echo-1" {
+            assert_ne!(ctx.tool_call_id.as_ref(), "echo-2", "tool polling panic");
+            if ctx.tool_call_id.as_ref() == "echo-1" {
                 if let Some(gate) = &self.gate {
                     gate.hold().await;
                 }
             }
-            self.delegate.call(progress, ctx, tool, args).await
+            self.delegate
+                .clone()
+                .call(kivio_agent_sdk::agent::ToolInvocation {
+                    progress,
+                    context: ctx,
+                    tool,
+                    arguments: args,
+                })
+                .await
         })
     }
     fn after_tool_call<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         _: &'a ToolDefinition,
         _: Value,
         _: &'a str,
         _: Vec<String>,
     ) -> ToolFuture<'a, Result<ToolResultUpdate, String>> {
         Box::pin(async move {
-            self.after.lock().unwrap().push(ctx.tool_call_id.into());
+            self.after
+                .lock()
+                .unwrap()
+                .push(ctx.tool_call_id.to_string());
             Ok(ToolResultUpdate::default())
         })
     }
@@ -192,17 +206,17 @@ async fn direct_executor_panics_are_contained_during_future_construction_and_pol
         let mut step = tool();
         step.output.tool_calls[0].id = "echo-2".into();
         let model = Model::new(vec![step]);
-        let executor = PanickingTool {
-            delegate: EchoTool::new(true),
+        let executor = std::sync::Arc::new(PanickingTool {
+            delegate: std::sync::Arc::new(EchoTool::new(true)),
             synchronous,
             gate: None,
             after: Mutex::new(vec![]),
-        };
-        let control = Control::default();
+        });
+        let control = std::sync::Arc::new(Control::default());
         let error = bounded(run_agent_loop(
             config(model.as_ref(), initial_history()),
             &Host,
-            &executor,
+            executor.clone(),
             &mut NoSessionPolicy,
             &Events::default(),
             handle(&control),
@@ -241,7 +255,7 @@ async fn tool_execution_panics_preserve_results_and_allow_continuation_without_r
                 .collect();
             let model = Model::new(vec![step, text("continued")]);
             let executor = Arc::new(PanickingTool {
-                delegate: EchoTool::new(true),
+                delegate: std::sync::Arc::new(EchoTool::new(true)),
                 synchronous,
                 gate: parallel.then(|| Arc::new(Gate::default())),
                 after: Mutex::new(vec![]),
@@ -492,7 +506,7 @@ impl AgentHost for CommitHost {
 }
 
 struct ManagedTool {
-    delegate: EchoTool,
+    delegate: std::sync::Arc<EchoTool>,
     gate: Arc<Gate>,
     cleaned: AtomicBool,
     observed_stop: AtomicBool,
@@ -500,8 +514,8 @@ struct ManagedTool {
 impl ToolExecutor for ManagedTool {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
@@ -518,13 +532,16 @@ impl ToolExecutor for ManagedTool {
             Ok(prepared)
         })
     }
-    fn call<'a>(
-        &'a self,
-        progress: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
-        _: &'a ToolDefinition,
-        _: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(
+        self: std::sync::Arc<Self>,
+        invocation: kivio_agent_sdk::agent::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
+        let kivio_agent_sdk::agent::ToolInvocation {
+            progress: progress,
+            context: _,
+            tool: _,
+            arguments: _,
+        } = invocation;
         Box::pin(async move {
             self.gate.hold().await;
             self.observed_stop
@@ -541,7 +558,7 @@ async fn abort_and_dropped_run_keep_admission_busy_until_tool_drain_and_commit_f
         let tool_gate = Arc::new(Gate::default());
         let commit_gate = Arc::new(Gate::default());
         let executor = Arc::new(ManagedTool {
-            delegate: EchoTool::new(true),
+            delegate: std::sync::Arc::new(EchoTool::new(true)),
             gate: tool_gate.clone(),
             cleaned: AtomicBool::new(false),
             observed_stop: AtomicBool::new(false),
@@ -665,7 +682,7 @@ impl SessionPolicy for RejectInput {
     fn input<'a>(
         &'a mut self,
         _: &'a str,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async { Err("input hook failed".into()) })
     }
@@ -783,7 +800,7 @@ impl SessionPolicy for PanicAfterTools {
     fn finish_turn<'a>(
         &'a mut self,
         _: RunSnapshot<'a>,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async { panic!("finish hook panicked after side effects") })
     }

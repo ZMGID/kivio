@@ -64,17 +64,17 @@ impl std::fmt::Display for RunStartError {
 /// Inputs share the host's existing mailbox. Acceptance means queued, not consumed.
 /// Inactivity ends core admission; outer persistence and cleanup may still hold capacity.
 #[derive(Clone)]
-pub struct AgentRunHandle<'a> {
-    identity: AgentRunIdentity<'a>,
+pub struct AgentRunHandle {
+    identity: super::events::OwnedRunIdentity,
     invocation_id: u64,
-    control: &'a dyn AgentRunControl,
+    control: Arc<dyn AgentRunControl>,
     completion: Arc<CoreCompletion>,
 }
 
-impl<'a> AgentRunHandle<'a> {
-    pub fn new(identity: AgentRunIdentity<'a>, control: &'a dyn AgentRunControl) -> Self {
+impl AgentRunHandle {
+    pub fn new(identity: AgentRunIdentity<'_>, control: Arc<dyn AgentRunControl>) -> Self {
         Self {
-            identity,
+            identity: identity.into(),
             invocation_id: NEXT_INVOCATION_ID
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
                 .expect("agent invocation ID space exhausted"),
@@ -83,8 +83,8 @@ impl<'a> AgentRunHandle<'a> {
         }
     }
 
-    pub fn identity(&self) -> AgentRunIdentity<'a> {
-        self.identity
+    pub fn identity(&self) -> AgentRunIdentity<'_> {
+        self.identity.borrowed()
     }
 
     /// Identifies this core invocation within the process; clones share the ID.
@@ -247,10 +247,10 @@ mod tests {
     #[test]
     fn handles_for_the_same_run_have_distinct_invocations_and_clones_share_one() {
         let generation = 1;
-        let control = TestControl::default();
-        let first = AgentRunHandle::new(identity(generation), &control);
+        let control = Arc::new(TestControl::default());
+        let first = AgentRunHandle::new(identity(generation), control.clone());
         let clone = first.clone();
-        let second = AgentRunHandle::new(identity(generation), &control);
+        let second = AgentRunHandle::new(identity(generation), control.clone());
 
         assert!(first.invocation_id() < second.invocation_id());
         assert_eq!(first.invocation_id(), clone.invocation_id());
@@ -262,8 +262,8 @@ mod tests {
     #[tokio::test]
     async fn core_completion_closes_clones_and_wakes_waiters_while_host_stays_active() {
         let generation = 1;
-        let control = TestControl::default();
-        let handle = AgentRunHandle::new(identity(generation), &control);
+        let control = Arc::new(TestControl::default());
+        let handle = AgentRunHandle::new(identity(generation), control.clone());
         let clone = handle.clone();
         let waiting = clone.wait_inactive();
         tokio::pin!(waiting);
@@ -288,8 +288,8 @@ mod tests {
     #[tokio::test]
     async fn stopped_handle_cannot_reach_another_control_or_its_input() {
         let old_generation = 1;
-        let old_control = TestControl::default();
-        let old = AgentRunHandle::new(identity(old_generation), &old_control);
+        let old_control = Arc::new(TestControl::default());
+        let old = AgentRunHandle::new(identity(old_generation), old_control.clone());
         assert_eq!(old.steer(message("old")), InputAdmission::Accepted);
         assert_eq!(old.follow_up(message("old")), InputAdmission::Accepted);
         let waiting = old.wait_inactive();
@@ -299,8 +299,8 @@ mod tests {
         assert!(futures::poll!(waiting.as_mut()).is_ready());
 
         let generation = 2;
-        let control = TestControl::default();
-        let current = AgentRunHandle::new(identity(generation), &control);
+        let control = Arc::new(TestControl::default());
+        let current = AgentRunHandle::new(identity(generation), control.clone());
         assert!(current.take_steering().is_empty());
         assert!(current.take_follow_up().is_empty());
         assert_eq!(current.steer(message("new")), InputAdmission::Accepted);

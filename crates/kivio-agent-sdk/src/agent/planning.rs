@@ -120,12 +120,12 @@ pub(crate) async fn planning_step(
         state.segment_builder.next_order(),
     );
     let execution_context = super::execute::ToolExecutionContext {
-        conversation_id: &config.conversation_id,
-        run_id: &config.run_id,
-        message_id: &config.message_id,
+        conversation_id: config.conversation_id.as_str().into(),
+        run_id: config.run_id.as_str().into(),
+        message_id: config.message_id.as_str().into(),
         generation: config.generation,
         round,
-        tool_call_id: "",
+        tool_call_id: "".into(),
     };
     // 内置搜索实时卡追踪器：仅在会话 Builtin 模式且模型支持时建（否则 None，走现状路径）。
     let planning_web_search_tracker = if config.builtin_web_search_active() {
@@ -157,7 +157,7 @@ pub(crate) async fn planning_step(
                 reasoning_segment: Some(planning_reasoning_segment.clone()),
                 tool_draft_tracker: Some(planning_tool_drafts.clone()),
                 web_search_tracker: planning_web_search_tracker.clone(),
-                speculation: Some((env.executor, &execution_context)),
+                speculation: Some((env.executor.as_ref(), &execution_context)),
             },
             session,
         )
@@ -420,7 +420,7 @@ pub(crate) async fn stream_model_call<'a>(
     web_search_tracker: Option<WebSearchCardTracker>,
     speculation: Option<(
         &'a dyn super::execute::ToolExecutor,
-        &'a super::execute::ToolExecutionContext<'a>,
+        &'a super::execute::ToolExecutionContext,
     )>,
 ) -> Result<GenerateOutput, ModelError> {
     let max_output_tokens = call.options.max_tokens;
@@ -524,7 +524,7 @@ mod tests {
         let context = AgentContext::new(
             &Completed,
             &events,
-            AgentRunHandle::new(identity, &Completed),
+            AgentRunHandle::new(identity, std::sync::Arc::new(Completed)),
         );
         let output = stream_model_call(
             &Completed,

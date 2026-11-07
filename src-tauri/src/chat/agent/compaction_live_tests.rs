@@ -136,7 +136,12 @@ async fn auto_case(provider: ModelProvider, model: String, seed: usize, chars: u
     config.message_id = format!("reply-{seed}");
     config.runtime_messages = fixture(seed, chars);
     let before = compaction::estimate_messages_tokens(&config.runtime_messages);
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default()).await;
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await;
     let outcome: Result<Value, String> = async {
         let result = result?;
         if result.stream_outcome != "completed" { return Err(format!("run ended: {}", result.stream_outcome)); }

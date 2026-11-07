@@ -341,7 +341,7 @@ async fn child_checkpoint_input_survives_final_history_with_parent_persistence_f
     let dir = tempfile::tempdir().unwrap();
     let record = record(dir.path());
     transcript(&record, dir.path()).await;
-    let host = JournalHost::new(record.session_file.clone());
+    let host = Arc::new(JournalHost::new(record.session_file.clone()));
     *host.incoming.lock().unwrap() = import_history(vec![json!({
         "role":"user", "content":"nested child report", "subagent_parent_persisted":true,
     })]);
@@ -352,19 +352,19 @@ async fn child_checkpoint_input_survives_final_history_with_parent_persistence_f
     ])]);
     let state = test_app_state();
     let generation = state.chat_runtime().begin_generation("conversation");
-    let control = crate::chat::runtime_state::ChatRunControl::new(
+    let control = Arc::new(crate::chat::runtime_state::ChatRunControl::new(
         state.chat_runtime(),
         "conversation",
         generation,
-    );
+    ));
     let config = test_run_config(&state, &server.base_url);
     let mut history = config.runtime_messages.clone();
     let result = run_session(
-        config.into_application(),
-        &host,
-        &RecordingExecutor::default(),
-        &host,
-        AgentRunHandle::new(identity(), &control),
+        Box::new(config.into_application()),
+        host.clone(),
+        Arc::new(RecordingExecutor::default()),
+        host.as_ref(),
+        AgentRunHandle::new(identity(), control.clone()),
     )
     .await
     .unwrap();
@@ -402,25 +402,25 @@ async fn real_loop_omp_projection_journal_replay_and_slot_release() {
     assert!(slot.begin(&record, "first"));
     let worker_guard = slot.worker.lock().await;
     transcript(&record, dir.path()).await;
-    let host = JournalHost::new(record.session_file.clone());
+    let host = Arc::new(JournalHost::new(record.session_file.clone()));
     let server = provider();
     let state = test_app_state();
     let generation = state.chat_runtime().begin_generation("conversation");
     assert_eq!(generation, 1);
-    let control = crate::chat::runtime_state::ChatRunControl::new(
+    let control = Arc::new(crate::chat::runtime_state::ChatRunControl::new(
         state.chat_runtime(),
         "conversation",
         generation,
-    );
+    ));
     let config = test_run_config(&state, &server.base_url);
     let initial_history = config.runtime_messages.clone();
-    let executor = RecordingExecutor::default();
+    let executor = Arc::new(RecordingExecutor::default());
     let result = run_session(
-        config.into_application(),
-        &host,
-        &executor,
-        &host,
-        AgentRunHandle::new(identity(), &control),
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
+        AgentRunHandle::new(identity(), control.clone()),
     )
     .await
     .unwrap();
@@ -509,19 +509,19 @@ async fn omp_journal_failure_is_sticky_and_preserves_history_cursor() {
     ]);
     let state = test_app_state();
     let generation = state.chat_runtime().begin_generation("conversation");
-    let control = crate::chat::runtime_state::ChatRunControl::new(
+    let control = Arc::new(crate::chat::runtime_state::ChatRunControl::new(
         state.chat_runtime(),
         "conversation",
         generation,
-    );
-    let host = JournalHost::new(missing.clone());
+    ));
+    let host = Arc::new(JournalHost::new(missing.clone()));
     let config = test_run_config(&state, "http://127.0.0.1:1/v1");
     let result = run_session(
-        config.into_application(),
-        &host,
-        &RecordingExecutor::default(),
-        &host,
-        AgentRunHandle::new(identity(), &control),
+        Box::new(config.into_application()),
+        host.clone(),
+        Arc::new(RecordingExecutor::default()),
+        host.as_ref(),
+        AgentRunHandle::new(identity(), control.clone()),
     )
     .await;
     assert!(result
@@ -622,7 +622,7 @@ struct CleanupExecutor {
 impl ToolDispatcher for CleanupExecutor {
     fn call<'a>(
         &'a self,
-        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        _progress: &'a crate::chat::agent::execute::ToolProgress,
         _: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _: Value,
@@ -653,27 +653,27 @@ async fn stopped_managed_tool_keeps_slot_busy_until_cleanup_and_journal_finish()
     assert!(slot.begin(&record, "first"));
     let worker_guard = slot.worker.lock().await;
     transcript(&record, dir.path()).await;
-    let host = JournalHost::new(record.session_file.clone());
+    let host = Arc::new(JournalHost::new(record.session_file.clone()));
     let server = provider();
     let state = test_app_state();
     let generation = state.chat_runtime().begin_generation("conversation");
-    let control = crate::chat::runtime_state::ChatRunControl::new(
+    let control = Arc::new(crate::chat::runtime_state::ChatRunControl::new(
         state.chat_runtime(),
         "conversation",
         generation,
-    );
-    let handle = AgentRunHandle::new(identity(), &control);
-    let executor = CleanupExecutor {
+    ));
+    let handle = AgentRunHandle::new(identity(), control.clone());
+    let executor = Arc::new(CleanupExecutor {
         started: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
-    };
+    });
     let config = test_run_config(&state, &server.base_url);
     let initial_history = config.runtime_messages.clone();
     let run = run_session(
-        config.into_application(),
-        &host,
-        &executor,
-        &host,
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
         handle.clone(),
     );
     tokio::pin!(run);

@@ -165,7 +165,7 @@ impl SessionPolicy for BudgetContextPolicy {
     fn start<'a>(
         &'a mut self,
         _run: RunSnapshot<'a>,
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         if self.started {
             self.state.initial_anchor_total_tokens = None;
@@ -181,7 +181,7 @@ impl SessionPolicy for BudgetContextPolicy {
     fn transform_context<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move {
             let mut view = history.to_vec();
@@ -193,7 +193,7 @@ impl SessionPolicy for BudgetContextPolicy {
         &'a mut self,
         reason: ContextReason,
         run: ContextSnapshot<'a>,
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
         progress: &'a dyn PolicyProgress,
     ) -> PolicyFuture<'a, Result<ContextPreparation, String>> {
         Box::pin(async move {
@@ -268,7 +268,7 @@ impl SessionPolicy for BudgetContextPolicy {
     fn context_applied<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
         progress: &'a dyn PolicyProgress,
     ) -> PolicyFuture<'a, (Vec<RuntimeMessage>, bool)> {
         Box::pin(async move {

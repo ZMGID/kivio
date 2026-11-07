@@ -7,7 +7,7 @@ use crate::{
         content::{AgentToolCall, AgentToolStatus},
         execute::{PreparedToolCall, ToolPreparation, ToolProgress, ToolResultUpdate},
         host::SpeculativeTaskScope,
-        ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
+        ToolExecutionContext, ToolExecutor, ToolExecutorFuture, ToolInvocation,
     },
     model::{ModelArtifact, PendingToolCall},
 };
@@ -21,8 +21,8 @@ use super::{
 pub trait ToolAuthorization: Send + Sync {
     fn authorize<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         arguments: &'a Value,
     ) -> ToolFuture<'a, Result<(), ToolError>>;
@@ -110,8 +110,8 @@ fn identifiers(tool: &ToolDefinition) -> Vec<(&str, bool)> {
 impl ToolExecutor for ToolRegistry {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
@@ -132,25 +132,25 @@ impl ToolExecutor for ToolRegistry {
         })
     }
 
-    fn call<'a>(
-        &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
-        tool: &'a ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(self: Arc<Self>, invocation: ToolInvocation) -> ToolExecutorFuture<'static> {
         Box::pin(async move {
             let (definition, executor) = self
-                .entry(&tool.key)
-                .ok_or_else(|| format!("Tool `{}` is not registered", tool.key))?;
-            executor.call(progress, ctx, definition, arguments).await
+                .entry(&invocation.tool.key)
+                .ok_or_else(|| format!("Tool `{}` is not registered", invocation.tool.key))?;
+            executor
+                .clone()
+                .call(ToolInvocation {
+                    tool: definition.clone(),
+                    ..invocation
+                })
+                .await
         })
     }
 
     fn after_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         arguments: Value,
         content: &'a str,
@@ -170,7 +170,7 @@ impl ToolExecutor for ToolRegistry {
 
     fn start_speculation(
         &self,
-        ctx: &ToolExecutionContext<'_>,
+        ctx: &ToolExecutionContext,
         tools: &[ToolDefinition],
     ) -> Option<Box<dyn SpeculativeTaskScope>> {
         let mut owner: Option<&Arc<dyn ToolExecutor>> = None;
@@ -212,11 +212,11 @@ struct RegisteredStatic<T> {
     authorization: Arc<dyn ToolAuthorization>,
 }
 
-impl<T: StaticTool<HostData = Vec<ModelArtifact>>> ToolExecutor for RegisteredStatic<T> {
+impl<T: StaticTool<HostData = Vec<ModelArtifact>> + 'static> ToolExecutor for RegisteredStatic<T> {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         mut record: AgentToolCall,
@@ -264,15 +264,9 @@ impl<T: StaticTool<HostData = Vec<ModelArtifact>>> ToolExecutor for RegisteredSt
         })
     }
 
-    fn call<'a>(
-        &'a self,
-        _progress: &'a ToolProgress<'a>,
-        _ctx: &'a ToolExecutionContext<'a>,
-        _tool: &'a ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(self: Arc<Self>, invocation: ToolInvocation) -> ToolExecutorFuture<'static> {
         Box::pin(async move {
-            call_typed(&self.tool, arguments)
+            call_typed(&self.tool, invocation.arguments)
                 .await
                 .map_err(|error| error.to_string())
         })

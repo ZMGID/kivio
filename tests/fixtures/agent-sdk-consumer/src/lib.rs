@@ -90,7 +90,7 @@ impl AgentRunControl for Control {
 pub struct Host;
 impl AgentHost for Host {}
 
-pub fn handle(control: &Control) -> AgentRunHandle<'_> {
+pub fn handle(control: &std::sync::Arc<Control>) -> AgentRunHandle {
     AgentRunHandle::new(
         AgentRunIdentity {
             conversation_id: "consumer",
@@ -98,7 +98,7 @@ pub fn handle(control: &Control) -> AgentRunHandle<'_> {
             message_id: "reply",
             generation: 1,
         },
-        control,
+        control.clone(),
     )
 }
 
@@ -168,8 +168,8 @@ impl EchoTool {
 impl ToolExecutor for EchoTool {
     fn before_tool_call<'a>(
         &'a self,
-        _progress: &'a ToolProgress<'a>,
-        _ctx: &'a ToolExecutionContext<'a>,
+        _progress: &'a ToolProgress,
+        _ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         mut record: AgentToolCall,
@@ -206,13 +206,16 @@ impl ToolExecutor for EchoTool {
         })
     }
 
-    fn call<'a>(
-        &'a self,
-        _progress: &'a ToolProgress<'a>,
-        _ctx: &'a ToolExecutionContext<'a>,
-        _tool: &'a ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(
+        self: std::sync::Arc<Self>,
+        invocation: kivio_agent_sdk::agent::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
+        let kivio_agent_sdk::agent::ToolInvocation {
+            progress: _progress,
+            context: _ctx,
+            tool: _tool,
+            arguments: arguments,
+        } = invocation;
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(ToolOutput::text(

@@ -52,8 +52,8 @@ async fn production_http_tool_round_stream_and_history_continuation() {
     ])
     .await;
     let provider = server.provider();
-    let executor = EchoTool::new(true);
-    let control = Control::default();
+    let executor = std::sync::Arc::new(EchoTool::new(true));
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     let events = Events::default();
     let result = timeout(
@@ -61,7 +61,7 @@ async fn production_http_tool_round_stream_and_history_continuation() {
         run_agent_loop(
             config(&provider, initial_history()),
             &Host,
-            &executor,
+            executor.clone(),
             &mut NoSessionPolicy,
             &events,
             run.clone(),
@@ -100,14 +100,14 @@ async fn production_http_tool_round_stream_and_history_continuation() {
 
     let mut history = result.history;
     history.push(RuntimeMessage::text(ModelRole::User, "continue"));
-    let next_control = Control::default();
+    let next_control = std::sync::Arc::new(Control::default());
     let next_events = Events::default();
     let continued = timeout(
         LIMIT,
         run_agent_loop(
             config(&provider, history),
             &Host,
-            &executor,
+            executor.clone(),
             &mut NoSessionPolicy,
             &next_events,
             handle(&next_control),
@@ -161,7 +161,7 @@ async fn inputs_are_consumed_once_at_tool_and_answer_boundaries() {
     ])
     .await;
     let provider = server.provider();
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     let events = Events::default();
     let queued = AtomicBool::new(false);
@@ -182,13 +182,13 @@ async fn inputs_are_consumed_once_at_tool_and_answer_boundaries() {
         }
         EventDelivery::Accepted
     };
-    let executor = EchoTool::new(true);
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let result = timeout(
         LIMIT,
         run_agent_loop(
             config(&provider, initial_history()),
             &Host,
-            &executor,
+            executor.clone(),
             &mut NoSessionPolicy,
             &sink,
             run.clone(),
@@ -247,7 +247,7 @@ async fn inputs_are_consumed_once_at_tool_and_answer_boundaries() {
 async fn tool_free_run_consumes_steer_and_follow_up_once() {
     let server = Server::start(vec![answer("first answer"), answer("followed up")]).await;
     let provider = server.provider();
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     assert_eq!(
         run.steer(SteeringMessage::new("steer".into(), "steer now").unwrap()),
@@ -259,11 +259,18 @@ async fn tool_free_run_consumes_steer_and_follow_up_once() {
     );
     let mut config = config(&provider, initial_history());
     config.tools.clear();
-    let executor = EchoTool::new(true);
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let events = Events::default();
     let result = timeout(
         LIMIT,
-        run_agent_loop(config, &Host, &executor, &mut NoSessionPolicy, &events, run),
+        run_agent_loop(
+            config,
+            &Host,
+            executor.clone(),
+            &mut NoSessionPolicy,
+            &events,
+            run,
+        ),
     )
     .await
     .unwrap()
@@ -339,7 +346,7 @@ async fn unsupported_tools_fallback_stream_has_an_open_message() {
     ])
     .await;
     let provider = server.provider();
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let run = handle(&control);
     let open = AtomicBool::new(false);
     let outside_message = AtomicBool::new(false);
@@ -374,13 +381,13 @@ async fn unsupported_tools_fallback_stream_has_an_open_message() {
         }
         EventDelivery::Accepted
     };
-    let executor = EchoTool::new(true);
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let result = timeout(
         LIMIT,
         run_agent_loop(
             config(&provider, initial_history()),
             &Host,
-            &executor,
+            executor.clone(),
             &mut NoSessionPolicy,
             &sink,
             run,
@@ -408,7 +415,7 @@ async fn cancellation_drops_real_http_stream_and_emits_one_terminal() {
     for use_tools in [false, true] {
         let server = Server::start(vec![Response::Hold(text_delta("partial answer\n"))]).await;
         let provider = server.provider();
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let run = handle(&control);
         let events = Events::default();
         let received = Notify::new();
@@ -426,13 +433,20 @@ async fn cancellation_drops_real_http_stream_and_emits_one_terminal() {
             }
             EventDelivery::Accepted
         };
-        let executor = EchoTool::new(true);
+        let executor = std::sync::Arc::new(EchoTool::new(true));
         let mut policy = NoSessionPolicy;
         let mut cfg = config(&provider, initial_history());
         if !use_tools {
             cfg.tools.clear();
         }
-        let execution = run_agent_loop(cfg, &Host, &executor, &mut policy, &sink, run.clone());
+        let execution = run_agent_loop(
+            cfg,
+            &Host,
+            executor.clone(),
+            &mut policy,
+            &sink,
+            run.clone(),
+        );
         let stopping = async {
             received.notified().await;
             assert_eq!(run.stop(), StopAdmission::Requested);
@@ -467,15 +481,15 @@ async fn host_denial_unknown_tool_and_bad_arguments_have_no_side_effects() {
     ] {
         let server = Server::start(vec![tool(name, arguments), answer("rejected safely")]).await;
         let provider = server.provider();
-        let executor = EchoTool::new(allowed);
-        let control = Control::default();
+        let executor = std::sync::Arc::new(EchoTool::new(allowed));
+        let control = std::sync::Arc::new(Control::default());
         let events = Events::default();
         let result = timeout(
             LIMIT,
             run_agent_loop(
                 config(&provider, initial_history()),
                 &Host,
-                &executor,
+                executor.clone(),
                 &mut NoSessionPolicy,
                 &events,
                 handle(&control),
@@ -575,14 +589,14 @@ async fn finish_reason_commits_before_a_broken_tail_without_retry() {
     );
     let server = Server::start(vec![Response::Disconnect(body)]).await;
     let provider = server.provider();
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let events = Events::default();
     let result = timeout(
         LIMIT,
         run_agent_loop(
             config(&provider, initial_history()),
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
             &events,
             handle(&control),
@@ -614,7 +628,7 @@ async fn cancelled_follow_up_stream_preserves_prior_answer_and_current_reasoning
         };
         let server = Server::start(vec![Response::Sse(first), Response::Hold(partial)]).await;
         let provider = server.provider();
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let run = handle(&control);
         run.follow_up(SteeringMessage::new("follow".into(), "ask next").unwrap());
         let mut cfg = config(&provider, initial_history());
@@ -630,9 +644,16 @@ async fn cancelled_follow_up_stream_preserves_prior_answer_and_current_reasoning
             }
             EventDelivery::Accepted
         };
-        let executor = EchoTool::new(true);
+        let executor = std::sync::Arc::new(EchoTool::new(true));
         let mut policy = NoSessionPolicy;
-        let execution = run_agent_loop(cfg, &Host, &executor, &mut policy, &sink, run.clone());
+        let execution = run_agent_loop(
+            cfg,
+            &Host,
+            executor.clone(),
+            &mut policy,
+            &sink,
+            run.clone(),
+        );
         let stopping = async {
             if partial_kind == "empty" {
                 while server.count() < 2 {

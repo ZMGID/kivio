@@ -73,7 +73,7 @@ pub trait SessionPolicy: Send {
     fn start<'a>(
         &'a mut self,
         _run: RunSnapshot<'a>,
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async { Ok(Vec::new()) })
     }
@@ -81,7 +81,7 @@ pub trait SessionPolicy: Send {
     fn input<'a>(
         &'a mut self,
         _prompt: &'a str,
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async { Ok(Vec::new()) })
     }
@@ -118,7 +118,7 @@ pub trait SessionPolicy: Send {
         &'a mut self,
         _reason: ContextReason,
         _run: ContextSnapshot<'a>,
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
         _progress: &'a dyn PolicyProgress,
     ) -> PolicyFuture<'a, Result<ContextPreparation, String>> {
         Box::pin(async { Ok(ContextPreparation::default()) })
@@ -127,7 +127,7 @@ pub trait SessionPolicy: Send {
     fn context_applied<'a>(
         &'a mut self,
         _history: &'a [RuntimeMessage],
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
         _progress: &'a dyn PolicyProgress,
     ) -> PolicyFuture<'a, (Vec<RuntimeMessage>, bool)> {
         Box::pin(async { (Vec::new(), false) })
@@ -145,7 +145,7 @@ pub trait SessionPolicy: Send {
         &'a mut self,
         _run: RunSnapshot<'a>,
         _request: &'a mut super::provider_runtime::ModelCall,
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<(), String>> {
         Box::pin(async { Ok(()) })
     }
@@ -154,7 +154,7 @@ pub trait SessionPolicy: Send {
     fn transform_context<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move { Ok(history.to_vec()) })
     }
@@ -164,7 +164,7 @@ pub trait SessionPolicy: Send {
     fn finish_turn<'a>(
         &'a mut self,
         _run: RunSnapshot<'a>,
-        _control: AgentRunHandle<'a>,
+        _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
         Box::pin(async { Ok(TurnDecision::Default) })
     }

@@ -50,7 +50,7 @@ pub(crate) struct StreamRequest<'a> {
     pub web_search_tracker: Option<super::stream::WebSearchCardTracker>,
     pub speculation: Option<(
         &'a dyn super::execute::ToolExecutor,
-        &'a super::execute::ToolExecutionContext<'a>,
+        &'a super::execute::ToolExecutionContext,
     )>,
 }
 

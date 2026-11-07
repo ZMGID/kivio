@@ -12,7 +12,7 @@ const owner = { kind: 'kivio-stack-fixture', identifier, version: 1 }
 const options = {}
 for (let index = 2; index < process.argv.length; index++) {
   const argument = process.argv[index]
-  if (['--exe', '--app-data', '--timeout-seconds'].includes(argument)) {
+  if (['--exe', '--app-data', '--timeout-seconds', '--worker-stack-bytes'].includes(argument)) {
     const value = process.argv[++index]
     assert(value && !value.startsWith('--'), `${argument} requires a value`)
     options[argument.slice(2)] = value
@@ -262,7 +262,7 @@ async function selfTest() {
 }
 
 if (options.help) {
-  console.log('node scripts/probe-chat-tools.mjs --exe PATH --app-data "%APPDATA%\\com.zmair.kivio.test" [--timeout-seconds 120]')
+  console.log('node scripts/probe-chat-tools.mjs --exe PATH --app-data "%APPDATA%\\com.zmair.kivio.test" [--timeout-seconds 120] [--worker-stack-bytes 2097152]')
   console.log('Requires a debug Test-identity build. Starts only local model/MCP fixtures, retains evidence, and never writes Dev or production settings.')
 } else if (options['self-test']) {
   await selfTest()
@@ -285,6 +285,8 @@ if (options.help) {
   assert.equal(fs.realpathSync(appData).toLowerCase(), appData.toLowerCase(), 'Fixture directory must not redirect through a junction')
   const timeoutSeconds = Number(options['timeout-seconds'] ?? 120)
   assert(Number.isSafeInteger(timeoutSeconds) && timeoutSeconds >= 10 && timeoutSeconds <= 3600, 'Timeout must be between 10 and 3600 seconds')
+  const workerStack = Number(options['worker-stack-bytes'] ?? 8 * 1024 * 1024)
+  assert(Number.isSafeInteger(workerStack) && workerStack >= 1024 * 1024, 'Worker stack must be at least 1 MiB')
   const runId = `${Date.now()}-${randomUUID().slice(0, 8)}`
   const artifacts = path.join(appData, 'stack-fixture', runId)
   const probeDir = path.join(appData, 'chat_probe')
@@ -372,7 +374,7 @@ if (options.help) {
     fs.writeFileSync(path.join(appData, 'settings.json'), JSON.stringify(fixtureSettings(mocks.base, workdir), null, 2))
     const stdout = fs.openSync(path.join(artifacts, 'app.stdout.log'), 'wx')
     const stderr = fs.openSync(path.join(artifacts, 'app.stderr.log'), 'wx')
-    try { child = spawn(exe, [], { cwd: path.dirname(exe), windowsHide: true, stdio: ['ignore', stdout, stderr] }) }
+    try { child = spawn(exe, [], { cwd: path.dirname(exe), windowsHide: true, stdio: ['ignore', stdout, stderr], env: { ...process.env, KIVIO_WORKER_STACK_BYTES: String(workerStack) } }) }
     finally { fs.closeSync(stdout); fs.closeSync(stderr) }
     child.on('error', (error) => { spawnError = error })
     fs.writeFileSync(marker, JSON.stringify({ ...owner, pid: child.pid, runId }))
@@ -393,7 +395,7 @@ if (options.help) {
     const stack = [...fs.readFileSync(path.join(artifacts, 'app.stderr.log'), 'utf8').matchAll(/point=MCP tool connecting .*total_bytes=(\d+) used_bytes=(\d+) remaining_bytes=(\d+)/g)]
       .map(([, total, used, remaining]) => ({ total: Number(total), used: Number(used), remaining: Number(remaining) }))
     assert(stack.length >= 2, 'Missing native MCP connection stack samples')
-    assert(stack.every((sample) => sample.total === 2 * 1024 * 1024), 'The regression must use the default 2 MiB worker stack')
+    assert(stack.every((sample) => sample.total === workerStack), `The regression must run on the requested ${workerStack}-byte worker stack`)
     summary.stack = { samples: stack.length, maxUsedAtMcpConnect: Math.max(...stack.map((sample) => sample.used)), minRemainingAtMcpConnect: Math.min(...stack.map((sample) => sample.remaining)) }
     assert(summary.stack.minRemainingAtMcpConnect >= 1024 * 1024, 'Native MCP connection must start with at least 1 MiB of stack headroom')
     summary.passed = true

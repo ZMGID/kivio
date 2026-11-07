@@ -1,0 +1,4 @@
+{"chain":32,"phase":"coerce","exit_code":0,"exe_sha256":"7720520C09186701C4B8E09E5732E913DB0B28110779A6D1A121B41C4E9528D6","stack_bytes":2097152,"log":"D:\\ZMdata\\kivio\\.scratch\\stack-architecture\\schema-coerce-32-controlled.log"}
+{"chain":1024,"phase":"validate","exit_code":0,"exe_sha256":"7720520C09186701C4B8E09E5732E913DB0B28110779A6D1A121B41C4E9528D6","stack_bytes":2097152,"log":"D:\\ZMdata\\kivio\\.scratch\\stack-architecture\\schema-validate-1024-controlled.log"}
+{"chain":1024,"phase":"build_map","exit_code":0,"exe_sha256":"7720520C09186701C4B8E09E5732E913DB0B28110779A6D1A121B41C4E9528D6","stack_bytes":2097152,"log":"D:\\ZMdata\\kivio\\.scratch\\stack-architecture\\schema-build_map-1024-controlled.log"}
+{"chain":1024,"phase":"coerce","exit_code":-1073741571,"exe_sha256":"7720520C09186701C4B8E09E5732E913DB0B28110779A6D1A121B41C4E9528D6","stack_bytes":2097152,"log":"D:\\ZMdata\\kivio\\.scratch\\stack-architecture\\schema-coerce-1024-controlled.log"}

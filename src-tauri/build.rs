@@ -65,6 +65,7 @@ fn main() {
     let attributes = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
+        println!("cargo:rustc-link-arg=/STACK:8388608");
         // tauri-winres embeds its manifest only into bin targets, leaving the
         // libtest harness unable to resolve Common Controls v6 imports at startup
         // (STATUS_ENTRYPOINT_NOT_FOUND). Embed the same dependency through the

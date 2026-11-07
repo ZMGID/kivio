@@ -1,0 +1,12 @@
+[package]
+name = "kivio-schema-stack-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+kivio-agent-sdk = { path = "../../../crates/kivio-agent-sdk", features = ["skills", "mcp"] }
+serde_json = "1"
+jsonschema = { version = "0.60.2", default-features = false }
+
+[workspace]

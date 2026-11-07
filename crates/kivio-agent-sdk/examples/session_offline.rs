@@ -89,8 +89,8 @@ struct AllowEcho;
 impl ToolAuthorization for AllowEcho {
     fn authorize<'a>(
         &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
+        _: &'a ToolProgress,
+        _: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         _: &'a Value,
     ) -> ToolFuture<'a, Result<(), ToolError>> {
@@ -110,7 +110,7 @@ impl SessionPolicy for RequestNote {
         &'a mut self,
         _: RunSnapshot<'a>,
         call: &'a mut ModelCall,
-        _: AgentRunHandle<'a>,
+        _: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<(), String>> {
         Box::pin(async move {
             call.history.push(RuntimeMessage::system(REQUEST_NOTE));

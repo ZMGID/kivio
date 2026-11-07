@@ -136,6 +136,74 @@ pub(super) async fn complete_assistant_reply(
     outcome.map(|_| ())
 }
 
+#[derive(Clone, Copy)]
+struct ReplyRequest<'a, 'state> {
+    app: &'a AppHandle,
+    state: &'a State<'state, AppState>,
+    title_from_first_user: Option<&'a str>,
+    last_user_api_content: Option<&'a str>,
+    last_user_image_paths: &'a [PathBuf],
+    active_skill_id: Option<&'a str>,
+    entry: crate::chat::agent::AgentRunEntry,
+    arm: Option<&'a ReplyArm>,
+    probe: bool,
+    resumed_jobs: Option<&'a [String]>,
+}
+
+enum PreparedReply<'a> {
+    Finished(ArmReplyOutcome),
+    Session(Box<PreparedReplySession<'a>>),
+}
+
+struct PreparedReplySession<'a> {
+    config: Box<crate::chat::session_policy::ApplicationRunConfig<'a>>,
+    host: std::sync::Arc<dyn crate::chat::tool_runtime::ApplicationHost>,
+    executor: std::sync::Arc<RegistryToolExecutor>,
+    events: std::sync::Arc<dyn crate::chat::agent::events::AgentEventSink>,
+    handle: crate::chat::agent::control::AgentRunHandle,
+    completion: Box<ReplyCompletion<'a>>,
+}
+
+struct ReplyCompletion<'a> {
+    settings: std::sync::Arc<crate::settings::Settings>,
+    run_id: String,
+    assistant_message_id: String,
+    source_anchor: Option<kivio_agent_sdk::agent::EntryId>,
+    source_branch_id: String,
+    resolved_provider_id: String,
+    resolved_model: String,
+    skill_id: Option<String>,
+    plan_mode: bool,
+    auxiliary_tool_records: Vec<crate::chat::ToolCallRecord>,
+    protocol_guard: crate::chat::protocol::RegisteredRunGuard,
+    _reply_guard: ChatReplyGuard<'a>,
+}
+
+struct ReplyAdmission<'a> {
+    run_generation: u64,
+    run_id: String,
+    _reply_guard: ChatReplyGuard<'a>,
+}
+
+fn admit_reply_generation<'a>(
+    state: &'a AppState,
+    conversation_id: &str,
+) -> Result<ReplyAdmission<'a>, String> {
+    let run_generation = state
+        .chat_runtime()
+        .begin_reply_generation(conversation_id)
+        .ok_or_else(|| "cancelled".to_string())?;
+    let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
+    // Install cleanup before Goal claiming or any other fallible await.
+    let guard = ChatReplyGuard::try_new(state, conversation_id, &run_id, run_generation)
+        .expect("new reply run ID is unique");
+    Ok(ReplyAdmission {
+        run_generation,
+        run_id,
+        _reply_guard: guard,
+    })
+}
+
 /// 共享实现：`arm = None` 为单模型现状（直接落盘，返回 `Ok(())` 语义不变）；
 /// `arm = Some(..)` 为多模型臂（用臂的 provider/model、自动批准工具、**不落盘**，
 /// 把产出的 assistant 消息通过 `ArmReplyOutcome.message` 返回给协调者）。
@@ -154,6 +222,47 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
 ) -> impl std::future::Future<Output = Result<ArmReplyOutcome, String>> + Send + 'a + use<'a, 'state>
 {
     Box::pin(async move {
+        let request = ReplyRequest {
+            app,
+            state,
+            title_from_first_user,
+            last_user_api_content,
+            last_user_image_paths,
+            active_skill_id,
+            entry,
+            arm,
+            probe,
+            resumed_jobs,
+        };
+        match prepare_assistant_reply(request, conversation).await? {
+            PreparedReply::Finished(outcome) => Ok(outcome),
+            PreparedReply::Session(session) => {
+                run_prepared_reply(request, conversation, session).await
+            }
+        }
+    })
+}
+
+fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
+    request: ReplyRequest<'a, 'state>,
+    conversation: &'prepare mut Conversation,
+) -> impl std::future::Future<Output = Result<PreparedReply<'a>, String>>
+       + Send
+       + 'prepare
+       + use<'a, 'state, 'prepare> {
+    Box::pin(async move {
+        let ReplyRequest {
+            app,
+            state,
+            title_from_first_user,
+            last_user_api_content,
+            last_user_image_paths,
+            active_skill_id,
+            entry,
+            arm,
+            probe,
+            resumed_jobs,
+        } = request;
         #[cfg(all(debug_assertions, target_os = "windows"))]
         crate::chat::probe::log_stack("reply entered");
         if conversation.agent_runtime.is_external() {
@@ -199,15 +308,19 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                 entry,
             )
             .await
-            .map(|outcome| match outcome {
-                crate::external_agents::ExternalCliTurnOutcome::Completed
-                | crate::external_agents::ExternalCliTurnOutcome::Failed(_)
-                | crate::external_agents::ExternalCliTurnOutcome::Cancelled => ArmReplyOutcome {
-                    history: None,
-                    message: None,
-                    run_id: None,
-                    error: None,
-                },
+            .map(|outcome| {
+                PreparedReply::Finished(match outcome {
+                    crate::external_agents::ExternalCliTurnOutcome::Completed
+                    | crate::external_agents::ExternalCliTurnOutcome::Failed(_)
+                    | crate::external_agents::ExternalCliTurnOutcome::Cancelled => {
+                        ArmReplyOutcome {
+                            history: None,
+                            message: None,
+                            run_id: None,
+                            error: None,
+                        }
+                    }
+                })
             });
         }
 
@@ -228,7 +341,7 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
             .expect("Migrated history")
             .active_branch_id
             .clone();
-        let settings = state.settings_read().clone();
+        let settings = std::sync::Arc::new(state.settings_read().clone());
         // 多模型臂用自己的 provider/model；单模型用会话级（行为不变）。
         // 提前转成 owned，避免对 `conversation` 的长期不可变借用挡住后续的 `&mut conversation`。
         let resolved_provider_id = arm
@@ -289,11 +402,11 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                 .into(),
         );
         }
-        let run_generation = state
-            .chat_runtime()
-            .begin_reply_generation(&conversation.id)
-            .ok_or_else(|| "cancelled".to_string())?;
-        let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
+        let ReplyAdmission {
+            run_generation,
+            run_id,
+            _reply_guard,
+        } = admit_reply_generation(state.inner(), &conversation.id)?;
         let assistant_message_id = format!("msg_{}", Uuid::new_v4());
         if let Some(goal) = conversation
             .goal_state
@@ -327,22 +440,16 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
         );
         let mut protocol_guard =
             crate::chat::protocol::RegisteredRunGuard::new(app, &run_id, conversation.revision);
-        // per-run 回复槽位 + 活跃 generation 守卫：本函数任意退出路径（含早返回的直接生图 /
-        // 辅助视觉分支）都会 drop 它，释放该 run 的槽位并退役其 generation。同会话多模型并发时
-        // 每条 run 各持一个守卫，互不影响。`next_chat_generation` 已登记 generation，这里仅补登
-        // run_id 槽位；run_id 由 generation + uuid 拼成，必不重复，try_new 不会返回 None。
-        let _reply_guard =
-            ChatReplyGuard::try_new(state.inner(), &conversation.id, &run_id, run_generation);
         if direct_image_model && arm.is_some() {
             protocol_guard.defer_terminal();
-            return Ok(ArmReplyOutcome {
+            return Ok(PreparedReply::Finished(ArmReplyOutcome {
                 history: None,
                 message: None,
                 run_id: Some(run_id),
                 error: Some(
                     "多模型并行回答暂不支持直接生图模型，请在多答选择中移除该模型。".to_string(),
                 ),
-            });
+            }));
         }
         if direct_image_model {
             return complete_direct_image_generation_reply(
@@ -362,11 +469,13 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                 entry,
             )
             .await
-            .map(|_| ArmReplyOutcome {
-                history: None,
-                message: None,
-                run_id: None,
-                error: None,
+            .map(|_| {
+                PreparedReply::Finished(ArmReplyOutcome {
+                    history: None,
+                    message: None,
+                    run_id: None,
+                    error: None,
+                })
             });
         }
         let session = session_model_for_conversation(conversation);
@@ -417,12 +526,12 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                     auxiliary_tool_records.push(record);
                     if arm.is_some() {
                         protocol_guard.defer_terminal();
-                        return Ok(ArmReplyOutcome {
+                        return Ok(PreparedReply::Finished(ArmReplyOutcome {
                     history: None,
                             message: None,
                             run_id: Some(run_id),
                             error: Some("cancelled".to_string()),
-                        });
+                        }));
                     }
                     crate::chat::protocol::finish_run(
                         app,
@@ -459,12 +568,12 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                     auxiliary_tool_records.push(record);
                     if arm.is_some() {
                         protocol_guard.defer_terminal();
-                        return Ok(ArmReplyOutcome {
+                        return Ok(PreparedReply::Finished(ArmReplyOutcome {
                             history: None,
                             message: None,
                             run_id: Some(run_id),
                             error: Some(err),
-                        });
+                        }));
                     }
                     return Err(err);
                 }
@@ -597,7 +706,8 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                     &mut protocol_guard,
                     error,
                 )
-                .await;
+                .await
+                .map(PreparedReply::Finished);
             }
         };
         let unavailable_mcp_servers = tool_list.unavailable_mcp_servers;
@@ -813,7 +923,7 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
             .context
             .push_str(&conversation_context);
 
-        let chat_host = ChatAgentHost {
+        let chat_host = std::sync::Arc::new(ChatAgentHost {
             source_anchor,
             source_branch_id: source_branch_id.clone(),
             workflow_hooks: if chat_mode {
@@ -838,7 +948,6 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                 runtime
             },
             app: app.clone(),
-            state: state.inner(),
             run_id: run_id.clone(),
             // 多模型臂不直接落盘（最终由协调者统一 upsert + save），因此抑制 loop 的
             // mid-run 部分快照写盘，避免 N 条并发 run 同写 conversations/{id}.json 的竞态。
@@ -865,33 +974,31 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                     )
                 })
                 .flatten(),
-        };
+        });
         // probe（无头测试通道，仅 debug）：换用自动放行审批/consent/ask_user 的 host，
         // 否则模型调用敏感工具或 ask_user 会 await GUI 应答而永久挂起。
         #[cfg(debug_assertions)]
-        let probe_host = ProbeAgentHost {
+        let probe_host = std::sync::Arc::new(ProbeAgentHost {
             run_id: run_id.clone(),
             app: app.clone(),
-            state: state.inner(),
-        };
-        let host: &dyn crate::chat::tool_runtime::ApplicationHost = {
+        });
+        let host: std::sync::Arc<dyn crate::chat::tool_runtime::ApplicationHost> = {
             #[cfg(debug_assertions)]
             {
                 if probe {
-                    &probe_host
+                    probe_host.clone()
                 } else {
-                    &chat_host
+                    chat_host.clone()
                 }
             }
             #[cfg(not(debug_assertions))]
             {
                 let _ = probe;
-                &chat_host
+                chat_host.clone()
             }
         };
-        let executor = RegistryToolExecutor {
+        let executor = std::sync::Arc::new(RegistryToolExecutor {
             app: app.clone(),
-            state: state.inner(),
             skills: crate::skills::for_run(
                 skill_registry.clone(),
                 conversation.assistant_snapshot.as_ref(),
@@ -900,7 +1007,7 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                 conversation.clone(),
                 video_plan,
             )),
-        };
+        });
         let max_output_tokens = chat_max_output_tokens_on_wire(
             Some(&provider),
             &resolved_model,
@@ -929,72 +1036,147 @@ pub(super) fn complete_assistant_reply_inner<'a, 'state: 'a>(
                 message_id: &assistant_message_id,
                 generation: run_generation,
             },
-            &control,
+            std::sync::Arc::new(control),
         );
-        let events: &dyn crate::chat::agent::events::AgentEventSink = {
+        let events: std::sync::Arc<dyn crate::chat::agent::events::AgentEventSink> = {
             #[cfg(debug_assertions)]
             {
                 if probe {
-                    &probe_host
+                    probe_host.clone()
                 } else {
-                    &chat_host
+                    chat_host.clone()
                 }
             }
             #[cfg(not(debug_assertions))]
             {
-                &chat_host
+                chat_host.clone()
             }
         };
+        let config = Box::new(crate::chat::session_policy::ApplicationRunConfig {
+            state: state.inner(),
+            provider_runtime: None,
+            todo_state: conversation.agent_todo_state.clone(),
+            conversation_id: conversation.id.clone(),
+            tool_conversation_id: conversation.id.clone(),
+            depth: 0,
+            interactive_host: !probe,
+            run_id: run_id.clone(),
+            message_id: assistant_message_id.clone(),
+            generation: run_generation,
+            provider,
+            model: resolved_model.clone(),
+            history,
+            runtime_context: Some(prepared_prompt.context),
+            request_projection: Some(request_projection),
+            tools,
+            blocked_tool_calls,
+            plan_state: if chat_mode {
+                Default::default()
+            } else {
+                conversation.agent_plan_state.clone()
+            },
+            mcp_tool_ids,
+            mcp_server_ids,
+            settings: settings.as_ref().clone(),
+            effective_chat_tools,
+            language,
+            thinking_enabled,
+            thinking_level,
+            web_search_mode,
+            max_output_tokens,
+            retry_attempts,
+            provider_tools_fallback_prompt,
+            initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
+            initial_anchor_total_tokens,
+            initial_anchor_trailing_estimate,
+        });
+        Ok(PreparedReply::Session(Box::new(PreparedReplySession {
+            config,
+            host,
+            executor,
+            events,
+            handle,
+            completion: Box::new(ReplyCompletion {
+                settings,
+                run_id,
+                assistant_message_id,
+                source_anchor,
+                source_branch_id,
+                resolved_provider_id,
+                resolved_model,
+                skill_id,
+                plan_mode,
+                auxiliary_tool_records,
+                protocol_guard,
+                _reply_guard,
+            }),
+        })))
+    })
+}
+
+fn run_prepared_reply<'a, 'state: 'a>(
+    request: ReplyRequest<'a, 'state>,
+    conversation: &'a mut Conversation,
+    session: Box<PreparedReplySession<'a>>,
+) -> impl std::future::Future<Output = Result<ArmReplyOutcome, String>> + Send + 'a + use<'a, 'state>
+{
+    Box::pin(async move {
+        let PreparedReplySession {
+            config,
+            host,
+            executor,
+            events,
+            handle,
+            completion,
+        } = *session;
         #[cfg(all(debug_assertions, target_os = "windows"))]
         crate::chat::probe::log_stack("starting model session");
         let result = crate::chat::session_policy::run_session(
-            crate::chat::session_policy::ApplicationRunConfig {
-                state: state.inner(),
-                provider_runtime: None,
-                todo_state: conversation.agent_todo_state.clone(),
-                conversation_id: conversation.id.clone(),
-                tool_conversation_id: conversation.id.clone(),
-                depth: 0,
-                interactive_host: !probe,
-                run_id: run_id.clone(),
-                message_id: assistant_message_id.clone(),
-                generation: run_generation,
-                provider,
-                model: resolved_model.clone(),
-                history,
-                runtime_context: Some(prepared_prompt.context),
-                request_projection: Some(request_projection),
-                tools,
-                blocked_tool_calls,
-                plan_state: if chat_mode {
-                    Default::default()
-                } else {
-                    conversation.agent_plan_state.clone()
-                },
-                mcp_tool_ids,
-                mcp_server_ids,
-                settings: settings.clone(),
-                effective_chat_tools,
-                language,
-                thinking_enabled,
-                thinking_level,
-                web_search_mode,
-                max_output_tokens,
-                retry_attempts,
-                provider_tools_fallback_prompt,
-                initial_cache_usage: super::context::conversation_cache_usage(
-                    conversation,
-                    &settings,
-                ),
-                initial_anchor_total_tokens,
-                initial_anchor_trailing_estimate,
-            },
+            config,
             host,
-            &executor,
-            events,
+            executor,
+            events.as_ref(),
             handle,
         )
         .await;
+        finish_prepared_reply(request, conversation, completion, result).await
+    })
+}
+
+fn finish_prepared_reply<'a, 'state: 'a>(
+    request: ReplyRequest<'a, 'state>,
+    conversation: &'a mut Conversation,
+    completion: Box<ReplyCompletion<'a>>,
+    result: Result<
+        crate::chat::session_policy::ApplicationRunResult,
+        crate::chat::session_policy::ApplicationRunError,
+    >,
+) -> impl std::future::Future<Output = Result<ArmReplyOutcome, String>> + Send + 'a + use<'a, 'state>
+{
+    Box::pin(async move {
+        let ReplyRequest {
+            app,
+            state,
+            title_from_first_user,
+            last_user_api_content,
+            entry,
+            arm,
+            ..
+        } = request;
+        let ReplyCompletion {
+            settings,
+            run_id,
+            assistant_message_id,
+            source_anchor,
+            source_branch_id,
+            resolved_provider_id,
+            resolved_model,
+            skill_id,
+            plan_mode,
+            auxiliary_tool_records,
+            mut protocol_guard,
+            _reply_guard,
+        } = *completion;
         let (mut result, run_error) = match result {
             Ok(result) => (result, None),
             Err(crate::chat::session_policy::ApplicationRunError::Failed { cause, partial }) => {
@@ -1338,6 +1520,34 @@ fn append_main_subagent_tools(
 mod tests {
     use super::*;
     use crate::chat::model::GeneratedImageData;
+
+    #[tokio::test]
+    async fn dropped_preparation_retires_admitted_generation_and_preserves_sibling_run() {
+        let state = crate::state::test_app_state();
+        let first = admit_reply_generation(&state, "conversation").unwrap();
+        let sibling = admit_reply_generation(&state, "conversation").unwrap();
+        let generation = first.run_generation;
+        let sibling_generation = sibling.run_generation;
+        let preparation = async move {
+            let _admission = first;
+            std::future::pending::<()>().await;
+        };
+        let mut preparation = Box::pin(preparation);
+        assert!(futures::poll!(preparation.as_mut()).is_pending());
+        assert!(state
+            .chat_runtime()
+            .is_generation_active("conversation", generation));
+        drop(preparation);
+        assert!(!state
+            .chat_runtime()
+            .is_generation_active("conversation", generation));
+        assert!(state
+            .chat_runtime()
+            .is_generation_active("conversation", sibling_generation));
+        drop(sibling);
+        assert!(!state.chat_runtime().has_active_reply("conversation"));
+        assert!(admit_reply_generation(&state, "conversation").is_ok());
+    }
 
     #[test]
     fn plan_delegation_respects_chat_builder_and_depth_gates() {

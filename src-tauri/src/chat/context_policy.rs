@@ -180,7 +180,7 @@ impl<'a> ContextPolicy<'a> {
         &mut self,
         reason: ContextReason,
         run: ContextSnapshot<'_>,
-        control: AgentRunHandle<'_>,
+        control: AgentRunHandle,
         progress: &dyn PolicyProgress,
     ) -> Result<ContextPreparation, String> {
         let mut messages = self.project(run.history)?;

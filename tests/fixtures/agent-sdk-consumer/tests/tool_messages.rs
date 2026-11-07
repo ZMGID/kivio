@@ -40,8 +40,8 @@ struct ImageTool;
 impl ToolExecutor for ImageTool {
     fn before_tool_call<'a>(
         &'a self,
-        _progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        _progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         _tool: &'a ToolDefinition,
         call: PendingToolCall,
         mut record: AgentToolCall,
@@ -53,7 +53,7 @@ impl ToolExecutor for ImageTool {
                 return Ok(ToolPreparation::Complete(
                     record,
                     "prepared output".into(),
-                    vec![image(ctx.tool_call_id)],
+                    vec![image(&ctx.tool_call_id)],
                 ));
             }
             Ok(ToolPreparation::Ready(PreparedToolCall {
@@ -68,20 +68,23 @@ impl ToolExecutor for ImageTool {
         })
     }
 
-    fn call<'a>(
-        &'a self,
-        _progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
-        _tool: &'a ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(
+        self: std::sync::Arc<Self>,
+        invocation: kivio_agent_sdk::agent::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
+        let kivio_agent_sdk::agent::ToolInvocation {
+            progress: _progress,
+            context: ctx,
+            tool: _tool,
+            arguments: arguments,
+        } = invocation;
         Box::pin(async move {
             Ok(ToolOutput {
                 content: "tool output".into(),
                 is_error: arguments["error"] == true,
                 structured_content: Some(json!({"partial": true})),
                 host_data: vec![artifact()],
-                follow_up_messages: vec![image(ctx.tool_call_id)],
+                follow_up_messages: vec![image(&ctx.tool_call_id)],
             })
         })
     }
@@ -111,7 +114,7 @@ fn round_context() -> ToolRoundContext<'static> {
 
 #[tokio::test]
 async fn typed_tool_results_preserve_errors_artifacts_and_images_across_batches() {
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let events = Events::default();
     let context = AgentContext::new(&Host, &events, handle(&control));
     let mut parallel = echo_definition();
@@ -136,7 +139,7 @@ async fn typed_tool_results_preserve_errors_artifacts_and_images_across_batches(
     let expected_ids = calls.iter().map(|call| call.id.clone()).collect::<Vec<_>>();
     let result = execute_tool_round(
         &context,
-        &ImageTool,
+        &(std::sync::Arc::new(ImageTool) as std::sync::Arc<dyn ToolExecutor>),
         round_context(),
         &[parallel, serial],
         &[blocked],
@@ -179,13 +182,13 @@ async fn typed_tool_results_preserve_errors_artifacts_and_images_across_batches(
 
 #[tokio::test]
 async fn preparation_completion_emits_one_terminal_record_without_executor_updates() {
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let events = Events::default();
     let context = AgentContext::new(&Host, &events, handle(&control));
-    let executor = EchoTool::new(false);
+    let executor = std::sync::Arc::new(EchoTool::new(false));
     let result = execute_tool_round(
         &context,
-        &executor,
+        &(executor.clone() as std::sync::Arc<dyn ToolExecutor>),
         round_context(),
         &[echo_definition()],
         &[],
@@ -212,12 +215,12 @@ async fn preparation_completion_emits_one_terminal_record_without_executor_updat
 
 #[tokio::test]
 async fn preparation_completion_preserves_typed_follow_ups_and_artifacts() {
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let events = Events::default();
     let context = AgentContext::new(&Host, &events, handle(&control));
     let result = execute_tool_round(
         &context,
-        &ImageTool,
+        &(std::sync::Arc::new(ImageTool) as std::sync::Arc<dyn ToolExecutor>),
         round_context(),
         &[echo_definition()],
         &[],
@@ -248,8 +251,8 @@ async fn cancellation_during_preparation_does_not_execute_side_effects() {
     impl ToolExecutor for CancelDuringPreparation {
         fn before_tool_call<'a>(
             &'a self,
-            progress: &'a ToolProgress<'a>,
-            ctx: &'a ToolExecutionContext<'a>,
+            progress: &'a ToolProgress,
+            ctx: &'a ToolExecutionContext,
             tool: &'a ToolDefinition,
             call: PendingToolCall,
             record: AgentToolCall,
@@ -267,29 +270,32 @@ async fn cancellation_during_preparation_does_not_execute_side_effects() {
             })
         }
 
-        fn call<'a>(
-            &'a self,
-            _progress: &'a ToolProgress<'a>,
-            _ctx: &'a ToolExecutionContext<'a>,
-            _tool: &'a ToolDefinition,
-            _arguments: Value,
-        ) -> ToolExecutorFuture<'a> {
+        fn call(
+            self: std::sync::Arc<Self>,
+            invocation: kivio_agent_sdk::agent::ToolInvocation,
+        ) -> ToolExecutorFuture<'static> {
+            let kivio_agent_sdk::agent::ToolInvocation {
+                progress: _progress,
+                context: _ctx,
+                tool: _tool,
+                arguments: _arguments,
+            } = invocation;
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(ToolOutput::text("side effect")) })
         }
     }
 
     for drain_on_cancel in [false, true] {
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let events = Events::default();
         let context = AgentContext::new(&Host, &events, handle(&control));
-        let executor = CancelDuringPreparation {
+        let executor = std::sync::Arc::new(CancelDuringPreparation {
             calls: AtomicUsize::new(0),
             drain_on_cancel,
-        };
+        });
         let result = execute_tool_round(
             &context,
-            &executor,
+            &(executor.clone() as std::sync::Arc<dyn ToolExecutor>),
             round_context(),
             &[echo_definition()],
             &[],

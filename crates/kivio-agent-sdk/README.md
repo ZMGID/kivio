@@ -73,10 +73,10 @@ The [session example](examples/session.rs) constructs the provider, sends a prom
 Advanced hosts with existing admission and persistence owners can compose the lower-level interfaces as the original example does:
 
 1. Construct `OpenAiChatProvider` with your HTTP client and an `OpenAiChatConfig` containing the complete Chat Completions endpoint URL.
-2. Implement `AgentRunControl` for one invocation's input mailbox and stop signal. Create an `AgentRunHandle`, and clone that handle for controls that target the same invocation.
-3. Implement `ToolExecutor::before_tool_call` to authorize the registered tool and validate its arguments. Implement `call` to execute only the prepared operation.
+2. Implement `AgentRunControl` for one invocation's input mailbox and stop signal. Pass its `Arc` to `AgentRunHandle::new`, and clone the handle for controls that target the same invocation.
+3. Implement `ToolExecutor::before_tool_call` to authorize the registered tool and validate its arguments. Implement `call(self: Arc<Self>, invocation: ToolInvocation)` with an owned future. The SDK constructs and polls it in a separate task. Await `invocation.progress.updated(&record)` when reporting progress.
 4. Set `AgentRunConfig.history` to a `SessionHistory`, plus model, tools, and host-supplied identity. Use matching identity values when constructing the handle.
-5. Call `run_agent_loop(config, &host, &executor, &mut NoSessionPolicy, &events, handle).await`.
+5. Call `run_agent_loop(config, &host, executor.clone(), &mut NoSessionPolicy, &events, handle).await` with an `Arc<dyn ToolExecutor>`.
 6. Check both the returned `Result` and `AgentRunResult.status`. Persist `AgentRunResult.history` in your own session store before releasing your application's run capacity.
 
 Start with `NoSessionPolicy` and an empty `AgentHost` implementation, as the example does. These enable no product policies or persistence. Add checkpoints, context management, or recovery only when your host needs them. A host with no tools still supplies a `ToolExecutor` implementation, but sets `tools` to an empty vector.

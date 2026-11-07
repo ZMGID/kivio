@@ -12,6 +12,34 @@ pub struct AgentRunIdentity<'a> {
     pub generation: u64,
 }
 
+#[derive(Clone)]
+pub(crate) struct OwnedRunIdentity {
+    pub conversation_id: std::sync::Arc<str>,
+    run_id: std::sync::Arc<str>,
+    message_id: std::sync::Arc<str>,
+    generation: u64,
+}
+impl From<AgentRunIdentity<'_>> for OwnedRunIdentity {
+    fn from(identity: AgentRunIdentity<'_>) -> Self {
+        Self {
+            conversation_id: identity.conversation_id.into(),
+            run_id: identity.run_id.into(),
+            message_id: identity.message_id.into(),
+            generation: identity.generation,
+        }
+    }
+}
+impl OwnedRunIdentity {
+    pub(crate) fn borrowed(&self) -> AgentRunIdentity<'_> {
+        AgentRunIdentity {
+            conversation_id: &self.conversation_id,
+            run_id: &self.run_id,
+            message_id: &self.message_id,
+            generation: self.generation,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgentRunOutcome {
     Completed,
@@ -149,7 +177,7 @@ struct EventState {
 }
 
 pub(crate) struct AgentEvents<'a> {
-    pub(crate) identity: AgentRunIdentity<'a>,
+    pub(crate) identity: OwnedRunIdentity,
     invocation_id: u64,
     sink: &'a dyn AgentEventSink,
     hooks: Option<&'a dyn AgentEventSink>,
@@ -158,13 +186,13 @@ pub(crate) struct AgentEvents<'a> {
 
 impl<'a> AgentEvents<'a> {
     pub(crate) fn new(
-        identity: AgentRunIdentity<'a>,
+        identity: AgentRunIdentity<'_>,
         sink: &'a dyn AgentEventSink,
         hooks: Option<&'a dyn AgentEventSink>,
         invocation_id: u64,
     ) -> Self {
         Self {
-            identity,
+            identity: identity.into(),
             invocation_id,
             sink,
             hooks,
@@ -184,7 +212,7 @@ impl<'a> AgentEvents<'a> {
         state.ended = matches!(kind, AgentEventKind::RunEnded { .. });
         state.sequence += 1;
         let event = AgentEvent {
-            identity: self.identity,
+            identity: self.identity.borrowed(),
             invocation_id: self.invocation_id,
             sequence: state.sequence,
             kind,

@@ -1,3 +1,4 @@
+use std::sync::Arc;
 mod support;
 
 use kivio_agent_sdk::{
@@ -56,9 +57,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         client = client.no_proxy();
     }
     let provider = OpenAiChatProvider::new(client.build()?, transport);
-    let control = Control::default();
+    let control = Arc::new(Control::default());
     let run = handle(&control);
-    let executor = EchoTool::new(true);
+    let executor = Arc::new(EchoTool::new(true));
     let submitted = AtomicBool::new(false);
     let sink = |event: &AgentEvent<'_>| {
         print_event(event);
@@ -94,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let result = run_agent_loop(
         run_config,
         &Host,
-        &executor,
+        executor.clone(),
         &mut NoSessionPolicy,
         &sink,
         run.clone(),
@@ -135,13 +136,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ModelRole::User,
             "Summarize the previous result without calling any tools.",
         ));
-        let next_control = Control::default();
+        let next_control = Arc::new(Control::default());
         let mut next_config = config(&provider, history);
         next_config.model = model;
         let continued = run_agent_loop(
             next_config,
             &Host,
-            &executor,
+            executor.clone(),
             &mut NoSessionPolicy,
             &print_event,
             handle(&next_control),

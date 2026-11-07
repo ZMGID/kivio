@@ -1212,7 +1212,7 @@ struct Executor {
 impl ToolExecutor for Executor {
     fn call<'a>(
         &'a self,
-        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        progress: &'a crate::chat::agent::execute::ToolProgress,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         args: Value,
@@ -3125,11 +3125,11 @@ async fn execute(
     } else {
         None
     };
-    let executor = Executor {
+    let executor = Arc::new(Executor {
         app: app.clone(),
         host: host.clone(),
         skills: crate::skills::for_run(skills.clone(), None),
-    };
+    });
     tools.retain(|tool| tool.id != "native__yield");
     append_yield(&mut tools, &host.options);
     let max_output_tokens = settings.chat.max_output_tokens;
@@ -3204,12 +3204,12 @@ async fn execute(
                     message_id: &config.message_id,
                     generation,
                 },
-                host.as_ref(),
+                host.clone(),
             );
             let attempt = run_agent_loop(
-                attempt_config,
-                host.as_ref(),
-                &executor,
+                Box::new(attempt_config),
+                host.clone(),
+                executor.clone(),
                 host.as_ref(),
                 handle,
             )

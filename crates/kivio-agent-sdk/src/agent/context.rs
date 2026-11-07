@@ -10,7 +10,7 @@ use super::{
 pub struct AgentContext<'a> {
     pub(crate) host: &'a dyn AgentHost,
     pub(crate) events: AgentEvents<'a>,
-    pub(crate) control: AgentRunHandle<'a>,
+    pub(crate) control: AgentRunHandle,
 }
 
 impl<'a> Deref for AgentContext<'a> {
@@ -24,7 +24,7 @@ impl<'a> AgentContext<'a> {
     pub fn new(
         host: &'a dyn AgentHost,
         sink: &'a dyn super::events::AgentEventSink,
-        control: AgentRunHandle<'a>,
+        control: AgentRunHandle,
     ) -> Self {
         let events = AgentEvents::new(
             control.identity(),

@@ -686,10 +686,10 @@ async fn run_session(
     let mut result = match std::panic::AssertUnwindSafe(super::run_agent_loop(
         config,
         cfg.host.as_ref(),
-        &tools,
+        Arc::new(tools),
         policy.as_mut(),
         inner.as_ref(),
-        AgentRunHandle::new(identity, invocation.as_ref()),
+        AgentRunHandle::new(identity, invocation.clone()),
     ))
     .catch_unwind()
     .await

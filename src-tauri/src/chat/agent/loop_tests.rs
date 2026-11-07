@@ -13,7 +13,7 @@ use crate::chat::recovery_policy::{
 };
 use crate::chat::session_policy::{ApplicationRunConfig, ApplicationRunResult as AgentRunResult};
 use crate::chat::tool_runtime::{
-    ApplicationHost, ApplicationToolExecutor, ToolAuthority, ToolDispatcher as ToolExecutor,
+    ApplicationHost, ApplicationToolExecutor, RunToolSnapshot, ToolDispatcher as ToolExecutor,
     ToolExecutionContext,
 };
 use crate::chat::types::{
@@ -471,7 +471,7 @@ impl RecordingExecutor {
 impl ToolExecutor for RecordingExecutor {
     fn call<'a>(
         &'a self,
-        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        _progress: &'a crate::chat::agent::execute::ToolProgress,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
@@ -515,17 +515,17 @@ impl ToolExecutor for RecordingExecutor {
     }
 }
 
-struct PreviewFeedbackExecutor<'a> {
-    state: &'a AppState,
-    settings: &'a Settings,
+struct PreviewFeedbackExecutor {
+    state: Arc<AppState>,
+    settings: Settings,
     conversation: crate::chat::Conversation,
     png_base64: String,
 }
 
-impl ToolExecutor for PreviewFeedbackExecutor<'_> {
+impl ToolExecutor for PreviewFeedbackExecutor {
     fn call<'a>(
         &'a self,
-        progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        progress: &'a crate::chat::agent::execute::ToolProgress,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
@@ -542,8 +542,8 @@ impl ToolExecutor for PreviewFeedbackExecutor<'_> {
                 ]
             }));
             crate::chat::vision::attach_image_artifacts_for_model_with_context(
-                self.state,
-                self.settings,
+                &self.state,
+                &self.settings,
                 &native_ctx.conversation_id,
                 &native_ctx.message_id,
                 native_ctx.provider,
@@ -1017,8 +1017,8 @@ fn visible_tool_segment_calls_skip_hidden_disabled_builtin_feedback() {
 
 #[tokio::test]
 async fn disabled_tool_feedback_lists_remaining_tools_without_disabling_file_access() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let mut settings = Settings::default();
     settings.chat_tools.approval_policy = "auto".into();
     let result = execute_tool_round(
@@ -1048,7 +1048,7 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
     impl ToolExecutor for InspectContext {
         fn call<'a>(
             &'a self,
-            progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+            progress: &'a crate::chat::agent::execute::ToolProgress,
             ctx: &'a ToolExecutionContext<'a>,
             _: &'a ChatToolDefinition,
             _: Value,
@@ -1096,8 +1096,8 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
     let mut settings = Settings::default();
     settings.chat_tools.approval_policy = "auto".into();
     let result = execute_tool_round(
-        &TestHost::default(),
-        &InspectContext,
+        &Arc::new(TestHost::default()),
+        &Arc::new(InspectContext),
         &settings,
         context,
         &[native_read_file_tool()],
@@ -1140,11 +1140,11 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
     // Regression: read(image) + bash produced tool/read, user/image, tool/bash.
     // Strict providers reject the image turn with "No tool output found" for bash.
     for trailing in ["web_fetch", "bash", "missing_tool"] {
-        let host = TestHost::default();
-        let executor = RecordingExecutor {
+        let host = Arc::new(TestHost::default());
+        let executor = Arc::new(RecordingExecutor {
             image_after_read: true,
             ..Default::default()
-        };
+        });
         let mut settings = Settings::default();
         settings.chat_tools.approval_policy = "auto".into();
         let tools = vec![
@@ -1182,8 +1182,8 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
 
 #[tokio::test]
 async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_order() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let mut settings = Settings::default();
     // This regression exercises scheduling after explicit authorization, not approval prompts.
     settings.chat_tools.approval_policy = "auto".into();
@@ -1251,8 +1251,8 @@ fn write_tools_stay_outside_parallel_whitelist() {
 
 #[tokio::test]
 async fn tool_round_runs_read_only_mcp_tools_concurrently() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let mut settings = Settings::default();
     // This regression exercises scheduling after explicit authorization, not approval prompts.
     settings.chat_tools.approval_policy = "auto".into();
@@ -1288,8 +1288,8 @@ async fn tool_round_runs_read_only_mcp_tools_concurrently() {
 
 #[tokio::test]
 async fn tool_round_keeps_ask_user_serial_between_parallel_safe_tools() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let settings = Settings::default();
     let mut tools = vec![native_read_file_tool(), native_web_fetch_tool()];
     crate::chat::ask_user::append_tool_definitions(&mut tools);
@@ -1342,8 +1342,8 @@ async fn tool_round_keeps_ask_user_serial_between_parallel_safe_tools() {
 
 #[tokio::test]
 async fn tool_round_keeps_destructive_mcp_tools_serial() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let mut settings = Settings::default();
     settings.chat_tools.approval_policy = "auto".to_string();
     let tools = vec![test_mcp_tool(
@@ -1374,8 +1374,8 @@ async fn tool_round_keeps_destructive_mcp_tools_serial() {
 
 #[tokio::test]
 async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let mut settings = Settings::default();
     settings.chat_tools.approval_policy = "auto".to_string();
     let tools = vec![test_mcp_tool(
@@ -1406,8 +1406,8 @@ async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
 
 #[tokio::test]
 async fn tool_round_preserves_unknown_and_invalid_call_order() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let mut settings = Settings::default();
     // This regression exercises scheduling after explicit authorization, not approval prompts.
     settings.chat_tools.approval_policy = "auto".into();
@@ -1511,8 +1511,8 @@ async fn tool_round_preserves_unknown_and_invalid_call_order() {
 async fn tool_round_matches_capitalized_tool_names_case_insensitively() {
     // Cursor 系模型（grok-composer 等）会按训练时的大写工具名出牌（Read/Grep）。
     // 唯一命中时按声明工具执行，不走未知工具路径。
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let settings = Settings::default();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
 
@@ -1545,8 +1545,8 @@ async fn tool_round_matches_capitalized_tool_names_case_insensitively() {
 
 #[tokio::test]
 async fn tool_round_records_plan_blocked_tool_as_skipped() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let settings = Settings::default();
     let tools = vec![native_read_file_tool()];
     let blocked = vec![native_run_command_tool()];
@@ -1583,8 +1583,8 @@ async fn tool_round_records_plan_blocked_tool_as_skipped() {
 
 #[tokio::test]
 async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
-    let host = TestHost::cancelling_after(Duration::from_millis(5));
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::cancelling_after(Duration::from_millis(5)));
+    let executor = Arc::new(RecordingExecutor::default());
     let settings = Settings::default();
     let tools = vec![native_read_file_tool(), native_run_command_tool()];
 
@@ -1633,8 +1633,8 @@ async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
 
 #[tokio::test]
 async fn tool_round_keeps_serial_only_tools_non_overlapping() {
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
     let settings = Settings::default();
     let tools = vec![native_run_command_tool()];
 
@@ -1709,8 +1709,8 @@ async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_resul
         ])]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -1932,8 +1932,8 @@ async fn run_loop_reconnects_current_request_without_replaying_tools() {
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
         config.retry_attempts = 3;
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+        let host = Arc::new(TestHost::default());
+        let executor = Arc::new(RecordingExecutor::default());
         let result = run_agent_loop(config, &host, &executor)
             .await
             .expect("reconnect must recover");
@@ -1988,13 +1988,13 @@ async fn stream_reconnect_is_bounded_and_cancelable_during_backoff() {
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
         config.retry_attempts = 3;
-        let host = if cancel {
+        let host = Arc::new(if cancel {
             TestHost::cancelling_after(Duration::from_millis(100))
         } else {
             TestHost::default()
-        };
+        });
         let started = std::time::Instant::now();
-        let executor = RecordingExecutor::default();
+        let executor = Arc::new(RecordingExecutor::default());
         let result = run_agent_loop(config, &host, &executor)
             .await
             .expect("terminal result");
@@ -2028,8 +2028,8 @@ async fn http_backoff_reports_progress_without_restarting_the_run() {
         let mut config = test_run_config(&state, &server.base_url);
         config.tools.clear();
         config.retry_attempts = 2;
-        let host = TestHost::default();
-        let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+        let host = Arc::new(TestHost::default());
+        let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
             .await
             .expect("HTTP backoff recovers");
         assert_eq!(result.content, "recovered");
@@ -2070,8 +2070,8 @@ async fn completed_stream_survives_proxy_disconnect_without_replay() {
         let mut config = test_run_config(&state, &server.base_url);
         config.tools.clear();
         config.provider.api_format = format.into();
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+        let host = Arc::new(TestHost::default());
+        let executor = Arc::new(RecordingExecutor::default());
         let result = tokio::time::timeout(Duration::from_secs(1), run_agent_loop(config, &host, &executor)).await.expect("completed stream must not wait for HTTP close")
             .unwrap_or_else(|err| panic!("{format}: completed response failed: {err}"));
         assert_eq!(result.content, "complete", "{format}");
@@ -2164,13 +2164,13 @@ async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
             ]
         }))
         .unwrap();
-        let state = test_app_state();
-        let executor = PreviewFeedbackExecutor {
-            state: &state,
-            settings: &settings,
+        let state = Arc::new(test_app_state());
+        let executor = Arc::new(PreviewFeedbackExecutor {
+            state: state.clone(),
+            settings: settings.clone(),
             conversation,
             png_base64: png_base64.clone(),
-        };
+        });
         let mut vision = test_run_config(&state, &vision_server.base_url);
         vision.conversation_id = "conv_multi".into();
         vision.tool_conversation_id = "conv_multi".into();
@@ -2189,8 +2189,8 @@ async fn preview_feedback_uses_each_answer_arms_provider_and_model() {
         text.model = "text-model".into();
         text.settings = settings.clone();
         text.tools = vec![crate::mcp::types::native_html_preview_tool()];
-        let vision_host = TestHost::default();
-        let text_host = TestHost::default();
+        let vision_host = Arc::new(TestHost::default());
+        let text_host = Arc::new(TestHost::default());
         let (vision_result, text_result) = tokio::join!(
             run_agent_loop(vision, &vision_host, &executor),
             run_agent_loop(text, &text_host, &executor),
@@ -2248,11 +2248,11 @@ async fn tool_image_follow_up_recovery_keeps_question_and_language() {
     config.runtime_messages[1] = serde_json::json!({"role":"user", "content":[
         {"type":"text", "text":"有GLM的官方群吗？"}
     ]});
-    let executor = RecordingExecutor {
+    let executor = Arc::new(RecordingExecutor {
         image_after_read: true,
         ..Default::default()
-    };
-    let result = run_agent_loop(config, &TestHost::default(), &executor)
+    });
+    let result = run_agent_loop(config, &Arc::new(TestHost::default()), &executor)
         .await
         .unwrap();
     assert_eq!(result.stream_outcome, "recovered");
@@ -2280,8 +2280,8 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2349,8 +2349,8 @@ async fn run_loop_stream_synthesis_cancelled_returns_cancelled_without_placehold
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::with_cancel_flag(cancel_flag);
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::with_cancel_flag(cancel_flag));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2392,8 +2392,8 @@ async fn run_loop_stream_synthesis_cancelled_keeps_partial_content() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::cancelling_on_first_text_delta();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::cancelling_on_first_text_delta());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2428,8 +2428,8 @@ async fn run_loop_planning_top_cancelled_preserves_gathered_tool_records() {
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
     // Cancellation is observed at the next loop boundary.
-    let host = TestHost::cancelling_on_persist();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::cancelling_on_persist());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2467,8 +2467,8 @@ async fn run_loop_stream_planning_cancelled_keeps_partial_text() {
     ])]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::cancelling_on_first_text_delta();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::cancelling_on_first_text_delta());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2499,8 +2499,8 @@ async fn run_loop_stream_planning_cancelled_orders_reasoning_before_text() {
         ])]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::cancelling_on_first_text_delta();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::cancelling_on_first_text_delta());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2536,8 +2536,8 @@ async fn run_loop_stream_planning_cancelled_with_no_text_returns_cancelled() {
     let server = MockModelServer::start(vec![MockResponse::SseThenHang(Vec::new())]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::cancelling_after(Duration::from_millis(20));
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::cancelling_after(Duration::from_millis(20)));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2558,8 +2558,8 @@ async fn run_loop_stream_plain_synthesis_cancelled_keeps_partial_text() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools = Vec::new();
-    let host = TestHost::cancelling_on_first_text_delta();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::cancelling_on_first_text_delta());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2585,7 +2585,7 @@ struct HugeResultExecutor {
 impl ToolExecutor for HugeResultExecutor {
     fn call<'a>(
         &'a self,
-        _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+        _progress: &'a crate::chat::agent::execute::ToolProgress,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
@@ -2659,8 +2659,8 @@ async fn run_loop_l2_compacts_old_history_keeps_current_round_raw() {
             "content": format!("history {i}")
         }));
     }
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2749,9 +2749,13 @@ async fn run_loop_compaction_snapshot_excludes_system_prompt() {
         serde_json::json!({ "role": "user", "content": "请读取文件", "_ui_message_id": "current_user" }),
     ];
 
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-        .await
-        .expect("compacted run completes");
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await
+    .expect("compacted run completes");
     assert_eq!(result.content, "读取文件后的回答。");
 
     let replay = result
@@ -2810,8 +2814,8 @@ async fn run_loop_usage_anchor_triggers_compaction_when_estimate_below_budget() 
     // config 锚点：上一轮 provider 实报 prompt=40000（> 预算 34976）→ 触发压缩。
     config.initial_anchor_total_tokens = Some(40_000);
     config.initial_anchor_trailing_estimate = 0;
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2854,8 +2858,8 @@ async fn run_loop_no_anchor_skips_compaction_when_estimate_below_budget() {
         }));
     }
     // 无锚点（默认 None）。
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2883,8 +2887,8 @@ async fn run_loop_without_usage_does_not_publish_local_estimates() {
     let mut config = test_run_config(&state, &server.base_url);
     config.initial_anchor_total_tokens = Some(10);
     config.initial_anchor_trailing_estimate = 0;
-    let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+    let host = Arc::new(TestHost::default());
+    let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
         .await
         .expect("run completes");
     assert!(host.recorded_context_ticks().is_empty());
@@ -2923,8 +2927,8 @@ async fn run_loop_reports_last_request_occupancy_and_weighted_cache_without_accu
         serde_json::json!({ "role": "system", "content": "system prompt" }),
         serde_json::json!({ "role": "user", "content": "a".repeat(4_000) }),
     ];
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2963,8 +2967,8 @@ async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2997,14 +3001,14 @@ async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
 
 #[tokio::test]
 async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provider_call() {
-    struct CheckpointExecutor<'a> {
-        host: &'a TestHost,
+    struct CheckpointExecutor {
+        host: Arc<TestHost>,
         arguments: String,
     }
-    impl ToolExecutor for CheckpointExecutor<'_> {
+    impl ToolExecutor for CheckpointExecutor {
         fn call<'a>(
             &'a self,
-            _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+            _progress: &'a crate::chat::agent::execute::ToolProgress,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -3076,11 +3080,11 @@ async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provid
         native_read_file_tool(),
         crate::chat::sub_agent::task::tool_definition(&[], &Settings::default()),
     ];
-    let host = TestHost::default();
-    let executor = CheckpointExecutor {
-        host: &host,
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(CheckpointExecutor {
+        host: host.clone(),
         arguments,
-    };
+    });
     let result = run_agent_loop(config, &host, &executor)
         .await
         .expect("run completes");
@@ -3102,8 +3106,8 @@ async fn run_loop_steering_injects_user_message_and_emits_card() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::with_steering("steer-1", "别用 grep，改用 rg");
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::with_steering("steer-1", "别用 grep，改用 rg"));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -3187,11 +3191,11 @@ async fn run_loop_steering_delivers_one_message_per_round() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::with_steering_batches(vec![vec![
+    let host = Arc::new(TestHost::with_steering_batches(vec![vec![
         SteeringMessage::new("steer-a".into(), "第一条：先跑测试").expect("non-blank"),
         SteeringMessage::new("steer-b".into(), "第二条：再改文档").expect("non-blank"),
-    ]]);
-    let executor = RecordingExecutor::default();
+    ]]));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -3245,11 +3249,11 @@ async fn run_loop_final_answer_with_pending_steering_continues() {
     let config = test_run_config(&state, &server.base_url);
     // 时序：轮首取信箱时是空的（批 1），插话在终答流式期间到达（批 2 在
     // FinalAnswer 边界的 steering_pending 检查被取到）。
-    let host = TestHost::with_steering_batches(vec![
+    let host = Arc::new(TestHost::with_steering_batches(vec![
         Vec::new(),
         vec![SteeringMessage::new("steer-late".into(), "顺便把 README 也更新").expect("non-blank")],
-    ]);
-    let executor = RecordingExecutor::default();
+    ]));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -3311,7 +3315,7 @@ async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownershi
         "role":"user", "content":"already saved child result", "subagent_parent_persisted":true,
     });
     let tail = serde_json::json!({"role":"user", "content":"tail checkpoint input"});
-    let host = TestHost {
+    let host = Arc::new(TestHost {
         finishing_inputs: Mutex::new(
             vec![
                 vec![ordinary.clone(), persisted.clone()],
@@ -3321,10 +3325,10 @@ async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownershi
             .into(),
         ),
         ..TestHost::default()
-    };
+    });
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let executor = RecordingExecutor::default();
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor).await.unwrap();
 
@@ -3397,8 +3401,8 @@ async fn run_loop_empty_planning_response_fails_without_executing_tools() {
     let server = MockModelServer::start(vec![MockResponse::Sse(vec!["[DONE]".into()])]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let error = run_agent_loop(config, &host, &executor).await.unwrap_err();
 
@@ -3424,12 +3428,10 @@ async fn run_loop_final_answer_with_pending_follow_up_continues() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::with_follow_up_batches(vec![vec![SteeringMessage::new(
-        "follow-late".into(),
-        "顺便把 README 也更新",
-    )
-    .expect("non-blank")]]);
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::with_follow_up_batches(vec![vec![
+        SteeringMessage::new("follow-late".into(), "顺便把 README 也更新").expect("non-blank"),
+    ]]));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -3473,12 +3475,10 @@ async fn run_loop_follow_up_waits_until_final_answer() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::with_follow_up_batches(vec![vec![SteeringMessage::new(
-        "follow-after-tools".into(),
-        "再改 README",
-    )
-    .expect("non-blank")]]);
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::with_follow_up_batches(vec![vec![
+        SteeringMessage::new("follow-after-tools".into(), "再改 README").expect("non-blank"),
+    ]]));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -3534,8 +3534,8 @@ async fn run_loop_dsml_calls_keep_ids_and_reject_truncated_batches() {
         ]);
         let state = test_app_state();
         let config = test_run_config(&state, &server.base_url);
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+        let host = Arc::new(TestHost::default());
+        let executor = Arc::new(RecordingExecutor::default());
 
         let result = run_agent_loop(config, &host, &executor).await.unwrap();
 
@@ -3605,8 +3605,8 @@ async fn run_loop_length_truncated_tool_calls_fail_whole_batch() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -3680,8 +3680,8 @@ async fn run_loop_rejects_compaction_when_retained_images_exceed_request_budget(
     config
         .runtime_messages
         .push(serde_json::json!({"role":"user","content":images}));
-    let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+    let host = Arc::new(TestHost::default());
+    let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
         .await
         .unwrap();
     assert!(
@@ -3747,8 +3747,8 @@ async fn run_loop_layer2_replaces_old_history_with_summary() {
             "content": format!("recent history {i}")
         }));
     }
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -3845,8 +3845,8 @@ async fn run_loop_compaction_summary_streams_on_streaming_only_provider() {
             "content": format!("recent history {i}")
         }));
     }
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -3955,13 +3955,13 @@ async fn compaction_checkpoints_old_history_and_keeps_concurrent_input() {
         let config = over_budget_config(&state, &server.base_url);
         let old = config.runtime_messages.clone();
         let incoming = serde_json::json!({"role":"user", "content":"arrived during compaction"});
-        let host = TestHost {
+        let host = Arc::new(TestHost {
             capture_compaction: true,
             fail_compaction_checkpoint: fail,
             compaction_incoming: Mutex::new(Some(incoming.clone())),
             ..Default::default()
-        };
-        let result = run_agent_loop(config, &host, &RecordingExecutor::default()).await;
+        });
+        let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default())).await;
         let checkpoints = host.compaction_checkpoints.lock().unwrap();
         assert_eq!(checkpoints.len(), 1);
         assert_eq!(checkpoints[0], old);
@@ -3994,9 +3994,9 @@ async fn run_loop_failed_auto_compaction_still_answers() {
         final_answer_sse("未压缩也照常回答。"),
     ]);
     let state = test_app_state();
-    let host = TestHost::default();
+    let host = Arc::new(TestHost::default());
     let config = over_budget_config(&state, &server.base_url);
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+    let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
         .await
         .expect("a failed compaction must not fail the run");
 
@@ -4025,12 +4025,12 @@ async fn run_loop_failed_auto_compaction_still_answers() {
 async fn run_loop_auto_compaction_circuit_breaker_pauses_and_resets() {
     let server = MockModelServer::start(vec![final_answer_sse("熔断中直接回答。")]);
     let state = test_app_state();
-    let host = TestHost::default();
+    let host = Arc::new(TestHost::default());
     *host.auto_compact_failures.lock().unwrap() = 3;
     let result = run_agent_loop(
         over_budget_config(&state, &server.base_url),
         &host,
-        &RecordingExecutor::default(),
+        &Arc::new(RecordingExecutor::default()),
     )
     .await
     .unwrap();
@@ -4051,12 +4051,12 @@ async fn run_loop_auto_compaction_circuit_breaker_pauses_and_resets() {
         ]),
         final_answer_sse("压缩后回答。"),
     ]);
-    let host = TestHost::default();
+    let host = Arc::new(TestHost::default());
     *host.auto_compact_failures.lock().unwrap() = 2;
     run_agent_loop(
         over_budget_config(&state, &server.base_url),
         &host,
-        &RecordingExecutor::default(),
+        &Arc::new(RecordingExecutor::default()),
     )
     .await
     .unwrap();
@@ -4076,8 +4076,8 @@ async fn run_loop_skips_compaction_without_enough_history() {
     let mut config = over_budget_config(&state, &server.base_url);
     // Only one user group exists; it cannot be removed from the recent tail.
     config.runtime_messages.truncate(2);
-    let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+    let host = Arc::new(TestHost::default());
+    let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
         .await
         .unwrap();
     assert_eq!(result.content, "直接回答。");
@@ -4099,9 +4099,9 @@ async fn run_loop_under_budget_sends_messages_untouched() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
+    let host = Arc::new(TestHost::default());
     // 默认窗口（test-model 无覆盖 → 200k fallback），小输出远不达 0.85。
-    let executor = HugeResultExecutor { chars: 600 };
+    let executor = Arc::new(HugeResultExecutor { chars: 600 });
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4130,8 +4130,8 @@ async fn run_loop_stream_synthesis_empty_output_uses_fallback_and_completes() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4176,8 +4176,8 @@ async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallba
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4254,11 +4254,11 @@ async fn run_loop_overflow_recovery_compacts_and_retries_success() {
             serde_json::json!({ "role": "assistant", "content": archived_work("earlier answer") }),
         ],
     );
-    let host = TestHost {
+    let host = Arc::new(TestHost {
         capture_compaction: true,
         ..Default::default()
-    };
-    let executor = RecordingExecutor::default();
+    });
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4338,8 +4338,8 @@ async fn run_loop_empty_response_at_context_window_recovers_as_silent_overflow()
             "content": "a".repeat(20_000),
         }));
     }
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4392,8 +4392,8 @@ async fn run_loop_overflow_recovery_retries_once_then_degrades() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4435,8 +4435,8 @@ async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4496,8 +4496,8 @@ async fn run_loop_responses_reasoning_survives_plain_final_and_reload() {
         if !tools_enabled {
             config.tools.clear();
         }
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+        let host = Arc::new(TestHost::default());
+        let executor = Arc::new(RecordingExecutor::default());
 
         let result = run_agent_loop(config, &host, &executor).await.unwrap();
 
@@ -4565,8 +4565,8 @@ async fn run_loop_stream_builtin_web_search_card_precedes_answer_single_card() {
     // Responses provider（支持内置搜索）+ 会话内置模式。
     config.provider.api_format = "openai_responses".to_string();
     config.web_search_mode = crate::chat::types::WebSearchMode::Builtin;
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4627,8 +4627,8 @@ async fn run_loop_gemini_native_image_lands_in_run_result_images() {
         serde_json::json!({ "role": "system", "content": "system prompt" }),
         serde_json::json!({ "role": "user", "content": "画一只猫" }),
     ];
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4783,8 +4783,8 @@ async fn hook_events_pair_up_on_the_tool_round_path() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = HookedHost::new(TestHost::default());
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(HookedHost::new(TestHost::default()));
+    let executor = Arc::new(RecordingExecutor::default());
 
     run_agent_loop(config, &host, &executor)
         .await
@@ -4808,8 +4808,8 @@ async fn hook_events_pair_up_on_the_no_tools_path() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools = Vec::new();
-    let host = HookedHost::new(TestHost::default());
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(HookedHost::new(TestHost::default()));
+    let executor = Arc::new(RecordingExecutor::default());
 
     run_agent_loop(config, &host, &executor)
         .await
@@ -4832,8 +4832,8 @@ async fn hook_events_pair_up_when_cancelled() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = HookedHost::new(TestHost::cancelling_on_persist());
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(HookedHost::new(TestHost::cancelling_on_persist()));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4867,8 +4867,8 @@ async fn cancelling_during_synthesis_still_cancels_hooks() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = HookedHost::new(TestHost::cancelling_on_first_text_delta());
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(HookedHost::new(TestHost::cancelling_on_first_text_delta()));
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4895,8 +4895,8 @@ async fn a_successful_run_never_cancels_hooks() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = HookedHost::new(TestHost::default());
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(HookedHost::new(TestHost::default()));
+    let executor = Arc::new(RecordingExecutor::default());
 
     run_agent_loop(config, &host, &executor)
         .await
@@ -4937,8 +4937,8 @@ async fn video_analysis_runs_only_when_the_main_model_calls_the_tool() {
         config.runtime_messages = vec![serde_json::json!({
             "role": "user", "content": "Tell me about the attached video."
         })];
-        let host = TestHost::default();
-        let executor = RecordingExecutor::default();
+        let host = Arc::new(TestHost::default());
+        let executor = Arc::new(RecordingExecutor::default());
         let result = run_agent_loop(config, &host, &executor).await.unwrap();
         assert_eq!(result.stream_outcome, "completed");
         if calls_video {
@@ -4964,8 +4964,8 @@ async fn run_loop_smoke_plain_answer_completes() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools = Vec::new();
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -4989,8 +4989,8 @@ async fn run_loop_smoke_tool_then_final_answer_round_trips() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -5038,8 +5038,8 @@ async fn collaboration_preserves_parent_answer_without_text_grading() {
         .push(crate::chat::sub_agent::delivery::report_input(
             "[Sub-agent: A · Completed]\n聊天流程缺少取消清理",
         ));
-    let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+    let host = Arc::new(TestHost::default());
+    let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
         .await
         .unwrap();
     assert_eq!(
@@ -5071,8 +5071,12 @@ async fn collaboration_returns_each_parent_answer_directly() {
             .push(crate::chat::sub_agent::delivery::report_input(
                 "[Sub-agent: A · Completed]\n未发现取消处理",
             ));
-        let result =
-            run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default()).await;
+        let result = run_agent_loop(
+            config,
+            &Arc::new(TestHost::default()),
+            &Arc::new(RecordingExecutor::default()),
+        )
+        .await;
         assert_eq!(result.is_ok(), succeeds);
         assert_eq!(server.captured_bodies().len(), expected_calls);
     }
@@ -5111,9 +5115,13 @@ async fn live_deepseek_subagent_scenarios() {
         serde_json::json!({"role":"system","content":"You are a read-only sub-agent. Answer naturally in the user's language. Useful partial findings with limitations are acceptable."}),
         serde_json::json!({"role":"user","content":"用自然中文简短说明：你完成了一次真实 API 测试，并给出一个观察。不要使用固定模板。"}),
     ];
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-        .await
-        .expect("live DeepSeek loop should return a usable answer");
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await
+    .expect("live DeepSeek loop should return a usable answer");
     assert_eq!(result.stream_outcome, "completed");
     assert!(result.content.chars().count() >= 12, "answer was too short");
     assert!(
@@ -5128,8 +5136,8 @@ async fn live_deepseek_subagent_scenarios() {
         serde_json::json!({"role":"system","content":"You are a read-only sub-agent. You must use the provided read tool once before answering."}),
         serde_json::json!({"role":"user","content":"Call read for README.md. Then briefly summarize the returned tool result in Chinese."}),
     ];
-    let executor = RecordingExecutor::default();
-    let result = run_agent_loop(config, &TestHost::default(), &executor)
+    let executor = Arc::new(RecordingExecutor::default());
+    let result = run_agent_loop(config, &Arc::new(TestHost::default()), &executor)
         .await
         .expect("live DeepSeek tool round should complete");
     assert_eq!(result.stream_outcome, "completed");
@@ -5153,9 +5161,13 @@ async fn live_deepseek_subagent_scenarios() {
             "[Sub-agent: B · Completed]\n发现恢复后的完整答复应该保留。",
         ),
     ];
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-        .await
-        .expect("live DeepSeek collection synthesis should complete");
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await
+    .expect("live DeepSeek collection synthesis should complete");
     assert_eq!(result.stream_outcome, "completed");
     assert!(result.content.chars().count() >= 12);
 }
@@ -5320,9 +5332,13 @@ async fn zcode_planning_overflow_forces_compaction_below_threshold() {
         serde_json::json!({"role":"assistant","content":"previous answer"}),
         serde_json::json!({"role":"user","content":"latest request"}),
     ]);
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.content, "resumed successfully");
     let bodies = server.captured_bodies();
     assert_eq!(bodies.len(), 3);
@@ -5687,8 +5703,8 @@ async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
         }],
         updated_at: 1,
     };
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     config.todo_state = initial_todo;
     let mut reopened = config.clone();
@@ -5764,10 +5780,10 @@ async fn queued_follow_ups_without_tool_calls_keep_periodic_todo_reminders() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.push(crate::chat::todo::todo_write_tool());
-    let host = TestHost::with_follow_up_batches(vec![(0..11)
+    let host = Arc::new(TestHost::with_follow_up_batches(vec![(0..11)
         .map(|index| SteeringMessage::new(format!("follow-{index}"), "continue").unwrap())
-        .collect()]);
-    let executor = RecordingExecutor::default();
+        .collect()]));
+    let executor = Arc::new(RecordingExecutor::default());
     let result = run_agent_loop(config, &host, &executor)
         .await
         .expect("queued run completes");
@@ -5826,8 +5842,8 @@ async fn open_todos_at_the_final_answer_get_one_closing_reminder() {
         }],
         updated_at: 1,
     };
-    let host = TestHost::default();
-    let executor = RecordingExecutor::default();
+    let host = Arc::new(TestHost::default());
+    let executor = Arc::new(RecordingExecutor::default());
 
     config.todo_state = initial_todo;
     let result = run_agent_loop(config, &host, &executor)
@@ -5867,8 +5883,8 @@ async fn anthropic_reports_cached_prompt_before_text_and_merges_partial_usage() 
     let mut config = test_run_config(&state, &server.base_url);
     config.provider.api_format = "anthropic_messages".into();
     config.tools.clear();
-    let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+    let host = Arc::new(TestHost::default());
+    let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
         .await
         .unwrap();
     assert_eq!(result.content, "first answer");
@@ -5911,9 +5927,13 @@ async fn automatic_compaction_uses_configured_summary_model_and_resumes_chat_mod
     config.initial_anchor_total_tokens = Some(200_000);
     config.runtime_messages = tool_round_history();
     config.tools.clear();
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.content, "resumed");
     let saved = result.compaction_summary.unwrap();
     assert!(saved.content.contains("CONFIGURED_SUMMARY"));
@@ -5978,8 +5998,8 @@ async fn automatic_compaction_rejects_insufficient_headroom() {
     config.runtime_messages.last_mut().unwrap()["content"] =
         Value::String(archived_work("latest work"));
     config.tools.clear();
-    let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+    let host = Arc::new(TestHost::default());
+    let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
         .await
         .unwrap();
     assert_eq!(result.stream_outcome, "compaction_blocked");
@@ -6005,9 +6025,13 @@ async fn local_safety_floor_triggers_compaction_despite_small_reported_anchor() 
     let state = test_app_state();
     let mut config = over_budget_config(&state, &server.base_url);
     config.initial_anchor_total_tokens = Some(1);
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.content, "continued after safe compaction");
     assert!(result.compacted_history.is_some());
     assert!(server.captured_bodies()[1].contains("SAFETY_FLOOR_SUMMARY"));
@@ -6214,8 +6238,8 @@ async fn assert_oversized_history_recovers(
         message["_ui_message_id"] = Value::String(format!("history-{index}"));
     }
     let original_runtime = config.runtime_messages.clone();
-    let host = TestHost::default();
-    let result = run_agent_loop(config, &host, &RecordingExecutor::default()).await;
+    let host = Arc::new(TestHost::default());
+    let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default())).await;
     let bodies = server.captured_bodies();
     let sizes: Vec<_> = bodies.iter().map(String::len).collect();
     let oversized_summaries = bodies
@@ -6406,8 +6430,8 @@ async fn run_loop_issue_62_unrelated_400_is_not_context_overflow() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.clear();
-    let host = TestHost::default();
-    let error = run_agent_loop(config, &host, &RecordingExecutor::default())
+    let host = Arc::new(TestHost::default());
+    let error = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
         .await
         .err()
         .unwrap();
@@ -6434,9 +6458,9 @@ async fn issue_62_second_review_open_breaker_allows_bounded_recovery() {
         let state = test_app_state();
         let mut config = over_budget_config(&state, &server.base_url);
         config.runtime_messages[1]["content"] = Value::String("history ".repeat(40_000));
-        let host = TestHost::default();
+        let host = Arc::new(TestHost::default());
         *host.auto_compact_failures.lock().unwrap() = 3;
-        let result = run_agent_loop(config, &host, &RecordingExecutor::default())
+        let result = run_agent_loop(config, &host, &Arc::new(RecordingExecutor::default()))
             .await
             .unwrap();
         if healthy {
@@ -6677,8 +6701,8 @@ async fn legacy_round_limit_does_not_interrupt_tool_progress() {
     let mut config = test_run_config(&state, &server.base_url);
     config.effective_chat_tools =
         serde_json::from_value(serde_json::json!({"maxToolRounds":10})).unwrap();
-    let executor = RecordingExecutor::default();
-    let result = run_agent_loop(config, &TestHost::default(), &executor)
+    let executor = Arc::new(RecordingExecutor::default());
+    let result = run_agent_loop(config, &Arc::new(TestHost::default()), &executor)
         .await
         .unwrap();
     assert_eq!(result.content, "All twelve steps complete.");
@@ -6701,9 +6725,13 @@ async fn runtime_context_is_persisted_without_rewriting_previous_wire_messages()
         let mut config = test_run_config(&state, &server.base_url);
         config.runtime_messages = history.clone();
         config.runtime_context = Some(context.into());
-        let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-            .await
-            .unwrap();
+        let result = run_agent_loop(
+            config,
+            &Arc::new(TestHost::default()),
+            &Arc::new(RecordingExecutor::default()),
+        )
+        .await
+        .unwrap();
         assert_eq!(result.content, "OK");
         let saved = serde_json::to_string(&result.api_messages).unwrap();
         let replay: Vec<Value> = serde_json::from_str(&saved).unwrap();
@@ -6762,8 +6790,8 @@ async fn permanent_request_errors_preserve_tools_without_another_model_call() {
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
         config.retry_attempts = 3;
-        let executor = RecordingExecutor::default();
-        let result = run_agent_loop(config, &TestHost::default(), &executor).await.unwrap();
+        let executor = Arc::new(RecordingExecutor::default());
+        let result = run_agent_loop(config, &Arc::new(TestHost::default()), &executor).await.unwrap();
         assert_eq!(server.captured_bodies().len(), 2, "permanent errors must stop model requests");
         assert_eq!(result.tool_records.len(), 1);
         assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
@@ -6818,7 +6846,7 @@ async fn truncated_text_recovers_once_without_replaying_completed_tools() {
                     serde_json::json!({"role":"user","content":format!("historical question {n}")}),
                 );
             }
-            let host = TestHost::default();
+            let host = Arc::new(TestHost::default());
             if outcome == "cancel" {
                 let flag = host.cancel_flag.clone();
                 tokio::spawn(async move {
@@ -6826,7 +6854,7 @@ async fn truncated_text_recovers_once_without_replaying_completed_tools() {
                     flag.store(true, Ordering::SeqCst);
                 });
             }
-            let executor = RecordingExecutor::default();
+            let executor = Arc::new(RecordingExecutor::default());
             let result = run_agent_loop(config, &host, &executor).await;
             if outcome == "success" {
                 let result = result.unwrap();
@@ -6876,9 +6904,13 @@ async fn truncated_text_at_output_cap_or_without_usage_does_not_retry() {
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
         config.tools.clear();
-        let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-            .await
-            .unwrap();
+        let result = run_agent_loop(
+            config,
+            &Arc::new(TestHost::default()),
+            &Arc::new(RecordingExecutor::default()),
+        )
+        .await
+        .unwrap();
         assert_eq!(result.content, "unfinished answer 🌱");
         assert_eq!(server.captured_bodies().len(), 1);
     }
@@ -6933,9 +6965,13 @@ async fn run_loop_compacted_final_preserves_responses_replay() {
             "_ui_message_id": format!("recent-{index}")
         }));
     }
-    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await
+    .unwrap();
     assert_eq!(result.content, "final after compression");
     assert_eq!(server.captured_bodies().len(), 2);
     let history = result
@@ -7008,8 +7044,8 @@ async fn run_loop_anthropic_block_input_and_text_match_replay() {
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
         config.provider.api_format = "anthropic_messages".into();
-        let executor = RecordingExecutor::default();
-        let result = run_agent_loop(config, &TestHost::default(), &executor)
+        let executor = Arc::new(RecordingExecutor::default());
+        let result = run_agent_loop(config, &Arc::new(TestHost::default()), &executor)
             .await
             .unwrap();
         assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
@@ -7189,15 +7225,17 @@ impl AgentEventSink for HookedHost {
         self.inner.on_event(event)
     }
 }
-fn test_context<H: AgentHost + AgentEventSink + AgentRunControl>(host: &H) -> AgentContext<'_> {
+fn test_context<H: AgentHost + AgentEventSink + AgentRunControl + 'static>(
+    host: &Arc<H>,
+) -> AgentContext<'_> {
     let identity = AgentRunIdentity {
         conversation_id: "conversation",
         run_id: "run",
         message_id: "message",
         generation: 1,
     };
-    let control = AgentRunHandle::new(identity, host);
-    AgentContext::new(host, host, control)
+    let control = AgentRunHandle::new(identity, host.clone());
+    AgentContext::new(host.as_ref(), host.as_ref(), control)
 }
 
 #[derive(Debug)]
@@ -7241,10 +7279,13 @@ fn present_result(result: AgentRunResult) -> PresentedRunResult {
     }
 }
 
-async fn run_agent_loop<H: ApplicationHost + AgentEventSink + AgentRunControl>(
+async fn run_agent_loop<
+    H: ApplicationHost + AgentEventSink + AgentRunControl + 'static,
+    D: ToolExecutor + 'static,
+>(
     config: AgentRunConfig<'_>,
-    host: &H,
-    executor: &dyn ToolExecutor,
+    host: &Arc<H>,
+    executor: &Arc<D>,
 ) -> Result<PresentedRunResult, String> {
     let identity = AgentRunIdentity {
         conversation_id: &config.conversation_id.clone(),
@@ -7252,12 +7293,12 @@ async fn run_agent_loop<H: ApplicationHost + AgentEventSink + AgentRunControl>(
         message_id: &config.message_id.clone(),
         generation: config.generation,
     };
-    let control = AgentRunHandle::new(identity, host);
+    let control = AgentRunHandle::new(identity, host.clone());
     crate::chat::session_policy::run_session(
-        config.into_application(),
-        host,
-        executor,
-        host,
+        Box::new(config.into_application()),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
         control,
     )
     .await
@@ -7291,9 +7332,12 @@ impl<'a> ToolRoundContext<'a> {
     }
 }
 
-async fn execute_tool_round<H: ApplicationHost + AgentEventSink + AgentRunControl>(
-    host: &H,
-    dispatcher: &dyn ToolExecutor,
+async fn execute_tool_round<
+    H: ApplicationHost + AgentEventSink + AgentRunControl + 'static,
+    D: ToolExecutor + 'static,
+>(
+    host: &Arc<H>,
+    dispatcher: &Arc<D>,
     settings: &Settings,
     ctx: ToolRoundContext<'_>,
     tools: &[ChatToolDefinition],
@@ -7303,13 +7347,12 @@ async fn execute_tool_round<H: ApplicationHost + AgentEventSink + AgentRunContro
     let context = test_context(host);
     let execution = ctx.execution();
     let all: Vec<_> = tools.iter().chain(blocked).cloned().collect();
-    let executor = ApplicationToolExecutor {
-        settings,
-        authority: ToolAuthority::from_context(&execution),
-        tools: &all,
-        host,
-        dispatcher,
-    };
+    let executor: Arc<dyn crate::chat::agent::execute::ToolExecutor> =
+        Arc::new(ApplicationToolExecutor {
+            snapshot: Arc::new(RunToolSnapshot::from_context(settings, &execution, &all)),
+            host: host.clone(),
+            dispatcher: dispatcher.clone(),
+        });
     let core = crate::chat::agent::rounds::ToolRoundContext {
         conversation_id: ctx.conversation_id,
         run_id: ctx.run_id,
@@ -7344,19 +7387,18 @@ fn visible_tool_segment_calls(
     blocked: &[ChatToolDefinition],
     calls: &[PendingToolCall],
 ) -> Vec<PendingToolCall> {
-    let host = TestHost::default();
+    let host = Arc::new(TestHost::default());
     let settings = Settings::default();
     let ctx = test_round_context();
     let execution = ctx.execution();
     let all: Vec<_> = tools.iter().chain(blocked).cloned().collect();
-    let dispatcher = RecordingExecutor::default();
-    let executor = ApplicationToolExecutor {
-        settings: &settings,
-        authority: ToolAuthority::from_context(&execution),
-        tools: &all,
-        host: &host,
-        dispatcher: &dispatcher,
-    };
+    let dispatcher = Arc::new(RecordingExecutor::default());
+    let executor: Arc<dyn crate::chat::agent::execute::ToolExecutor> =
+        Arc::new(ApplicationToolExecutor {
+            snapshot: Arc::new(RunToolSnapshot::from_context(&settings, &execution, &all)),
+            host: host.clone(),
+            dispatcher: dispatcher.clone(),
+        });
     crate::chat::agent::rounds::visible_tool_segment_calls(
         &executor,
         &tools
@@ -7381,14 +7423,14 @@ async fn sdk04_stopped_stream_does_not_accept_provider_aggregate() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.clear();
-    let host = TestHost::default();
+    let host = Arc::new(TestHost::default());
     let identity = AgentRunIdentity {
         conversation_id: "conversation",
         run_id: "run",
         message_id: "message",
         generation: 1,
     };
-    let control = AgentRunHandle::new(identity, &host);
+    let control = AgentRunHandle::new(identity, host.clone());
     let terminal = Mutex::new(Vec::new());
     let sink = |event: &AgentEvent<'_>| {
         if let AgentEventKind::Content { delta, .. } = &event.kind {
@@ -7403,9 +7445,9 @@ async fn sdk04_stopped_stream_does_not_accept_provider_aggregate() {
         EventDelivery::Accepted
     };
     let result = crate::chat::session_policy::run_session(
-        config.into_application(),
-        &host,
-        &RecordingExecutor::default(),
+        Box::new(config.into_application()),
+        host.clone(),
+        Arc::new(RecordingExecutor::default()),
         &sink,
         control.clone(),
     )
@@ -7465,11 +7507,11 @@ async fn application_failure_returns_full_history_with_branches_compaction_and_t
     history.push(RuntimeMessage::text(ModelRole::User, "read the file"));
     let original = history.entries().to_vec();
     config.history = history;
-    let host = TestHost {
+    let host = Arc::new(TestHost {
         fail_finishing_checkpoint: true,
         ..Default::default()
-    };
-    let executor = RecordingExecutor::default();
+    });
+    let executor = Arc::new(RecordingExecutor::default());
     let control = AgentRunHandle::new(
         AgentRunIdentity {
             conversation_id: "conversation",
@@ -7477,13 +7519,17 @@ async fn application_failure_returns_full_history_with_branches_compaction_and_t
             message_id: "message",
             generation: 1,
         },
-        &host,
+        host.clone(),
     );
-    let ApplicationRunError::Failed { cause, partial } =
-        crate::chat::session_policy::run_session(config, &host, &executor, &host, control)
-            .await
-            .unwrap_err()
-    else {
+    let ApplicationRunError::Failed { cause, partial } = crate::chat::session_policy::run_session(
+        Box::new(config),
+        host.clone(),
+        executor.clone(),
+        host.as_ref(),
+        control,
+    )
+    .await
+    .unwrap_err() else {
         panic!("an admitted run must return its partial result");
     };
     assert!(matches!(cause, AgentFailure::Host { .. }));
@@ -7525,7 +7571,7 @@ async fn sdk04_recovery_request_uses_formatted_bounded_tool_summary() {
     impl ToolExecutor for SearchResultExecutor {
         fn call<'a>(
             &'a self,
-            _progress: &'a crate::chat::agent::execute::ToolProgress<'a>,
+            _progress: &'a crate::chat::agent::execute::ToolProgress,
             _ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ChatToolDefinition,
             _arguments: Value,
@@ -7567,9 +7613,13 @@ async fn sdk04_recovery_request_uses_formatted_bounded_tool_summary() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.settings.chat_tools.max_tool_output_chars = Some(1000);
-    let result = run_agent_loop(config, &TestHost::default(), &SearchResultExecutor)
-        .await
-        .unwrap();
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(SearchResultExecutor),
+    )
+    .await
+    .unwrap();
     assert_eq!(server.captured_bodies().len(), 3);
     assert_eq!(result.stream_outcome, "recovered");
     assert!(result.degraded.unwrap().tool_summaries[0]
@@ -7586,8 +7636,8 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
     impl crate::chat::agent::execute::ToolExecutor for RegisteredTool {
         fn before_tool_call<'a>(
             &'a self,
-            _: &'a ToolProgress<'a>,
-            _: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
+            _: &'a ToolProgress,
+            _: &'a crate::chat::agent::execute::ToolExecutionContext,
             _: &'a crate::chat::tools::ToolDefinition,
             call: PendingToolCall,
             record: AgentToolCall,
@@ -7604,13 +7654,10 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
                 }))
             })
         }
-        fn call<'a>(
-            &'a self,
-            _: &'a ToolProgress<'a>,
-            _: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
-            _: &'a crate::chat::tools::ToolDefinition,
-            _: Value,
-        ) -> crate::chat::agent::execute::ToolExecutorFuture<'a> {
+        fn call(
+            self: Arc<Self>,
+            _: crate::chat::agent::execute::ToolInvocation,
+        ) -> crate::chat::agent::execute::ToolExecutorFuture<'static> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(crate::chat::tools::ToolOutput::text("registered result")) })
         }
@@ -7657,21 +7704,21 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
         report_context: false,
         limits: Default::default(),
     };
-    let host = TestHost::default();
+    let host = Arc::new(TestHost::default());
     let identity = AgentRunIdentity {
         conversation_id: "conversation",
         run_id: "run",
         message_id: "message",
         generation: 1,
     };
-    let executor = RegisteredTool(AtomicUsize::new(0));
+    let executor = Arc::new(RegisteredTool(AtomicUsize::new(0)));
     let result = super::run_agent_loop(
         config,
-        &host,
-        &executor,
+        host.as_ref(),
+        executor.clone(),
         &mut crate::chat::agent::session::NoSessionPolicy,
-        &host,
-        AgentRunHandle::new(identity, &host),
+        host.as_ref(),
+        AgentRunHandle::new(identity, host.clone()),
     )
     .await
     .unwrap();
@@ -7715,8 +7762,11 @@ async fn core_completion_closes_handle_before_application_releases_capacity() {
     let runtime = state.chat_runtime();
     let generation = runtime.begin_generation("conversation");
     assert!(runtime.try_begin_reply("conversation", "run"));
-    let control =
-        crate::chat::runtime_state::ChatRunControl::new(runtime, "conversation", generation);
+    let control = Arc::new(crate::chat::runtime_state::ChatRunControl::new(
+        runtime,
+        "conversation",
+        generation,
+    ));
     let handle = AgentRunHandle::new(
         AgentRunIdentity {
             conversation_id: "conversation",
@@ -7724,18 +7774,18 @@ async fn core_completion_closes_handle_before_application_releases_capacity() {
             message_id: "message",
             generation,
         },
-        &control,
+        control.clone(),
     );
     let clone = handle.clone();
     let waiting = clone.wait_inactive();
     tokio::pin!(waiting);
     assert!(futures::poll!(waiting.as_mut()).is_pending());
-    let host = TestHost::default();
+    let host = Arc::new(TestHost::default());
     crate::chat::session_policy::run_session(
-        test_run_config(&state, &server.base_url).into_application(),
-        &host,
-        &RecordingExecutor::default(),
-        &host,
+        Box::new(test_run_config(&state, &server.base_url).into_application()),
+        host.clone(),
+        Arc::new(RecordingExecutor::default()),
+        host.as_ref(),
         handle,
     )
     .await

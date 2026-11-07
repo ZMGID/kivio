@@ -571,14 +571,14 @@ fn imported_inactive_unfinished_tool_round_cannot_be_selected() {
 }
 
 struct ManagedTool {
-    delegate: EchoTool,
+    delegate: std::sync::Arc<EchoTool>,
     gate: Arc<Gate>,
 }
 impl ToolExecutor for ManagedTool {
     fn before_tool_call<'a>(
         &'a self,
-        progress: &'a ToolProgress<'a>,
-        ctx: &'a ToolExecutionContext<'a>,
+        progress: &'a ToolProgress,
+        ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
@@ -595,13 +595,16 @@ impl ToolExecutor for ManagedTool {
             Ok(prepared)
         })
     }
-    fn call<'a>(
-        &'a self,
-        _: &'a ToolProgress<'a>,
-        _: &'a ToolExecutionContext<'a>,
-        _: &'a ToolDefinition,
-        _: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(
+        self: std::sync::Arc<Self>,
+        invocation: kivio_agent_sdk::agent::ToolInvocation,
+    ) -> ToolExecutorFuture<'static> {
+        let kivio_agent_sdk::agent::ToolInvocation {
+            progress: _,
+            context: _,
+            tool: _,
+            arguments: _,
+        } = invocation;
         Box::pin(async move {
             self.gate.hold().await;
             Ok(ToolOutput::text("drained"))
@@ -662,7 +665,7 @@ async fn navigation_stays_busy_through_stop_tool_cleanup_and_blocked_commit() {
         .register_dynamic(
             echo_definition(),
             Arc::new(ManagedTool {
-                delegate: EchoTool::new(true),
+                delegate: std::sync::Arc::new(EchoTool::new(true)),
                 gate: tool_gate.clone(),
             }),
         )

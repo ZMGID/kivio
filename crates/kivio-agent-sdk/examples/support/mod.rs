@@ -1,7 +1,7 @@
 pub mod http;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Mutex,
+    Arc, Mutex,
 };
 
 use kivio_agent_sdk::{
@@ -11,7 +11,7 @@ use kivio_agent_sdk::{
         events::{AgentRunIdentity, InputKind},
         execute::{PreparedToolCall, ToolFuture, ToolPreparation, ToolProgress},
         AgentHost, AgentHostFuture, AgentRunConfig, RuntimeMessage, SteeringMessage,
-        ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
+        ToolExecutionContext, ToolExecutor, ToolExecutorFuture, ToolInvocation,
     },
     model::{ModelRole, ModelTool, PendingToolCall},
     tools::{schema::validate_arguments, ToolDefinition, ToolOutput},
@@ -88,7 +88,7 @@ impl AgentRunControl for Control {
 pub struct Host;
 impl AgentHost for Host {}
 
-pub fn handle(control: &Control) -> AgentRunHandle<'_> {
+pub fn handle(control: &Arc<Control>) -> AgentRunHandle {
     AgentRunHandle::new(
         AgentRunIdentity {
             conversation_id: "example",
@@ -96,7 +96,7 @@ pub fn handle(control: &Control) -> AgentRunHandle<'_> {
             message_id: "reply",
             generation: 1,
         },
-        control,
+        control.clone(),
     )
 }
 
@@ -166,8 +166,8 @@ impl EchoTool {
 impl ToolExecutor for EchoTool {
     fn before_tool_call<'a>(
         &'a self,
-        _progress: &'a ToolProgress<'a>,
-        _ctx: &'a ToolExecutionContext<'a>,
+        _progress: &'a ToolProgress,
+        _ctx: &'a ToolExecutionContext,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         mut record: AgentToolCall,
@@ -204,17 +204,13 @@ impl ToolExecutor for EchoTool {
         })
     }
 
-    fn call<'a>(
-        &'a self,
-        _progress: &'a ToolProgress<'a>,
-        _ctx: &'a ToolExecutionContext<'a>,
-        _tool: &'a ToolDefinition,
-        arguments: Value,
-    ) -> ToolExecutorFuture<'a> {
+    fn call(self: Arc<Self>, invocation: ToolInvocation) -> ToolExecutorFuture<'static> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(ToolOutput::text(
-                arguments["text"].as_str().expect("prepare validated text"),
+                invocation.arguments["text"]
+                    .as_str()
+                    .expect("prepare validated text"),
             ))
         })
     }

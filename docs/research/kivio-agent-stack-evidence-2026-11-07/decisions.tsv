@@ -1,0 +1,6 @@
+time	phase	decision	evidence	result
+2026-11-07T23:39:03.4845609+08:00	scope	Keep Kivio Agent primary; OpenCode is fixed historical analogy	history-cli audit and user clarification	Verified scope
+2026-11-07T23:39:03.4845609+08:00	evidence	Separate finite async pressure from input-driven recursion	Actual SDK schema probe, four same-binary cases	Three successful controls; coerce 1024 refs exits 0xC00000FD
+2026-11-07T23:39:03.4845609+08:00	design	Select bounded state/owned operations and execution-group worker isolation	Rig Swiftide AutoAgents pinned source; two independent design candidates	Proposed, not implemented
+2026-11-07T23:39:03.4845609+08:00	review	Require finite fault-drain deadline and durable side-effect start acknowledgment	Fresh source/document review	Corrections applied; same model family only
+2026-11-07T23:39:03.4845609+08:00	verification	Check artifact hashes, source references and documentation links	25 local links; 6 pinned source links; probe source and lock hashes	Pass; no new desktop run or historical bisect

@@ -71,13 +71,13 @@ async fn model_failure_retains_completed_work_usage_and_provider_identity() {
     let model = Model(Mutex::new(
         vec![Ok(tool_answer()), Err(failure.clone())].into(),
     ));
-    let control = Control::default();
-    let executor = EchoTool::new(true);
+    let control = std::sync::Arc::new(Control::default());
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let events = Events::default();
     let error = run_agent_loop(
         config(&model, initial_history()),
         &Host,
-        &executor,
+        executor.clone(),
         &mut NoSessionPolicy,
         &events,
         handle(&control),
@@ -157,11 +157,11 @@ async fn boundary_failure_retains_the_answer_that_already_completed() {
         let model = Model(Mutex::new(
             vec![Ok(GenerateOutput::text("completed answer".into(), None))].into(),
         ));
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let error = run_agent_loop(
             config(&model, initial_history()),
             &BoundaryFailure(fail_save),
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
             &Events::default(),
             handle(&control),
@@ -210,12 +210,12 @@ impl ModelRuntime for DraftFailure {
 #[tokio::test]
 async fn draft_failure_keeps_previously_completed_tool_records() {
     let model = DraftFailure(Mutex::new(false));
-    let control = Control::default();
-    let executor = EchoTool::new(true);
+    let control = std::sync::Arc::new(Control::default());
+    let executor = std::sync::Arc::new(EchoTool::new(true));
     let result = run_agent_loop(
         config(&model, initial_history()),
         &Host,
-        &executor,
+        executor.clone(),
         &mut NoSessionPolicy,
         &Events::default(),
         handle(&control),
@@ -232,12 +232,12 @@ async fn draft_failure_keeps_previously_completed_tool_records() {
 #[tokio::test]
 async fn host_failure_preserves_input_and_does_not_become_a_provider_error() {
     let model = Model(Mutex::new(VecDeque::new()));
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let events = Events::default();
     let error = run_agent_loop(
         config(&model, initial_history()),
         &SaveFailure,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &events,
         handle(&control),
@@ -265,14 +265,14 @@ async fn host_failure_preserves_input_and_does_not_become_a_provider_error() {
 #[tokio::test]
 async fn identity_rejection_does_not_start_or_end_a_run() {
     let model = Model(Mutex::new(VecDeque::new()));
-    let control = Control::default();
+    let control = std::sync::Arc::new(Control::default());
     let events = Events::default();
     let mut cfg = config(&model, initial_history());
     cfg.generation += 1;
     let error = run_agent_loop(
         cfg,
         &Host,
-        &EchoTool::new(true),
+        std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
         &events,
         handle(&control),
@@ -314,11 +314,11 @@ async fn http_retry_after_survives_the_run_error_boundary() {
                 .unwrap(),
             OpenAiChatConfig::new(endpoint),
         );
-        let control = Control::default();
+        let control = std::sync::Arc::new(Control::default());
         let error = run_agent_loop(
             config(&provider, initial_history()),
             &Host,
-            &EchoTool::new(true),
+            std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
             &Events::default(),
             handle(&control),
