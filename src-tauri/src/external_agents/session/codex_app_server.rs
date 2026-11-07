@@ -3648,10 +3648,19 @@ mod tests {
         let list: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
         assert_eq!(list["method"], "skills/list");
         assert_eq!(list["params"]["cwds"], json!(["/work"]));
+        if mode == "late-approval" {
+            println!("{}", json!({"id":"late-child-approval", "method":"item/commandExecution/requestApproval", "params":{
+                "threadId":"child-thread", "turnId":"old-child-turn", "itemId":"child-command",
+                "command":"echo fixture", "availableDecisions":["accept", "acceptForSession", "decline"]
+            }}));
+            std::io::stdout().flush().unwrap();
+            let approval: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            std::fs::write(std::env::var_os("KIVIO_SKILL_APPROVAL_RECEIPT").unwrap(), approval.to_string()).unwrap();
+        }
         println!(
             "{}",
             json!({"id":list["id"], "result":{"data":[{"skills":[{
-                "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md", "enabled":mode != "disabled"
+                "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md", "enabled":matches!(mode.as_str(), "enabled" | "cancelled")
             }]}]}})
         );
         std::io::stdout().flush().unwrap();
@@ -3685,7 +3694,9 @@ mod tests {
 
     #[tokio::test]
     async fn skill_slash_runtime_resolves_before_dispatch_and_blocks_disabled_skills() {
-        for mode in ["enabled", "disabled", "cancelled"] {
+        for mode in ["enabled", "disabled", "cancelled", "late-approval"] {
+            let receipt_dir = tempfile::tempdir().unwrap();
+            let approval_receipt = receipt_dir.path().join("approval.json");
             let exe = std::env::current_exe().unwrap();
             let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
                 .args([
@@ -3694,6 +3705,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("KIVIO_SKILL_PROTOCOL_PEER", mode)
+                .env("KIVIO_SKILL_APPROVAL_RECEIPT", &approval_receipt)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -3712,7 +3724,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
-                approval_policy: "never",
+                approval_policy: "on-request",
                 sandbox_policy: json!({"type": "dangerFullAccess"}),
                 plan_mode: false,
                 thread_model: None,
@@ -3766,6 +3778,11 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert!(status.success(), "{}", session.stderr_tail.await.unwrap());
+            if mode == "late-approval" {
+                let approval: Value = serde_json::from_slice(&std::fs::read(&approval_receipt).unwrap()).unwrap();
+                assert_eq!(approval["id"], "late-child-approval");
+                assert_eq!(approval["result"]["decision"], "decline", "skills/list must not auto-approve a late child request in on-request mode: {approval}");
+            }
         }
     }
 

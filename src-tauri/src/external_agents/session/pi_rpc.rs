@@ -5069,6 +5069,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_compact_settlement_does_not_hide_next_compact_rejection() {
+        for compaction_started in [true, false] {
+            let (client_stdin, server_stdin) = duplex(4096);
+            let (client_stdout, mut server_stdout) = duplex(4096);
+            let server = tokio::spawn(async move {
+                let mut requests = BufReader::new(server_stdin).lines();
+                for turn in 0..2 {
+                    let request: Value =
+                        serde_json::from_str(&requests.next_line().await.unwrap().unwrap()).unwrap();
+                    assert_eq!(request["type"], "compact");
+                    if turn == 1 && compaction_started {
+                        server_stdout
+                            .write_all(b"{\"type\":\"compaction_start\"}\n")
+                            .await
+                            .unwrap();
+                    }
+                    let response = if turn == 0 {
+                        json!({"id":1,"type":"response","command":"compact","success":true,"data":{}})
+                    } else {
+                        json!({"id":1,"type":"response","command":"compact","success":false,"error":"second compact rejected"})
+                    };
+                    server_stdout
+                        .write_all(format!("{response}\n").as_bytes())
+                        .await
+                        .unwrap();
+                    if turn == 0 {
+                        server_stdout
+                            .write_all(b"{\"type\":\"agent_settled\"}\n")
+                            .await
+                            .unwrap();
+                    }
+                }
+                let Ok(Ok(Some(stats))) =
+                    timeout(Duration::from_millis(200), requests.next_line()).await
+                else {
+                    return;
+                };
+                let stats: Value = serde_json::from_str(&stats).unwrap();
+                assert_eq!(stats["type"], "get_session_stats");
+                let response = json!({"id":stats["id"],"type":"response","command":"get_session_stats","success":true,"data":{}});
+                server_stdout
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+            });
+            let mut reader = BufReader::new(client_stdout).lines();
+            let stdin = Arc::new(Mutex::new(client_stdin));
+            let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+            run_pi_rpc_io(
+                &TurnDelivery::default(),
+                &mut reader,
+                &stdin,
+                "/compact",
+                &[],
+                &mut |_| {},
+                None,
+                Some(&waiters),
+                || false,
+                true,
+            )
+            .await
+            .unwrap();
+            let result = run_pi_rpc_io(
+                &TurnDelivery::default(),
+                &mut reader,
+                &stdin,
+                "/compact",
+                &[],
+                &mut |_| {},
+                None,
+                Some(&waiters),
+                || false,
+                true,
+            )
+            .await;
+            server.await.unwrap();
+            assert!(result.as_ref().is_err_and(|error| error.contains("second compact rejected")),
+            "second compact rejection was lost (compaction_started={compaction_started}): {result:?}");
+        }
+    }
+    #[tokio::test]
     async fn stale_settlement_after_compact_cannot_finish_the_next_prompt() {
         let (client_stdin, server_stdin) = duplex(4096);
         let (client_stdout, mut server_stdout) = duplex(4096);
