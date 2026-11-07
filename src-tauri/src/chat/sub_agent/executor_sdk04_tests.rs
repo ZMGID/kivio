@@ -488,7 +488,13 @@ async fn stopped_managed_tool_keeps_slot_busy_until_cleanup_and_journal_finish()
     };
     let config = test_run_config(&state, &server.base_url);
     let initial_history = config.runtime_messages.clone();
-    let run = run_session(config.into_application(), &host, &executor, &host, handle.clone());
+    let run = run_session(
+        config.into_application(),
+        &host,
+        &executor,
+        &host,
+        handle.clone(),
+    );
     tokio::pin!(run);
     tokio::select! {
         _ = executor.started.notified() => {},

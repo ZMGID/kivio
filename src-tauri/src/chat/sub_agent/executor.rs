@@ -1327,7 +1327,10 @@ impl ToolExecutor for Executor {
                         ..Default::default()
                     });
                 }
-                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
+                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(
+                    ctx,
+                    progress.control.clone(),
+                );
                 crate::mcp::registry::call_tool(
                     &self.app,
                     &self.app.state::<AppState>(),
@@ -3244,9 +3247,10 @@ async fn execute(
             if budget_stop {
                 let mut history = match &attempt {
                     Ok(result) => export_history(result.history.context()),
-                    Err(crate::chat::session_policy::ApplicationRunError::Failed { partial, .. }) => {
-                        export_history(partial.history.context())
-                    }
+                    Err(crate::chat::session_policy::ApplicationRunError::Failed {
+                        partial,
+                        ..
+                    }) => export_history(partial.history.context()),
                     Err(_) => export_history(&host.lock().history),
                 };
                 if !host.active() {

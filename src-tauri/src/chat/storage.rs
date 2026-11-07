@@ -358,10 +358,11 @@ mod conversation_workspace_tests {
         }))
         .expect("conversation");
 
-        assert!(
-            rewrite_conversation_artifact_paths(&mut conversation, &[(source, target.clone())])
-                .unwrap()
-        );
+        assert!(rewrite_conversation_artifact_paths(
+            &mut conversation,
+            &[(source, target.clone())]
+        )
+        .unwrap());
         assert_eq!(
             conversation.messages[0].artifacts[0].path.as_deref(),
             Some(target.join("direct.txt").to_string_lossy().as_ref())

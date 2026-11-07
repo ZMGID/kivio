@@ -252,7 +252,10 @@ impl ToolExecutor for WorkflowToolExecutor {
         Box::pin(async move {
             let result_arguments = arguments.clone();
             let output: crate::mcp::types::McpToolCallResult = async {
-                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
+                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(
+                    ctx,
+                    progress.control.clone(),
+                );
                 crate::mcp::registry::call_tool(
                     &self.app,
                     &self.app.state::<AppState>(),
@@ -426,11 +429,10 @@ async fn run_builtin_agent_node(
         .await?;
     let catalog = registry.clone();
     let selected = spec.skill_ids.clone();
-    let loaded = tauri::async_runtime::spawn_blocking(move || {
-        skills::read_selected(&catalog, &selected)
-    })
-        .await
-        .map_err(|e| e.to_string())??;
+    let loaded =
+        tauri::async_runtime::spawn_blocking(move || skills::read_selected(&catalog, &selected))
+            .await
+            .map_err(|e| e.to_string())??;
     let active_skill_id = spec.skill_ids.first().map(|id| id.as_str());
     let active_skill_detail = active_skill_id
         .and_then(|id| loaded.find(id))

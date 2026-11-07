@@ -11,9 +11,7 @@ use crate::chat::recovery_policy::{
     empty_synthesis_fallback_response, synthesis_failed_fallback_response,
     tool_planning_failed_fallback_response,
 };
-use crate::chat::session_policy::{
-    ApplicationRunConfig, ApplicationRunResult as AgentRunResult,
-};
+use crate::chat::session_policy::{ApplicationRunConfig, ApplicationRunResult as AgentRunResult};
 use crate::chat::tool_runtime::{
     ApplicationHost, ApplicationToolExecutor, ToolAuthority, ToolDispatcher as ToolExecutor,
     ToolExecutionContext,
@@ -533,7 +531,10 @@ impl ToolExecutor for PreviewFeedbackExecutor<'_> {
         _arguments: Value,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         Box::pin(async move {
-            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
+            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(
+                ctx,
+                progress.control.clone(),
+            );
             let mut result = crate::mcp::result::parse_tool_result(serde_json::json!({
                 "content": [
                     {"type": "text", "text": "Preview captured."},
@@ -1053,7 +1054,10 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
             _: Value,
         ) -> super::super::execute::ToolExecutorFuture<'a> {
             Box::pin(async move {
-                let native = crate::mcp::registry::NativeToolContext::from_execution(ctx, progress.control.clone());
+                let native = crate::mcp::registry::NativeToolContext::from_execution(
+                    ctx,
+                    progress.control.clone(),
+                );
                 assert_eq!(
                     native.plan_state.mode,
                     crate::chat::types::AgentPlanMode::Orchestrate
@@ -1066,7 +1070,10 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
                 assert_eq!(native.mcp_server_ids[0], "allowed");
                 assert_eq!(native.approval_policy, "readonly_auto_sensitive_confirm");
                 assert!(native.interactive_host);
-                assert_eq!(native.control.as_ref().unwrap().invocation_id(), progress.control.invocation_id());
+                assert_eq!(
+                    native.control.as_ref().unwrap().invocation_id(),
+                    progress.control.invocation_id()
+                );
                 Ok(super::super::execute::AgentToolOutput::default())
             })
         }
@@ -7225,7 +7232,9 @@ fn present_result(result: AgentRunResult) -> PresentedRunResult {
         stream_outcome: crate::chat::agent_presentation::run_status(&result.status).to_string(),
         usage: result.usage,
         last_step_usage: result.last_step_usage,
-        compacted_history: result.compacted.then(|| export_history(result.history.context())),
+        compacted_history: result
+            .compacted
+            .then(|| export_history(result.history.context())),
         compaction_summary: result.compaction_summary,
         degraded: result.degraded,
         images: result.images,
@@ -7244,10 +7253,16 @@ async fn run_agent_loop<H: ApplicationHost + AgentEventSink + AgentRunControl>(
         generation: config.generation,
     };
     let control = AgentRunHandle::new(identity, host);
-    crate::chat::session_policy::run_session(config.into_application(), host, executor, host, control)
-        .await
-        .map(present_result)
-        .map_err(|error| error.to_string())
+    crate::chat::session_policy::run_session(
+        config.into_application(),
+        host,
+        executor,
+        host,
+        control,
+    )
+    .await
+    .map(present_result)
+    .map_err(|error| error.to_string())
 }
 struct PresentedRoundResult {
     tool_records: Vec<ToolCallRecord>,
@@ -7628,7 +7643,8 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
         history: vec![RuntimeMessage::text(
             crate::chat::model::ModelRole::User,
             "Use the registered tool",
-        )].into(),
+        )]
+        .into(),
         tools: vec![tool],
         blocked_tool_calls: Vec::new(),
         options: crate::chat::model::GenerateOptions {

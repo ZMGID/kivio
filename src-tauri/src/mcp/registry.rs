@@ -843,7 +843,13 @@ pub async fn call_tool(
         .ok_or_else(|| "MCP server is disabled or missing".to_string())?;
     // 走持久连接池：复用长连接、liveness 探活 + 透明重连、按 server_id 隔离。
     let mut result = state
-        .mcp_call_tool(Some(app), &server, &tool.name, arguments.clone(), native_ctx.as_ref().and_then(|ctx| ctx.control.as_ref()))
+        .mcp_call_tool(
+            Some(app),
+            &server,
+            &tool.name,
+            arguments.clone(),
+            native_ctx.as_ref().and_then(|ctx| ctx.control.as_ref()),
+        )
         .await?;
     // R1：MCP 工具结果里的图片 artifact 直达模型——vision 主模型直喂原图，
     // 纯文本主模型走辅助视觉模型审查向分析（R2）。通用于所有 MCP server，非
@@ -1078,12 +1084,10 @@ async fn call_skill_tool(
     ) {
         return Err(err);
     }
-    let output = kivio_agent_sdk::tools::call_typed(
-        &crate::skills::SkillTool::new(context),
-        arguments,
-    )
-    .await
-    .map_err(|error| error.to_string())?;
+    let output =
+        kivio_agent_sdk::tools::call_typed(&crate::skills::SkillTool::new(context), arguments)
+            .await
+            .map_err(|error| error.to_string())?;
 
     Ok(McpToolCallResult {
         content: output.content,

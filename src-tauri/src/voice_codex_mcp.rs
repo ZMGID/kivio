@@ -452,12 +452,15 @@ mod tests {
         assert_eq!(tools.len(), 7);
         assert!(tools.iter().any(|tool| tool.name == "kivio_list_agents"));
         backend.release.notify_one();
-        let result = service.call_tool(
-            "kivio_list_agents",
-            json!({}),
-            Duration::from_secs(3),
-            std::future::pending(),
-        ).await.unwrap();
+        let result = service
+            .call_tool(
+                "kivio_list_agents",
+                json!({}),
+                Duration::from_secs(3),
+                std::future::pending(),
+            )
+            .await
+            .unwrap();
         assert_eq!(result.content, "tool result");
         service.close().await.unwrap();
     }

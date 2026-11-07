@@ -493,7 +493,13 @@ mod tests {
             ]),
         );
         assert_eq!(inputs.len(), 1);
-        assert_eq!(inputs[0].source.get("_ui_message_id").and_then(Value::as_str), Some(new[0].0.as_str()));
+        assert_eq!(
+            inputs[0]
+                .source
+                .get("_ui_message_id")
+                .and_then(Value::as_str),
+            Some(new[0].0.as_str())
+        );
         assert_eq!(
             inputs[0]
                 .source

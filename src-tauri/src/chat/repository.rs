@@ -1197,12 +1197,22 @@ pub(crate) async fn recover_committed(
     app: &AppHandle,
     error: ConversationRepositoryError,
 ) -> Result<(Conversation, String), String> {
-    let ConversationRepositoryError::Committed { id, revision, message } = error else {
+    let ConversationRepositoryError::Committed {
+        id,
+        revision,
+        message,
+    } = error
+    else {
         return Err(error.to_string());
     };
-    let latest = repository(app).get(app, &id).await.map_err(repository_error)?;
+    let latest = repository(app)
+        .get(app, &id)
+        .await
+        .map_err(repository_error)?;
     if latest.id != id || latest.revision < revision {
-        return Err(format!("Committed conversation could not be verified: {message}"));
+        return Err(format!(
+            "Committed conversation could not be verified: {message}"
+        ));
     }
     Ok((latest, message))
 }

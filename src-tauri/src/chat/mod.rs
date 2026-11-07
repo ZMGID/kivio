@@ -77,8 +77,8 @@ pub(crate) fn session_model_for_conversation(
     }
 }
 
-pub(crate) mod session_policy;
 pub(crate) mod session_history;
+pub(crate) mod session_policy;
 
 pub(crate) mod context_estimate;
 pub(crate) mod context_measure;
