@@ -71,6 +71,7 @@ pub enum AgentAdmissionError {
     Busy,
     EmptyInput,
     InvalidContinuation,
+    InvalidHistory(String),
     NoRuntime,
     Control(RunStartError),
 }
@@ -100,6 +101,7 @@ impl std::fmt::Display for AgentRunError {
             Self::Admission(AgentAdmissionError::InvalidContinuation) => {
                 f.write_str("Agent history cannot be continued")
             }
+            Self::Admission(AgentAdmissionError::InvalidHistory(message)) => f.write_str(message),
             Self::Admission(AgentAdmissionError::NoRuntime) => {
                 f.write_str("Agent session requires a Tokio runtime")
             }

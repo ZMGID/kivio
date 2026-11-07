@@ -18,7 +18,8 @@ pub mod session;
 pub mod session_history;
 pub mod session_runtime;
 pub use session_history::{
-    ContextOrigin, EntryId, EntryRange, SessionEntry, SessionEntryKind, SessionHistory,
+    AttachmentReference, ContextOrigin, EntryId, EntryRange, SessionEntry, SessionEntryKind,
+    SessionHistory,
 };
 pub use session_runtime::{
     AgentSession, AgentSessionConfig, SessionPendingInput, SessionRun, SessionStatus,

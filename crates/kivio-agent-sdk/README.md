@@ -76,6 +76,12 @@ The SDK does not register desktop tools or load permissions from Kivio settings.
 
 For automatic context management, use `context::BudgetContextPolicy` with a resolved summary runtime and `SummaryOptions`. Set its main-request model, window and output budget explicitly when they differ from the summary model. Install it with `AgentSessionConfig::with_policy`. Original facts remain available through `session.entries()` while `session.context()` returns the current projection. See [context contracts](docs/contracts.md#context-budgets-and-compaction) and the [independent consumer tests](../../tests/fixtures/agent-sdk-consumer/tests/context.rs) for repeated compaction, cancellation and Skill reload examples.
 
+## Navigate session history
+
+Use `active_leaf()` to remember a position and `leaves()` to list retained branch tips. `fork(entry_id)` selects an inclusive anchor, and the next prompt creates another path. `switch_branch(Some(leaf))` restores that path without executing old tools. `rewind(user_entry)` returns the original input and selects the position before it.
+
+`regenerate(entry_id, None).await` produces a new answer while retaining the old path. Supply a replacement user `RuntimeMessage` to edit a question on a new path. Navigation requires an idle session, including completion of tool cleanup and host commit. See [tree contracts](docs/contracts.md#session-trees-and-navigation) and the [consumer tests](../../tests/fixtures/agent-sdk-consumer/tests/tree.rs) for request-level examples.
+
 ## Run against a real provider
 
 The standalone providers currently support these protocols. Desktop adapters share their request encoders and response decoders.

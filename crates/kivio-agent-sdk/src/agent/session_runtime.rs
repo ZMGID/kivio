@@ -20,7 +20,7 @@ use super::{
     host::{AgentHost, AgentHostFuture},
     provider_runtime::ModelRuntime,
     session::{NoSessionPolicy, SessionPolicy},
-    session_history::{complete_tool_rounds, SessionEntry, SessionHistory},
+    session_history::{complete_tool_rounds, EntryId, SessionEntry, SessionHistory},
     types::{AgentRunConfig, AgentRunResult, AgentRunStatus, RunLimits},
     SteeringMessage,
 };
@@ -109,6 +109,7 @@ struct SessionState {
 
 struct Invocation {
     generation: u64,
+    base_leaf: Option<EntryId>,
     run_id: String,
     message_id: String,
     state: Mutex<InvocationState>,
@@ -122,6 +123,24 @@ struct InvocationState {
     steer: Vec<SteeringMessage>,
     follow_up: Vec<SteeringMessage>,
     input_ids: HashSet<String>,
+}
+
+impl SessionState {
+    fn owns_invocation(&self, invocation: &Arc<Invocation>) -> bool {
+        self.generation == invocation.generation
+            && self.active.as_ref().is_some_and(|active| {
+                Arc::ptr_eq(active, invocation) && active.base_leaf == invocation.base_leaf
+            })
+    }
+}
+
+enum SessionStart {
+    Prompt(RuntimeMessage),
+    Continue,
+    Regenerate {
+        anchor: EntryId,
+        replacement: Option<RuntimeMessage>,
+    },
 }
 
 impl AgentSession {
@@ -147,24 +166,31 @@ impl AgentSession {
     /// Admission happens immediately. Dropping the returned waiter requests stop and retains cleanup.
     pub fn prompt(&self, input: impl Into<RuntimeMessage>) -> SessionRun {
         let input = input.into();
-        let valid = input.model_message().is_some_and(|message| {
-            message.role == ModelRole::User
-                && message.content.iter().any(|part| match part {
-                    MessagePart::Text { text } => !text.trim().is_empty(),
-                    _ => true,
-                })
-        });
-        if !valid {
+        if !valid_user_input(&input) {
             return SessionRun::rejected(AgentAdmissionError::EmptyInput);
         }
-        self.start(Some(input))
+        self.start(SessionStart::Prompt(input))
     }
 
     pub fn continue_run(&self) -> SessionRun {
-        self.start(None)
+        self.start(SessionStart::Continue)
     }
 
-    fn start(&self, input: Option<RuntimeMessage>) -> SessionRun {
+    /// Reserves the run and selects its history together; rejected admission preserves the tree.
+    pub fn regenerate(&self, anchor: EntryId, replacement: Option<RuntimeMessage>) -> SessionRun {
+        if replacement
+            .as_ref()
+            .is_some_and(|input| !valid_user_input(input))
+        {
+            return SessionRun::rejected(AgentAdmissionError::EmptyInput);
+        }
+        self.start(SessionStart::Regenerate {
+            anchor,
+            replacement,
+        })
+    }
+
+    fn start(&self, start: SessionStart) -> SessionRun {
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return SessionRun::rejected(AgentAdmissionError::NoRuntime);
         };
@@ -173,21 +199,31 @@ impl AgentSession {
             if state.active.is_some() {
                 return SessionRun::rejected(AgentAdmissionError::Busy);
             }
-            if !complete_tool_rounds(state.history.context())
+            let mut history = state.history.clone();
+            let input = match start {
+                SessionStart::Prompt(input) => Some(input),
+                SessionStart::Continue => None,
+                SessionStart::Regenerate {
+                    anchor,
+                    replacement,
+                } => {
+                    if let Err(message) = history.prepare_regenerate(anchor, replacement) {
+                        return SessionRun::rejected(AgentAdmissionError::InvalidHistory(message));
+                    }
+                    None
+                }
+            };
+            if !complete_tool_rounds(history.context())
                 || (input.is_none()
                     && !matches!(
-                        state
-                            .history
-                            .context()
-                            .last()
-                            .and_then(RuntimeMessage::role),
+                        history.context().last().and_then(RuntimeMessage::role),
                         Some(ModelRole::User | ModelRole::Tool)
                     ))
             {
                 return SessionRun::rejected(AgentAdmissionError::InvalidContinuation);
             }
             if let Some(input) = input {
-                state.history.push(input);
+                history.push(input);
             }
             state.generation = state
                 .generation
@@ -195,6 +231,7 @@ impl AgentSession {
                 .expect("session generation exhausted");
             let invocation = Arc::new(Invocation {
                 generation: state.generation,
+                base_leaf: history.active_leaf(),
                 run_id: uuid::Uuid::new_v4().to_string(),
                 message_id: uuid::Uuid::new_v4().to_string(),
                 state: Mutex::new(InvocationState {
@@ -207,8 +244,9 @@ impl AgentSession {
                 settled: AtomicBool::new(false),
                 settlement: Notify::new(),
             });
+            state.history = history.clone();
             state.active = Some(invocation.clone());
-            (invocation, state.history.clone(), state.tools.snapshot())
+            (invocation, history, state.tools.snapshot())
         };
         let (sender, receiver) = oneshot::channel();
         let inner = self.inner.clone();
@@ -248,6 +286,47 @@ impl AgentSession {
             .history
             .entries()
             .to_vec()
+    }
+
+    pub fn active_leaf(&self) -> Option<EntryId> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .history
+            .active_leaf()
+    }
+
+    pub fn leaves(&self) -> Vec<EntryId> {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .history
+            .leaves()
+    }
+
+    pub fn switch_branch(&self, leaf: Option<EntryId>) -> Result<(), AgentAdmissionError> {
+        self.navigate(|history| history.switch_branch(leaf))
+    }
+
+    pub fn fork(&self, anchor: EntryId) -> Result<(), AgentAdmissionError> {
+        self.navigate(|history| history.fork(anchor))
+    }
+
+    pub fn rewind(&self, user: EntryId) -> Result<RuntimeMessage, AgentAdmissionError> {
+        self.navigate(|history| history.rewind(user))
+    }
+
+    fn navigate<T>(
+        &self,
+        navigate: impl FnOnce(&mut SessionHistory) -> Result<T, String>,
+    ) -> Result<T, AgentAdmissionError> {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.active.is_some() {
+            return Err(AgentAdmissionError::Busy);
+        }
+        navigate(&mut state.history).map_err(AgentAdmissionError::InvalidHistory)
     }
 
     pub fn steer(&self, message: SteeringMessage) -> InputAdmission {
@@ -349,6 +428,16 @@ impl AgentSession {
             .active
             .clone()
     }
+}
+
+fn valid_user_input(input: &RuntimeMessage) -> bool {
+    input.model_message().is_some_and(|message| {
+        message.role == ModelRole::User
+            && message.content.iter().any(|part| match part {
+                MessagePart::Text { text } => !text.trim().is_empty(),
+                _ => true,
+            })
+    })
 }
 
 impl Drop for AgentSession {
@@ -578,25 +667,40 @@ async fn run_session(
         Err(AgentRunError::Admission(_)) => None,
     };
     if let Some(partial) = partial {
-        inner
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .history = partial.history.clone();
-        let commit =
-            std::panic::AssertUnwindSafe(async { cfg.host.commit_run(identity, partial).await })
+        let installed = {
+            let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.owns_invocation(&invocation)
+                && state.history.active_leaf() == invocation.base_leaf
+            {
+                state.history = partial.history.clone();
+                true
+            } else {
+                false
+            }
+        };
+        let (operation, commit) = if installed {
+            (
+                "session.commit_run",
+                std::panic::AssertUnwindSafe(async {
+                    cfg.host.commit_run(identity, partial).await
+                })
                 .catch_unwind()
-                .await;
-        if let Err(message) = commit.unwrap_or_else(|_| Err("Session commit panicked".into())) {
+                .await
+                .unwrap_or_else(|_| Err("Session commit panicked".into())),
+            )
+        } else {
+            (
+                "session.history",
+                Err("Session invocation no longer owns its history branch".into()),
+            )
+        };
+        if let Err(message) = commit {
             let mut partial = match result {
                 Ok(result) => Box::new(result),
                 Err(AgentRunError::Failed { partial, .. }) => partial,
                 Err(AgentRunError::Admission(_)) => unreachable!(),
             };
-            let cause = AgentFailure::Host {
-                operation: "session.commit_run",
-                message,
-            };
+            let cause = AgentFailure::Host { operation, message };
             partial.status = AgentRunStatus::Failed(cause.clone());
             result = Err(AgentRunError::Failed { cause, partial });
         }
@@ -651,8 +755,10 @@ async fn run_session(
     }
     {
         let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.pending.extend(pending);
-        state.active = None;
+        if state.owns_invocation(&invocation) {
+            state.pending.extend(pending);
+            state.active = None;
+        }
         invocation.settled.store(true, Ordering::Release);
         invocation.settlement.notify_waiters();
     }

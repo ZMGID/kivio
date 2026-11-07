@@ -198,9 +198,17 @@ Static registration uses a 60-second execution timeout, no output truncation and
 
 An absent thinking level retains the existing automatic/default behavior, including models without a reasoning parameter. An explicit unsupported reasoning level is rejected. Context-window and additional modality configuration remain with the existing context policy until their extraction uses them; T1 does not add unused capability fields.
 
-## Entry and projection design contract
+## Session trees and navigation
 
-The following defines T5's history migration; it does not claim the tree API is implemented in T1. An entry has a stable session-local ID, a parent ID and a payload. Message entries reuse `RuntimeMessage`, including tool calls and results; compaction entries record a summary and a covered ancestor range. `active_leaf` selects a path independently of the most recently appended entry. Parent links define topology; a second mandatory `branch_id` is unnecessary.
+`SessionHistory` owns the complete entry log and selects one path through `active_leaf()`. An entry has a stable session-local ID, a parent ID and a payload. Message entries reuse `RuntimeMessage`, including tool calls and results. Compaction entries record replacement messages and exact ancestor origins. IDs are opaque identities, not numeric positions or ranges. `entries()` returns all facts, `active_path()` returns selected ancestors, and `context()` returns their current model projection.
+
+`fork(anchor)` selects an inclusive endpoint for the next append. `switch_branch(Some(leaf))` restores an existing path, while `None` selects an empty path. Neither deletes facts or calls the model. `leaves()` lists structural tips in append order; the active cursor can also select an earlier complete position. No branch record is created until a new message or context boundary is appended.
+
+`rewind(user)` selects the user's parent and returns the original input. `prepare_regenerate(anchor, replacement)` keeps an unedited user, appends an edited user on a new path, or excludes an assistant answer. The standalone `AgentSession::regenerate` combines this selection with run admission in one lock and returns a `SessionRun`. A rejected operation leaves history unchanged. All Session navigation rejects Running, StopRequested and Finishing states, including pending host commits.
+
+`SessionHistory::from_entries` validates typed entries and the selected position. It rejects duplicate IDs, missing or forward parents, forged compaction origins and malformed tool sequences. An inactive tip may retain unfinished calls as historical facts, but an active or navigable endpoint must have complete tool rounds. Import and navigation never execute those calls. This API does not define a disk format.
+
+`attachment_references()` returns typed media and artifact references from all entries and replacement messages, including inactive and compacted paths. References remain opaque host inputs. The SDK does not read or delete attachments, or infer references from arbitrary host metadata. Hosts combine these results with their own display and resource references before garbage collection.
 
 Projection selects the active parent chain, applies valid compaction ranges, then calls `request_from_history`. It preserves complete tool rounds and provider-native replay blocks. `RuntimeSource` survives export but never enters a model request. UI metadata does not become model text. An unknown model payload is an import error, not silently discarded UI metadata. Imported history never executes tools.
 
@@ -209,7 +217,7 @@ Projection selects the active parent chain, applies valid compaction ranges, the
 | `s(system) -> u(user) -> a(assistant)`, leaf `a` | System `s`, messages `[u, a]` |
 | `u -> a(call c) -> t(result c)`, leaf `t` | `[u, a, t]`; exactly one result for `c`; navigation cannot split the round |
 | `u1 -> a1 -> u2 -> a2 -> compact(summary, covers u1..a1, retain u2)`, leaf `compact` | Summary plus `[u2, a2]`; original entries remain available |
-| `u -> a1` and `u -> a2`, leaf `a1` or `a2` | `[u, a1]` or `[u, a2]`; switching alone changes and persists the selected leaf |
+| `u -> a1` and `u -> a2`, leaf `a1` or `a2` | `[u, a1]` or `[u, a2]`; switching alone changes the selected leaf, which the host persists |
 | `u` with source `{message_id, UI selection}`, plus a signed native assistant block | User text without source; native block retained only for its compatible provider/model |
 
-A compaction range must be on the selected ancestor chain. Rewinding before it restores the earlier projection. Entry snapshots store history and selection, never credentials, active futures, execution cursors or tool execution capabilities. Host CAS and atomic persistence remain authoritative.
+A compaction range must match a continuous sequence of origins on the selected ancestor chain. Selecting a position before it restores the earlier projection. Runtime system-prompt overrides are cleared on navigation so shared ancestors do not leak a fallback prompt between branches. Model and provider configuration remain outside entries; each request applies its existing native-replay compatibility rules. Host CAS and atomic persistence remain authoritative.
