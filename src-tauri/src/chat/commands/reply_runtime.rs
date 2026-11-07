@@ -66,9 +66,14 @@ impl<'a> ChatSendReservation<'a> {
     }
 
     fn try_reserve(state: &AppState, conversation_id: &str, run_id: &str) -> Option<u64> {
-        state.sub_agents.with_interruption_epoch(conversation_id, |epoch| {
-            state.chat_runtime().try_reserve_send(conversation_id, run_id).then_some(epoch)
-        })
+        state
+            .sub_agents
+            .with_interruption_epoch(conversation_id, |epoch| {
+                state
+                    .chat_runtime()
+                    .try_reserve_send(conversation_id, run_id)
+                    .then_some(epoch)
+            })
     }
 
     pub(crate) fn interruption_epoch(&self) -> u64 {
@@ -78,7 +83,8 @@ impl<'a> ChatSendReservation<'a> {
     /// Queued variant: waits while the conversation is replying, then reserves.
     pub(super) async fn acquire_when_idle(state: &'a AppState, conversation_id: &str) -> Self {
         let run_id = format!("chat-send-reservation-{}", Uuid::new_v4());
-        let interruption_epoch = state.chat_runtime()
+        let interruption_epoch = state
+            .chat_runtime()
             .reserve_send_when_idle(|| Self::try_reserve(state, conversation_id, &run_id))
             .await;
         Self {
@@ -122,7 +128,10 @@ impl<'a> ChatReplyGuard<'a> {
         {
             return None;
         }
-        state.sub_agents.irc.begin_turn(conversation_id, crate::chat::sub_agent::MAIN_AGENT_ID);
+        state
+            .sub_agents
+            .irc
+            .begin_turn(conversation_id, crate::chat::sub_agent::MAIN_AGENT_ID);
         Some(Self {
             state,
             conversation_id: conversation_id.to_string(),
@@ -134,7 +143,9 @@ impl<'a> ChatReplyGuard<'a> {
 
 impl Drop for ChatReplyGuard<'_> {
     fn drop(&mut self) {
-        self.state.chat_interactions().forget_answered_ask_user(&self.run_id);
+        self.state
+            .chat_interactions()
+            .forget_answered_ask_user(&self.run_id);
         self.state.chat_runtime().finish_reply_generation(
             &self.conversation_id,
             &self.run_id,
@@ -169,23 +180,30 @@ pub(super) struct ArmReplyOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::interaction::{cancel_user_generation, UserStopScope};
+    use super::*;
 
     #[tokio::test]
     async fn dropped_external_reply_retires_generation_and_allows_the_next_send() {
         let state = crate::state::test_app_state();
         let reservation = ChatSendReservation::try_acquire(&state, "external").unwrap();
-        let generation = state.chat_runtime().begin_reply_generation("external").unwrap();
+        let generation = state
+            .chat_runtime()
+            .begin_reply_generation("external")
+            .unwrap();
         let reply = async {
             let _guard = ChatReplyGuard::try_new(&state, "external", "run", generation).unwrap();
             std::future::pending::<()>().await;
         };
         let mut reply = Box::pin(reply);
         assert!(futures::poll!(reply.as_mut()).is_pending());
-        assert!(state.chat_runtime().is_generation_active("external", generation));
+        assert!(state
+            .chat_runtime()
+            .is_generation_active("external", generation));
         drop(reply);
-        assert!(!state.chat_runtime().is_generation_active("external", generation));
+        assert!(!state
+            .chat_runtime()
+            .is_generation_active("external", generation));
         drop(reservation);
         assert!(!state.chat_runtime().has_active_reply("external"));
         assert!(ChatSendReservation::try_acquire(&state, "external").is_some());
@@ -199,21 +217,39 @@ mod tests {
         cancel_user_generation(&state, "conversation", UserStopScope::Generation, || ());
         assert!(!state.sub_agents.resume_user_turn("conversation", epoch));
         assert!(state.sub_agents.user_interrupted("conversation"));
-        assert!(state.chat_runtime().begin_reply_generation("conversation").is_none());
+        assert!(state
+            .chat_runtime()
+            .begin_reply_generation("conversation")
+            .is_none());
         drop(first);
 
         let second = ChatSendReservation::try_acquire(&state, "conversation").unwrap();
-        assert!(state.sub_agents.resume_user_turn("conversation", second.interruption_epoch()));
-        let generation = state.chat_runtime().begin_reply_generation("conversation").unwrap();
+        assert!(state
+            .sub_agents
+            .resume_user_turn("conversation", second.interruption_epoch()));
+        let generation = state
+            .chat_runtime()
+            .begin_reply_generation("conversation")
+            .unwrap();
         cancel_user_generation(&state, "conversation", UserStopScope::Generation, || ());
-        assert!(!state.chat_runtime().is_generation_active("conversation", generation));
-        assert!(state.chat_runtime().begin_reply_generation("conversation").is_none());
+        assert!(!state
+            .chat_runtime()
+            .is_generation_active("conversation", generation));
+        assert!(state
+            .chat_runtime()
+            .begin_reply_generation("conversation")
+            .is_none());
         assert!(state.sub_agents.user_interrupted("conversation"));
         drop(second);
 
         let third = ChatSendReservation::try_acquire(&state, "conversation").unwrap();
-        assert!(state.sub_agents.resume_user_turn("conversation", third.interruption_epoch()));
-        assert!(state.chat_runtime().begin_reply_generation("conversation").is_some());
+        assert!(state
+            .sub_agents
+            .resume_user_turn("conversation", third.interruption_epoch()));
+        assert!(state
+            .chat_runtime()
+            .begin_reply_generation("conversation")
+            .is_some());
     }
 
     #[test]
@@ -222,19 +258,33 @@ mod tests {
 
         let state = crate::state::test_app_state();
         let root = "conversation";
-        let (job, _) = state.sub_agents.jobs.register(root, MAIN_AGENT_ID, "Scout", "look up the answer");
+        let (job, _) =
+            state
+                .sub_agents
+                .jobs
+                .register(root, MAIN_AGENT_ID, "Scout", "look up the answer");
         let reservation = ChatSendReservation::try_acquire(&state, root).unwrap();
 
         cancel_user_generation(&state, root, UserStopScope::BackgroundWait, || ());
         assert!(state.sub_agents.user_interrupted(root));
         assert!(state.chat_runtime().begin_reply_generation(root).is_none());
         assert_eq!(state.sub_agents.jobs.status(&job), Some(JobStatus::Running));
-        state.sub_agents.jobs.settle(&job, Ok("child result".into()));
-        assert_eq!(state.sub_agents.jobs.undelivered(root, MAIN_AGENT_ID)[0].result.as_deref(), Some("child result"));
+        state
+            .sub_agents
+            .jobs
+            .settle(&job, Ok("child result".into()));
+        assert_eq!(
+            state.sub_agents.jobs.undelivered(root, MAIN_AGENT_ID)[0]
+                .result
+                .as_deref(),
+            Some("child result")
+        );
 
         drop(reservation);
         let next = ChatSendReservation::try_acquire(&state, root).unwrap();
-        assert!(state.sub_agents.resume_user_turn(root, next.interruption_epoch()));
+        assert!(state
+            .sub_agents
+            .resume_user_turn(root, next.interruption_epoch()));
         assert!(state.chat_runtime().begin_reply_generation(root).is_some());
     }
 
@@ -248,7 +298,12 @@ mod tests {
         cancel_user_generation(&state, "conversation", UserStopScope::Generation, || ());
         drop(first);
         let next = waiting.await;
-        assert!(state.sub_agents.resume_user_turn("conversation", next.interruption_epoch()));
-        assert!(state.chat_runtime().begin_reply_generation("conversation").is_some());
+        assert!(state
+            .sub_agents
+            .resume_user_turn("conversation", next.interruption_epoch()));
+        assert!(state
+            .chat_runtime()
+            .begin_reply_generation("conversation")
+            .is_some());
     }
 }

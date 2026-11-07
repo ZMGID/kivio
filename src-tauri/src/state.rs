@@ -108,7 +108,9 @@ impl AppState {
     ) -> &crate::external_agents::background_tasks::ExternalBackgroundTasks {
         &self.external_background_tasks
     }
-    pub(crate) fn native_diagnostics(&self) -> &crate::external_agents::diagnostics::NativeDiagnostics {
+    pub(crate) fn native_diagnostics(
+        &self,
+    ) -> &crate::external_agents::diagnostics::NativeDiagnostics {
         &self.native_diagnostics
     }
     pub(crate) fn request_debug(&self) -> &crate::chat::request_debug::RequestDebugState {
@@ -184,7 +186,10 @@ impl AppState {
     ) -> Self {
         let mcp_runtime = crate::mcp::McpRuntimeState::load(&usage_dir);
         let request_debug = crate::chat::request_debug::RequestDebugState::new(&usage_dir);
-        let native_diagnostics = crate::external_agents::diagnostics::NativeDiagnostics::new(&usage_dir, settings.chat_tools.request_debug_enabled);
+        let native_diagnostics = crate::external_agents::diagnostics::NativeDiagnostics::new(
+            &usage_dir,
+            settings.chat_tools.request_debug_enabled,
+        );
         let provider_runtime = crate::chat::provider_runtime::ProviderRuntimeState::new(&settings);
         AppState {
             settings: RwLock::new(settings),
@@ -300,7 +305,8 @@ impl AppState {
         let canonical = build_canonical(&current).map_err(SettingsError::from)?;
         persist(&canonical).map_err(SettingsError::from)?;
         let mut current = self.settings.write().unwrap_or_else(|e| e.into_inner());
-        self.native_diagnostics.set_enabled(canonical.chat_tools.request_debug_enabled);
+        self.native_diagnostics
+            .set_enabled(canonical.chat_tools.request_debug_enabled);
         *current = canonical.clone();
         let revision = self.advance_settings_revision();
         Ok(SettingsSnapshot {
@@ -312,7 +318,8 @@ impl AppState {
     pub(crate) fn update_settings_for_test(&self, update: impl FnOnce(&mut Settings)) {
         let mut settings = self.settings.write().unwrap_or_else(|e| e.into_inner());
         update(&mut settings);
-        self.native_diagnostics.set_enabled(settings.chat_tools.request_debug_enabled);
+        self.native_diagnostics
+            .set_enabled(settings.chat_tools.request_debug_enabled);
         self.advance_settings_revision();
     }
     pub(crate) fn settings_revision(&self) -> u64 {

@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 

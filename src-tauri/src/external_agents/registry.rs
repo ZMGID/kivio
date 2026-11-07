@@ -208,22 +208,99 @@ mod tests {
             // ID, steering, follow-up, image, rewind, import, account.
             ("claude", Native, Fallback, Native, Native, Native, Native),
             ("codex", Native, Fallback, Native, Native, Native, Native),
-            ("opencode", Unavailable, Fallback, Native, Fallback, Native, Unavailable),
-            ("gemini", Unavailable, Fallback, Native, Fallback, Unavailable, Unavailable),
-            ("kimi", Unavailable, Fallback, Native, Fallback, Native, Unavailable),
-            ("pi", Native, Native, Native, Native, Unavailable, Unavailable),
-            ("hermes", Unavailable, Fallback, Native, Fallback, Unavailable, Unavailable),
-            ("grok", Unavailable, Fallback, Native, Fallback, Native, Native),
-            ("dsh", Native, Native, Native, Fallback, Unavailable, Unavailable),
-            ("antigravity", Unavailable, Fallback, Fallback, Fallback, Unavailable, Unavailable),
+            (
+                "opencode",
+                Unavailable,
+                Fallback,
+                Native,
+                Fallback,
+                Native,
+                Unavailable,
+            ),
+            (
+                "gemini",
+                Unavailable,
+                Fallback,
+                Native,
+                Fallback,
+                Unavailable,
+                Unavailable,
+            ),
+            (
+                "kimi",
+                Unavailable,
+                Fallback,
+                Native,
+                Fallback,
+                Native,
+                Unavailable,
+            ),
+            (
+                "pi",
+                Native,
+                Native,
+                Native,
+                Native,
+                Unavailable,
+                Unavailable,
+            ),
+            (
+                "hermes",
+                Unavailable,
+                Fallback,
+                Native,
+                Fallback,
+                Unavailable,
+                Unavailable,
+            ),
+            (
+                "grok",
+                Unavailable,
+                Fallback,
+                Native,
+                Fallback,
+                Native,
+                Native,
+            ),
+            (
+                "dsh",
+                Native,
+                Native,
+                Native,
+                Fallback,
+                Unavailable,
+                Unavailable,
+            ),
+            (
+                "antigravity",
+                Unavailable,
+                Fallback,
+                Fallback,
+                Fallback,
+                Unavailable,
+                Unavailable,
+            ),
         ];
         assert_eq!(cases.len(), AGENT_DEFS.len());
         for (id, steering, follow_up, image_input, rewind, import_history, account) in cases {
             let capabilities = get_agent_def(id).unwrap().capabilities();
             assert_eq!(
-                (capabilities.steering, capabilities.follow_up, capabilities.image_input,
-                 capabilities.rewind, capabilities.import_history, capabilities.account),
-                (steering, follow_up, image_input, rewind, import_history, account),
+                (
+                    capabilities.steering,
+                    capabilities.follow_up,
+                    capabilities.image_input,
+                    capabilities.rewind,
+                    capabilities.import_history,
+                    capabilities.account
+                ),
+                (
+                    steering,
+                    follow_up,
+                    image_input,
+                    rewind,
+                    import_history,
+                    account
+                ),
                 "{id}"
             );
             assert_eq!(capabilities.conversation_branch, Fallback, "{id}");

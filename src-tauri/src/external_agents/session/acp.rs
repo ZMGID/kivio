@@ -2,10 +2,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, Lines};
-use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -693,15 +693,17 @@ pub async fn detect_acp_models(
     cwd: &Path,
     timeout_secs: u64,
 ) -> Option<AcpModelsProbe> {
-    let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command(bin)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .no_console_window()
-        .kill_on_drop(true))
-        .ok()?;
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(
+        crate::external_agents::spawn::cli_command(bin)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .no_console_window()
+            .kill_on_drop(true),
+    )
+    .ok()?;
 
     let mut stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;
@@ -870,15 +872,17 @@ pub async fn detect_acp_commands(
     cwd: &Path,
     timeout_secs: u64,
 ) -> Option<Vec<ExternalCliSlashCommand>> {
-    let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command(bin)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .no_console_window()
-        .kill_on_drop(true))
-        .ok()?;
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(
+        crate::external_agents::spawn::cli_command(bin)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .no_console_window()
+            .kill_on_drop(true),
+    )
+    .ok()?;
 
     let mut stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;
@@ -1740,15 +1744,17 @@ impl AcpSession {
     ) -> Result<Self, String> {
         let mut command = crate::external_agents::spawn::cli_command(resolved_bin);
         crate::external_agents::spawn::bypass_loopback_proxy(&mut command);
-        let mut child = crate::external_agents::spawn::AgentChild::spawn(command
-            .args(args)
-            .current_dir(cwd)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .no_console_window()
-            .kill_on_drop(true))
-            .map_err(|e| format!("spawn: {e}"))?;
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(
+            command
+                .args(args)
+                .current_dir(cwd)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .no_console_window()
+                .kill_on_drop(true),
+        )
+        .map_err(|e| format!("spawn: {e}"))?;
         // N1: drain stderr for the process lifetime.
         let stderr_tail = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
         let mut stdin = match child.stdin.take() {
@@ -2046,7 +2052,9 @@ impl AcpSession {
             self.current_model = desired_model;
         }
 
-        if turn_cancelled.is_some_and(|token| token.is_cancelled()) { return Err("cancelled".into()); }
+        if turn_cancelled.is_some_and(|token| token.is_cancelled()) {
+            return Err("cancelled".into());
+        }
         let prompt_id = self.next_id;
         self.next_id += 1;
         let params = json!({
@@ -2630,7 +2638,9 @@ fn acp_prompt_blocks(
 }
 
 /// Spawn the actor task owning a connected ACP session.
-pub fn spawn_acp_session_actor(mut session: AcpSession) -> crate::external_agents::session::live::SessionControl {
+pub fn spawn_acp_session_actor(
+    mut session: AcpSession,
+) -> crate::external_agents::session::live::SessionControl {
     let (tx, mut rx) = mpsc::channel::<SessionCommand>(8);
     crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         loop {
@@ -2654,7 +2664,12 @@ pub fn spawn_acp_session_actor(mut session: AcpSession) -> crate::external_agent
                     extra_writable_roots,
                     delivery,
                 } => {
-                    if done.is_closed() || cancelled.as_ref().is_some_and(|token| token.is_cancelled()) { let _ = done.send(Err("cancelled".into())); continue; }
+                    if done.is_closed()
+                        || cancelled.as_ref().is_some_and(|token| token.is_cancelled())
+                    {
+                        let _ = done.send(Err("cancelled".into()));
+                        continue;
+                    }
                     // Invariant (A4): `run_turn` sends all its `events` before returning, and mpsc
                     // preserves order, so every event is already queued when `done` fires — the
                     // caller's post-`done` `try_recv` drain sees them all. Keep `done.send` LAST.
@@ -5223,15 +5238,17 @@ pub async fn probe_acp_sessions(
 ) -> Option<Vec<AcpSessionSummary>> {
     // ponytail: 每次列表都起一次进程握手（实测 opencode ~2s）。导入入口是低频动作，
     // 不做连接复用；真觉得慢再挂到 detection 的缓存上。
-    let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command(bin)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .no_console_window()
-        .kill_on_drop(true))
-        .ok()?;
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(
+        crate::external_agents::spawn::cli_command(bin)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .no_console_window()
+            .kill_on_drop(true),
+    )
+    .ok()?;
 
     let mut stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;
@@ -5339,15 +5356,17 @@ pub async fn probe_acp_session_history(
     session_id: &str,
     timeout_secs: u64,
 ) -> Option<Vec<Value>> {
-    let mut child = crate::external_agents::spawn::AgentChild::spawn(crate::external_agents::spawn::cli_command(bin)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .no_console_window()
-        .kill_on_drop(true))
-        .ok()?;
+    let mut child = crate::external_agents::spawn::AgentChild::spawn(
+        crate::external_agents::spawn::cli_command(bin)
+            .args(args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .no_console_window()
+            .kill_on_drop(true),
+    )
+    .ok()?;
 
     let mut stdin = child.stdin.take()?;
     let stdout = child.stdout.take()?;

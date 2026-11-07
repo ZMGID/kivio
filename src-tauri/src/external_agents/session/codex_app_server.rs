@@ -3,10 +3,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
@@ -45,11 +45,7 @@ async fn write_rpc(
         .map_err(|e| e.to_string())
 }
 
-async fn write_rpc_result(
-    stdin: &mut AgentStdin,
-    id: &Value,
-    result: Value,
-) -> Result<(), String> {
+async fn write_rpc_result(stdin: &mut AgentStdin, id: &Value, result: Value) -> Result<(), String> {
     let payload = json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -3470,7 +3466,8 @@ mod tests {
     #[tokio::test]
     async fn native_diagnostics_survive_owned_handshake_and_actor_reuse() {
         use crate::external_agents::{diagnostics::NativeDiagnostics, types::StreamFormat};
-        let (_diagnostics, capture, records) = NativeDiagnostics::test_capture(StreamFormat::CodexAppServer);
+        let (_diagnostics, capture, records) =
+            NativeDiagnostics::test_capture(StreamFormat::CodexAppServer);
         let control = capture.scope_spawn(async {
             let exe = std::env::current_exe().unwrap();
             let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
@@ -3495,29 +3492,61 @@ mod tests {
             let _observation = control.observe_generation(generation);
             let (events, mut output) = mpsc::channel(64);
             let (done, result) = oneshot::channel();
-            control.send(SessionCommand::RunTurn {
-                delivery: TurnDelivery::default(), cancelled: None, prompt: "SECRET-prompt".into(),
-                model: None, reasoning: None, images: vec![], extra_writable_roots: vec![],
-                events, done, approvals: None,
-            }).await.unwrap();
-            timeout(Duration::from_secs(5), result).await.unwrap().unwrap().unwrap();
+            control
+                .send(SessionCommand::RunTurn {
+                    delivery: TurnDelivery::default(),
+                    cancelled: None,
+                    prompt: "SECRET-prompt".into(),
+                    model: None,
+                    reasoning: None,
+                    images: vec![],
+                    extra_writable_roots: vec![],
+                    events,
+                    done,
+                    approvals: None,
+                })
+                .await
+                .unwrap();
+            timeout(Duration::from_secs(5), result)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             let mut text = String::new();
             while let Ok(event) = output.try_recv() {
-                if let UnifiedAgentEvent::TextDelta { delta } = event { text.push_str(&delta); }
+                if let UnifiedAgentEvent::TextDelta { delta } = event {
+                    text.push_str(&delta);
+                }
             }
             assert_eq!(text, format!("turn-{generation}"));
             assert!(!control.is_closed());
         }
         control.close().await.unwrap();
-        let records: Vec<Value> = records.try_iter().map(|(_, bytes)| {
-            assert!(!String::from_utf8_lossy(&bytes).contains("SECRET"));
-            serde_json::from_slice(&bytes).unwrap()
-        }).collect();
-        assert!(records.iter().any(|v| v["method"] == "initialize" && v.get("observed_during_generation").is_none()));
-        assert_eq!(records.iter().filter_map(|v| v["connection"].as_str()).collect::<HashSet<_>>().len(), 1);
+        let records: Vec<Value> = records
+            .try_iter()
+            .map(|(_, bytes)| {
+                assert!(!String::from_utf8_lossy(&bytes).contains("SECRET"));
+                serde_json::from_slice(&bytes).unwrap()
+            })
+            .collect();
+        assert!(records
+            .iter()
+            .any(|v| v["method"] == "initialize" && v.get("observed_during_generation").is_none()));
+        assert_eq!(
+            records
+                .iter()
+                .filter_map(|v| v["connection"].as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            1
+        );
         for generation in 1..=2 {
-            assert!(records.iter().any(|v| v["method"] == "turn/start" && v["observed_during_generation"] == generation));
-            assert!(records.iter().any(|v| v["method"] == "turn/completed" && v["observed_during_generation"] == generation));
+            assert!(records
+                .iter()
+                .any(|v| v["method"] == "turn/start"
+                    && v["observed_during_generation"] == generation));
+            assert!(records.iter().any(|v| v["method"] == "turn/completed"
+                && v["observed_during_generation"] == generation));
         }
     }
 
@@ -3645,13 +3674,20 @@ mod tests {
         assert_eq!(list["method"], "skills/list");
         assert_eq!(list["params"]["cwds"], json!(["/work"]));
         if mode == "late-approval" {
-            println!("{}", json!({"id":"late-child-approval", "method":"item/commandExecution/requestApproval", "params":{
-                "threadId":"child-thread", "turnId":"old-child-turn", "itemId":"child-command",
-                "command":"echo fixture", "availableDecisions":["accept", "acceptForSession", "decline"]
-            }}));
+            println!(
+                "{}",
+                json!({"id":"late-child-approval", "method":"item/commandExecution/requestApproval", "params":{
+                    "threadId":"child-thread", "turnId":"old-child-turn", "itemId":"child-command",
+                    "command":"echo fixture", "availableDecisions":["accept", "acceptForSession", "decline"]
+                }})
+            );
             std::io::stdout().flush().unwrap();
             let approval: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
-            std::fs::write(std::env::var_os("KIVIO_SKILL_APPROVAL_RECEIPT").unwrap(), approval.to_string()).unwrap();
+            std::fs::write(
+                std::env::var_os("KIVIO_SKILL_APPROVAL_RECEIPT").unwrap(),
+                approval.to_string(),
+            )
+            .unwrap();
         }
         println!(
             "{}",
@@ -3775,7 +3811,8 @@ mod tests {
                 .unwrap();
             assert!(status.success(), "{}", session.stderr_tail.await.unwrap());
             if mode == "late-approval" {
-                let approval: Value = serde_json::from_slice(&std::fs::read(&approval_receipt).unwrap()).unwrap();
+                let approval: Value =
+                    serde_json::from_slice(&std::fs::read(&approval_receipt).unwrap()).unwrap();
                 assert_eq!(approval["id"], "late-child-approval");
                 assert_eq!(approval["result"]["decision"], "decline", "skills/list must not auto-approve a late child request in on-request mode: {approval}");
             }

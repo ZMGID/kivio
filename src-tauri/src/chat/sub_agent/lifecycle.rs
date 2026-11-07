@@ -28,8 +28,11 @@ fn expected(
 }
 
 fn require_accepted(manager: &SubAgentManager, record: &AgentRecord) -> Result<(), String> {
-    if manager.registry.accepted_lineage(record)? { Ok(()) }
-    else { Err("Subagent has not been accepted for execution".into()) }
+    if manager.registry.accepted_lineage(record)? {
+        Ok(())
+    } else {
+        Err("Subagent has not been accepted for execution".into())
+    }
 }
 
 pub(crate) fn tombstone(record: &AgentRecord) -> PathBuf {
@@ -82,14 +85,20 @@ pub async fn ensure_live(
     if record.status == AgentStatus::Running {
         return Ok(record);
     }
-    state.settings_read().chat_tools.ensure_subagent_role_enabled(&record.agent_type)?;
+    state
+        .settings_read()
+        .chat_tools
+        .ensure_subagent_role_enabled(&record.agent_type)?;
     let mut guard = slot.worker.lock().await;
     record = expected(manager, root, id, expected_generation)?;
     require_accepted(manager, &record)?;
     if record.status == AgentStatus::Running {
         return Ok(record);
     }
-    state.settings_read().chat_tools.ensure_subagent_role_enabled(&record.agent_type)?;
+    state
+        .settings_read()
+        .chat_tools
+        .ensure_subagent_role_enabled(&record.agent_type)?;
     if guard.is_none() {
         *guard = Some(read_worker(&record).await?);
     }
@@ -192,22 +201,38 @@ pub async fn park(
     Ok(record)
 }
 
-fn mark_parked(manager: &SubAgentManager, slot: &session::Slot, record: &AgentRecord) -> Result<AgentRecord, String> {
-    let control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+fn mark_parked(
+    manager: &SubAgentManager,
+    slot: &session::Slot,
+    record: &AgentRecord,
+) -> Result<AgentRecord, String> {
+    let control = slot
+        .control
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     if control.killed || control.generation != record.generation {
         return Err("Subagent changed while being parked".into());
     }
-    if control.active_run.is_some() || control.wake_reserved || manager.irc.has_pending(&record.root, &record.id) {
+    if control.active_run.is_some()
+        || control.wake_reserved
+        || manager.irc.has_pending(&record.root, &record.id)
+    {
         return Err("Subagent has active or queued work".into());
     }
     // IRC enqueue takes the same lock before checking the recipient's status.
     manager
         .registry
-        .update_checked(&record.root, &record.id, record.generation, None, |current| {
-            current.status = AgentStatus::Parked;
-            current.run_id = None;
-            current.activity = None;
-        })
+        .update_checked(
+            &record.root,
+            &record.id,
+            record.generation,
+            None,
+            |current| {
+                current.status = AgentStatus::Parked;
+                current.run_id = None;
+                current.activity = None;
+            },
+        )
         .ok_or_else(|| "Subagent changed while being parked".into())
 }
 
@@ -316,19 +341,36 @@ pub(crate) fn read_summarize_for_run(manager: &SubAgentManager, run: &str) -> Op
         .then(|| control.read_summarize.unwrap_or(true))
 }
 
-pub(crate) fn completion_schema_for_run(manager: &SubAgentManager, run: &str) -> Option<serde_json::Value> {
+pub(crate) fn completion_schema_for_run(
+    manager: &SubAgentManager,
+    run: &str,
+) -> Option<serde_json::Value> {
     let (root, id) = manager.registry.find_by_run(run)?;
     let slot = manager.sessions.existing(&root, &id)?;
-    let control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
-    (control.active_run.as_deref() == Some(run) && !control.killed).then(|| control.completion_schema.clone()).flatten()
+    let control = slot
+        .control
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    (control.active_run.as_deref() == Some(run) && !control.killed)
+        .then(|| control.completion_schema.clone())
+        .flatten()
 }
 
 pub async fn discover(app: &AppHandle, root: &str) -> Result<Vec<AgentRecord>, String> {
     let directory = registry::artifacts_dir(app, root)?;
-    discover_in(&directory, &app.state::<AppState>().sub_agents.registry, root).await
+    discover_in(
+        &directory,
+        &app.state::<AppState>().sub_agents.registry,
+        root,
+    )
+    .await
 }
 
-async fn discover_in(directory: &std::path::Path, registry: &registry::AgentRegistry, root: &str) -> Result<Vec<AgentRecord>, String> {
+async fn discover_in(
+    directory: &std::path::Path,
+    registry: &registry::AgentRegistry,
+    root: &str,
+) -> Result<Vec<AgentRecord>, String> {
     let mut entries = match tokio::fs::read_dir(&directory).await {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -422,19 +464,31 @@ async fn discover_in(directory: &std::path::Path, registry: &registry::AgentRegi
     }
     discovered.sort_by_key(|record| record.depth);
     for record in discovered {
-        if registry.accepted_lineage(&record)? { registry.restore(record); }
+        if registry.accepted_lineage(&record)? {
+            registry.restore(record);
+        }
     }
     let mut accepted = Vec::new();
     for record in registry.list(root) {
-        if registry.accepted_lineage(&record)? { accepted.push(record); }
+        if registry.accepted_lineage(&record)? {
+            accepted.push(record);
+        }
     }
     Ok(accepted)
 }
 
-fn retained_inspection(manager: &SubAgentManager, record: &AgentRecord) -> Option<(Option<Value>, Option<String>)> {
+fn retained_inspection(
+    manager: &SubAgentManager,
+    record: &AgentRecord,
+) -> Option<(Option<Value>, Option<String>)> {
     let slot = manager.sessions.existing(&record.root, &record.id)?;
-    let control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
-    if control.generation != record.generation { return None; }
+    let control = slot
+        .control
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if control.generation != record.generation {
+        return None;
+    }
     let progress = control.last_progress.clone();
     let model = control.model.clone();
     if record.status == AgentStatus::Running || progress.is_some() || model.is_some() {
@@ -442,7 +496,9 @@ fn retained_inspection(manager: &SubAgentManager, record: &AgentRecord) -> Optio
     }
     drop(control);
     let worker = slot.worker.try_lock().ok()?;
-    worker.as_ref().map(|worker| (worker.last_progress.clone(), worker.model.clone()))
+    worker
+        .as_ref()
+        .map(|worker| (worker.last_progress.clone(), worker.model.clone()))
 }
 
 pub async fn inspect(
@@ -451,8 +507,12 @@ pub async fn inspect(
 ) -> Result<(Option<Value>, Option<String>), String> {
     let state = app.state::<AppState>();
     let retained = retained_inspection(&state.sub_agents, record);
-    if record.status == AgentStatus::Running { return Ok(retained.unwrap_or_default()); }
-    if let Some(retained) = retained { return Ok(retained); }
+    if record.status == AgentStatus::Running {
+        return Ok(retained.unwrap_or_default());
+    }
+    if let Some(retained) = retained {
+        return Ok(retained);
+    }
     let bytes = tokio::fs::read(&record.session_file)
         .await
         .map_err(|error| error.to_string())?;
@@ -462,24 +522,41 @@ pub async fn inspect(
 
 pub async fn revival_error(app: &AppHandle, record: &AgentRecord) -> Option<String> {
     let state = app.state::<AppState>();
-    if let Err(error) = state.settings_read().chat_tools.ensure_subagent_role_enabled(&record.agent_type) {
+    if let Err(error) = state
+        .settings_read()
+        .chat_tools
+        .ensure_subagent_role_enabled(&record.agent_type)
+    {
         return Some(error);
     }
-    let retained = state.sub_agents.sessions.existing(&record.root, &record.id).and_then(|slot| {
-        let worker = slot.worker.try_lock().ok()?;
-        let worker = worker.as_ref()?;
-        worker.contract.clone().filter(|saved| saved.generation == record.generation).map(|saved| (saved, worker.prepared.is_some()))
-    });
+    let retained = state
+        .sub_agents
+        .sessions
+        .existing(&record.root, &record.id)
+        .and_then(|slot| {
+            let worker = slot.worker.try_lock().ok()?;
+            let worker = worker.as_ref()?;
+            worker
+                .contract
+                .clone()
+                .filter(|saved| saved.generation == record.generation)
+                .map(|saved| (saved, worker.prepared.is_some()))
+        });
     let saved = match retained {
         Some((saved, prepared)) => {
             if !saved.cwd.is_absolute() || !saved.cwd.is_dir() {
                 return Some("Saved subagent working directory is unavailable".into());
             }
-            if !prepared && matches!(saved.options.workspace, super::spawn::WorkspacePolicy::Isolated { .. }) {
+            if !prepared
+                && matches!(
+                    saved.options.workspace,
+                    super::spawn::WorkspacePolicy::Isolated { .. }
+                )
+            {
                 return Some("Isolated worker leases cannot be cold-revived".into());
             }
             saved
-        },
+        }
         None => match read_worker(record).await {
             Ok(worker) => worker.contract?,
             Err(error) => return Some(error),
@@ -509,13 +586,17 @@ fn belongs_to_recovery(
     main_calls: &[(String, String)],
     parent_runs: &HashMap<String, String>,
 ) -> bool {
-    if saved.owner_id != record.parent_id || saved.parent_tool_call_id.is_empty()
-        || saved.parent_run_id.is_empty() || !super::task::valid_agent_id(&saved.job_id)
+    if saved.owner_id != record.parent_id
+        || saved.parent_tool_call_id.is_empty()
+        || saved.parent_run_id.is_empty()
+        || !super::task::valid_agent_id(&saved.job_id)
     {
         return false;
     }
     if record.parent_id == super::MAIN_AGENT_ID {
-        main_calls.iter().any(|(run, call)| run == &saved.parent_run_id && call == &saved.parent_tool_call_id)
+        main_calls
+            .iter()
+            .any(|(run, call)| run == &saved.parent_run_id && call == &saved.parent_tool_call_id)
     } else {
         parent_runs.get(&record.parent_id) == Some(&saved.parent_run_id)
     }
@@ -527,43 +608,87 @@ pub(crate) async fn restore_interrupted(
     main_calls: &[(String, String)],
     epoch: u64,
 ) -> Result<Vec<String>, String> {
-    if main_calls.is_empty() { return Ok(Vec::new()); }
+    if main_calls.is_empty() {
+        return Ok(Vec::new());
+    }
     let state = app.state::<AppState>();
     let manager = &state.sub_agents;
-    if !state.settings_read().chat_tools.task_async_enabled { return Ok(Vec::new()); }
+    if !state.settings_read().chat_tools.task_async_enabled {
+        return Ok(Vec::new());
+    }
     let mut records = discover(app, root).await?;
     records.sort_by_key(|record| record.depth);
     let mut parent_runs = HashMap::new();
     let mut starts = Vec::new();
-    for record in records.into_iter().filter(|record| record.status == AgentStatus::Parked) {
-        if state.settings_read().chat_tools.ensure_subagent_role_enabled(&record.agent_type).is_err() { continue; }
+    for record in records
+        .into_iter()
+        .filter(|record| record.status == AgentStatus::Parked)
+    {
+        if state
+            .settings_read()
+            .chat_tools
+            .ensure_subagent_role_enabled(&record.agent_type)
+            .is_err()
+        {
+            continue;
+        }
         let worker = match read_worker(&record).await {
             Ok(worker) => worker,
-            Err(error) => { eprintln!("Cannot restore subagent {}: {error}", record.id); continue; }
+            Err(error) => {
+                eprintln!("Cannot restore subagent {}: {error}", record.id);
+                continue;
+            }
         };
-        let Some(saved) = worker.interrupted.clone() else { continue; };
-        if !belongs_to_recovery(&record, &saved, main_calls, &parent_runs) { continue; }
-        let Ok(slot) = manager.sessions.slot(&record) else { break; };
-        let Ok(mut retained) = slot.worker.try_lock() else { continue; };
-        if retained.is_some() { continue; }
+        let Some(saved) = worker.interrupted.clone() else {
+            continue;
+        };
+        if !belongs_to_recovery(&record, &saved, main_calls, &parent_runs) {
+            continue;
+        }
+        let Ok(slot) = manager.sessions.slot(&record) else {
+            break;
+        };
+        let Ok(mut retained) = slot.worker.try_lock() else {
+            continue;
+        };
+        if retained.is_some() {
+            continue;
+        }
         let Some((job, cancel)) = manager.with_interruption_epoch(root, |current_epoch| {
-            if current_epoch != epoch { return None; }
-            let control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
-            if control.killed || control.generation != record.generation
-                || control.active_run.is_some() || control.wake_reserved
-            { return None; }
+            if current_epoch != epoch {
+                return None;
+            }
+            let control = slot
+                .control
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if control.killed
+                || control.generation != record.generation
+                || control.active_run.is_some()
+                || control.wake_reserved
+            {
+                return None;
+            }
             let registration = manager.jobs.register_restored(
-                root, &saved.owner_id, &record.id, &saved.job_id, "Restored interrupted assignment",
+                root,
+                &saved.owner_id,
+                &record.id,
+                &saved.job_id,
+                "Restored interrupted assignment",
             )?;
             *retained = Some(worker);
             Some(registration)
-        }) else { continue; };
+        }) else {
+            continue;
+        };
         parent_runs.insert(record.id.clone(), saved.run_id.clone());
         starts.push((record, job, cancel, saved));
     }
-    let restored = starts.iter()
+    let restored = starts
+        .iter()
         .filter(|(record, _, _, _)| record.parent_id == super::MAIN_AGENT_ID)
-        .map(|(_, job, _, _)| job.clone()).collect();
+        .map(|(_, job, _, _)| job.clone())
+        .collect();
     for (record, job, cancel, saved) in starts {
         super::irc::schedule_restored(app, record, job, cancel, saved);
     }
@@ -600,24 +725,45 @@ mod tests {
         let record = manager.registry.register(record(AgentStatus::Idle));
         let slot = manager.sessions.slot(&record).unwrap();
         manager.irc.seed_message(super::super::irc::Message {
-            id: "message".into(), root: record.root.clone(), from: record.parent_id.clone(),
-            to: record.id.clone(), body: "Follow up".into(), sequence: 1, reply_to: None,
-            progress: false, broadcast: false, wake_relay: false, timestamp: 0,
+            id: "message".into(),
+            root: record.root.clone(),
+            from: record.parent_id.clone(),
+            to: record.id.clone(),
+            body: "Follow up".into(),
+            sequence: 1,
+            reply_to: None,
+            progress: false,
+            broadcast: false,
+            wake_relay: false,
+            timestamp: 0,
         });
         assert!(mark_parked(&manager, &slot, &record).is_err());
-        assert_eq!(manager.registry.get(&record.root, &record.id).unwrap().status, AgentStatus::Idle);
+        assert_eq!(
+            manager
+                .registry
+                .get(&record.root, &record.id)
+                .unwrap()
+                .status,
+            AgentStatus::Idle
+        );
         let mut delivered = manager.irc.claim(&record.root, &record.id, |_| true);
         assert_eq!(delivered.messages().len(), 1);
         delivered.commit();
-        assert_eq!(mark_parked(&manager, &slot, &record).unwrap().status, AgentStatus::Parked);
+        assert_eq!(
+            mark_parked(&manager, &slot, &record).unwrap().status,
+            AgentStatus::Parked
+        );
     }
 
     #[test]
     fn recovery_requires_the_exact_parent_run_and_task_call() {
         let mut child = record(AgentStatus::Parked);
         let mut saved = session::SavedTurn {
-            job_id: "job".into(), owner_id: super::super::MAIN_AGENT_ID.into(), run_id: "child-run".into(),
-            parent_run_id: "current".into(), parent_tool_call_id: "dispatch".into(),
+            job_id: "job".into(),
+            owner_id: super::super::MAIN_AGENT_ID.into(),
+            run_id: "child-run".into(),
+            parent_run_id: "current".into(),
+            parent_tool_call_id: "dispatch".into(),
         };
         let calls = vec![("current".into(), "dispatch".into())];
         let mut parents = HashMap::new();
@@ -647,7 +793,10 @@ mod tests {
             control.model = Some("saved-model".into());
         }
         let _busy = slot.worker.lock().await;
-        assert_eq!(retained_inspection(&manager, &record), Some((Some(progress), Some("saved-model".into()))));
+        assert_eq!(
+            retained_inspection(&manager, &record),
+            Some((Some(progress), Some("saved-model".into())))
+        );
         record.generation += 1;
         assert!(retained_inspection(&manager, &record).is_none());
     }
@@ -666,7 +815,13 @@ mod tests {
         assert_eq!(read_summarize_for_run(&manager, "run"), None);
     }
 
-    fn interrupted_worker(manager: &SubAgentManager, directory: &std::path::Path, id: &str, parent: &str, depth: u8) -> AgentRecord {
+    fn interrupted_worker(
+        manager: &SubAgentManager,
+        directory: &std::path::Path,
+        id: &str,
+        parent: &str,
+        depth: u8,
+    ) -> AgentRecord {
         let mut worker = record(AgentStatus::Running);
         worker.id = id.into();
         worker.parent_id = parent.into();
@@ -681,12 +836,21 @@ mod tests {
             "task":"No external tools. Return a textual answer.","agentDefinition":crate::agents::builtin_agent_definitions()[0],"tools":[],
             "readOnly":true,"resolvedModel":{"provider":"provider","model":"model"},"thinkingEnabled":false,"resolvedThinkingLevel":null,
             "approvalPolicy":"always_confirm","planState":crate::chat::types::AgentPlanState::default()});
-        let entries = [serde_json::json!({"type":"turn_start","jobId":id,"ownerId":parent,"runId":"run",
-            "parentRunId":"parent-run","parentToolCallId":"task-call"}), contract,
-            serde_json::json!({"role":"system","content":"system"}), serde_json::json!({"role":"user","content":"assignment"})];
-        let bytes: Vec<_> = entries.into_iter().flat_map(|entry| {
-            let mut row = serde_json::to_vec(&entry).unwrap(); row.push(b'\n'); row
-        }).collect();
+        let entries = [
+            serde_json::json!({"type":"turn_start","jobId":id,"ownerId":parent,"runId":"run",
+            "parentRunId":"parent-run","parentToolCallId":"task-call"}),
+            contract,
+            serde_json::json!({"role":"system","content":"system"}),
+            serde_json::json!({"role":"user","content":"assignment"}),
+        ];
+        let bytes: Vec<_> = entries
+            .into_iter()
+            .flat_map(|entry| {
+                let mut row = serde_json::to_vec(&entry).unwrap();
+                row.push(b'\n');
+                row
+            })
+            .collect();
         std::fs::write(&worker.session_file, bytes).unwrap();
         worker
     }
@@ -697,29 +861,75 @@ mod tests {
         let live = SubAgentManager::default();
         let accepted = interrupted_worker(&live, directory.path(), "Accepted", "Main", 1);
         let unaccepted = interrupted_worker(&live, directory.path(), "Speculative", "Main", 1);
-        let child = interrupted_worker(&live, directory.path(), "Speculative.Child", "Speculative", 2);
+        let child = interrupted_worker(
+            &live,
+            directory.path(),
+            "Speculative.Child",
+            "Speculative",
+            2,
+        );
         let invalid = interrupted_worker(&live, directory.path(), "Invalid", "Main", 1);
-        live.registry.publish("root", &accepted.id, accepted.generation).unwrap();
-        live.registry.publish("root", &child.id, child.generation).unwrap();
-        std::fs::write(invalid.session_file.with_extension("jsonl.accepted"), b"{\"root\":\"other\",\"id\":\"Invalid\"}").unwrap();
+        live.registry
+            .publish("root", &accepted.id, accepted.generation)
+            .unwrap();
+        live.registry
+            .publish("root", &child.id, child.generation)
+            .unwrap();
+        std::fs::write(
+            invalid.session_file.with_extension("jsonl.accepted"),
+            b"{\"root\":\"other\",\"id\":\"Invalid\"}",
+        )
+        .unwrap();
         for record in [&accepted, &unaccepted, &child, &invalid] {
-            assert!(read_worker(record).await.unwrap().interrupted.is_some(), "every fixture is a genuinely replayable interrupted session");
+            assert!(
+                read_worker(record).await.unwrap().interrupted.is_some(),
+                "every fixture is a genuinely replayable interrupted session"
+            );
         }
-        assert!(require_accepted(&live, &unaccepted).is_err(), "the execution gate must reject a running hidden identity before returning it");
+        assert!(
+            require_accepted(&live, &unaccepted).is_err(),
+            "the execution gate must reject a running hidden identity before returning it"
+        );
         assert!(require_accepted(&live, &live.registry.get("root", &child.id).unwrap()).is_err());
         let cold = SubAgentManager::default();
-        let discovered = discover_in(directory.path(), &cold.registry, "root").await.unwrap();
-        assert_eq!(discovered.iter().map(|record| record.id.as_str()).collect::<Vec<_>>(), ["Accepted"]);
-        let turn = read_worker(&discovered[0]).await.unwrap().interrupted.unwrap();
+        let discovered = discover_in(directory.path(), &cold.registry, "root")
+            .await
+            .unwrap();
+        assert_eq!(
+            discovered
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["Accepted"]
+        );
+        let turn = read_worker(&discovered[0])
+            .await
+            .unwrap()
+            .interrupted
+            .unwrap();
         assert_eq!(turn.parent_run_id, "parent-run");
         assert_eq!(turn.parent_tool_call_id, "task-call");
         assert!(require_accepted(&cold, &discovered[0]).is_ok());
         assert!(!cold.registry.contains("root", &unaccepted.id));
         assert!(!cold.registry.contains("root", &child.id));
         assert!(!cold.registry.contains("root", &invalid.id));
-        assert!(tokio::fs::read_to_string(&unaccepted.session_file).await.unwrap().contains("assignment"), "unaccepted history must remain readable");
-        live.registry.publish("root", &unaccepted.id, unaccepted.generation).unwrap();
-        let discovered = discover_in(directory.path(), &cold.registry, "root").await.unwrap();
-        assert_eq!(discovered.len(), 3, "accepting the parent makes its already accepted child discoverable");
+        assert!(
+            tokio::fs::read_to_string(&unaccepted.session_file)
+                .await
+                .unwrap()
+                .contains("assignment"),
+            "unaccepted history must remain readable"
+        );
+        live.registry
+            .publish("root", &unaccepted.id, unaccepted.generation)
+            .unwrap();
+        let discovered = discover_in(directory.path(), &cold.registry, "root")
+            .await
+            .unwrap();
+        assert_eq!(
+            discovered.len(),
+            3,
+            "accepting the parent makes its already accepted child discoverable"
+        );
     }
 }

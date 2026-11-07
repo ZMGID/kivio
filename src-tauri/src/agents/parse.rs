@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 
-use serde_yaml::Value;
 use crate::skills::slugify;
+use serde_yaml::Value;
 
 use super::types::{AgentDefinition, AgentModelPolicy};
 
@@ -17,13 +17,21 @@ pub fn parse_agent_markdown(
     let (frontmatter, body) = match split_agent_frontmatter(raw) {
         Ok(parts) => parts,
         Err(error) => {
-            eprintln!("Invalid agent {}: {error}", path.as_deref().unwrap_or(fallback_id));
+            eprintln!(
+                "Invalid agent {}: {error}",
+                path.as_deref().unwrap_or(fallback_id)
+            );
             return None;
         }
     };
 
-    let string = |key: &str| frontmatter.get(key).and_then(Value::as_str)
-        .map(str::trim).filter(|s| !s.is_empty());
+    let string = |key: &str| {
+        frontmatter
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+    };
     let name = string("name").unwrap_or(fallback_id).to_string();
     if name.is_empty() {
         return None;
@@ -32,8 +40,11 @@ pub fn parse_agent_markdown(
     let description = string("description").unwrap_or_default().to_string();
     let models = list(frontmatter.get("model"));
     let model = models.first().cloned();
-    let thinking_level = string("thinkingLevel").or_else(|| string("thinking-level"))
-        .or_else(|| string("thinking")).and_then(normalize_thinking).map(str::to_string);
+    let thinking_level = string("thinkingLevel")
+        .or_else(|| string("thinking-level"))
+        .or_else(|| string("thinking"))
+        .and_then(normalize_thinking)
+        .map(str::to_string);
     let tools = match frontmatter.get("tools") {
         None | Some(Value::Null) => None,
         value => {
@@ -48,24 +59,33 @@ pub fn parse_agent_markdown(
         }
     };
     let spawns = match frontmatter.get("spawns") {
-        None | Some(Value::Null) => {
-            tools.as_ref().filter(|tools| tools.iter().any(|tool| tool == "task"))
-                .map(|_| "*".to_string())
-        }
+        None | Some(Value::Null) => tools
+            .as_ref()
+            .filter(|tools| tools.iter().any(|tool| tool == "task"))
+            .map(|_| "*".to_string()),
         Some(Value::Bool(true)) => Some("*".into()),
         Some(Value::Bool(false)) => Some(String::new()),
         value => Some(list(value).join(",")),
     };
-    let skills = list(frontmatter.get("autoloadSkills").or_else(|| frontmatter.get("autoload-skills"))
-        .or_else(|| frontmatter.get("skills")));
-    let blocking = frontmatter.get("blocking").and_then(parse_bool).unwrap_or(false);
+    let skills = list(
+        frontmatter
+            .get("autoloadSkills")
+            .or_else(|| frontmatter.get("autoload-skills"))
+            .or_else(|| frontmatter.get("skills")),
+    );
+    let blocking = frontmatter
+        .get("blocking")
+        .and_then(parse_bool)
+        .unwrap_or(false);
     let mut unsupported = Vec::new();
     for (key, value) in &frontmatter {
         let unsupported_value = match key.as_str() {
             "name" | "description" | "tools" | "spawns" => false,
             "model" | "autoloadSkills" | "autoload-skills" | "skills" => {
                 !matches!(value, Value::Null | Value::String(_) | Value::Sequence(_))
-                    || value.as_sequence().is_some_and(|items| items.iter().any(|item| !item.is_string()))
+                    || value
+                        .as_sequence()
+                        .is_some_and(|items| items.iter().any(|item| !item.is_string()))
             }
             "thinkingLevel" | "thinking-level" | "thinking" => match value {
                 Value::Null => false,
@@ -74,19 +94,17 @@ pub fn parse_agent_markdown(
                 _ => true,
             },
             "blocking" => !value.is_null() && parse_bool(value).is_none(),
-            "readSummarize" | "read-summarize" => {
-                !value.is_null() && parse_bool(value).is_none()
-            }
+            "readSummarize" | "read-summarize" => !value.is_null() && parse_bool(value).is_none(),
             "structured" => !value.is_null() && parse_bool(value).is_none(),
-            "output" => !value.is_null() && serde_json::to_value(value).ok().is_none_or(|schema| {
-                crate::chat::sub_agent::structured::validate_schema(&schema).is_err()
-            }),
-            "prewalk" | "advisor" => {
-                !value.is_null() && parse_model_policy(value).is_none()
+            "output" => {
+                !value.is_null()
+                    && serde_json::to_value(value).ok().is_none_or(|schema| {
+                        crate::chat::sub_agent::structured::validate_schema(&schema).is_err()
+                    })
             }
-            "disallowed_tools" | "disallowed-tools" | "disallowedTools"
-            | "serviceTier" | "service-tier" | "accountPool" | "account-pool"
-            | "compaction" => !value.is_null(),
+            "prewalk" | "advisor" => !value.is_null() && parse_model_policy(value).is_none(),
+            "disallowed_tools" | "disallowed-tools" | "disallowedTools" | "serviceTier"
+            | "service-tier" | "accountPool" | "account-pool" | "compaction" => !value.is_null(),
             _ => false,
         };
         if unsupported_value {
@@ -102,12 +120,28 @@ pub fn parse_agent_markdown(
         system_prompt,
         model,
         models,
-        structured: frontmatter.get("structured").and_then(parse_bool).unwrap_or(false),
-        output: frontmatter.get("output").filter(|value| !value.is_null()).and_then(|value| serde_json::to_value(value).ok()),
+        structured: frontmatter
+            .get("structured")
+            .and_then(parse_bool)
+            .unwrap_or(false),
+        output: frontmatter
+            .get("output")
+            .filter(|value| !value.is_null())
+            .and_then(|value| serde_json::to_value(value).ok()),
         prewalk: frontmatter.get("prewalk").and_then(parse_model_policy),
         advisor: frontmatter.get("advisor").and_then(parse_model_policy),
-        read_summarize: frontmatter.get("readSummarize").or_else(|| frontmatter.get("read-summarize")).and_then(parse_bool),
-        metadata: frontmatter.iter().filter_map(|(key, value)| serde_json::to_value(value).ok().map(|value| (key.clone(), value))).collect(),
+        read_summarize: frontmatter
+            .get("readSummarize")
+            .or_else(|| frontmatter.get("read-summarize"))
+            .and_then(parse_bool),
+        metadata: frontmatter
+            .iter()
+            .filter_map(|(key, value)| {
+                serde_json::to_value(value)
+                    .ok()
+                    .map(|value| (key.clone(), value))
+            })
+            .collect(),
         thinking_level,
         blocking,
         tools,
@@ -125,16 +159,26 @@ fn split_agent_frontmatter(raw: &str) -> Result<(BTreeMap<String, Value>, &str),
     };
     let end = rest.find("\n---").ok_or("Unclosed frontmatter")?;
     let frontmatter = serde_yaml::from_str::<Option<BTreeMap<String, Value>>>(&rest[..end])
-        .map_err(|error| error.to_string())?.unwrap_or_default();
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
     Ok((frontmatter, &rest[end + 4..]))
 }
 
 fn list(value: Option<&Value>) -> Vec<String> {
     match value {
-        Some(Value::String(s)) => s.split(',').map(str::trim)
-            .filter(|s| !s.is_empty()).map(str::to_string).collect(),
-        Some(Value::Sequence(items)) => items.iter().filter_map(Value::as_str)
-            .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect(),
+        Some(Value::String(s)) => s
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
+        Some(Value::Sequence(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -149,20 +193,30 @@ fn parse_bool(value: &Value) -> Option<bool> {
 }
 
 fn parse_model_policy(value: &Value) -> Option<AgentModelPolicy> {
-    if let Some(value) = parse_bool(value) { return Some(AgentModelPolicy::Enabled(value)); }
-    value.as_str().map(str::trim).filter(|value| !value.is_empty())
+    if let Some(value) = parse_bool(value) {
+        return Some(AgentModelPolicy::Enabled(value));
+    }
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
         .map(|value| AgentModelPolicy::Model(value.to_string()))
 }
 
 fn normalize_thinking(value: &str) -> Option<&'static str> {
-    const LEVELS: &[&str] = &["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    const LEVELS: &[&str] = &[
+        "inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max",
+    ];
     if value == "auto" {
         return Some("auto");
     }
     if value.len() < 2 {
         return None;
     }
-    let mut matches = LEVELS.iter().copied().filter(|level| level.starts_with(value));
+    let mut matches = LEVELS
+        .iter()
+        .copied()
+        .filter(|level| level.starts_with(value));
     let level = matches.next()?;
     matches.next().is_none().then_some(level)
 }
@@ -171,12 +225,11 @@ fn normalize_tool_name(name: &str) -> String {
     let lower = name.to_ascii_lowercase();
     match lower.as_str() {
         "search" => "grep".into(),
-        "read" | "bash" | "edit" | "ast_grep" | "ast_edit" | "ask" | "debug" | "ida"
-        | "eval" | "github" | "glob" | "grep" | "find" | "lsp" | "checkpoint"
-        | "rewind" | "context_notes" | "new_context" | "security_scan" | "task"
-        | "wait" | "todo" | "web_search" | "write" | "memory_edit" | "retain"
-        | "recall" | "reflect" | "learn" | "manage_skill" | "yield" | "goal"
-        | "think" => lower,
+        "read" | "bash" | "edit" | "ast_grep" | "ast_edit" | "ask" | "debug" | "ida" | "eval"
+        | "github" | "glob" | "grep" | "find" | "lsp" | "checkpoint" | "rewind"
+        | "context_notes" | "new_context" | "security_scan" | "task" | "wait" | "todo"
+        | "web_search" | "write" | "memory_edit" | "retain" | "recall" | "reflect" | "learn"
+        | "manage_skill" | "yield" | "goal" | "think" => lower,
         _ => name.to_string(),
     }
 }
@@ -194,7 +247,10 @@ mod tests {
         assert_eq!(def.description, "Deep research");
         assert_eq!(def.model.as_deref(), Some("gpt-4o"));
         assert_eq!(def.thinking_level.as_deref(), Some("medium"));
-        assert_eq!(def.tools, Some(vec!["read".into(), "web_search".into(), "web_fetch".into()]));
+        assert_eq!(
+            def.tools,
+            Some(vec!["read".into(), "web_search".into(), "web_fetch".into()])
+        );
         assert_eq!(def.spawns.as_deref(), Some("scout,reviewer"));
         assert_eq!(def.skills, vec!["pdf", "docx"]);
         assert_eq!(def.system_prompt, "You are a research specialist.");
@@ -208,16 +264,34 @@ mod tests {
         assert_eq!(absent.tools, None);
         for tools in ["tools:", "tools: null", "tools: ~"] {
             let raw = format!("---\nname: x\n{tools}\n---\nbody");
-            assert_eq!(parse_agent_markdown("x", &raw, "user", None).unwrap().tools, None, "{tools}");
+            assert_eq!(
+                parse_agent_markdown("x", &raw, "user", None).unwrap().tools,
+                None,
+                "{tools}"
+            );
         }
         for tools in ["tools: ''", "tools: []", "tools: false"] {
             let raw = format!("---\nname: x\n{tools}\n---\nbody");
-            assert_eq!(parse_agent_markdown("x", &raw, "user", None).unwrap().tools, Some(vec![]), "{tools}");
+            assert_eq!(
+                parse_agent_markdown("x", &raw, "user", None).unwrap().tools,
+                Some(vec![]),
+                "{tools}"
+            );
         }
         let indented = "---\n  name: x\n  tools:\n  spawns: '*'\n---\nbody";
-        assert_eq!(parse_agent_markdown("x", indented, "user", None).unwrap().tools, None);
+        assert_eq!(
+            parse_agent_markdown("x", indented, "user", None)
+                .unwrap()
+                .tools,
+            None
+        );
         let nested_only = "---\nname: x\noutput:\n  tools: [write]\n---\nbody";
-        assert_eq!(parse_agent_markdown("x", nested_only, "user", None).unwrap().tools, None);
+        assert_eq!(
+            parse_agent_markdown("x", nested_only, "user", None)
+                .unwrap()
+                .tools,
+            None
+        );
         let nested_override = "---\nname: x\ntools: []\noutput:\n  tools: [write]\n  name: nested\n  spawns: '*'\n---\nbody";
         let def = parse_agent_markdown("x", nested_override, "user", None).unwrap();
         assert_eq!(def.name, "x");
@@ -234,21 +308,36 @@ mod tests {
         assert_eq!(def.spawns.as_deref(), Some("scout,reviewer"));
         assert_eq!(def.skills, vec!["pdf", "docx"]);
         assert_eq!(def.thinking_level.as_deref(), Some("high"));
-        let unindented = "---\nname: x\ntools:\n# allowed tools\n- read\n- glob\nspawns:\n- scout\n---\nbody";
+        let unindented =
+            "---\nname: x\ntools:\n# allowed tools\n- read\n- glob\nspawns:\n- scout\n---\nbody";
         let def = parse_agent_markdown("x", unindented, "user", None).unwrap();
         assert_eq!(def.tools, Some(vec!["read".into(), "glob".into()]));
         assert_eq!(def.spawns.as_deref(), Some("scout"));
-        let auto = parse_agent_markdown("x", "---\nthinkingLevel: auto\nautoloadSkills: [pdf, docx]\nblocking: 'true'\n---\nbody", "user", None).unwrap();
+        let auto = parse_agent_markdown(
+            "x",
+            "---\nthinkingLevel: auto\nautoloadSkills: [pdf, docx]\nblocking: 'true'\n---\nbody",
+            "user",
+            None,
+        )
+        .unwrap();
         assert_eq!(auto.thinking_level.as_deref(), Some("auto"));
         assert_eq!(auto.skills, ["pdf", "docx"]);
         assert!(auto.blocking);
         for key in ["thinking-level", "thinkingLevel", "thinking"] {
             let raw = format!("---\n{key}: auto\n---\nbody");
-            assert_eq!(parse_agent_markdown("x", &raw, "user", None).unwrap().thinking_level.as_deref(), Some("auto"));
+            assert_eq!(
+                parse_agent_markdown("x", &raw, "user", None)
+                    .unwrap()
+                    .thinking_level
+                    .as_deref(),
+                Some("auto")
+            );
         }
-        let abbreviated = parse_agent_markdown("x", "---\nthinking: med\n---\nbody", "user", None).unwrap();
+        let abbreviated =
+            parse_agent_markdown("x", "---\nthinking: med\n---\nbody", "user", None).unwrap();
         assert_eq!(abbreviated.thinking_level.as_deref(), Some("medium"));
-        let invalid = parse_agent_markdown("x", "---\nthinking: nope\n---\nbody", "user", None).unwrap();
+        let invalid =
+            parse_agent_markdown("x", "---\nthinking: nope\n---\nbody", "user", None).unwrap();
         assert_eq!(invalid.thinking_level, None);
         assert_eq!(invalid.unsupported, ["thinking"]);
     }
@@ -261,8 +350,17 @@ mod tests {
             assert_eq!(def.tools, Some(vec!["task".into()]));
             assert_eq!(def.spawns.as_deref(), Some(""), "{value}");
         }
-        let def = parse_agent_markdown("x", "---\ntools: [TASK, search, grep, Read]\n---\nbody", "user", None).unwrap();
-        assert_eq!(def.tools, Some(vec!["task".into(), "grep".into(), "read".into()]));
+        let def = parse_agent_markdown(
+            "x",
+            "---\ntools: [TASK, search, grep, Read]\n---\nbody",
+            "user",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            def.tools,
+            Some(vec!["task".into(), "grep".into(), "read".into()])
+        );
         assert_eq!(def.spawns.as_deref(), Some("*"));
         let def = parse_agent_markdown("x", "---\nspawns: true\n---\nbody", "user", None).unwrap();
         assert_eq!(def.spawns.as_deref(), Some("*"));
@@ -275,7 +373,10 @@ mod tests {
         assert!(def.unsupported.is_empty());
         assert_eq!(def.prewalk, Some(AgentModelPolicy::Enabled(true)));
         assert_eq!(def.advisor, Some(AgentModelPolicy::Model("other".into())));
-        assert_eq!(def.metadata.get("extraField"), Some(&serde_json::json!("value")));
+        assert_eq!(
+            def.metadata.get("extraField"),
+            Some(&serde_json::json!("value"))
+        );
         assert!(!def.unsupported.iter().any(|item| item == "extraField"));
         assert_eq!(def.models, ["first", "fallback"]);
         assert!(def.structured);
@@ -288,15 +389,35 @@ mod tests {
     fn policy_frontmatter_handles_boolean_strings_nulls_and_nested_metadata() {
         let role = parse_agent_markdown("x", "---\nprewalk: 'true'\nadvisor: ' test/model:low '\nreadSummarize: true\nextra:\n  tags: [one, two]\n---\nbody", "project", None).unwrap();
         assert_eq!(role.prewalk, Some(AgentModelPolicy::Enabled(true)));
-        assert_eq!(role.advisor, Some(AgentModelPolicy::Model("test/model:low".into())));
+        assert_eq!(
+            role.advisor,
+            Some(AgentModelPolicy::Model("test/model:low".into()))
+        );
         assert_eq!(role.read_summarize, Some(true));
-        assert_eq!(role.metadata["extra"], serde_json::json!({"tags":["one", "two"]}));
+        assert_eq!(
+            role.metadata["extra"],
+            serde_json::json!({"tags":["one", "two"]})
+        );
         assert!(role.unsupported.is_empty());
-        let nulls = parse_agent_markdown("x", "---\nprewalk: null\nadvisor: null\nreadSummarize: null\n---\nbody", "project", None).unwrap();
-        assert!(nulls.prewalk.is_none() && nulls.advisor.is_none() && nulls.read_summarize.is_none());
+        let nulls = parse_agent_markdown(
+            "x",
+            "---\nprewalk: null\nadvisor: null\nreadSummarize: null\n---\nbody",
+            "project",
+            None,
+        )
+        .unwrap();
+        assert!(
+            nulls.prewalk.is_none() && nulls.advisor.is_none() && nulls.read_summarize.is_none()
+        );
         assert!(nulls.unsupported.is_empty());
         let invalid = parse_agent_markdown("x", "---\nprewalk: [test/model]\nadvisor: 42\nreadSummarize: maybe\naccountPool: private\nserviceTier: priority\n---\nbody", "project", None).unwrap();
-        for key in ["prewalk", "advisor", "readSummarize", "accountPool", "serviceTier"] {
+        for key in [
+            "prewalk",
+            "advisor",
+            "readSummarize",
+            "accountPool",
+            "serviceTier",
+        ] {
             assert!(invalid.unsupported.iter().any(|field| field == key));
         }
     }

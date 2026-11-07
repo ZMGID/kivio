@@ -204,12 +204,19 @@ impl ChatInteractionState {
         }
     }
 
-    pub(crate) fn remember_answered_ask_user(&self, run_id: &str, tool_call_id: String, content: Value) {
-        Self::lock(&self.answered_ask_user_content).insert((run_id.to_string(), tool_call_id), content);
+    pub(crate) fn remember_answered_ask_user(
+        &self,
+        run_id: &str,
+        tool_call_id: String,
+        content: Value,
+    ) {
+        Self::lock(&self.answered_ask_user_content)
+            .insert((run_id.to_string(), tool_call_id), content);
     }
 
     pub(crate) fn take_answered_ask_user(&self, run_id: &str, tool_call_id: &str) -> Option<Value> {
-        Self::lock(&self.answered_ask_user_content).remove(&(run_id.to_string(), tool_call_id.to_string()))
+        Self::lock(&self.answered_ask_user_content)
+            .remove(&(run_id.to_string(), tool_call_id.to_string()))
     }
 
     pub(crate) fn forget_answered_ask_user(&self, run_id: &str) {
@@ -331,7 +338,10 @@ mod tests {
         ));
         assert!(state.respond_tool_approval(
             "next-interaction",
-            ToolApprovalOutcome { approved: true, ..Default::default() },
+            ToolApprovalOutcome {
+                approved: true,
+                ..Default::default()
+            },
             false,
         ));
         assert!(fresh.await.unwrap().approved);
@@ -345,10 +355,16 @@ mod tests {
         state.remember_answered_ask_user("first-run", "same-tool".into(), first.clone());
         state.remember_answered_ask_user("second-run", "same-tool".into(), second.clone());
 
-        assert_eq!(state.take_answered_ask_user("first-run", "same-tool"), Some(first));
+        assert_eq!(
+            state.take_answered_ask_user("first-run", "same-tool"),
+            Some(first)
+        );
         state.remember_answered_ask_user("first-run", "same-tool".into(), serde_json::Value::Null);
         state.forget_answered_ask_user("first-run");
         assert_eq!(state.take_answered_ask_user("first-run", "same-tool"), None);
-        assert_eq!(state.take_answered_ask_user("second-run", "same-tool"), Some(second));
+        assert_eq!(
+            state.take_answered_ask_user("second-run", "same-tool"),
+            Some(second)
+        );
     }
 }

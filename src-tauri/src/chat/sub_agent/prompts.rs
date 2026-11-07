@@ -13,7 +13,16 @@ pub fn render(template: &str, ctx: &Value) -> String {
     let mut pos = 0;
     let nodes = parse(&tokens, &mut pos);
     let mut out = String::new();
-    emit(&nodes, &Scope { current: ctx, root: ctx, index: 0, last: false }, &mut out);
+    emit(
+        &nodes,
+        &Scope {
+            current: ctx,
+            root: ctx,
+            index: 0,
+            last: false,
+        },
+        &mut out,
+    );
     format_rendered(&out)
 }
 
@@ -55,8 +64,15 @@ fn format_rendered(rendered: &str) -> String {
             i += 1;
             continue;
         }
-        let closing = trimmed.strip_prefix("</").and_then(|s| s.strip_suffix('>'))
-            .is_some_and(|name| !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-' || b == b'_'));
+        let closing = trimmed
+            .strip_prefix("</")
+            .and_then(|s| s.strip_suffix('>'))
+            .is_some_and(|name| {
+                !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b == b'-' || b == b'_')
+            });
         if closing {
             while out.last().is_some_and(|line| line.is_empty()) {
                 out.pop();
@@ -64,17 +80,21 @@ fn format_rendered(rendered: &str) -> String {
         }
         if trimmed.starts_with('|') && trimmed.ends_with('|') {
             let indent = &line[..line.len() - trimmed.len()];
-            let is_separator = trimmed.bytes().all(|b| matches!(b, b'|' | b'-' | b':' | b' ' | b'\t'));
+            let is_separator = trimmed
+                .bytes()
+                .all(|b| matches!(b, b'|' | b'-' | b':' | b' ' | b'\t'));
             let cells = trimmed.split('|').map(str::trim);
             let table = if is_separator {
-                let cells = cells.filter(|cell| !cell.is_empty()).map(|cell| {
-                    match (cell.starts_with(':'), cell.ends_with(':')) {
+                let cells = cells
+                    .filter(|cell| !cell.is_empty())
+                    .map(|cell| match (cell.starts_with(':'), cell.ends_with(':')) {
                         (true, true) => ":---:",
                         (true, false) => ":---",
                         (false, true) => "---:",
                         (false, false) => "---",
-                    }
-                }).collect::<Vec<_>>().join("|");
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|");
                 format!("{indent}|{cells}|")
             } else {
                 format!("{indent}{}", cells.collect::<Vec<_>>().join("|"))
@@ -110,7 +130,11 @@ fn tokenize(template: &str) -> Vec<Token<'_>> {
         if start > 0 {
             tokens.push(Token::Text(&rest[..start]));
         }
-        let (open, close) = if rest[start..].starts_with("{{{") { (3, "}}}") } else { (2, "}}") };
+        let (open, close) = if rest[start..].starts_with("{{{") {
+            (3, "}}}")
+        } else {
+            (2, "}}")
+        };
         let Some(end) = rest[start + open..].find(close) else {
             tokens.push(Token::Text(&rest[start..]));
             return tokens;
@@ -127,8 +151,16 @@ fn tokenize(template: &str) -> Vec<Token<'_>> {
 enum Node<'a> {
     Text(&'a str),
     Var(&'a str),
-    If { path: &'a str, negate: bool, then: Vec<Node<'a>>, otherwise: Vec<Node<'a>> },
-    Each { path: &'a str, body: Vec<Node<'a>> },
+    If {
+        path: &'a str,
+        negate: bool,
+        then: Vec<Node<'a>>,
+        otherwise: Vec<Node<'a>>,
+    },
+    Each {
+        path: &'a str,
+        body: Vec<Node<'a>>,
+    },
 }
 
 /// Parse until a closing `{{/…}}` or `{{else}}` (left unconsumed for the caller).
@@ -155,8 +187,18 @@ fn parse<'a>(tokens: &[Token<'a>], pos: &mut usize) -> Vec<Node<'a>> {
                     *pos += 1; // closing tag
                     nodes.push(match kind {
                         "each" => Node::Each { path, body: then },
-                        "unless" => Node::If { path, negate: true, then, otherwise },
-                        _ => Node::If { path, negate: false, then, otherwise },
+                        "unless" => Node::If {
+                            path,
+                            negate: true,
+                            then,
+                            otherwise,
+                        },
+                        _ => Node::If {
+                            path,
+                            negate: false,
+                            then,
+                            otherwise,
+                        },
                     });
                 } else if !tag.starts_with('!') {
                     nodes.push(Node::Var(tag));
@@ -193,8 +235,11 @@ fn lookup(scope: &Scope<'_>, path: &str) -> Value {
         value = match value {
             Value::Object(map) => map.get(segment).unwrap_or(&Value::Null),
             Value::Array(items) if segment == "length" => return Value::from(items.len()),
-            Value::Array(items) => segment.parse::<usize>().ok()
-                .and_then(|i| items.get(i)).unwrap_or(&Value::Null),
+            Value::Array(items) => segment
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| items.get(i))
+                .unwrap_or(&Value::Null),
             _ => &Value::Null,
         };
     }
@@ -221,15 +266,29 @@ fn emit(nodes: &[Node<'_>], scope: &Scope<'_>, out: &mut String) {
                 Value::String(s) => out.push_str(&s),
                 other => out.push_str(&other.to_string()),
             },
-            Node::If { path, negate, then, otherwise } => {
-                let branch = if truthy(&lookup(scope, path)) != *negate { then } else { otherwise };
+            Node::If {
+                path,
+                negate,
+                then,
+                otherwise,
+            } => {
+                let branch = if truthy(&lookup(scope, path)) != *negate {
+                    then
+                } else {
+                    otherwise
+                };
                 emit(branch, scope, out);
             }
             Node::Each { path, body } => {
                 if let Value::Array(items) = lookup(scope, path) {
                     let count = items.len();
                     for (index, item) in items.iter().enumerate() {
-                        let inner = Scope { current: item, root: scope.root, index, last: index + 1 == count };
+                        let inner = Scope {
+                            current: item,
+                            root: scope.root,
+                            index,
+                            last: index + 1 == count,
+                        };
                         emit(body, &inner, out);
                     }
                 }
@@ -246,44 +305,74 @@ mod tests {
     #[test]
     fn renders_conditionals_loops_and_root_paths() {
         let template = "{{#if multiple}}{{jobs.length}} jobs{{else}}Job {{jobs.[0].id}}{{/if}}:{{#each jobs}}{{#if @root.multiple}}[{{this.id}}]{{/if}}{{this.result}}{{#unless @last}},{{/unless}}{{/each}}{{#unless missing}}!{{/unless}}";
-        let one = render(template, &json!({"multiple": false, "jobs": [{"id": "A", "result": "r"}]}));
+        let one = render(
+            template,
+            &json!({"multiple": false, "jobs": [{"id": "A", "result": "r"}]}),
+        );
         assert_eq!(one, "Job A:r!");
-        let two = render(template, &json!({"multiple": true, "jobs": [{"id": "A", "result": "r"}, {"id": "B", "result": "s"}]}));
+        let two = render(
+            template,
+            &json!({"multiple": true, "jobs": [{"id": "A", "result": "r"}, {"id": "B", "result": "s"}]}),
+        );
         assert_eq!(two, "2 jobs:[A]r,[B]s!");
-        assert_eq!(render("{{{raw}}} {{n}}", &json!({"raw": "<x>", "n": 3})), "<x> 3");
+        assert_eq!(
+            render("{{{raw}}} {{n}}", &json!({"raw": "<x>", "n": 3})),
+            "<x> 3"
+        );
     }
 
     #[test]
     fn normalizes_rendered_whitespace_without_collapsing_code_blocks() {
         let template = "<section>  \nA  \n{{#if optional}}{{optional}}{{/if}}\n\nB\n\n</section>\n\n```\none\n\n\n two  \n```\n";
-        assert_eq!(render(template, &json!({})), "<section>\nA\nB\n</section>\n\n```\none\n\n\n two\n```");
-        assert_eq!(render("| one | two |\n| :------ | ----: |\n", &json!({})), "|one|two|\n|:---|---:|");
+        assert_eq!(
+            render(template, &json!({})),
+            "<section>\nA\nB\n</section>\n\n```\none\n\n\n two\n```"
+        );
+        assert_eq!(
+            render("| one | two |\n| :------ | ----: |\n", &json!({})),
+            "|one|two|\n|:---|---:|"
+        );
     }
 
     #[test]
     fn actual_templates_switch_between_sync_async_and_plan_content() {
-        let guidance = render(TASK_ASYNC_CONTRACT, &json!({"waitTool": true, "ircEnabled": false}));
-        let async_text = render(TASK_TOOL, &json!({
-            "asyncEnabled": true, "hasBlockingAgents": true, "asyncGuidance": guidance,
-            "defaultAgent": "task", "ircEnabled": false
-        }));
+        let guidance = render(
+            TASK_ASYNC_CONTRACT,
+            &json!({"waitTool": true, "ircEnabled": false}),
+        );
+        let async_text = render(
+            TASK_TOOL,
+            &json!({
+                "asyncEnabled": true, "hasBlockingAgents": true, "asyncGuidance": guidance,
+                "defaultAgent": "task", "ircEnabled": false
+            }),
+        );
         assert!(async_text.contains("BLOCKING agents return inline"));
         assert!(async_text.contains("Call `wait`"));
         assert!(!async_text.contains("automatically resume the conversation"));
-        let main_guidance = render(TASK_ASYNC_CONTRACT, &json!({"mainAgent": true, "waitTool": true}));
+        let main_guidance = render(
+            TASK_ASYNC_CONTRACT,
+            &json!({"mainAgent": true, "waitTool": true}),
+        );
         assert!(main_guidance.contains("automatically resume the conversation"));
         assert!(main_guidance.contains("need the result within this same turn"));
         assert!(!main_guidance.contains("Completely blocked? Call `wait`"));
         assert!(!async_text.contains("proc://"));
         assert!(!async_text.contains("write agent://"));
         assert!(!async_text.contains("local://"));
-        let sync_text = render(TASK_TOOL, &json!({"asyncEnabled": false, "defaultAgent": "task"}));
+        let sync_text = render(
+            TASK_TOOL,
+            &json!({"asyncEnabled": false, "defaultAgent": "task"}),
+        );
         assert!(sync_text.contains("Run `tasks[]` synchronously"));
         assert!(!sync_text.contains("Results auto-deliver"));
-        let worker = render(SUBAGENT_SYSTEM, &json!({
-            "agent": "Planner", "context": "shared", "planReference": "The approved plan.",
-            "planReferencePath": "plan.md", "ircSelfId": ""
-        }));
+        let worker = render(
+            SUBAGENT_SYSTEM,
+            &json!({
+                "agent": "Planner", "context": "shared", "planReference": "The approved plan.",
+                "planReferencePath": "plan.md", "ircSelfId": ""
+            }),
+        );
         assert!(worker.contains("<plan path=\"plan.md\">\nThe approved plan.\n</plan>"));
         assert!(!worker.contains("# Peers"));
         assert!(worker.contains("No `yield` tool exists"));
@@ -292,10 +381,13 @@ mod tests {
 
     #[test]
     fn completion_probe_renders_inflight_details() {
-        let prompt = render(COMPLETION_PROBE, &json!({
-            "inflight": [{"name": "grep", "path": "src", "chars": 12}],
-            "previous": {"ago": "5m", "percent": 50, "stage": "reading"}
-        }));
+        let prompt = render(
+            COMPLETION_PROBE,
+            &json!({
+                "inflight": [{"name": "grep", "path": "src", "chars": 12}],
+                "previous": {"ago": "5m", "percent": 50, "stage": "reading"}
+            }),
+        );
         assert!(prompt.contains("`grep` (src): 12 characters"));
         assert!(prompt.contains("5m ago, was 50%"));
         assert!(!render(COMPLETION_PROBE, &json!({"inflight": []})).contains("mid-response"));
@@ -358,18 +450,24 @@ mod template_tests {
 
     #[test]
     fn renders_task_summary_inside_async_delivery_envelope() {
-        let summary = render(TASK_SUMMARY, &json!({
-            "id": "CalmPanda", "agentName": "scout", "status": "completed",
-            "duration": "2s", "preview": "Found the answer."
-        }));
+        let summary = render(
+            TASK_SUMMARY,
+            &json!({
+                "id": "CalmPanda", "agentName": "scout", "status": "completed",
+                "duration": "2s", "preview": "Found the answer."
+            }),
+        );
         assert_eq!(
             summary.trim(),
             "<task-result id=\"CalmPanda\" agent=\"scout\" status=\"completed\" duration=\"2s\">\n\n<output>\nFound the answer.\n</output>\n</task-result>"
         );
-        let notice = render(ASYNC_RESULT, &json!({
-            "multiple": false, "jobCount": 1,
-            "jobs": [{"jobId": "job-1", "result": summary.trim()}]
-        }));
+        let notice = render(
+            ASYNC_RESULT,
+            &json!({
+                "multiple": false, "jobCount": 1,
+                "jobs": [{"jobId": "job-1", "result": summary.trim()}]
+            }),
+        );
         assert_eq!(
             notice.trim(),
             format!("<system-notice>\nBackground job job-1 has completed. Resume your work using the result below.\n{}\n</system-notice>", summary.trim())
@@ -378,13 +476,16 @@ mod template_tests {
 
     #[test]
     fn renders_multiple_job_count_and_labels() {
-        let notice = render(ASYNC_RESULT, &json!({
-            "multiple": true, "jobCount": 2,
-            "jobs": [
-                {"jobId": "one", "label": "Scout", "result": "first"},
-                {"jobId": "two", "result": "second"}
-            ]
-        }));
+        let notice = render(
+            ASYNC_RESULT,
+            &json!({
+                "multiple": true, "jobCount": 2,
+                "jobs": [
+                    {"jobId": "one", "label": "Scout", "result": "first"},
+                    {"jobId": "two", "result": "second"}
+                ]
+            }),
+        );
         assert!(notice.contains("2 background jobs have completed."));
         assert!(notice.contains("── Job one (Scout) ──\nfirst"));
         assert!(notice.contains("── Job two ──\nsecond"));

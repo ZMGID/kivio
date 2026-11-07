@@ -743,11 +743,9 @@ async fn run_external_agent_node(
     let mut conversation =
         load_or_create_external_conversation(app, automation_id, node_id, spec, agent_id).await?;
     let state = app.state::<AppState>();
-    let _reservation = crate::chat::commands::ChatSendReservation::try_acquire(
-        &state,
-        &conversation.id,
-    )
-    .ok_or_else(|| "该对话正在生成中，请稍后再试".to_string())?;
+    let _reservation =
+        crate::chat::commands::ChatSendReservation::try_acquire(&state, &conversation.id)
+            .ok_or_else(|| "该对话正在生成中，请稍后再试".to_string())?;
     let user_message = workflow_user_message(prompt.clone());
     conversation = crate::chat::repository::repository(app)
         .mutate(app, &conversation.id, {

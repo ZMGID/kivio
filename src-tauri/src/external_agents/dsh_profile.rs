@@ -540,8 +540,7 @@ pub async fn ensure_profile_ready(
     reasoning: Option<&str>,
     preset: Option<&str>,
 ) -> Result<(), String> {
-    let home =
-        dsh_home().ok_or_else(|| "无法定位 dsh 主目录（$DSH_HOME / ~/.dsh）".to_string())?;
+    let home = dsh_home().ok_or_else(|| "无法定位 dsh 主目录（$DSH_HOME / ~/.dsh）".to_string())?;
     let dir = home.join("profiles").join(KIVIO_PROFILE);
 
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建 dsh profile 目录失败：{e}"))?;
@@ -856,9 +855,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let mut command = tokio::process::Command::new("dsh");
         configure_profile_install(&mut command, &[relay_provider()], temp.path());
-        let value = command.as_std().get_envs().find_map(|(key, value)| {
-            (key == "DSH_HOME").then_some(value).flatten()
-        });
+        let value = command
+            .as_std()
+            .get_envs()
+            .find_map(|(key, value)| (key == "DSH_HOME").then_some(value).flatten());
         assert_eq!(value, Some(temp.path().as_os_str()));
     }
 

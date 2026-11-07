@@ -187,7 +187,10 @@ mod tests {
 
     #[test]
     fn delegation_guidance_requires_an_exposed_task_tool() {
-        let mut state = AgentPlanState { mode: AgentPlanMode::Plan, ..Default::default() };
+        let mut state = AgentPlanState {
+            mode: AgentPlanMode::Plan,
+            ..Default::default()
+        };
         assert!(format_prompt(&state, true).contains("read-only planning investigations"));
         assert!(!format_prompt(&state, false).contains("use task"));
         state.mode = AgentPlanMode::Orchestrate;
