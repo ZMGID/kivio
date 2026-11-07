@@ -2412,9 +2412,7 @@ fn decode_codex_frame(value: &Value) -> Result<CodexFrame<'_>, String> {
     Ok(CodexFrame::Response { id, outcome })
 }
 
-/// Read JSON-RPC lines until the response with `target_id` arrives, auto-answering any
-/// server→client approval requests and skipping notifications. Unknown requests are
-/// fail-closed so handshake cannot hang.
+/// Read until `target_id`, rejecting unattended requests and skipping notifications.
 async fn read_until_response(
     reader: &mut Lines<BufReader<AgentStdout>>,
     stdin: &mut AgentStdin,
@@ -2438,8 +2436,8 @@ async fn read_until_response(
         let value: Value = serde_json::from_str(line.trim())
             .map_err(|error| format!("invalid Codex JSON: {error}"))?;
         match decode_codex_frame(&value)? {
-            CodexFrame::Request { method, id, params } => {
-                answer_handshake_request(stdin, method, id, params).await?;
+            CodexFrame::Request { method, id, .. } => {
+                reject_unattended_request(stdin, method, id).await?;
             }
             CodexFrame::Response { id, outcome } if id == &json!(target_id) => {
                 return outcome.cloned().map_err(codex_error_message);
@@ -2449,13 +2447,12 @@ async fn read_until_response(
     }
 }
 
-async fn answer_handshake_request(
+async fn reject_unattended_request(
     stdin: &mut AgentStdin,
     method: &str,
     id: &Value,
-    params: &Value,
 ) -> Result<(), String> {
-    if let Some(result) = approval_response(method, params, true) {
+    if let Some(result) = approval_deny_response(method, false) {
         write_rpc_result(stdin, id, result).await
     } else {
         write_rpc_result(stdin, id, unknown_server_request_result()).await
@@ -2539,8 +2536,7 @@ async fn ensure_windows_sandbox_inner(
             value.get("method").and_then(|v| v.as_str()),
             value.get("id"),
         ) {
-            let params = value.get("params").cloned().unwrap_or(Value::Null);
-            let _ = answer_handshake_request(stdin, method, id, &params).await;
+            let _ = reject_unattended_request(stdin, method, id).await;
             continue;
         }
         if value.get("method").and_then(|v| v.as_str()) == Some("windowsSandbox/setupCompleted") {
