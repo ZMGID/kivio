@@ -73,7 +73,7 @@ pub(crate) async fn compact_send_view(
                 .checkpoint_runtime(
                     &env.config.conversation_id,
                     &env.config.run_id,
-                    state.history.context(),
+                    &state.history,
                     false,
                 )
                 .await

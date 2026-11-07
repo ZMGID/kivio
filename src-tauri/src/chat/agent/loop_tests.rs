@@ -175,7 +175,7 @@ impl AgentHost for TestHost {
         &'a self,
         _conversation: &'a str,
         _run: &'a str,
-        history: &'a [RuntimeMessage],
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> crate::chat::agent::host::AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -211,7 +211,7 @@ impl AgentHost for TestHost {
                 self.compaction_checkpoints
                     .lock()
                     .unwrap()
-                    .push(export_history(history));
+                    .push(export_history(history.context()));
                 if self.fail_compaction_checkpoint {
                     return Err("checkpoint persistence failed".into());
                 }
@@ -244,6 +244,7 @@ impl AgentHost for TestHost {
         tool_records: &'a [AgentToolCall],
         segments: &'a [ContentBlock],
         api_messages: &'a [RuntimeMessage],
+        _history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> super::super::host::AgentHostFuture<'a, ()> {
         let (tool_records, segments) =
             crate::chat::agent_presentation::project_snapshot(tool_records, segments, Some("run"));
@@ -4686,6 +4687,7 @@ impl AgentHost for HookedHost {
         tool_records: &'a [AgentToolCall],
         segments: &'a [ContentBlock],
         api_messages: &'a [RuntimeMessage],
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> super::super::host::AgentHostFuture<'a, ()> {
         self.inner.persist_partial_assistant(
             conversation_id,
@@ -4693,6 +4695,7 @@ impl AgentHost for HookedHost {
             tool_records,
             segments,
             api_messages,
+            history,
         )
     }
 

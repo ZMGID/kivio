@@ -262,7 +262,7 @@ impl AgentHost for Deliveries {
         &'a self,
         _: &'a str,
         _: &'a str,
-        _: &'a [RuntimeMessage],
+        _: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -507,7 +507,7 @@ impl AgentHost for CancelCheckpoint<'_> {
         &'a self,
         _: &'a str,
         _: &'a str,
-        _: &'a [RuntimeMessage],
+        _: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {

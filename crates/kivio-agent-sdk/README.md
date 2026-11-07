@@ -57,7 +57,7 @@ async fn chat(runtime: Arc<dyn ModelRuntime>) -> Result<(), Box<dyn std::error::
 }
 ```
 
-The [session example](examples/session.rs) constructs the provider and sends two prompts. Run it with the environment variables below using `cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example session`. No empty executor, host, or mailbox implementation is required. Set `config.tools` to a `ToolRegistry` to add tools. Set `config.host` only when the host needs checkpoints or a final `commit_run` operation.
+The [session example](examples/session.rs) constructs the provider, sends a prompt, round-trips a snapshot through JSON, and continues in a restored session. Run it with the environment variables below using `cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example session`. No empty executor, host, or mailbox implementation is required. Set `config.tools` to a `ToolRegistry` to add tools. Set `config.host` only when the host needs checkpoints or a final `commit_run` operation.
 
 `prompt` admits immediately and returns a waiter; concurrent sends return `Admission(Busy)`. `abort()` requests cancellation. `wait_inactive().await` waits for the current invocation's tool cleanup and commit. Dropping the waiter requests stop while the owned worker finishes cleanup. Keep the Tokio runtime alive until this wait completes. `continue_run()` continues an unanswered user message or completed tool round; it never executes saved tool results. See [session and hook contracts](docs/contracts.md#owned-agent-session) for queue, subscription, and failure semantics.
 
@@ -81,6 +81,14 @@ For automatic context management, use `context::BudgetContextPolicy` with a reso
 Use `active_leaf()` to remember a position and `leaves()` to list retained branch tips. `fork(entry_id)` selects an inclusive anchor, and the next prompt creates another path. `switch_branch(Some(leaf))` restores that path without executing old tools. `rewind(user_entry)` returns the original input and selects the position before it.
 
 `regenerate(entry_id, None).await` produces a new answer while retaining the old path. Supply a replacement user `RuntimeMessage` to edit a question on a new path. Navigation requires an idle session, including completion of tool cleanup and host commit. See [tree contracts](docs/contracts.md#session-trees-and-navigation) and the [consumer tests](../../tests/fixtures/agent-sdk-consumer/tests/tree.rs) for request-level examples.
+
+## Save and restore a session
+
+Call `session.snapshot()` after the run settles and serialize the returned `SessionSnapshot` with serde. The host owns saving these bytes atomically. Deserialization validates the version, complete entry tree and selected path before returning a usable snapshot. IDs are decimal strings to preserve the full `u64` range across JSON consumers.
+
+`AgentSessionConfig::from_snapshot(runtime, snapshot)` restores saved model identity, standard generation settings and history. Reinstall tools, authorization, hooks, host persistence, run limits and vendor options before starting another run. Provider clients and credentials are supplied through the new runtime; pending queues and active execution are not restored. Message bodies and source metadata remain intact, so hosts still control sensitive transcript storage.
+
+Advanced hosts can use `history.snapshot()` without session configuration, then `snapshot.into_history()` with their own settings. `graft_branch` merges a concurrent run's selected suffix, remaps its entry references and returns the ID mapping without changing the destination selection. See [snapshot contracts](docs/contracts.md#session-snapshots) and [consumer tests](../../tests/fixtures/agent-sdk-consumer/tests/snapshot.rs).
 
 ## Run against a real provider
 

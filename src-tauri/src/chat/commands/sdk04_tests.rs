@@ -84,6 +84,7 @@ impl AgentHost for DesktopHost {
         tools: &'a [AgentToolCall],
         blocks: &'a [ContentBlock],
         history: &'a [RuntimeMessage],
+        _history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> AgentHostFuture<'a, ()> {
         Box::pin(async move {
             let (tools, blocks) = agent_presentation::project_snapshot(tools, blocks, Some("run"));

@@ -1,11 +1,31 @@
 use super::{history::RuntimeMessage, session::CompactionPlan};
 use crate::model::{MessagePart, ModelRole};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EntryId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl Serialize for EntryId {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for EntryId {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(serde::de::Error::custom(
+                "EntryId must be a decimal u64 string",
+            ));
+        }
+        value.parse().map(Self).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EntryRange {
     /// First and last represented facts along a path, not a numeric ID interval.
     pub first: EntryId,
@@ -13,19 +33,27 @@ pub struct EntryRange {
 }
 
 /// A projected message points to its producing entry and the facts it represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ContextOrigin {
     pub entry_id: EntryId,
     pub index: usize,
     pub covered: EntryRange,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum SessionEntryKind {
     Message(RuntimeMessage),
     Compaction {
         covered: EntryRange,
         replaced: Vec<ContextOrigin>,
+        #[serde(deserialize_with = "Option::deserialize")]
         retained_after: Option<ContextOrigin>,
         replacement: Vec<RuntimeMessage>,
     },
@@ -34,11 +62,20 @@ pub enum SessionEntryKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionEntry {
     pub id: EntryId,
+    #[serde(deserialize_with = "Option::deserialize")]
     pub parent_id: Option<EntryId>,
     pub kind: SessionEntryKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraftedBranch {
+    pub leaf: Option<EntryId>,
+    /// Fresh IDs for the appended suffix. Shared ancestors keep their IDs.
+    pub ids: HashMap<EntryId, EntryId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,15 +112,21 @@ impl SessionHistory {
         active_leaf: Option<EntryId>,
     ) -> Result<Self, String> {
         let mut history = Self::default();
-        for entry in entries {
+        for (index, entry) in entries.into_iter().enumerate() {
             if history.entry_indices.contains_key(&entry.id) {
-                return Err("Duplicate session entry ID".into());
+                return Err(format!(
+                    "entries[{index}] ({}): Duplicate session entry ID",
+                    entry.id.0
+                ));
             }
             if entry
                 .parent_id
                 .is_some_and(|id| !history.entry_indices.contains_key(&id))
             {
-                return Err("Entry parent must precede its child".into());
+                return Err(format!(
+                    "entries[{index}] ({}): Entry parent must precede its child",
+                    entry.id.0
+                ));
             }
             history
                 .entry_indices
@@ -97,10 +140,73 @@ impl SessionHistory {
             .max()
             .map_or(0, |id| id.wrapping_add(1));
         for tip in history.leaves() {
-            history.project(Some(tip))?;
+            history
+                .project(Some(tip))
+                .map_err(|error| format!("path ending at {}: {error}", tip.0))?;
         }
-        history.switch_branch(active_leaf)?;
+        history
+            .switch_branch(active_leaf)
+            .map_err(|error| format!("active_leaf: {error}"))?;
         Ok(history)
+    }
+
+    /// Copies the source's selected suffix, retaining this history's selection.
+    pub fn graft_branch(
+        &mut self,
+        source: &Self,
+        source_anchor: Option<EntryId>,
+    ) -> Result<GraftedBranch, String> {
+        let source_path = source.path(source.active_leaf)?;
+        let prefix_len = match source_anchor {
+            Some(anchor) => {
+                source_path
+                    .iter()
+                    .position(|entry| entry.id == anchor)
+                    .ok_or("Graft anchor must be on the source selected path")?
+                    + 1
+            }
+            None => 0,
+        };
+        if self.path(source_anchor)? != source_path[..prefix_len] {
+            return Err("Graft shared ancestors must exactly match destination facts".into());
+        }
+        let mut candidate = self.clone();
+        let mut ids = HashMap::new();
+        candidate.active_leaf = source_anchor;
+        for entry in &source_path[prefix_len..] {
+            let remap = |id: EntryId| ids.get(&id).copied().unwrap_or(id);
+            let range = |value: EntryRange| EntryRange {
+                first: remap(value.first),
+                last: remap(value.last),
+            };
+            let origin = |value: ContextOrigin| ContextOrigin {
+                entry_id: remap(value.entry_id),
+                index: value.index,
+                covered: range(value.covered),
+            };
+            let mut kind = entry.kind.clone();
+            if let SessionEntryKind::Compaction {
+                covered,
+                replaced,
+                retained_after,
+                ..
+            } = &mut kind
+            {
+                *covered = range(*covered);
+                for item in replaced {
+                    *item = origin(*item);
+                }
+                *retained_after = retained_after.map(origin);
+            }
+            let id = candidate.record(kind);
+            ids.insert(entry.id, id);
+        }
+        let leaf = candidate.active_leaf;
+        let mut candidate = Self::from_entries(candidate.entries, self.active_leaf)?;
+        candidate.system_override.clone_from(&self.system_override);
+        candidate.apply_system_override();
+        *self = candidate;
+        Ok(GraftedBranch { leaf, ids })
     }
 
     pub fn active_leaf(&self) -> Option<EntryId> {
@@ -548,6 +654,81 @@ mod tests {
             json!({"role":"assistant", "content":"", "tool_calls":[{"id":"call", "type":"function", "function":{"name":"echo", "arguments":"{}"}}]}),
             json!({"role":"tool", "tool_call_id":"call", "content":"result"}),
         ])
+    }
+
+    #[test]
+    fn graft_remaps_colliding_suffix_and_compaction_origins_without_selecting_it() {
+        let mut destination = SessionHistory::from(vec![message("shared")]);
+        let anchor = destination.active_leaf();
+        let mut source = destination.clone();
+        destination.push(message("destination answer"));
+        source.push(message("source answer"));
+        source.push(message("retained"));
+        source
+            .compact(CompactionPlan {
+                covered: 0..2,
+                replacement: vec![RuntimeMessage::system("summary")],
+            })
+            .unwrap();
+        source
+            .compact(CompactionPlan {
+                covered: 0..2,
+                replacement: vec![RuntimeMessage::system("second summary")],
+            })
+            .unwrap();
+        let destination_context = destination.context().to_vec();
+        let destination_leaf = destination.active_leaf();
+        let result = destination.graft_branch(&source, anchor).unwrap();
+        assert_eq!(destination.active_leaf(), destination_leaf);
+        assert_eq!(destination.context(), destination_context);
+        assert_eq!(result.ids.len(), 4);
+        assert_ne!(result.ids[&EntryId(1)], EntryId(1));
+        assert_eq!(
+            result.leaf,
+            Some(result.ids[&source.active_leaf().unwrap()])
+        );
+        destination.switch_branch(result.leaf).unwrap();
+        assert_eq!(destination.context(), source.context());
+        let encoded = serde_json::to_string(&destination.snapshot().unwrap()).unwrap();
+        let restored: super::super::SessionSnapshot = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored.into_history().context(), source.context());
+    }
+
+    #[test]
+    fn graft_rejects_mismatched_ancestors_and_invalid_suffix_atomically() {
+        let mut destination = SessionHistory::from(vec![message("shared")]);
+        let before = destination.clone();
+        let mismatch = SessionHistory::from(vec![message("different")]);
+        assert!(destination
+            .graft_branch(&mismatch, Some(EntryId(0)))
+            .is_err());
+        assert_eq!(destination, before);
+        let mut invalid = destination.clone();
+        invalid.push(tool_round().remove(1));
+        assert!(destination
+            .graft_branch(&invalid, Some(EntryId(0)))
+            .is_err());
+        assert_eq!(destination, before);
+        assert!(destination
+            .graft_branch(&mismatch, Some(EntryId(99)))
+            .is_err());
+        assert_eq!(destination, before);
+        let appended = destination.graft_branch(&mismatch, None).unwrap();
+        assert_eq!(destination.active_leaf(), before.active_leaf());
+        destination.switch_branch(appended.leaf).unwrap();
+        assert_eq!(destination.context(), mismatch.context());
+    }
+
+    #[test]
+    fn snapshot_rejects_selected_pending_tools_but_preserves_inactive_pending_tips() {
+        let mut history = SessionHistory::from(vec![message("shared")]);
+        let selected = history.active_leaf();
+        history.push(tool_round().remove(0));
+        assert!(history.snapshot().is_err());
+        history.switch_branch(selected).unwrap();
+        let restored = history.snapshot().unwrap().into_history();
+        assert_eq!(restored.entries(), history.entries());
+        assert_eq!(restored.active_leaf(), selected);
     }
 
     #[test]

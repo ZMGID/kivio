@@ -994,12 +994,12 @@ impl AgentHost for Host {
         &'a self,
         _conversation: &'a str,
         _run: &'a str,
-        history: &'a [RuntimeMessage],
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
-            self.lock().history = history.to_vec();
-            self.save_history(history).await?;
+            self.lock().history = history.context().to_vec();
+            self.save_history(history.context()).await?;
             let state = self.app.state::<AppState>();
             let (mut claim, mut incoming) =
                 delivery::claim_inputs(&state.sub_agents.jobs, &self.record.root, &self.record.id);
@@ -1030,7 +1030,7 @@ impl AgentHost for Host {
             );
             let mut incoming = import_history(incoming);
             if !incoming.is_empty() {
-                let mut saved = history.to_vec();
+                let mut saved = history.context().to_vec();
                 saved.extend(incoming.iter().cloned());
                 self.save_history(&saved).await?;
                 self.lock().history = saved;
@@ -1043,7 +1043,7 @@ impl AgentHost for Host {
                     .jobs
                     .promote_inline(&self.record.root, &self.job_id);
             }
-            let mut current = history.to_vec();
+            let mut current = history.context().to_vec();
             current.extend(incoming.iter().cloned());
             incoming.extend(self.checkpoint_policies(&current, finishing).await?);
             if !incoming.is_empty() {
@@ -3259,7 +3259,9 @@ async fn execute(
                     .checkpoint_runtime(
                         &config.conversation_id,
                         &config.run_id,
-                        &import_history(history.clone()),
+                        &kivio_agent_sdk::agent::SessionHistory::from(import_history(
+                            history.clone(),
+                        )),
                         false,
                     )
                     .await?;
@@ -3354,7 +3356,7 @@ async fn execute(
                 .checkpoint_runtime(
                     &config.conversation_id,
                     &config.run_id,
-                    &import_history(history.clone()),
+                    &kivio_agent_sdk::agent::SessionHistory::from(import_history(history.clone())),
                     true,
                 )
                 .await?;

@@ -57,6 +57,7 @@ pub(crate) async fn run_tool_round(
             &records,
             state.segment_builder.segments(),
             &state.generated_api_messages[..state.generated_api_messages.len() - 1],
+            &state.history,
         )
         .await;
     }

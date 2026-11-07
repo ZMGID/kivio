@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use kivio_agent_sdk::{
-    agent::{AgentSession, AgentSessionConfig},
+    agent::{AgentRunError, AgentSession, AgentSessionConfig, SessionSnapshot},
     model::openai::{OpenAiChatConfig, OpenAiChatProvider},
 };
 
@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let runtime = Arc::new(OpenAiChatProvider::new(client, transport));
     let session = AgentSession::new(AgentSessionConfig::new(
-        runtime,
+        runtime.clone(),
         std::env::var("KIVIO_SDK_MODEL")?,
     ));
     println!(
@@ -24,6 +24,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await?
             .content
     );
-    println!("{}", session.prompt("Now give one example.").await?.content);
+    let bytes = serde_json::to_vec(&session.snapshot().map_err(AgentRunError::Admission)?)?;
+    let saved: SessionSnapshot = serde_json::from_slice(&bytes)?;
+    let restored = AgentSession::new(AgentSessionConfig::from_snapshot(runtime, saved)?);
+    println!(
+        "{}",
+        restored.prompt("Now give one example.").await?.content
+    );
     Ok(())
 }

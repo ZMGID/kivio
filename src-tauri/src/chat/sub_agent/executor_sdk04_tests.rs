@@ -48,7 +48,7 @@ impl AgentHost for JournalHost {
         &'a self,
         _: &'a str,
         _: &'a str,
-        history: &'a [RuntimeMessage],
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
         _: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -56,11 +56,11 @@ impl AgentHost for JournalHost {
             self.journal
                 .lock()
                 .await
-                .save_history(&self.path, history, &records)
+                .save_history(&self.path, history.context(), &records)
                 .await?;
             let incoming = std::mem::take(&mut *self.incoming.lock().unwrap());
             if !incoming.is_empty() {
-                let mut saved = history.to_vec();
+                let mut saved = history.context().to_vec();
                 saved.extend(incoming.iter().cloned());
                 self.journal
                     .lock()

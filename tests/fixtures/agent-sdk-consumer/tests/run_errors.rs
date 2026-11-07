@@ -7,7 +7,6 @@ use kivio_agent_sdk::{
         session::NoSessionPolicy,
         types::AgentRunStatus,
         AgentAdmissionError, AgentFailure, AgentHost, AgentHostFuture, AgentRunError,
-        RuntimeMessage,
     },
     model::{GenerateOutput, ModelError, ModelRole, ModelUsage, PendingToolCall},
 };
@@ -118,7 +117,7 @@ impl AgentHost for SaveFailure {
         &'a self,
         _: &'a str,
         _: &'a str,
-        _: &'a [RuntimeMessage],
+        _: &'a kivio_agent_sdk::agent::SessionHistory,
         _: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async { Err("disk full".into()) })
@@ -131,7 +130,7 @@ impl AgentHost for BoundaryFailure {
         &'a self,
         _: &'a str,
         _: &'a str,
-        _: &'a [RuntimeMessage],
+        _: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {

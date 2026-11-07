@@ -21,6 +21,7 @@ use super::{
     provider_runtime::ModelRuntime,
     session::{NoSessionPolicy, SessionPolicy},
     session_history::{complete_tool_rounds, EntryId, SessionEntry, SessionHistory},
+    session_snapshot::{SessionSnapshot, SessionSnapshotConfig},
     types::{AgentRunConfig, AgentRunResult, AgentRunStatus, RunLimits},
     SteeringMessage,
 };
@@ -67,6 +68,26 @@ impl AgentSessionConfig {
     pub fn with_policy(mut self, policy: impl SessionPolicy + 'static) -> Self {
         self.policy = tokio::sync::Mutex::new(Box::new(policy));
         self
+    }
+
+    /// Restores history and settings; the host must rebind tools, hooks and authority.
+    pub fn from_snapshot(
+        provider_runtime: Arc<dyn ModelRuntime>,
+        snapshot: SessionSnapshot,
+    ) -> Result<Self, String> {
+        let saved = snapshot
+            .config()
+            .ok_or("History-only snapshot requires host-provided session configuration")?
+            .clone();
+        let mut config = Self::new(provider_runtime, saved.model);
+        config.provider_id = saved.provider_id;
+        config.provider_label = saved.provider_label;
+        config.api_format = saved.api_format;
+        config.conversation_id = saved.conversation_id;
+        config.options = saved.options.into();
+        config.capabilities = saved.capabilities;
+        config.history = snapshot.into_history();
+        Ok(config)
     }
 }
 
@@ -286,6 +307,22 @@ impl AgentSession {
             .history
             .entries()
             .to_vec()
+    }
+
+    /// Exports settled history and standard settings without live runtime authority.
+    pub fn snapshot(&self) -> Result<SessionSnapshot, AgentAdmissionError> {
+        self.navigate(|history| {
+            let config = &self.inner.config;
+            Ok(history.snapshot()?.with_config(SessionSnapshotConfig {
+                provider_id: config.provider_id.clone(),
+                provider_label: config.provider_label.clone(),
+                api_format: config.api_format.clone(),
+                model: config.model.clone(),
+                conversation_id: config.conversation_id.clone(),
+                options: (&config.options).into(),
+                capabilities: config.capabilities.clone(),
+            }))
+        })
     }
 
     pub fn active_leaf(&self) -> Option<EntryId> {

@@ -472,7 +472,7 @@ async fn admit_step(
         .checkpoint_runtime(
             &env.config.conversation_id,
             &env.config.run_id,
-            state.history.context(),
+            &state.history,
             false,
         )
         .await
@@ -541,7 +541,7 @@ async fn answer_boundary(
         .checkpoint_runtime(
             &env.config.conversation_id,
             &env.config.run_id,
-            state.history.context(),
+            &state.history,
             true,
         )
         .await
@@ -797,13 +797,14 @@ async fn run_agent_loop_inner(
                     &state.tool_records,
                     state.segment_builder.segments(),
                     &state.generated_api_messages,
+                    &state.history,
                 )
                 .await;
                 let incoming = host
                     .checkpoint_runtime(
                         &config.conversation_id,
                         &config.run_id,
-                        state.history.context(),
+                        &state.history,
                         false,
                     )
                     .await
@@ -832,7 +833,7 @@ async fn run_agent_loop_inner(
             .checkpoint_runtime(
                 &config.conversation_id,
                 &config.run_id,
-                state.history.context(),
+                &state.history,
                 true,
             )
             .await

@@ -25,7 +25,7 @@ use kivio_agent_sdk::{
         },
         types::AgentRunStatus,
         AgentHost, AgentHostFuture, AgentRunError, AgentSession, AgentSessionConfig,
-        RuntimeMessage, SessionEntry, SessionEntryKind, SteeringMessage,
+        RuntimeMessage, SessionEntry, SessionEntryKind, SessionHistory, SteeringMessage,
     },
     context::{BudgetContextPolicy, SummaryOptions},
     model::{
@@ -748,7 +748,7 @@ struct CheckpointHost {
     seen: AtomicUsize,
     entered: Notify,
     release: Notify,
-    checkpoint: Mutex<Vec<RuntimeMessage>>,
+    checkpoint: Mutex<SessionHistory>,
 }
 
 impl AgentHost for CheckpointHost {
@@ -756,7 +756,7 @@ impl AgentHost for CheckpointHost {
         &'a self,
         _: &'a str,
         _: &'a str,
-        history: &'a [RuntimeMessage],
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
     ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -770,7 +770,7 @@ impl AgentHost for CheckpointHost {
             if finishing || !summary_started || self.seen.fetch_add(1, Ordering::SeqCst) != 0 {
                 return Ok(vec![]);
             }
-            *self.checkpoint.lock().unwrap() = history.to_vec();
+            *self.checkpoint.lock().unwrap() = history.clone();
             match self.action {
                 CheckpointAction::Fail => return Err("checkpoint failed".into()),
                 CheckpointAction::Wait => {
@@ -804,7 +804,7 @@ async fn oversized_checkpoint_input_is_preserved_without_sending_an_overflowing_
         seen: AtomicUsize::new(0),
         entered: Notify::new(),
         release: Notify::new(),
-        checkpoint: Mutex::new(vec![]),
+        checkpoint: Mutex::new(SessionHistory::default()),
     });
     let mut config =
         AgentSessionConfig::new(model.clone(), "test-model").with_policy(policy(model.clone()));
@@ -847,7 +847,7 @@ async fn checkpoints_preserve_original_facts_and_deliver_each_input_once() {
             seen: AtomicUsize::new(0),
             entered: Notify::new(),
             release: Notify::new(),
-            checkpoint: Mutex::new(vec![]),
+            checkpoint: Mutex::new(SessionHistory::default()),
         });
         let mut config =
             AgentSessionConfig::new(model.clone(), "test-model").with_policy(policy(model.clone()));
@@ -882,7 +882,12 @@ async fn checkpoints_preserve_original_facts_and_deliver_each_input_once() {
                 .iter()
                 .any(|text| text == "already persisted input"));
         }
-        assert!(texts(&host.checkpoint.lock().unwrap())
+        assert_original_entries(host.checkpoint.lock().unwrap().entries(), &original);
+        assert_eq!(
+            count_compactions(host.checkpoint.lock().unwrap().entries()),
+            0
+        );
+        assert!(texts(host.checkpoint.lock().unwrap().context())
             .join("\n")
             .contains("ARCHIVED_A"));
         assert_original_entries(&session.entries(), &original);

@@ -1,10 +1,17 @@
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::model::{
     GenerateOptions, GenerateRequest, ModelMessage, ModelRole, ModelTool, RequestMetadata,
 };
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RuntimeBody {
     System(String),
     Model(ModelMessage),
@@ -12,7 +19,8 @@ pub enum RuntimeBody {
 
 pub type RuntimeSource = Map<String, Value>;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RuntimeMessage {
     pub body: RuntimeBody,
     pub source: RuntimeSource,

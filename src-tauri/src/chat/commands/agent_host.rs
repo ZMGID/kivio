@@ -235,7 +235,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         &'b self,
         conversation_id: &'b str,
         run_id: &'b str,
-        history: &'b [RuntimeMessage],
+        history: &'b kivio_agent_sdk::agent::SessionHistory,
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -243,7 +243,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
                 &self.app,
                 conversation_id,
                 run_id,
-                history,
+                history.context(),
             )
             .await?
             .into_iter()
@@ -259,6 +259,7 @@ impl crate::chat::agent::AgentHost for ChatAgentHost<'_> {
         tool_records: &'a [crate::chat::agent::content::AgentToolCall],
         segments: &'a [crate::chat::agent::content::ContentBlock],
         api_messages: &'a [RuntimeMessage],
+        _history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
             if self.suppress_partial_persist {
@@ -435,7 +436,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         &'b self,
         conversation_id: &'b str,
         run_id: &'b str,
-        history: &'b [RuntimeMessage],
+        history: &'b kivio_agent_sdk::agent::SessionHistory,
         _finishing: bool,
     ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
@@ -443,7 +444,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
                 &self.app,
                 conversation_id,
                 run_id,
-                history,
+                history.context(),
             )
             .await?
             .into_iter()
@@ -461,6 +462,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost<'_> {
         tool_records: &'a [crate::chat::agent::content::AgentToolCall],
         segments: &'a [crate::chat::agent::content::ContentBlock],
         api_messages: &'a [RuntimeMessage],
+        _history: &'a kivio_agent_sdk::agent::SessionHistory,
     ) -> crate::chat::agent::AgentHostFuture<'a, ()> {
         Box::pin(async move {
             let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(

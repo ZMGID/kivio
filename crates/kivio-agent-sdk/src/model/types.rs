@@ -56,7 +56,7 @@ impl ModelRole {
 
 /// Opaque tool-call replay data with its origin. Old string-only history remains readable.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum ProviderSignature {
     Scoped {
         value: String,
@@ -107,7 +107,7 @@ impl From<&str> for ProviderSignature {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MessagePart {
     /// Runtime video bytes with an optional host-owned persistence reference.
     Video {
@@ -202,6 +202,7 @@ pub enum MessagePart {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelArtifact {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -217,6 +218,7 @@ pub struct ModelArtifact {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelMessage {
     pub role: ModelRole,
     pub content: Vec<MessagePart>,

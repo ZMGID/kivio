@@ -514,6 +514,7 @@ pub(crate) async fn run_session(
                         &partial.tool_records,
                         &partial.segments,
                         &partial.generated_history,
+                        &partial.history,
                     )
                     .await;
                 }
