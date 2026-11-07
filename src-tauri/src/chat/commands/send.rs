@@ -36,7 +36,10 @@ pub(crate) async fn chat_continue_goal(
     if !crate::chat::goal::is_running(goal.status) {
         return Err("Goal is not active".into());
     }
-    if !state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch) {
+    if !state
+        .sub_agents
+        .resume_user_turn(&conversation_id, interruption_epoch)
+    {
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
     }
@@ -214,30 +217,51 @@ fn main_recovery(conversation: &Conversation) -> Option<MainRecovery<'_>> {
     if conversation.agent_runtime.kind != crate::chat::types::AgentRuntimeKind::Builtin {
         return None;
     }
-    let user_index = conversation.messages.iter().rposition(|message| message.role == "user")?;
+    let user_index = conversation
+        .messages
+        .iter()
+        .rposition(|message| message.role == "user")?;
     let user = &conversation.messages[user_index];
-    if user.group_id.is_some() || user_index < super::context::context_replay_start_index(conversation) {
+    if user.group_id.is_some()
+        || user_index < super::context::context_replay_start_index(conversation)
+    {
         return None;
     }
-    let main_answers = || conversation.messages[user_index + 1..].iter().filter(|message| {
-        message.role == "assistant"
-            && !message.id.starts_with("subagent-result-")
-            && message.irc_message.is_none()
-    });
+    let main_answers = || {
+        conversation.messages[user_index + 1..]
+            .iter()
+            .filter(|message| {
+                message.role == "assistant"
+                    && !message.id.starts_with("subagent-result-")
+                    && message.irc_message.is_none()
+            })
+    };
     let checkpoint = main_answers().last()?;
     if checkpoint.group_id.is_some()
-        || !matches!(checkpoint.stream_outcome.as_deref(), Some("interrupted" | "completed"))
+        || !matches!(
+            checkpoint.stream_outcome.as_deref(),
+            Some("interrupted" | "completed")
+        )
     {
         return None;
     }
     let child_calls = main_answers()
-        .filter(|message| message.group_id.is_none()
-            && matches!(message.stream_outcome.as_deref(), Some("interrupted" | "completed")))
+        .filter(|message| {
+            message.group_id.is_none()
+                && matches!(
+                    message.stream_outcome.as_deref(),
+                    Some("interrupted" | "completed")
+                )
+        })
         .flat_map(|message| &message.tool_calls)
         .filter(|call| is_accepted_task_record(call))
         .filter_map(|call| Some((call.trace_id.as_ref()?.clone(), call.id.clone())))
         .collect();
-    Some(MainRecovery { user, checkpoint, child_calls })
+    Some(MainRecovery {
+        user,
+        checkpoint,
+        child_calls,
+    })
 }
 
 fn is_accepted_task_record(call: &ToolCallRecord) -> bool {
@@ -252,9 +276,9 @@ fn is_accepted_task_record(call: &ToolCallRecord) -> bool {
         ToolCallStatus::Error => call.structured_content.as_ref().is_some_and(|receipt| {
             receipt["async"]["state"] == "running"
                 && receipt["agents"].as_array().is_some_and(|agents| {
-                    agents.iter().any(|agent| {
-                        agent["jobId"].as_str().is_some_and(|id| !id.is_empty())
-                    })
+                    agents
+                        .iter()
+                        .any(|agent| agent["jobId"].as_str().is_some_and(|id| !id.is_empty()))
                 })
         }),
         _ => false,
@@ -263,24 +287,39 @@ fn is_accepted_task_record(call: &ToolCallRecord) -> bool {
 
 fn resumable_checkpoint(draft: &ChatMessage) -> bool {
     if draft.stream_outcome.as_deref() != Some("interrupted")
-        || draft.tool_calls.iter().any(|call| matches!(call.status, ToolCallStatus::Pending | ToolCallStatus::Running))
+        || draft.tool_calls.iter().any(|call| {
+            matches!(
+                call.status,
+                ToolCallStatus::Pending | ToolCallStatus::Running
+            )
+        })
     {
         return false;
     }
     let fallback;
     let messages = if draft.model_messages.is_empty() {
-        fallback = crate::chat::model::model_messages_from_openai_messages(draft.api_messages.clone());
+        fallback =
+            crate::chat::model::model_messages_from_openai_messages(draft.api_messages.clone());
         &fallback
     } else {
         &draft.model_messages
     };
-    !messages.is_empty() && matches!(crate::chat::model::paired_model_messages(messages), std::borrow::Cow::Borrowed(_))
+    !messages.is_empty()
+        && matches!(
+            crate::chat::model::paired_model_messages(messages),
+            std::borrow::Cow::Borrowed(_)
+        )
 }
 
 async fn register_recovered_children(
-    app: &AppHandle, conversation_id: &str, calls: &[(String, String)], epoch: u64,
+    app: &AppHandle,
+    conversation_id: &str,
+    calls: &[(String, String)],
+    epoch: u64,
 ) -> Vec<String> {
-    match crate::chat::sub_agent::lifecycle::restore_interrupted(app, conversation_id, calls, epoch).await {
+    match crate::chat::sub_agent::lifecycle::restore_interrupted(app, conversation_id, calls, epoch)
+        .await
+    {
         Ok(jobs) => jobs,
         Err(error) => {
             eprintln!("Cannot restore subagent jobs for {conversation_id}: {error}");
@@ -310,7 +349,8 @@ mod recovery_tests {
         serde_json::from_value(json!({
             "id": "conv", "title": "Title", "provider_id": "provider", "model": "model",
             "created_at": 1, "updated_at": 2, "messages": messages,
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     fn user(id: &str) -> Value {
@@ -320,17 +360,24 @@ mod recovery_tests {
     #[test]
     fn latest_parent_checkpoint_survives_background_reports_but_not_a_newer_turn() {
         let mut conversation = conversation(vec![
-            user("old-user"), checkpoint("old-answer", "old-run", "completed"),
-            user("current-user"), checkpoint("draft", "current-run", "interrupted"),
+            user("old-user"),
+            checkpoint("old-answer", "old-run", "completed"),
+            user("current-user"),
+            checkpoint("draft", "current-run", "interrupted"),
             json!({"id": "subagent-result-job", "role": "assistant", "content": "Result", "timestamp": 3}),
         ]);
         let recovery = main_recovery(&conversation).unwrap();
         assert_eq!(recovery.user.id, "current-user");
         assert_eq!(recovery.checkpoint.id, "draft");
-        assert_eq!(recovery.child_calls, vec![("current-run".to_string(), "dispatch".to_string())]);
+        assert_eq!(
+            recovery.child_calls,
+            vec![("current-run".to_string(), "dispatch".to_string())]
+        );
         assert!(resumable_checkpoint(recovery.checkpoint));
 
-        conversation.messages.push(serde_json::from_value(user("new-user")).unwrap());
+        conversation
+            .messages
+            .push(serde_json::from_value(user("new-user")).unwrap());
         assert!(main_recovery(&conversation).is_none());
     }
 
@@ -355,12 +402,16 @@ mod recovery_tests {
         ]);
         let conversation = conversation(vec![user("current-user"), draft]);
         let recovery = main_recovery(&conversation).unwrap();
-        assert_eq!(recovery.child_calls, vec![("current-run".into(), "mixed".into())]);
+        assert_eq!(
+            recovery.child_calls,
+            vec![("current-run".into(), "mixed".into())]
+        );
     }
 
     #[test]
     fn only_paired_checkpoint_without_pending_tool_effects_can_continue() {
-        let mut draft: ChatMessage = serde_json::from_value(checkpoint("draft", "run", "interrupted")).unwrap();
+        let mut draft: ChatMessage =
+            serde_json::from_value(checkpoint("draft", "run", "interrupted")).unwrap();
         assert!(resumable_checkpoint(&draft));
         draft.tool_calls[0].status = ToolCallStatus::Running;
         assert!(!resumable_checkpoint(&draft));
@@ -368,7 +419,10 @@ mod recovery_tests {
         draft.api_messages.pop();
         assert!(!resumable_checkpoint(&draft));
 
-        let stopped = conversation(vec![user("user"), checkpoint("stopped", "run", "cancelled")]);
+        let stopped = conversation(vec![
+            user("user"),
+            checkpoint("stopped", "run", "cancelled"),
+        ]);
         assert!(main_recovery(&stopped).is_none());
     }
 }
@@ -411,48 +465,82 @@ async fn send_reserved(
         return Err("User message already exists".into());
     }
 
-    let recovery = (on_user_message_saved.is_none() && !state.sub_agents.user_interrupted(&conversation_id))
-        .then(|| main_recovery(&conversation)).flatten()
-        .filter(|scope| {
-            // A Stop accepted just before process exit still fences this saved user turn.
-            crate::chat::draft_journal::stop_fences_user_turn(&app, &conversation_id, &scope.user.id)
-                .is_ok_and(|stopped| !stopped)
-        })
-        .filter(|_| {
-            let settings = state.settings_read();
-            !conversation.model.trim().is_empty()
-                && settings.get_provider(&conversation.provider_id).is_some_and(|provider| {
+    let recovery = (on_user_message_saved.is_none()
+        && !state.sub_agents.user_interrupted(&conversation_id))
+    .then(|| main_recovery(&conversation))
+    .flatten()
+    .filter(|scope| {
+        // A Stop accepted just before process exit still fences this saved user turn.
+        crate::chat::draft_journal::stop_fences_user_turn(&app, &conversation_id, &scope.user.id)
+            .is_ok_and(|stopped| !stopped)
+    })
+    .filter(|_| {
+        let settings = state.settings_read();
+        !conversation.model.trim().is_empty()
+            && settings
+                .get_provider(&conversation.provider_id)
+                .is_some_and(|provider| {
                     provider.authentication_ready()
-                        && !crate::chat::model_metadata::model_can_generate_images_directly(provider, &conversation.model)
+                        && !crate::chat::model_metadata::model_can_generate_images_directly(
+                            provider,
+                            &conversation.model,
+                        )
                 })
-        });
-    let continue_requested = (content.trim() == "继续" || content.trim().eq_ignore_ascii_case("continue"))
-        && attachments.is_empty() && text_attachments.is_empty()
-        && active_skill_id.is_none() && plan_message_id.is_none();
+    });
+    let continue_requested = (content.trim() == "继续"
+        || content.trim().eq_ignore_ascii_case("continue"))
+        && attachments.is_empty()
+        && text_attachments.is_empty()
+        && active_skill_id.is_none()
+        && plan_message_id.is_none();
     if let Some(scope) = recovery.as_ref().filter(|scope| {
-        continue_requested && scope.user.attachments.is_empty() && resumable_checkpoint(scope.checkpoint)
+        continue_requested
+            && scope.user.attachments.is_empty()
+            && resumable_checkpoint(scope.checkpoint)
     }) {
-        let outcome = if state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch) {
-            let restored = register_recovered_children(&app, &conversation_id, &scope.child_calls, interruption_epoch).await;
+        let outcome = if state
+            .sub_agents
+            .resume_user_turn(&conversation_id, interruption_epoch)
+        {
+            let restored = register_recovered_children(
+                &app,
+                &conversation_id,
+                &scope.child_calls,
+                interruption_epoch,
+            )
+            .await;
             complete_assistant_reply(
-                &app, &state, &mut conversation, None, None, &[], None,
-                crate::chat::agent::AgentRunEntry::Send, Some(&restored),
-            ).await
+                &app,
+                &state,
+                &mut conversation,
+                None,
+                None,
+                &[],
+                None,
+                crate::chat::agent::AgentRunEntry::Send,
+                Some(&restored),
+            )
+            .await
         } else {
             Ok(())
         };
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(match outcome {
             Ok(()) => serde_json::json!({ "success": true, "conversation": conversation }),
-            Err(error) if error == "cancelled" => serde_json::json!({ "success": true, "conversation": conversation }),
-            Err(error) => serde_json::json!({ "success": false, "conversation": conversation, "error": error }),
+            Err(error) if error == "cancelled" => {
+                serde_json::json!({ "success": true, "conversation": conversation })
+            }
+            Err(error) => {
+                serde_json::json!({ "success": false, "conversation": conversation, "error": error })
+            }
         });
     }
     let idle_parent_calls = recovery
         .filter(|scope| scope.checkpoint.stream_outcome.as_deref() == Some("completed"))
         .map(|scope| scope.child_calls);
     if let Some(calls) = idle_parent_calls.as_ref().filter(|_| continue_requested) {
-        let restored = register_recovered_children(&app, &conversation_id, calls, interruption_epoch).await;
+        let restored =
+            register_recovered_children(&app, &conversation_id, calls, interruption_epoch).await;
         if !restored.is_empty() {
             strip_transcripts_for_frontend(&mut conversation);
             return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
@@ -563,7 +651,7 @@ async fn send_reserved(
 
     // 创建用户消息
     let user_message = ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: user_message_id,
         role: "user".to_string(),
         content: content.clone(),
@@ -655,7 +743,9 @@ async fn send_reserved(
         })
         .await
         .map_err(crate::chat::repository::repository_error)?;
-    let resumed = state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch);
+    let resumed = state
+        .sub_agents
+        .resume_user_turn(&conversation_id, interruption_epoch);
     if goal_started.is_some() || resumed_waiting_goal {
         crate::chat::goal::emit_goal_state(&app, &conversation);
     }

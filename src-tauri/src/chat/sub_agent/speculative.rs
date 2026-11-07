@@ -1,14 +1,84 @@
 //! Stream-owned speculative task launches. Unadopted runs are cancelled on drop.
 
-use std::{collections::HashMap, future::Future, sync::{Arc, Mutex}};
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::{Arc, Mutex},
+};
 
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tokio::{sync::mpsc, task::JoinHandle};
 
-use crate::{chat::agent::ToolExecutionContext, mcp::registry::NativeToolContext};
 use super::task::{self, SpeculativeRun};
+use crate::{
+    chat::{
+        agent::host::SpeculativeTaskScope,
+        tool_runtime::{ApplicationHost, ToolExecutionContext},
+    },
+    mcp::{registry::NativeToolContext, ChatToolDefinition},
+};
+
+pub(crate) fn start(
+    app: &AppHandle,
+    host: &dyn ApplicationHost,
+    settings: &crate::settings::Settings,
+    tools: &[ChatToolDefinition],
+    context: &ToolExecutionContext<'_>,
+) -> Option<Box<dyn SpeculativeTaskScope>> {
+    let root_consent = context.approval_policy == "auto"
+        || (context.approval_policy != "always_confirm"
+            && app
+                .state::<crate::state::AppState>()
+                .chat_interactions()
+                .has_session_consent(context.tool_conversation_id));
+    if !speculative_task_allowed(
+        settings,
+        tools,
+        host.workflow_hooks(),
+        context.approval_policy,
+        root_consent,
+        host.supports_interactive_approval(),
+    ) || host.tool_execution_hooks_active()
+        || !app
+            .state::<crate::state::AppState>()
+            .chat_runtime()
+            .is_generation_active(context.conversation_id, context.generation)
+    {
+        return None;
+    }
+    Some(Box::new(Scope::new(app.clone(), context)))
+}
+
+fn speculative_task_allowed(
+    settings: &crate::settings::Settings,
+    tools: &[ChatToolDefinition],
+    workflow: Option<&crate::chat::workflow_hooks::Runtime>,
+    approval_policy: &str,
+    root_consent: bool,
+    interactive: bool,
+) -> bool {
+    let Some(task) = tools.iter().find(|tool| {
+        tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
+    }) else {
+        return false;
+    };
+    let requires_approval =
+        crate::chat::tool_runtime::tool_requires_approval_for_policy(approval_policy, task);
+    settings.chat_tools.task_speculative_launch
+        && approval_policy != "always_confirm"
+        && (approval_policy == "auto" || root_consent)
+        && (interactive || !requires_approval)
+        && (crate::chat::agent_preparation::tool_requires_session_consent(task)
+            || !requires_approval)
+        && !workflow.is_some_and(|runtime| {
+            runtime
+                .hooks
+                .iter()
+                .any(|hook| matches!(hook.event.as_str(), "PreToolUse" | "PostToolUse"))
+        })
+}
 
 #[derive(Clone)]
 struct OwnedContext {
@@ -93,22 +163,36 @@ pub(crate) struct Sessions {
 }
 
 /// Owns all sessions made by one streamed attempt through its final tool round.
-pub(crate) struct Scope {
+struct Scope {
     app: AppHandle,
     sessions: Sessions,
     context: OwnedContext,
 }
 
 impl Scope {
-    pub(crate) fn new(app: AppHandle, ctx: &ToolExecutionContext<'_>) -> Self {
-        let sessions = app.state::<crate::state::AppState>().sub_agents.speculative.clone();
-        Self { app, sessions, context: OwnedContext::new(ctx) }
+    fn new(app: AppHandle, ctx: &ToolExecutionContext<'_>) -> Self {
+        let sessions = app
+            .state::<crate::state::AppState>()
+            .sub_agents
+            .speculative
+            .clone();
+        Self {
+            app,
+            sessions,
+            context: OwnedContext::new(ctx),
+        }
     }
+}
 
-    pub(crate) fn update(&self, call: &str, raw: &str) {
+impl SpeculativeTaskScope for Scope {
+    fn update(&self, call: &str, raw: &str) {
         let ctx = self.context.native(call);
         let key = Key::new(&ctx);
-        let mut calls = self.sessions.calls.lock().unwrap_or_else(|e| e.into_inner());
+        let mut calls = self
+            .sessions
+            .calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let session = calls.entry(key).or_insert_with(|| {
             let app = self.app.clone();
             let context = self.context.clone();
@@ -118,7 +202,9 @@ impl Scope {
                 let context = context.clone();
                 let call = call.clone();
                 async move {
-                    if !app.state::<crate::state::AppState>().chat_runtime()
+                    if !app
+                        .state::<crate::state::AppState>()
+                        .chat_runtime()
                         .is_generation_active(&context.issuer_conversation_id, context.generation)
                     {
                         return None;
@@ -130,24 +216,39 @@ impl Scope {
         session.update(raw);
     }
 
-    pub(crate) fn reconcile_call(&self, call: &str, args: Option<&Value>) {
+    fn reconcile_call(&self, call: &str, args: Option<&Value>) {
         let key = Key::new(&self.context.native(call));
-        let mut calls = self.sessions.calls.lock().unwrap_or_else(|e| e.into_inner());
-        let discard = calls.get(&key).is_some_and(|session| args.is_none_or(|args| !session.matches(args)));
+        let mut calls = self
+            .sessions
+            .calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let discard = calls
+            .get(&key)
+            .is_some_and(|session| args.is_none_or(|args| !session.matches(args)));
         let session = if discard { calls.remove(&key) } else { None };
         drop(calls);
-        if let Some(session) = session { session.discard(); }
+        if let Some(session) = session {
+            session.discard();
+        }
     }
 
-    pub(crate) fn reconcile(&self, final_calls: &[(&str, &Value)]) {
-        let mut calls = self.sessions.calls.lock().unwrap_or_else(|e| e.into_inner());
+    fn reconcile(&self, final_calls: &[(&str, &Value)]) {
+        let mut calls = self
+            .sessions
+            .calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let mut removed = Vec::new();
         calls.retain(|key, session| {
             let owned = key.root == self.context.conversation_id
-                && key.run == self.context.run_id && key.round == self.context.round;
-            if owned && !final_calls.iter().any(|(id, args)| {
-                *id == key.call && session.matches(args)
-            }) {
+                && key.run == self.context.run_id
+                && key.round == self.context.round;
+            if owned
+                && !final_calls
+                    .iter()
+                    .any(|(id, args)| *id == key.call && session.matches(args))
+            {
                 removed.push(session.clone());
                 false
             } else {
@@ -155,20 +256,34 @@ impl Scope {
             }
         });
         drop(calls);
-        for session in removed { session.discard(); }
+        for session in removed {
+            session.discard();
+        }
     }
 
-    pub(crate) fn discard(&self) { self.reconcile(&[]); }
+    fn discard(&self) {
+        self.reconcile(&[]);
+    }
 }
 
 impl Drop for Scope {
-    fn drop(&mut self) { self.discard(); }
+    fn drop(&mut self) {
+        self.discard();
+    }
 }
 
 impl Sessions {
     /// Called only after the final batch passes dispatch preflight and authorization.
-    pub(crate) async fn adopt(&self, ctx: &NativeToolContext<'_>, args: &Value) -> Vec<Option<SpeculativeRun>> {
-        let call = self.calls.lock().unwrap_or_else(|e| e.into_inner()).remove(&Key::new(ctx));
+    pub(crate) async fn adopt(
+        &self,
+        ctx: &NativeToolContext<'_>,
+        args: &Value,
+    ) -> Vec<Option<SpeculativeRun>> {
+        let call = self
+            .calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&Key::new(ctx));
         match call {
             Some(call) => call.adopt(args).await,
             None => Vec::new(),
@@ -176,8 +291,14 @@ impl Sessions {
     }
 
     pub(crate) fn discard(&self, ctx: &NativeToolContext<'_>) {
-        let call = self.calls.lock().unwrap_or_else(|e| e.into_inner()).remove(&Key::new(ctx));
-        if let Some(call) = call { call.discard(); }
+        let call = self
+            .calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&Key::new(ctx));
+        if let Some(call) = call {
+            call.discard();
+        }
     }
 }
 
@@ -199,13 +320,19 @@ impl<R> Drop for Call<R> {
         if let Some(worker) = self.worker.lock().unwrap_or_else(|e| e.into_inner()).take() {
             worker.abort();
         }
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).runs.clear();
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .runs
+            .clear();
     }
 }
 
 struct AbortWorker(JoinHandle<()>);
 impl Drop for AbortWorker {
-    fn drop(&mut self) { self.0.abort(); }
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl<R: Send + 'static> Call<R> {
@@ -216,8 +343,11 @@ impl<R: Send + 'static> Call<R> {
     {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let state = Arc::new(Mutex::new(CallState {
-            scanner: BatchScanner::default(), planned: Vec::new(), runs: Vec::new(),
-            sender: Some(sender), closed: false,
+            scanner: BatchScanner::default(),
+            planned: Vec::new(),
+            runs: Vec::new(),
+            sender: Some(sender),
+            closed: false,
         }));
         let worker_state = state.clone();
         let worker = tokio::spawn(async move {
@@ -225,10 +355,14 @@ impl<R: Send + 'static> Call<R> {
                 if {
                     let state = worker_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.closed
-                } { break; }
+                } {
+                    break;
+                }
                 let run = start(index, args).await;
                 let mut state = worker_state.lock().unwrap_or_else(|e| e.into_inner());
-                if state.closed { break; }
+                if state.closed {
+                    break;
+                }
                 match run {
                     Some(run) => state.runs[index] = Some(run),
                     None => {
@@ -240,12 +374,17 @@ impl<R: Send + 'static> Call<R> {
                 }
             }
         });
-        Arc::new(Self { state, worker: Mutex::new(Some(worker)) })
+        Arc::new(Self {
+            state,
+            worker: Mutex::new(Some(worker)),
+        })
     }
 
     fn update(&self, raw: &str) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.closed || !state.scanner.changed(raw) { return; }
+        if state.closed || !state.scanner.changed(raw) {
+            return;
+        }
         if state.scanner.invalid {
             drop(state);
             self.discard();
@@ -256,10 +395,21 @@ impl<R: Send + 'static> Call<R> {
             self.discard();
             return;
         };
-        let Some(context) = prefix.context else { return; };
-        if state.planned.iter().enumerate().any(|(index, (old_context, old_item))| {
-            old_context != &context || prefix.items.get(index).is_none_or(|item| !items_match(old_item, item))
-        }) {
+        let Some(context) = prefix.context else {
+            return;
+        };
+        if state
+            .planned
+            .iter()
+            .enumerate()
+            .any(|(index, (old_context, old_item))| {
+                old_context != &context
+                    || prefix
+                        .items
+                        .get(index)
+                        .is_none_or(|item| !items_match(old_item, item))
+            })
+        {
             drop(state);
             self.discard();
             return;
@@ -274,7 +424,11 @@ impl<R: Send + 'static> Call<R> {
             let args = json!({"context": context, "tasks": &prefix.items[..=index]});
             state.planned.push((context.clone(), item.clone()));
             state.runs.push(None);
-            if state.sender.as_ref().is_none_or(|sender| sender.send((index, args)).is_err()) {
+            if state
+                .sender
+                .as_ref()
+                .is_none_or(|sender| sender.send((index, args)).is_err())
+            {
                 drop(state);
                 self.discard();
                 return;
@@ -320,23 +474,41 @@ impl<R: Send + 'static> Call<R> {
 }
 
 fn matches_plan(planned: &[(String, Value)], args: &Value) -> bool {
-    let Some(context) = args.get("context").and_then(Value::as_str) else { return false; };
-    let Some(items) = args.get("tasks").and_then(Value::as_array) else { return false; };
-    planned.iter().enumerate().all(|(index, (old_context, old_item))| {
-        old_context == context && items.get(index).is_some_and(|item| items_match(old_item, item))
-    })
+    let Some(context) = args.get("context").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(items) = args.get("tasks").and_then(Value::as_array) else {
+        return false;
+    };
+    planned
+        .iter()
+        .enumerate()
+        .all(|(index, (old_context, old_item))| {
+            old_context == context
+                && items
+                    .get(index)
+                    .is_some_and(|item| items_match(old_item, item))
+        })
 }
 
 fn items_match(old: &Value, new: &Value) -> bool {
-    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else { return false; };
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        return false;
+    };
     let agents_match = match (old.get("agent"), new.get("agent")) {
         (None, None) | (Some(Value::String(_)), None) | (None, Some(Value::String(_))) => true,
         (Some(Value::String(a)), Some(Value::String(b))) => a.trim() == b.trim(),
         _ => false,
     };
     agents_match
-        && old.iter().filter(|(key, _)| *key != "agent").all(|(key, value)| new.get(key) == Some(value))
-        && new.iter().filter(|(key, _)| *key != "agent").all(|(key, value)| old.get(key) == Some(value))
+        && old
+            .iter()
+            .filter(|(key, _)| *key != "agent")
+            .all(|(key, value)| new.get(key) == Some(value))
+        && new
+            .iter()
+            .filter(|(key, _)| *key != "agent")
+            .all(|(key, value)| old.get(key) == Some(value))
 }
 
 /// Incrementally finds JSON boundaries; serde validates and decodes every prefix.
@@ -352,32 +524,47 @@ struct BatchScanner {
 
 impl BatchScanner {
     fn changed(&mut self, raw: &str) -> bool {
-        if raw.len() < self.offset { return false; }
+        if raw.len() < self.offset {
+            return false;
+        }
         let mut boundary = false;
         for &byte in &raw.as_bytes()[self.offset..] {
             if self.string {
                 if self.unicode_digits > 0 {
-                    if byte.is_ascii_hexdigit() { self.unicode_digits -= 1; }
-                    else { self.unicode_digits = 0; self.invalid = true; boundary = true; }
-                } else if self.escaped {
-                    self.escaped = false;
-                    if byte == b'u' { self.unicode_digits = 4; }
-                    else if !matches!(byte, b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') {
+                    if byte.is_ascii_hexdigit() {
+                        self.unicode_digits -= 1;
+                    } else {
+                        self.unicode_digits = 0;
                         self.invalid = true;
                         boundary = true;
                     }
-                } else if byte == b'\\' { self.escaped = true; }
-                else if byte == b'"' {
+                } else if self.escaped {
+                    self.escaped = false;
+                    if byte == b'u' {
+                        self.unicode_digits = 4;
+                    } else if !matches!(
+                        byte,
+                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't'
+                    ) {
+                        self.invalid = true;
+                        boundary = true;
+                    }
+                } else if byte == b'\\' {
+                    self.escaped = true;
+                } else if byte == b'"' {
                     self.string = false;
                     boundary |= self.depth == 1 || self.depth == 2;
-                } else if byte < 0x20 { self.invalid = true; boundary = true; }
+                } else if byte < 0x20 {
+                    self.invalid = true;
+                    boundary = true;
+                }
             } else {
                 match byte {
                     b'"' => self.string = true,
                     b'{' | b'[' => self.depth += 1,
                     b'}' | b']' => {
-                        boundary |= (byte == b'}' && self.depth == 3)
-                            || (byte == b']' && self.depth == 2);
+                        boundary |=
+                            (byte == b'}' && self.depth == 3) || (byte == b']' && self.depth == 2);
                         self.depth = self.depth.saturating_sub(1);
                     }
                     b',' if self.depth == 2 => boundary = true,
@@ -400,7 +587,9 @@ struct Prefix {
 fn parse_prefix(raw: &str) -> Option<Prefix> {
     let mut prefix = Prefix::default();
     let mut de = serde_json::Deserializer::from_str(raw);
-    let result = Root(&mut prefix).deserialize(&mut de).and_then(|()| de.end());
+    let result = Root(&mut prefix)
+        .deserialize(&mut de)
+        .and_then(|()| de.end());
     match result {
         Ok(()) => Some(prefix),
         Err(error) if error.is_eof() => Some(prefix),
@@ -415,13 +604,20 @@ impl<'de> DeserializeSeed<'de> for Root<'_> {
         struct RootVisitor<'a>(&'a mut Prefix);
         impl<'de> Visitor<'de> for RootVisitor<'_> {
             type Value = ();
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("a task batch") }
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a task batch")
+            }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<(), M::Error> {
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "context" => self.0.context = Some(map.next_value()?),
-                        "tasks" => { self.0.items.clear(); map.next_value_seed(Tasks(&mut self.0.items))?; }
-                        _ => { map.next_value::<IgnoredAny>()?; }
+                        "tasks" => {
+                            self.0.items.clear();
+                            map.next_value_seed(Tasks(&mut self.0.items))?;
+                        }
+                        _ => {
+                            map.next_value::<IgnoredAny>()?;
+                        }
                     }
                 }
                 Ok(())
@@ -438,9 +634,13 @@ impl<'de> DeserializeSeed<'de> for Tasks<'_> {
         struct TasksVisitor<'a>(&'a mut Vec<Value>);
         impl<'de> Visitor<'de> for TasksVisitor<'_> {
             type Value = ();
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("a task array") }
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a task array")
+            }
             fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<(), S::Error> {
-                while let Some(item) = seq.next_element()? { self.0.push(item); }
+                while let Some(item) = seq.next_element()? {
+                    self.0.push(item);
+                }
                 Ok(())
             }
         }
@@ -454,13 +654,112 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::oneshot;
 
+    #[test]
+    fn speculative_launch_obeys_visibility_approval_and_workflow_hooks() {
+        let mut settings = crate::settings::Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        assert!(settings.chat_tools.task_speculative_launch);
+        let task = crate::chat::sub_agent::task::tool_definition(&[], &settings);
+        assert!(speculative_task_allowed(
+            &settings,
+            &[task.clone()],
+            None,
+            "auto",
+            false,
+            true
+        ));
+        assert!(!speculative_task_allowed(
+            &settings,
+            &[],
+            None,
+            "auto",
+            false,
+            true
+        ));
+        settings.chat_tools.task_speculative_launch = false;
+        assert!(!speculative_task_allowed(
+            &settings,
+            &[task.clone()],
+            None,
+            "auto",
+            true,
+            true
+        ));
+        settings.chat_tools.task_speculative_launch = true;
+        assert!(!speculative_task_allowed(
+            &settings,
+            &[task.clone()],
+            None,
+            "always_confirm",
+            true,
+            true
+        ));
+        assert!(!speculative_task_allowed(
+            &settings,
+            &[task.clone()],
+            None,
+            "readonly_auto_sensitive_confirm",
+            false,
+            true
+        ));
+        assert!(speculative_task_allowed(
+            &settings,
+            &[task.clone()],
+            None,
+            "readonly_auto_sensitive_confirm",
+            true,
+            true
+        ));
+        let mut sensitive_task = task.clone();
+        sensitive_task.sensitive = true;
+        assert!(speculative_task_allowed(
+            &settings,
+            &[sensitive_task.clone()],
+            None,
+            "readonly_auto_sensitive_confirm",
+            true,
+            true
+        ));
+        assert!(!speculative_task_allowed(
+            &settings,
+            &[sensitive_task],
+            None,
+            "readonly_auto_sensitive_confirm",
+            true,
+            false
+        ));
+        for event in ["PreToolUse", "PostToolUse", "SessionStart"] {
+            let hooks = crate::chat::workflow_hooks::parse(
+                &serde_json::json!({(event): [{"hooks": [{"type": "command", "command": "true"}]}]}),
+                "test", std::path::Path::new("."), std::path::Path::new("."),
+            ).unwrap();
+            let runtime = crate::chat::workflow_hooks::Runtime {
+                hooks,
+                ..Default::default()
+            };
+            assert_eq!(
+                speculative_task_allowed(
+                    &settings,
+                    &[task.clone()],
+                    Some(&runtime),
+                    "auto",
+                    false,
+                    true
+                ),
+                event == "SessionStart"
+            );
+        }
+    }
+
     struct Run {
         index: usize,
         dropped: Arc<AtomicUsize>,
     }
 
     impl Drop for Run {
-        fn drop(&mut self) { self.dropped.fetch_add(1, Ordering::SeqCst); }
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
     }
 
     fn input() -> (Value, String, usize) {
@@ -470,10 +769,16 @@ mod tests {
         let first_raw = first.to_string();
         let raw = format!(
             "{{\"context\":{},\"tasks\":[{},{}]}}",
-            serde_json::to_string(context).unwrap(), first_raw, second
+            serde_json::to_string(context).unwrap(),
+            first_raw,
+            second
         );
         let end = raw.find(&first_raw).unwrap() + first_raw.len();
-        (json!({"context": context, "tasks": [first, second]}), raw, end)
+        (
+            json!({"context": context, "tasks": [first, second]}),
+            raw,
+            end,
+        )
     }
 
     #[tokio::test]
@@ -509,7 +814,12 @@ mod tests {
         assert_eq!(index, 1);
         assert_eq!(prefix, args);
         let runs = call.adopt(&args).await;
-        assert_eq!(runs.iter().map(|run| run.as_ref().unwrap().index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.as_ref().unwrap().index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
         assert_eq!(dropped.load(Ordering::SeqCst), 0);
         drop(runs);
         assert_eq!(dropped.load(Ordering::SeqCst), 2);
@@ -532,8 +842,11 @@ mod tests {
             });
             call.update(&raw[..first_end]);
             rx.recv().await.unwrap();
-            if change_context { args["context"] = json!("changed"); }
-            else { args["tasks"][0]["task"] = json!("changed"); }
+            if change_context {
+                args["context"] = json!("changed");
+            } else {
+                args["tasks"][0]["task"] = json!("changed");
+            }
             assert!(call.adopt(&args).await.is_empty());
             assert_eq!(dropped.load(Ordering::SeqCst), 1);
         }
@@ -580,7 +893,11 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_tail_cancels_launched_runs_immediately() {
-        for suffix in [r#",{"task":"bad\q"#, r#",{"task":"bad\u0g"#, r#","not an object""#] {
+        for suffix in [
+            r#",{"task":"bad\q"#,
+            r#",{"task":"bad\u0g"#,
+            r#","not an object""#,
+        ] {
             let (_, raw, first_end) = input();
             let (tx, mut rx) = mpsc::unbounded_channel();
             let dropped = Arc::new(AtomicUsize::new(0));
@@ -624,7 +941,11 @@ mod tests {
     async fn discard_cancels_inflight_start_and_completed_runs() {
         struct Started(Option<oneshot::Sender<()>>);
         impl Drop for Started {
-            fn drop(&mut self) { if let Some(tx) = self.0.take() { let _ = tx.send(()); } }
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
         }
         let (_, raw, _) = input();
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
@@ -657,7 +978,11 @@ mod tests {
     async fn cancelling_adoption_aborts_a_pending_launch() {
         struct NotifyOnDrop(Option<oneshot::Sender<()>>);
         impl Drop for NotifyOnDrop {
-            fn drop(&mut self) { if let Some(tx) = self.0.take() { let _ = tx.send(()); } }
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
         }
         let (args, raw, first_end) = input();
         let (started_tx, started_rx) = oneshot::channel();

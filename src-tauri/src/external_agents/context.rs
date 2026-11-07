@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::model::ModelUsage;
 use crate::chat::model_metadata::context_window_for_model;
 use crate::chat::types::{ContextUsageSegment, Conversation, ConversationContextState};

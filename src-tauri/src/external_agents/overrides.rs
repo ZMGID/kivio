@@ -202,7 +202,7 @@ impl LaunchIdentity {
         Self::from_environment(def, bin, revision, config.as_ref(), &env)
     }
 
-    fn from_environment(
+    pub(super) fn from_environment(
         def: &RuntimeAgentDef,
         bin: &Path,
         revision: Option<u64>,

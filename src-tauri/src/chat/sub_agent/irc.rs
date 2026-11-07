@@ -1,3 +1,4 @@
+use crate::chat::agent::history::RuntimeMessage;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
@@ -51,8 +52,14 @@ impl Message {
     }
 
     pub(crate) fn worker_input(&self, parent: &str) -> Value {
-        if self.broadcast || (self.from != parent && self.from != "@user") { return self.model_input(); }
-        let source = if self.from == "@user" { "the user".to_string() } else { format!("your parent agent `{}`", self.from) };
+        if self.broadcast || (self.from != parent && self.from != "@user") {
+            return self.model_input();
+        }
+        let source = if self.from == "@user" {
+            "the user".to_string()
+        } else {
+            format!("your parent agent `{}`", self.from)
+        };
         json!({"role":"user", "content":format!("Message from {source}:\n{}", self.body),
             "_subagent_irc_id":self.id, super::delivery::REPORT_MESSAGE_ID_KEY:format!("subagent-irc-{}", self.id)})
     }
@@ -133,9 +140,6 @@ pub(crate) struct IncomingClaim<'a> {
 impl IncomingClaim<'_> {
     pub fn messages(&self) -> &[Message] {
         &self.messages
-    }
-    pub fn inputs(&self) -> Vec<Value> {
-        self.messages.iter().map(Message::model_input).collect()
     }
     pub fn commit(&mut self) {
         self.committed = true;
@@ -233,9 +237,16 @@ impl Bus {
             let mut inner = self.inner.lock().unwrap();
             inner.sequence = inner.sequence.max(message.sequence);
             if message.asks_reply() {
-                let debts = inner.debts.entry((message.root.clone(), message.from.clone())).or_default();
+                let debts = inner
+                    .debts
+                    .entry((message.root.clone(), message.from.clone()))
+                    .or_default();
                 debts.retain(|debt| debt.target != message.to);
-                debts.push(Debt { target: message.to.clone(), sequence: message.sequence, promised: false });
+                debts.push(Debt {
+                    target: message.to.clone(),
+                    sequence: message.sequence,
+                    promised: false,
+                });
             }
         }
         self.enqueue(message);
@@ -412,20 +423,25 @@ async fn send_message(
         vec![target.into()]
     };
     deliver_targets(target, targets, |recipient| {
-        send_to_recipient(app, Message {
-            id: uuid::Uuid::new_v4().to_string(),
-            root: root.into(),
-            from: sender.into(),
-            to: recipient,
-            body: body.into(),
-            sequence,
-            reply_to: reply_to.clone(),
-            progress,
-            broadcast,
-            wake_relay,
-            timestamp: super::registry::now_ms(),
-        }, sender_run.as_ref())
-    }).await
+        send_to_recipient(
+            app,
+            Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                root: root.into(),
+                from: sender.into(),
+                to: recipient,
+                body: body.into(),
+                sequence,
+                reply_to: reply_to.clone(),
+                progress,
+                broadcast,
+                wake_relay,
+                timestamp: super::registry::now_ms(),
+            },
+            sender_run.as_ref(),
+        )
+    })
+    .await
 }
 
 fn accepts_irc(record: &AgentRecord) -> bool {
@@ -433,7 +449,9 @@ fn accepts_irc(record: &AgentRecord) -> bool {
 }
 
 async fn deliver_targets<F, Fut>(
-    target: &str, targets: Vec<String>, mut deliver: F,
+    target: &str,
+    targets: Vec<String>,
+    mut deliver: F,
 ) -> Result<SendReceipt, String>
 where
     F: FnMut(String) -> Fut,
@@ -445,12 +463,18 @@ where
         receipts.push(match result {
             Ok(receipt) => receipt,
             Err(error) if target == "all" => Receipt {
-                id: String::new(), recipient, status: "failed".into(), error: Some(error),
+                id: String::new(),
+                recipient,
+                status: "failed".into(),
+                error: Some(error),
             },
             Err(error) => return Err(error),
         });
     }
-    let delivered = receipts.iter().filter(|receipt| receipt.error.is_none()).count();
+    let delivered = receipts
+        .iter()
+        .filter(|receipt| receipt.error.is_none())
+        .count();
     let status = if delivered == receipts.len() {
         "queued"
     } else if delivered == 0 {
@@ -459,8 +483,11 @@ where
         "partial"
     };
     Ok(SendReceipt {
-        id: receipts.iter().find(|receipt| receipt.error.is_none())
-            .map(|receipt| receipt.id.clone()).unwrap_or_default(),
+        id: receipts
+            .iter()
+            .find(|receipt| receipt.error.is_none())
+            .map(|receipt| receipt.id.clone())
+            .unwrap_or_default(),
         recipient: target.into(),
         status: status.into(),
         receipts,
@@ -477,7 +504,9 @@ async fn send_to_recipient(
     let mut recipient = if message.to == MAIN_AGENT_ID {
         None
     } else {
-        let record = manager.registry.resolve(&message.root, &message.to)
+        let record = manager
+            .registry
+            .resolve(&message.root, &message.to)
             .ok_or_else(|| format!("Unknown agent '{}'", message.to))?;
         if !accepts_irc(&record) {
             return Err("Advisor sessions do not accept IRC messages".into());
@@ -486,13 +515,22 @@ async fn send_to_recipient(
     };
     loop {
         if let Some(record) = &recipient {
-            recipient = Some(lifecycle::ensure_live(app, &message.root, &record.id, record.generation).await?);
+            recipient = Some(
+                lifecycle::ensure_live(app, &message.root, &record.id, record.generation).await?,
+            );
         }
-        if !message.wake_relay && sender_run.is_some_and(|(generation, run)| {
-            manager.registry.get(&message.root, &message.from).is_none_or(|record| {
-                record.generation != *generation || record.run_id != *run || record.status != AgentStatus::Running
+        if !message.wake_relay
+            && sender_run.is_some_and(|(generation, run)| {
+                manager
+                    .registry
+                    .get(&message.root, &message.from)
+                    .is_none_or(|record| {
+                        record.generation != *generation
+                            || record.run_id != *run
+                            || record.status != AgentStatus::Running
+                    })
             })
-        }) {
+        {
             return Err("Sender run ended before delivery".into());
         }
         let delivery_slot = recipient
@@ -505,10 +543,14 @@ async fn send_to_recipient(
                 .unwrap_or_else(|error| error.into_inner())
         });
         if let (Some(record), Some(control)) = (&recipient, &recipient_control) {
-            let current = manager.registry.get(&message.root, &record.id)
+            let current = manager
+                .registry
+                .get(&message.root, &record.id)
                 .ok_or("Recipient disappeared before delivery")?;
-            if control.killed || current.generation != record.generation
-                || control.generation != record.generation || current.status == AgentStatus::Aborted
+            if control.killed
+                || current.generation != record.generation
+                || control.generation != record.generation
+                || current.status == AgentStatus::Aborted
             {
                 return Err("Recipient changed before delivery".into());
             }
@@ -524,7 +566,10 @@ async fn send_to_recipient(
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             if message.asks_reply() {
-                let debts = inner.debts.entry((message.root.clone(), message.from.clone())).or_default();
+                let debts = inner
+                    .debts
+                    .entry((message.root.clone(), message.from.clone()))
+                    .or_default();
                 debts.retain(|debt| debt.target != message.to);
                 debts.push(Debt {
                     target: message.to.clone(),
@@ -533,11 +578,19 @@ async fn send_to_recipient(
                 });
             }
             inner.sent.insert(
-                (message.root.clone(), message.from.clone(), message.to.clone()), message.sequence,
+                (
+                    message.root.clone(),
+                    message.from.clone(),
+                    message.to.clone(),
+                ),
+                message.sequence,
             );
         }
         let receipt = Receipt {
-            id: message.id.clone(), recipient: message.to.clone(), status: "queued".into(), error: None,
+            id: message.id.clone(),
+            recipient: message.to.clone(),
+            status: "queued".into(),
+            error: None,
         };
         let observation = message.view(true);
         let _ = app.emit("subagent-irc", &observation);
@@ -556,8 +609,8 @@ pub async fn collect_for_main(
     app: &AppHandle,
     root: &str,
     _run: &str,
-    history: &[Value],
-) -> Result<Vec<Value>, String> {
+    history: &[RuntimeMessage],
+) -> Result<Vec<RuntimeMessage>, String> {
     let state = app.state::<AppState>();
     let mut claim = state.sub_agents.irc.claim(root, MAIN_AGENT_ID, |_| true);
     for message in claim.messages() {
@@ -568,13 +621,23 @@ pub async fn collect_for_main(
         .iter()
         .filter(|message| {
             !history.iter().any(|item| {
-                item["_subagent_irc_id"] == message.id
-                    || item[super::delivery::REPORT_MESSAGE_ID_KEY]
-                        == format!("subagent-irc-{}", message.id)
-                    || item["_ui_message_id"] == format!("subagent-irc-{}", message.id)
+                item.source
+                    .get("_subagent_irc_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(message.id.as_str())
+                    || item
+                        .source
+                        .get("_subagent_result_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(format!("subagent-irc-{}", message.id).as_str())
+                    || item
+                        .source
+                        .get("_ui_message_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(format!("subagent-irc-{}", message.id).as_str())
             })
         })
-        .map(Message::model_input)
+        .filter_map(|message| RuntimeMessage::from_legacy(message.model_input()))
         .collect();
     claim.commit();
     Ok(inputs)
@@ -604,7 +667,8 @@ pub(crate) fn has_interrupting(manager: &super::SubAgentManager, root: &str, own
         .flatten()
         .any(|message| {
             !message.broadcast
-                && (message.from == "@user" || parent.as_ref() == Some(&message.from)
+                && (message.from == "@user"
+                    || parent.as_ref() == Some(&message.from)
                     || (!message.progress
                         && manager.registry.is_ancestor(root, owner, &message.from)))
         })
@@ -642,8 +706,10 @@ pub(crate) fn schedule_wake(app: &AppHandle, record: &AgentRecord) {
             .control
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if control.generation != current.generation || control.killed
-            || control.wake_reserved || control.active_run.is_some()
+        if control.generation != current.generation
+            || control.killed
+            || control.wake_reserved
+            || control.active_run.is_some()
         {
             return;
         }
@@ -656,12 +722,21 @@ pub(crate) fn schedule_wake(app: &AppHandle, record: &AgentRecord) {
         let Some(result) = with_current_wake(&slot, current.generation, |control| {
             control.wake_reserved = false;
             result.map_err(|error| {
-                let messages = state.sub_agents.irc.failed_handoff(&current.root, &current.id);
+                let messages = state
+                    .sub_agents
+                    .irc
+                    .failed_handoff(&current.root, &current.id);
                 (error, messages)
             })
         }) else {
-            state.sub_agents.irc.inner.lock().unwrap_or_else(|error| error.into_inner())
-                .waking.remove(&(current.root.clone(), current.id.clone(), current.generation));
+            state
+                .sub_agents
+                .irc
+                .inner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .waking
+                .remove(&(current.root.clone(), current.id.clone(), current.generation));
             return;
         };
         match result {
@@ -689,8 +764,15 @@ pub(crate) fn schedule_wake(app: &AppHandle, record: &AgentRecord) {
     });
 }
 
-fn with_current_wake<T>(slot: &Slot, generation: u64, apply: impl FnOnce(&mut Control) -> T) -> Option<T> {
-    let mut control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+fn with_current_wake<T>(
+    slot: &Slot,
+    generation: u64,
+    apply: impl FnOnce(&mut Control) -> T,
+) -> Option<T> {
+    let mut control = slot
+        .control
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     (control.generation == generation && !control.killed && control.wake_reserved)
         .then(|| apply(&mut control))
 }
@@ -700,7 +782,10 @@ async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
     let slot = state.sub_agents.sessions.slot(&record)?;
     let mut guard = slot.worker.lock().await;
     let Some(mut claim) = with_current_wake(&slot, record.generation, |_| {
-        state.sub_agents.irc.claim(&record.root, &record.id, |_| true)
+        state
+            .sub_agents
+            .irc
+            .claim(&record.root, &record.id, |_| true)
     }) else {
         return Ok(());
     };
@@ -716,7 +801,10 @@ async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
         saved.options.workpool_items.clear();
         saved.options.completion = super::spawn::CompletionPolicy::Text;
     }
-    let inputs = claim.messages().iter().map(|message| message.worker_input(&record.parent_id));
+    let inputs = claim
+        .messages()
+        .iter()
+        .map(|message| message.worker_input(&record.parent_id));
     worker.history.extend(inputs);
     super::session::append_context(&record.session_file, &worker.history).await?;
     if saved.plan_state.mode == crate::chat::types::AgentPlanMode::Plan {
@@ -735,8 +823,17 @@ async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
         } else {
             jobs.register_inline(&record.root, &record.parent_id, &record.id, "IRC follow-up")
         };
-        state.sub_agents.irc.inner.lock().unwrap_or_else(|error| error.into_inner())
-            .waking.insert((record.root.clone(), record.id.clone(), record.generation), waking);
+        state
+            .sub_agents
+            .irc
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .waking
+            .insert(
+                (record.root.clone(), record.id.clone(), record.generation),
+                waking,
+            );
         job
     }) else {
         return Ok(());
@@ -854,7 +951,9 @@ pub(crate) fn schedule_restored(
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
         let result = async {
-            if *cancel.borrow() { return Err("Interrupted restore cancelled".into()); }
+            if *cancel.borrow() {
+                return Err("Interrupted restore cancelled".into());
+            }
             let live =
                 lifecycle::ensure_live(&app, &record.root, &record.id, record.generation).await?;
             let slot = state.sub_agents.sessions.slot(&live)?;
@@ -937,23 +1036,45 @@ mod tests {
                 Err("Recipient changed before delivery".into())
             } else {
                 Ok(Receipt {
-                    id: format!("message-{recipient}"), recipient,
-                    status: "queued".into(), error: None,
+                    id: format!("message-{recipient}"),
+                    recipient,
+                    status: "queued".into(),
+                    error: None,
                 })
             }
         };
-        let result = deliver_targets("all", ["First", "Stopped", "Last"].map(String::from).into(), deliver)
-            .await.unwrap();
+        let result = deliver_targets(
+            "all",
+            ["First", "Stopped", "Last"].map(String::from).into(),
+            deliver,
+        )
+        .await
+        .unwrap();
         assert_eq!(result.status, "partial");
         assert_eq!(result.id, "message-First");
         assert_eq!(
-            result.receipts.iter().map(|receipt| (receipt.recipient.as_str(), receipt.status.as_str())).collect::<Vec<_>>(),
-            [("First", "queued"), ("Stopped", "failed"), ("Last", "queued")],
+            result
+                .receipts
+                .iter()
+                .map(|receipt| (receipt.recipient.as_str(), receipt.status.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("First", "queued"),
+                ("Stopped", "failed"),
+                ("Last", "queued")
+            ],
         );
-        assert_eq!(result.receipts[1].error.as_deref(), Some("Recipient changed before delivery"));
-        let failed = deliver_targets("all", vec!["Stopped".into()], deliver).await.unwrap();
+        assert_eq!(
+            result.receipts[1].error.as_deref(),
+            Some("Recipient changed before delivery")
+        );
+        let failed = deliver_targets("all", vec!["Stopped".into()], deliver)
+            .await
+            .unwrap();
         assert_eq!(failed.status, "failed");
-        assert!(deliver_targets("Stopped", vec!["Stopped".into()], deliver).await.is_err());
+        assert!(deliver_targets("Stopped", vec!["Stopped".into()], deliver)
+            .await
+            .is_err());
     }
     #[test]
     fn failed_persistence_rolls_back_and_claims_consume_once() {
@@ -986,7 +1107,11 @@ mod tests {
     #[test]
     fn stale_wake_cannot_claim_move_or_clear_a_reopened_workers_mail() {
         let slot = Slot {
-            control: Mutex::new(Control { generation: 2, wake_reserved: true, ..Control::default() }),
+            control: Mutex::new(Control {
+                generation: 2,
+                wake_reserved: true,
+                ..Control::default()
+            }),
             worker: tokio::sync::Mutex::new(None),
         };
         let bus = Bus::default();
@@ -995,7 +1120,8 @@ mod tests {
         assert!(with_current_wake(&slot, 1, |control| {
             control.wake_reserved = false;
             bus.failed_handoff("r", "B")
-        }).is_none());
+        })
+        .is_none());
         assert!(bus.inner.lock().unwrap().failed.is_empty());
         let mut claim = with_current_wake(&slot, 2, |_| bus.claim("r", "B", |_| true)).unwrap();
         assert_eq!(claim.messages().len(), 1);
@@ -1007,12 +1133,21 @@ mod tests {
         for from in ["@user", "Parent"] {
             let input = message(1, from, "Child", false).worker_input("Parent");
             assert_eq!(input["role"], "user");
-            assert!(!input["content"].as_str().unwrap().contains("external evidence"));
-            assert!(input["content"].as_str().unwrap().starts_with("Message from"));
+            assert!(!input["content"]
+                .as_str()
+                .unwrap()
+                .contains("external evidence"));
+            assert!(input["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("Message from"));
         }
         let peer = message(1, "Peer", "Child", false).worker_input("Parent");
         assert_eq!(peer["role"], "developer");
-        assert!(peer["content"].as_str().unwrap().contains("external evidence"));
+        assert!(peer["content"]
+            .as_str()
+            .unwrap()
+            .contains("external evidence"));
         let mut broadcast = message(1, "Parent", "Child", false);
         broadcast.broadcast = true;
         assert_eq!(broadcast.worker_input("Parent")["role"], "developer");

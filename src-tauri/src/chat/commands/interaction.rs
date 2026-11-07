@@ -139,29 +139,46 @@ pub(crate) async fn chat_cancel_stream(
     conversation_id: String,
     scope: Option<UserStopScope>,
 ) -> Result<(), String> {
-    let persisted = cancel_user_generation(state.inner(), &conversation_id, scope.unwrap_or_default(), || {
-        let last_user_id = crate::chat::storage::load_conversation(&app, &conversation_id)
-            .ok()
-            .filter(|conversation| conversation.agent_runtime.kind == crate::chat::types::AgentRuntimeKind::Builtin)
-            .and_then(|conversation| conversation.messages.into_iter().rev()
-                .find(|message| message.role == "user")
-                .map(|message| message.id));
-        last_user_id.map_or(Ok(()), |id| {
-            let path = crate::chat::draft_journal::stop_fence_path(&app, &conversation_id)?;
-            crate::chat::storage::atomic_write(&path, &id, "conversation stop marker")
-        })
-    });
+    let persisted = cancel_user_generation(
+        state.inner(),
+        &conversation_id,
+        scope.unwrap_or_default(),
+        || {
+            let last_user_id = crate::chat::storage::load_conversation(&app, &conversation_id)
+                .ok()
+                .filter(|conversation| {
+                    conversation.agent_runtime.kind == crate::chat::types::AgentRuntimeKind::Builtin
+                })
+                .and_then(|conversation| {
+                    conversation
+                        .messages
+                        .into_iter()
+                        .rev()
+                        .find(|message| message.role == "user")
+                        .map(|message| message.id)
+                });
+            last_user_id.map_or(Ok(()), |id| {
+                let path = crate::chat::draft_journal::stop_fence_path(&app, &conversation_id)?;
+                crate::chat::storage::atomic_write(&path, &id, "conversation stop marker")
+            })
+        },
+    );
     pause_goal_after_cancel(&app, &conversation_id).await?;
     persisted
 }
 
 pub(super) fn cancel_user_generation<R>(
-    state: &AppState, conversation_id: &str, scope: UserStopScope, persist_stop: impl FnOnce() -> R,
+    state: &AppState,
+    conversation_id: &str,
+    scope: UserStopScope,
+    persist_stop: impl FnOnce() -> R,
 ) -> R {
     state.sub_agents.interrupt_user_turn(conversation_id, || {
         match scope {
             UserStopScope::Generation => state.cancel_chat_generation(conversation_id),
-            UserStopScope::BackgroundWait => state.chat_runtime().cancel_conversation(conversation_id),
+            UserStopScope::BackgroundWait => {
+                state.chat_runtime().cancel_conversation(conversation_id)
+            }
         }
         persist_stop()
     })
@@ -293,7 +310,9 @@ pub(crate) fn chat_list_background_tasks(
         for t in state
             .external_background_tasks()
             .snapshot_reconciled(wanted, |id, owner| {
-                state.external_live_sessions().is_identity_current(id, owner)
+                state
+                    .external_live_sessions()
+                    .is_identity_current(id, owner)
             })
         {
             let value = serde_json::json!({
@@ -350,13 +369,18 @@ pub(crate) async fn chat_stop_external_background_task(
     if target.status != "running" {
         return Ok(());
     }
-    if state.external_live_sessions().is_identity_current(&conversation_id, &target.owner) {
+    if state
+        .external_live_sessions()
+        .is_identity_current(&conversation_id, &target.owner)
+    {
         if let Some(control) = target.owner.sender() {
-            let _ = control.send(
-                crate::external_agents::session::live::SessionCommand::StopTask {
-                    task_id: target.native_task_id,
-                },
-            ).await;
+            let _ = control
+                .send(
+                    crate::external_agents::session::live::SessionCommand::StopTask {
+                        task_id: target.native_task_id,
+                    },
+                )
+                .await;
         }
     }
     tasks.mark_stopped(&conversation_id, &task_id);
@@ -689,9 +713,17 @@ pub(crate) async fn request_tool_approval(
     record: &ToolCallRecord,
     interaction_id: &str,
 ) -> bool {
-    request_tool_approval_outcome(app, state, conversation_id, run_id, generation, record, interaction_id)
-        .await
-        .approved
+    request_tool_approval_outcome(
+        app,
+        state,
+        conversation_id,
+        run_id,
+        generation,
+        record,
+        interaction_id,
+    )
+    .await
+    .approved
 }
 
 /// 同 `request_tool_approval`，但把用户选的那一档也带回来（计划批准的三选一）。
@@ -716,10 +748,11 @@ pub(crate) async fn request_tool_approval_outcome(
             always: true,
         };
     }
-    let rx =
-        state
-            .chat_interactions()
-            .begin_tool_approval(interaction_id, conversation_id, &record.name);
+    let rx = state.chat_interactions().begin_tool_approval(
+        interaction_id,
+        conversation_id,
+        &record.name,
+    );
     let summary = format_tool_approval_summary(record);
     crate::chat::protocol::emit_run_event(
         app,
@@ -748,7 +781,9 @@ pub(crate) async fn request_tool_approval_outcome(
     match result {
         Ok(value) => value,
         Err(_) => {
-            state.chat_interactions().cancel_tool_approval(interaction_id);
+            state
+                .chat_interactions()
+                .cancel_tool_approval(interaction_id);
             withdraw_tool_confirm(app, interaction_id);
             crate::chat::interaction_state::ToolApprovalOutcome::default()
         }
@@ -827,12 +862,7 @@ pub(crate) fn emit_chat_tool_record(app: &AppHandle, run_id: &str, record: &Tool
     crate::chat::protocol::emit_run_event(
         app,
         run_id,
-        crate::chat::protocol::ChatRunEvent::ToolUpdated {
-            tool: crate::chat::protocol::ChatToolPayload::from_record(
-                record,
-                truncate_chars(&record.arguments, 800),
-            ),
-        },
+        crate::chat::agent_presentation::project_tool_event(record),
     );
 }
 
@@ -859,28 +889,10 @@ pub(crate) fn emit_chat_stream_delta(
     reasoning_delta: Option<&str>,
     segment: Option<&ChatMessageSegment>,
 ) {
-    let segment = segment.map(crate::chat::protocol::ChatSegmentPayload::from);
-    let (emit_reasoning, emit_text) =
-        stream_delta_event_kinds(delta, reasoning_delta, segment.is_some());
-    if emit_reasoning {
-        crate::chat::protocol::emit_run_event(
-            app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::ReasoningDelta {
-                delta: reasoning_delta.unwrap_or_default().to_string(),
-                segment: segment.clone(),
-            },
-        );
-    }
-    if emit_text {
-        crate::chat::protocol::emit_run_event(
-            app,
-            run_id,
-            crate::chat::protocol::ChatRunEvent::TextDelta {
-                delta: delta.to_string(),
-                segment,
-            },
-        );
+    for event in
+        crate::chat::agent_presentation::project_stream_delta(delta, reasoning_delta, segment)
+    {
+        crate::chat::protocol::emit_run_event(app, run_id, event);
     }
 }
 

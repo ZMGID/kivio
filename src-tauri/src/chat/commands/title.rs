@@ -3,7 +3,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Manager, State};
 use tokio::time::timeout;
 
-use crate::chat::agent::{execute::truncate_chars, stop as agent_stop};
+use crate::chat::agent::execute::truncate_chars;
 use crate::chat::attachments::title_source_for_user_message;
 use crate::chat::model::{
     generate_request_from_openai_messages, GenerateOptions, GenerateRequestContext,
@@ -217,17 +217,12 @@ async fn generate_title_with_model(
         "Chat title summary",
         GenerateRequestContext::new(Some(conversation_id), Some("")),
     );
-    let output = crate::chat::agent::planning::generate_via_stream_collect(
-        state,
-        &provider,
-        retry_attempts,
-        request,
-    )
-    .await
-    .map_err(|err| eprintln!("[title] 模型请求失败: {err}"))
-    .ok()?;
-    let raw =
-        agent_stop::assistant_content_from_api_message(&output.to_openai_compatible_message());
+    let output =
+        crate::chat::model::generate_via_stream_collect(state, &provider, retry_attempts, request)
+            .await
+            .map_err(|err| eprintln!("[title] 模型请求失败: {err}"))
+            .ok()?;
+    let raw = output.text;
     sanitize_generated_title(&raw)
 }
 

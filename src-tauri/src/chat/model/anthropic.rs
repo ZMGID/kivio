@@ -1,14 +1,15 @@
+use super::{FinishKind, FinishReason, ModelTransport, ProviderConfig};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT_ENCODING};
 use serde_json::Value;
 
-use crate::api::{send_with_failover, with_chat_request_timeout};
-use crate::settings::ModelProvider;
-use crate::state::AppState;
+use crate::api::{send_model_with_failover, with_chat_request_timeout};
+use crate::settings::CacheRetention;
 use crate::usage::{
     chat_usage_source_for_label, error_kind_from_message, model_usage_from_anthropic_value,
-    operation_from_label, record_model_call, UsageRecordInput,
+    operation_from_label, UsageRecordInput,
 };
 
+use super::error::provider_error_code;
 use super::{
     parse_tool_arguments, stream_read_error, BuiltinWebSearch, FirstTokenStreamSink,
     GenerateOutput, GenerateRequest, LanguageModelProvider, MessagePart, ModelError, ModelFuture,
@@ -26,7 +27,7 @@ struct AnthropicContinuationSink<'a> {
 impl StreamSink for AnthropicContinuationSink<'_> {
     fn emit(&mut self, part: StreamPart) -> Result<(), ModelError> {
         match part {
-            StreamPart::Finish { reason, .. } if reason == "pause_turn" => Ok(()),
+            StreamPart::Finish { reason, .. } if reason.kind == FinishKind::PauseTurn => Ok(()),
             StreamPart::Finish { reason, full } => self.sink.emit(StreamPart::Finish {
                 reason,
                 full: format!("{}{full}", self.prefix),
@@ -90,7 +91,6 @@ fn merge_anthropic_continuation(
     previous.images.extend(next.images);
     previous.finish_reason = next.finish_reason;
     previous.cancelled = next.cancelled;
-    previous.provider_messages = vec![previous.to_openai_compatible_message()];
     previous
 }
 /// 1 小时缓存的 beta 开关；不带这个头时 `ttl: "1h"` 会被拒。
@@ -136,9 +136,9 @@ fn from_claude_code_tool_name(name: &str, tools: &[ModelTool]) -> String {
     let mut candidate = None;
     let mut matches = 0;
     for tool in tools {
-        let declared = tool.openai_tool_name();
+        let declared = &tool.name;
         if declared == name {
-            return declared;
+            return declared.clone();
         }
         if declared.eq_ignore_ascii_case(name) {
             matches += 1;
@@ -146,7 +146,7 @@ fn from_claude_code_tool_name(name: &str, tools: &[ModelTool]) -> String {
         }
     }
     if matches == 1 {
-        candidate.expect("one matching declared tool")
+        candidate.expect("one matching declared tool").clone()
     } else {
         name.to_string()
     }
@@ -256,19 +256,14 @@ fn mark_last_cacheable_block(blocks: &mut [Value], cache_control: &Value) {
     }
 }
 
-pub struct AnthropicMessagesProvider<'a> {
-    state: &'a AppState,
-    provider: &'a ModelProvider,
-    retry_attempts: usize,
+pub(super) struct AnthropicMessagesProvider<'a> {
+    transport: ModelTransport<'a>,
+    config: ProviderConfig<'a>,
 }
 
 impl<'a> AnthropicMessagesProvider<'a> {
-    pub fn new(state: &'a AppState, provider: &'a ModelProvider, retry_attempts: usize) -> Self {
-        Self {
-            state,
-            provider,
-            retry_attempts,
-        }
+    pub(super) fn new(transport: ModelTransport<'a>, config: ProviderConfig<'a>) -> Self {
+        Self { transport, config }
     }
 }
 
@@ -307,7 +302,10 @@ impl AnthropicMessagesProvider<'_> {
             } else {
                 self.generate_inner(request.clone()).await?
             };
-            let paused = output.finish_reason.as_deref() == Some("pause_turn");
+            let paused = output
+                .finish_reason
+                .as_ref()
+                .is_some_and(|reason| reason.kind == FinishKind::PauseTurn);
             if paused {
                 if !output.tool_calls.is_empty() {
                     return Err(ModelError::new(
@@ -350,17 +348,17 @@ impl AnthropicMessagesProvider<'_> {
         let started_at = chrono::Local::now().timestamp();
         let started = std::time::Instant::now();
         let body = self.request_body(&request, false);
-        let response = send_with_failover(
-            self.state,
+        let response = send_model_with_failover(
+            self.transport.runtime,
             &label,
-            self.retry_attempts,
-            &self.provider.id,
-            &self.provider.api_keys,
+            self.transport.retry_attempts,
+            self.config.id,
+            self.config.api_keys,
             |key| {
                 with_chat_request_timeout(crate::api::attach_json_body(
                     self.with_extra_headers(
-                        self.state
-                            .client_for(self.provider)
+                        self.transport
+                            .client
                             .post(self.messages_url())
                             .headers(anthropic_headers(key).unwrap_or_default())
                             .header(ACCEPT_ENCODING, "identity"),
@@ -368,16 +366,29 @@ impl AnthropicMessagesProvider<'_> {
                         false,
                     ),
                     &body,
-                    self.provider.compress_request_body,
+                    self.config.compress_request_body,
                 ))
                 .send()
             },
         )
         .await
         .map_err(|err| {
-            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
-            self.record_debug_failure(&request, &label, false, &err, started_at, started.elapsed());
-            ModelError::new(err)
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.message,
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                false,
+                &err.message,
+                started_at,
+                started.elapsed(),
+            );
+            err
         })?;
 
         let raw = response.text().await.map_err(|err| {
@@ -444,17 +455,17 @@ impl AnthropicMessagesProvider<'_> {
         let mut measured_sink = FirstTokenStreamSink::new(sink, started);
         let sink = &mut measured_sink;
         let body = self.request_body(&request, true);
-        let mut response = send_with_failover(
-            self.state,
+        let mut response = send_model_with_failover(
+            self.transport.runtime,
             &label,
-            self.retry_attempts,
-            &self.provider.id,
-            &self.provider.api_keys,
+            self.transport.retry_attempts,
+            self.config.id,
+            self.config.api_keys,
             |key| {
                 crate::api::attach_json_body(
                     self.with_extra_headers(
-                        self.state
-                            .client_for(self.provider)
+                        self.transport
+                            .client
                             .post(self.messages_url())
                             .headers(anthropic_headers(key).unwrap_or_default())
                             .header(ACCEPT_ENCODING, "identity"),
@@ -462,16 +473,29 @@ impl AnthropicMessagesProvider<'_> {
                         true,
                     ),
                     &body,
-                    self.provider.compress_request_body,
+                    self.config.compress_request_body,
                 )
                 .send()
             },
         )
         .await
         .map_err(|err| {
-            self.record_usage_failure(&request, &label, started_at, started.elapsed(), &err);
-            self.record_debug_failure(&request, &label, true, &err, started_at, started.elapsed());
-            ModelError::new(err)
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.message,
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                true,
+                &err.message,
+                started_at,
+                started.elapsed(),
+            );
+            err
         })?;
 
         let mut sse = super::sse::SseDecoder::default();
@@ -482,7 +506,8 @@ impl AnthropicMessagesProvider<'_> {
         let mut current_tool_id = String::new();
         let mut current_tool_name = String::new();
         let mut current_tool_input_parts: Vec<String> = Vec::new();
-        let mut finish_reason = "stop".to_string();
+        let mut current_tool_initial_input = serde_json::json!({});
+        let mut finish_reason = FinishReason::new(FinishKind::Stop, "");
         let mut usage: Option<ModelUsage> = None;
         // 内置搜索引用（服务端块尽力收集，随 content_block_start 完整到达）。
         let mut web_search: Option<BuiltinWebSearch> = None;
@@ -524,7 +549,7 @@ impl AnthropicMessagesProvider<'_> {
                         reasoning_full.push_str(&thinking);
                         sink.emit(StreamPart::ReasoningDelta { delta: thinking })?;
                     }
-                    Some(AnthropicSseEvent::ToolUseStart { id, name }) => {
+                    Some(AnthropicSseEvent::ToolUseStart { id, name, input }) => {
                         let name = self.declared_tool_name(&name, &request);
                         sink.emit(StreamPart::ToolCallStart {
                             id: id.clone(),
@@ -532,6 +557,7 @@ impl AnthropicMessagesProvider<'_> {
                         })?;
                         current_tool_id = id;
                         current_tool_name = name;
+                        current_tool_initial_input = input;
                         current_tool_input_parts.clear();
                     }
                     Some(AnthropicSseEvent::ToolInputDelta(json)) => {
@@ -549,6 +575,7 @@ impl AnthropicMessagesProvider<'_> {
                                 &current_tool_id,
                                 &current_tool_name,
                                 &current_tool_input_parts,
+                                &current_tool_initial_input,
                             );
                             sink.emit(StreamPart::ToolCallDone { call: call.clone() })?;
                             tool_calls.push(call);
@@ -648,14 +675,7 @@ impl AnthropicMessagesProvider<'_> {
                         );
                         return Ok(output);
                     }
-                    Some(AnthropicSseEvent::Error(err)) => {
-                        sink.emit(StreamPart::Error {
-                            message: err.clone(),
-                        })?;
-                        return Err(ModelError::provider_stream_error(format!(
-                            "Anthropic stream error: {err}"
-                        )));
-                    }
+                    Some(AnthropicSseEvent::Error(error)) => return Err(error),
                     None => {}
                 }
             }
@@ -700,7 +720,7 @@ impl AnthropicMessagesProvider<'_> {
                         ..
                     } => {
                         *source_model = Some(request.model.clone());
-                        *source_provider_id = Some(self.provider.id.clone());
+                        *source_provider_id = Some(self.config.id.to_owned());
                     }
                     _ => {}
                 }
@@ -709,7 +729,7 @@ impl AnthropicMessagesProvider<'_> {
     }
 
     fn messages_url(&self) -> String {
-        anthropic_messages_url(&self.provider.base_url)
+        anthropic_messages_url(self.config.base_url)
     }
 
     fn request_body(&self, request: &GenerateRequest, stream: bool) -> Value {
@@ -717,14 +737,14 @@ impl AnthropicMessagesProvider<'_> {
         let mut body = serde_json::json!({
             "model": request.model,
             "messages": anthropic_messages_with_unsigned_thinking(request,
-                crate::utils::is_official_deepseek_anthropic_api(&self.provider.base_url), Some(&self.provider.id)),
+                crate::utils::is_official_deepseek_anthropic_api(self.config.base_url), Some(self.config.id)),
             "max_tokens": max_tokens,
         });
         let profile = crate::chat::model_metadata::claude_thinking_profile(&request.model);
         if !profile.is_some_and(|profile| profile.forbid_temperature) {
             if let Some(temperature) = crate::chat::model_metadata::temperature_for_request(
                 request.options.temperature,
-                Some(self.provider),
+                Some(self.config.source),
                 &request.model,
             ) {
                 body["temperature"] = serde_json::json!(temperature);
@@ -732,7 +752,7 @@ impl AnthropicMessagesProvider<'_> {
         }
         // 统一用块数组（官方 SDK 与 Claude Code 的写法）；Claude Code 身份下第一块是它的固定开场。
         let mut system = Vec::new();
-        if crate::provider_request::is_claude_code_identity(self.provider) {
+        if self.config.claude_code {
             system.push(serde_json::json!({
                 "type": "text",
                 "text": crate::provider_request::CLAUDE_CODE_SYSTEM_PREFIX,
@@ -776,7 +796,7 @@ impl AnthropicMessagesProvider<'_> {
             body.as_object_mut().unwrap().remove("tools");
             body["tool_choice"] = serde_json::json!({ "type": "none" });
         }
-        if crate::provider_request::is_claude_code_identity(self.provider) {
+        if self.config.claude_code {
             rename_tools_for_claude_code(&mut body);
         }
         // prompt caching 放在最后：断点必须打在最终 body 上，否则 provider_options
@@ -797,7 +817,7 @@ impl AnthropicMessagesProvider<'_> {
         &self,
         metadata: &crate::chat::model::RequestMetadata,
     ) -> Option<PromptCache> {
-        if !self.provider.prompt_caching_enabled() {
+        if self.config.cache_retention == CacheRetention::None {
             return None;
         }
         metadata
@@ -805,10 +825,7 @@ impl AnthropicMessagesProvider<'_> {
             .as_deref()
             .filter(|id| !id.is_empty())?;
         // 对齐 pi：long → ttl:1h（默认 supportsLongCacheRetention=true，不做主机名启发式）。
-        let long_ttl = matches!(
-            self.provider.cache_retention(),
-            crate::settings::CacheRetention::Long
-        );
+        let long_ttl = matches!(self.config.cache_retention, CacheRetention::Long);
         Some(PromptCache { long_ttl })
     }
 
@@ -816,7 +833,7 @@ impl AnthropicMessagesProvider<'_> {
     /// 否则是本机稳定的匿名设备 id —— 官方建议的「不透明的终端用户标识」。
     fn user_id(&self, metadata: &crate::chat::model::RequestMetadata) -> String {
         let device_id = crate::provider_request::device_id();
-        if !crate::provider_request::is_claude_code_identity(self.provider) {
+        if !self.config.claude_code {
             return device_id.to_string();
         }
         serde_json::json!({
@@ -830,7 +847,7 @@ impl AnthropicMessagesProvider<'_> {
 
     /// 回包里的工具名映射回本次请求声明的原名（只有 Claude Code 身份会改写工具名）。
     fn declared_tool_name(&self, name: &str, request: &GenerateRequest) -> String {
-        if crate::provider_request::is_claude_code_identity(self.provider) {
+        if self.config.claude_code {
             from_claude_code_tool_name(name, &request.tools)
         } else {
             name.to_string()
@@ -838,7 +855,7 @@ impl AnthropicMessagesProvider<'_> {
     }
 
     /// 非流式响应里的 `tool_use` 名映射回原名。必须在 `output_from_anthropic_message` 之前做：
-    /// 它构造的 provider_messages 会存进历史，换到不改写工具名的供应商回放时，
+    /// 它构造的消息会存进历史，换到不改写工具名的供应商回放时，
     /// 模型会看到一个没声明过的工具。
     fn with_declared_tool_names(&self, mut response: Value, request: &GenerateRequest) -> Value {
         if let Some(blocks) = response.get_mut("content").and_then(Value::as_array_mut) {
@@ -857,7 +874,7 @@ impl AnthropicMessagesProvider<'_> {
     /// 本次请求按功能需要声明的 beta。
     fn feature_betas(&self, request: &GenerateRequest) -> Vec<&'static str> {
         let mut betas = Vec::new();
-        let claude_code = crate::provider_request::is_claude_code_identity(self.provider);
+        let claude_code = self.config.claude_code;
         if claude_code {
             betas.push(CLAUDE_CODE_BETA);
         }
@@ -883,7 +900,7 @@ impl AnthropicMessagesProvider<'_> {
     fn extra_header_pairs(&self, request: &GenerateRequest, stream: bool) -> Vec<(String, String)> {
         // Anthropic 不发会话亲和头：官方与主流中转都不认，身份模式下有 X-Claude-Code-Session-Id。
         let mut pairs = crate::provider_request::model_header_pairs(
-            self.provider,
+            self.config.source,
             request.metadata.conversation_id.as_deref(),
             false,
             stream,
@@ -940,7 +957,7 @@ impl AnthropicMessagesProvider<'_> {
         stream: bool,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
-        if let Some(key) = self.provider.preferred_api_key() {
+        if let Some(key) = self.config.preferred_api_key {
             headers.insert("x-api-key".to_string(), key.to_string());
         }
         headers.insert(
@@ -965,12 +982,12 @@ impl AnthropicMessagesProvider<'_> {
         started_at: i64,
         duration: std::time::Duration,
     ) {
-        if !self.state.request_debug_enabled() {
+        let Some(debug) = (self.transport.request_debug)() else {
             return;
-        }
+        };
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
-                provider: self.provider,
+                provider: self.config.source,
                 request,
                 label,
                 started_at,
@@ -986,7 +1003,7 @@ impl AnthropicMessagesProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        debug.record(record);
     }
 
     /// 记录一次失败调用到请求调试缓冲。开关关时首行短路（零开销）。
@@ -999,12 +1016,12 @@ impl AnthropicMessagesProvider<'_> {
         started_at: i64,
         duration: std::time::Duration,
     ) {
-        if !self.state.request_debug_enabled() {
+        let Some(debug) = (self.transport.request_debug)() else {
             return;
-        }
+        };
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
-                provider: self.provider,
+                provider: self.config.source,
                 request,
                 label,
                 started_at,
@@ -1020,7 +1037,7 @@ impl AnthropicMessagesProvider<'_> {
                 ),
             },
         );
-        crate::chat::request_debug::record(self.state, record);
+        debug.record(record);
     }
 
     fn record_usage_success(
@@ -1042,26 +1059,23 @@ impl AnthropicMessagesProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: "success",
-                status_code: Some(200),
-                usage,
-                usage_source: "provider_reported",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: None,
-            },
-        );
+        (self.transport.record_usage)(UsageRecordInput {
+            provider: self.config.source,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: "success",
+            status_code: Some(200),
+            usage,
+            usage_source: "provider_reported",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: None,
+        });
     }
 
     fn record_usage_failure(
@@ -1082,26 +1096,23 @@ impl AnthropicMessagesProvider<'_> {
             .usage_operation
             .clone()
             .unwrap_or_else(|| operation_from_label(label));
-        record_model_call(
-            self.state,
-            UsageRecordInput {
-                provider: self.provider,
-                model: &request.model,
-                source: &source,
-                operation: &operation,
-                status: crate::usage::failure_status_from_message(error),
-                status_code: crate::api::extract_status_code(error),
-                usage: None,
-                usage_source: "missing",
-                started_at,
-                duration_ms: duration.as_millis() as u64,
-                first_token_ms: None,
-                reasoning_effort: crate::usage::reasoning_effort_for_request(request),
-                conversation_id: request.metadata.conversation_id.clone(),
-                message_id: request.metadata.message_id.clone(),
-                error_kind: Some(error_kind_from_message(error)),
-            },
-        );
+        (self.transport.record_usage)(UsageRecordInput {
+            provider: self.config.source,
+            model: &request.model,
+            source: &source,
+            operation: &operation,
+            status: crate::usage::failure_status_from_message(error),
+            status_code: crate::api::extract_status_code(error),
+            usage: None,
+            usage_source: "missing",
+            started_at,
+            duration_ms: duration.as_millis() as u64,
+            first_token_ms: None,
+            reasoning_effort: crate::usage::reasoning_effort_for_request(request),
+            conversation_id: request.metadata.conversation_id.clone(),
+            message_id: request.metadata.message_id.clone(),
+            error_kind: Some(error_kind_from_message(error)),
+        });
     }
 }
 
@@ -1318,8 +1329,8 @@ pub fn anthropic_tools_from_model_tools(tools: &[ModelTool]) -> Vec<Value> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for tool in tools {
-        let name = tool.openai_tool_name();
-        if name.is_empty() || !seen.insert(name.clone()) {
+        let name = &tool.name;
+        if name.is_empty() || !seen.insert(name) {
             continue;
         }
         out.push(serde_json::json!({
@@ -1340,18 +1351,16 @@ pub fn output_from_anthropic_message(
             .get("message")
             .and_then(|value| value.as_str())
             .unwrap_or("Unknown Anthropic error");
-        return Err(ModelError::new(format!("{label}: {msg}")));
+        let code = provider_error_code(error);
+        return Err(ModelError::from_provider_payload(
+            code.as_deref(),
+            format!("{label}: {msg}"),
+        ));
     }
 
     let parsed = parse_anthropic_response(value);
     let finish_reason = parsed.finish_reason.clone();
     let usage = anthropic_usage(value);
-    let provider_message = openai_compatible_message(
-        &parsed.content,
-        parsed.reasoning.as_deref(),
-        &parsed.tool_calls,
-        Some(&finish_reason),
-    );
     Ok(GenerateOutput {
         billing_usage: None,
         canonical_message: Some(ModelMessage {
@@ -1369,7 +1378,6 @@ pub fn output_from_anthropic_message(
         tool_calls: parsed.tool_calls,
         usage,
         finish_reason: Some(finish_reason),
-        provider_messages: vec![provider_message],
         cancelled: false,
         web_search: parsed.web_search,
         images: Vec::new(),
@@ -1452,7 +1460,7 @@ struct AnthropicParsedResponse {
     content: String,
     reasoning: Option<String>,
     tool_calls: Vec<PendingToolCall>,
-    finish_reason: String,
+    finish_reason: FinishReason,
     web_search: Option<BuiltinWebSearch>,
 }
 
@@ -1688,6 +1696,7 @@ enum AnthropicSseEvent {
     ToolUseStart {
         id: String,
         name: String,
+        input: Value,
     },
     ToolInputDelta(String),
     ContentBlockStop,
@@ -1699,7 +1708,7 @@ enum AnthropicSseEvent {
         reason: String,
         usage: Option<ModelUsage>,
     },
-    Error(String),
+    Error(ModelError),
 }
 
 fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
@@ -1724,6 +1733,10 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
             let block = value.get("content_block")?;
             match block.get("type").and_then(|value| value.as_str()) {
                 Some("tool_use") => Some(AnthropicSseEvent::ToolUseStart {
+                    input: block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::json!({})),
                     id: block
                         .get("id")
                         .and_then(|value| value.as_str())
@@ -1809,10 +1822,12 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
             let message = error["message"]
                 .as_str()
                 .unwrap_or("Unknown Anthropic error");
-            match error["type"].as_str() {
+            let diagnostic = match error["type"].as_str() {
                 Some(kind) => format!("{message} ({kind})"),
                 None => message.to_string(),
-            }
+            };
+            let code = provider_error_code(error);
+            ModelError::from_provider_stream(code.as_deref(), diagnostic)
         })),
         _ => None,
     }
@@ -1852,10 +1867,11 @@ fn assemble_tool_call_from_stream(
     id: &str,
     name: &str,
     input_json_parts: &[String],
+    initial_input: &Value,
 ) -> PendingToolCall {
     let raw = input_json_parts.join("");
-    let arguments_raw = if raw.trim().is_empty() {
-        "{}".to_string()
+    let arguments_raw = if input_json_parts.is_empty() {
+        initial_input.to_string()
     } else {
         raw
     };
@@ -2116,56 +2132,14 @@ fn anthropic_usage(value: &Value) -> Option<ModelUsage> {
     model_usage_from_anthropic_value(value)
 }
 
-fn openai_compatible_message(
-    text: &str,
-    reasoning: Option<&str>,
-    tool_calls: &[PendingToolCall],
-    finish_reason: Option<&str>,
-) -> Value {
-    let mut message = serde_json::json!({
-        "role": "assistant",
-        "content": if text.is_empty() { Value::Null } else { Value::String(text.to_string()) },
-    });
-    if let Some(reasoning) = reasoning.map(str::trim).filter(|value| !value.is_empty()) {
-        message["reasoning_content"] = Value::String(reasoning.to_string());
-    }
-    if !tool_calls.is_empty() {
-        message["tool_calls"] = Value::Array(
-            tool_calls
-                .iter()
-                .map(|call| {
-                    serde_json::json!({
-                        "id": call.id,
-                        "type": "function",
-                        "function": {
-                            "name": call.function_name,
-                            "arguments": call.arguments_raw,
-                        }
-                    })
-                })
-                .collect(),
-        );
-    }
-    if let Some(finish_reason) = finish_reason {
-        message["finish_reason"] = Value::String(finish_reason.to_string());
-    }
-    message
-}
-
 fn stream_output(
     text: String,
     reasoning: String,
     tool_calls: Vec<PendingToolCall>,
-    finish_reason: String,
+    finish_reason: FinishReason,
     usage: Option<ModelUsage>,
 ) -> GenerateOutput {
     let reasoning = non_empty(reasoning);
-    let provider_message = openai_compatible_message(
-        &text,
-        reasoning.as_deref(),
-        &tool_calls,
-        Some(&finish_reason),
-    );
     GenerateOutput {
         canonical_message: None,
         billing_usage: None,
@@ -2174,7 +2148,6 @@ fn stream_output(
         tool_calls,
         usage,
         finish_reason: Some(finish_reason),
-        provider_messages: vec![provider_message],
         cancelled: false,
         web_search: None,
         images: Vec::new(),
@@ -2197,15 +2170,14 @@ fn merge_anthropic_web_search(acc: &mut Option<BuiltinWebSearch>, next: BuiltinW
     }
 }
 
-fn finish_reason_from_anthropic_stop_reason(reason: &str) -> String {
-    match reason {
-        "end_turn" => "stop",
-        "tool_use" => "tool_calls",
-        "max_tokens" => "length",
-        "pause_turn" => "pause_turn",
-        _ => "stop",
-    }
-    .to_string()
+fn finish_reason_from_anthropic_stop_reason(reason: &str) -> FinishReason {
+    let kind = match reason {
+        "tool_use" => FinishKind::ToolCalls,
+        "max_tokens" => FinishKind::Length,
+        "pause_turn" => FinishKind::PauseTurn,
+        _ => FinishKind::Stop,
+    };
+    FinishReason::new(kind, reason)
 }
 
 fn request_label(request: &GenerateRequest, fallback: &str) -> String {
@@ -2251,20 +2223,22 @@ mod tests {
             "fixture",
         )
         .unwrap();
-        let stream =
-            crate::chat::agent::stream::ChatStreamOutput::from_generate_output_with_snapshot(
-                output,
-                String::new(),
-                String::new(),
-            );
         assert_eq!(
-            stream.to_openai_compatible_message()["finish_reason"],
-            "tool_calls"
+            output.finish_reason.as_ref().unwrap().kind,
+            FinishKind::ToolCalls
         );
-        let mut history = crate::chat::model::model_messages_from_openai_messages(vec![
-            stream.to_openai_compatible_message(),
-            serde_json::json!({"role":"tool", "tool_call_id":"toolu_1", "content":"found"}),
-        ]);
+        let mut history = vec![
+            output.replay_message(),
+            ModelMessage {
+                role: ModelRole::Tool,
+                content: vec![MessagePart::ToolResult {
+                    tool_call_id: "toolu_1".into(),
+                    content: "found".into(),
+                    is_error: false,
+                    artifacts: Vec::new(),
+                }],
+            },
+        ];
         // Real storage format is serde canonical messages; reload must preserve opaque bytes.
         history = serde_json::from_slice(&serde_json::to_vec(&history).unwrap()).unwrap();
         let mut request = cache_test_request();
@@ -2280,18 +2254,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            truncated.to_openai_compatible_message()["finish_reason"],
-            "length"
-        );
-        let truncated_stream =
-            crate::chat::agent::stream::ChatStreamOutput::from_generate_output_with_snapshot(
-                truncated,
-                String::new(),
-                String::new(),
-            );
-        assert_eq!(
-            truncated_stream.to_openai_compatible_message()["finish_reason"],
-            "length"
+            truncated.finish_reason.as_ref().unwrap().kind,
+            FinishKind::Length
         );
     }
 
@@ -2412,7 +2376,7 @@ mod tests {
     fn end_to_end_openai_dangling_history_becomes_paired_wire() {
         // Real entry point: an OpenAI-format history where an assistant tool_call
         // was never answered (interrupted turn), followed by the next user prompt.
-        use crate::chat::model::types::generate_request_from_openai_messages;
+        use crate::chat::model::generate_request_from_openai_messages;
         let openai = vec![
             serde_json::json!({ "role": "user", "content": "hi" }),
             serde_json::json!({
@@ -2541,7 +2505,10 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let request = GenerateRequest {
             model: model.into(),
             system: "sys".into(),
@@ -2746,7 +2713,10 @@ mod tests {
             request: Default::default(),
             active_key_index: 0,
         };
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let base = GenerateRequest {
             model: "claude-opus-4-8".into(),
             system: String::new(),
@@ -2781,7 +2751,10 @@ mod tests {
             std::env::temp_dir(),
         );
         let provider = cache_test_provider(false, "short");
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let body = adapter.request_body(&cache_test_request(), false);
         // 关缓存时 system 仍是块数组，但没有任何 cache_control。
         assert_eq!(
@@ -2798,7 +2771,10 @@ mod tests {
             std::env::temp_dir(),
         );
         let provider = cache_test_provider(true, "short");
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let body = adapter.request_body(&cache_test_request(), false);
 
         let ephemeral = serde_json::json!({ "type": "ephemeral" });
@@ -2829,7 +2805,10 @@ mod tests {
             std::env::temp_dir(),
         );
         let provider = cache_test_provider(true, "long");
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let body = adapter.request_body(&cache_test_request(), false);
         assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
         // 1h 不带 beta 头会被拒，所以头和 ttl 必须同进同出。
@@ -2841,7 +2820,10 @@ mod tests {
         );
 
         let short_provider = cache_test_provider(true, "short");
-        let short_adapter = AnthropicMessagesProvider::new(&state, &short_provider, 1);
+        let short_adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &short_provider),
+            ProviderConfig::from_settings(&short_provider),
+        );
         assert!(short_adapter
             .debug_request_headers(&in_session, false)
             .get("anthropic-beta")
@@ -2868,7 +2850,10 @@ mod tests {
         );
         let mut provider = cache_test_provider(true, "long");
         provider.base_url = "https://api.deepseek.com/anthropic".into();
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let body = adapter.request_body(&cache_test_request(), false);
         assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
         let in_session = cache_test_request();
@@ -2890,7 +2875,10 @@ mod tests {
             std::env::temp_dir(),
         );
         let provider = cache_test_provider(true, "short");
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let mut request = cache_test_request();
         request.metadata.conversation_id = None;
         let body = adapter.request_body(&request, false);
@@ -2961,14 +2949,9 @@ mod tests {
 
     fn cache_test_tool(name: &str) -> ModelTool {
         ModelTool {
-            id: name.into(),
             name: name.into(),
             description: format!("{name} a file"),
-            source: "native".into(),
-            server_id: None,
-            server_name: None,
             input_schema: serde_json::json!({ "type": "object", "properties": {} }),
-            sensitive: false,
         }
     }
 
@@ -2999,7 +2982,10 @@ mod tests {
         );
         let mut provider = cache_test_provider(false, "short");
         provider.request.cli_identity = cli_identity.to_string();
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let request = cache_test_request();
         (
             adapter.request_body(&request, false),
@@ -3050,7 +3036,10 @@ mod tests {
         );
         let mut provider = cache_test_provider(false, "short");
         provider.request.cli_identity = "claude_code".into();
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let mut request = cache_test_request();
         request.tools.push(cache_test_tool("todo_write"));
         request.options.builtin_web_search = true;
@@ -3090,13 +3079,17 @@ mod tests {
         .expect("output");
         assert_eq!(output.tool_calls[0].function_name, "read");
         assert_eq!(
-            output.to_openai_compatible_message()["tool_calls"][0]["function"]["name"],
+            crate::chat::model::openai_messages_from_model_messages(&[output.replay_message()])[0]
+                ["tool_calls"][0]["function"]["name"],
             "read"
         );
 
         // 不选身份时完全不改写。
         let plain_provider = cache_test_provider(false, "short");
-        let plain = AnthropicMessagesProvider::new(&state, &plain_provider, 1);
+        let plain = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &plain_provider),
+            ProviderConfig::from_settings(&plain_provider),
+        );
         assert_eq!(
             plain.request_body(&request, false)["tools"][0]["name"],
             "read"
@@ -3112,15 +3105,16 @@ mod tests {
         );
         let mut provider = cache_test_provider(false, "short");
         provider.request.cli_identity = "claude_code".into();
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let mut request = cache_test_request();
         request.tools = ["read", "Read"]
             .into_iter()
             .map(|name| {
                 let mut tool = cache_test_tool(name);
-                tool.id = format!("mcp__server__{name}");
-                tool.source = "mcp".into();
-                tool.server_id = Some("server".into());
+                tool.name = format!("mcp__server__{name}");
                 tool
             })
             .collect();
@@ -3151,7 +3145,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            output.to_openai_compatible_message()["tool_calls"][1]["function"]["name"],
+            crate::chat::model::openai_messages_from_model_messages(&[output.replay_message()])[0]
+                ["tool_calls"][1]["function"]["name"],
             "mcp__server__Read"
         );
 
@@ -3178,7 +3173,10 @@ mod tests {
             key: "accept".into(),
             value: "text/event-stream".into(),
         }];
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let pairs = adapter.extra_header_pairs(&cache_test_request(), false);
         let accepts: Vec<_> = pairs
             .iter()
@@ -3199,7 +3197,10 @@ mod tests {
             key: "anthropic-beta".into(),
             value: "foo-1, extended-cache-ttl-2025-04-11".into(),
         }];
-        let adapter = AnthropicMessagesProvider::new(&state, &provider, 1);
+        let adapter = AnthropicMessagesProvider::new(
+            ModelTransport::for_test(&state, &provider),
+            ProviderConfig::from_settings(&provider),
+        );
         let mut request = cache_test_request();
         request.model = "claude-sonnet-4-5".into();
         request.options.thinking_enabled = true;
@@ -3383,7 +3384,10 @@ mod tests {
         assert_eq!(output.text, "Answer");
         assert_eq!(output.reasoning.as_deref(), Some("Plan"));
         assert_eq!(output.tool_calls.len(), 1);
-        assert_eq!(output.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(
+            output.finish_reason.as_ref().map(FinishReason::legacy_name),
+            Some("tool_calls")
+        );
         assert_eq!(
             output.usage.as_ref().and_then(|usage| usage.total_tokens),
             Some(18)
@@ -3412,7 +3416,7 @@ mod tests {
         ));
         assert!(matches!(
             parse_anthropic_sse_event(events[2]),
-            Some(AnthropicSseEvent::ToolUseStart { id, name })
+            Some(AnthropicSseEvent::ToolUseStart { id, name, .. })
                 if id == "toolu_123" && name == "web_search"
         ));
         assert!(matches!(
@@ -3431,7 +3435,12 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let call = assemble_tool_call_from_stream("toolu_123", "web_search", &input_parts);
+        let call = assemble_tool_call_from_stream(
+            "toolu_123",
+            "web_search",
+            &input_parts,
+            &serde_json::json!({}),
+        );
 
         assert_eq!(call.function_name, "web_search");
         assert_eq!(call.arguments["query"], "kivio");

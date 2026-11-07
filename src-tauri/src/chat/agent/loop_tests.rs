@@ -1,3 +1,28 @@
+use crate::chat::agent::content::{AgentToolCall, ContentBlock, InputKind};
+use crate::chat::agent::context::AgentContext;
+use crate::chat::agent::control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission};
+use crate::chat::agent::events::{
+    AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery,
+};
+use crate::chat::agent::history::{export_history, import_history, RuntimeMessage};
+use crate::chat::agent::host::{InputPersistence, SessionInput};
+use crate::chat::model::FinishKind;
+use crate::chat::recovery_policy::{
+    empty_synthesis_fallback_response, synthesis_failed_fallback_response,
+    tool_planning_failed_fallback_response,
+};
+use crate::chat::session_policy::{
+    ApplicationRunConfig as AgentRunConfig, ApplicationRunResult as AgentRunResult,
+};
+use crate::chat::tool_runtime::{
+    ApplicationHost, ApplicationToolExecutor, ToolAuthority, ToolDispatcher as ToolExecutor,
+    ToolExecutionContext,
+};
+use crate::chat::types::{
+    ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase, ToolCallRecord,
+};
+use crate::mcp::ChatToolDefinition;
+use serde_json::Value;
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{
@@ -7,20 +32,20 @@ use std::sync::{
 
 use tokio::time::{sleep, Duration};
 
-use super::*;
-use crate::chat::agent::compaction;
+use crate::chat::agent::AgentHost;
 use crate::chat::agent::SteeringMessage;
-use crate::chat::model::{StreamPart, StreamSink as _};
+use crate::chat::context_policy as compaction;
+use crate::chat::model::{PendingToolCall, StreamPart};
 use crate::chat::types::ToolCallStatus;
-use crate::mcp::types::{
-    native_read_file_tool, native_run_command_tool, native_web_fetch_tool, native_write_file_tool,
-    McpToolCallResult,
-};
-use crate::settings::{ChatToolsConfig, ModelProvider};
+use crate::mcp::types::{native_read_file_tool, native_run_command_tool, native_web_fetch_tool};
+use crate::settings::{ChatToolsConfig, ModelProvider, Settings};
 use crate::state::AppState;
 
 #[path = "compaction_live_tests.rs"]
 mod compaction_live_tests;
+
+#[path = "tool_contract_tests.rs"]
+mod tool_contract_tests;
 
 #[derive(Clone, Debug)]
 struct RecordedDelta {
@@ -31,7 +56,7 @@ struct RecordedDelta {
 }
 
 #[derive(Default)]
-struct TestHost {
+pub(crate) struct TestHost {
     records: Mutex<Vec<ToolCallRecord>>,
     deltas: Mutex<Vec<RecordedDelta>>,
     /// Per-call snapshot sizes from `persist_partial_assistant`:
@@ -62,6 +87,7 @@ struct TestHost {
     fail_compaction_checkpoint: bool,
     compaction_checkpoints: Mutex<Vec<Vec<Value>>>,
     compaction_incoming: Mutex<Option<Value>>,
+    finishing_inputs: Mutex<std::collections::VecDeque<Vec<Value>>>,
     retry_notes: Mutex<Vec<Option<String>>>,
     retry_statuses: Mutex<Vec<crate::chat::protocol::ChatRetryStatusPayload>>,
     discarded_attempts: Mutex<Vec<(u32, u32, Vec<String>, Vec<String>)>>,
@@ -149,23 +175,99 @@ impl AgentHost for TestHost {
         &'a self,
         _conversation: &'a str,
         _run: &'a str,
-        history: &'a [Value],
-        _finishing: bool,
-    ) -> crate::chat::agent::host::AgentHostFuture<'a, Result<Vec<Value>, String>> {
+        history: &'a [RuntimeMessage],
+        finishing: bool,
+    ) -> crate::chat::agent::host::AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
         Box::pin(async move {
+            let session_inputs = |messages| {
+                import_history(messages)
+                    .into_iter()
+                    .map(|message| {
+                        let persistence = if message
+                            .source
+                            .get("subagent_parent_persisted")
+                            .and_then(Value::as_bool)
+                            == Some(true)
+                        {
+                            InputPersistence::AlreadyPersisted
+                        } else {
+                            InputPersistence::Append
+                        };
+                        SessionInput {
+                            message,
+                            persistence,
+                        }
+                    })
+                    .collect()
+            };
             if self.capture_compaction
-                && self.compaction_phases.lock().unwrap().last().is_some_and(|phase| phase == "started")
+                && self
+                    .compaction_phases
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .is_some_and(|phase| phase == "started")
             {
-                self.compaction_checkpoints.lock().unwrap().push(history.to_vec());
+                self.compaction_checkpoints
+                    .lock()
+                    .unwrap()
+                    .push(export_history(history));
                 if self.fail_compaction_checkpoint {
                     return Err("checkpoint persistence failed".into());
                 }
-                return Ok(self.compaction_incoming.lock().unwrap().take().into_iter().collect());
+                return Ok(session_inputs(
+                    self.compaction_incoming
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .into_iter()
+                        .collect(),
+                ));
+            }
+            if finishing {
+                return Ok(session_inputs(
+                    self.finishing_inputs
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_default(),
+                ));
             }
             Ok(Vec::new())
         })
     }
 
+    fn persist_partial_assistant<'a>(
+        &'a self,
+        _conversation_id: &'a str,
+        message_id: &'a str,
+        tool_records: &'a [AgentToolCall],
+        segments: &'a [ContentBlock],
+        api_messages: &'a [RuntimeMessage],
+    ) -> super::super::host::AgentHostFuture<'a, ()> {
+        let (tool_records, segments) =
+            crate::chat::agent_presentation::project_snapshot(tool_records, segments, Some("run"));
+        if self.cancel_on_persist {
+            self.cancel_flag.store(true, Ordering::SeqCst);
+        }
+        self.persists
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push((
+                message_id.to_string(),
+                tool_records.len(),
+                segments.len(),
+                api_messages.len(),
+            ));
+        self.persisted_drafts
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .push((tool_records.to_vec(), export_history(api_messages)));
+        Box::pin(async {})
+    }
+}
+
+impl crate::chat::tool_runtime::ApplicationHost for TestHost {
     fn auto_compact_failures(&self, _conversation_id: &str) -> u32 {
         *self.auto_compact_failures.lock().unwrap()
     }
@@ -174,6 +276,32 @@ impl AgentHost for TestHost {
         *self.auto_compact_failures.lock().unwrap() = failures;
     }
 
+    fn request_tool_approval<'a>(
+        &'a self,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
+        _record: &'a AgentToolCall,
+    ) -> super::super::host::AgentHostFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+
+    fn request_session_consent<'a>(
+        &'a self,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
+    ) -> super::super::host::AgentHostFuture<'a, bool> {
+        Box::pin(async { true })
+    }
+
+    fn request_user_response<'a>(
+        &'a self,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
+        _record: &'a AgentToolCall,
+        _prompt: crate::chat::ask_user::AskUserPromptPayload,
+    ) -> super::super::host::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
+        Box::pin(async { crate::chat::ask_user::skipped_response() })
+    }
+}
+
+impl TestHost {
     fn emit_compaction_status(
         &self,
         _conversation_id: &str,
@@ -272,55 +400,6 @@ impl AgentHost for TestHost {
         }
     }
 
-    fn persist_partial_assistant<'a>(
-        &'a self,
-        _conversation_id: &'a str,
-        message_id: &'a str,
-        tool_records: &'a [ToolCallRecord],
-        segments: &'a [ChatMessageSegment],
-        api_messages: &'a [serde_json::Value],
-    ) -> super::super::host::AgentHostFuture<'a, ()> {
-        if self.cancel_on_persist {
-            self.cancel_flag.store(true, Ordering::SeqCst);
-        }
-        self.persists
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
-            .push((
-                message_id.to_string(),
-                tool_records.len(),
-                segments.len(),
-                api_messages.len(),
-            ));
-        self.persisted_drafts.lock().unwrap_or_else(|err| err.into_inner())
-            .push((tool_records.to_vec(), api_messages.to_vec()));
-        Box::pin(async {})
-    }
-
-    fn request_tool_approval<'a>(
-        &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
-    ) -> super::super::host::AgentHostFuture<'a, bool> {
-        Box::pin(async { true })
-    }
-
-    fn request_session_consent<'a>(
-        &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
-    ) -> super::super::host::AgentHostFuture<'a, bool> {
-        Box::pin(async { true })
-    }
-
-    fn request_user_response<'a>(
-        &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
-        _prompt: crate::chat::ask_user::AskUserPromptPayload,
-    ) -> super::super::host::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
-        Box::pin(async { crate::chat::ask_user::skipped_response() })
-    }
-
     fn is_generation_active(&self, _conversation_id: &str, _generation: u64) -> bool {
         !self.cancel_flag.load(Ordering::SeqCst)
     }
@@ -366,7 +445,7 @@ impl AgentHost for TestHost {
 }
 
 #[derive(Default)]
-struct RecordingExecutor {
+pub(crate) struct RecordingExecutor {
     active: AtomicUsize,
     max_active: AtomicUsize,
     events: Arc<Mutex<Vec<String>>>,
@@ -378,7 +457,7 @@ impl RecordingExecutor {
         self.max_active.load(Ordering::SeqCst)
     }
 
-    fn events(&self) -> Vec<String> {
+    pub(crate) fn events(&self) -> Vec<String> {
         self.events
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -392,7 +471,6 @@ impl ToolExecutor for RecordingExecutor {
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         _arguments: Value,
-        _skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         let name = tool.name.clone();
         let events = self.events.clone();
@@ -409,23 +487,26 @@ impl ToolExecutor for RecordingExecutor {
                 .unwrap_or_else(|err| err.into_inner())
                 .push(format!("finish:{name}"));
             self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(McpToolCallResult {
-                content: format!("result:{name}"),
-                is_error: false,
-                raw: Value::Null,
-                artifacts: Vec::new(),
-                structured_content: None,
-                follow_up_user_messages: if self.image_after_read && name == "read" {
-                    vec![serde_json::json!({
-                        "role": "user",
-                        "content": [{"type": "image_url", "image_url": {
-                            "url": "data:image/png;base64,aGVsbG8="
-                        }}]
-                    })]
-                } else {
-                    Vec::new()
+            crate::chat::tool_output::from_mcp(
+                tool,
+                crate::mcp::types::McpToolCallResult {
+                    content: format!("result:{name}"),
+                    is_error: false,
+                    raw: Value::Null,
+                    artifacts: Vec::new(),
+                    structured_content: None,
+                    follow_up_user_messages: if self.image_after_read && name == "read" {
+                        vec![serde_json::json!({
+                            "role": "user",
+                            "content": [{"type": "image_url", "image_url": {
+                                "url": "data:image/png;base64,aGVsbG8="
+                            }}]
+                        })]
+                    } else {
+                        Vec::new()
+                    },
                 },
-            })
+            )
         })
     }
 }
@@ -441,9 +522,8 @@ impl ToolExecutor for PreviewFeedbackExecutor<'_> {
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
-        _tool: &'a ChatToolDefinition,
+        tool: &'a ChatToolDefinition,
         _arguments: Value,
-        _skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         Box::pin(async move {
             let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
@@ -464,39 +544,7 @@ impl ToolExecutor for PreviewFeedbackExecutor<'_> {
                 || Ok(self.conversation.clone()),
             )
             .await;
-            Ok(result)
-        })
-    }
-}
-
-/// Tool executor that succeeds immediately and flips the shared cancel flag while
-/// executing, so cancellation deterministically lands between the tool round and
-/// the synthesis request (the executor branch wins the `tokio::select!` because it
-/// completes synchronously on its first poll).
-struct CancelAfterToolExecutor {
-    cancel_flag: Arc<AtomicBool>,
-}
-
-impl ToolExecutor for CancelAfterToolExecutor {
-    fn call<'a>(
-        &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
-        tool: &'a ChatToolDefinition,
-        _arguments: Value,
-        _skill_context: Option<&'a mut skills::SkillRunContext>,
-    ) -> super::super::execute::ToolExecutorFuture<'a> {
-        let name = tool.name.clone();
-        let cancel_flag = self.cancel_flag.clone();
-        Box::pin(async move {
-            cancel_flag.store(true, Ordering::SeqCst);
-            Ok(McpToolCallResult {
-                content: format!("result:{name}"),
-                is_error: false,
-                raw: Value::Null,
-                artifacts: Vec::new(),
-                structured_content: None,
-                follow_up_user_messages: Vec::new(),
-            })
+            crate::chat::tool_output::from_mcp(tool, result)
         })
     }
 }
@@ -504,7 +552,7 @@ impl ToolExecutor for CancelAfterToolExecutor {
 /// Scripted HTTP mock for the OpenAI-compatible chat completions endpoint.
 /// Responses are served in connection-accept order; each response closes (or
 /// deliberately breaks) its connection so reqwest opens a fresh one per request.
-enum MockResponse {
+pub(crate) enum MockResponse {
     /// Evaluate the actual HTTP request instead of assuming a request sequence.
     ForRequest(Box<dyn FnOnce(&str) -> MockResponse + Send>),
     /// SSE stream; each entry becomes one `data: <entry>` event.
@@ -524,13 +572,13 @@ enum MockResponse {
     SseThenHang(Vec<String>),
 }
 
-struct MockModelServer {
-    base_url: String,
+pub(crate) struct MockModelServer {
+    pub(crate) base_url: String,
     captured_bodies: Arc<Mutex<Vec<String>>>,
 }
 
 impl MockModelServer {
-    fn start(responses: Vec<MockResponse>) -> Self {
+    pub(crate) fn start(responses: Vec<MockResponse>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock model server");
         let addr = listener.local_addr().expect("mock model server addr");
         let captured_bodies = Arc::new(Mutex::new(Vec::new()));
@@ -576,7 +624,7 @@ impl MockModelServer {
         Self::start(responses)
     }
 
-    fn captured_bodies(&self) -> Vec<String> {
+    pub(crate) fn captured_bodies(&self) -> Vec<String> {
         self.captured_bodies
             .lock()
             .unwrap_or_else(|err| err.into_inner())
@@ -680,7 +728,7 @@ fn serve_mock_response(mut stream: TcpStream, response: MockResponse) {
 /// Minimal in-memory AppState for run_agent_loop tests. Settings live only in
 /// memory and usage records go to a unique temp dir, so user settings/providers
 /// are never touched.
-fn test_app_state() -> AppState {
+pub(crate) fn test_app_state() -> AppState {
     let offline_models =
         crate::offline_models::OfflineModelManager::headless(reqwest::Client::new());
     AppState::base(
@@ -697,7 +745,7 @@ fn test_app_state() -> AppState {
     )
 }
 
-fn test_provider(base_url: &str) -> ModelProvider {
+pub(crate) fn test_provider(base_url: &str) -> ModelProvider {
     ModelProvider {
         id: "test-provider".to_string(),
         name: "Test Provider".to_string(),
@@ -715,9 +763,11 @@ fn test_provider(base_url: &str) -> ModelProvider {
     }
 }
 
-fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a> {
+pub(crate) fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a> {
     AgentRunConfig {
-        provider_runtime: state,
+        state,
+        provider_runtime: None,
+        todo_state: Default::default(),
         conversation_id: "conversation".to_string(),
         tool_conversation_id: "conversation".to_string(),
         depth: 0,
@@ -744,14 +794,11 @@ fn test_run_config<'a>(state: &'a AppState, base_url: &str) -> AgentRunConfig<'a
         web_search_mode: crate::chat::types::WebSearchMode::Off,
         max_output_tokens: 1024,
         retry_attempts: 1,
-        assistant_snapshot: None,
         runtime_context: None,
         provider_tools_fallback_prompt: Default::default(),
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
-        skill_registry: Default::default(),
-        todo_state: Default::default(),
     }
 }
 
@@ -784,11 +831,7 @@ fn planning_tool_call_sse_events() -> Vec<String> {
 }
 
 /// 把一份非流式 chat-completion JSON 固件转成等价的 SSE 事件序列。
-///
-/// 「要完整结果」的模型调用现在**一律走流式线**（`generate_via_stream_collect`，理由见
-/// planning.rs 上 `call_chat_completion_output_with_usage` 的注释）。
-/// 固件用非流式 JSON 写着更好读，所以在这里做一次机械转换，而不是把每个测试都手抄成 SSE。
-fn sse_from_completion_json(body: &str) -> Vec<String> {
+pub(crate) fn sse_from_completion_json(body: &str) -> Vec<String> {
     let parsed: Value = serde_json::from_str(body).expect("mock body must be valid JSON");
     let message = &parsed["choices"][0]["message"];
     let mut events = Vec::new();
@@ -828,6 +871,27 @@ fn sse_from_completion_json(body: &str) -> Vec<String> {
     }
     events.push("[DONE]".to_string());
     events
+}
+
+struct ToolRoundContext<'a> {
+    pub(crate) conversation_id: &'a str,
+    pub(crate) run_id: &'a str,
+    pub(crate) message_id: &'a str,
+    pub(crate) provider: &'a crate::settings::ModelProvider,
+    pub(crate) model: &'a str,
+    pub(crate) generation: u64,
+    pub(crate) round: u32,
+    pub(crate) depth: u8,
+    pub(crate) tool_conversation_id: &'a str,
+    pub(crate) plan_state: &'a crate::chat::types::AgentPlanState,
+    pub(crate) mcp_tool_ids: &'a [(String, String)],
+    pub(crate) mcp_server_ids: &'a [String],
+    pub(crate) approval_policy: &'a str,
+    pub(crate) interactive_host: bool,
+    /// finish_reason of the generation that produced these tool calls. When
+    /// `"length"`, the model hit max_output_tokens and any tool-call JSON is
+    /// truncated — so we explain *that* instead of "invalid JSON, retry".
+    pub(crate) finish_reason: Option<FinishKind>,
 }
 
 fn test_round_context() -> ToolRoundContext<'static> {
@@ -919,7 +983,6 @@ async fn disabled_tool_feedback_lists_remaining_tools_without_disabling_file_acc
     let executor = RecordingExecutor::default();
     let mut settings = Settings::default();
     settings.chat_tools.approval_policy = "auto".into();
-    let mut cache = skills::SkillRunContext::default();
     let result = execute_tool_round(
         &host,
         &executor,
@@ -931,7 +994,6 @@ async fn disabled_tool_feedback_lists_remaining_tools_without_disabling_file_acc
             pending_tool_call("disabled_bash", "bash"),
             pending_tool_call("available_read", "read"),
         ],
-        &mut cache,
     )
     .await;
     let feedback = result.response_messages[0]["content"].as_str().unwrap();
@@ -951,11 +1013,13 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
             ctx: &'a ToolExecutionContext<'a>,
             _: &'a ChatToolDefinition,
             _: Value,
-            _: Option<&'a mut skills::SkillRunContext>,
         ) -> super::super::execute::ToolExecutorFuture<'a> {
             Box::pin(async move {
                 let native = crate::mcp::registry::NativeToolContext::from_execution(ctx);
-                assert_eq!(native.plan_state.mode, crate::chat::types::AgentPlanMode::Orchestrate);
+                assert_eq!(
+                    native.plan_state.mode,
+                    crate::chat::types::AgentPlanMode::Orchestrate
+                );
                 assert_eq!(native.plan_state.plan.as_deref(), Some("approved snapshot"));
                 assert_eq!(native.mcp_tool_ids.len(), 1);
                 assert_eq!(native.mcp_tool_ids[0].0, "allowed");
@@ -964,7 +1028,7 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
                 assert_eq!(native.mcp_server_ids[0], "allowed");
                 assert_eq!(native.approval_policy, "readonly_auto_sensitive_confirm");
                 assert!(native.interactive_host);
-                Ok(McpToolCallResult::default())
+                Ok(super::super::execute::AgentToolOutput::default())
             })
         }
     }
@@ -985,7 +1049,6 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
     };
     let mut settings = Settings::default();
     settings.chat_tools.approval_policy = "auto".into();
-    let mut skills = skills::SkillRunContext::default();
     let result = execute_tool_round(
         &TestHost::default(),
         &InspectContext,
@@ -994,31 +1057,10 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
         &[native_read_file_tool()],
         &[],
         vec![pending_tool_call("call", "read")],
-        &mut skills,
-    ).await;
+    )
+    .await;
     assert_eq!(result.tool_records.len(), 1);
     assert_eq!(result.tool_records[0].status, ToolCallStatus::Success);
-}
-
-#[test]
-fn reasoning_segment_order_precedes_text_in_same_step() {
-    let mut builder = SegmentBuilder::new();
-    let reasoning = builder.reserve(
-        ChatMessageSegmentKind::Reasoning,
-        ChatMessageSegmentPhase::ToolLoop,
-        Some(1),
-        Some(1),
-        "step_1_reasoning",
-    );
-    let text = builder.reserve(
-        ChatMessageSegmentKind::Text,
-        ChatMessageSegmentPhase::ToolLoop,
-        Some(1),
-        Some(1),
-        "step_1_text",
-    );
-
-    assert!(reasoning.order < text.order);
 }
 
 fn test_mcp_tool(name: &str, annotations: Value) -> ChatToolDefinition {
@@ -1060,7 +1102,6 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
             native_web_fetch_tool(),
             native_run_command_tool(),
         ];
-        let mut skill_context = skills::SkillRunContext::default();
         let result = execute_tool_round(
             &host,
             &executor,
@@ -1072,7 +1113,6 @@ async fn tool_image_follow_up_waits_for_all_results_across_batches_and_errors() 
                 pending_tool_call("call_read", "read"),
                 pending_tool_call("call_next", trailing),
             ],
-            &mut skill_context,
         )
         .await;
         assert!(!result.cancelled);
@@ -1097,7 +1137,6 @@ async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_o
     // This regression exercises scheduling after explicit authorization, not approval prompts.
     settings.chat_tools.approval_policy = "auto".into();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1110,7 +1149,6 @@ async fn tool_round_runs_parallel_eligible_tools_concurrently_and_keeps_result_o
             pending_tool_call("call_read", "read"),
             pending_tool_call("call_fetch", "web_fetch"),
         ],
-        &mut skill_context,
     )
     .await;
 
@@ -1175,7 +1213,6 @@ async fn tool_round_runs_read_only_mcp_tools_concurrently() {
         test_mcp_tool("search_a", serde_json::json!({ "readOnlyHint": true })),
         test_mcp_tool("search_b", serde_json::json!({ "readOnlyHint": true })),
     ];
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1188,7 +1225,6 @@ async fn tool_round_runs_read_only_mcp_tools_concurrently() {
             pending_tool_call("call_mcp_a", "search_a"),
             pending_tool_call("call_mcp_b", "search_b"),
         ],
-        &mut skill_context,
     )
     .await;
 
@@ -1210,7 +1246,6 @@ async fn tool_round_keeps_ask_user_serial_between_parallel_safe_tools() {
     let settings = Settings::default();
     let mut tools = vec![native_read_file_tool(), native_web_fetch_tool()];
     crate::chat::ask_user::append_tool_definitions(&mut tools);
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1224,7 +1259,6 @@ async fn tool_round_keeps_ask_user_serial_between_parallel_safe_tools() {
             pending_tool_call("call_ask", "ask_user"),
             pending_tool_call("call_fetch", "web_fetch"),
         ],
-        &mut skill_context,
     )
     .await;
 
@@ -1269,7 +1303,6 @@ async fn tool_round_keeps_destructive_mcp_tools_serial() {
         "write_remote",
         serde_json::json!({ "destructiveHint": true }),
     )];
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1282,7 +1315,6 @@ async fn tool_round_keeps_destructive_mcp_tools_serial() {
             pending_tool_call("call_mcp_write_1", "write_remote"),
             pending_tool_call("call_mcp_write_2", "write_remote"),
         ],
-        &mut skill_context,
     )
     .await;
 
@@ -1303,7 +1335,6 @@ async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
         "remote_search",
         serde_json::json!({ "readOnlyHint": true, "openWorldHint": true }),
     )];
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1316,7 +1347,6 @@ async fn tool_round_keeps_open_world_mcp_tools_serial_even_when_read_only() {
             pending_tool_call("call_mcp_remote_1", "remote_search"),
             pending_tool_call("call_mcp_remote_2", "remote_search"),
         ],
-        &mut skill_context,
     )
     .await;
 
@@ -1335,7 +1365,6 @@ async fn tool_round_preserves_unknown_and_invalid_call_order() {
     // This regression exercises scheduling after explicit authorization, not approval prompts.
     settings.chat_tools.approval_policy = "auto".into();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-    let mut skill_context = skills::SkillRunContext::default();
     let mut invalid_fetch = pending_tool_call("call_bad_args", "web_fetch");
     invalid_fetch.arguments_parse_error = Some("expected compact object".to_string());
 
@@ -1354,7 +1383,6 @@ async fn tool_round_preserves_unknown_and_invalid_call_order() {
             invalid_fetch,
             pending_tool_call("call_final", "read"),
         ],
-        &mut skill_context,
     )
     .await;
 
@@ -1440,7 +1468,6 @@ async fn tool_round_matches_capitalized_tool_names_case_insensitively() {
     let executor = RecordingExecutor::default();
     let settings = Settings::default();
     let tools = vec![native_read_file_tool(), native_web_fetch_tool()];
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1450,7 +1477,6 @@ async fn tool_round_matches_capitalized_tool_names_case_insensitively() {
         &tools,
         &[],
         vec![pending_tool_call("call_cap_read", "Read")],
-        &mut skill_context,
     )
     .await;
 
@@ -1477,7 +1503,6 @@ async fn tool_round_records_plan_blocked_tool_as_skipped() {
     let settings = Settings::default();
     let tools = vec![native_read_file_tool()];
     let blocked = vec![native_run_command_tool()];
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1487,7 +1512,6 @@ async fn tool_round_records_plan_blocked_tool_as_skipped() {
         &tools,
         &blocked,
         vec![pending_tool_call("call_bash", "bash")],
-        &mut skill_context,
     )
     .await;
 
@@ -1518,7 +1542,6 @@ async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
     let executor = RecordingExecutor::default();
     let settings = Settings::default();
     let tools = vec![native_read_file_tool(), native_run_command_tool()];
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1531,7 +1554,6 @@ async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
             pending_tool_call("call_read", "read"),
             pending_tool_call("call_bash", "bash"),
         ],
-        &mut skill_context,
     )
     .await;
 
@@ -1564,94 +1586,12 @@ async fn tool_round_cancels_unstarted_calls_after_running_tool_is_cancelled() {
     );
 }
 
-#[test]
-fn cancelled_tool_round_result_preserves_replay_messages_for_storage() {
-    let tool_record = ToolCallRecord {
-        id: "call_read".to_string(),
-        name: "read".to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        arguments: "{}".to_string(),
-        status: ToolCallStatus::Cancelled,
-        result_preview: None,
-        error: Some("Tool call cancelled".to_string()),
-        duration_ms: Some(5),
-        started_at: Some(10),
-        completed_at: Some(11),
-        round: 1,
-        sensitive: false,
-        artifacts: Vec::new(),
-        trace_id: Some("run".to_string()),
-        span_id: Some("tool_round_1_call_read".to_string()),
-        structured_content: None,
-    };
-    let assistant_message = serde_json::json!({
-        "role": "assistant",
-        "content": Value::Null,
-        "tool_calls": [{
-            "id": "call_read",
-            "type": "function",
-            "function": {
-                "name": "read",
-                "arguments": "{}",
-            }
-        }],
-    });
-    let tool_response = tool_message("call_read".to_string(), "Tool call cancelled");
-    let result = cancelled_tool_round_run_result(
-        &["planning".to_string()],
-        vec![tool_record.clone()],
-        vec![ChatMessageSegment {
-            id: "seg_1000_tool_call_read".to_string(),
-            kind: ChatMessageSegmentKind::Tool,
-            phase: ChatMessageSegmentPhase::ToolLoop,
-            order: 1000,
-            step_number: Some(1),
-            round: Some(1),
-            text: None,
-            tool_call_id: Some("call_read".to_string()),
-        }],
-        vec![assistant_message.clone(), tool_response.clone()],
-    );
-
-    assert!(result.content.is_empty());
-    assert_eq!(result.reasoning.as_deref(), Some("planning"));
-    assert_eq!(result.tool_records.len(), 1);
-    assert!(result.segments.iter().any(|segment| {
-        segment.kind == ChatMessageSegmentKind::Tool
-            && segment.tool_call_id.as_deref() == Some("call_read")
-    }));
-    assert!(!result
-        .segments
-        .iter()
-        .any(|segment| segment.kind == ChatMessageSegmentKind::Text));
-    assert!(matches!(
-        result.tool_records[0].status,
-        ToolCallStatus::Cancelled
-    ));
-    assert_eq!(result.api_messages, vec![assistant_message, tool_response]);
-    assert_eq!(
-        result.api_messages[0]
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(
-        result.api_messages[1]
-            .get("tool_call_id")
-            .and_then(Value::as_str),
-        Some("call_read")
-    );
-}
-
 #[tokio::test]
 async fn tool_round_keeps_serial_only_tools_non_overlapping() {
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
     let settings = Settings::default();
     let tools = vec![native_run_command_tool()];
-    let mut skill_context = skills::SkillRunContext::default();
 
     let result = execute_tool_round(
         &host,
@@ -1664,7 +1604,6 @@ async fn tool_round_keeps_serial_only_tools_non_overlapping() {
             pending_tool_call("call_bash_1", "bash"),
             pending_tool_call("call_bash_2", "bash"),
         ],
-        &mut skill_context,
     )
     .await;
 
@@ -1718,126 +1657,6 @@ fn fallback_responses_are_bilingual() {
         );
 }
 
-/// Fallback A (helper level, deterministic): a planning stream dies while tool
-/// argument drafts are in flight; the run result must mark every draft record
-/// as error, emit the bilingual fallback, and finish with stream_outcome "error".
-#[test]
-fn tool_planning_failed_run_result_marks_drafts_error_and_emits_fallback() {
-    let state = test_app_state();
-    let config = test_run_config(&state, "http://127.0.0.1:9/v1");
-    let host = TestHost::default();
-
-    let mut segment_builder = SegmentBuilder::new();
-    let _reasoning_segment = segment_builder.reserve(
-        ChatMessageSegmentKind::Reasoning,
-        ChatMessageSegmentPhase::ToolLoop,
-        Some(1),
-        Some(1),
-        "step_1_reasoning",
-    );
-    let planning_text_segment = segment_builder.reserve(
-        ChatMessageSegmentKind::Text,
-        ChatMessageSegmentPhase::ToolLoop,
-        Some(1),
-        Some(1),
-        "step_1_text",
-    );
-    let tracker = ToolCallDraftTracker::new(
-        vec![native_write_file_tool()],
-        1,
-        Some(1),
-        segment_builder.next_order(),
-    );
-    let mut sink = AgentStreamSink::new(
-        &host,
-        "conversation",
-        "run",
-        "message",
-        true,
-        None,
-        None,
-        Some(tracker.clone()),
-        None,
-    );
-    sink.emit(StreamPart::ToolCallStart {
-        id: "call_write".to_string(),
-        name: "write".to_string(),
-    })
-    .expect("tool call start should emit");
-    sink.emit(StreamPart::ToolCallDelta {
-        id: "call_write".to_string(),
-        delta: "{\"path\":\"large.html\",\"content\":\"".to_string(),
-    })
-    .expect("tool call delta should emit");
-    assert!(tracker.has_started());
-
-    let result = tool_planning_failed_run_result(
-        &host,
-        &config,
-        segment_builder,
-        planning_text_segment,
-        tracker,
-        &["planning thought".to_string()],
-        Vec::new(),
-        "Chat tools planning read body failed".to_string(),
-    );
-
-    let fallback = tool_planning_failed_fallback_response("zh-CN");
-    assert_eq!(result.stream_outcome, "error");
-    assert_eq!(result.content, fallback);
-    assert_eq!(result.reasoning.as_deref(), Some("planning thought"));
-    assert_eq!(result.tool_records.len(), 1);
-    assert_eq!(result.tool_records[0].id, "call_write");
-    assert!(matches!(
-        result.tool_records[0].status,
-        ToolCallStatus::Error
-    ));
-    assert_eq!(
-        result.tool_records[0].error.as_deref(),
-        Some("Chat tools planning read body failed")
-    );
-    assert!(result.tool_records[0].completed_at.is_some());
-
-    // The error record was re-emitted through the host (after the pending draft).
-    let emitted = host.recorded_tool_records();
-    let last_emitted = emitted.last().expect("error record emitted");
-    assert_eq!(last_emitted.id, "call_write");
-    assert!(matches!(last_emitted.status, ToolCallStatus::Error));
-
-    // Draft tool segment is preserved and the fallback text segment is
-    // synthesis-phase with no round.
-    assert!(result.segments.iter().any(|segment| {
-        segment.kind == ChatMessageSegmentKind::Tool
-            && segment.tool_call_id.as_deref() == Some("call_write")
-    }));
-    let fallback_segment = result
-        .segments
-        .iter()
-        .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
-        .expect("fallback text segment");
-    assert_eq!(fallback_segment.phase, ChatMessageSegmentPhase::Synthesis);
-    assert_eq!(fallback_segment.round, None);
-    assert_eq!(fallback_segment.text.as_deref(), Some(fallback.as_str()));
-
-    // Fallback delta.
-    assert!(host
-        .recorded_deltas()
-        .iter()
-        .any(|delta| delta.delta == fallback));
-
-    // The final assistant message is pushed unconditionally here.
-    assert_eq!(result.api_messages.len(), 1);
-    assert_eq!(
-        result.api_messages[0]
-            .get("content")
-            .and_then(Value::as_str),
-        Some(fallback.as_str())
-    );
-
-    // The whole turn is preserved: exactly the one failed tool record.
-    assert_eq!(result.tool_records.len(), 1);
-}
-
 /// Fallback A (integration): the provider stream breaks mid-connection after a
 /// tool-call draft has started; run_agent_loop must return Ok with
 /// stream_outcome "error" instead of bubbling an invoke error.
@@ -1878,47 +1697,87 @@ async fn run_loop_stream_planning_interrupt_after_tool_draft_returns_error_resul
     );
 }
 
+#[derive(Default)]
+struct ProviderTestSink {
+    retries: Vec<crate::chat::agent::events::RetryStatus>,
+    resets: usize,
+}
+
+impl crate::chat::model::StreamSink for ProviderTestSink {
+    fn emit(&mut self, _: StreamPart) -> Result<(), crate::chat::model::ModelError> {
+        Ok(())
+    }
+}
+
+impl crate::chat::agent::provider_runtime::ModelOutputSink for ProviderTestSink {
+    fn request_started(&mut self, _: &crate::chat::agent::provider_runtime::ModelCall) {}
+    fn retry(&mut self, status: crate::chat::agent::events::RetryStatus) {
+        self.retries.push(status);
+    }
+    fn reset_attempt(&mut self) {
+        self.resets += 1;
+    }
+    fn draft_snapshot(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+}
+
 #[tokio::test]
 async fn stream_request_none_reaches_provider_wire() {
+    use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery, ModelRuntime};
+    use crate::chat::model::{GenerateOptions, ModelTool, RequestMetadata, ToolChoice};
     let server = MockModelServer::start(vec![MockResponse::Sse(vec![
         r#"{"choices":[{"delta":{"content":"finished"},"finish_reason":"stop"}]}"#.into(),
         "[DONE]".into(),
     ])]);
     let state = test_app_state();
-    let config = test_run_config(&state, &server.base_url);
-    let host = TestHost::default();
-    let output = config.provider_runtime.stream(crate::chat::agent::provider_runtime::StreamRequest {
-        host: &host,
-        provider: &config.provider,
-        model: &config.model,
-        messages: vec![serde_json::json!({"role":"user","content":"hello"})],
-        tools: Some(&config.tools),
-        tool_choice: crate::chat::model::ToolChoice::None,
-        retry_attempts: 1,
-        thinking_enabled: false,
-        thinking_level: None,
-        builtin_web_search: false,
-        max_output_tokens: 100,
-        conversation_id: &config.conversation_id,
-        run_id: &config.run_id,
-        message_id: &config.message_id,
-        generation: config.generation,
-        label: "forced finalization",
-        policy: crate::chat::agent::types::AgentStreamPolicy::SynthesisAlwaysDone,
-        text_segment: None,
-        reasoning_segment: None,
-        tool_draft_tracker: None,
-        web_search_tracker: None,
-    }).await.unwrap();
-    assert_eq!(output.finish_reason.as_deref(), Some("stop"));
+    let provider = test_provider(&server.base_url);
+    let runtime = crate::chat::model::agent_runtime::AppAgentModel::new(&state, &provider, 1);
+    let output = runtime
+        .generate(
+            ModelCall {
+                provider_id: provider.id.clone(),
+                model: "test-model".into(),
+                history: vec![RuntimeMessage::text(
+                    crate::chat::model::ModelRole::User,
+                    "hello",
+                )],
+                tools: vec![ModelTool {
+                    name: "read".into(),
+                    description: String::new(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                }],
+                options: GenerateOptions {
+                    tool_choice: ToolChoice::None,
+                    thinking_enabled: false,
+                    max_tokens: 100,
+                    ..Default::default()
+                },
+                metadata: RequestMetadata {
+                    label: "forced finalization".into(),
+                    conversation_id: Some("conversation".into()),
+                    message_id: Some("message".into()),
+                    ..Default::default()
+                },
+                delivery: ModelDelivery::Streamed,
+            },
+            &mut ProviderTestSink::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        output.finish_reason.as_ref().map(|reason| reason.kind),
+        Some(crate::chat::model::FinishKind::Stop)
+    );
     let body: Value = serde_json::from_str(&server.captured_bodies()[0]).unwrap();
     assert_eq!(body["tool_choice"], "none");
     assert!(body.get("tools").is_none());
 }
 
-/// An HTTP error and an interrupted established stream consume the same budget.
 #[tokio::test]
 async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
+    use crate::chat::agent::provider_runtime::{ModelCall, ModelDelivery, ModelRuntime};
+    use crate::chat::model::{GenerateOptions, RequestMetadata};
     for recover in [true, false] {
         let final_response = if recover {
             MockResponse::Sse(sse_from_completion_json(
@@ -1930,45 +1789,47 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
         let server = MockModelServer::start(vec![
             MockResponse::Status(503, "unavailable".into()),
             MockResponse::SseInterrupt(vec![
-                serde_json::json!({"choices":[{"delta":{"content":"partial"}}]}).to_string(),
+                serde_json::json!({"choices":[{"delta":{"content":"partial 🌱", "reasoning_content":"discarded thought"}}]}).to_string(),
             ]),
             final_response,
         ]);
         let state = test_app_state();
-        let config = test_run_config(&state, &server.base_url);
-        let host = TestHost::default();
-        let result = config
-            .provider_runtime
-            .stream(crate::chat::agent::provider_runtime::StreamRequest {
-                host: &host,
-                provider: &config.provider,
-                model: &config.model,
-                messages: vec![serde_json::json!({"role":"user", "content":"hello"})],
-                tools: None,
-                tool_choice: crate::chat::model::ToolChoice::Auto,
-                retry_attempts: 3,
-                thinking_enabled: false,
-                thinking_level: None,
-                builtin_web_search: false,
-                max_output_tokens: 100,
-                conversation_id: &config.conversation_id,
-                run_id: &config.run_id,
-                message_id: &config.message_id,
-                generation: config.generation,
-                label: "Budget test",
-                policy: crate::chat::agent::types::AgentStreamPolicy::SynthesisAlwaysDone,
-                text_segment: None,
-                reasoning_segment: None,
-                tool_draft_tracker: None,
-                web_search_tracker: None,
-            })
+        let provider = test_provider(&server.base_url);
+        let runtime = crate::chat::model::agent_runtime::AppAgentModel::new(&state, &provider, 3);
+        let mut sink = ProviderTestSink::default();
+        let result = runtime
+            .generate(
+                ModelCall {
+                    provider_id: provider.id.clone(),
+                    model: "test-model".into(),
+                    history: vec![RuntimeMessage::text(
+                        crate::chat::model::ModelRole::User,
+                        "hello",
+                    )],
+                    tools: Vec::new(),
+                    options: GenerateOptions {
+                        thinking_enabled: false,
+                        max_tokens: 100,
+                        ..Default::default()
+                    },
+                    metadata: RequestMetadata {
+                        label: "Budget test".into(),
+                        conversation_id: Some("conversation".into()),
+                        message_id: Some("message".into()),
+                        ..Default::default()
+                    },
+                    delivery: ModelDelivery::Streamed,
+                },
+                &mut sink,
+            )
             .await;
         assert_eq!(result.is_ok(), recover);
         if let Ok(output) = result {
-            assert_eq!(output.content, "recovered");
+            assert_eq!(output.text, "recovered");
+            assert!(output.reasoning.is_none());
         }
         assert_eq!(server.captured_bodies().len(), 3);
-        let progress = host.retry_statuses.lock().unwrap();
+        let progress = &sink.retries;
         assert_eq!(
             progress
                 .iter()
@@ -1976,7 +1837,7 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
                 .collect::<Vec<_>>(),
             vec![(1, 2), (2, 2)]
         );
-        assert_eq!(host.discarded_attempts.lock().unwrap().len(), 1);
+        assert_eq!(sink.resets, 1);
     }
 }
 
@@ -2384,10 +2245,10 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
         .expect("synthesis failure after tool records must not bubble Err");
 
     // 框架恢复:合成被拒(400)后不再吐静态"失败"文案,而是用已收集的工具结果兜底。
-    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
-        &result.tool_records,
+    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
+        &result.raw_tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::InvalidRequest,
+        crate::chat::recovery_policy::FailureKind::InvalidRequest,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "recovered");
@@ -2434,15 +2295,19 @@ async fn run_loop_stream_synthesis_failure_preserves_tool_records_with_fallback(
 /// returns Ok("cancelled") without a synthetic assistant response.
 #[tokio::test]
 async fn run_loop_stream_synthesis_cancelled_returns_cancelled_without_placeholder() {
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_on_request = cancel_flag.clone();
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
-        MockResponse::SseThenHang(Vec::new()),
+        MockResponse::ForRequest(Box::new(move |_| {
+            cancel_on_request.store(true, Ordering::SeqCst);
+            MockResponse::SseThenHang(Vec::new())
+        })),
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let host = TestHost::with_cancel_flag(cancel_flag.clone());
-    let executor = CancelAfterToolExecutor { cancel_flag };
+    let host = TestHost::with_cancel_flag(cancel_flag);
+    let executor = RecordingExecutor::default();
 
     let result = run_agent_loop(config, &host, &executor)
         .await
@@ -2678,19 +2543,21 @@ impl ToolExecutor for HugeResultExecutor {
     fn call<'a>(
         &'a self,
         _ctx: &'a ToolExecutionContext<'a>,
-        _tool: &'a ChatToolDefinition,
+        tool: &'a ChatToolDefinition,
         _arguments: Value,
-        _skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> super::super::execute::ToolExecutorFuture<'a> {
         Box::pin(async move {
-            Ok(McpToolCallResult {
-                content: "A".repeat(self.chars),
-                is_error: false,
-                raw: Value::Null,
-                artifacts: Vec::new(),
-                structured_content: None,
-                follow_up_user_messages: Vec::new(),
-            })
+            crate::chat::tool_output::from_mcp(
+                tool,
+                crate::mcp::types::McpToolCallResult {
+                    content: "A".repeat(self.chars),
+                    is_error: false,
+                    raw: Value::Null,
+                    artifacts: Vec::new(),
+                    structured_content: None,
+                    follow_up_user_messages: Vec::new(),
+                },
+            )
         })
     }
 }
@@ -3086,27 +2953,55 @@ async fn run_loop_persists_partial_assistant_after_completed_tool_round() {
 
 #[tokio::test]
 async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provider_call() {
-    struct CheckpointExecutor<'a> { host: &'a TestHost, arguments: String }
+    struct CheckpointExecutor<'a> {
+        host: &'a TestHost,
+        arguments: String,
+    }
     impl ToolExecutor for CheckpointExecutor<'_> {
         fn call<'a>(
-            &'a self, _ctx: &'a ToolExecutionContext<'a>, tool: &'a ChatToolDefinition,
-            _arguments: Value, _skill_context: Option<&'a mut skills::SkillRunContext>,
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+            tool: &'a ChatToolDefinition,
+            _arguments: Value,
         ) -> super::super::execute::ToolExecutorFuture<'a> {
             Box::pin(async move {
                 if tool.name != "task" {
-                    return Ok(McpToolCallResult { content: "Read result".into(), ..Default::default() });
+                    return crate::chat::tool_output::from_mcp(
+                        tool,
+                        crate::mcp::types::McpToolCallResult {
+                            content: "Read result".into(),
+                            ..Default::default()
+                        },
+                    );
                 }
                 let drafts = self.host.persisted_drafts.lock().unwrap();
-                let (records, messages) = drafts.last().expect("checkpoint precedes task execution");
-                let task = records.iter().find(|record| record.id == "call_task").unwrap();
+                let (records, messages) =
+                    drafts.last().expect("checkpoint precedes task execution");
+                let task = records
+                    .iter()
+                    .find(|record| record.id == "call_task")
+                    .unwrap();
                 assert_eq!(task.name, "task");
                 assert_eq!(task.source, "native");
                 assert_eq!(task.status, ToolCallStatus::Pending);
                 assert_eq!(task.arguments, self.arguments);
-                assert!(messages.len() >= 2, "completed prior tool work remains replayable");
-                assert!(!serde_json::to_string(messages).unwrap().contains("call_task"),
-                    "the incomplete tool-call message must not enter replay");
-                Ok(McpToolCallResult { content: "Task result".into(), ..Default::default() })
+                assert!(
+                    messages.len() >= 2,
+                    "completed prior tool work remains replayable"
+                );
+                assert!(
+                    !serde_json::to_string(messages)
+                        .unwrap()
+                        .contains("call_task"),
+                    "the incomplete tool-call message must not enter replay"
+                );
+                crate::chat::tool_output::from_mcp(
+                    tool,
+                    crate::mcp::types::McpToolCallResult {
+                        content: "Task result".into(),
+                        ..Default::default()
+                    },
+                )
             })
         }
     }
@@ -3116,18 +3011,34 @@ async fn task_call_is_checkpointed_before_execution_without_an_unanswered_provid
     }).to_string();
     let call = serde_json::json!({"choices":[{"delta":{"tool_calls":[
         {"index":0,"id":"call_task","function":{"name":"task","arguments":arguments}}
-    ]}}]}).to_string();
+    ]}}]})
+    .to_string();
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
-        MockResponse::Sse(vec![call, r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.into(), "[DONE]".into()]),
-        MockResponse::Sse(vec![r#"{"choices":[{"delta":{"content":"Finished"}}]}"#.into(), "[DONE]".into()]),
+        MockResponse::Sse(vec![
+            call,
+            r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#.into(),
+            "[DONE]".into(),
+        ]),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"Finished"}}]}"#.into(),
+            "[DONE]".into(),
+        ]),
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
-    config.tools = vec![native_read_file_tool(), crate::chat::sub_agent::task::tool_definition(&[], &Settings::default())];
+    config.tools = vec![
+        native_read_file_tool(),
+        crate::chat::sub_agent::task::tool_definition(&[], &Settings::default()),
+    ];
     let host = TestHost::default();
-    let executor = CheckpointExecutor { host: &host, arguments };
-    let result = run_agent_loop(config, &host, &executor).await.expect("run completes");
+    let executor = CheckpointExecutor {
+        host: &host,
+        arguments,
+    };
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("run completes");
     assert_eq!(result.stream_outcome, "completed");
 }
 
@@ -3165,7 +3076,7 @@ async fn run_loop_steering_injects_user_message_and_emits_card() {
     // ② 卡片：实时发过一条，且留在 run 结果里（→ 落盘到 assistant 消息的 tool_calls）。
     let steer_card = |records: &[ToolCallRecord]| {
         records.iter().any(|record| {
-            record.name == crate::chat::agent::STEER_TOOL_NAME
+            record.name == crate::chat::agent_presentation::STEER_TOOL_NAME
                 && record.source == "native"
                 && record
                     .structured_content
@@ -3188,7 +3099,7 @@ async fn run_loop_steering_injects_user_message_and_emits_card() {
     let card_id = result
         .tool_records
         .iter()
-        .find(|record| record.name == crate::chat::agent::STEER_TOOL_NAME)
+        .find(|record| record.name == crate::chat::agent_presentation::STEER_TOOL_NAME)
         .map(|record| record.id.clone())
         .expect("steer record present");
     assert!(
@@ -3255,7 +3166,7 @@ async fn run_loop_steering_delivers_one_message_per_round() {
     let steer_ids: Vec<_> = result
         .tool_records
         .iter()
-        .filter(|record| record.name == crate::chat::agent::STEER_TOOL_NAME)
+        .filter(|record| record.name == crate::chat::agent_presentation::STEER_TOOL_NAME)
         .filter_map(|record| {
             record
                 .structured_content
@@ -3332,8 +3243,124 @@ async fn run_loop_final_answer_with_pending_steering_continues() {
     assert!(result
         .tool_records
         .iter()
-        .any(|record| record.name == crate::chat::agent::STEER_TOOL_NAME));
+        .any(|record| record.name == crate::chat::agent_presentation::STEER_TOOL_NAME));
     assert_eq!(result.stream_outcome, "completed");
+}
+
+#[tokio::test]
+async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownership() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec![
+            serde_json::json!({"choices":[{"delta":{"content":"intermediate answer"}}]})
+                .to_string(),
+            "[DONE]".into(),
+        ]),
+        MockResponse::Sse(vec![
+            serde_json::json!({"choices":[{"delta":{"content":"final answer"}}]}).to_string(),
+            "[DONE]".into(),
+        ]),
+    ]);
+    let ordinary = serde_json::json!({"role":"user", "content":"new checkpoint input"});
+    let persisted = serde_json::json!({
+        "role":"user", "content":"already saved child result", "subagent_parent_persisted":true,
+    });
+    let tail = serde_json::json!({"role":"user", "content":"tail checkpoint input"});
+    let host = TestHost {
+        finishing_inputs: Mutex::new(
+            vec![
+                vec![ordinary.clone(), persisted.clone()],
+                Vec::new(),
+                vec![tail.clone()],
+            ]
+            .into(),
+        ),
+        ..TestHost::default()
+    };
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url);
+    let executor = RecordingExecutor::default();
+
+    let result = run_agent_loop(config, &host, &executor).await.unwrap();
+
+    assert_eq!(result.content, "final answer");
+    assert_eq!(result.stream_outcome, "completed");
+    assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
+    assert_eq!(
+        result
+            .tool_records
+            .iter()
+            .filter(|record| record.id == "call_read")
+            .count(),
+        1
+    );
+    assert_eq!(host.recorded_persists().len(), 1);
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 3);
+    let continued: Value = serde_json::from_str(&bodies[2]).unwrap();
+    let messages = continued["messages"].as_array().unwrap();
+    let contents: Vec<_> = messages
+        .iter()
+        .filter_map(|message| message["content"].as_str())
+        .collect();
+    let expected = [
+        "intermediate answer",
+        "new checkpoint input",
+        "already saved child result",
+    ];
+    let mut positions = Vec::new();
+    for content in expected {
+        assert_eq!(contents.iter().filter(|text| **text == content).count(), 1);
+        positions.push(contents.iter().position(|text| *text == content).unwrap());
+    }
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(!contents.contains(&"tail checkpoint input"));
+    for content in [
+        "intermediate answer",
+        "final answer",
+        "new checkpoint input",
+        "tail checkpoint input",
+    ] {
+        assert_eq!(
+            result
+                .api_messages
+                .iter()
+                .filter(|message| message["content"] == content)
+                .count(),
+            1
+        );
+    }
+    assert!(!result
+        .api_messages
+        .iter()
+        .any(|message| message["content"] == persisted["content"]));
+    assert_eq!(result.api_messages[result.api_messages.len() - 2], tail);
+    assert_eq!(
+        result.api_messages.last().unwrap()["content"],
+        "final answer"
+    );
+    let streamed: String = host
+        .recorded_deltas()
+        .iter()
+        .map(|delta| delta.delta.as_str())
+        .collect();
+    assert_eq!(streamed, "intermediate answerfinal answer");
+}
+
+#[tokio::test]
+async fn run_loop_empty_planning_response_fails_without_executing_tools() {
+    let server = MockModelServer::start(vec![MockResponse::Sse(vec!["[DONE]".into()])]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url);
+    let host = TestHost::default();
+    let executor = RecordingExecutor::default();
+
+    let error = run_agent_loop(config, &host, &executor).await.unwrap_err();
+
+    assert!(error.contains("empty assistant response"));
+    assert_eq!(server.captured_bodies().len(), 1);
+    assert!(executor.events().is_empty());
+    assert!(host.recorded_persists().is_empty());
 }
 
 /// 内置循环的原生 follow-up：终答时信箱有下一轮消息 ⇒ 吸收终答、注入 `user_follow_up`
@@ -3377,11 +3404,11 @@ async fn run_loop_final_answer_with_pending_follow_up_continues() {
     assert!(result
         .tool_records
         .iter()
-        .any(|record| record.name == crate::chat::agent::FOLLOW_UP_TOOL_NAME));
+        .any(|record| record.name == crate::chat::agent_presentation::FOLLOW_UP_TOOL_NAME));
     assert!(result
         .tool_records
         .iter()
-        .all(|record| record.name != crate::chat::agent::STEER_TOOL_NAME));
+        .all(|record| record.name != crate::chat::agent_presentation::STEER_TOOL_NAME));
     assert_eq!(result.stream_outcome, "completed");
 }
 
@@ -3435,8 +3462,82 @@ async fn run_loop_follow_up_waits_until_final_answer() {
     assert!(result
         .tool_records
         .iter()
-        .any(|record| record.name == crate::chat::agent::FOLLOW_UP_TOOL_NAME));
+        .any(|record| record.name == crate::chat::agent_presentation::FOLLOW_UP_TOOL_NAME));
     assert_eq!(result.stream_outcome, "completed");
+}
+
+#[tokio::test]
+async fn run_loop_dsml_calls_keep_ids_and_reject_truncated_batches() {
+    for finish in ["stop", "length"] {
+        let text = concat!(
+            "Reading the file.\n",
+            "<|DSML|tool_calls><|DSML|invoke name=\"read\">",
+            "<|DSML|parameter name=\"path\" string=\"true\">fixture.txt</|DSML|parameter>",
+            "</|DSML|invoke></|DSML|tool_calls>",
+        );
+        let server = MockModelServer::start(vec![
+            MockResponse::Sse(vec![
+                serde_json::json!({"choices":[{"delta":{"content":text}}]}).to_string(),
+                serde_json::json!({
+                    "choices":[{"delta":{},"finish_reason":finish}],
+                    "usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13},
+                })
+                .to_string(),
+                "[DONE]".into(),
+            ]),
+            final_answer_sse("finished"),
+        ]);
+        let state = test_app_state();
+        let config = test_run_config(&state, &server.base_url);
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor).await.unwrap();
+
+        assert_eq!(result.content, "finished");
+        let bodies = server.captured_bodies();
+        assert_eq!(bodies.len(), 2);
+        let next: Value = serde_json::from_str(&bodies[1]).unwrap();
+        let messages = next["messages"].as_array().unwrap();
+        let assistant = messages
+            .iter()
+            .find(|message| message["tool_calls"].is_array())
+            .unwrap();
+        let calls = assistant["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        let id = calls[0]["id"].as_str().unwrap();
+        assert!(!id.is_empty());
+        assert_eq!(calls[0]["function"]["name"], "read");
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|message| message["tool_call_id"] == id)
+                .count(),
+            1
+        );
+        assert_eq!(
+            result
+                .tool_records
+                .iter()
+                .filter(|record| record.id == id)
+                .count(),
+            1
+        );
+        assert!(!assistant["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("DSML"));
+        assert_eq!(assistant["content"], "Reading the file.");
+        if finish == "length" {
+            assert!(executor.events().is_empty());
+            assert!(result
+                .tool_records
+                .iter()
+                .any(|record| record.id == id && matches!(record.status, ToolCallStatus::Error)));
+        } else {
+            assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
+        }
+    }
 }
 
 /// 对齐 pi failToolCallsFromTruncatedMessage：finish_reason=="length" 时整批工具调用作废
@@ -3810,7 +3911,10 @@ async fn compaction_checkpoints_old_history_and_keeps_concurrent_input() {
         assert_eq!(checkpoints.len(), 1);
         assert_eq!(checkpoints[0], old);
         if fail {
-            assert!(result.err().unwrap().contains("checkpoint persistence failed"));
+            assert!(result
+                .err()
+                .unwrap()
+                .contains("checkpoint persistence failed"));
             assert_eq!(server.captured_bodies().len(), 1);
         } else {
             let result = result.unwrap();
@@ -3978,10 +4082,10 @@ async fn run_loop_stream_synthesis_empty_output_uses_fallback_and_completes() {
         .await
         .expect("empty synthesis with tool records must not bubble Err");
 
-    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
-        &result.tool_records,
+    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
+        &result.raw_tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::Empty,
+        crate::chat::recovery_policy::FailureKind::Empty,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "completed");
@@ -4024,10 +4128,10 @@ async fn run_loop_nonstream_synthesis_failure_preserves_tool_records_with_fallba
         .await
         .expect("non-stream synthesis failure after tool records must not bubble Err");
 
-    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
-        &result.tool_records,
+    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
+        &result.raw_tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::InvalidRequest,
+        crate::chat::recovery_policy::FailureKind::InvalidRequest,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "recovered");
@@ -4095,7 +4199,10 @@ async fn run_loop_overflow_recovery_compacts_and_retries_success() {
             serde_json::json!({ "role": "assistant", "content": archived_work("earlier answer") }),
         ],
     );
-    let host = TestHost { capture_compaction: true, ..Default::default() };
+    let host = TestHost {
+        capture_compaction: true,
+        ..Default::default()
+    };
     let executor = RecordingExecutor::default();
 
     let result = run_agent_loop(config, &host, &executor)
@@ -4114,8 +4221,12 @@ async fn run_loop_overflow_recovery_compacts_and_retries_success() {
     assert_eq!(server.captured_bodies().len(), 5);
     let checkpoints = host.compaction_checkpoints.lock().unwrap();
     assert_eq!(checkpoints.len(), 1);
-    assert!(checkpoints[0].iter().any(|message| message["content"].as_str().is_some_and(|text| text.contains("earlier answer"))));
-    assert!(checkpoints[0].iter().any(|message| message["role"] == "tool" && message["content"] == "result:read"));
+    assert!(checkpoints[0].iter().any(|message| message["content"]
+        .as_str()
+        .is_some_and(|text| text.contains("earlier answer"))));
+    assert!(checkpoints[0]
+        .iter()
+        .any(|message| message["role"] == "tool" && message["content"] == "result:read"));
 }
 
 /// 静默超窗（pi `isContextOverflow` case 2/3）：synthesis 调用 **HTTP 200 成功**，
@@ -4233,10 +4344,10 @@ async fn run_loop_overflow_recovery_retries_once_then_degrades() {
         .await
         .expect("overflow recovery exhaustion must not bubble Err");
 
-    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
-        &result.tool_records,
+    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
+        &result.raw_tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::ContextOverflow,
+        crate::chat::recovery_policy::FailureKind::ContextOverflow,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.content, recovered);
@@ -4276,10 +4387,10 @@ async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
         .await
         .expect("non-stream empty synthesis with tool records must not bubble Err");
 
-    let recovered = crate::chat::agent::recovery::assemble_results_from_tool_records(
-        &result.tool_records,
+    let recovered = crate::chat::recovery_policy::assemble_results_from_tool_records(
+        &result.raw_tool_records,
         "zh-CN",
-        crate::chat::agent::recovery::FailureKind::Empty,
+        crate::chat::recovery_policy::FailureKind::Empty,
     );
     assert!(recovered.contains("result:read"));
     assert_eq!(result.stream_outcome, "completed");
@@ -4302,6 +4413,66 @@ async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
 
 /// Responses 格式的一段内置搜索 SSE（web_search_call 查询 + 正文 + url_citation 来源），
 /// 供内置搜索实时卡端到端集成测试用（任务 07-23）。无 function_call → planning 直接终答。
+#[tokio::test]
+async fn run_loop_responses_reasoning_survives_plain_final_and_reload() {
+    for tools_enabled in [true, false] {
+        let reasoning = serde_json::json!({
+            "type": "reasoning", "id": "rs_saved", "encrypted_content": "opaque-replay",
+        });
+        let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+            serde_json::json!({
+                "type": "response.output_text.delta", "delta": "answer with replay",
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "response.completed",
+                "response": { "status": "completed", "output": [
+                    reasoning.clone(),
+                    { "type": "message", "role": "assistant", "content": [
+                        { "type": "output_text", "text": "answer with replay" }
+                    ] }
+                ] }
+            })
+            .to_string(),
+        ])]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.provider.api_format = "openai_responses".into();
+        if !tools_enabled {
+            config.tools.clear();
+        }
+        let host = TestHost::default();
+        let executor = RecordingExecutor::default();
+
+        let result = run_agent_loop(config, &host, &executor).await.unwrap();
+
+        assert_eq!(result.content, "answer with replay");
+        assert_eq!(server.captured_bodies().len(), 1);
+        assert!(executor.events().is_empty());
+        let saved = crate::chat::model::model_messages_from_openai_messages(result.api_messages);
+        let reloaded = serde_json::from_str::<Vec<crate::chat::model::ModelMessage>>(
+            &serde_json::to_string(&saved).unwrap(),
+        )
+        .unwrap();
+        let replay =
+            crate::chat::model::responses_input_from_model_messages(&reloaded, Some("test-model"));
+        assert_eq!(
+            replay
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count(),
+            1
+        );
+        assert_eq!(replay.first(), Some(&reasoning));
+        assert!(crate::chat::model::responses_input_from_model_messages(
+            &reloaded,
+            Some("another-model"),
+        )
+        .iter()
+        .all(|item| item["type"] != "reasoning"));
+    }
+}
+
 fn responses_web_search_sse_events() -> Vec<String> {
     vec![
         r#"{"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"in_progress"}}"#.to_string(),
@@ -4314,7 +4485,7 @@ fn responses_web_search_sse_events() -> Vec<String> {
 }
 
 /// 收集本条 assistant 消息里的内置搜索卡段（tool_call_id 以 `websearch_` 打头）。
-fn web_search_card_segments(result: &AgentRunResult) -> Vec<&ChatMessageSegment> {
+fn web_search_card_segments(result: &PresentedRunResult) -> Vec<&ChatMessageSegment> {
     result
         .segments
         .iter()
@@ -4495,80 +4666,13 @@ fn assert_hook_events_well_formed(events: &[&str]) {
 }
 
 impl AgentHost for HookedHost {
-    fn emit_stream_delta(
-        &self,
-        conversation_id: &str,
-        run_id: &str,
-        message_id: &str,
-        delta: &str,
-        reasoning_delta: Option<&str>,
-        segment: Option<&ChatMessageSegment>,
-    ) {
-        self.inner.emit_stream_delta(
-            conversation_id,
-            run_id,
-            message_id,
-            delta,
-            reasoning_delta,
-            segment,
-        );
-    }
-
-    fn emit_tool_record(
-        &self,
-        conversation_id: &str,
-        run_id: &str,
-        message_id: &str,
-        record: &ToolCallRecord,
-    ) {
-        self.inner
-            .emit_tool_record(conversation_id, run_id, message_id, record);
-    }
-
-    fn request_tool_approval<'a>(
-        &'a self,
-        ctx: &'a ToolExecutionContext<'a>,
-        record: &'a ToolCallRecord,
-    ) -> super::super::host::AgentHostFuture<'a, bool> {
-        self.inner.request_tool_approval(ctx, record)
-    }
-
-    fn request_session_consent<'a>(
-        &'a self,
-        ctx: &'a ToolExecutionContext<'a>,
-    ) -> super::super::host::AgentHostFuture<'a, bool> {
-        self.inner.request_session_consent(ctx)
-    }
-
-    fn request_user_response<'a>(
-        &'a self,
-        ctx: &'a ToolExecutionContext<'a>,
-        record: &'a ToolCallRecord,
-        prompt: crate::chat::ask_user::AskUserPromptPayload,
-    ) -> super::super::host::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
-        self.inner.request_user_response(ctx, record, prompt)
-    }
-
-    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.inner.is_generation_active(conversation_id, generation)
-    }
-
-    fn wait_for_generation_inactive<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        generation: u64,
-    ) -> super::super::host::AgentHostFuture<'a, ()> {
-        self.inner
-            .wait_for_generation_inactive(conversation_id, generation)
-    }
-
     fn persist_partial_assistant<'a>(
         &'a self,
         conversation_id: &'a str,
         message_id: &'a str,
-        tool_records: &'a [ToolCallRecord],
-        segments: &'a [ChatMessageSegment],
-        api_messages: &'a [Value],
+        tool_records: &'a [AgentToolCall],
+        segments: &'a [ContentBlock],
+        api_messages: &'a [RuntimeMessage],
     ) -> super::super::host::AgentHostFuture<'a, ()> {
         self.inner.persist_partial_assistant(
             conversation_id,
@@ -4579,8 +4683,34 @@ impl AgentHost for HookedHost {
         )
     }
 
-    fn hooks(&self) -> Option<&crate::chat::hooks::HookDispatcher> {
+    fn hooks(&self) -> Option<&dyn crate::chat::agent::events::AgentEventSink> {
         Some(&self.hooks)
+    }
+}
+
+impl crate::chat::tool_runtime::ApplicationHost for HookedHost {
+    fn request_tool_approval<'a>(
+        &'a self,
+        ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
+        record: &'a AgentToolCall,
+    ) -> super::super::host::AgentHostFuture<'a, bool> {
+        self.inner.request_tool_approval(ctx, record)
+    }
+
+    fn request_session_consent<'a>(
+        &'a self,
+        ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
+    ) -> super::super::host::AgentHostFuture<'a, bool> {
+        self.inner.request_session_consent(ctx)
+    }
+
+    fn request_user_response<'a>(
+        &'a self,
+        ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
+        record: &'a AgentToolCall,
+        prompt: crate::chat::ask_user::AskUserPromptPayload,
+    ) -> super::super::host::AgentHostFuture<'a, crate::chat::ask_user::AskUserResponseResult> {
+        self.inner.request_user_response(ctx, record, prompt)
     }
 }
 
@@ -4846,9 +4976,11 @@ async fn collaboration_preserves_parent_answer_without_text_grading() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.clear();
-    config.runtime_messages.push(crate::chat::sub_agent::delivery::report_input(
-        "[Sub-agent: A · Completed]\n聊天流程缺少取消清理",
-    ));
+    config
+        .runtime_messages
+        .push(crate::chat::sub_agent::delivery::report_input(
+            "[Sub-agent: A · Completed]\n聊天流程缺少取消清理",
+        ));
     let host = TestHost::default();
     let result = run_agent_loop(config, &host, &RecordingExecutor::default())
         .await
@@ -4877,9 +5009,11 @@ async fn collaboration_returns_each_parent_answer_directly() {
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
         config.tools.clear();
-        config.runtime_messages.push(crate::chat::sub_agent::delivery::report_input(
-            "[Sub-agent: A · Completed]\n未发现取消处理",
-        ));
+        config
+            .runtime_messages
+            .push(crate::chat::sub_agent::delivery::report_input(
+                "[Sub-agent: A · Completed]\n未发现取消处理",
+            ));
         let result =
             run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default()).await;
         assert_eq!(result.is_ok(), succeeds);
@@ -4988,7 +5122,7 @@ async fn summary_overflow_folds_history_and_preserves_recent_tool_round() {
         serde_json::json!({"role":"assistant","tool_calls":[{"id":"kept_call","type":"function","function":{"name":"read","arguments":"{\"path\":\"a.txt\"}"}}]}),
         serde_json::json!({"role":"tool","tool_call_id":"kept_call","content":"full tool result"}),
     ];
-    let result = crate::chat::agent::compaction::summarize_history(
+    let result = crate::chat::context_policy::summarize_history(
         &state,
         &config.provider,
         &config.model,
@@ -5002,7 +5136,7 @@ async fn summary_overflow_folds_history_and_preserves_recent_tool_round() {
         None,
     )
     .await;
-    let crate::chat::agent::compaction::CompactOutcome::Compacted(history, _) = result else {
+    let crate::chat::context_policy::CompactOutcome::Compacted(history, _) = result else {
         panic!("summary must succeed");
     };
     let text = serde_json::to_string(&history).unwrap();
@@ -5012,8 +5146,8 @@ async fn summary_overflow_folds_history_and_preserves_recent_tool_round() {
     );
     assert!(text.contains("full tool result"));
     assert_eq!(
-        super::super::prepare::latest_runtime_context(&history),
-        super::super::prepare::latest_runtime_context(&messages)
+        crate::chat::agent_preparation::latest_runtime_context(&history),
+        crate::chat::agent_preparation::latest_runtime_context(&messages)
     );
     assert_eq!(
         text.matches("kept_call").count(),
@@ -5045,7 +5179,7 @@ async fn manual_summary_preserves_recent_context_verbatim() {
         serde_json::json!({"role":"assistant","content":"latest original answer"}),
         serde_json::json!({"role":"user","content":"latest correction: do not modify files"}),
     ];
-    let result = crate::chat::agent::compaction::summarize_history(
+    let result = crate::chat::context_policy::summarize_history(
         &state,
         &config.provider,
         &config.model,
@@ -5059,7 +5193,7 @@ async fn manual_summary_preserves_recent_context_verbatim() {
         None,
     )
     .await;
-    let crate::chat::agent::compaction::CompactOutcome::Compacted(history, _) = result else {
+    let crate::chat::context_policy::CompactOutcome::Compacted(history, _) = result else {
         panic!("summary must succeed");
     };
     assert!(history
@@ -5084,7 +5218,7 @@ async fn zcode_summary_cancel_keeps_original_messages() {
         serde_json::json!({"role":"assistant","content":"more work"}),
     ];
     let before = messages.clone();
-    let result = crate::chat::agent::compaction::summarize_history(
+    let result = crate::chat::context_policy::summarize_history(
         &state,
         &config.provider,
         &config.model,
@@ -5100,7 +5234,7 @@ async fn zcode_summary_cancel_keeps_original_messages() {
     .await;
     assert!(matches!(
         result,
-        crate::chat::agent::compaction::CompactOutcome::Cancelled
+        crate::chat::context_policy::CompactOutcome::Cancelled
     ));
     assert_eq!(messages, before);
 }
@@ -5155,7 +5289,7 @@ async fn zcode_summary_rejects_truncated_output_without_replacing_history() {
         serde_json::json!({"role":"assistant","content":"latest work"}),
     ];
     let original = messages.clone();
-    let result = crate::chat::agent::compaction::summarize_history(
+    let result = crate::chat::context_policy::summarize_history(
         &state,
         &config.provider,
         &config.model,
@@ -5171,7 +5305,7 @@ async fn zcode_summary_rejects_truncated_output_without_replacing_history() {
     .await;
     assert!(matches!(
         result,
-        crate::chat::agent::compaction::CompactOutcome::Failed
+        crate::chat::context_policy::CompactOutcome::Failed
     ));
     assert_eq!(messages, original);
     assert_eq!(server.captured_bodies().len(), 1);
@@ -5203,11 +5337,15 @@ async fn zcode_summary_request_carries_run_tools_or_text_history() {
         let state = test_app_state();
         let config = test_run_config(&state, &server.base_url);
         let tools = if with_tools {
-            config.tools.clone()
+            config
+                .tools
+                .iter()
+                .map(crate::chat::model::ModelTool::from)
+                .collect()
         } else {
             Vec::new()
         };
-        let outcome = crate::chat::agent::compaction::summarize_history(
+        let outcome = crate::chat::context_policy::summarize_history(
             &state,
             &config.provider,
             &config.model,
@@ -5223,7 +5361,7 @@ async fn zcode_summary_request_carries_run_tools_or_text_history() {
         .await;
         assert!(matches!(
             outcome,
-            crate::chat::agent::compaction::CompactOutcome::Compacted(..)
+            crate::chat::context_policy::CompactOutcome::Compacted(..)
         ));
         let body: Value = serde_json::from_str(&server.captured_bodies()[0]).unwrap();
         if with_tools {
@@ -5257,13 +5395,17 @@ async fn zcode_summary_retries_without_tools_when_provider_rejects_them() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let outcome = crate::chat::agent::compaction::summarize_history(
+    let outcome = crate::chat::context_policy::summarize_history(
         &state,
         &config.provider,
         &config.model,
         &tool_round_history(),
         true,
-        &config.tools,
+        &config
+            .tools
+            .iter()
+            .map(crate::chat::model::ModelTool::from)
+            .collect::<Vec<_>>(),
         32_000,
         "test",
         "reply",
@@ -5273,7 +5415,7 @@ async fn zcode_summary_retries_without_tools_when_provider_rejects_them() {
     .await;
     assert!(matches!(
         outcome,
-        crate::chat::agent::compaction::CompactOutcome::Compacted(..)
+        crate::chat::context_policy::CompactOutcome::Compacted(..)
     ));
     let bodies = server.captured_bodies();
     assert_eq!(bodies.len(), 2);
@@ -5292,7 +5434,7 @@ async fn manual_overflow_never_discards_oldest_history() {
     );
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    let outcome = crate::chat::agent::compaction::summarize_history(
+    let outcome = crate::chat::context_policy::summarize_history(
         &state,
         &config.provider,
         &config.model,
@@ -5306,7 +5448,7 @@ async fn manual_overflow_never_discards_oldest_history() {
         None,
     )
     .await;
-    let crate::chat::agent::compaction::CompactOutcome::Compacted(history, _) = outcome else {
+    let crate::chat::context_policy::CompactOutcome::Compacted(history, _) = outcome else {
         panic!("summary retry must succeed");
     };
     let bodies = server.captured_bodies();
@@ -5338,7 +5480,7 @@ async fn zcode_empty_length_summary_is_treated_as_overflow() {
         serde_json::json!({"role":"user","content":"even newer request"}),
         serde_json::json!({"role":"assistant","content":"newest work"}),
     ]);
-    let outcome = crate::chat::agent::compaction::summarize_history(
+    let outcome = crate::chat::context_policy::summarize_history(
         &state,
         &config.provider,
         &config.model,
@@ -5352,7 +5494,7 @@ async fn zcode_empty_length_summary_is_treated_as_overflow() {
         None,
     )
     .await;
-    let crate::chat::agent::compaction::CompactOutcome::Compacted(compacted, _) = outcome else {
+    let crate::chat::context_policy::CompactOutcome::Compacted(compacted, _) = outcome else {
         panic!("empty length finish should fold and retry");
     };
     assert!(serde_json::to_string(&compacted)
@@ -5389,7 +5531,7 @@ async fn compaction_fix_overflow_finish_retries_with_smaller_input() {
                 serde_json::json!({"role":"assistant","content":"latest work"}),
             ];
             let original = messages.clone();
-            let outcome = crate::chat::agent::compaction::summarize_history(
+            let outcome = crate::chat::context_policy::summarize_history(
                 &state,
                 &config.provider,
                 &config.model,
@@ -5403,8 +5545,7 @@ async fn compaction_fix_overflow_finish_retries_with_smaller_input() {
                 None,
             )
             .await;
-            let crate::chat::agent::compaction::CompactOutcome::Compacted(history, summary) =
-                outcome
+            let crate::chat::context_policy::CompactOutcome::Compacted(history, summary) = outcome
             else {
                 panic!("{reason}: retry should succeed");
             };
@@ -5441,7 +5582,7 @@ async fn compaction_fix_overflow_finish_exhaustion_preserves_original_history() 
             serde_json::json!({"role":"assistant","content":"more work"}),
         ];
         let original = messages.clone();
-        let outcome = crate::chat::agent::compaction::summarize_history(
+        let outcome = crate::chat::context_policy::summarize_history(
             &state,
             &config.provider,
             &config.model,
@@ -5457,7 +5598,7 @@ async fn compaction_fix_overflow_finish_exhaustion_preserves_original_history() 
         .await;
         assert!(matches!(
             outcome,
-            crate::chat::agent::compaction::CompactOutcome::Failed
+            crate::chat::context_policy::CompactOutcome::Failed
         ));
         assert_eq!(messages, original);
         assert_eq!(server.captured_bodies().len(), 2);
@@ -5477,7 +5618,7 @@ async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.push(crate::chat::todo::todo_write_tool());
-    config.todo_state = crate::chat::types::AgentTodoState {
+    let initial_todo = crate::chat::types::AgentTodoState {
         items: vec![crate::chat::types::AgentTodoItem {
             id: "1".to_string(),
             content: "接好协议事件".to_string(),
@@ -5489,6 +5630,7 @@ async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
 
+    config.todo_state = initial_todo;
     let result = run_agent_loop(config, &host, &executor)
         .await
         .expect("run completes");
@@ -5541,7 +5683,7 @@ async fn open_todos_at_the_final_answer_get_one_closing_reminder() {
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.push(crate::chat::todo::todo_write_tool());
-    config.todo_state = crate::chat::types::AgentTodoState {
+    let initial_todo = crate::chat::types::AgentTodoState {
         items: vec![crate::chat::types::AgentTodoItem {
             id: "1".to_string(),
             content: "跑测试".to_string(),
@@ -5553,6 +5695,7 @@ async fn open_todos_at_the_final_answer_get_one_closing_reminder() {
     let host = TestHost::default();
     let executor = RecordingExecutor::default();
 
+    config.todo_state = initial_todo;
     let result = run_agent_loop(config, &host, &executor)
         .await
         .expect("run completes");
@@ -5932,7 +6075,7 @@ async fn assert_oversized_history_recovers(
         .runtime_messages
         .push(serde_json::json!({"role":"user", "content":"current question"}));
     for (index, message) in config.runtime_messages.iter_mut().enumerate().skip(1) {
-        message[compaction::UI_MESSAGE_ID_KEY] = Value::String(format!("history-{index}"));
+        message["_ui_message_id"] = Value::String(format!("history-{index}"));
     }
     let original_runtime = config.runtime_messages.clone();
     let host = TestHost::default();
@@ -5981,7 +6124,7 @@ async fn assert_oversized_history_recovers(
             .skip(1)
             .map(|message| {
                 serde_json::json!({
-                    "id":message[compaction::UI_MESSAGE_ID_KEY], "role":message["role"],
+                    "id":message["_ui_message_id"], "role":message["role"],
                     "content":message["content"], "timestamp":0
                 })
             })
@@ -6085,7 +6228,7 @@ async fn compaction_permanent_errors_do_not_shrink_or_repeat_requests() {
                 .runtime_messages
                 .push(serde_json::json!({"role":"user", "content":format!("next {round}")}));
         }
-        let result = crate::chat::agent::compaction::summarize_history(
+        let result = crate::chat::context_policy::summarize_history(
             &state,
             &config.provider,
             &config.model,
@@ -6101,7 +6244,7 @@ async fn compaction_permanent_errors_do_not_shrink_or_repeat_requests() {
         .await;
         assert!(matches!(
             result,
-            crate::chat::agent::compaction::CompactOutcome::Failed
+            crate::chat::context_policy::CompactOutcome::Failed
         ));
         assert_eq!(server.captured_bodies().len(), 1, "{status}: {body}");
     }
@@ -6602,4 +6745,769 @@ async fn truncated_text_at_output_cap_or_without_usage_does_not_retry() {
         assert_eq!(result.content, "unfinished answer 🌱");
         assert_eq!(server.captured_bodies().len(), 1);
     }
+}
+
+#[tokio::test]
+async fn run_loop_compacted_final_preserves_responses_replay() {
+    let reasoning = serde_json::json!({
+        "type": "reasoning", "id": "rs_compacted", "encrypted_content": "replay-after-compaction",
+    });
+    let response = |text: &str, reasoning: Option<Value>| {
+        let mut output = Vec::new();
+        if let Some(reasoning) = reasoning {
+            output.push(reasoning);
+        }
+        output.push(
+            serde_json::json!({"type":"message", "role":"assistant", "content":[
+                {"type":"output_text", "text": text}
+            ]}),
+        );
+        MockResponse::Sse(vec![
+            serde_json::json!({"type":"response.output_text.delta", "delta":text}).to_string(),
+            serde_json::json!({"type":"response.completed", "response":{
+                "status":"completed", "output":output
+            }})
+            .to_string(),
+        ])
+    };
+    let summary = format!("SUMMARY_MARKER {}", "Archived work completed. ".repeat(30));
+    let server = MockModelServer::start(vec![
+        response(&summary, None),
+        response("final after compression", Some(reasoning.clone())),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.provider.api_format = "openai_responses".into();
+    use_large_summary_model(&mut config);
+    config.provider.model_overrides.insert(
+        "test-model".into(),
+        crate::settings::ModelInfo {
+            context_window: Some(17_000),
+            ..Default::default()
+        },
+    );
+    config
+        .runtime_messages
+        .push(serde_json::json!({"role":"user", "content":"OLD".repeat(40_000)}));
+    for index in 0..8 {
+        config.runtime_messages.push(serde_json::json!({
+            "role": if index % 2 == 0 { "assistant" } else { "user" },
+            "content": format!("recent history {index}"),
+            "_ui_message_id": format!("recent-{index}")
+        }));
+    }
+    let result = run_agent_loop(config, &TestHost::default(), &RecordingExecutor::default())
+        .await
+        .unwrap();
+    assert_eq!(result.content, "final after compression");
+    assert_eq!(server.captured_bodies().len(), 2);
+    let history = result
+        .compacted_history
+        .expect("compression must produce replacement history");
+    assert!(history
+        .iter()
+        .any(|message| message["_ui_message_id"] == "recent-7"));
+    let canonical = crate::chat::model::model_messages_from_openai_messages(history);
+    let saved = serde_json::to_string(&canonical).unwrap();
+    let restored: Vec<crate::chat::model::ModelMessage> = serde_json::from_str(&saved).unwrap();
+    let request =
+        crate::chat::model::responses_input_from_model_messages(&restored, Some("test-model"));
+    let reasoning_items: Vec<_> = request
+        .iter()
+        .filter(|item| item["type"] == "reasoning")
+        .collect();
+    assert_eq!(reasoning_items, vec![&reasoning]);
+    assert_eq!(
+        request
+            .iter()
+            .filter(|item| item["role"] == "assistant"
+                && item["content"]
+                    .to_string()
+                    .contains("final after compression"))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn run_loop_anthropic_block_input_and_text_match_replay() {
+    for streamed_input in [false, true] {
+        let mut calls = vec![serde_json::json!({
+            "type":"content_block_start", "index":0,
+            "content_block":{"type":"tool_use", "id":"call_read", "name":"read", "input":{"path":"fixture.txt"}}
+        }).to_string()];
+        let path = if streamed_input {
+            "delta.txt"
+        } else {
+            "fixture.txt"
+        };
+        if streamed_input {
+            calls.push(
+                serde_json::json!({"type":"content_block_delta", "index":0,
+                    "delta":{"type":"input_json_delta", "partial_json":"{\"path\":\"delta.txt\"}"}
+                })
+                .to_string(),
+            );
+        }
+        calls.extend([
+            serde_json::json!({"type":"content_block_stop", "index":0}).to_string(),
+            serde_json::json!({"type":"message_delta", "delta":{"stop_reason":"tool_use"}})
+                .to_string(),
+        ]);
+        let mut answer = Vec::new();
+        for (index, text) in ["First.", "Second."].iter().enumerate() {
+            answer.extend([
+                serde_json::json!({"type":"content_block_start", "index":index, "content_block":{"type":"text", "text":""}}).to_string(),
+                serde_json::json!({"type":"content_block_delta", "index":index, "delta":{"type":"text_delta", "text":text}}).to_string(),
+                serde_json::json!({"type":"content_block_stop", "index":index}).to_string(),
+            ]);
+        }
+        answer.push(
+            serde_json::json!({"type":"message_delta", "delta":{"stop_reason":"end_turn"}})
+                .to_string(),
+        );
+        let server =
+            MockModelServer::start(vec![MockResponse::Sse(calls), MockResponse::Sse(answer)]);
+        let state = test_app_state();
+        let mut config = test_run_config(&state, &server.base_url);
+        config.provider.api_format = "anthropic_messages".into();
+        let executor = RecordingExecutor::default();
+        let result = run_agent_loop(config, &TestHost::default(), &executor)
+            .await
+            .unwrap();
+        assert_eq!(executor.events(), vec!["start:read", "finish:read"]);
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.tool_records[0].arguments).unwrap()["path"],
+            path
+        );
+        assert_eq!(result.content, "First.\nSecond.");
+        let saved = serde_json::to_string(&result.api_messages).unwrap();
+        let restored: Vec<Value> = serde_json::from_str(&saved).unwrap();
+        let tool_call = restored
+            .iter()
+            .find(|message| message["tool_calls"].is_array())
+            .unwrap();
+        let arguments = tool_call["tool_calls"][0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(arguments).unwrap()["path"],
+            path
+        );
+        assert_eq!(restored.last().unwrap()["content"], result.content);
+    }
+}
+
+impl AgentRunControl for TestHost {
+    fn active(&self) -> bool {
+        self.is_generation_active("conversation", 1)
+    }
+    fn stop(&self) -> StopAdmission {
+        if self.cancel_flag.swap(true, Ordering::SeqCst) {
+            StopAdmission::Inactive
+        } else {
+            StopAdmission::Requested
+        }
+    }
+    fn submit(&self, kind: InputKind, message: SteeringMessage) -> InputAdmission {
+        if !self.active() {
+            return InputAdmission::Inactive;
+        }
+        let queue = match kind {
+            InputKind::Steer => &self.steering,
+            InputKind::FollowUp => &self.follow_up,
+        };
+        queue.lock().unwrap().push_back(vec![message]);
+        InputAdmission::Accepted
+    }
+    fn take(&self, kind: InputKind) -> Vec<SteeringMessage> {
+        match kind {
+            InputKind::Steer => self.take_steering_messages("conversation"),
+            InputKind::FollowUp => self.take_follow_up_messages("conversation"),
+        }
+    }
+    fn wait_inactive(&self) -> crate::chat::agent::host::AgentHostFuture<'_, ()> {
+        self.wait_for_generation_inactive("conversation", 1)
+    }
+}
+impl AgentRunControl for HookedHost {
+    fn active(&self) -> bool {
+        self.inner.active()
+    }
+    fn stop(&self) -> StopAdmission {
+        self.inner.stop()
+    }
+    fn submit(&self, kind: InputKind, message: SteeringMessage) -> InputAdmission {
+        self.inner.submit(kind, message)
+    }
+    fn take(&self, kind: InputKind) -> Vec<SteeringMessage> {
+        self.inner.take(kind)
+    }
+    fn wait_inactive(&self) -> crate::chat::agent::host::AgentHostFuture<'_, ()> {
+        self.inner.wait_inactive()
+    }
+}
+impl AgentEventSink for TestHost {
+    fn on_event(&self, event: &AgentEvent<'_>) -> EventDelivery {
+        let id = event.identity;
+        match &event.kind {
+            AgentEventKind::Content {
+                delta,
+                reasoning_delta,
+                block,
+            } => {
+                let segment = block.map(crate::chat::agent_presentation::project_block);
+                self.emit_stream_delta(
+                    id.conversation_id,
+                    id.run_id,
+                    id.message_id,
+                    delta,
+                    *reasoning_delta,
+                    segment.as_ref(),
+                );
+                if let Some(record) =
+                    block.and_then(crate::chat::agent_presentation::project_embedded)
+                {
+                    self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record);
+                }
+            }
+            AgentEventKind::SearchUpdated { block, announce } => {
+                if *announce {
+                    self.emit_stream_delta(
+                        id.conversation_id,
+                        id.run_id,
+                        id.message_id,
+                        "",
+                        None,
+                        Some(&crate::chat::agent_presentation::project_block(block)),
+                    );
+                }
+                if let Some(record) = crate::chat::agent_presentation::project_embedded(block) {
+                    self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record);
+                }
+            }
+            AgentEventKind::ToolUpdated(call) => self.emit_tool_record(
+                id.conversation_id,
+                id.run_id,
+                id.message_id,
+                &crate::chat::agent_presentation::project_tool(call, Some(id.run_id)),
+            ),
+            AgentEventKind::AttemptDiscarded {
+                text_chars,
+                reasoning_chars,
+                block_ids,
+                tool_ids,
+            } => self.discard_stream_attempt(
+                id.run_id,
+                *text_chars,
+                *reasoning_chars,
+                block_ids
+                    .iter()
+                    .map(|id| crate::chat::agent_presentation::segment_id(*id))
+                    .collect(),
+                tool_ids.clone(),
+            ),
+            AgentEventKind::Status { note } => self.emit_status_note(id.run_id, note.clone()),
+            AgentEventKind::Retry(retry) => self.emit_retry_status(
+                id.run_id,
+                crate::chat::protocol::ChatRetryStatusPayload {
+                    attempt: retry.attempt,
+                    max_retries: retry.max_retries,
+                    retry_at_ms: retry.retry_at_ms,
+                    reason: retry.reason.clone(),
+                },
+            ),
+            AgentEventKind::Compaction {
+                phase,
+                trigger,
+                boundary,
+            } => self.emit_compaction_status(
+                id.conversation_id,
+                phase,
+                *trigger,
+                boundary
+                    .as_ref()
+                    .map(crate::chat::agent_presentation::project_compaction)
+                    .as_ref(),
+            ),
+            AgentEventKind::ContextUsage {
+                used_tokens,
+                source,
+                window,
+                cache,
+            } => self.emit_context_usage_live(
+                id.conversation_id,
+                *used_tokens,
+                *source,
+                *window,
+                *cache,
+            ),
+            _ => {}
+        }
+        EventDelivery::Accepted
+    }
+}
+impl AgentEventSink for HookedHost {
+    fn on_event(&self, event: &AgentEvent<'_>) -> EventDelivery {
+        self.inner.on_event(event)
+    }
+}
+fn test_context<H: AgentHost + AgentEventSink + AgentRunControl>(host: &H) -> AgentContext<'_> {
+    let identity = AgentRunIdentity {
+        conversation_id: "conversation",
+        run_id: "run",
+        message_id: "message",
+        generation: 1,
+    };
+    let control = AgentRunHandle::new(identity, host);
+    AgentContext::new(host, host, control)
+}
+
+#[derive(Debug)]
+struct PresentedRunResult {
+    pub content: String,
+    pub reasoning: Option<String>,
+    pub tool_records: Vec<ToolCallRecord>,
+    pub segments: Vec<ChatMessageSegment>,
+    pub api_messages: Vec<Value>,
+    pub stream_outcome: String,
+    pub usage: Option<crate::chat::model::ModelUsage>,
+    pub last_step_usage: Option<crate::chat::model::ModelUsage>,
+    pub compacted_history: Option<Vec<Value>>,
+    pub compaction_summary: Option<crate::chat::types::ConversationContextSummary>,
+    pub degraded: Option<crate::chat::recovery_policy::DegradedAnswer>,
+    pub images: Vec<crate::chat::model::GeneratedImageData>,
+    raw_tool_records: Vec<AgentToolCall>,
+}
+fn present_result(result: AgentRunResult) -> PresentedRunResult {
+    let (tool_records, segments) = crate::chat::agent_presentation::project_snapshot(
+        &result.tool_records,
+        &result.segments,
+        Some("run"),
+    );
+    PresentedRunResult {
+        raw_tool_records: result.tool_records,
+        content: result.content,
+        reasoning: result.reasoning,
+        tool_records,
+        segments,
+        api_messages: result.api_messages,
+        stream_outcome: crate::chat::agent_presentation::run_status(&result.status).to_string(),
+        usage: result.usage,
+        last_step_usage: result.last_step_usage,
+        compacted_history: result.compacted_history,
+        compaction_summary: result.compaction_summary,
+        degraded: result.degraded,
+        images: result.images,
+    }
+}
+
+async fn run_agent_loop<H: ApplicationHost + AgentEventSink + AgentRunControl>(
+    config: AgentRunConfig<'_>,
+    host: &H,
+    executor: &dyn ToolExecutor,
+) -> Result<PresentedRunResult, String> {
+    let identity = AgentRunIdentity {
+        conversation_id: &config.conversation_id.clone(),
+        run_id: &config.run_id.clone(),
+        message_id: &config.message_id.clone(),
+        generation: config.generation,
+    };
+    let control = AgentRunHandle::new(identity, host);
+    crate::chat::session_policy::run_session(config, host, executor, host, control)
+        .await
+        .map(present_result)
+}
+struct PresentedRoundResult {
+    tool_records: Vec<ToolCallRecord>,
+    response_messages: Vec<Value>,
+    cancelled: bool,
+}
+impl<'a> ToolRoundContext<'a> {
+    fn execution(&self) -> ToolExecutionContext<'_> {
+        ToolExecutionContext {
+            conversation_id: self.conversation_id,
+            run_id: self.run_id,
+            message_id: self.message_id,
+            generation: self.generation,
+            round: self.round,
+            tool_call_id: "",
+            provider: self.provider,
+            model: self.model,
+            depth: self.depth,
+            tool_conversation_id: self.tool_conversation_id,
+            plan_state: self.plan_state,
+            mcp_tool_ids: self.mcp_tool_ids,
+            mcp_server_ids: self.mcp_server_ids,
+            approval_policy: self.approval_policy,
+            interactive_host: self.interactive_host,
+        }
+    }
+}
+
+async fn execute_tool_round<H: ApplicationHost + AgentEventSink + AgentRunControl>(
+    host: &H,
+    dispatcher: &dyn ToolExecutor,
+    settings: &Settings,
+    ctx: ToolRoundContext<'_>,
+    tools: &[ChatToolDefinition],
+    blocked: &[ChatToolDefinition],
+    calls: Vec<PendingToolCall>,
+) -> PresentedRoundResult {
+    let context = test_context(host);
+    let execution = ctx.execution();
+    let all: Vec<_> = tools.iter().chain(blocked).cloned().collect();
+    let executor = ApplicationToolExecutor {
+        settings,
+        authority: ToolAuthority::from_context(&execution),
+        tools: &all,
+        host,
+        dispatcher,
+    };
+    let core = crate::chat::agent::rounds::ToolRoundContext {
+        conversation_id: ctx.conversation_id,
+        run_id: ctx.run_id,
+        message_id: ctx.message_id,
+        generation: ctx.generation,
+        round: ctx.round,
+        finish_reason: ctx.finish_reason,
+    };
+    let tools: Vec<_> = tools.iter().map(|tool| tool.for_run(settings)).collect();
+    let blocked: Vec<_> = blocked.iter().map(|tool| tool.for_run(settings)).collect();
+    let result = crate::chat::agent::rounds::execute_tool_round(
+        &context, &executor, core, &tools, &blocked, calls,
+    )
+    .await;
+    PresentedRoundResult {
+        tool_records: result
+            .tool_records
+            .iter()
+            .map(|call| crate::chat::agent_presentation::project_tool(call, Some("run")))
+            .collect(),
+        response_messages: result.response_messages,
+        cancelled: result.cancelled,
+    }
+}
+
+fn tool_call_parallel_eligible(settings: &Settings, tool: &ChatToolDefinition) -> bool {
+    tool.for_run(settings).parallel_safe
+}
+
+fn visible_tool_segment_calls(
+    tools: &[ChatToolDefinition],
+    blocked: &[ChatToolDefinition],
+    calls: &[PendingToolCall],
+) -> Vec<PendingToolCall> {
+    let host = TestHost::default();
+    let settings = Settings::default();
+    let ctx = test_round_context();
+    let execution = ctx.execution();
+    let all: Vec<_> = tools.iter().chain(blocked).cloned().collect();
+    let dispatcher = RecordingExecutor::default();
+    let executor = ApplicationToolExecutor {
+        settings: &settings,
+        authority: ToolAuthority::from_context(&execution),
+        tools: &all,
+        host: &host,
+        dispatcher: &dispatcher,
+    };
+    crate::chat::agent::rounds::visible_tool_segment_calls(
+        &executor,
+        &tools
+            .iter()
+            .map(|tool| tool.for_run(&settings))
+            .collect::<Vec<_>>(),
+        &blocked
+            .iter()
+            .map(|tool| tool.for_run(&settings))
+            .collect::<Vec<_>>(),
+        calls,
+    )
+}
+
+#[tokio::test]
+async fn sdk04_stopped_stream_does_not_accept_provider_aggregate() {
+    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+        r#"{"choices":[{"delta":{"content":"accepted"}}]}"#.into(),
+        r#"{"choices":[{"delta":{"content":"LATE_TAIL"}}]}"#.into(),
+        "[DONE]".into(),
+    ])]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.tools.clear();
+    let host = TestHost::default();
+    let identity = AgentRunIdentity {
+        conversation_id: "conversation",
+        run_id: "run",
+        message_id: "message",
+        generation: 1,
+    };
+    let control = AgentRunHandle::new(identity, &host);
+    let terminal = Mutex::new(Vec::new());
+    let sink = |event: &AgentEvent<'_>| {
+        if let AgentEventKind::Content { delta, .. } = &event.kind {
+            if *delta == "accepted" {
+                control.stop();
+            }
+            assert!(!delta.contains("LATE_TAIL"));
+        }
+        if let AgentEventKind::RunEnded { outcome } = &event.kind {
+            terminal.lock().unwrap().push(outcome.clone());
+        }
+        EventDelivery::Accepted
+    };
+    let result = crate::chat::session_policy::run_session(
+        config,
+        &host,
+        &RecordingExecutor::default(),
+        &sink,
+        control.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result.status,
+        crate::chat::agent::types::AgentRunStatus::Cancelled
+    );
+    assert_eq!(result.content, "accepted");
+    assert_eq!(
+        *terminal.lock().unwrap(),
+        vec![crate::chat::agent::events::AgentRunOutcome::Cancelled]
+    );
+    assert!(!serde_json::to_string(&result.api_messages)
+        .unwrap()
+        .contains("LATE_TAIL"));
+}
+
+#[tokio::test]
+async fn sdk04_recovery_request_uses_formatted_bounded_tool_summary() {
+    struct SearchResultExecutor;
+    impl ToolExecutor for SearchResultExecutor {
+        fn call<'a>(
+            &'a self,
+            _ctx: &'a ToolExecutionContext<'a>,
+            tool: &'a ChatToolDefinition,
+            _arguments: Value,
+        ) -> super::super::execute::ToolExecutorFuture<'a> {
+            Box::pin(async move {
+                crate::chat::tool_output::from_mcp(tool, crate::mcp::types::McpToolCallResult {
+                    content: serde_json::json!({"aaa": "P".repeat(1_000_000), "answer": format!("Readable answer {}", "A".repeat(2000))}).to_string(),
+                    ..Default::default()
+                })
+            })
+        }
+    }
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Status(
+            400,
+            r#"{"error":{"code":"content_filter","message":"content moderation blocked"}}"#.into(),
+        ),
+        MockResponse::ForRequest(Box::new(|body| {
+            let request: Value = serde_json::from_str(body).unwrap();
+            let text = request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|m| m["content"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("答: Readable answer"), "{text}");
+            assert!(
+                text.chars().count() < 2000,
+                "recovery prompt bypassed output limit"
+            );
+            MockResponse::Status(
+                400,
+                r#"{"error":{"message":"content moderation blocked"}}"#.into(),
+            )
+        })),
+    ]);
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.settings.chat_tools.max_tool_output_chars = Some(1000);
+    let result = run_agent_loop(config, &TestHost::default(), &SearchResultExecutor)
+        .await
+        .unwrap();
+    assert_eq!(server.captured_bodies().len(), 3);
+    assert_eq!(result.stream_outcome, "recovered");
+    assert!(result.degraded.unwrap().tool_summaries[0]
+        .preview
+        .starts_with("答: Readable answer"));
+}
+
+#[tokio::test]
+async fn core_without_product_session_completes_a_model_tool_round_trip() {
+    use crate::chat::agent::execute::{
+        PreparedToolCall, ToolFuture, ToolPreparation, ToolProgress,
+    };
+    struct RegisteredTool(AtomicUsize);
+    impl crate::chat::agent::execute::ToolExecutor for RegisteredTool {
+        fn prepare<'a>(
+            &'a self,
+            _: &'a ToolProgress<'a>,
+            _: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
+            _: &'a crate::chat::tools::ToolDefinition,
+            call: PendingToolCall,
+            record: AgentToolCall,
+        ) -> ToolFuture<'a, ToolPreparation> {
+            Box::pin(async move {
+                ToolPreparation::Ready(PreparedToolCall {
+                    record,
+                    arguments: call.arguments,
+                    timeout_ms: None,
+                    timeout_message: String::new(),
+                    output_limit: None,
+                    drain_on_cancel: false,
+                    feedback: Vec::new(),
+                })
+            })
+        }
+        fn call<'a>(
+            &'a self,
+            _: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
+            _: &'a crate::chat::tools::ToolDefinition,
+            _: Value,
+        ) -> crate::chat::agent::execute::ToolExecutorFuture<'a> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(crate::chat::tools::ToolOutput::text("registered result")) })
+        }
+    }
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"core complete"}}]}"#.into(),
+            "[DONE]".into(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let provider = test_provider(&server.base_url);
+    let model = crate::chat::model::agent_runtime::AppAgentModel::new(&state, &provider, 1);
+    let tool = crate::chat::tools::ToolDefinition::new(crate::chat::model::ModelTool {
+        name: "read".into(),
+        description: "Read the registered fixture".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}),
+    });
+    let config = crate::chat::agent::types::AgentRunConfig {
+        provider_runtime: &model,
+        conversation_id: "conversation".into(),
+        run_id: "run".into(),
+        message_id: "message".into(),
+        generation: 1,
+        provider_id: provider.id.clone(),
+        provider_label: provider.name.clone(),
+        api_format: provider.api_format.clone(),
+        model: "test-model".into(),
+        runtime_messages: vec![RuntimeMessage::text(
+            crate::chat::model::ModelRole::User,
+            "Use the registered tool",
+        )],
+        tools: vec![tool],
+        blocked_tool_calls: Vec::new(),
+        thinking_enabled: false,
+        thinking_level: None,
+        builtin_web_search: false,
+        max_output_tokens: 1024,
+        initial_cache_usage: None,
+        report_context: false,
+    };
+    let host = TestHost::default();
+    let identity = AgentRunIdentity {
+        conversation_id: "conversation",
+        run_id: "run",
+        message_id: "message",
+        generation: 1,
+    };
+    let executor = RegisteredTool(AtomicUsize::new(0));
+    let result = super::run_agent_loop(
+        config,
+        &host,
+        &executor,
+        &mut crate::chat::agent::session::NoSessionPolicy,
+        &host,
+        AgentRunHandle::new(identity, &host),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.content, "core complete");
+    assert_eq!(
+        result.status,
+        crate::chat::agent::types::AgentRunStatus::Completed
+    );
+    assert_eq!(executor.0.load(Ordering::SeqCst), 1);
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 2);
+    let request: Value = serde_json::from_str(&bodies[1]).unwrap();
+    let results: Vec<_> = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .collect();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0]["tool_call_id"], "call_read");
+    assert_eq!(results[0]["content"], "registered result");
+}
+
+#[test]
+fn task_speculation_is_enabled_only_for_the_registered_native_tool() {
+    let settings = Settings::default();
+    let mut tool = crate::chat::sub_agent::task::tool_definition(&[], &settings);
+    assert!(tool.for_run(&settings).speculative);
+    tool.source = "mcp".into();
+    assert!(!tool.for_run(&settings).speculative);
+}
+
+#[tokio::test]
+async fn core_completion_closes_handle_before_application_releases_capacity() {
+    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
+        serde_json::json!({"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]})
+            .to_string(),
+        "[DONE]".into(),
+    ])]);
+    let state = test_app_state();
+    let runtime = state.chat_runtime();
+    let generation = runtime.begin_generation("conversation");
+    assert!(runtime.try_begin_reply("conversation", "run"));
+    let control =
+        crate::chat::runtime_state::ChatRunControl::new(runtime, "conversation", generation);
+    let handle = AgentRunHandle::new(
+        AgentRunIdentity {
+            conversation_id: "conversation",
+            run_id: "run",
+            message_id: "message",
+            generation,
+        },
+        &control,
+    );
+    let clone = handle.clone();
+    let waiting = clone.wait_inactive();
+    tokio::pin!(waiting);
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    let host = TestHost::default();
+    crate::chat::session_policy::run_session(
+        test_run_config(&state, &server.base_url),
+        &host,
+        &RecordingExecutor::default(),
+        &host,
+        handle,
+    )
+    .await
+    .unwrap();
+    assert!(futures::poll!(waiting.as_mut()).is_ready());
+    assert!(!clone.active());
+    assert_eq!(
+        clone.steer(SteeringMessage::new("late".into(), "late").unwrap()),
+        InputAdmission::Inactive
+    );
+    assert_eq!(
+        clone.follow_up(SteeringMessage::new("late".into(), "late").unwrap()),
+        InputAdmission::Inactive
+    );
+    assert_eq!(clone.stop(), StopAdmission::Inactive);
+    assert!(clone.take_steering().is_empty());
+    assert!(runtime.is_generation_active("conversation", generation));
+    assert!(!runtime.try_reserve_send("conversation", "next"));
+    runtime.finish_reply_generation("conversation", "run", generation);
+    assert!(runtime.try_reserve_send("conversation", "next"));
 }

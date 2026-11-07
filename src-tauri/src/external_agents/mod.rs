@@ -8,7 +8,6 @@ pub mod claude_todo;
 pub mod commands;
 pub mod compact;
 pub mod context;
-pub mod providers;
 pub mod detection;
 pub(crate) mod diagnostics;
 pub(crate) mod discovery_state;
@@ -24,6 +23,7 @@ pub mod pi_extensions;
 pub mod pi_skills;
 pub mod prompt;
 pub mod provider_profile;
+pub mod providers;
 pub mod registry;
 pub mod relay_models;
 pub mod run;
@@ -37,7 +37,7 @@ pub mod workspace;
 pub mod wsl;
 
 pub(crate) use run::run_external_cli_reply_in;
-pub use run::{run_external_cli_reply, run_external_cli_slash_command};
+pub use run::{run_external_cli_reply, run_external_cli_slash_command, ExternalCliTurnOutcome};
 
 #[cfg(test)]
 mod replay_tests;

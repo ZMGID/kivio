@@ -506,5 +506,4 @@ mod tests {
             .user_message
             .contains("Flex"));
     }
-
 }

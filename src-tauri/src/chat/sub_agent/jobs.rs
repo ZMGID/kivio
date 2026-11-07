@@ -103,7 +103,11 @@ impl Default for JobManager {
 
 impl JobManager {
     pub(crate) fn set_structured_output(&self, id: &str, output: Value) {
-        if let Some(job) = self.lock().get_mut(id).filter(|job| job.snapshot.status == JobStatus::Running) {
+        if let Some(job) = self
+            .lock()
+            .get_mut(id)
+            .filter(|job| job.snapshot.status == JobStatus::Running)
+        {
             job.snapshot.structured_output = Some(output);
         }
     }
@@ -159,11 +163,18 @@ impl JobManager {
     fn schedule_snapshots(&self, snapshots: &[JobSnapshot]) {
         let deadlines: Vec<_> = {
             let jobs = self.lock();
-            snapshots.iter().filter_map(|snapshot| {
-                jobs.get(&snapshot.id)
-                    .filter(|job| job.snapshot.execution_id == snapshot.execution_id)
-                    .and_then(|job| job.expires_at.map(|deadline| (snapshot.id.clone(), snapshot.execution_id.clone(), deadline)))
-            }).collect()
+            snapshots
+                .iter()
+                .filter_map(|snapshot| {
+                    jobs.get(&snapshot.id)
+                        .filter(|job| job.snapshot.execution_id == snapshot.execution_id)
+                        .and_then(|job| {
+                            job.expires_at.map(|deadline| {
+                                (snapshot.id.clone(), snapshot.execution_id.clone(), deadline)
+                            })
+                        })
+                })
+                .collect()
         };
         for (id, execution_id, deadline) in deadlines {
             self.schedule_eviction(&id, &execution_id, deadline);
@@ -183,42 +194,84 @@ impl JobManager {
     }
 
     pub fn register_inline(
-        &self, root: &str, owner_id: &str, agent_id: &str, label: &str,
+        &self,
+        root: &str,
+        owner_id: &str,
+        agent_id: &str,
+        label: &str,
     ) -> (String, watch::Receiver<bool>) {
         self.register_with_mode(root, owner_id, agent_id, label, true)
     }
 
-    pub(crate) fn register_restored(&self, root: &str, owner: &str, agent: &str, id: &str, label: &str) -> Option<(String, watch::Receiver<bool>)> {
+    pub(crate) fn register_restored(
+        &self,
+        root: &str,
+        owner: &str,
+        agent: &str,
+        id: &str,
+        label: &str,
+    ) -> Option<(String, watch::Receiver<bool>)> {
         self.register_identity(root, owner, agent, label, false, id, true)
     }
 
     pub(crate) fn cancel_agent(&self, root: &str, agent: &str) {
-        let jobs: Vec<_> = self.lock().values().filter(|job| job.snapshot.root == root && (job.snapshot.agent_id == agent || job.snapshot.owner_id == agent))
-            .map(|job| (job.snapshot.id.clone(), job.snapshot.owner_id.clone())).collect();
-        for (id, owner) in jobs { self.cancel(root, &id, &owner); }
+        let jobs: Vec<_> = self
+            .lock()
+            .values()
+            .filter(|job| {
+                job.snapshot.root == root
+                    && (job.snapshot.agent_id == agent || job.snapshot.owner_id == agent)
+            })
+            .map(|job| (job.snapshot.id.clone(), job.snapshot.owner_id.clone()))
+            .collect();
+        for (id, owner) in jobs {
+            self.cancel(root, &id, &owner);
+        }
     }
 
     fn register_with_mode(
-        &self, root: &str, owner_id: &str, agent_id: &str, label: &str, inline: bool,
+        &self,
+        root: &str,
+        owner_id: &str,
+        agent_id: &str,
+        label: &str,
+        inline: bool,
     ) -> (String, watch::Receiver<bool>) {
         self.register_identity(root, owner_id, agent_id, label, inline, agent_id, false)
             .expect("new jobs always allocate an unused identity")
     }
 
     fn register_identity(
-        &self, root: &str, owner_id: &str, agent_id: &str, label: &str, inline: bool, preferred_id: &str, restored: bool,
+        &self,
+        root: &str,
+        owner_id: &str,
+        agent_id: &str,
+        label: &str,
+        inline: bool,
+        preferred_id: &str,
+        restored: bool,
     ) -> Option<(String, watch::Receiver<bool>)> {
         let mut jobs = self.lock();
         let mut identities = self.identities.lock().unwrap_or_else(|e| e.into_inner());
         prune(&mut jobs);
         if restored {
             let origins = identities.restored.entry(root.into()).or_default();
-            if origins.contains_key(preferred_id) || origins.values().flatten().any(|alias| {
-                alias.job == preferred_id && alias.owner == owner_id && alias.agent == agent_id
-            }) { return None; }
+            if origins.contains_key(preferred_id)
+                || origins.values().flatten().any(|alias| {
+                    alias.job == preferred_id && alias.owner == owner_id && alias.agent == agent_id
+                })
+            {
+                return None;
+            }
             origins.insert(preferred_id.into(), None);
-            if jobs.values().any(|job| job.snapshot.root == root && job.snapshot.owner_id == owner_id
-                && job.snapshot.agent_id == agent_id && job.snapshot.status == JobStatus::Running) { return None; }
+            if jobs.values().any(|job| {
+                job.snapshot.root == root
+                    && job.snapshot.owner_id == owner_id
+                    && job.snapshot.agent_id == agent_id
+                    && job.snapshot.status == JobStatus::Running
+            }) {
+                return None;
+            }
         }
         let mut id = preferred_id.to_string();
         let mut n = 2;
@@ -229,9 +282,14 @@ impl JobManager {
         identities.used.insert(id.clone());
         if restored && id != preferred_id {
             // A resumed journal can contain the new job id instead of its saved origin.
-            identities.restored.entry(root.into()).or_default().insert(preferred_id.into(), Some(RestoreAlias {
-                owner: owner_id.into(), agent: agent_id.into(), job: id.clone(),
-            }));
+            identities.restored.entry(root.into()).or_default().insert(
+                preferred_id.into(),
+                Some(RestoreAlias {
+                    owner: owner_id.into(),
+                    agent: agent_id.into(),
+                    job: id.clone(),
+                }),
+            );
         }
         let (cancel, cancelled) = watch::channel(false);
         jobs.insert(
@@ -283,7 +341,11 @@ impl JobManager {
             };
             if matches {
                 if job.snapshot.status == JobStatus::Running {
-                    let wait = job.snapshot.progress.as_mut().and_then(Value::as_object_mut)
+                    let wait = job
+                        .snapshot
+                        .progress
+                        .as_mut()
+                        .and_then(Value::as_object_mut)
                         .and_then(|previous| previous.remove("wait"));
                     if let (Some(wait), Some(object)) = (wait, progress.as_object_mut()) {
                         object.entry("wait").or_insert(wait);
@@ -305,13 +367,20 @@ impl JobManager {
         let updated = {
             let mut jobs = self.lock();
             if let Some(job) = jobs.values_mut().find(|job| {
-                job.snapshot.root == root && job.snapshot.agent_id == agent_id
+                job.snapshot.root == root
+                    && job.snapshot.agent_id == agent_id
                     && job.snapshot.status == JobStatus::Running
             }) {
-                let progress = job.snapshot.progress.get_or_insert_with(|| serde_json::json!({}));
+                let progress = job
+                    .snapshot
+                    .progress
+                    .get_or_insert_with(|| serde_json::json!({}));
                 if let Some(object) = progress.as_object_mut() {
-                    if let Some(wait) = wait { object.insert("wait".into(), wait); }
-                    else { object.remove("wait"); }
+                    if let Some(wait) = wait {
+                        object.insert("wait".into(), wait);
+                    } else {
+                        object.remove("wait");
+                    }
                     true
                 } else {
                     false
@@ -330,10 +399,17 @@ impl JobManager {
         self.settle_before_notification(job_id, outcome, || {});
     }
 
-    pub fn settle_before_notification(&self, job_id: &str, outcome: Result<String, String>, before_notify: impl FnOnce()) {
+    pub fn settle_before_notification(
+        &self,
+        job_id: &str,
+        outcome: Result<String, String>,
+        before_notify: impl FnOnce(),
+    ) {
         let (notify, eviction) = {
             let mut jobs = self.lock();
-            let Some(job) = jobs.get_mut(job_id) else { return };
+            let Some(job) = jobs.get_mut(job_id) else {
+                return;
+            };
             if job.snapshot.status != JobStatus::Running {
                 return;
             }
@@ -347,7 +423,8 @@ impl JobManager {
             let eviction = if job.inline {
                 None
             } else {
-                let deadline = tokio::time::Instant::now() + Duration::from_millis(UNCONSUMED_RETENTION_MS as u64);
+                let deadline = tokio::time::Instant::now()
+                    + Duration::from_millis(UNCONSUMED_RETENTION_MS as u64);
                 job.expires_at = Some(deadline);
                 Some((job.snapshot.execution_id.clone(), deadline))
             };
@@ -370,12 +447,17 @@ impl JobManager {
         let cancelled = {
             let mut jobs = self.lock();
             match jobs.get_mut(job_id) {
-                Some(job) if job.snapshot.root == root
-                    && job.snapshot.owner_id == owner_id
-                    && job.snapshot.status == JobStatus::Running => {
+                Some(job)
+                    if job.snapshot.root == root
+                        && job.snapshot.owner_id == owner_id
+                        && job.snapshot.status == JobStatus::Running =>
+                {
                     job.snapshot.status = JobStatus::Cancelled;
                     job.snapshot.finished_at = Some(now_ms());
-                    let deadline = (!job.inline).then(|| tokio::time::Instant::now() + Duration::from_millis(UNCONSUMED_RETENTION_MS as u64));
+                    let deadline = (!job.inline).then(|| {
+                        tokio::time::Instant::now()
+                            + Duration::from_millis(UNCONSUMED_RETENTION_MS as u64)
+                    });
                     job.expires_at = deadline;
                     let _ = job.cancel.send(true);
                     Some((job.snapshot.execution_id.clone(), deadline))
@@ -404,9 +486,14 @@ impl JobManager {
                     job.snapshot.status = JobStatus::Cancelled;
                     job.snapshot.finished_at = Some(now_ms());
                     if !job.inline {
-                        let deadline = tokio::time::Instant::now() + Duration::from_millis(UNCONSUMED_RETENTION_MS as u64);
+                        let deadline = tokio::time::Instant::now()
+                            + Duration::from_millis(UNCONSUMED_RETENTION_MS as u64);
                         job.expires_at = Some(deadline);
-                        evictions.push((job.snapshot.id.clone(), job.snapshot.execution_id.clone(), deadline));
+                        evictions.push((
+                            job.snapshot.id.clone(),
+                            job.snapshot.execution_id.clone(),
+                            deadline,
+                        ));
                     }
                     let _ = job.cancel.send(true);
                 }
@@ -430,7 +517,9 @@ impl JobManager {
 
     /// Running jobs owned by `owner_id` in `root`, registration order.
     pub fn running(&self, root: &str, owner_id: &str) -> Vec<JobSnapshot> {
-        self.select(root, owner_id, |job| !job.inline && job.snapshot.status == JobStatus::Running)
+        self.select(root, owner_id, |job| {
+            !job.inline && job.snapshot.status == JobStatus::Running
+        })
     }
 
     /// Settled (completed/failed), unconsumed results of `owner_id` — what `wait` returns first.
@@ -443,7 +532,11 @@ impl JobManager {
         let snapshot = {
             let mut jobs = self.lock();
             let job = jobs.get_mut(job_id)?;
-            if !job.inline || job.snapshot.root != root || job.snapshot.status == JobStatus::Running || job.snapshot.consumed {
+            if !job.inline
+                || job.snapshot.root != root
+                || job.snapshot.status == JobStatus::Running
+                || job.snapshot.consumed
+            {
                 return None;
             }
             let snapshot = job.snapshot.clone();
@@ -460,13 +553,18 @@ impl JobManager {
     pub fn promote_inline(&self, root: &str, job_id: &str) -> bool {
         let (snapshot, notify) = {
             let mut jobs = self.lock();
-            let Some(job) = jobs.get_mut(job_id) else { return false };
+            let Some(job) = jobs.get_mut(job_id) else {
+                return false;
+            };
             if !job.inline || job.snapshot.root != root || job.snapshot.consumed {
                 return false;
             }
             job.inline = false;
             if job.snapshot.status != JobStatus::Running {
-                job.expires_at = Some(tokio::time::Instant::now() + Duration::from_millis(UNCONSUMED_RETENTION_MS as u64));
+                job.expires_at = Some(
+                    tokio::time::Instant::now()
+                        + Duration::from_millis(UNCONSUMED_RETENTION_MS as u64),
+                );
             }
             let notify = deliverable(job, false)
                 .then(|| (job.snapshot.root.clone(), job.snapshot.owner_id.clone()));
@@ -484,7 +582,10 @@ impl JobManager {
     pub fn discard_inline(&self, root: &str, job_id: &str) -> bool {
         let removed = {
             let mut jobs = self.lock();
-            if !jobs.get(job_id).is_some_and(|job| job.inline && job.snapshot.root == root) {
+            if !jobs
+                .get(job_id)
+                .is_some_and(|job| job.inline && job.snapshot.root == root)
+            {
                 return false;
             }
             jobs.remove(job_id)
@@ -511,8 +612,13 @@ impl JobManager {
     fn take_results(&self, root: &str, owner_id: &str, in_flight: bool) -> Vec<JobSnapshot> {
         let taken = {
             let mut jobs = self.lock();
-            let mut taken: Vec<JobSnapshot> = jobs.values_mut()
-                .filter(|job| job.snapshot.root == root && job.snapshot.owner_id == owner_id && deliverable(job, false))
+            let mut taken: Vec<JobSnapshot> = jobs
+                .values_mut()
+                .filter(|job| {
+                    job.snapshot.root == root
+                        && job.snapshot.owner_id == owner_id
+                        && deliverable(job, false)
+                })
                 .map(|job| {
                     let snapshot = job.snapshot.clone();
                     if in_flight {
@@ -560,7 +666,10 @@ impl JobManager {
             }
             claimed.sort_by_key(|job: &JobSnapshot| (job.finished_at, job.started_at));
             watched.sort();
-            (claimed, watched.into_iter().map(|(_, id)| id).collect::<Vec<_>>())
+            (
+                claimed,
+                watched.into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
+            )
         };
         if !claimed.is_empty() {
             self.schedule_snapshots(&claimed);
@@ -600,7 +709,8 @@ impl JobManager {
             let mut jobs = self.lock();
             for snapshot in snapshots {
                 if let Some(job) = jobs.get_mut(&snapshot.id) {
-                    if job.delivery_in_flight && job.snapshot.execution_id == snapshot.execution_id {
+                    if job.delivery_in_flight && job.snapshot.execution_id == snapshot.execution_id
+                    {
                         job.delivery_in_flight = false;
                         if committed {
                             mark_consumed(job);
@@ -608,7 +718,10 @@ impl JobManager {
                             job.snapshot.consumed = false;
                             job.snapshot.result = snapshot.result.clone();
                             if deliverable(job, false) {
-                                owners.insert((job.snapshot.root.clone(), job.snapshot.owner_id.clone()));
+                                owners.insert((
+                                    job.snapshot.root.clone(),
+                                    job.snapshot.owner_id.clone(),
+                                ));
                             }
                         }
                     }
@@ -629,7 +742,10 @@ impl JobManager {
             let mut jobs = self.lock();
             for id in job_ids {
                 if let Some(job) = jobs.get_mut(id) {
-                    if job.snapshot.status != JobStatus::Running && !job.inline && !job.delivery_in_flight {
+                    if job.snapshot.status != JobStatus::Running
+                        && !job.inline
+                        && !job.delivery_in_flight
+                    {
                         mark_consumed(job);
                         consumed.push(job.snapshot.clone());
                     }
@@ -672,24 +788,24 @@ impl JobManager {
     pub fn remove_root(&self, root: &str) {
         {
             let mut jobs = self.lock();
-            let mut identities = self.identities.lock().unwrap_or_else(|error| error.into_inner());
+            let mut identities = self
+                .identities
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             jobs.retain(|_, job| job.snapshot.root != root);
             identities.restored.remove(root);
         }
         self.bump();
     }
 
-    fn select(
-        &self,
-        root: &str,
-        owner_id: &str,
-        keep: impl Fn(&Job) -> bool,
-    ) -> Vec<JobSnapshot> {
+    fn select(&self, root: &str, owner_id: &str, keep: impl Fn(&Job) -> bool) -> Vec<JobSnapshot> {
         let mut jobs = self.lock();
         prune(&mut jobs);
         let mut list: Vec<_> = jobs
             .values()
-            .filter(|job| job.snapshot.root == root && job.snapshot.owner_id == owner_id && keep(job))
+            .filter(|job| {
+                job.snapshot.root == root && job.snapshot.owner_id == owner_id && keep(job)
+            })
             .map(|job| job.snapshot.clone())
             .collect();
         list.sort_by_key(|job| job.started_at);
@@ -698,7 +814,11 @@ impl JobManager {
 }
 
 fn deliverable(job: &Job, include_watched: bool) -> bool {
-    !job.inline && matches!(job.snapshot.status, JobStatus::Completed | JobStatus::Failed)
+    !job.inline
+        && matches!(
+            job.snapshot.status,
+            JobStatus::Completed | JobStatus::Failed
+        )
         && !job.snapshot.consumed
         && (include_watched || job.watchers == 0)
 }
@@ -706,12 +826,15 @@ fn deliverable(job: &Job, include_watched: bool) -> bool {
 fn mark_consumed(job: &mut Job) {
     job.snapshot.consumed = true;
     job.snapshot.result = None;
-    job.expires_at = Some(tokio::time::Instant::now() + Duration::from_millis(CONSUMED_RETENTION_MS as u64));
+    job.expires_at =
+        Some(tokio::time::Instant::now() + Duration::from_millis(CONSUMED_RETENTION_MS as u64));
 }
 
 fn prune(jobs: &mut HashMap<String, Job>) {
     let now = tokio::time::Instant::now();
-    jobs.retain(|_, job| job.delivery_in_flight || job.expires_at.is_none_or(|deadline| deadline > now));
+    jobs.retain(|_, job| {
+        job.delivery_in_flight || job.expires_at.is_none_or(|deadline| deadline > now)
+    });
 }
 
 #[cfg(test)]
@@ -733,7 +856,10 @@ mod tests {
         jobs.settle(&a, Ok("done".into()));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
         assert_eq!(jobs.take_deliverable("c", "Main").len(), 1);
-        assert!(jobs.take_deliverable("c", "Main").is_empty(), "consumed once");
+        assert!(
+            jobs.take_deliverable("c", "Main").is_empty(),
+            "consumed once"
+        );
         assert_eq!(jobs.get(&a).unwrap().result, None);
     }
 
@@ -741,53 +867,97 @@ mod tests {
     async fn restored_origin_is_not_replayed_after_settlement_or_eviction() {
         let jobs = JobManager::default();
         let (other_root, _) = jobs.register("other-root", "Main", "saved-job", "unrelated work");
-        let (id, _) = jobs.register_restored("root", "Main", "Agent", "saved-job", "restore").unwrap();
+        let (id, _) = jobs
+            .register_restored("root", "Main", "Agent", "saved-job", "restore")
+            .unwrap();
         assert_ne!(id, other_root);
-        assert!(jobs.register_restored("root", "Main", "Agent", "saved-job", "repeat").is_none());
+        assert!(jobs
+            .register_restored("root", "Main", "Agent", "saved-job", "repeat")
+            .is_none());
         jobs.settle(&id, Ok("restored result".into()));
-        assert!(jobs.register_restored("root", "Main", "Agent", "saved-job", "settled repeat").is_none());
+        assert!(jobs
+            .register_restored("root", "Main", "Agent", "saved-job", "settled repeat")
+            .is_none());
         assert_eq!(jobs.take_deliverable("root", "Main").len(), 1);
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(CONSUMED_RETENTION_MS as u64)).await;
         tokio::task::yield_now().await;
         assert!(jobs.get(&id).is_none());
-        assert!(jobs.register_restored("root", "Main", "Agent", "saved-job", "expired repeat").is_none());
-        assert!(jobs.register_restored("root", "Main", "Agent", &id, "stale resumed journal").is_none());
-        assert!(jobs.register_restored("root", "Main", "Other", &id, "different saved worker with the same id").is_some());
+        assert!(jobs
+            .register_restored("root", "Main", "Agent", "saved-job", "expired repeat")
+            .is_none());
+        assert!(jobs
+            .register_restored("root", "Main", "Agent", &id, "stale resumed journal")
+            .is_none());
+        assert!(jobs
+            .register_restored(
+                "root",
+                "Main",
+                "Other",
+                &id,
+                "different saved worker with the same id"
+            )
+            .is_some());
         jobs.remove_root("root");
         assert!(jobs.get(&other_root).is_some());
-        assert!(jobs.register_restored("root", "Main", "Agent", "saved-job", "forgotten root").is_some());
+        assert!(jobs
+            .register_restored("root", "Main", "Agent", "saved-job", "forgotten root")
+            .is_some());
     }
 
     #[test]
     fn restored_claims_are_atomic_and_scoped_to_root() {
         let jobs = Arc::new(JobManager::default());
         let barrier = Arc::new(std::sync::Barrier::new(8));
-        let attempts: Vec<_> = (0..8).map(|_| {
-            let jobs = jobs.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                jobs.register_restored("root", "Main", "Agent", "same-saved-id", "restore").is_some()
+        let attempts: Vec<_> = (0..8)
+            .map(|_| {
+                let jobs = jobs.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    jobs.register_restored("root", "Main", "Agent", "same-saved-id", "restore")
+                        .is_some()
+                })
             })
-        }).collect();
-        assert_eq!(attempts.into_iter().map(|attempt| attempt.join().unwrap()).filter(|accepted| *accepted).count(), 1);
+            .collect();
+        assert_eq!(
+            attempts
+                .into_iter()
+                .map(|attempt| attempt.join().unwrap())
+                .filter(|accepted| *accepted)
+                .count(),
+            1
+        );
         let first = jobs.running("root", "Main");
         assert_eq!(first.len(), 1);
-        let (other, _) = jobs.register_restored("other-root", "Main", "Agent", "same-saved-id", "other root").unwrap();
+        let (other, _) = jobs
+            .register_restored("other-root", "Main", "Agent", "same-saved-id", "other root")
+            .unwrap();
         assert_ne!(first[0].id, other);
         assert_eq!(jobs.get(&other).unwrap().root, "other-root");
-        assert!(jobs.register_restored("other-root", "Main", "Agent", "same-saved-id", "repeat").is_none());
+        assert!(jobs
+            .register_restored("other-root", "Main", "Agent", "same-saved-id", "repeat")
+            .is_none());
     }
 
     #[tokio::test]
     async fn restore_skips_an_already_running_owned_agent_and_remembers_the_origin() {
         let jobs = JobManager::default();
         let (running, _) = jobs.register("root", "Main", "Agent", "current work");
-        assert!(jobs.register_restored("root", "Main", "Agent", "old-saved-id", "stale snapshot").is_none());
+        assert!(jobs
+            .register_restored("root", "Main", "Agent", "old-saved-id", "stale snapshot")
+            .is_none());
         assert_eq!(jobs.running("root", "Main").len(), 1);
         jobs.settle(&running, Ok("current result".into()));
-        assert!(jobs.register_restored("root", "Main", "Agent", "old-saved-id", "late stale snapshot").is_none());
+        assert!(jobs
+            .register_restored(
+                "root",
+                "Main",
+                "Agent",
+                "old-saved-id",
+                "late stale snapshot"
+            )
+            .is_none());
     }
 
     #[test]
@@ -815,7 +985,9 @@ mod tests {
         let jobs = JobManager::default();
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = hits.clone();
-        jobs.set_settled_hook(Arc::new(move |_, _| { counter.fetch_add(1, Ordering::SeqCst); }));
+        jobs.set_settled_hook(Arc::new(move |_, _| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
         let (inline, _) = jobs.register_inline("root", "Main", "Inline", "work");
         assert!(jobs.running("root", "Main").is_empty());
         assert!(jobs.begin_wait("root", "Main").1.is_empty());
@@ -823,14 +995,20 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 0);
         assert!(jobs.take_deliverable("root", "Main").is_empty());
         assert!(jobs.take_inline("other", &inline).is_none());
-        assert_eq!(jobs.take_inline("root", &inline).unwrap().result.as_deref(), Some("inline result"));
+        assert_eq!(
+            jobs.take_inline("root", &inline).unwrap().result.as_deref(),
+            Some("inline result")
+        );
         assert!(jobs.take_inline("root", &inline).is_none());
 
         let (promoted, _) = jobs.register_inline("root", "Main", "Promoted", "work");
         jobs.settle(&promoted, Ok("adopted result".into()));
         assert!(jobs.promote_inline("root", &promoted));
         assert_eq!(hits.load(Ordering::SeqCst), 1);
-        assert_eq!(jobs.take_deliverable("root", "Main")[0].result.as_deref(), Some("adopted result"));
+        assert_eq!(
+            jobs.take_deliverable("root", "Main")[0].result.as_deref(),
+            Some("adopted result")
+        );
     }
 
     #[test]

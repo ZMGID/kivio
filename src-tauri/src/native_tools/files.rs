@@ -7,16 +7,23 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
+
+use crate::chat::{
+    model::ModelArtifact,
+    tools::{StaticTool, ToolFuture, ToolOutput},
+};
 
 use super::{
     resolve_tool_read_path, resolve_tool_write_path, workspace_display_path, NativeToolWorkspace,
     MAX_READ_FILE_BYTES, TOOL_OUTPUT_MAX_BYTES, TOOL_OUTPUT_MAX_LINES,
 };
 
+const FILE_MUTATION_DIFF_MAX_LINES: usize = 80;
 const MAX_LIST_ENTRIES: usize = 500;
 const MAX_GLOB_RESULTS: usize = 500;
 const MAX_SEARCH_FILES: usize = 5_000;
@@ -37,6 +44,44 @@ const DEFAULT_IGNORED_DIRS: &[&str] = &[
 ];
 
 static FILE_MUTATION_LOCKS: OnceLock<FileMutationLocks> = OnceLock::new();
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct WriteArgs {
+    /// Target file path. Relative paths use the current working directory (project root or conversation workbench). Explicit absolute and ~/ paths can point outside it; normal OS permissions and tool approvals apply.
+    pub path: String,
+    /// Full text content to save
+    pub content: String,
+}
+
+pub struct WriteFile {
+    pub workspace: NativeToolWorkspace,
+}
+
+impl StaticTool for WriteFile {
+    type Args = WriteArgs;
+    type Output = FileMutationResult;
+    type Error = String;
+    type HostData = Vec<ModelArtifact>;
+
+    fn execute<'a>(
+        &'a self,
+        args: Self::Args,
+    ) -> ToolFuture<'a, Result<ToolOutput<Self::HostData, Self::Output>, Self::Error>> {
+        let workspace = self.workspace.clone();
+        Box::pin(async move {
+            let result = tokio::task::spawn_blocking(move || write_file(&workspace, &args))
+                .await
+                .map_err(|error| format!("File mutation task failed: {error}"))??;
+            Ok(ToolOutput {
+                content: result.model_content(),
+                is_error: !result.ok,
+                structured_content: Some(result),
+                host_data: Vec::new(),
+                follow_up_messages: Vec::new(),
+            })
+        })
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FileMutationResult {
@@ -79,6 +124,28 @@ pub struct FileMutationFile {
 }
 
 impl FileMutationResult {
+    pub fn model_content(&self) -> String {
+        let mut content = self.summary();
+        if !self.warnings.is_empty() {
+            content = format!("{}\n{}", content, self.warnings.join("\n"));
+        }
+        if !self.ok && !self.diff.trim().is_empty() {
+            let lines: Vec<&str> = self.diff.lines().collect();
+            if lines.len() > FILE_MUTATION_DIFF_MAX_LINES {
+                let clipped = lines[..FILE_MUTATION_DIFF_MAX_LINES].join("\n");
+                content = format!(
+                    "{}\n\n{}\n[... diff clipped: showing first {FILE_MUTATION_DIFF_MAX_LINES} of {} lines ...]",
+                    content,
+                    clipped,
+                    lines.len()
+                );
+            } else {
+                content = format!("{}\n\n{}", content, self.diff);
+            }
+        }
+        content
+    }
+
     pub fn summary(&self) -> String {
         let stats = format!("+{} -{}", self.additions, self.removals);
         if let Some(file) = self.files.first().filter(|_| self.files.len() == 1) {
@@ -129,21 +196,52 @@ pub fn read_file(
 
     let content = fs::read_to_string(&full).map_err(|err| format!("Read file failed: {err}"))?;
     let display_path = workspace_display_path(workspace, &full);
-    read_text_window(display_path, full.display().to_string(), content, metadata.len(), offset, limit)
+    read_text_window(
+        display_path,
+        full.display().to_string(),
+        content,
+        metadata.len(),
+        offset,
+        limit,
+    )
 }
 
 /// Apply the normal read window and output limits to generated internal URLs.
-pub(crate) fn read_text_content(path: &str, content: String, arguments: &Value) -> Result<ReadFileResult, String> {
-    let offset = arguments.get("offset").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-    let limit = arguments.get("limit").and_then(Value::as_u64).map(|value| value as usize);
+pub(crate) fn read_text_content(
+    path: &str,
+    content: String,
+    arguments: &Value,
+) -> Result<ReadFileResult, String> {
+    let offset = arguments
+        .get("offset")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1) as usize;
+    let limit = arguments
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
     let size = content.len() as u64;
-    let mut result = read_text_window(path.to_string(), path.to_string(), content, size, offset, limit)?;
-    if result.start_line > result.end_line && result.next_offset == Some(result.start_line + 1)
-        && result.warnings.first().is_some_and(|warning| warning.contains("Use bash:"))
+    let mut result = read_text_window(
+        path.to_string(),
+        path.to_string(),
+        content,
+        size,
+        offset,
+        limit,
+    )?;
+    if result.start_line > result.end_line
+        && result.next_offset == Some(result.start_line + 1)
+        && result
+            .warnings
+            .first()
+            .is_some_and(|warning| warning.contains("Use bash:"))
     {
         result.warnings = vec![format!(
             "[Line {} exceeds the {}KB limit. Use offset={} to skip it.]",
-            result.start_line, TOOL_OUTPUT_MAX_BYTES / 1024, result.start_line + 1,
+            result.start_line,
+            TOOL_OUTPUT_MAX_BYTES / 1024,
+            result.start_line + 1,
         )];
     }
     Ok(result)
@@ -361,16 +459,10 @@ fn read_file_window_streaming(
 
 pub fn write_file(
     workspace: &NativeToolWorkspace,
-    arguments: &Value,
+    arguments: &WriteArgs,
 ) -> Result<FileMutationResult, String> {
-    let path = arguments
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "write_file requires path".to_string())?;
-    let content = arguments
-        .get("content")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "write_file requires content".to_string())?;
+    let path = &arguments.path;
+    let content = &arguments.content;
     let full = resolve_tool_write_path(workspace, path)?;
     let _guard = acquire_file_mutation_locks([full.clone()])?;
     let existed = full.is_file();
@@ -1728,7 +1820,10 @@ mod tests {
             std::env::temp_dir().join(format!("kivio_sim_outside_{}.txt", uuid::Uuid::new_v4()));
         let written = write_file(
             &ws,
-            &json!({ "path": outside.to_string_lossy(), "content": "escaped the project root\n" }),
+            &WriteArgs {
+                path: outside.to_string_lossy().into_owned(),
+                content: "escaped the project root\n".into(),
+            },
         )
         .expect("write outside project (no boundary)");
         println!(
@@ -2789,6 +2884,56 @@ mod tests {
         assert!(error.contains(recovery.path().to_string_lossy().as_ref()));
     }
 
+    #[tokio::test]
+    async fn typed_write_validates_arguments_and_preserves_file_metadata() {
+        use crate::chat::tools::{call_typed, input_schema, schema::validate_arguments, ToolError};
+
+        let root = tempfile::tempdir().unwrap();
+        let tool = WriteFile {
+            workspace: NativeToolWorkspace::conversation(root.path().to_path_buf()),
+        };
+        let schema = input_schema::<WriteFile>();
+        let malformed = json!({ "path": "hello.txt", "content": 42 });
+        assert!(validate_arguments(&schema, &malformed).is_err());
+        assert!(matches!(
+            call_typed(&tool, malformed).await,
+            Err(ToolError::InvalidArguments(_))
+        ));
+        assert!(!root.path().join("hello.txt").exists());
+        assert!(call_typed(&tool, json!({ "path": "hello.txt" }))
+            .await
+            .is_err());
+
+        let arguments = json!({ "path": "hello.txt", "content": "alpha\nbeta\n" });
+        validate_arguments(&schema, &arguments).unwrap();
+        let created = call_typed(&tool, arguments).await.unwrap();
+        let result = created.structured_content.unwrap();
+        assert!(!created.is_error);
+        assert!(!created.content.contains("alpha"));
+        assert_eq!(result["operation"], "create");
+        assert_eq!(result["additions"], 2);
+        assert!(result["diff"].as_str().unwrap().contains("+alpha"));
+        assert_eq!(
+            fs::read_to_string(root.path().join("hello.txt")).unwrap(),
+            "alpha\nbeta\n"
+        );
+
+        let overwritten = call_typed(&tool, json!({ "path": "hello.txt", "content": "gamma\n" }))
+            .await
+            .unwrap();
+        let result = overwritten.structured_content.unwrap();
+        assert_eq!(result["operation"], "overwrite");
+        assert_eq!(result["removals"], 2);
+        assert_eq!(
+            fs::read_to_string(root.path().join("hello.txt")).unwrap(),
+            "gamma\n"
+        );
+        assert!(call_typed(&tool, json!({ "path": ".", "content": "bad" }))
+            .await
+            .is_err());
+        assert!(root.path().is_dir());
+    }
+
     #[test]
     fn write_file_returns_structured_diff_metadata() {
         let root = std::env::temp_dir().join(format!("kivio_write_{}", uuid::Uuid::new_v4()));
@@ -2801,10 +2946,10 @@ mod tests {
 
         let result = write_file(
             &workspace,
-            &json!({
-                "path": "hello.txt",
-                "content": "alpha\nbeta\n"
-            }),
+            &WriteArgs {
+                path: "hello.txt".into(),
+                content: "alpha\nbeta\n".into(),
+            },
         )
         .expect("write");
 
@@ -2880,7 +3025,10 @@ mod tests {
         let target = dir.join("note.html");
         write_file(
             &workspace,
-            &json!({ "path": target.to_string_lossy(), "content": "<html></html>" }),
+            &WriteArgs {
+                path: target.to_string_lossy().into_owned(),
+                content: "<html></html>".into(),
+            },
         )
         .expect("explicit absolute write outside project");
         assert_eq!(
@@ -2893,7 +3041,10 @@ mod tests {
         let escape_name = format!("kivio_escape_{}.txt", uuid::Uuid::new_v4());
         write_file(
             &workspace,
-            &json!({ "path": format!("../{escape_name}"), "content": "x" }),
+            &WriteArgs {
+                path: format!("../{escape_name}"),
+                content: "x".into(),
+            },
         )
         .expect("relative `..` write is allowed under no-boundary");
         let escaped = root.parent().expect("root parent").join(&escape_name);
@@ -2949,10 +3100,10 @@ mod tests {
 
         let result = write_file(
             &workspace,
-            &json!({
-                "path": "bin.dat",
-                "content": "clean\n"
-            }),
+            &WriteArgs {
+                path: "bin.dat".into(),
+                content: "clean\n".into(),
+            },
         )
         .expect("overwrite non-utf8 file");
 

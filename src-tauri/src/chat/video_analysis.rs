@@ -91,7 +91,7 @@ impl VideoTool {
         &mut self,
         app: &tauri::AppHandle,
         state: &AppState,
-        ctx: &super::agent::ToolExecutionContext<'_>,
+        ctx: &super::tool_runtime::ToolExecutionContext<'_>,
         arguments: &Value,
     ) -> Result<crate::mcp::types::McpToolCallResult, String> {
         let settings = state.settings_read().clone();
@@ -440,22 +440,34 @@ pub(super) async fn analyze(
     let provider = settings
         .get_provider(&model.provider_id)
         .ok_or("视频分析模型不可用，请在混音器中重新选择。")?;
-    let output = super::agent::planning::call_chat_completion_message_streamed(
+    let output = super::model::generate_via_stream_collect(
         state,
         provider,
-        &model.model,
-        analysis_messages(messages, language),
-        None,
         retry_attempts,
-        true,
-        super::model_metadata::chat_max_output_tokens_on_wire(Some(provider), &model.model, 16384)
-            .min(16384),
-        conversation_id,
-        message_id,
-        "Chat auxiliary video analysis",
+        crate::chat::model::generate_request_from_openai_messages(
+            &model.model,
+            analysis_messages(messages, language),
+            None,
+            crate::chat::model::GenerateOptions {
+                thinking_enabled: true,
+                max_tokens: super::model_metadata::chat_max_output_tokens_on_wire(
+                    Some(provider),
+                    &model.model,
+                    16384,
+                )
+                .min(16384),
+                ..Default::default()
+            },
+            "Chat auxiliary video analysis",
+            crate::chat::model::GenerateRequestContext::new(
+                Some(conversation_id),
+                Some(message_id),
+            ),
+        ),
     )
-    .await?;
-    let content = super::agent::stop::assistant_content_from_api_message(&output);
+    .await
+    .map_err(|err| err.to_string())?;
+    let content = output.text.trim().to_string();
     if content.trim().is_empty() {
         return Err("视频分析模型返回了空结果，请重试或在混音器中更换模型。".into());
     }

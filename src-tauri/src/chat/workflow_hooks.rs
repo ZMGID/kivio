@@ -1,5 +1,7 @@
 //! Awaited workflow hooks. Legacy `hooks.rs` remains an observational channel.
 //! Input follows Claude/Codex event envelopes; decisions never bypass host approval.
+use crate::chat::agent::history::RuntimeMessage;
+use crate::chat::model::ModelRole;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::PathBuf, process::Stdio, time::Duration};
@@ -498,28 +500,27 @@ fn session_cell(runtime: &Runtime, session: &str) -> SessionCell {
 
 /// Cancellation covers stdin, process output and all handlers, not only tool execution.
 pub async fn run_for_host(
-    host: &dyn crate::chat::agent::AgentHost,
+    host: &dyn crate::chat::tool_runtime::ApplicationHost,
+    control: crate::chat::agent::control::AgentRunHandle<'_>,
     event: &str,
     input: Value,
-    session: &str,
-    generation: u64,
 ) -> Result<Outcome, String> {
     let Some(runtime) = host.workflow_hooks() else {
         return Ok(Outcome::default());
     };
-    if !host.is_generation_active(session, generation) {
+    if !control.active() {
         return Err("cancelled".into());
     }
     tokio::select! {
         result = runtime.run(event, input) => result,
-        _ = host.wait_for_generation_inactive(session, generation) => Err("cancelled".into()),
+        _ = control.wait_inactive() => Err("cancelled".into()),
     }
 }
 
 pub async fn start_context(
-    host: &dyn crate::chat::agent::AgentHost,
+    host: &dyn crate::chat::tool_runtime::ApplicationHost,
+    control: crate::chat::agent::control::AgentRunHandle<'_>,
     session: &str,
-    generation: u64,
     resumed: bool,
     subagent: bool,
 ) -> Result<Vec<String>, String> {
@@ -532,7 +533,7 @@ pub async fn start_context(
     let cell = session_cell(runtime, session);
     let mut cached = tokio::select! {
         guard = cell.lock() => guard,
-        _ = host.wait_for_generation_inactive(session, generation) => return Err("cancelled".into()),
+        _ = control.wait_inactive() => return Err("cancelled".into()),
     };
     if let Some(context) = &*cached {
         return Ok(context.clone());
@@ -546,7 +547,7 @@ pub async fn start_context(
     if !subagent {
         input["source"] = json!(if resumed { "resume" } else { "startup" });
     }
-    let out = run_for_host(host, event, input, session, generation).await?;
+    let out = run_for_host(host, control, event, input).await?;
     if let Some(reason) = out.denied {
         return Err(reason);
     }
@@ -572,16 +573,16 @@ pub async fn remember_context(runtime: &Runtime, session: &str, context: &[Strin
 }
 
 pub async fn compact_context(
-    host: &dyn crate::chat::agent::AgentHost,
+    host: &dyn crate::chat::tool_runtime::ApplicationHost,
+    control: crate::chat::agent::control::AgentRunHandle<'_>,
     session: &str,
-    generation: u64,
 ) -> Result<Vec<String>, String> {
     let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) else {
         return Ok(vec![]);
     };
     let mut input = runtime.input("SessionStart", session);
     input["source"] = json!("compact");
-    let outcome = run_for_host(host, "SessionStart", input, session, generation).await?;
+    let outcome = run_for_host(host, control, "SessionStart", input).await?;
     if let Some(reason) = outcome.denied {
         return Err(reason);
     }
@@ -589,11 +590,17 @@ pub async fn compact_context(
     Ok(outcome.context)
 }
 
-pub fn inject_context(messages: &mut Vec<Value>, context: &[String]) -> Option<Value> {
+pub(crate) fn inject_context(
+    messages: &mut Vec<RuntimeMessage>,
+    context: &[String],
+) -> Option<RuntimeMessage> {
     if context.is_empty() {
         return None;
     }
-    let message = json!({"role":"user", "content":format!("[Workflow hook context]\n{}", context.join("\n\n"))});
+    let message = RuntimeMessage::text(
+        ModelRole::User,
+        format!("[Workflow hook context]\n{}", context.join("\n\n")),
+    );
     messages.push(message.clone());
     Some(message)
 }
@@ -604,13 +611,13 @@ mod tests {
     #[test]
     fn hook_context_appends_without_changing_cached_prefix() {
         let mut messages = vec![
-            json!({"role":"system","content":"policy"}),
-            json!({"role":"user","content":"task"}),
+            RuntimeMessage::system("policy"),
+            RuntimeMessage::text(ModelRole::User, "task"),
         ];
         let prefix = messages.clone();
         let recorded = inject_context(&mut messages, &["hook result".into()]).unwrap();
         assert_eq!(&messages[..prefix.len()], prefix.as_slice());
-        assert_eq!(recorded["role"], "user");
+        assert_eq!(recorded.role(), Some(ModelRole::User));
         assert_eq!(messages.last(), Some(&recorded));
         assert!(inject_context(&mut messages, &[]).is_none());
     }
@@ -628,7 +635,10 @@ mod tests {
         assert_eq!(input["tool_name"], "Agent");
         assert_eq!(input["kivio_tool_name"], "task");
         assert_eq!(input["tool_input"], task["tool_input"]);
-        assert_eq!(native_input(&task, input["tool_input"].clone()), task["tool_input"]);
+        assert_eq!(
+            native_input(&task, input["tool_input"].clone()),
+            task["tool_input"]
+        );
         let subagent = compatible_input(&json!({"agent_type":"example:review"}));
         assert_eq!(subagent["agent_type"], "review");
     }

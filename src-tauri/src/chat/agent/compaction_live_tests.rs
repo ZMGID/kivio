@@ -1,7 +1,7 @@
 //! Opt-in, bounded real-provider stress tests. Only synthetic history is sent.
 //! Settings are read for one provider; user settings and conversations are never written.
 use super::*;
-use crate::chat::agent::{compaction, planning};
+use crate::chat::context_policy as compaction;
 use serde_json::{json, Value};
 use std::time::Instant;
 
@@ -93,21 +93,26 @@ async fn recall(
     id: &str,
 ) -> Result<String, String> {
     messages.push(json!({"role":"user","content":recall_question()}));
-    let output = planning::call_chat_completion_message_streamed(
+    let output = crate::chat::model::generate_via_stream_collect(
         state,
         provider,
-        model,
-        messages,
-        None,
         1,
-        false,
-        1024,
-        id,
-        "recall",
-        "Compaction live stress recall",
+        crate::chat::model::generate_request_from_openai_messages(
+            model,
+            messages,
+            None,
+            crate::chat::model::GenerateOptions {
+                thinking_enabled: false,
+                max_tokens: 1024,
+                ..Default::default()
+            },
+            "Compaction live stress recall",
+            crate::chat::model::GenerateRequestContext::new(Some(id), Some("recall")),
+        ),
     )
-    .await?;
-    let text = crate::chat::agent::stop::assistant_content_from_api_message(&output);
+    .await
+    .map_err(|err| err.to_string())?;
+    let text = output.text.trim().to_string();
     verify_recall(&text)?;
     Ok(text)
 }

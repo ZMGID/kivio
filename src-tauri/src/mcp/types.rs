@@ -1,3 +1,7 @@
+pub use crate::chat::model::ModelArtifact as ChatToolArtifact;
+use crate::chat::model::ModelTool;
+use crate::chat::tools::{ArgumentPolicy, ToolTimeout};
+
 use serde::{Deserialize, Serialize};
 
 use crate::settings::{ChatMcpServer, ChatNativeToolsConfig};
@@ -76,7 +80,38 @@ pub struct ChatToolDefinition {
     pub output_schema: Option<serde_json::Value>,
 }
 
+impl From<&ChatToolDefinition> for ModelTool {
+    fn from(tool: &ChatToolDefinition) -> Self {
+        Self {
+            name: tool.openai_tool_name(),
+            description: tool.description.clone(),
+            input_schema: tool.input_schema.clone(),
+        }
+    }
+}
+
 impl ChatToolDefinition {
+    pub(crate) fn for_run(
+        &self,
+        settings: &crate::settings::Settings,
+    ) -> crate::chat::tools::ToolDefinition {
+        let model = ModelTool::from(self);
+        crate::chat::tools::ToolDefinition {
+            key: self.id.clone(),
+            aliases: LEGACY_TOOL_ALIASES.iter().filter(|(_, to)| *to == self.name || *to == model.name)
+                .map(|(from, _)| (*from).into()).collect(),
+            model,
+            label: crate::chat::tools::ToolLabel {
+                name: self.name.clone(), source: self.source.clone(), server_id: self.server_id.clone(), sensitive: self.sensitive,
+            },
+            parallel_safe: self.parallel_safe() && !crate::chat::tool_runtime::tool_requires_approval(settings, self),
+            checkpoint_before_dispatch: self.source == "native" && self.name == crate::chat::sub_agent::TASK_TOOL_NAME,
+            speculative: self.source == "native" && self.name == crate::chat::sub_agent::TASK_TOOL_NAME,
+            argument_limit: (self.openai_tool_name() == "present_artifacts").then_some(PRESENT_ARTIFACTS_ARGUMENTS_MAX_CHARS),
+            argument_limit_error: (self.openai_tool_name() == "present_artifacts").then(|| format!("{} arguments are too large. Pass only artifact_ids or paths; never file contents, base64, or data URLs.", self.name)),
+        }
+    }
+
     pub fn openai_tool_name(&self) -> String {
         wire_tool_name(
             &self.source,
@@ -95,6 +130,38 @@ impl ChatToolDefinition {
                 "parameters": self.input_schema,
             }
         })
+    }
+
+    pub fn timeout_policy(&self) -> ToolTimeout {
+        match self.source.as_str() {
+            "native" => super::native_registry::find_entry(&self.name)
+                .map_or(ToolTimeout::Default, |entry| entry.timeout),
+            "mixer" => match self.name.as_str() {
+                "mixer_video_analysis" => ToolTimeout::AtLeast(300_000),
+                "mixer_generate_image" => {
+                    ToolTimeout::AtLeast(crate::chat::image_generation::IMAGE_GENERATION_TIMEOUT_MS)
+                }
+                _ => ToolTimeout::Default,
+            },
+            _ => ToolTimeout::Default,
+        }
+    }
+
+    pub fn argument_policy(&self) -> ArgumentPolicy {
+        if self.source == "native" {
+            return super::native_registry::find_entry(&self.name)
+                .map_or(ArgumentPolicy::Schema, |entry| entry.arguments);
+        }
+        ArgumentPolicy::Schema
+    }
+
+    pub fn parallel_safe(&self) -> bool {
+        match self.source.as_str() {
+            "native" => super::native_registry::find_entry(&self.name)
+                .is_some_and(|entry| entry.parallel_safe),
+            "mcp" => self.is_read_only_tool(),
+            _ => false,
+        }
     }
 
     pub fn read_only_hint(&self) -> Option<bool> {
@@ -139,21 +206,6 @@ pub struct McpToolCallResult {
     /// text, so the actual image rides here as a follow-up user message.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub follow_up_user_messages: Vec<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChatToolArtifact {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub name: String,
-    #[serde(alias = "mimeType")]
-    pub mime_type: String,
-    #[serde(alias = "dataUrl")]
-    pub data_url: String,
-    #[serde(default, alias = "sizeBytes")]
-    pub size_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,14 +450,7 @@ pub fn native_write_file_tool() -> ChatToolDefinition {
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string", "description": "Target file path. Relative paths use the current working directory (project root or conversation workbench). Explicit absolute and ~/ paths can point outside it; normal OS permissions and tool approvals apply." },
-                "content": { "type": "string", "description": "Full text content to save" }
-            },
-            "required": ["path", "content"]
-        }),
+        input_schema: crate::chat::tools::input_schema::<crate::native_tools::WriteFile>(),
         sensitive: true,
         annotations: None,
         output_schema: None,
@@ -1685,6 +1730,7 @@ mod tests {
         assert_eq!(tool.output_schema.as_ref(), Some(&output_schema));
         assert_eq!(tool.read_only_hint(), Some(true));
         assert!(tool.is_read_only_tool());
+        assert!(tool.parallel_safe());
         assert!(tool.sensitive);
     }
 
@@ -1759,6 +1805,7 @@ mod tests {
 
         assert!(tool.sensitive);
         assert!(!tool.is_read_only_tool());
+        assert!(!tool.parallel_safe());
     }
 
     #[test]

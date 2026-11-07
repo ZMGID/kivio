@@ -1,0 +1,12 @@
+[package]
+name = "kivio-agent-sdk-consumer"
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+kivio-agent-sdk = { path = "../../../crates/kivio-agent-sdk" }
+reqwest = { version = "0.13", features = ["json", "rustls", "stream"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }

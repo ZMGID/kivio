@@ -50,15 +50,21 @@ pub(super) fn remove_assistant_answer(
     if conversation.messages[idx].role != "assistant" {
         return Err("仅支持删除助手回复".to_string());
     }
-    let changes_pending_history = conversation.external_history.as_ref().is_some_and(|history| {
-        history.prefix(conversation).is_ok_and(|prefix| idx < prefix.len())
-    });
+    let changes_pending_history = conversation
+        .external_history
+        .as_ref()
+        .is_some_and(|history| {
+            history
+                .prefix(conversation)
+                .is_ok_and(|prefix| idx < prefix.len())
+        });
     mark_summary_stale_if_needed(conversation, idx);
     let removed = conversation.messages.remove(idx);
     if changes_pending_history {
         if let Some(history) = &mut conversation.external_history {
             if history.through_message_id.as_deref() == Some(message_id) {
-                history.through_message_id = idx.checked_sub(1)
+                history.through_message_id = idx
+                    .checked_sub(1)
                     .map(|previous| conversation.messages[previous].id.clone());
             }
             history.id = Uuid::new_v4().to_string();
@@ -128,7 +134,9 @@ fn assistant_turn_span(
     message_id: &str,
 ) -> Result<(usize, usize, usize), String> {
     let target_idx = find_message_index(conversation, message_id)?;
-    if conversation.messages[target_idx].role != "assistant" || is_subagent_report(&conversation.messages[target_idx]) {
+    if conversation.messages[target_idx].role != "assistant"
+        || is_subagent_report(&conversation.messages[target_idx])
+    {
         return Err("仅支持对助手回复换模型回答".to_string());
     }
     let user_idx = conversation.messages[..target_idx]
@@ -139,7 +147,10 @@ fn assistant_turn_span(
     let mut start = target_idx;
     while start > user_idx + 1 {
         let previous = &conversation.messages[start - 1];
-        if previous.role != "assistant" || is_subagent_report(previous) || !same_reply_group(target, previous) {
+        if previous.role != "assistant"
+            || is_subagent_report(previous)
+            || !same_reply_group(target, previous)
+        {
             break;
         }
         start -= 1;
@@ -176,7 +187,10 @@ pub(super) fn prepare_reply_with_model(
         return Err("请选择要回答的模型".to_string());
     }
     let (user_idx, start, end) = assistant_turn_span(conversation, message_id)?;
-    if conversation.messages[end + 1..].iter().any(|message| !is_subagent_report(message)) {
+    if conversation.messages[end + 1..]
+        .iter()
+        .any(|message| !is_subagent_report(message))
+    {
         return Err("只能对最后一轮回答换模型".to_string());
     }
     let siblings = &conversation.messages[start..=end];
@@ -330,11 +344,15 @@ pub(crate) async fn chat_update_message(
 }
 
 fn is_subagent_report(message: &ChatMessage) -> bool {
-    message.role == "assistant" && (message.id.starts_with("subagent-result-") || message.irc_message.is_some())
+    message.role == "assistant"
+        && (message.id.starts_with("subagent-result-") || message.irc_message.is_some())
 }
 
 fn last_turn_user(messages: &[ChatMessage]) -> Option<&ChatMessage> {
-    messages.iter().rev().find(|message| !is_subagent_report(message))
+    messages
+        .iter()
+        .rev()
+        .find(|message| !is_subagent_report(message))
         .filter(|message| message.role == "user")
 }
 
@@ -348,7 +366,9 @@ pub(crate) fn apply_regenerate_truncation(
     idx: usize,
     new_content: Option<String>,
 ) -> Result<(), String> {
-    let current_turn = !conversation.messages[idx + 1..].iter().any(|message| message.role == "user");
+    let current_turn = !conversation.messages[idx + 1..]
+        .iter()
+        .any(|message| message.role == "user");
     let keep = match conversation.messages[idx].role.as_str() {
         "assistant" => {
             if new_content.is_some() {
@@ -483,31 +503,33 @@ pub(crate) async fn chat_regenerate_message(
             Err(err) => return Err(crate::chat::repository::repository_error(err)),
         }
     };
-    if !state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch) {
+    if !state
+        .sub_agents
+        .resume_user_turn(&conversation_id, interruption_epoch)
+    {
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
     }
 
-    let last_user_api_content = last_turn_user(&conversation.messages)
-        .map(|message| {
-            let attachment_dir = if message.attachments.is_empty() {
-                None
-            } else {
-                conversation_attachments_dir(&app, &conversation_id).ok()
-            };
-            let mut api_content = compose_user_content_for_api(
-                &message.content,
-                &message.attachments,
-                attachment_dir.as_deref(),
-            );
-            // 虚拟文本附件（memory://）正文只存在附件记录里、不在 message.content 中：
-            // 重新生成时同样要内联，否则模型只会看到原始短提示词或空内容。
-            let text_attachments = text_attachments_from_attachments(&message.attachments);
-            if !text_attachments.is_empty() {
-                api_content = compose_text_attachments_for_api(&api_content, &text_attachments);
-            }
-            api_content
-        });
+    let last_user_api_content = last_turn_user(&conversation.messages).map(|message| {
+        let attachment_dir = if message.attachments.is_empty() {
+            None
+        } else {
+            conversation_attachments_dir(&app, &conversation_id).ok()
+        };
+        let mut api_content = compose_user_content_for_api(
+            &message.content,
+            &message.attachments,
+            attachment_dir.as_deref(),
+        );
+        // 虚拟文本附件（memory://）正文只存在附件记录里、不在 message.content 中：
+        // 重新生成时同样要内联，否则模型只会看到原始短提示词或空内容。
+        let text_attachments = text_attachments_from_attachments(&message.attachments);
+        if !text_attachments.is_empty() {
+            api_content = compose_text_attachments_for_api(&api_content, &text_attachments);
+        }
+        api_content
+    });
     let last_user_image_paths = last_turn_user(&conversation.messages)
         .map(|message| {
             stored_image_paths_for_attachments(&app, &conversation_id, &message.attachments)
@@ -1218,7 +1240,10 @@ fn forget_subagents(
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("remove sub-agent artifacts {}: {error}", dir.display())),
+        Err(error) => Err(format!(
+            "remove sub-agent artifacts {}: {error}",
+            dir.display()
+        )),
     }
 }
 
@@ -1263,9 +1288,13 @@ mod subagent_cleanup_tests {
         let manager = SubAgentManager::default();
         register_agent(&manager, "conv_a", "agent-a", &target);
         register_agent(&manager, "conv_ab", "agent-b", &other);
-        let (job, cancelled) = manager.jobs.register("conv_a", MAIN_AGENT_ID, "agent-a", "task");
+        let (job, cancelled) = manager
+            .jobs
+            .register("conv_a", MAIN_AGENT_ID, "agent-a", "task");
         let (other_job, other_cancelled) =
-            manager.jobs.register("conv_ab", MAIN_AGENT_ID, "agent-b", "task");
+            manager
+                .jobs
+                .register("conv_ab", MAIN_AGENT_ID, "agent-b", "task");
         manager.set_user_interrupted("conv_a", true);
         manager.set_user_interrupted("conv_ab", true);
 
@@ -1281,7 +1310,12 @@ mod subagent_cleanup_tests {
 
         forget_subagents(&manager, "conv_a", || Ok(target.clone())).unwrap();
         assert!(!target.exists());
-        assert_eq!(std::fs::read(other.join("session.jsonl")).unwrap().as_slice(), b"other");
+        assert_eq!(
+            std::fs::read(other.join("session.jsonl"))
+                .unwrap()
+                .as_slice(),
+            b"other"
+        );
         assert!(manager.registry.get("conv_a", "agent-a").is_none());
         assert!(manager.registry.get("conv_ab", "agent-b").is_some());
         assert!(manager.jobs.get(&job).is_none());
@@ -1866,7 +1900,10 @@ pub(crate) async fn chat_reply_with_model(
     }
     let last_user_image_paths =
         stored_image_paths_for_attachments(&app, &conversation_id, &user_message.attachments)?;
-    if !state.sub_agents.resume_user_turn(&conversation_id, interruption_epoch) {
+    if !state
+        .sub_agents
+        .resume_user_turn(&conversation_id, interruption_epoch)
+    {
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(serde_json::json!({ "success": true, "conversation": conversation }));
     }
@@ -1874,7 +1911,9 @@ pub(crate) async fn chat_reply_with_model(
 
     let mut arm_conversation = conversation.clone();
     let removed = arm_conversation.messages.split_off(prep.user_index + 1);
-    arm_conversation.messages.extend(removed.into_iter().filter(is_subagent_report));
+    arm_conversation
+        .messages
+        .extend(removed.into_iter().filter(is_subagent_report));
 
     let arm = ReplyArm {
         group_id: prep.group_id.clone(),

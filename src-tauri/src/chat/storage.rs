@@ -38,6 +38,8 @@ pub use assistants::{
     get_assistants, load_assistant_index, remove_builtin_assistants, save_assistant_index,
     update_assistant,
 };
+#[cfg(test)]
+pub(crate) use conversations::write_conversation_file_at_path;
 pub use conversations::{
     conversation_pins_file_path, find_reusable_blank_conversation, get_conversations,
     load_conversation, load_conversation_pins, set_conversation_pins,
@@ -990,7 +992,10 @@ mod delete_side_artifact_tests {
         );
         crate::native_tools::write_file(
             &workspace,
-            &serde_json::json!({"path":"report.txt","content":"keep"}),
+            &crate::native_tools::WriteArgs {
+                path: "report.txt".into(),
+                content: "keep".into(),
+            },
         )
         .unwrap();
         let attachments = dir.path().join("conv_one_attachments");

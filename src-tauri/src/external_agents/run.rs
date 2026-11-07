@@ -18,11 +18,11 @@ use crate::chat::types::{
     CompactionBoundaryRecord, ToolCallRecord, ToolCallStatus,
 };
 use crate::chat::Conversation;
-use crate::external_agents::providers::claude::append_system_prompt_file_args;
 use crate::external_agents::prompt::{
     build_external_daemon_instructions, compose_external_prompt,
     compose_external_prompt_passthrough, instructions_via_launch_flag, is_cli_slash_input,
 };
+use crate::external_agents::providers::claude::append_system_prompt_file_args;
 use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::session::acp::AcpMcpServer;
 use crate::external_agents::session::live::LaunchConfig;
@@ -61,6 +61,25 @@ fn context_reset_notice_event() -> UnifiedAgentEvent {
 /// 系统提示落盘文件的前缀。启动 GC 也认这个前缀（`screenshot::cleanup_orphan_temp_files`），
 /// 崩溃留下的残渣 24h 后被回收。
 const SYSTEM_PROMPT_FILE_PREFIX: &str = "kivio-extsys-";
+
+/// The assistant message is saved and its terminal event is published.
+#[must_use]
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExternalCliTurnOutcome {
+    Completed,
+    Failed(String),
+    Cancelled,
+}
+
+impl ExternalCliTurnOutcome {
+    pub fn require_completed(self) -> Result<(), String> {
+        match self {
+            Self::Completed => Ok(()),
+            Self::Failed(message) => Err(message),
+            Self::Cancelled => Err("cancelled".into()),
+        }
+    }
+}
 
 fn translate_cli_dirs(cli_bin: &Path, dirs: Vec<String>) -> Vec<String> {
     dirs.into_iter()
@@ -101,7 +120,7 @@ pub async fn run_external_cli_slash_command(
     state: &State<'_, AppState>,
     conversation: &mut Conversation,
     slash_command: &str,
-) -> Result<(), String> {
+) -> Result<ExternalCliTurnOutcome, String> {
     if !is_cli_slash_input(slash_command) {
         return Err("外部 CLI slash 命令必须以 / 开头".to_string());
     }
@@ -130,7 +149,7 @@ pub async fn run_external_cli_reply(
     file_paths: &[std::path::PathBuf],
     active_skill_id: Option<&str>,
     entry: AgentRunEntry,
-) -> Result<(), String> {
+) -> Result<ExternalCliTurnOutcome, String> {
     run_external_cli_reply_in(
         app,
         state,
@@ -159,7 +178,7 @@ pub(crate) async fn run_external_cli_reply_in(
     active_skill_id: Option<&str>,
     entry: AgentRunEntry,
     working_directory: Option<&std::path::Path>,
-) -> Result<(), String> {
+) -> Result<ExternalCliTurnOutcome, String> {
     let run_generation = state
         .chat_runtime()
         .begin_reply_generation(&conversation.id)
@@ -233,7 +252,7 @@ async fn run_external_cli_reply_owned(
     run_id: &str,
     lease: &crate::external_agents::session::live::SessionLease<'_>,
     finalizes_reply: &std::sync::atomic::AtomicBool,
-) -> Result<(), String> {
+) -> Result<ExternalCliTurnOutcome, String> {
     let settings = state.settings_read().clone();
     let agent_id = conversation
         .agent_runtime
@@ -270,7 +289,8 @@ async fn run_external_cli_reply_owned(
             def.name
         )
     })?;
-    let launch_identity = crate::external_agents::overrides::LaunchIdentity::capture(def, &resolved_bin);
+    let launch_identity =
+        crate::external_agents::overrides::LaunchIdentity::capture(def, &resolved_bin);
     if crate::external_agents::overrides::launch_revision(def.id) != Some(launch_revision) {
         return Err("external CLI configuration changed; retry".into());
     }
@@ -522,7 +542,8 @@ async fn run_external_cli_reply_owned(
     // retain their existing passthrough behavior. 图片：支持原生图片块的协议按白名单
     // 加载为 base64 块，其余（不支持 / 超白名单 / 读失败）降级为路径文本；文件：一律路径说明块。
     // Catalog input types are authoritative; older catalogs retain native protocol support.
-    let accepts_images = if def.image_input == CapabilitySupport::Native && !image_paths.is_empty() {
+    let accepts_images = if def.image_input == CapabilitySupport::Native && !image_paths.is_empty()
+    {
         let key = crate::external_agents::slash::cache_key(&agent_id, &cwd.to_string_lossy());
         let cached = state.external_discovery().get_cached_external_agent_models(
             &key,
@@ -683,10 +704,12 @@ async fn run_external_cli_reply_owned(
         ));
     }
     if agent_id == "claude" {
-        args.extend(crate::external_agents::providers::claude::thinking_display_args(
-            conversation.agent_runtime.external_reasoning.as_deref(),
-            crate::external_agents::spawn::cached_cli_version(&resolved_bin).as_deref(),
-        ));
+        args.extend(
+            crate::external_agents::providers::claude::thinking_display_args(
+                conversation.agent_runtime.external_reasoning.as_deref(),
+                crate::external_agents::spawn::cached_cli_version(&resolved_bin).as_deref(),
+            ),
+        );
     }
     // A1：系统指令以 flag 追加（不改 `build_args` 的形状，也不动 `RuntimeContext` ——
     // 那两处是所有 CLI 共用的，为一个 claude 专属 flag 加字段要牵动全部 def 与其单测）。
@@ -763,8 +786,16 @@ async fn run_external_cli_reply_owned(
             | StreamFormat::PiRpc
             | StreamFormat::AntigravityStreamJson
     );
-    if lease.is_cancelled() || !state.chat_runtime().is_generation_active(&conversation.id, run_generation) { return Err("cancelled".into()); }
-    if !launch_identity.still_current(def, &resolved_bin) { return Err("external CLI configuration changed; retry".into()); }
+    if lease.is_cancelled()
+        || !state
+            .chat_runtime()
+            .is_generation_active(&conversation.id, run_generation)
+    {
+        return Err("cancelled".into());
+    }
+    if !launch_identity.still_current(def, &resolved_bin) {
+        return Err("external CLI configuration changed; retry".into());
+    }
     let mut spawned_opt = if persistent {
         None
     } else {
@@ -848,9 +879,10 @@ async fn run_external_cli_reply_owned(
     };
 
     let cancel_check = || {
-        lease.is_cancelled() || !state
-            .chat_runtime()
-            .is_generation_active(&conversation_id, run_generation)
+        lease.is_cancelled()
+            || !state
+                .chat_runtime()
+                .is_generation_active(&conversation_id, run_generation)
     };
 
     // 本轮接不接工具审批 / 问用户。claude 的判据取自即将启动的 argv 本身
@@ -865,10 +897,10 @@ async fn run_external_cli_reply_owned(
         generation: run_generation,
         agent_id: &agent_id,
         auto_allow_tools: std::sync::atomic::AtomicBool::new(
-            permission_mode_from_args(&args)
-                .is_some_and(crate::external_agents::providers::claude::claude_mode_auto_allows_tools)
-                || (matches!(def.run.approval, ApprovalStrategy::GrokAlwaysApprove)
-                    && args.iter().any(|arg| arg == "--always-approve"))
+            permission_mode_from_args(&args).is_some_and(
+                crate::external_agents::providers::claude::claude_mode_auto_allows_tools,
+            ) || (matches!(def.run.approval, ApprovalStrategy::GrokAlwaysApprove)
+                && args.iter().any(|arg| arg == "--always-approve"))
                 || crate::external_agents::ask_user::auto_allow_ordinary_tools(&agent_id),
         ),
     });
@@ -1022,6 +1054,7 @@ async fn run_external_cli_reply_owned(
     // into a collapsible `<details>` rather than being shown verbatim as the bubble body.
     let turn_error = resolve_turn_error(read_result.as_ref().err(), stream_error.as_ref());
     let mut error_rendered = false;
+    let mut failure_message = None;
     if let Some(err) = turn_error {
         if is_cancellation(err) {
             stream_outcome = "cancelled".to_string();
@@ -1030,6 +1063,7 @@ async fn run_external_cli_reply_owned(
             let classified =
                 crate::external_agents::errors::classify(err, exit_code, &stderr_output, &agent_id);
             let bubble = classified.render_bubble();
+            failure_message = Some(classified.user_message);
             append_final_text(
                 &mut content,
                 &mut segments,
@@ -1203,7 +1237,13 @@ async fn run_external_cli_reply_owned(
         conversation.revision,
     );
 
-    Ok(())
+    Ok(match terminal_outcome.as_str() {
+        "completed" => ExternalCliTurnOutcome::Completed,
+        "cancelled" => ExternalCliTurnOutcome::Cancelled,
+        _ => ExternalCliTurnOutcome::Failed(
+            failure_message.unwrap_or_else(|| format!("{} 执行失败", def.name)),
+        ),
+    })
 }
 
 #[derive(Default)]
@@ -1411,10 +1451,11 @@ pub(crate) async fn prepare_history_transition(
             .external_history
             .as_ref()
             .is_some_and(|history| {
-                history.prefix(conversation).is_err() || matches!(
-                    history.delivery,
-                    ExternalHistoryDelivery::MayHaveSent { .. }
-                )
+                history.prefix(conversation).is_err()
+                    || matches!(
+                        history.delivery,
+                        ExternalHistoryDelivery::MayHaveSent { .. }
+                    )
             })
             || (conversation.external_history.is_none()
                 && crate::external_agents::session::has_legacy_rewind(app, &conversation.id)))
@@ -1583,16 +1624,25 @@ where
     // 生效而上下文不丢（spec 第 8 条：UI 所见必须与会话实际配置一致）。
     let force_pi_fork = matches!(protocol, StreamFormat::PiRpc) && pi_regenerate.is_some();
     let force_reconnect = force_pi_fork || rewind.reconnect;
-    if cancel() { return Err("cancelled".into()); }
+    if cancel() {
+        return Err("cancelled".into());
+    }
     let mut _busy = None;
-    let reusable_control = match state.external_live_sessions().claim_control(conversation_id, agent_id, &cwd_str, launch_config)? {
+    let reusable_control = match state.external_live_sessions().claim_control(
+        conversation_id,
+        agent_id,
+        &cwd_str,
+        launch_config,
+    )? {
         Some((control, claimed, true)) if !force_reconnect => {
             _busy = Some(claimed);
             Some(control)
         }
         Some((stale, claimed, _)) => {
             close_live_control(&stale).await?;
-            state.external_live_sessions().remove_exact(conversation_id, &stale);
+            state
+                .external_live_sessions()
+                .remove_exact(conversation_id, &stale);
             drop(claimed);
             None
         }
@@ -1618,16 +1668,32 @@ where
         let native_id = forked.session_id.clone();
         let child_pid = session.child_pid();
         let control = crate::external_agents::session::pi_rpc::spawn_pi_rpc_session_actor(session);
-        publish_live_session(app, lease, conversation_id, cancel, resolved_bin,
+        publish_live_session(
+            app,
+            lease,
+            conversation_id,
+            cancel,
+            resolved_bin,
             LiveSession {
-                control: control.clone(), _chat_credential: None,
-                agent_id: agent_id.into(), cwd: cwd_str.clone(), launch_config: launch_config.clone(),
-                last_activity: Instant::now(), child_pid, turns_served: 1,
+                control: control.clone(),
+                _chat_credential: None,
+                agent_id: agent_id.into(),
+                cwd: cwd_str.clone(),
+                launch_config: launch_config.clone(),
+                last_activity: Instant::now(),
+                child_pid,
+                turns_served: 1,
                 busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
-            LiveSessionHandle { agent_id: agent_id.into(), protocol: protocol_tag.into(),
-                native_id: native_id.clone(), native_path: forked.session_path, cwd: cwd_str.clone() },
-        ).await?;
+            LiveSessionHandle {
+                agent_id: agent_id.into(),
+                protocol: protocol_tag.into(),
+                native_id: native_id.clone(),
+                native_path: forked.session_path,
+                cwd: cwd_str.clone(),
+            },
+        )
+        .await?;
         resumable_native = Some(native_id);
         let prompt = if forked.needs_root_prompt {
             regenerate.root_prompt.clone()
@@ -1726,16 +1792,32 @@ where
                 } = connected;
                 // 轮内重连要续的是**这个**会话，不是 handle 里那个（首连开了新会话时两者不同）。
                 resumable_native = Some(native_id.clone()).filter(|id| !id.trim().is_empty());
-                publish_live_session(app, lease, conversation_id, cancel, resolved_bin,
+                publish_live_session(
+                    app,
+                    lease,
+                    conversation_id,
+                    cancel,
+                    resolved_bin,
                     LiveSession {
-                        control: control.clone(), _chat_credential: chat_credential,
-                        agent_id: agent_id.into(), cwd: cwd_str.clone(), launch_config: launch_config.clone(),
-                        last_activity: Instant::now(), child_pid, turns_served: 1,
+                        control: control.clone(),
+                        _chat_credential: chat_credential,
+                        agent_id: agent_id.into(),
+                        cwd: cwd_str.clone(),
+                        launch_config: launch_config.clone(),
+                        last_activity: Instant::now(),
+                        child_pid,
+                        turns_served: 1,
                         busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     },
-                    LiveSessionHandle { agent_id: agent_id.into(), protocol: protocol_tag.into(),
-                        native_id, native_path: None, cwd: cwd_str.clone() },
-                ).await?;
+                    LiveSessionHandle {
+                        agent_id: agent_id.into(),
+                        protocol: protocol_tag.into(),
+                        native_id,
+                        native_path: None,
+                        cwd: cwd_str.clone(),
+                    },
+                )
+                .await?;
                 // A resumed session already holds history → send only the latest message.
                 let prompt = if resumed {
                     reuse_prompt.to_string()
@@ -1762,7 +1844,11 @@ where
     // 会往注册表塞一条全新的 `LiveSession`（`busy: false`），旧 guard 还指着旧会话的 Arc
     // —— 不重挂的话，恰好是刚付过冷启动的那条路反而不受保护。
     // 下划线名字是必要的：这个值只靠 Drop 起作用，没有任何读取点。
-    if _busy.is_none() { _busy = state.external_live_sessions().mark_busy_exact(conversation_id, &control); }
+    if _busy.is_none() {
+        _busy = state
+            .external_live_sessions()
+            .mark_busy_exact(conversation_id, &control);
+    }
     lease.track(&control);
 
     // At most one automatic fresh reconnect after a non-cancel / non-auth failure (R3), plus one
@@ -1778,11 +1864,18 @@ where
         let outcome = drive_persistent_turn(
             &control,
             &delivery,
-            &|| launch_config.identity.as_ref().is_none_or(|identity| {
-                get_agent_def(agent_id).is_some_and(|def| identity.still_current(def, resolved_bin))
-            }),
-            state.chat_runtime().generation_cancellation(conversation_id, run_generation),
-            state, conversation_id, run_generation,
+            &|| {
+                launch_config.identity.as_ref().is_none_or(|identity| {
+                    get_agent_def(agent_id)
+                        .is_some_and(|def| identity.still_current(def, resolved_bin))
+                })
+            },
+            state
+                .chat_runtime()
+                .generation_cancellation(conversation_id, run_generation),
+            state,
+            conversation_id,
+            run_generation,
             prompt.clone(),
             model.clone(),
             reasoning.clone(),
@@ -1809,7 +1902,9 @@ where
         // 子进程）；只有「协议级取消之后会话仍可用」的协议例外 —— 否则用户点一次「停止」
         // 就把常驻进程连带杀掉，上下文延续与 0.1s 冷启动全部作废（见 `cancel_keeps_live_session`）。
         if !cancel_keeps_live_session(&err, protocol) {
-            state.external_live_sessions().remove_exact(conversation_id, &control);
+            state
+                .external_live_sessions()
+                .remove_exact(conversation_id, &control);
         }
         if cancel() && !is_cancellation(&err) {
             return Err("cancelled".into());
@@ -1855,9 +1950,12 @@ where
             // the conversation forever.
             PersistentFailureAction::RetryFresh => {
                 retried_after_failure = true;
-                emit(UnifiedAgentEvent::StatusNote {
-                    text: "reconnect".to_string(),
-                }, None);
+                emit(
+                    UnifiedAgentEvent::StatusNote {
+                        text: "reconnect".to_string(),
+                    },
+                    None,
+                );
             }
         }
 
@@ -1865,7 +1963,9 @@ where
         // exists. dsh now enforces one writer per native session, so wait for the old process
         // before reopening that same id after a failed turn.
         close_live_control(&control).await?;
-        if cancel() { return Err("cancelled".into()); }
+        if cancel() {
+            return Err("cancelled".into());
+        }
         let (next_control, resumed, reconnect_native) = reconnect_fresh(
             app,
             lease,
@@ -1890,14 +1990,14 @@ where
         // 又重连一次时续的是这条会话（续接成功 ⇒ 同一个 id；失败降级成新会话 ⇒ 新 id）。
         resumable_native = reconnect_native.filter(|id| !id.trim().is_empty());
         // 新会话进了注册表 ⇒ 旧 guard 已经指不到它了，重挂一个（旧的在赋值时落地）。
-        _busy = state.external_live_sessions().mark_busy_exact(conversation_id, &next_control);
+        _busy = state
+            .external_live_sessions()
+            .mark_busy_exact(conversation_id, &next_control);
         lease.track(&next_control);
         control = next_control;
-        prompt = if resumed {
-            reuse_prompt.to_string()
-        } else {
-            first_prompt.to_string()
-        };
+        if !resumed {
+            prompt = first_prompt.to_string();
+        }
         // A fresh reconnect after an in-run session failure drops whatever context that session
         // had accumulated this run — surface it rather than silently continuing on a blank slate.
         // 但**真的续上了**原生会话时不能发这条（claude 的 argv 仍带 `--resume` 就属于这种）：
@@ -1919,21 +2019,40 @@ async fn publish_live_session(
 ) -> Result<(), String> {
     let control = session.control.clone();
     lease.track(&control);
-    crate::chat::repository::repository(app).with_existing_conversation(app, conversation_id, || {
-        if cancel() { return Err("cancelled".into()); }
-        if session.launch_config.identity.as_ref().is_some_and(|identity| {
-            get_agent_def(&session.agent_id).is_none_or(|def| !identity.still_current(def, resolved_bin))
-        }) { return Err("external CLI launch configuration changed; retry".into()); }
-        lease.publish(session, || {
-            crate::external_agents::session::save_live_handle(app, conversation_id, &handle)?;
-            crate::external_agents::session::update_stored_session_id(app, conversation_id, &handle.agent_id, &handle.native_id)
+    crate::chat::repository::repository(app)
+        .with_existing_conversation(app, conversation_id, || {
+            if cancel() {
+                return Err("cancelled".into());
+            }
+            if session
+                .launch_config
+                .identity
+                .as_ref()
+                .is_some_and(|identity| {
+                    get_agent_def(&session.agent_id)
+                        .is_none_or(|def| !identity.still_current(def, resolved_bin))
+                })
+            {
+                return Err("external CLI launch configuration changed; retry".into());
+            }
+            lease.publish(session, || {
+                crate::external_agents::session::save_live_handle(app, conversation_id, &handle)?;
+                crate::external_agents::session::update_stored_session_id(
+                    app,
+                    conversation_id,
+                    &handle.agent_id,
+                    &handle.native_id,
+                )
+            })
         })
-    }).await?;
+        .await?;
     let app = app.clone();
     let conversation_id = conversation_id.to_string();
     tokio::spawn(async move {
         control.finished().await;
-        app.state::<AppState>().external_live_sessions().remove_exact(&conversation_id, &control);
+        app.state::<AppState>()
+            .external_live_sessions()
+            .remove_exact(&conversation_id, &control);
     });
     Ok(())
 }
@@ -2005,16 +2124,32 @@ async fn reconnect_fresh<C: Fn() -> bool>(
         None,
     )
     .await?;
-    publish_live_session(app, lease, conversation_id, cancel, resolved_bin,
+    publish_live_session(
+        app,
+        lease,
+        conversation_id,
+        cancel,
+        resolved_bin,
         LiveSession {
-            control: control.clone(), _chat_credential: chat_credential,
-            agent_id: agent_id.into(), cwd: cwd_str.into(), launch_config: launch_config.clone(),
-            last_activity: Instant::now(), child_pid, turns_served: 1,
+            control: control.clone(),
+            _chat_credential: chat_credential,
+            agent_id: agent_id.into(),
+            cwd: cwd_str.into(),
+            launch_config: launch_config.clone(),
+            last_activity: Instant::now(),
+            child_pid,
+            turns_served: 1,
             busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         },
-        LiveSessionHandle { agent_id: agent_id.into(), protocol: protocol_tag.into(),
-            native_id: native_id.clone(), native_path: None, cwd: cwd_str.into() },
-    ).await?;
+        LiveSessionHandle {
+            agent_id: agent_id.into(),
+            protocol: protocol_tag.into(),
+            native_id: native_id.clone(),
+            native_path: None,
+            cwd: cwd_str.into(),
+        },
+    )
+    .await?;
     Ok((control, resumed, Some(native_id)))
 }
 
@@ -2053,7 +2188,7 @@ fn launch_config_for_turn(
             &serde_json::to_string(&env).unwrap_or_default(),
         );
         return LaunchConfig {
-        identity: None,
+            identity: None,
             flags: serde_json::json!([model, reasoning, sandbox, additional_dirs_key, env_hash])
                 .to_string(),
             instructions: None,
@@ -2067,7 +2202,7 @@ fn launch_config_for_turn(
     }
     if matches!(protocol, StreamFormat::AcpJsonRpc) {
         return LaunchConfig {
-        identity: None,
+            identity: None,
             // Process-bound ACP choices: grok's ask / strict change argv, OpenCode's build /
             // plan is applied once at session setup. Switching relaunches and resumes the same
             // native session. `full` is grok's default argv, so it fingerprints like unset.
@@ -2529,15 +2664,17 @@ where
                 ref kind,
                 ref description,
                 ref summary,
-            } => state.external_background_tasks().upsert_external_background_task(
-                conversation_id,
-                &identity,
-                task_id,
-                status,
-                kind.as_deref(),
-                description.as_deref(),
-                summary.as_deref(),
-            ),
+            } => state
+                .external_background_tasks()
+                .upsert_external_background_task(
+                    conversation_id,
+                    &identity,
+                    task_id,
+                    status,
+                    kind.as_deref(),
+                    description.as_deref(),
+                    summary.as_deref(),
+                ),
             _ => {}
         }
         emit(event, actor_id);
@@ -2895,9 +3032,11 @@ impl ApprovalHost<'_> {
             &answered_record,
         );
         if let Some(content) = answered_record.structured_content.clone() {
-            self.state
-                .chat_interactions()
-                .remember_answered_ask_user(self.run_id, answered_record.id.clone(), content);
+            self.state.chat_interactions().remember_answered_ask_user(
+                self.run_id,
+                answered_record.id.clone(),
+                content,
+            );
         }
         let approved = answered.phase == crate::chat::ask_user::ASK_USER_PHASE_ANSWERED;
         crate::external_agents::session::live::ApprovalDecision {
@@ -3166,12 +3305,22 @@ async fn present_dsh_idle_ask(
         denied
     };
     if let Some(mut revision) = persisted {
-        if let Some(content) = state.chat_interactions().take_answered_ask_user(&run_id, &tool_call_id) {
+        if let Some(content) = state
+            .chat_interactions()
+            .take_answered_ask_user(&run_id, &tool_call_id)
+        {
             match crate::chat::repository::repository(&app)
                 .mutate(&app, &conversation_id, |conversation| {
-                    let record = conversation.messages.iter_mut()
+                    let record = conversation
+                        .messages
+                        .iter_mut()
                         .find(|message| message.id == message_id)
-                        .and_then(|message| message.tool_calls.iter_mut().find(|record| record.id == tool_call_id))
+                        .and_then(|message| {
+                            message
+                                .tool_calls
+                                .iter_mut()
+                                .find(|record| record.id == tool_call_id)
+                        })
                         .ok_or_else(|| "dsh idle question no longer exists".to_string())?;
                     record.status = ToolCallStatus::Success;
                     record.completed_at = Some(Local::now().timestamp());
@@ -3245,7 +3394,9 @@ fn apply_idle_dsh_event(
     event: UnifiedAgentEvent,
     identity: &crate::external_agents::session::live::SessionIdentity,
 ) {
-    let Some(actor_id) = identity.instance_id() else { return; };
+    let Some(actor_id) = identity.instance_id() else {
+        return;
+    };
     match event {
         UnifiedAgentEvent::BackgroundTask {
             task_id,
@@ -3369,7 +3520,9 @@ fn persist_dsh_subagent_card(
     summary: Option<String>,
     identity: crate::external_agents::session::live::SessionIdentity,
 ) {
-    let Some(actor_id) = identity.instance_id() else { return; };
+    let Some(actor_id) = identity.instance_id() else {
+        return;
+    };
     let actor_id = actor_id.to_string();
     tauri::async_runtime::spawn(async move {
         let now = Local::now().timestamp();
@@ -3379,9 +3532,11 @@ fn persist_dsh_subagent_card(
                     .external_live_sessions()
                     .with_current(&conversation.id.clone(), &identity, || {
                         for message in conversation.messages.iter_mut().rev() {
-                            let Some(record) =
-                                find_dsh_subagent_record(&mut message.tool_calls, &task_id, Some(&actor_id))
-                            else {
+                            let Some(record) = find_dsh_subagent_record(
+                                &mut message.tool_calls,
+                                &task_id,
+                                Some(&actor_id),
+                            ) else {
                                 continue;
                             };
                             if !steps.is_empty() || !preview.is_empty() {
@@ -3527,175 +3682,234 @@ async fn connect_persistent_session(
         spawn_dsh_session_actor_with_sink, DshJsonRpcSession,
     };
 
-    let capture = app.state::<AppState>().native_diagnostics().connection(protocol, Uuid::parse_str(conversation_id).ok());
-    capture.scope_spawn(async {
-        let identity = crate::external_agents::session::live::SessionIdentity::default();
-        let background_task_sink = Some(background_task_sink(app, conversation_id, identity.clone()));
-        let dsh_idle_sink = Some(dsh_idle_sink(app, conversation_id, identity.clone()));
-        let dsh_idle_approvals = dsh_idle_approvals_for(protocol, app, conversation_id, identity.clone());
-        // WSL loopback may not reach the Windows-hosted MCP server.
-        let chat_credential = if matches!(
-            protocol,
-            StreamFormat::ClaudeStreamJson | StreamFormat::CodexAppServer | StreamFormat::AcpJsonRpc
-        ) && !crate::external_agents::wsl::is_wsl_target(resolved_bin)
-        {
-            Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
-        } else {
-            None
-        };
+    let capture = app
+        .state::<AppState>()
+        .native_diagnostics()
+        .connection(protocol, Some(conversation_id));
+    capture
+        .scope_spawn(async {
+            let identity = crate::external_agents::session::live::SessionIdentity::default();
+            let background_task_sink =
+                Some(background_task_sink(app, conversation_id, identity.clone()));
+            let dsh_idle_sink = Some(dsh_idle_sink(app, conversation_id, identity.clone()));
+            let dsh_idle_approvals =
+                dsh_idle_approvals_for(protocol, app, conversation_id, identity.clone());
+            // WSL loopback may not reach the Windows-hosted MCP server.
+            let chat_credential = if matches!(
+                protocol,
+                StreamFormat::ClaudeStreamJson
+                    | StreamFormat::CodexAppServer
+                    | StreamFormat::AcpJsonRpc
+            ) && !crate::external_agents::wsl::is_wsl_target(resolved_bin)
+            {
+                Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
+            } else {
+                None
+            };
 
-        match protocol {
-            StreamFormat::AntigravityStreamJson => {
-                use crate::external_agents::session::antigravity::{
-                    spawn_antigravity_session_actor, AntigravitySession,
-                };
-                let session =
-                    AntigravitySession::connect(resolved_bin, args, cwd, resume_native.as_deref())
-                        .await?;
-                let native_id = session.session_id().to_string();
-                let child_pid = session.child_pid();
-                Ok(PersistentConnection {
-                    control: spawn_antigravity_session_actor(session),
-                    native_id,
-                    resumed: resume_native.is_some(),
-                    child_pid,
-                    chat_credential,
-                }.identified(&identity))
-            }
-            StreamFormat::ClaudeStreamJson => {
-                // claude 的会话 id 走**启动参数**，不像 codex / ACP 在握手 RPC 里传 ——
-                // 所以这里要看/改 argv 而不是传参。
-                //
-                // **参数说了算**：`build_claude_args` 已按 `resolve_agent_resume_context` 放好
-                // `--resume <id>`（续接已有会话）或 `--session-id <new>`（这个对话还没有会话）。
-                // 参数里的会话标记是**本轮的真实决定**；live handle 只是「上一个进程最后报的那个
-                // id」。让 handle 压过参数，会把一个全新对话接到某个旧会话上 —— 用户会在新对话里
-                // 看到别人的上下文。
-                //
-                // （历史：这里曾解释成「换模型要开新会话」。2026-07-29 本机实测 claude 2.1.220
-                // 推翻了那个前提 —— `--resume` 带另一个 `--model` 既切得动模型、也保住上下文，
-                // 所以换模型现在照常续接。优先级本身不变，只是理由换了。见 spec 第 8 / 25 条。）
-                //
-                // live handle 只在参数里**没有**任何会话 flag 时兜底，且必须改写成 `--resume`：
-                // 同一个 id 再 `--session-id` 一次会被 claude 以「id 已存在」拒绝启动。
-                let (mut effective_args, resumed) = if args.iter().any(|arg| arg == "--resume") {
-                    (args.to_vec(), true)
-                } else if args.iter().any(|arg| arg == "--session-id") {
-                    (args.to_vec(), false)
-                } else if let Some(id) = resume_native
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                {
-                    (
-                        crate::external_agents::providers::claude::claude_args_resuming(args, id),
-                        true,
+            match protocol {
+                StreamFormat::AntigravityStreamJson => {
+                    use crate::external_agents::session::antigravity::{
+                        spawn_antigravity_session_actor, AntigravitySession,
+                    };
+                    let session = AntigravitySession::connect(
+                        resolved_bin,
+                        args,
+                        cwd,
+                        resume_native.as_deref(),
                     )
-                } else {
-                    (args.to_vec(), false)
-                };
-                let chat_mcp_config = if let Some(credential) = &chat_credential {
-                    Some(crate::external_agents::providers::claude::append_chat_mcp_args(
-                        &mut effective_args,
-                        &credential.url,
-                        &credential.authorization,
-                    )?)
-                } else {
-                    None
-                };
-                let mut session =
-                    ClaudeStreamJsonSession::connect(resolved_bin, &effective_args, cwd).await?;
-                if let Some(file) = chat_mcp_config {
-                    session.hold_chat_mcp_config(file);
+                    .await?;
+                    let native_id = session.session_id().to_string();
+                    let child_pid = session.child_pid();
+                    Ok(PersistentConnection {
+                        control: spawn_antigravity_session_actor(session),
+                        native_id,
+                        resumed: resume_native.is_some(),
+                        child_pid,
+                        chat_credential,
+                    }
+                    .identified(&identity))
                 }
-                let id = session.session_id().to_string();
-                let child_pid = session.child_pid();
-                Ok(PersistentConnection {
-                    control: spawn_claude_stream_session_actor_with_sink(session, background_task_sink),
-                    native_id: id,
-                    resumed,
-                    child_pid,
-                    chat_credential,
-                }.identified(&identity))
-            }
-            StreamFormat::CodexAppServer => {
-                let mcp = chat_credential
-                    .as_ref()
-                    .map(|credential| (credential.url.as_str(), credential.authorization.as_str()));
-                if let Some(tid) = resume_native
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                {
-                    // Resume failure must surface to the caller. Swallowing it and starting
-                    // a blank thread made `save_live_handle` overwrite the real id — the next
-                    // time the user opened this conversation, we resumed the empty one.
-                    // Missing-thread is classified one layer up (`is_missing_codex_thread_error`)
-                    // and only then do we drop the binding and start fresh.
+                StreamFormat::ClaudeStreamJson => {
+                    // claude 的会话 id 走**启动参数**，不像 codex / ACP 在握手 RPC 里传 ——
+                    // 所以这里要看/改 argv 而不是传参。
+                    //
+                    // **参数说了算**：`build_claude_args` 已按 `resolve_agent_resume_context` 放好
+                    // `--resume <id>`（续接已有会话）或 `--session-id <new>`（这个对话还没有会话）。
+                    // 参数里的会话标记是**本轮的真实决定**；live handle 只是「上一个进程最后报的那个
+                    // id」。让 handle 压过参数，会把一个全新对话接到某个旧会话上 —— 用户会在新对话里
+                    // 看到别人的上下文。
+                    //
+                    // （历史：这里曾解释成「换模型要开新会话」。2026-07-29 本机实测 claude 2.1.220
+                    // 推翻了那个前提 —— `--resume` 带另一个 `--model` 既切得动模型、也保住上下文，
+                    // 所以换模型现在照常续接。优先级本身不变，只是理由换了。见 spec 第 8 / 25 条。）
+                    //
+                    // live handle 只在参数里**没有**任何会话 flag 时兜底，且必须改写成 `--resume`：
+                    // 同一个 id 再 `--session-id` 一次会被 claude 以「id 已存在」拒绝启动。
+                    let (mut effective_args, resumed) = if args.iter().any(|arg| arg == "--resume")
+                    {
+                        (args.to_vec(), true)
+                    } else if args.iter().any(|arg| arg == "--session-id") {
+                        (args.to_vec(), false)
+                    } else if let Some(id) = resume_native
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                    {
+                        (
+                            crate::external_agents::providers::claude::claude_args_resuming(
+                                args, id,
+                            ),
+                            true,
+                        )
+                    } else {
+                        (args.to_vec(), false)
+                    };
+                    let chat_mcp_config = if let Some(credential) = &chat_credential {
+                        Some(
+                            crate::external_agents::providers::claude::append_chat_mcp_args(
+                                &mut effective_args,
+                                &credential.url,
+                                &credential.authorization,
+                            )?,
+                        )
+                    } else {
+                        None
+                    };
+                    let mut session =
+                        ClaudeStreamJsonSession::connect(resolved_bin, &effective_args, cwd)
+                            .await?;
+                    if let Some(file) = chat_mcp_config {
+                        session.hold_chat_mcp_config(file);
+                    }
+                    let id = session.session_id().to_string();
+                    let child_pid = session.child_pid();
+                    Ok(PersistentConnection {
+                        control: spawn_claude_stream_session_actor_with_sink(
+                            session,
+                            background_task_sink,
+                        ),
+                        native_id: id,
+                        resumed,
+                        child_pid,
+                        chat_credential,
+                    }
+                    .identified(&identity))
+                }
+                StreamFormat::CodexAppServer => {
+                    let mcp = chat_credential.as_ref().map(|credential| {
+                        (credential.url.as_str(), credential.authorization.as_str())
+                    });
+                    if let Some(tid) = resume_native
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                    {
+                        // Resume failure must surface to the caller. Swallowing it and starting
+                        // a blank thread made `save_live_handle` overwrite the real id — the next
+                        // time the user opened this conversation, we resumed the empty one.
+                        // Missing-thread is classified one layer up (`is_missing_codex_thread_error`)
+                        // and only then do we drop the binding and start fresh.
+                        let session = CodexAppServerSession::connect(
+                            resolved_bin,
+                            args,
+                            cwd,
+                            model,
+                            sandbox,
+                            Some(tid),
+                            mcp,
+                        )
+                        .await
+                        .map_err(|err| {
+                            eprintln!("[external-agent] codex resume failed (thread {tid}): {err}");
+                            err
+                        })?;
+                        let mut session = session;
+                        if let Some(visible_users) = codex_rewind {
+                            if let Err(err) = session.revert_to_visible(visible_users).await {
+                                session.close().await;
+                                return Err(format!("{CODEX_REWIND_UNAVAILABLE}{err}"));
+                            }
+                        }
+                        let id = session.thread_id().to_string();
+                        let child_pid = session.child_pid();
+                        return Ok(PersistentConnection {
+                            control: spawn_codex_session_actor(session),
+                            native_id: id,
+                            resumed: true,
+                            child_pid,
+                            chat_credential,
+                        }
+                        .identified(&identity));
+                    }
                     let session = CodexAppServerSession::connect(
                         resolved_bin,
                         args,
                         cwd,
                         model,
                         sandbox,
-                        Some(tid),
+                        None,
                         mcp,
                     )
-                    .await
-                    .map_err(|err| {
-                        eprintln!("[external-agent] codex resume failed (thread {tid}): {err}");
-                        err
-                    })?;
-                    let mut session = session;
-                    if let Some(visible_users) = codex_rewind {
-                        if let Err(err) = session.revert_to_visible(visible_users).await {
-                            session.close().await;
-                            return Err(format!("{CODEX_REWIND_UNAVAILABLE}{err}"));
-                        }
-                    }
+                    .await?;
                     let id = session.thread_id().to_string();
                     let child_pid = session.child_pid();
-                    return Ok(PersistentConnection {
+                    Ok(PersistentConnection {
                         control: spawn_codex_session_actor(session),
                         native_id: id,
-                        resumed: true,
+                        resumed: false,
                         child_pid,
                         chat_credential,
-                    }.identified(&identity));
+                    }
+                    .identified(&identity))
                 }
-                let session =
-                    CodexAppServerSession::connect(resolved_bin, args, cwd, model, sandbox, None, mcp)
-                        .await?;
-                let id = session.thread_id().to_string();
-                let child_pid = session.child_pid();
-                Ok(PersistentConnection {
-                    control: spawn_codex_session_actor(session),
-                    native_id: id,
-                    resumed: false,
-                    child_pid,
-                    chat_credential,
-                }.identified(&identity))
-            }
-            StreamFormat::AcpJsonRpc => {
-                let mcp_servers: Vec<AcpMcpServer> = chat_credential
-                    .as_ref()
-                    .map(|credential| AcpMcpServer::Http {
-                        name: crate::app_mcp::CHAT_MCP_SERVER_NAME.to_string(),
-                        url: credential.url.clone(),
-                        headers: vec![(
-                            "Authorization".to_string(),
-                            credential.authorization.clone(),
-                        )],
-                    })
-                    .into_iter()
-                    .collect();
-                if let Some(sid) = resume_native
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                {
-                    // Same contract as Codex: resume failure must surface. Swallowing it
-                    // and calling session/new made save_live_handle overwrite the real id.
+                StreamFormat::AcpJsonRpc => {
+                    let mcp_servers: Vec<AcpMcpServer> = chat_credential
+                        .as_ref()
+                        .map(|credential| AcpMcpServer::Http {
+                            name: crate::app_mcp::CHAT_MCP_SERVER_NAME.to_string(),
+                            url: credential.url.clone(),
+                            headers: vec![(
+                                "Authorization".to_string(),
+                                credential.authorization.clone(),
+                            )],
+                        })
+                        .into_iter()
+                        .collect();
+                    if let Some(sid) = resume_native
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                    {
+                        // Same contract as Codex: resume failure must surface. Swallowing it
+                        // and calling session/new made save_live_handle overwrite the real id.
+                        let session = AcpSession::connect(
+                            resolved_bin,
+                            args,
+                            cwd,
+                            model,
+                            reasoning,
+                            sandbox,
+                            &mcp_servers,
+                            Some(sid),
+                            additional_directories,
+                        )
+                        .await
+                        .map_err(|err| {
+                            eprintln!("[external-agent] acp resume failed (session {sid}): {err}");
+                            err
+                        })?;
+                        let id = session.session_id().to_string();
+                        let child_pid = session.child_pid();
+                        return Ok(PersistentConnection {
+                            control: spawn_acp_session_actor(session),
+                            native_id: id,
+                            resumed: true,
+                            child_pid,
+                            chat_credential,
+                        }
+                        .identified(&identity));
+                    }
                     let session = AcpSession::connect(
                         resolved_bin,
                         args,
@@ -3704,133 +3918,113 @@ async fn connect_persistent_session(
                         reasoning,
                         sandbox,
                         &mcp_servers,
-                        Some(sid),
+                        None,
                         additional_directories,
                     )
-                    .await
-                    .map_err(|err| {
-                        eprintln!("[external-agent] acp resume failed (session {sid}): {err}");
-                        err
-                    })?;
+                    .await?;
                     let id = session.session_id().to_string();
                     let child_pid = session.child_pid();
-                    return Ok(PersistentConnection {
+                    Ok(PersistentConnection {
                         control: spawn_acp_session_actor(session),
                         native_id: id,
-                        resumed: true,
+                        resumed: false,
                         child_pid,
                         chat_credential,
-                    }.identified(&identity));
+                    }
+                    .identified(&identity))
                 }
-                let session = AcpSession::connect(
-                    resolved_bin,
-                    args,
-                    cwd,
-                    model,
-                    reasoning,
-                    sandbox,
-                    &mcp_servers,
-                    None,
-                    additional_directories,
-                )
-                .await?;
-                let id = session.session_id().to_string();
-                let child_pid = session.child_pid();
-                Ok(PersistentConnection {
-                    control: spawn_acp_session_actor(session),
-                    native_id: id,
-                    resumed: false,
-                    child_pid,
-                    chat_credential,
-                }.identified(&identity))
-            }
-            StreamFormat::DshJsonRpc => {
-                if let Some(sid) = resume_native
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty())
-                {
-                    // Same contract as Codex / ACP: resume failure must surface. Swallowing
-                    // `session/open` and creating a fresh `kivio-*` id made save_live_handle
-                    // overwrite the real binding. Missing-session is classified one layer up.
+                StreamFormat::DshJsonRpc => {
+                    if let Some(sid) = resume_native
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|id| !id.is_empty())
+                    {
+                        // Same contract as Codex / ACP: resume failure must surface. Swallowing
+                        // `session/open` and creating a fresh `kivio-*` id made save_live_handle
+                        // overwrite the real binding. Missing-session is classified one layer up.
+                        let session = DshJsonRpcSession::connect(
+                            resolved_bin,
+                            args,
+                            cwd,
+                            Some(sid),
+                            model,
+                            reasoning,
+                            sandbox,
+                            preset,
+                        )
+                        .await
+                        .map_err(|err| {
+                            eprintln!("[external-agent] dsh resume failed (session {sid}): {err}");
+                            err
+                        })?;
+                        let id = session.session_id().to_string();
+                        let child_pid = session.child_pid();
+                        return Ok(PersistentConnection {
+                            control: spawn_dsh_session_actor_with_sink(
+                                session,
+                                dsh_idle_sink,
+                                dsh_idle_approvals,
+                            ),
+                            native_id: id,
+                            resumed: true,
+                            child_pid,
+                            chat_credential,
+                        }
+                        .identified(&identity));
+                    }
                     let session = DshJsonRpcSession::connect(
                         resolved_bin,
                         args,
                         cwd,
-                        Some(sid),
+                        None,
                         model,
                         reasoning,
                         sandbox,
                         preset,
                     )
-                    .await
-                    .map_err(|err| {
-                        eprintln!("[external-agent] dsh resume failed (session {sid}): {err}");
-                        err
-                    })?;
+                    .await?;
                     let id = session.session_id().to_string();
+                    let resumed = session.resumed();
                     let child_pid = session.child_pid();
-                    return Ok(PersistentConnection {
+                    Ok(PersistentConnection {
                         control: spawn_dsh_session_actor_with_sink(
                             session,
                             dsh_idle_sink,
                             dsh_idle_approvals,
                         ),
                         native_id: id,
-                        resumed: true,
+                        resumed,
                         child_pid,
                         chat_credential,
-                    }.identified(&identity));
+                    }
+                    .identified(&identity))
                 }
-                let session = DshJsonRpcSession::connect(
-                    resolved_bin,
-                    args,
-                    cwd,
-                    None,
-                    model,
-                    reasoning,
-                    sandbox,
-                    preset,
-                )
-                .await?;
-                let id = session.session_id().to_string();
-                let resumed = session.resumed();
-                let child_pid = session.child_pid();
-                Ok(PersistentConnection {
-                    control: spawn_dsh_session_actor_with_sink(
-                        session,
-                        dsh_idle_sink,
-                        dsh_idle_approvals,
-                    ),
-                    native_id: id,
-                    resumed,
-                    child_pid,
-                    chat_credential,
-                }.identified(&identity))
+                StreamFormat::PiRpc => {
+                    let session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
+                        resolved_bin,
+                        args,
+                        cwd,
+                        resume_native.as_deref(),
+                    )
+                    .await?;
+                    let native_id = session.session_id().to_string();
+                    let resumed = session.resumed();
+                    let child_pid = session.child_pid();
+                    Ok(PersistentConnection {
+                        control:
+                            crate::external_agents::session::pi_rpc::spawn_pi_rpc_session_actor(
+                                session,
+                            ),
+                        native_id,
+                        resumed,
+                        child_pid,
+                        chat_credential,
+                    }
+                    .identified(&identity))
+                }
             }
-            StreamFormat::PiRpc => {
-                let session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
-                    resolved_bin,
-                    args,
-                    cwd,
-                    resume_native.as_deref(),
-                )
-                .await?;
-                let native_id = session.session_id().to_string();
-                let resumed = session.resumed();
-                let child_pid = session.child_pid();
-                Ok(PersistentConnection {
-                    control: crate::external_agents::session::pi_rpc::spawn_pi_rpc_session_actor(
-                        session,
-                    ),
-                    native_id,
-                    resumed,
-                    child_pid,
-                    chat_credential,
-                }.identified(&identity))
-            }
-        }
-    }).await
+        })
+        .await
 }
 
 /// 文本 / 推理分段的 phase。
@@ -4080,7 +4274,11 @@ fn apply_unified_event(
             );
             emit_chat_stream_delta(app, run_id, "", Some(&delta), Some(&segment));
         }
-        UnifiedAgentEvent::ToolUse { id, name, mut input } => {
+        UnifiedAgentEvent::ToolUse {
+            id,
+            name,
+            mut input,
+        } => {
             if let Some(record) = tool_map.get(&id).and_then(|idx| tool_calls.get_mut(*idx)) {
                 if update_existing_acp_tool(record, &name, &input) {
                     emit_chat_tool_record(app, run_id, record);
@@ -4094,7 +4292,10 @@ fn apply_unified_event(
             let arguments = input.to_string();
             if crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&name) {
                 if let (Some(actor_id), Some(input)) = (dsh_actor_id, input.as_object_mut()) {
-                    input.insert("externalSessionId".to_string(), serde_json::Value::String(actor_id.to_string()));
+                    input.insert(
+                        "externalSessionId".to_string(),
+                        serde_json::Value::String(actor_id.to_string()),
+                    );
                 }
             }
             let record = ToolCallRecord {
@@ -4255,7 +4456,7 @@ fn apply_unified_event(
             let Some(message) = crate::chat::agent::SteeringMessage::new(id, &text) else {
                 return;
             };
-            let record = crate::chat::agent::steering::build_steer_record(&message, 1);
+            let record = crate::chat::agent_presentation::build_steer_record(&message, 1);
             let segment = push_tool_segment(segments, segment_order, &record.id);
             emit_chat_stream_delta(app, run_id, "", None, Some(&segment));
             tool_map.insert(record.id.clone(), tool_calls.len());
@@ -4268,7 +4469,7 @@ fn apply_unified_event(
             let Some(message) = crate::chat::agent::SteeringMessage::new(id, &text) else {
                 return;
             };
-            let record = crate::chat::agent::steering::build_follow_up_record(&message, 1);
+            let record = crate::chat::agent_presentation::build_follow_up_record(&message, 1);
             let segment = push_tool_segment(segments, segment_order, &record.id);
             emit_chat_stream_delta(app, run_id, "", None, Some(&segment));
             tool_map.insert(record.id.clone(), tool_calls.len());
@@ -4309,7 +4510,12 @@ fn apply_unified_event(
         }
         // CLI 侧后台任务（后台 Bash / 后台子代理）→ AppState 注册表，
         // Background tasks 面板轮询读取。不进消息流：任务跨轮存活，run 级事件装不下它。
-        UnifiedAgentEvent::BackgroundTask { task_id, status, summary, .. } => {
+        UnifiedAgentEvent::BackgroundTask {
+            task_id,
+            status,
+            summary,
+            ..
+        } => {
             // dsh 后台子代理的 tool/result 只是派出回执。终态走 BackgroundTask，
             // 同一轮里把对应工具卡从 Running 收掉（跨轮要靠空闲读，目前 dsh 没有）。
             if status != "running" {
@@ -4345,7 +4551,9 @@ fn apply_unified_event(
                         task_id,
                         name: record.name.clone(),
                         model: None,
-                        generation: None, child_run_id: None, progress: None,
+                        generation: None,
+                        child_run_id: None,
+                        progress: None,
                         depth: 1,
                         status,
                         preview: (!preview.is_empty()).then_some(preview),
@@ -4652,14 +4860,17 @@ fn find_dsh_subagent_record<'a>(
     task_id: &str,
     actor_id: Option<&str>,
 ) -> Option<&'a mut ToolCallRecord> {
-    let owns = |record: &ToolCallRecord| actor_id.is_none_or(|id| {
-        structured_string_field(record, "externalSessionId").as_deref() == Some(id)
-    });
+    let owns = |record: &ToolCallRecord| {
+        actor_id.is_none_or(|id| {
+            structured_string_field(record, "externalSessionId").as_deref() == Some(id)
+        })
+    };
     if !task_id.is_empty() {
         if let Some(index) = tool_calls.iter().rposition(|record| {
-            owns(record) && (record.id == task_id
-                || background_task_id(record).as_deref() == Some(task_id)
-                || child_session_id(record).as_deref() == Some(task_id))
+            owns(record)
+                && (record.id == task_id
+                    || background_task_id(record).as_deref() == Some(task_id)
+                    || child_session_id(record).as_deref() == Some(task_id))
         }) {
             return tool_calls.get_mut(index);
         }
@@ -4669,7 +4880,8 @@ fn find_dsh_subagent_record<'a>(
         .iter()
         .enumerate()
         .filter(|(_, record)| {
-            owns(record) && record.status == ToolCallStatus::Running
+            owns(record)
+                && record.status == ToolCallStatus::Running
                 && crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&record.name)
         })
         .map(|(index, _)| index)
@@ -4822,6 +5034,10 @@ fn truncate_for_preview(value: &str, max_chars: usize) -> String {
     out
 }
 
+#[cfg(all(test, windows))]
+#[path = "run_regression_tests.rs"]
+pub(crate) mod regression_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4829,7 +5045,10 @@ mod tests {
     #[tokio::test]
     async fn dropping_an_approval_wait_removes_the_pending_request() {
         let state = crate::state::test_app_state();
-        let mut reply = state.chat_interactions().begin_tool_approval("tool", "conversation", "Bash");
+        let mut reply =
+            state
+                .chat_interactions()
+                .begin_tool_approval("tool", "conversation", "Bash");
         let waiting = async {
             let _pending = PendingApprovals {
                 ids: vec!["tool".to_string()],
@@ -4839,9 +5058,15 @@ mod tests {
         };
         let mut waiting = Box::pin(waiting);
         assert!(futures::poll!(waiting.as_mut()).is_pending());
-        assert!(matches!(reply.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Empty)));
+        assert!(matches!(
+            reply.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
         drop(waiting);
-        assert!(matches!(reply.try_recv(), Err(tokio::sync::oneshot::error::TryRecvError::Closed)));
+        assert!(matches!(
+            reply.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+        ));
         assert!(!state.chat_interactions().cancel_tool_approval("tool"));
     }
 
@@ -4884,8 +5109,11 @@ mod tests {
             "backgroundTaskId": "native-task"
         }));
         assert!(find_dsh_subagent_record(
-            &mut [old.clone(), historical.clone()], "native-task", Some("current-actor")
-        ).is_none());
+            &mut [old.clone(), historical.clone()],
+            "native-task",
+            Some("current-actor")
+        )
+        .is_none());
         let mut records = [current, old, historical];
         let matched = find_dsh_subagent_record(&mut records, "native-task", Some("current-actor"))
             .expect("the current actor's card");
@@ -5366,7 +5594,8 @@ mod tests {
                 "prompt": "查 A"
             })),
         }];
-        let record = find_dsh_subagent_record(&mut tools, "toolu-task-a", None).expect("claude task");
+        let record =
+            find_dsh_subagent_record(&mut tools, "toolu-task-a", None).expect("claude task");
         merge_subagent_progress(
             record,
             "子 agent A，先读一下文件。",
@@ -5411,7 +5640,8 @@ mod tests {
             })),
         }];
         {
-            let record = find_dsh_subagent_record(&mut tools, "018b08fc-session", None).expect("bind");
+            let record =
+                find_dsh_subagent_record(&mut tools, "018b08fc-session", None).expect("bind");
             merge_subagent_progress(
                 record,
                 "正在检索",
@@ -5719,8 +5949,9 @@ mod tests {
             )
         };
         let auto_allows = |args: &[String]| {
-            permission_mode_from_args(args)
-                .is_some_and(crate::external_agents::providers::claude::claude_mode_auto_allows_tools)
+            permission_mode_from_args(args).is_some_and(
+                crate::external_agents::providers::claude::claude_mode_auto_allows_tools,
+            )
         };
         assert!(auto_allows(&mk(None)), "默认档（完全）必须就地放行");
         assert!(auto_allows(&mk(Some("bypassPermissions"))));
@@ -5949,7 +6180,14 @@ mod tests {
     #[test]
     fn auth_failure_is_never_retried() {
         assert_eq!(
-            persistent_failure_action("Authentication required", "grok", false, false, false, false),
+            persistent_failure_action(
+                "Authentication required",
+                "grok",
+                false,
+                false,
+                false,
+                false
+            ),
             PersistentFailureAction::Fatal
         );
     }
@@ -5962,7 +6200,8 @@ mod tests {
                 "opencode",
                 false,
                 false,
-                false, false
+                false,
+                false
             ),
             PersistentFailureAction::RetryFresh
         );
@@ -5973,7 +6212,8 @@ mod tests {
                 "opencode",
                 true,
                 false,
-                false, false
+                false,
+                false
             ),
             PersistentFailureAction::Fatal
         );
@@ -6004,7 +6244,14 @@ mod tests {
         ] {
             let (sender, mut commands) = tokio::sync::mpsc::channel(1);
             let control = SessionControl::spawn(sender, async move {
-                let Some(SessionCommand::RunTurn { delivery, events, done, prompt, .. }) = commands.recv().await else {
+                let Some(SessionCommand::RunTurn {
+                    delivery,
+                    events,
+                    done,
+                    prompt,
+                    ..
+                }) = commands.recv().await
+                else {
                     panic!("expected a user turn");
                 };
                 assert_eq!(prompt, "execute this prompt once");
@@ -6012,9 +6259,11 @@ mod tests {
                     delivery.mark_possibly_sent();
                 }
                 if report_outcome {
-                    events.try_send(UnifiedAgentEvent::InteractionResolved {
-                        interaction_id: "retired-interaction".into(),
-                    }).unwrap();
+                    events
+                        .try_send(UnifiedAgentEvent::InteractionResolved {
+                            interaction_id: "retired-interaction".into(),
+                        })
+                        .unwrap();
                     done.send(Err(NEEDS_RECONNECT.to_string())).unwrap();
                 }
             });
@@ -6041,10 +6290,20 @@ mod tests {
             .await
             .unwrap_err();
             assert_eq!(
-                persistent_failure_action(&error, "opencode", false, false, false, delivery.possibly_sent()),
+                persistent_failure_action(
+                    &error,
+                    "opencode",
+                    false,
+                    false,
+                    false,
+                    delivery.possibly_sent()
+                ),
                 expected,
             );
-            assert!(emitted.is_empty(), "resolved interactions must be consumed even during done drain");
+            assert!(
+                emitted.is_empty(),
+                "resolved interactions must be consumed even during done drain"
+            );
         }
     }
 
@@ -6053,9 +6312,10 @@ mod tests {
         use crate::external_agents::session::live::SessionCommand;
 
         let (control, mut commands) = tokio::sync::mpsc::channel(1);
-        let control = crate::external_agents::session::live::SessionControl::spawn(control, async move {
-            assert!(matches!(commands.recv().await, Some(SessionCommand::Close)));
-        });
+        let control =
+            crate::external_agents::session::live::SessionControl::spawn(control, async move {
+                assert!(matches!(commands.recv().await, Some(SessionCommand::Close)));
+            });
 
         close_live_control(&control).await.unwrap();
         assert!(control.is_closed());
@@ -6075,12 +6335,26 @@ mod tests {
     #[test]
     fn a_missing_resume_target_reconnects_without_resume_exactly_once() {
         assert_eq!(
-            persistent_failure_action(REAL_MISSING_SESSION_ERROR, "claude", false, false, false, false),
+            persistent_failure_action(
+                REAL_MISSING_SESSION_ERROR,
+                "claude",
+                false,
+                false,
+                false,
+                false
+            ),
             PersistentFailureAction::ReconnectWithoutResume
         );
         // 已经降级过一次还失败 ⇒ 原因不是 resume，别再兜圈子。
         assert_eq!(
-            persistent_failure_action(REAL_MISSING_SESSION_ERROR, "claude", false, false, true, false),
+            persistent_failure_action(
+                REAL_MISSING_SESSION_ERROR,
+                "claude",
+                false,
+                false,
+                true,
+                false
+            ),
             PersistentFailureAction::Fatal
         );
     }
@@ -6091,11 +6365,25 @@ mod tests {
     #[test]
     fn a_missing_dsh_resume_target_reconnects_without_resume_exactly_once() {
         assert_eq!(
-            persistent_failure_action(REAL_DSH_MISSING_SESSION_ERROR, "dsh", false, false, false, false),
+            persistent_failure_action(
+                REAL_DSH_MISSING_SESSION_ERROR,
+                "dsh",
+                false,
+                false,
+                false,
+                false
+            ),
             PersistentFailureAction::ReconnectWithoutResume
         );
         assert_eq!(
-            persistent_failure_action(REAL_DSH_MISSING_SESSION_ERROR, "dsh", false, false, true, false),
+            persistent_failure_action(
+                REAL_DSH_MISSING_SESSION_ERROR,
+                "dsh",
+                false,
+                false,
+                true,
+                false
+            ),
             PersistentFailureAction::Fatal
         );
         // 宽到 "Session not found" 会把无关失败拽进降级；dsh 必须带 session/open 前缀。
@@ -6110,11 +6398,25 @@ mod tests {
     #[test]
     fn a_missing_pi_resume_target_reconnects_without_resume_exactly_once() {
         assert_eq!(
-            persistent_failure_action(REAL_PI_MISSING_SESSION_ERROR, "pi", false, false, false, false),
+            persistent_failure_action(
+                REAL_PI_MISSING_SESSION_ERROR,
+                "pi",
+                false,
+                false,
+                false,
+                false
+            ),
             PersistentFailureAction::ReconnectWithoutResume
         );
         assert_eq!(
-            persistent_failure_action(REAL_PI_MISSING_SESSION_ERROR, "pi", false, false, true, false),
+            persistent_failure_action(
+                REAL_PI_MISSING_SESSION_ERROR,
+                "pi",
+                false,
+                false,
+                true,
+                false
+            ),
             PersistentFailureAction::Fatal
         );
         assert_ne!(
@@ -6126,11 +6428,25 @@ mod tests {
     #[test]
     fn a_missing_codex_thread_reconnects_without_resume_exactly_once() {
         assert_eq!(
-            persistent_failure_action("thread not found: thr_abc", "codex", false, false, false, false),
+            persistent_failure_action(
+                "thread not found: thr_abc",
+                "codex",
+                false,
+                false,
+                false,
+                false
+            ),
             PersistentFailureAction::ReconnectWithoutResume
         );
         assert_eq!(
-            persistent_failure_action("thread not found: thr_abc", "codex", false, false, true, false),
+            persistent_failure_action(
+                "thread not found: thr_abc",
+                "codex",
+                false,
+                false,
+                true,
+                false
+            ),
             PersistentFailureAction::Fatal
         );
     }
@@ -6143,7 +6459,8 @@ mod tests {
                 "grok",
                 false,
                 false,
-                false, false
+                false,
+                false
             ),
             PersistentFailureAction::ReconnectWithoutResume
         );
@@ -6153,7 +6470,8 @@ mod tests {
                 "opencode",
                 false,
                 false,
-                true, false
+                true,
+                false
             ),
             PersistentFailureAction::Fatal
         );
@@ -6166,7 +6484,14 @@ mod tests {
     #[test]
     fn codex_usage_and_window_errors_are_fatal() {
         assert_eq!(
-            persistent_failure_action("UsageLimitExceeded: quota", "codex", false, false, false, false),
+            persistent_failure_action(
+                "UsageLimitExceeded: quota",
+                "codex",
+                false,
+                false,
+                false,
+                false
+            ),
             PersistentFailureAction::Fatal
         );
         assert_eq!(
@@ -6175,12 +6500,20 @@ mod tests {
                 "codex",
                 false,
                 false,
-                false, false
+                false,
+                false
             ),
             PersistentFailureAction::Fatal
         );
         assert_eq!(
-            persistent_failure_action("ResponseStreamDisconnected", "codex", false, false, false, false),
+            persistent_failure_action(
+                "ResponseStreamDisconnected",
+                "codex",
+                false,
+                false,
+                false,
+                false
+            ),
             PersistentFailureAction::RetryFresh
         );
         assert_eq!(
@@ -6189,7 +6522,8 @@ mod tests {
                 "codex",
                 false,
                 false,
-                false, false
+                false,
+                false
             ),
             PersistentFailureAction::Fatal
         );
@@ -6486,7 +6820,7 @@ mod tests {
         );
     }
 
-/// 真正的启动 flag 任一变化都要触发重连（`accepts` 为 false）；全都没变则复用。
+    /// 真正的启动 flag 任一变化都要触发重连（`accepts` 为 false）；全都没变则复用。
     /// **换模型是例外** —— 见下一条测试。
     #[test]
     fn every_launch_flag_change_forces_a_reconnect() {

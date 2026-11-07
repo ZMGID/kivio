@@ -32,17 +32,25 @@ fn directory(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> 
     Ok(super::registry::artifacts_dir(app, conversation_id)?.join("task-progress"))
 }
 
-pub(crate) fn append(app: &AppHandle, conversation_id: &str, progress: &TaskProgressRecord) -> Result<(), String> {
+pub(crate) fn append(
+    app: &AppHandle,
+    conversation_id: &str,
+    progress: &TaskProgressRecord,
+) -> Result<(), String> {
     append_in(&directory(app, conversation_id)?, progress)
 }
 
 fn append_in(dir: &Path, progress: &TaskProgressRecord) -> Result<(), String> {
-    let data = serde_json::to_string(progress).map_err(|error| format!("serialize task progress: {error}"))?;
+    let data = serde_json::to_string(progress)
+        .map_err(|error| format!("serialize task progress: {error}"))?;
     let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
     crate::chat::storage::atomic_write(&path, &data, "task progress")
 }
 
-pub(crate) fn pending(app: &AppHandle, conversation_id: &str) -> Result<Vec<(PathBuf, TaskProgressRecord)>, String> {
+pub(crate) fn pending(
+    app: &AppHandle,
+    conversation_id: &str,
+) -> Result<Vec<(PathBuf, TaskProgressRecord)>, String> {
     pending_in(&directory(app, conversation_id)?)
 }
 
@@ -56,7 +64,9 @@ fn pending_in(dir: &Path) -> Result<Vec<(PathBuf, TaskProgressRecord)>, String> 
     for entry in entries {
         let entry = entry.map_err(|error| format!("read task progress entry: {error}"))?;
         let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("json") { continue; }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
         let data = match fs::read(&path) {
             Ok(data) => data,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -75,79 +85,160 @@ fn is_terminal(status: &str) -> bool {
 }
 
 fn update_async_state(structured: &mut serde_json::Map<String, Value>) {
-    let Some(agents) = structured.get("agents").and_then(Value::as_array).filter(|agents| !agents.is_empty()) else { return; };
-    let progress = structured.get("subagentProgressByTask").and_then(Value::as_object);
+    let Some(agents) = structured
+        .get("agents")
+        .and_then(Value::as_array)
+        .filter(|agents| !agents.is_empty())
+    else {
+        return;
+    };
+    let progress = structured
+        .get("subagentProgressByTask")
+        .and_then(Value::as_object);
     let mut all_terminal = true;
     let mut failed = false;
     for agent in agents {
-        let status = agent.get("agentId").and_then(Value::as_str)
+        let status = agent
+            .get("agentId")
+            .and_then(Value::as_str)
             .and_then(|id| progress.and_then(|entries| entries.get(id)))
-            .and_then(|entry| entry.get("status")).and_then(Value::as_str);
+            .and_then(|entry| entry.get("status"))
+            .and_then(Value::as_str);
         match status {
             Some("completed") => {}
             Some("failed" | "aborted" | "cancelled") => failed = true,
             _ => all_terminal = false,
         }
     }
-    let state = if !all_terminal { "running" } else if failed { "failed" } else { "completed" };
+    let state = if !all_terminal {
+        "running"
+    } else if failed {
+        "failed"
+    } else {
+        "completed"
+    };
     if let Some(aggregate) = structured.get_mut("async").and_then(Value::as_object_mut) {
         aggregate.insert("state".into(), Value::String(state.into()));
     }
 }
 
-pub(crate) fn apply(conversation: &mut Conversation, pending: &[(PathBuf, TaskProgressRecord)]) -> Vec<PathBuf> {
+pub(crate) fn apply(
+    conversation: &mut Conversation,
+    pending: &[(PathBuf, TaskProgressRecord)],
+) -> Vec<PathBuf> {
     let mut applied = Vec::new();
-    if pending.is_empty() { return applied; }
-    let mut activity_ids: std::collections::HashSet<_> = conversation.messages.iter()
+    if pending.is_empty() {
+        return applied;
+    }
+    let mut activity_ids: std::collections::HashSet<_> = conversation
+        .messages
+        .iter()
         .flat_map(|message| &message.segments)
-        .filter(|segment| matches!(segment.kind, crate::chat::ChatMessageSegmentKind::Subagent(_)))
+        .filter(|segment| {
+            matches!(
+                segment.kind,
+                crate::chat::ChatMessageSegmentKind::Subagent(_)
+            )
+        })
         .map(|segment| segment.id.clone())
         .collect();
     for (path, progress) in pending {
-        let timeline_applied = progress.timeline.as_ref().is_none_or(|(message_id, segment)| {
-            if activity_ids.contains(&segment.id) { return true; }
-            let Some(message) = conversation.messages.iter_mut().find(|message| &message.id == message_id) else { return false; };
-            activity_ids.insert(segment.id.clone());
-            message.segments.push(segment.clone());
-            true
-        });
+        let timeline_applied = progress
+            .timeline
+            .as_ref()
+            .is_none_or(|(message_id, segment)| {
+                if activity_ids.contains(&segment.id) {
+                    return true;
+                }
+                let Some(message) = conversation
+                    .messages
+                    .iter_mut()
+                    .find(|message| &message.id == message_id)
+                else {
+                    return false;
+                };
+                activity_ids.insert(segment.id.clone());
+                message.segments.push(segment.clone());
+                true
+            });
         let terminal = is_terminal(&progress.status);
         let mut matched = false;
         for message in &mut conversation.messages {
-            if progress.message_id.as_ref().is_some_and(|id| id != &message.id) { continue; }
+            if progress
+                .message_id
+                .as_ref()
+                .is_some_and(|id| id != &message.id)
+            {
+                continue;
+            }
             for tool in &mut message.tool_calls {
-                if tool.id != progress.tool_call_id || tool.source != "native"
-                    || !matches!(tool.name.as_str(), "task" | "native__task") { continue; }
+                if tool.id != progress.tool_call_id
+                    || tool.source != "native"
+                    || !matches!(tool.name.as_str(), "task" | "native__task")
+                {
+                    continue;
+                }
                 let structured = tool.structured_content.get_or_insert_with(|| json!({}));
-                let Some(structured) = structured.as_object_mut() else { continue; };
+                let Some(structured) = structured.as_object_mut() else {
+                    continue;
+                };
                 let agents = structured.get("agents").and_then(Value::as_array);
-                let has_agent = agents.is_some_and(|agents| agents.iter().any(|agent| {
-                    agent.get("agentId").and_then(Value::as_str) == Some(progress.task_id.as_str())
-                }));
-                if !has_agent && (progress.message_id.is_none() || agents.is_some_and(|agents| !agents.is_empty())) { continue; }
+                let has_agent = agents.is_some_and(|agents| {
+                    agents.iter().any(|agent| {
+                        agent.get("agentId").and_then(Value::as_str)
+                            == Some(progress.task_id.as_str())
+                    })
+                });
+                if !has_agent
+                    && (progress.message_id.is_none()
+                        || agents.is_some_and(|agents| !agents.is_empty()))
+                {
+                    continue;
+                }
                 if progress.timeline.is_some() {
-                    let ids = structured.entry("timelineAgentIds").or_insert_with(|| json!([]));
+                    let ids = structured
+                        .entry("timelineAgentIds")
+                        .or_insert_with(|| json!([]));
                     if let Some(ids) = ids.as_array_mut() {
-                        if !ids.iter().any(|id| id.as_str() == Some(progress.task_id.as_str())) {
+                        if !ids
+                            .iter()
+                            .any(|id| id.as_str() == Some(progress.task_id.as_str()))
+                        {
                             ids.push(json!(progress.task_id));
                         }
                     }
                 }
                 matched = true;
-                if !terminal { break; }
-                let map = structured.entry("subagentProgressByTask").or_insert_with(|| json!({}));
-                let Some(map) = map.as_object_mut() else { continue; };
+                if !terminal {
+                    break;
+                }
+                let map = structured
+                    .entry("subagentProgressByTask")
+                    .or_insert_with(|| json!({}));
+                let Some(map) = map.as_object_mut() else {
+                    continue;
+                };
                 let existing = map.get(&progress.task_id);
-                if !existing.and_then(|value| value.get("status")).and_then(Value::as_str).is_some_and(is_terminal) {
+                if !existing
+                    .and_then(|value| value.get("status"))
+                    .and_then(Value::as_str)
+                    .is_some_and(is_terminal)
+                {
                     map.insert(progress.task_id.clone(), json!({
                         "taskId": progress.task_id, "name": progress.name, "model": progress.model,
                         "generation": progress.generation, "runId": progress.run_id, "progress": progress.progress,
                         "depth": progress.depth, "status": progress.status,
                         "preview": progress.preview, "steps": progress.steps,
                     }));
-                } else if let Some(value) = map.get_mut(&progress.task_id).and_then(Value::as_object_mut) {
+                } else if let Some(value) = map
+                    .get_mut(&progress.task_id)
+                    .and_then(Value::as_object_mut)
+                {
                     if value.get("status").and_then(Value::as_str) == Some(progress.status.as_str())
-                        && value.get("preview").and_then(Value::as_str).is_none_or(str::is_empty)
+                        && value
+                            .get("preview")
+                            .and_then(Value::as_str)
+                            .is_none_or(str::is_empty)
                     {
                         if let Some(preview) = &progress.preview {
                             value.insert("preview".into(), json!(preview));
@@ -159,43 +250,95 @@ pub(crate) fn apply(conversation: &mut Conversation, pending: &[(PathBuf, TaskPr
                 break;
             }
         }
-        if timeline_applied && (matched || !terminal) { applied.push(path.clone()); }
+        if timeline_applied && (matched || !terminal) {
+            applied.push(path.clone());
+        }
     }
     applied
 }
-pub(crate) fn merge_message(previous: &crate::chat::ChatMessage, next: &mut crate::chat::ChatMessage) {
+pub(crate) fn merge_message(
+    previous: &crate::chat::ChatMessage,
+    next: &mut crate::chat::ChatMessage,
+) {
     for segment in &previous.segments {
-        if matches!(segment.kind, crate::chat::ChatMessageSegmentKind::Subagent(_))
-            && !next.segments.iter().any(|item| item.id == segment.id) {
+        if matches!(
+            segment.kind,
+            crate::chat::ChatMessageSegmentKind::Subagent(_)
+        ) && !next.segments.iter().any(|item| item.id == segment.id)
+        {
             next.segments.push(segment.clone());
         }
     }
     for tool in &mut next.tool_calls {
-        if tool.source != "native" || !matches!(tool.name.as_str(), "task" | "native__task") { continue; }
+        if tool.source != "native" || !matches!(tool.name.as_str(), "task" | "native__task") {
+            continue;
+        }
         let Some(old) = previous.tool_calls.iter().find(|old| {
-            old.id == tool.id && old.source == "native" && matches!(old.name.as_str(), "task" | "native__task")
-        }) else { continue; };
-        if let Some(ids) = old.structured_content.as_ref().and_then(|value| value.get("timelineAgentIds")) {
-            if let Some(structured) = tool.structured_content.get_or_insert_with(|| json!({})).as_object_mut() {
+            old.id == tool.id
+                && old.source == "native"
+                && matches!(old.name.as_str(), "task" | "native__task")
+        }) else {
+            continue;
+        };
+        if let Some(ids) = old
+            .structured_content
+            .as_ref()
+            .and_then(|value| value.get("timelineAgentIds"))
+        {
+            if let Some(structured) = tool
+                .structured_content
+                .get_or_insert_with(|| json!({}))
+                .as_object_mut()
+            {
                 structured.insert("timelineAgentIds".into(), ids.clone());
             }
         }
-        let Some(old_map) = old.structured_content.as_ref()
+        let Some(old_map) = old
+            .structured_content
+            .as_ref()
             .and_then(|value| value.get("subagentProgressByTask"))
-            .and_then(Value::as_object) else { continue; };
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
         for (id, progress) in old_map {
-            if !progress.get("status").and_then(Value::as_str).is_some_and(is_terminal) { continue; }
-            let agents = tool.structured_content.as_ref().and_then(|value| value.get("agents")).and_then(Value::as_array);
-            if agents.is_some_and(|agents| !agents.is_empty() && !agents.iter().any(|agent| {
-                agent.get("agentId").and_then(Value::as_str) == Some(id.as_str())
-            })) { continue; }
+            if !progress
+                .get("status")
+                .and_then(Value::as_str)
+                .is_some_and(is_terminal)
+            {
+                continue;
+            }
+            let agents = tool
+                .structured_content
+                .as_ref()
+                .and_then(|value| value.get("agents"))
+                .and_then(Value::as_array);
+            if agents.is_some_and(|agents| {
+                !agents.is_empty()
+                    && !agents.iter().any(|agent| {
+                        agent.get("agentId").and_then(Value::as_str) == Some(id.as_str())
+                    })
+            }) {
+                continue;
+            }
             let structured = tool.structured_content.get_or_insert_with(|| json!({}));
-            let Some(structured) = structured.as_object_mut() else { continue; };
-            let map = structured.entry("subagentProgressByTask").or_insert_with(|| json!({}));
-            let Some(map) = map.as_object_mut() else { continue; };
+            let Some(structured) = structured.as_object_mut() else {
+                continue;
+            };
+            let map = structured
+                .entry("subagentProgressByTask")
+                .or_insert_with(|| json!({}));
+            let Some(map) = map.as_object_mut() else {
+                continue;
+            };
             map.insert(id.clone(), progress.clone());
         }
-        if let Some(structured) = tool.structured_content.as_mut().and_then(Value::as_object_mut) {
+        if let Some(structured) = tool
+            .structured_content
+            .as_mut()
+            .and_then(Value::as_object_mut)
+        {
             update_async_state(structured);
         }
     }
@@ -205,7 +348,10 @@ pub(crate) fn clear_applied(paths: &[PathBuf]) {
     for path in paths {
         if let Err(error) = fs::remove_file(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                eprintln!("Cannot remove embedded task progress {}: {error}", path.display());
+                eprintln!(
+                    "Cannot remove embedded task progress {}: {error}",
+                    path.display()
+                );
             }
         }
     }
@@ -218,10 +364,18 @@ mod tests {
     fn progress(id: &str, status: &str, preview: &str) -> TaskProgressRecord {
         TaskProgressRecord {
             timeline: None,
-            generation: Some(1), run_id: Some("child-run".into()), progress: Some(json!({"requests":2,"cost":0.1})),
-            message_id: Some("message".into()), tool_call_id: "call".into(), task_id: id.into(),
-            name: id.into(), model: None, depth: 1, status: status.into(),
-            preview: Some(preview.into()), steps: Vec::new(),
+            generation: Some(1),
+            run_id: Some("child-run".into()),
+            progress: Some(json!({"requests":2,"cost":0.1})),
+            message_id: Some("message".into()),
+            tool_call_id: "call".into(),
+            task_id: id.into(),
+            name: id.into(),
+            model: None,
+            depth: 1,
+            status: status.into(),
+            preview: Some(preview.into()),
+            steps: Vec::new(),
         }
     }
 
@@ -229,7 +383,8 @@ mod tests {
         serde_json::from_value(json!({
             "id": "conv_progress", "title": "test", "provider_id": "p", "model": "m",
             "created_at": 1, "updated_at": 1, "messages": []
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     fn receipt() -> crate::chat::ChatMessage {
@@ -249,16 +404,20 @@ mod tests {
                     }
                 }
             }]
-        })).unwrap()
+        }))
+        .unwrap()
     }
 
     #[test]
     fn timeline_preserves_both_events_when_a_child_finishes_in_a_later_message() {
         let mut saved = conversation();
         saved.messages.push(receipt());
-        saved.messages.push(serde_json::from_value(json!({
-            "id": "later", "role": "assistant", "content": "More work", "timestamp": 3
-        })).unwrap());
+        saved.messages.push(
+            serde_json::from_value(json!({
+                "id": "later", "role": "assistant", "content": "More work", "timestamp": 3
+            }))
+            .unwrap(),
+        );
         let marker = |id: &str, status: &str| -> crate::chat::ChatMessageSegment {
             serde_json::from_value(json!({
                 "id": id, "kind": {"subagent": {
@@ -266,21 +425,46 @@ mod tests {
                     "parentToolCallId": "call", "afterSegmentId": null, "afterOrder": null,
                     "textChars": null
                 }}, "phase": "auxiliary", "order": 2
-            })).unwrap()
+            }))
+            .unwrap()
         };
         let mut start = progress("async", "running", "");
         start.timeline = Some(("message".into(), marker("start", "started")));
         let mut finish = progress("async", "completed", "result");
         finish.timeline = Some(("later".into(), marker("finish", "completed")));
-        let pending = [(PathBuf::from("finish.json"), finish), (PathBuf::from("start.json"), start)];
+        let pending = [
+            (PathBuf::from("finish.json"), finish),
+            (PathBuf::from("start.json"), start),
+        ];
         assert_eq!(apply(&mut saved, &pending).len(), 2);
         apply(&mut saved, &pending);
-        let read: Conversation = serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
-        assert_eq!(read.messages[0].segments.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["start"]);
-        assert_eq!(read.messages[1].segments.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["finish"]);
-        let structured = read.messages[0].tool_calls[0].structured_content.as_ref().unwrap();
+        let read: Conversation =
+            serde_json::from_slice(&serde_json::to_vec(&saved).unwrap()).unwrap();
+        assert_eq!(
+            read.messages[0]
+                .segments
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["start"]
+        );
+        assert_eq!(
+            read.messages[1]
+                .segments
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            ["finish"]
+        );
+        let structured = read.messages[0].tool_calls[0]
+            .structured_content
+            .as_ref()
+            .unwrap();
         assert_eq!(structured["timelineAgentIds"], json!(["async"]));
-        assert_eq!(structured["subagentProgressByTask"]["async"]["status"], "completed");
+        assert_eq!(
+            structured["subagentProgressByTask"]["async"]["status"],
+            "completed"
+        );
     }
 
     #[test]
@@ -295,22 +479,52 @@ mod tests {
         assert!(apply(&mut saved, &pending_in(&journal).unwrap()).is_empty());
         assert_eq!(pending_in(&journal).unwrap().len(), 2);
         saved.messages.push(receipt());
-        let (inline, background): (Vec<_>, Vec<_>) = pending_in(&journal).unwrap()
-            .into_iter().partition(|(_, entry)| entry.task_id == "inline");
+        let (inline, background): (Vec<_>, Vec<_>) = pending_in(&journal)
+            .unwrap()
+            .into_iter()
+            .partition(|(_, entry)| entry.task_id == "inline");
         let mut applied = apply(&mut saved, &inline);
-        assert_eq!(saved.messages[0].tool_calls[0].structured_content.as_ref().unwrap()["async"]["state"], "running");
+        assert_eq!(
+            saved.messages[0].tool_calls[0]
+                .structured_content
+                .as_ref()
+                .unwrap()["async"]["state"],
+            "running"
+        );
         applied.extend(apply(&mut saved, &background));
         assert_eq!(applied.len(), 2);
-        crate::chat::storage::atomic_write(&conversation_file, &serde_json::to_string(&saved).unwrap(), "test").unwrap();
+        crate::chat::storage::atomic_write(
+            &conversation_file,
+            &serde_json::to_string(&saved).unwrap(),
+            "test",
+        )
+        .unwrap();
         clear_applied(&applied);
         assert!(pending_in(&journal).unwrap().is_empty());
 
-        let reloaded = crate::chat::storage::read_conversation_file(&conversation_file, "conv_progress").unwrap();
-        let structured = reloaded.messages[0].tool_calls[0].structured_content.as_ref().unwrap();
-        assert_eq!(structured["subagentProgressByTask"]["inline"]["status"], "completed");
-        assert_eq!(structured["subagentProgressByTask"]["inline"]["preview"], "Inline result");
-        assert_eq!(structured["subagentProgressByTask"]["async"]["status"], "failed");
-        assert_eq!(structured["subagentProgressByTask"]["async"]["preview"], "Async diagnostic");
+        let reloaded =
+            crate::chat::storage::read_conversation_file(&conversation_file, "conv_progress")
+                .unwrap();
+        let structured = reloaded.messages[0].tool_calls[0]
+            .structured_content
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            structured["subagentProgressByTask"]["inline"]["status"],
+            "completed"
+        );
+        assert_eq!(
+            structured["subagentProgressByTask"]["inline"]["preview"],
+            "Inline result"
+        );
+        assert_eq!(
+            structured["subagentProgressByTask"]["async"]["status"],
+            "failed"
+        );
+        assert_eq!(
+            structured["subagentProgressByTask"]["async"]["preview"],
+            "Async diagnostic"
+        );
         assert_eq!(structured["async"]["state"], "failed");
         assert_eq!(structured["agents"][1]["jobId"], "job-async");
     }
@@ -319,30 +533,69 @@ mod tests {
     fn journal_does_not_attach_to_a_different_agent_or_replace_a_terminal_result() {
         let mut saved = conversation();
         saved.messages.push(receipt());
-        saved.messages[0].tool_calls[0].structured_content.as_mut().unwrap()
-            ["subagentProgressByTask"].as_object_mut().unwrap().remove("async");
+        saved.messages[0].tool_calls[0]
+            .structured_content
+            .as_mut()
+            .unwrap()["subagentProgressByTask"]
+            .as_object_mut()
+            .unwrap()
+            .remove("async");
         let mut other = progress("other", "completed", "wrong result");
         other.message_id = None;
         let pending = vec![(PathBuf::from("other.json"), other)];
         assert!(apply(&mut saved, &pending).is_empty());
-        let applied = vec![(PathBuf::from("current.json"), progress("inline", "completed", "persisted result"))];
+        let applied = vec![(
+            PathBuf::from("current.json"),
+            progress("inline", "completed", "persisted result"),
+        )];
         assert_eq!(apply(&mut saved, &applied).len(), 1);
-        assert_eq!(saved.messages[0].tool_calls[0].structured_content.as_ref().unwrap()["async"]["state"], "running");
-        let done = vec![(PathBuf::from("done.json"), progress("async", "completed", "background result"))];
+        assert_eq!(
+            saved.messages[0].tool_calls[0]
+                .structured_content
+                .as_ref()
+                .unwrap()["async"]["state"],
+            "running"
+        );
+        let done = vec![(
+            PathBuf::from("done.json"),
+            progress("async", "completed", "background result"),
+        )];
         assert_eq!(apply(&mut saved, &done).len(), 1);
-        assert_eq!(saved.messages[0].tool_calls[0].structured_content.as_ref().unwrap()["async"]["state"], "completed");
-        let stale = vec![(PathBuf::from("stale.json"), progress("inline", "failed", "stale result"))];
+        assert_eq!(
+            saved.messages[0].tool_calls[0]
+                .structured_content
+                .as_ref()
+                .unwrap()["async"]["state"],
+            "completed"
+        );
+        let stale = vec![(
+            PathBuf::from("stale.json"),
+            progress("inline", "failed", "stale result"),
+        )];
         assert_eq!(apply(&mut saved, &stale).len(), 1);
-        let structured = saved.messages[0].tool_calls[0].structured_content.as_ref().unwrap();
-        assert_eq!(structured["subagentProgressByTask"]["inline"]["status"], "completed");
-        assert_eq!(structured["subagentProgressByTask"]["inline"]["preview"], "persisted result");
+        let structured = saved.messages[0].tool_calls[0]
+            .structured_content
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            structured["subagentProgressByTask"]["inline"]["status"],
+            "completed"
+        );
+        assert_eq!(
+            structured["subagentProgressByTask"]["inline"]["preview"],
+            "persisted result"
+        );
         assert!(structured["subagentProgressByTask"].get("other").is_none());
         let mut replacement = receipt();
         replacement.tool_calls[0].structured_content = Some(json!({
             "agents":[{"agentId":"replacement"}], "subagentProgressByTask":{}
         }));
         merge_message(&saved.messages[0], &mut replacement);
-        assert!(replacement.tool_calls[0].structured_content.as_ref().unwrap()
-            ["subagentProgressByTask"].get("inline").is_none());
+        assert!(replacement.tool_calls[0]
+            .structured_content
+            .as_ref()
+            .unwrap()["subagentProgressByTask"]
+            .get("inline")
+            .is_none());
     }
 }

@@ -1,7 +1,8 @@
 use std::{collections::HashMap, path::Path};
 
-use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::attachments::compose_user_content_for_api;
+use crate::chat::context_estimate::estimate_image_tokens;
 use crate::chat::model::{
     openai_messages_from_model_messages, MessagePart, ModelMessage, ModelRole,
 };
@@ -16,8 +17,8 @@ use crate::skills;
 
 use super::catalog::{assistant_from_builder_args, strip_transcripts_for_frontend};
 use super::context::{
-    apply_context_clear, build_chat_api_messages, conversation_cache_usage, count_tokens_in_value,
-    estimate_image_tokens, group_answer_excluded_from_context, mark_summary_stale_if_needed,
+    accumulate_source_ids, apply_context_clear, build_chat_api_messages, conversation_cache_usage,
+    count_tokens_in_value, group_answer_excluded_from_context, mark_summary_stale_if_needed,
     resolve_usage_anchor,
 };
 use super::interaction::{format_tool_approval_summary, stream_delta_event_kinds};
@@ -39,6 +40,70 @@ use super::tooling::{
     should_answer_inline_without_file_write, try_apply_skill_slash_trigger,
 };
 use super::*;
+
+#[test]
+fn accumulate_source_ids_unions_previous_and_new_range() {
+    use crate::chat::types::ConversationContextState;
+    let messages: Vec<ChatMessage> = ["m0", "m1", "m2", "m3", "m4"]
+        .iter()
+        .map(|id| test_chat_message(id, "user", "x", 0))
+        .collect();
+    let mut conversation = test_conversation_with_messages(messages);
+    // 已有 S1 覆盖 m0..=m1（source_until = m1，ids = [m0, m1]）。
+    conversation.context_state = ConversationContextState {
+        summary: Some(ConversationContextSummary {
+            id: "ctxsum_prev".to_string(),
+            content: "prev".to_string(),
+            source_message_ids: vec!["m0".to_string(), "m1".to_string()],
+            source_until_message_id: "m1".to_string(),
+            token_estimate_before: 0,
+            token_estimate_after: 0,
+            created_at: 0,
+            provider_id: "p".to_string(),
+            model: "m".to_string(),
+            stale: false,
+            file_ledger: None,
+            replay: None,
+        }),
+        ..Default::default()
+    };
+    // 新压缩覆盖到 m3 → ids = S1.ids ∪ (m2, m3)。
+    let ids = accumulate_source_ids(&conversation, "m3");
+    assert_eq!(ids, vec!["m0", "m1", "m2", "m3"]);
+    // until_id 未找到 → 仅旧 ids。
+    assert_eq!(
+        accumulate_source_ids(&conversation, "nope"),
+        vec!["m0", "m1"]
+    );
+}
+
+#[test]
+fn accumulate_source_ids_no_previous_summary() {
+    let messages: Vec<ChatMessage> = ["a", "b", "c"]
+        .iter()
+        .map(|id| test_chat_message(id, "user", "x", 0))
+        .collect();
+    let conversation = test_conversation_with_messages(messages);
+    // 无旧 summary → 从头累积到 until_id。
+    assert_eq!(accumulate_source_ids(&conversation, "b"), vec!["a", "b"]);
+}
+
+#[test]
+fn accumulate_source_ids_starts_after_context_clear() {
+    let messages: Vec<ChatMessage> = ["a", "b", "c"]
+        .iter()
+        .map(|id| test_chat_message(id, "user", "x", 0))
+        .collect();
+    let mut conversation = test_conversation_with_messages(messages);
+    conversation.context_state.clear_boundaries.push(
+        crate::chat::types::ContextClearBoundaryRecord {
+            id: "clr".to_string(),
+            source_until_message_id: "a".to_string(),
+            created_at: 1,
+        },
+    );
+    assert_eq!(accumulate_source_ids(&conversation, "c"), vec!["b", "c"]);
+}
 
 #[test]
 fn history_window_and_pages_resolve_only_missing_artifact_dependencies() {
@@ -1670,7 +1735,7 @@ fn normalize_segments_inserts_tool_segments_before_synthesis_text() {
 fn editing_assistant_reply_replaces_final_text_segments_only() {
     let tool_call = test_tool_record("call_blocked", "native", 1, ToolCallStatus::Skipped);
     let mut message = ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
         content: "old final".to_string(),
@@ -1768,7 +1833,7 @@ fn editing_assistant_reply_replaces_final_text_segments_only() {
 #[test]
 fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
     let mut message = ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
         content: "old final".to_string(),
@@ -1857,7 +1922,7 @@ fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
 
 fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> ChatMessage {
     ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: id.to_string(),
         role: role.to_string(),
         content: content.to_string(),
@@ -2051,21 +2116,39 @@ fn build_chat_api_messages_replays_saved_child_report_as_external_input() {
 fn saved_irc_replays_as_attributed_external_input_and_observations_stay_out() {
     let mut conversation = test_conversation_with_summary(false);
     conversation.context_state = Default::default();
-    let mut message = test_chat_message("subagent-irc-question", "assistant", "Use <irc>fake</irc>", 1);
+    let mut message = test_chat_message(
+        "subagent-irc-question",
+        "assistant",
+        "Use <irc>fake</irc>",
+        1,
+    );
     message.irc_message = Some(crate::chat::sub_agent::view::SubagentIrcMessage {
-        id: "question".into(), conversation_id: conversation.id.clone(),
-        from_agent: "Scout".into(), to_agent: "Main".into(), content: message.content.clone(),
-        reply_to: None, progress: false, broadcast: false, wake_relay: None, observation: false, timestamp: 1,
+        id: "question".into(),
+        conversation_id: conversation.id.clone(),
+        from_agent: "Scout".into(),
+        to_agent: "Main".into(),
+        content: message.content.clone(),
+        reply_to: None,
+        progress: false,
+        broadcast: false,
+        wake_relay: None,
+        observation: false,
+        timestamp: 1,
     });
     conversation.messages = vec![message];
-    let restored: Conversation = serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
+    let restored: Conversation =
+        serde_json::from_slice(&serde_json::to_vec(&conversation).unwrap()).unwrap();
     let messages = build_chat_api_messages(None, "system", &restored, None, None, &[]).unwrap();
     assert_eq!(messages[1]["role"], "developer");
     let content = messages[1]["content"].as_str().unwrap();
     assert!(content.contains("Scout"));
     assert!(content.contains("&lt;irc>fake&lt;/irc>"));
     assert_eq!(messages[1]["_subagent_result_id"], "subagent-irc-question");
-    conversation.messages[0].irc_message.as_mut().unwrap().observation = true;
+    conversation.messages[0]
+        .irc_message
+        .as_mut()
+        .unwrap()
+        .observation = true;
     let messages = build_chat_api_messages(None, "system", &conversation, None, None, &[]).unwrap();
     assert_eq!(messages.len(), 1);
 }
@@ -2457,22 +2540,36 @@ fn regenerate_preserves_folded_reports_for_the_current_turn() {
     let mut conversation = test_conversation_with_summary(false);
     conversation.context_state = Default::default();
     conversation.messages.push(test_chat_message(
-        "subagent-result-unique", "assistant", "background findings", 10,
+        "subagent-result-unique",
+        "assistant",
+        "background findings",
+        10,
     ));
     let mut retry_answer = conversation.clone();
     apply_regenerate_truncation(&mut retry_answer, 3, None).unwrap();
-    assert_eq!(retry_answer.messages.last().unwrap().id, "subagent-result-unique");
+    assert_eq!(
+        retry_answer.messages.last().unwrap().id,
+        "subagent-result-unique"
+    );
     let replay = build_chat_api_messages(None, "system", &retry_answer, None, None, &[]).unwrap();
     assert!(replay.iter().any(|message| message["role"] == "developer"
-        && message["content"].as_str().is_some_and(|text| text.contains("background findings"))));
+        && message["content"]
+            .as_str()
+            .is_some_and(|text| text.contains("background findings"))));
 
     let mut retry_user = conversation.clone();
     apply_regenerate_truncation(&mut retry_user, 2, Some("revised question".into())).unwrap();
     assert_eq!(retry_user.messages[2].content, "revised question");
-    assert_eq!(retry_user.messages.last().unwrap().id, "subagent-result-unique");
+    assert_eq!(
+        retry_user.messages.last().unwrap().id,
+        "subagent-result-unique"
+    );
 
     apply_regenerate_truncation(&mut conversation, 0, None).unwrap();
-    assert!(!conversation.messages.iter().any(|message| message.id == "subagent-result-unique"));
+    assert!(!conversation
+        .messages
+        .iter()
+        .any(|message| message.id == "subagent-result-unique"));
 }
 
 #[test]
@@ -2592,16 +2689,29 @@ fn reply_with_model_ignores_folded_reports_as_answers() {
     let mut conversation = test_conversation_with_summary(false);
     conversation.context_state.summary = None;
     conversation.messages.push(test_chat_message(
-        "subagent-result-work", "assistant", "background report", 10,
+        "subagent-result-work",
+        "assistant",
+        "background report",
+        10,
     ));
     let prep = prepare_reply_with_model(
-        &conversation, "msg_assistant_2", "other-provider", "other-model", None,
-    ).unwrap();
+        &conversation,
+        "msg_assistant_2",
+        "other-provider",
+        "other-model",
+        None,
+    )
+    .unwrap();
     assert_eq!(prep.sibling_ids, vec!["msg_assistant_2"]);
     assert_eq!(prep.user_index, 2);
     assert!(prepare_reply_with_model(
-        &conversation, "subagent-result-work", "other-provider", "other-model", None,
-    ).is_err());
+        &conversation,
+        "subagent-result-work",
+        "other-provider",
+        "other-model",
+        None,
+    )
+    .is_err());
 }
 
 #[test]
@@ -2652,7 +2762,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
         model: "model".to_string(),
         messages: vec![
             ChatMessage {
-            irc_message: None,
+                irc_message: None,
                 id: "msg_user_1".to_string(),
                 role: "user".to_string(),
                 content: "use a skill".to_string(),
@@ -2678,7 +2788,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 degraded: None,
             },
             ChatMessage {
-            irc_message: None,
+                irc_message: None,
                 id: "msg_assistant_1".to_string(),
                 role: "assistant".to_string(),
                 content: "visible answer".to_string(),
@@ -3695,8 +3805,7 @@ fn file_ledger_flows_into_replayed_summary_message() {
 
     // Recompute the ledger over the covered history and store it (mirrors both
     // compaction persist sites).
-    let ledger =
-        crate::chat::agent::file_ledger::build_for_boundary(&conversation, "msg_assistant_1");
+    let ledger = crate::chat::file_ledger::build_for_boundary(&conversation, "msg_assistant_1");
     assert!(!ledger.is_empty(), "ledger should capture the two ops");
     conversation
         .context_state
@@ -3923,7 +4032,7 @@ fn display_meter_ignores_an_older_anchor_when_the_latest_request_did_not_report(
             reported_tokens: None,
             segments: Vec::new(),
         });
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, None);
+    let display = crate::chat::context_measure::resolve_display(&conversation, None);
     assert_eq!(display.reported_tokens, None);
     let provider = test_provider("openai", "OpenAI", vec!["gpt-4o"]);
     assert_eq!(
@@ -3946,7 +4055,7 @@ fn live_measurement_outranks_an_older_disk_report_and_a_lower_seq_does_not() {
             reported_tokens: Some(7_100),
             segments: Vec::new(),
         });
-    let live = crate::chat::agent::context_measure::LiveContextMeasurement {
+    let live = crate::chat::context_measure::LiveContextMeasurement {
         seq: 9,
         lifecycle_id: 1,
         request_id: "run".into(),
@@ -3956,20 +4065,20 @@ fn live_measurement_outranks_an_older_disk_report_and_a_lower_seq_does_not() {
         report_received: true,
         ..Default::default()
     };
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, Some(&live));
+    let display = crate::chat::context_measure::resolve_display(&conversation, Some(&live));
     assert_eq!(display.reported_tokens, Some(53_000));
-    let stale = crate::chat::agent::context_measure::LiveContextMeasurement {
+    let stale = crate::chat::context_measure::LiveContextMeasurement {
         seq: 1,
         reported_tokens: Some(1_000),
         ..live
     };
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, Some(&stale));
+    let display = crate::chat::context_measure::resolve_display(&conversation, Some(&stale));
     assert_eq!(display.reported_tokens, Some(7_100));
-    let blank = crate::chat::agent::context_measure::LiveContextMeasurement {
+    let blank = crate::chat::context_measure::LiveContextMeasurement {
         seq: 99,
         ..Default::default()
     };
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, Some(&blank));
+    let display = crate::chat::context_measure::resolve_display(&conversation, Some(&blank));
     assert_eq!(display.reported_tokens, Some(7_100));
 }
 
@@ -3982,7 +4091,7 @@ fn returning_to_a_previous_model_does_not_restore_its_display_report() {
     conversation.context_state.reported_context_tokens = None;
     conversation.context_state.token_count_source = None;
     conversation.context_state.request_measurement = None;
-    let display = crate::chat::agent::context_measure::resolve_display(&conversation, None);
+    let display = crate::chat::context_measure::resolve_display(&conversation, None);
     assert_eq!(display.reported_tokens, None);
     let provider = test_provider("openai", "OpenAI", vec!["gpt-4o"]);
     assert_eq!(
@@ -4019,7 +4128,7 @@ fn persisted_cache_pairs_keep_the_same_total_when_a_later_request_omits_telemetr
 
 #[test]
 fn request_measurement_refresh_preserves_last_report_until_replacement() {
-    use crate::chat::agent::context_measure::resolve_display;
+    use crate::chat::context_measure::resolve_display;
     use crate::chat::runtime_state::ChatRuntimeState;
 
     let runtime = ChatRuntimeState::default();
@@ -4124,7 +4233,7 @@ fn request_measurement_refresh_preserves_last_report_until_replacement() {
 
 #[test]
 fn model_switch_back_and_restart_keep_invalidated_measurements_unknown() {
-    use crate::chat::agent::context_measure::resolve_display;
+    use crate::chat::context_measure::resolve_display;
     use crate::chat::runtime_state::ChatRuntimeState;
 
     let runtime = ChatRuntimeState::default();
@@ -4190,7 +4299,7 @@ fn review_regression_request_images_have_independent_cost_without_character_infl
 
 #[test]
 fn review_regression_branch_selection_invalidates_memory_disk_and_late_reports() {
-    use crate::chat::agent::context_measure::resolve_display;
+    use crate::chat::context_measure::resolve_display;
     let state = crate::state::test_app_state();
     let mut first = assistant_with_anchor("first", 1, 100);
     first.group_id = Some("group".into());
@@ -4515,12 +4624,15 @@ fn maintenance_review_deleting_pending_history_boundary_keeps_handoff_sendable()
         crate::chat::types::ExternalHistoryMethod::Replay,
     ));
     remove_assistant_answer(&mut conversation, "answer_a").unwrap();
-    conversation.messages.push(test_chat_message("user_b", "user", "question B", 3));
+    conversation
+        .messages
+        .push(test_chat_message("user_b", "user", "question B", 3));
     let prompt = crate::external_agents::prompt::compose_history_handoff(
         &conversation,
         crate::external_agents::prompt::compose_external_prompt_passthrough("question B"),
         "question B",
-    ).expect("deleting a displayed answer must not block a branch's first send");
+    )
+    .expect("deleting a displayed answer must not block a branch's first send");
     assert!(prompt.full_prompt.contains("question A"));
     assert!(!prompt.full_prompt.contains("answer A"));
     assert_eq!(prompt.full_prompt.matches("question B").count(), 1);
@@ -4528,7 +4640,9 @@ fn maintenance_review_deleting_pending_history_boundary_keeps_handoff_sendable()
 
 #[test]
 fn maintenance_review_history_deletion_rejects_old_delivery_receipts() {
-    use crate::chat::types::{ExternalHistoryDelivery, ExternalHistoryMethod, ExternalHistoryTransition};
+    use crate::chat::types::{
+        ExternalHistoryDelivery, ExternalHistoryMethod, ExternalHistoryTransition,
+    };
     for removed in ["answer_a", "answer_b"] {
         let mut conversation = test_conversation_with_messages(vec![
             test_chat_message("user_a", "user", "question A", 1),
@@ -4536,22 +4650,34 @@ fn maintenance_review_history_deletion_rejects_old_delivery_receipts() {
             test_chat_message("user_b", "user", "question B", 3),
             test_chat_message("answer_b", "assistant", "answer B", 4),
         ]);
-        let mut history = ExternalHistoryTransition::new(&conversation, ExternalHistoryMethod::NativeRewind);
+        let mut history =
+            ExternalHistoryTransition::new(&conversation, ExternalHistoryMethod::NativeRewind);
         let attempt = crate::external_agents::session::HistoryAttempt {
-            transition_id: history.id.clone(), native_id: "old-native".into(),
-            attempt_id: "old-attempt".into(), generation: 1,
+            transition_id: history.id.clone(),
+            native_id: "old-native".into(),
+            attempt_id: "old-attempt".into(),
+            generation: 1,
         };
         history.delivery = ExternalHistoryDelivery::MayHaveSent {
-            native_id: attempt.native_id.clone(), attempt_id: attempt.attempt_id.clone(), generation: 1,
+            native_id: attempt.native_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            generation: 1,
         };
         let delivery = history.delivery.clone();
         conversation.external_history = Some(history);
         remove_assistant_answer(&mut conversation, removed).unwrap();
         crate::external_agents::session::settle_history_delivery(&mut conversation, &attempt);
-        let history = conversation.external_history.as_ref().expect("old receipt cannot settle edited history");
+        let history = conversation
+            .external_history
+            .as_ref()
+            .expect("old receipt cannot settle edited history");
         assert_ne!(history.id, attempt.transition_id);
         assert_eq!(history.method, ExternalHistoryMethod::Replay);
         assert_eq!(history.delivery, delivery);
-        assert!(history.prefix(&conversation).unwrap().iter().all(|message| message.id != removed));
+        assert!(history
+            .prefix(&conversation)
+            .unwrap()
+            .iter()
+            .all(|message| message.id != removed));
     }
 }

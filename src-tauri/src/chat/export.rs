@@ -275,7 +275,7 @@ mod tests {
             model: "gpt-test".to_string(),
             messages: vec![
                 ChatMessage {
-            irc_message: None,
+                    irc_message: None,
                     id: "user_1".to_string(),
                     role: "user".to_string(),
                     content: "Hello".to_string(),
@@ -307,7 +307,7 @@ mod tests {
                     degraded: None,
                 },
                 ChatMessage {
-            irc_message: None,
+                    irc_message: None,
                     id: "assistant_1".to_string(),
                     role: "assistant".to_string(),
                     content: "Final answer".to_string(),

@@ -1,25 +1,13 @@
-pub(crate) mod compaction;
-pub(crate) mod context_estimate;
-pub(crate) mod context_measure;
-pub mod execute;
-pub(crate) mod file_ledger;
-pub mod filter;
-pub(crate) mod finalize;
-pub mod host;
+pub use kivio_agent_sdk::agent::{
+    content, context, control, events, execute, host, provider_runtime, recovery, rounds, session,
+    steering, stop, stream, types,
+};
+pub mod history;
 pub mod loop_;
-pub(crate) mod planning;
-pub mod prepare;
-pub(crate) mod provider_runtime;
-pub(crate) mod recovery;
-pub(crate) mod rounds;
-pub mod steering;
-pub mod stop;
-pub mod stream;
-pub(crate) mod synthesis;
-pub mod types;
 
 pub use execute::{ToolExecutionContext, ToolExecutor, ToolExecutorFuture};
+pub use history::{RuntimeBody, RuntimeMessage, RuntimeSource};
 pub use host::{AgentHost, AgentHostFuture};
-pub use loop_::run_agent_loop;
-pub use steering::{SteeringMessage, FOLLOW_UP_TOOL_NAME, STEER_TOOL_NAME};
+pub use kivio_agent_sdk::agent::run_agent_loop;
+pub use steering::SteeringMessage;
 pub use types::{AgentRunConfig, AgentRunEntry};
