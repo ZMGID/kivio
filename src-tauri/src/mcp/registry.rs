@@ -1049,21 +1049,24 @@ async fn call_skill_tool(
 ) -> Result<McpToolCallResult, String> {
     let settings = state.settings_read().clone();
     let skill_name = crate::skills::extract_skill_name(&arguments)?;
-
-    let fallback;
-    let registry = if let Some(context) = skill_context.as_deref() {
-        context.registry()
+    if tool.name != "skill" {
+        return Err(format!("Unknown skill tool: {}", tool.name));
+    }
+    let context = if let Some(context) = skill_context {
+        context.clone()
     } else {
         let app = app.clone();
         let paths = settings.chat_tools.skill_scan_paths.clone();
-        fallback = tauri::async_runtime::spawn_blocking(move || {
+        let registry = tauri::async_runtime::spawn_blocking(move || {
             crate::skills::build_registry(&app, &paths)
         })
         .await
         .map_err(|e| e.to_string())??;
-        &fallback
+        crate::skills::for_run(std::sync::Arc::new(registry), None)
     };
-    let record = crate::skills::lookup_skill(&registry, &skill_name)
+    let record = context
+        .registry()
+        .find(&skill_name)
         .ok_or_else(|| format!("Skill not found: {skill_name}"))?;
     if let Some(err) = crate::settings::skill_global_unavailable_error(
         &settings.chat_tools,
@@ -1072,31 +1075,19 @@ async fn call_skill_tool(
     ) {
         return Err(err);
     }
-    // 助手技能白名单硬 gate(防绕过):模型报个不在目录里的技能名也会被这里拦下。
-    if let Some(cache) = skill_context.as_deref() {
-        if !cache.skill_id_allowed(&record.meta.id) {
-            return Err(format!(
-                "Skill is not allowed for the active assistant: {skill_name}"
-            ));
-        }
-    }
-
-    let record = record.clone();
-    let record =
-        tauri::async_runtime::spawn_blocking(move || crate::skills::read_skill_record(&record))
-            .await
-            .map_err(|e| e.to_string())??;
-    let content = match tool.name.as_str() {
-        "skill" => crate::skills::activate_skill(&record),
-        other => return Err(format!("Unknown skill tool: {other}")),
-    };
+    let output = kivio_agent_sdk::tools::call_typed(
+        &crate::skills::SkillTool::new(context),
+        arguments,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
 
     Ok(McpToolCallResult {
-        content,
-        is_error: false,
+        content: output.content,
+        is_error: output.is_error,
         raw: Value::Null,
-        artifacts: Vec::new(),
-        structured_content: None,
+        artifacts: output.host_data,
+        structured_content: output.structured_content,
         follow_up_user_messages: Vec::new(),
     })
 }

@@ -302,23 +302,15 @@ pub fn native_web_search_tool() -> ChatToolDefinition {
 }
 
 pub fn native_skill_activate_tool() -> ChatToolDefinition {
+    let definition = crate::skills::SkillTool::definition();
     ChatToolDefinition {
         id: "skill__activate".to_string(),
-        name: "skill".to_string(),
-        description: "Load the instructions for a listed skill according to the session's skill activation policy. Injects the skill's instructions and resources into the current conversation — the output may contain detailed workflow guidance plus references to scripts and files in the skill directory (use `read` for files and `bash` for scripts when those tools are declared in this request). The skill name must match one listed in available_skills. A previous activation is not proof that its instructions remain in context. Reload when needed after compaction or history changes, or when the skill files change. If the output is truncated, read the skill file in sections instead of repeatedly loading the same truncated output.".to_string(),
+        name: definition.model.name,
+        description: definition.model.description,
         source: "skill".to_string(),
         server_id: None,
         server_name: Some("Skill".to_string()),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "Skill name from available_skills"
-                }
-            },
-            "required": ["name"]
-        }),
+        input_schema: definition.model.input_schema,
         sensitive: false,
         annotations: None,
         output_schema: None,

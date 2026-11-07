@@ -425,7 +425,9 @@ async fn run_builtin_agent_node(
         .await?;
     let catalog = registry.clone();
     let selected = spec.skill_ids.clone();
-    let loaded = tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected))
+    let loaded = tauri::async_runtime::spawn_blocking(move || {
+        skills::read_selected(&catalog, &selected)
+    })
         .await
         .map_err(|e| e.to_string())??;
     let active_skill_id = spec.skill_ids.first().map(|id| id.as_str());
@@ -481,7 +483,7 @@ async fn run_builtin_agent_node(
     let events = WorkflowAgentEvents::default();
     let executor = WorkflowToolExecutor {
         app: app.clone(),
-        skills: skills::SkillRunContext::for_run(registry.clone(), None),
+        skills: skills::for_run(registry.clone(), None),
     };
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
@@ -651,7 +653,7 @@ fn extra_skill_bodies(
         return None;
     }
     let registry = skills::build_registry_in(app, scan_paths, workdir).ok()?;
-    let loaded = registry.read_selected(skill_ids).ok()?;
+    let loaded = skills::read_selected(&registry, skill_ids).ok()?;
     extra_loaded_skill_bodies(&loaded, skill_ids)
 }
 

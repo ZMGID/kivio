@@ -106,6 +106,18 @@ The standalone provider cancels an HTTP read when its generation future is dropp
 
 Continuation rebuilds model context from saved messages and completed tool results, then starts new model work under current authorization. It does not replay tool records as an execution queue. A crash between an external effect and its durable result leaves an uncertain outcome. The SDK provides no exactly-once guarantee for files, commands, or remote operations. Hosts and tools reconcile target state or use their own idempotency keys before retrying uncertain work.
 
+## Skill resources
+
+The `skills` feature adds explicit-source discovery and `SkillTool` without new dependencies. Source order determines duplicate priority. Discovery stops at a skill directory instead of recursively indexing its resources. Initial discovery can return a partial catalog with `scan_failed`; `reload` rejects a failed scan before replacing the current catalog. Hosts keep ownership of when to scan and publish the next snapshot.
+
+`SkillRunContext` holds a frozen `Arc<SkillRegistry>` and access policy. Skill identity, metadata and location remain fixed until the host selects a new catalog. Activation reads and parses the current body, so edits become visible on the next explicit load. Missing, invalid or unreadable files return errors. Optional arguments use the existing single-pass substitution and never re-interpret text introduced by argument values.
+
+`SkillTool` implements `StaticTool` and registers through the existing `ToolRegistry` with explicit `ToolAuthorization`. Disabled IDs and an optional whitelist are checked before body loading. `disable_model_invocation` controls catalog visibility; it is not a separate permission grant or a replacement for host authorization. Recommended tools and `allowed-tools` metadata do not register or authorize tools. The default reader only reads Markdown; activation never runs skill scripts.
+
+`SkillRecord::resolve_resource` resolves an existing path within the skill directory and rejects parent traversal, absolute paths and symlink escapes. It does not read the resource or grant filesystem access. Hosts continue to authorize actual file and process operations. Custom readers are host-provided code and remain the host's responsibility.
+
+The application shares the parser, loader, formatting and typed activation tool. It retains source enumeration, settings, assistant policy, plugin transformations and `ResourceSessions` publication of skills, roles and hooks together. A normal send or retry does not rescan an existing catalog. The existing `skill` tool name and `<skill_content>` wrapper remain compatible with context compaction and subsequent reload instructions.
+
 ## Errors and retries
 
 Provider calls return `ModelError` with `kind`, an optional HTTP `status`, an optional `provider_code`, an optional `retry_after` duration, and a diagnostic `message`. Kinds distinguish authentication, rate limits, timeouts, transport errors, invalid requests, unsupported tools, context overflow, moderation, cancellation, and other failures. Retry classification is information for the runtime owner. It is not an automatic retry promise.

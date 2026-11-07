@@ -7,4 +7,6 @@
 pub mod agent;
 pub mod dsml_tools;
 pub mod model;
+#[cfg(feature = "skills")]
+pub mod skills;
 pub mod tools;

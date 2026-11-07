@@ -508,9 +508,11 @@ pub(super) async fn complete_assistant_reply_inner(
     } else {
         let catalog = skill_registry.clone();
         std::sync::Arc::new(
-            tauri::async_runtime::spawn_blocking(move || catalog.read_selected(&selected))
-                .await
-                .map_err(|e| e.to_string())??,
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::skills::read_selected(&catalog, &selected)
+            })
+            .await
+            .map_err(|e| e.to_string())??,
         )
     };
     let (skill_id, active_skill_detail) = resolve_request_skill(
@@ -870,7 +872,7 @@ pub(super) async fn complete_assistant_reply_inner(
     let executor = RegistryToolExecutor {
         app: app.clone(),
         state: state.inner(),
-        skills: crate::skills::SkillRunContext::for_run(
+        skills: crate::skills::for_run(
             skill_registry.clone(),
             conversation.assistant_snapshot.as_ref(),
         ),

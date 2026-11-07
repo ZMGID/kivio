@@ -10,15 +10,9 @@ use super::{
     types::{SkillRecord, SkillRegistry},
 };
 
-const MAX_SCAN_DEPTH: usize = 6;
 const MAX_PROJECT_WALK: usize = 24;
 
-const SKIP_DIR_NAMES: &[&str] = &[".git", "node_modules", ".svn", ".hg"];
-
-struct SkillScanRoot {
-    path: PathBuf,
-    source: &'static str,
-}
+use kivio_agent_sdk::skills::SkillSource as SkillScanRoot;
 
 /// 共享 Agent Skills 目录：`~/.agents/skills`（Codex / OpenCode / Pi 等共用）。
 /// 只扫描，Kivio 不往这里写、也不从这里删。
@@ -165,7 +159,10 @@ fn push_root(roots: &mut Vec<SkillScanRoot>, path: PathBuf, source: &'static str
     if roots.iter().any(|root| root.path == path) {
         return;
     }
-    roots.push(SkillScanRoot { path, source });
+    roots.push(SkillScanRoot {
+        path,
+        source: source.into(),
+    });
 }
 
 fn append_external_roots(roots: &mut Vec<SkillScanRoot>, extra_paths: &[String]) {
@@ -239,99 +236,20 @@ fn load_plugin_command(path: &Path) -> Result<super::types::SkillRecord, String>
 }
 
 fn build_registry_from_roots(roots: Vec<SkillScanRoot>) -> SkillRegistry {
-    let mut registry = SkillRegistry::default();
-    for root in roots {
-        if let Err(err) = collect_skill_files(&root.path, 0, &mut registry, root.source) {
-            registry.scan_failed = true;
-            registry
-                .warnings
-                .push(format!("Scan {} failed: {err}", root.path.display()));
-        }
-    }
-    dedup_records(&mut registry.records, &mut registry.warnings);
-    registry
-        .records
-        .sort_by(|a, b| a.meta.name.to_lowercase().cmp(&b.meta.name.to_lowercase()));
-    registry
+    SkillRegistry::discover_with_reader(&roots, read_raw)
 }
 
-fn dedup_records(records: &mut Vec<super::types::SkillRecord>, warnings: &mut Vec<String>) {
-    let mut seen = std::collections::HashMap::<String, usize>::new();
-    let mut out: Vec<super::types::SkillRecord> = Vec::new();
-    for record in records.drain(..) {
-        let key = record.meta.id.clone();
-        if let Some(&index) = seen.get(&key) {
-            // 同 ID 按扫描顺序取第一份；跨来源允许覆盖，同来源重复才报告冲突。
-            if out[index].meta.source == record.meta.source {
-                warnings.push(format!(
-                    "Skill {} shadowed duplicate id {}",
-                    out[index].meta.name, record.meta.name
-                ));
-            }
-            continue;
-        }
-        seen.insert(key, out.len());
-        out.push(record);
+fn read_raw(path: &Path, source: &str) -> Result<String, String> {
+    if source == "plugin" {
+        crate::plugins::packages::component_markdown(path)
+    } else {
+        fs::read_to_string(path)
+            .map_err(|error| format!("Read skill {} failed: {error}", path.display()))
     }
-    *records = out;
-}
-
-fn collect_skill_files(
-    root: &Path,
-    depth: usize,
-    registry: &mut SkillRegistry,
-    source: &str,
-) -> Result<(), String> {
-    if depth > MAX_SCAN_DEPTH || !root.is_dir() {
-        return Ok(());
-    }
-
-    let skill_md = root.join("SKILL.md");
-    if skill_md.is_file() {
-        match load_skill_at(&skill_md, source) {
-            Ok(mut record) => {
-                record.body.clear();
-                registry.records.push(record);
-            }
-            Err(err) => {
-                registry.scan_failed = true;
-                registry
-                    .warnings
-                    .push(format!("Parse skill {} failed: {err}", skill_md.display()));
-            }
-        }
-        return Ok(());
-    }
-
-    if depth == MAX_SCAN_DEPTH {
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(root).map_err(|err| format!("read skills dir failed: {err}"))?;
-    for entry in entries {
-        let entry = entry.map_err(|err| err.to_string())?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if SKIP_DIR_NAMES.contains(&name) {
-            continue;
-        }
-        collect_skill_files(&path, depth + 1, registry, source)?;
-    }
-    Ok(())
 }
 
 fn load_skill_at(skill_md_path: &Path, source: &str) -> Result<super::types::SkillRecord, String> {
-    let raw = if source == "plugin" {
-        crate::plugins::packages::component_markdown(skill_md_path)?
-    } else {
-        fs::read_to_string(skill_md_path)
-            .map_err(|err| format!("Read skill {} failed: {err}", skill_md_path.display()))?
-    };
+    let raw = read_raw(skill_md_path, source)?;
     let mut warnings = Vec::new();
     parse_skill_record(skill_md_path, &raw, source, Vec::new(), &mut warnings)
 }
@@ -339,9 +257,8 @@ fn load_skill_at(skill_md_path: &Path, source: &str) -> Result<super::types::Ski
 /// Load only the known skill file. The session's identity and metadata stay stable
 /// until /reload; instruction edits take effect on the next explicit use.
 pub fn read_skill_record(record: &SkillRecord) -> Result<SkillRecord, String> {
-    let mut loaded = load_skill_at(&record.location, &record.meta.source)?;
-    loaded.meta = record.meta.clone();
-    loaded.meta.files.clear();
+    let raw = read_raw(&record.location, &record.meta.source)?;
+    let mut loaded = kivio_agent_sdk::skills::read_skill_record_with(record, &raw)?;
     if record.meta.source == "plugin" && record.meta.id.starts_with("pkg-") {
         loaded.body = crate::plugins::packages::expand_skill_body(
             &record.meta.id,
@@ -357,24 +274,6 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn temp_skill_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("kivio-skill-test-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(dir.join("scripts")).unwrap();
-        fs::write(
-            dir.join("SKILL.md"),
-            r#"---
-name: skill-test
-description: Test skill.
----
-
-# Skill body
-"#,
-        )
-        .unwrap();
-        fs::write(dir.join("scripts").join("run.sh"), "echo ok").unwrap();
-        dir
-    }
-
     #[tokio::test]
     async fn session_catalog_is_stable_until_reload_but_bodies_are_read_on_demand() {
         let root = tempfile::tempdir().unwrap();
@@ -388,7 +287,7 @@ description: Test skill.
                 Ok(crate::chat::resources::Catalog {
                     skills: std::sync::Arc::new(build_registry_from_roots(vec![SkillScanRoot {
                         path,
-                        source: "user",
+                        source: "user".into(),
                     }])),
                     ..Default::default()
                 })
@@ -441,25 +340,6 @@ description: Test skill.
             .is_none());
     }
 
-    #[test]
-    fn discovery_does_not_index_skill_resources() {
-        let dir = temp_skill_dir();
-        fs::create_dir_all(dir.join("artifacts/nested")).unwrap();
-        fs::write(dir.join("artifacts/nested/output.txt"), "generated").unwrap();
-        write_skill(&dir.join("artifacts/nested/fake-skill"), "nested-artifact");
-        let registry = build_registry_from_roots(vec![SkillScanRoot {
-            path: dir.clone(),
-            source: "user",
-        }]);
-        fs::remove_dir_all(dir).unwrap();
-        assert_eq!(registry.records.len(), 1);
-        assert!(
-            registry.records[0].meta.files.is_empty(),
-            "discovery must not enumerate skill resources"
-        );
-        assert!(registry.records[0].body.is_empty());
-    }
-
     fn write_skill(dir: &Path, id: &str) {
         fs::create_dir_all(dir).unwrap();
         fs::write(
@@ -510,36 +390,6 @@ description: Test skill.
     }
 
     #[test]
-    fn same_id_prefers_project_over_agents() {
-        let base =
-            std::env::temp_dir().join(format!("kivio-agents-dedup-{}", uuid::Uuid::new_v4()));
-        let project_root = base.join("project").join(".agents").join("skills");
-        let agents_root = base.join("home").join(".agents").join("skills");
-        write_skill(&project_root.join("shared"), "shared");
-        write_skill(&agents_root.join("shared"), "shared");
-
-        let registry = build_registry_from_roots(vec![
-            SkillScanRoot {
-                path: project_root,
-                source: "project",
-            },
-            SkillScanRoot {
-                path: agents_root,
-                source: "agents",
-            },
-        ]);
-        assert_eq!(registry.records.len(), 1);
-        assert_eq!(registry.records[0].meta.source, "project");
-        assert!(
-            registry.warnings.is_empty(),
-            "cross-source overlay is expected, not a user warning: {:?}",
-            registry.warnings
-        );
-
-        fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
     fn bundled_skills_are_defaults_that_project_and_installed_skills_can_override() {
         let base = tempfile::tempdir().unwrap();
         let project = base.path().join("project");
@@ -572,36 +422,6 @@ description: Test skill.
         assert_eq!(default.meta.source, "builtin");
         assert_eq!(default.meta.id, "bundled-only");
         assert!(registry.warnings.is_empty());
-    }
-
-    #[test]
-    fn same_source_duplicate_id_warns() {
-        let base =
-            std::env::temp_dir().join(format!("kivio-agents-samedup-{}", uuid::Uuid::new_v4()));
-        let one = base.join("a");
-        let two = base.join("b");
-        write_skill(&one.join("shared"), "shared");
-        write_skill(&two.join("shared"), "shared");
-
-        let registry = build_registry_from_roots(vec![
-            SkillScanRoot {
-                path: one,
-                source: "user",
-            },
-            SkillScanRoot {
-                path: two,
-                source: "user",
-            },
-        ]);
-        assert_eq!(registry.records.len(), 1);
-        assert_eq!(registry.warnings.len(), 1);
-        assert!(
-            registry.warnings[0].contains("shadowed duplicate id"),
-            "{:?}",
-            registry.warnings
-        );
-
-        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

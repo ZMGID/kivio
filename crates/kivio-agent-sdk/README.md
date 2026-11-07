@@ -103,12 +103,34 @@ You can also append `--live` to `cancel`, `inputs`, or `continue`. These modes m
 
 Only the example reads these environment variables. The SDK receives the resolved endpoint, credentials, headers, and HTTP client. The live example keeps reqwest's client defaults for proxy behavior. Configure `.proxy(...)`, `.no_proxy()`, TLS, and timeouts on your client as needed. The local example explicitly disables proxies for its loopback requests.
 
+## Load skills
+
+Enable the `skills` Cargo feature to use filesystem discovery and the read-only Skill tool. The host supplies ordered `SkillSource` directories and source labels. The SDK does not search home directories, install plugins or change tool permissions.
+
+```rust
+use std::sync::Arc;
+use kivio_agent_sdk::skills::{SkillAccess, SkillRegistry, SkillRunContext, SkillSource, SkillTool};
+
+let sources = [SkillSource { path: "./skills".into(), source: "project".into() }];
+let mut catalog = SkillRegistry::discover(&sources);
+let context = SkillRunContext::new(Arc::new(catalog.clone()), SkillAccess::default());
+tools.register_static(SkillTool::definition(), SkillTool::new(context), authorization)?;
+catalog.reload(&sources)?;
+```
+
+Here `tools` is the same `ToolRegistry` used by `AgentSessionConfig`, and `authorization` is the host's `ToolAuthorization`. Discovery returns metadata and diagnostics through `scan_failed` and `warnings`. A failed reload leaves the catalog unchanged. Existing tools retain their frozen catalog; build the next tool snapshot from the reloaded catalog.
+
+Each activation reads the selected file again, applies optional arguments and returns the full instruction wrapper. `SkillAccess` can deny IDs or restrict activation to a whitelist; `Some(vec![])` allows none. `disable_model_invocation` retains the existing catalog-visibility behavior. Execution authority comes from access policy and host authorization. Resource paths can be resolved relative to a skill directory without reading or executing those resources or granting access to other tools.
+
+Hosts with adapted Markdown sources can supply a discovery reader and `SkillBodyReader`. Kivio uses these seams for plugin metadata, body variables and live plugin availability while retaining its existing resource cache and approval flow.
+
 ## Verify the SDK and an independent consumer
 
 These checks do not start the desktop application or require model credentials.
 
 ```powershell
 cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml
+cargo test --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --features skills
 cargo check --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --examples
 cargo doc --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --no-deps
 cargo test --locked --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml

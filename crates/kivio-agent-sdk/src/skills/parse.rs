@@ -173,7 +173,9 @@ pub fn parse_skill_record(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_list_value, parse_recommended_tools, split_frontmatter};
+    use super::{
+        parse_list_value, parse_recommended_tools, parse_skill_markdown, split_frontmatter,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -257,5 +259,67 @@ arguments:
         assert_eq!(parsed.meta.triggers, vec!["/commit", "/ci"]);
         assert_eq!(parsed.meta.argument_hint.as_deref(), Some("<message>"));
         assert_eq!(parsed.meta.arguments, vec!["title", "scope"]);
+    }
+    #[test]
+    fn parse_skill_supports_recommended_tools_and_mcp_tools_alias() {
+        let raw = r#"---
+name: test-skill
+description: Uses selected tools.
+recommended-tools:
+  - web_search
+mcp-tools:
+  - fetch
+  - web_search
+allowed-tools: Bash(git:*)
+---
+# Body
+"#;
+
+        let parsed = parse_skill_markdown(raw, "user", None, Vec::new()).unwrap();
+
+        assert!(parsed.meta.recommended_tools.contains(&"fetch".to_string()));
+        assert!(parsed
+            .meta
+            .recommended_tools
+            .contains(&"web_search".to_string()));
+        assert!(parsed
+            .meta
+            .recommended_tools
+            .iter()
+            .any(|tool| tool.contains("Bash")));
+    }
+
+    #[test]
+    fn parse_skill_requires_name_and_description() {
+        let err = parse_skill_markdown(
+            r#"---
+description: Missing name.
+---
+# Body
+"#,
+            "user",
+            None,
+            Vec::new(),
+        )
+        .expect_err("missing name should be rejected");
+
+        assert!(err.contains("name"));
+    }
+
+    #[test]
+    fn disable_model_invocation_parses_from_frontmatter() {
+        let parsed = parse_skill_markdown(
+            r#"---
+name: manual-only
+description: Only when invoked explicitly.
+disable-model-invocation: true
+---
+"#,
+            "user",
+            None,
+            Vec::new(),
+        )
+        .unwrap();
+        assert!(parsed.meta.disable_model_invocation);
     }
 }

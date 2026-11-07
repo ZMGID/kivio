@@ -2698,7 +2698,7 @@ async fn prepare(
     let selected = definition.skills.clone();
     let loaded = host
         .until_inactive(tauri::async_runtime::spawn_blocking(move || {
-            catalog.read_selected(&selected)
+            crate::skills::read_selected(&catalog, &selected)
         }))
         .await?
         .map_err(|e| e.to_string())??;
@@ -3074,7 +3074,7 @@ async fn execute(
     let executor = Executor {
         app: app.clone(),
         host: host.clone(),
-        skills: crate::skills::SkillRunContext::for_run(skills.clone(), None),
+        skills: crate::skills::for_run(skills.clone(), None),
     };
     tools.retain(|tool| tool.id != "native__yield");
     append_yield(&mut tools, &host.options);
