@@ -1,8 +1,8 @@
 //! Read-only native account/usage discovery. Never starts a conversation or returns credentials.
 use crate::{
     external_agents::{
-        types::{AccountProbe, AccountProtocol, RuntimeAgentDef},
         spawn::{agent_cli_command, join_stderr_tail, spawn_stderr_tail, AgentChild},
+        types::{AccountProbe, AccountProtocol, RuntimeAgentDef},
     },
     proc::NoConsoleWindow,
 };
@@ -251,7 +251,13 @@ mod tests {
         assert_eq!(grok["windows"][0]["usedPercent"], 12.5);
         assert_eq!(grok["windows"][0]["windowDurationMins"], 7 * 24 * 60);
         assert_eq!(grok["account"]["plan"], "SuperGrok Plus");
-        let unavailable = normalize("claude", AccountProtocol::ClaudeControl, &Value::Null, &Value::Null, None);
+        let unavailable = normalize(
+            "claude",
+            AccountProtocol::ClaudeControl,
+            &Value::Null,
+            &Value::Null,
+            None,
+        );
         assert!(unavailable["windows"].as_array().unwrap().is_empty());
         assert!(unavailable["unavailable"].is_string());
     }

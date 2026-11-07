@@ -3,10 +3,10 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
@@ -45,11 +45,7 @@ async fn write_rpc(
         .map_err(|e| e.to_string())
 }
 
-async fn write_rpc_result(
-    stdin: &mut AgentStdin,
-    id: &Value,
-    result: Value,
-) -> Result<(), String> {
+async fn write_rpc_result(stdin: &mut AgentStdin, id: &Value, result: Value) -> Result<(), String> {
     let payload = json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -2412,9 +2408,7 @@ fn decode_codex_frame(value: &Value) -> Result<CodexFrame<'_>, String> {
     Ok(CodexFrame::Response { id, outcome })
 }
 
-/// Read JSON-RPC lines until the response with `target_id` arrives, auto-answering any
-/// server→client approval requests and skipping notifications. Unknown requests are
-/// fail-closed so handshake cannot hang.
+/// Read until `target_id`, rejecting unattended requests and skipping notifications.
 async fn read_until_response(
     reader: &mut Lines<BufReader<AgentStdout>>,
     stdin: &mut AgentStdin,
@@ -2438,8 +2432,8 @@ async fn read_until_response(
         let value: Value = serde_json::from_str(line.trim())
             .map_err(|error| format!("invalid Codex JSON: {error}"))?;
         match decode_codex_frame(&value)? {
-            CodexFrame::Request { method, id, params } => {
-                answer_handshake_request(stdin, method, id, params).await?;
+            CodexFrame::Request { method, id, .. } => {
+                reject_unattended_request(stdin, method, id).await?;
             }
             CodexFrame::Response { id, outcome } if id == &json!(target_id) => {
                 return outcome.cloned().map_err(codex_error_message);
@@ -2449,13 +2443,12 @@ async fn read_until_response(
     }
 }
 
-async fn answer_handshake_request(
+async fn reject_unattended_request(
     stdin: &mut AgentStdin,
     method: &str,
     id: &Value,
-    params: &Value,
 ) -> Result<(), String> {
-    if let Some(result) = approval_response(method, params, true) {
+    if let Some(result) = approval_deny_response(method, false) {
         write_rpc_result(stdin, id, result).await
     } else {
         write_rpc_result(stdin, id, unknown_server_request_result()).await
@@ -2539,8 +2532,7 @@ async fn ensure_windows_sandbox_inner(
             value.get("method").and_then(|v| v.as_str()),
             value.get("id"),
         ) {
-            let params = value.get("params").cloned().unwrap_or(Value::Null);
-            let _ = answer_handshake_request(stdin, method, id, &params).await;
+            let _ = reject_unattended_request(stdin, method, id).await;
             continue;
         }
         if value.get("method").and_then(|v| v.as_str()) == Some("windowsSandbox/setupCompleted") {
@@ -3474,7 +3466,8 @@ mod tests {
     #[tokio::test]
     async fn native_diagnostics_survive_owned_handshake_and_actor_reuse() {
         use crate::external_agents::{diagnostics::NativeDiagnostics, types::StreamFormat};
-        let (_diagnostics, capture, records) = NativeDiagnostics::test_capture(StreamFormat::CodexAppServer);
+        let (_diagnostics, capture, records) =
+            NativeDiagnostics::test_capture(StreamFormat::CodexAppServer);
         let control = capture.scope_spawn(async {
             let exe = std::env::current_exe().unwrap();
             let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
@@ -3499,29 +3492,61 @@ mod tests {
             let _observation = control.observe_generation(generation);
             let (events, mut output) = mpsc::channel(64);
             let (done, result) = oneshot::channel();
-            control.send(SessionCommand::RunTurn {
-                delivery: TurnDelivery::default(), cancelled: None, prompt: "SECRET-prompt".into(),
-                model: None, reasoning: None, images: vec![], extra_writable_roots: vec![],
-                events, done, approvals: None,
-            }).await.unwrap();
-            timeout(Duration::from_secs(5), result).await.unwrap().unwrap().unwrap();
+            control
+                .send(SessionCommand::RunTurn {
+                    delivery: TurnDelivery::default(),
+                    cancelled: None,
+                    prompt: "SECRET-prompt".into(),
+                    model: None,
+                    reasoning: None,
+                    images: vec![],
+                    extra_writable_roots: vec![],
+                    events,
+                    done,
+                    approvals: None,
+                })
+                .await
+                .unwrap();
+            timeout(Duration::from_secs(5), result)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
             let mut text = String::new();
             while let Ok(event) = output.try_recv() {
-                if let UnifiedAgentEvent::TextDelta { delta } = event { text.push_str(&delta); }
+                if let UnifiedAgentEvent::TextDelta { delta } = event {
+                    text.push_str(&delta);
+                }
             }
             assert_eq!(text, format!("turn-{generation}"));
             assert!(!control.is_closed());
         }
         control.close().await.unwrap();
-        let records: Vec<Value> = records.try_iter().map(|(_, bytes)| {
-            assert!(!String::from_utf8_lossy(&bytes).contains("SECRET"));
-            serde_json::from_slice(&bytes).unwrap()
-        }).collect();
-        assert!(records.iter().any(|v| v["method"] == "initialize" && v.get("observed_during_generation").is_none()));
-        assert_eq!(records.iter().filter_map(|v| v["connection"].as_str()).collect::<HashSet<_>>().len(), 1);
+        let records: Vec<Value> = records
+            .try_iter()
+            .map(|(_, bytes)| {
+                assert!(!String::from_utf8_lossy(&bytes).contains("SECRET"));
+                serde_json::from_slice(&bytes).unwrap()
+            })
+            .collect();
+        assert!(records
+            .iter()
+            .any(|v| v["method"] == "initialize" && v.get("observed_during_generation").is_none()));
+        assert_eq!(
+            records
+                .iter()
+                .filter_map(|v| v["connection"].as_str())
+                .collect::<HashSet<_>>()
+                .len(),
+            1
+        );
         for generation in 1..=2 {
-            assert!(records.iter().any(|v| v["method"] == "turn/start" && v["observed_during_generation"] == generation));
-            assert!(records.iter().any(|v| v["method"] == "turn/completed" && v["observed_during_generation"] == generation));
+            assert!(records
+                .iter()
+                .any(|v| v["method"] == "turn/start"
+                    && v["observed_during_generation"] == generation));
+            assert!(records.iter().any(|v| v["method"] == "turn/completed"
+                && v["observed_during_generation"] == generation));
         }
     }
 
@@ -3648,10 +3673,26 @@ mod tests {
         let list: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
         assert_eq!(list["method"], "skills/list");
         assert_eq!(list["params"]["cwds"], json!(["/work"]));
+        if mode == "late-approval" {
+            println!(
+                "{}",
+                json!({"id":"late-child-approval", "method":"item/commandExecution/requestApproval", "params":{
+                    "threadId":"child-thread", "turnId":"old-child-turn", "itemId":"child-command",
+                    "command":"echo fixture", "availableDecisions":["accept", "acceptForSession", "decline"]
+                }})
+            );
+            std::io::stdout().flush().unwrap();
+            let approval: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            std::fs::write(
+                std::env::var_os("KIVIO_SKILL_APPROVAL_RECEIPT").unwrap(),
+                approval.to_string(),
+            )
+            .unwrap();
+        }
         println!(
             "{}",
             json!({"id":list["id"], "result":{"data":[{"skills":[{
-                "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md", "enabled":mode != "disabled"
+                "name":"wizard", "path":"/work/.agents/skills/wizard/SKILL.md", "enabled":matches!(mode.as_str(), "enabled" | "cancelled")
             }]}]}})
         );
         std::io::stdout().flush().unwrap();
@@ -3685,7 +3726,9 @@ mod tests {
 
     #[tokio::test]
     async fn skill_slash_runtime_resolves_before_dispatch_and_blocks_disabled_skills() {
-        for mode in ["enabled", "disabled", "cancelled"] {
+        for mode in ["enabled", "disabled", "cancelled", "late-approval"] {
+            let receipt_dir = tempfile::tempdir().unwrap();
+            let approval_receipt = receipt_dir.path().join("approval.json");
             let exe = std::env::current_exe().unwrap();
             let mut child = crate::external_agents::spawn::AgentChild::spawn(tokio::process::Command::new(&exe)
                 .args([
@@ -3694,6 +3737,7 @@ mod tests {
                     "--nocapture",
                 ])
                 .env("KIVIO_SKILL_PROTOCOL_PEER", mode)
+                .env("KIVIO_SKILL_APPROVAL_RECEIPT", &approval_receipt)
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -3712,7 +3756,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
-                approval_policy: "never",
+                approval_policy: "on-request",
                 sandbox_policy: json!({"type": "dangerFullAccess"}),
                 plan_mode: false,
                 thread_model: None,
@@ -3766,6 +3810,12 @@ mod tests {
                 .unwrap()
                 .unwrap();
             assert!(status.success(), "{}", session.stderr_tail.await.unwrap());
+            if mode == "late-approval" {
+                let approval: Value =
+                    serde_json::from_slice(&std::fs::read(&approval_receipt).unwrap()).unwrap();
+                assert_eq!(approval["id"], "late-child-approval");
+                assert_eq!(approval["result"]["decision"], "decline", "skills/list must not auto-approve a late child request in on-request mode: {approval}");
+            }
         }
     }
 

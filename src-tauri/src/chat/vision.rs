@@ -9,7 +9,6 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-use crate::chat::agent::stop as agent_stop;
 use crate::chat::model_metadata::{model_supports_image_generation, model_supports_vision};
 use crate::mcp;
 use crate::settings::{ModelProvider, SessionModel, Settings};
@@ -221,25 +220,29 @@ pub(super) async fn analyze_chat_images_with_auxiliary_model(
             "content": parts,
         }),
     ];
-    // 走流式（见 planning.rs 上 call_chat_completion_output_with_usage / *_streamed 的注释）：
-    // 非流式在部分 openai_responses 代理上直接报 "Unknown Responses API error"。
-    let message = crate::chat::agent::planning::call_chat_completion_message_streamed(
+    let output = crate::chat::model::generate_via_stream_collect(
         state,
         &provider,
-        &auxiliary_model.model,
-        messages,
-        None,
         retry_attempts,
-        // 不发 reasoning effort，交给端点默认（`false` 的语义是显式下发 "none"，不是不发；
-        // 而 none 不在 xAI 的档位里，会 400）。
-        true,
-        4096,
-        conversation_id,
-        message_id,
-        "Chat auxiliary vision analysis",
+        crate::chat::model::generate_request_from_openai_messages(
+            &auxiliary_model.model,
+            messages,
+            None,
+            crate::chat::model::GenerateOptions {
+                thinking_enabled: true,
+                max_tokens: 4096,
+                ..Default::default()
+            },
+            "Chat auxiliary vision analysis",
+            crate::chat::model::GenerateRequestContext::new(
+                Some(conversation_id),
+                Some(message_id),
+            ),
+        ),
     )
-    .await?;
-    let content = agent_stop::assistant_content_from_api_message(&message);
+    .await
+    .map_err(|err| err.to_string())?;
+    let content = output.text.trim().to_string();
     if content.trim().is_empty() {
         return Err("Vision auxiliary model returned an empty analysis".to_string());
     }

@@ -1610,7 +1610,8 @@ pub struct ChatToolsConfig {
     #[serde(default)]
     pub task_disabled_agents: Vec<String>,
     #[serde(default)]
-    pub task_agent_compaction_threshold_overrides: std::collections::BTreeMap<String, Option<TaskCompactionThreshold>>,
+    pub task_agent_compaction_threshold_overrides:
+        std::collections::BTreeMap<String, Option<TaskCompactionThreshold>>,
     #[serde(default)]
     pub task_prewalk: bool,
     #[serde(default)]
@@ -1646,7 +1647,11 @@ pub struct ChatToolsConfig {
 
 impl ChatToolsConfig {
     pub(crate) fn ensure_subagent_role_enabled(&self, name: &str) -> Result<(), String> {
-        if self.task_disabled_agents.iter().any(|disabled| disabled == name) {
+        if self
+            .task_disabled_agents
+            .iter()
+            .any(|disabled| disabled == name)
+        {
             return Err(format!("Subagent role `{name}` is disabled in settings."));
         }
         Ok(())
@@ -3933,11 +3938,21 @@ mod tests {
             "taskAgentCompactionThresholdOverrides": {
                 "scout": 90_000, "reviewer": "75.5%", "inherit": null, "invalid": "101%"
             }
-        })).unwrap();
+        }))
+        .unwrap();
         let values = config.task_agent_compaction_threshold_overrides;
-        assert_eq!(values["scout"].as_ref().unwrap().tokens(100_000), Some(90_000));
-        assert_eq!(values["reviewer"].as_ref().unwrap().tokens(100_000), Some(75_500));
-        assert_eq!(values["reviewer"].as_ref().unwrap().tokens(200_000), Some(151_000));
+        assert_eq!(
+            values["scout"].as_ref().unwrap().tokens(100_000),
+            Some(90_000)
+        );
+        assert_eq!(
+            values["reviewer"].as_ref().unwrap().tokens(100_000),
+            Some(75_500)
+        );
+        assert_eq!(
+            values["reviewer"].as_ref().unwrap().tokens(200_000),
+            Some(151_000)
+        );
         assert!(values["inherit"].is_none());
         assert_eq!(values["invalid"].as_ref().unwrap().tokens(100_000), None);
     }
@@ -4040,7 +4055,6 @@ mod tests {
         assert_eq!(restored.chat_tools.task_max_recursion_depth, -1);
         assert_eq!(restored.chat_tools.task_soft_request_budget, 0);
     }
-
 
     #[test]
     fn task_limits_preserve_custom_values_above_old_caps() {

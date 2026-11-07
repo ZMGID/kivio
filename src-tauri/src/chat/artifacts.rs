@@ -567,7 +567,7 @@ pub fn prepare_output<'a>(
     tool: &ChatToolDefinition,
     arguments: &Value,
     mut output: McpToolCallResult,
-) -> super::agent::ToolExecutorFuture<'a> {
+) -> super::tools::ToolFuture<'a, Result<McpToolCallResult, String>> {
     let app = app.clone();
     let conversation_id = conversation_id.to_string();
     let message_id = message_id.to_string();

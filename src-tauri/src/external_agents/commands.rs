@@ -154,9 +154,7 @@ pub async fn chat_external_cli_import_cc_switch(
 
 /// dsh 的供应商摘要只是读 `settings.yaml`，跟 binary/auth 探测无关，缓存命中也重读，
 /// 避免官方 DeepSeek / 用户刚改的 llm-pi-ai 要等 10 分钟才出现在「所有供应商」。
-fn stamp_availability(
-    mut agents: Vec<DetectedAgent>,
-) -> Vec<DetectedAgent> {
+fn stamp_availability(mut agents: Vec<DetectedAgent>) -> Vec<DetectedAgent> {
     for agent in agents.iter_mut() {
         agent.disabled = crate::external_agents::overrides::is_disabled(&agent.id);
         let def = get_agent_def(&agent.id);

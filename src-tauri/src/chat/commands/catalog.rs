@@ -5,7 +5,7 @@ use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
 
-use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::attachments::{save_message_attachments, title_source_for_user_message};
 use crate::chat::storage::{
     archive_assistant, assistant_snapshot, create_assistant, create_set, delete_project,

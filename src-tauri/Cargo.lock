@@ -3602,6 +3602,7 @@ dependencies = [
  "json5",
  "jsonschema",
  "keyring",
+ "kivio-agent-sdk",
  "libc",
  "lopdf",
  "notify",
@@ -3659,6 +3660,21 @@ dependencies = [
  "windows 0.61.3",
  "xcap",
  "zip",
+]
+
+[[package]]
+name = "kivio-agent-sdk"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "chrono",
+ "futures",
+ "jsonschema",
+ "reqwest",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

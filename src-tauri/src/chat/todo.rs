@@ -15,11 +15,72 @@ use serde::Deserialize;
 use serde_json::Value;
 use tauri::AppHandle;
 
+use crate::chat::agent::history::RuntimeMessage;
+use crate::chat::model::{MessagePart, ModelRole};
 use crate::chat::types::{
     AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessage, ToolCallRecord, ToolCallStatus,
 };
 use crate::mcp::types::McpToolCallResult;
 use crate::mcp::ChatToolDefinition;
+
+pub struct RunPolicy {
+    initial: AgentTodoState,
+    final_check_sent: bool,
+}
+
+impl RunPolicy {
+    pub fn new(initial: AgentTodoState) -> Self {
+        Self {
+            initial,
+            final_check_sent: false,
+        }
+    }
+
+    fn current(&self, run: crate::chat::agent::session::RunSnapshot<'_>) -> AgentTodoState {
+        latest_result_state(
+            run.tool_records
+                .iter()
+                .rev()
+                .filter(|record| {
+                    record.status == crate::chat::agent::content::AgentToolStatus::Success
+                })
+                .filter_map(|record| record.structured_content.as_ref()),
+        )
+        .unwrap_or_else(|| self.initial.clone())
+    }
+
+    fn exposed(run: crate::chat::agent::session::RunSnapshot<'_>) -> bool {
+        run.tools
+            .iter()
+            .any(|tool| tool.label.source == "native" && is_agent_todo_tool_name(&tool.label.name))
+    }
+}
+
+impl crate::chat::agent::session::SessionPolicy for RunPolicy {
+    fn before_step(
+        &mut self,
+        run: crate::chat::agent::session::RunSnapshot<'_>,
+    ) -> Vec<RuntimeMessage> {
+        if !Self::exposed(run) {
+            return Vec::new();
+        }
+        reminder_for_next_step(run.history, &self.current(run))
+            .into_iter()
+            .collect()
+    }
+
+    fn before_finish(
+        &mut self,
+        run: crate::chat::agent::session::RunSnapshot<'_>,
+    ) -> Option<RuntimeMessage> {
+        if self.final_check_sent || !Self::exposed(run) || run.tool_records.is_empty() {
+            return None;
+        }
+        let reminder = final_check_reminder(&self.current(run))?;
+        self.final_check_sent = true;
+        Some(reminder)
+    }
+}
 
 pub const TODO_WRITE_TOOL_NAME: &str = "todo_write";
 
@@ -313,14 +374,21 @@ pub fn state_from_messages(
 
 /// Last todo snapshot recorded on a successful tool call in `records`.
 pub(crate) fn latest_recorded_state(records: &[ToolCallRecord]) -> Option<AgentTodoState> {
-    records
-        .iter()
-        .rev()
-        .filter(|record| record.status == ToolCallStatus::Success)
-        .find_map(|record| {
-            let todo = record.structured_content.as_ref()?.get("todoState")?;
-            serde_json::from_value::<AgentTodoState>(todo.clone()).ok()
-        })
+    latest_result_state(
+        records
+            .iter()
+            .rev()
+            .filter(|record| record.status == ToolCallStatus::Success)
+            .filter_map(|record| record.structured_content.as_ref()),
+    )
+}
+
+pub(crate) fn latest_result_state<'a>(
+    results: impl Iterator<Item = &'a serde_json::Value>,
+) -> Option<AgentTodoState> {
+    results
+        .filter_map(|result| result.get("todoState"))
+        .find_map(|todo| serde_json::from_value::<AgentTodoState>(todo.clone()).ok())
 }
 
 /// The reminder to append before the next model step, if any.
@@ -334,9 +402,9 @@ pub(crate) fn latest_recorded_state(records: &[ToolCallRecord]) -> Option<AgentT
 /// Reminders are user messages appended at the end of the request, so they never
 /// change the cached prefix.
 pub(crate) fn reminder_for_next_step(
-    messages: &[Value],
+    messages: &[RuntimeMessage],
     current: &AgentTodoState,
-) -> Option<Value> {
+) -> Option<RuntimeMessage> {
     let mut steps = 0usize;
     let mut since_write = None;
     let mut since_reminder = None;
@@ -344,7 +412,7 @@ pub(crate) fn reminder_for_next_step(
         if since_reminder.is_none() && is_reminder_message(message) {
             since_reminder = Some(steps);
         }
-        if message["role"] != "assistant" {
+        if message.role() != Some(ModelRole::Assistant) {
             continue;
         }
         if since_write.is_none() && calls_todo_write(message) {
@@ -378,7 +446,7 @@ pub(crate) fn reminder_for_next_step(
 /// wrote in this run still has pending or in_progress items, if any. The loop sends
 /// it at most once per run, so a list the model deliberately leaves open costs one
 /// extra step, not a loop.
-pub(crate) fn final_check_reminder(current: &AgentTodoState) -> Option<Value> {
+pub(crate) fn final_check_reminder(current: &AgentTodoState) -> Option<RuntimeMessage> {
     let open = current
         .items
         .iter()
@@ -393,27 +461,32 @@ pub(crate) fn final_check_reminder(current: &AgentTodoState) -> Option<Value> {
     )))
 }
 
-fn reminder_message(body: &str) -> Value {
-    serde_json::json!({
-        "role": "user",
-        "content": format!("{REMINDER_OPEN_TAG}\n{body}\n{REMINDER_CLOSE_TAG}"),
-    })
+fn reminder_message(body: &str) -> RuntimeMessage {
+    RuntimeMessage::text(
+        ModelRole::User,
+        format!("{REMINDER_OPEN_TAG}\n{body}\n{REMINDER_CLOSE_TAG}"),
+    )
 }
 
 /// Whether `message` is a todo reminder appended by the runtime, not user input.
-pub(crate) fn is_reminder_message(message: &Value) -> bool {
-    message["role"] == "user"
-        && message["content"]
-            .as_str()
-            .is_some_and(|content| content.starts_with(REMINDER_OPEN_TAG))
+pub(crate) fn is_reminder_message(message: &RuntimeMessage) -> bool {
+    message.model_message().is_some_and(|model| {
+        model.role == ModelRole::User
+            && matches!(
+                model.content.as_slice(),
+                [MessagePart::Text { text }] if text.starts_with(REMINDER_OPEN_TAG)
+            )
+    })
 }
 
-fn calls_todo_write(message: &Value) -> bool {
-    message["tool_calls"].as_array().is_some_and(|calls| {
-        calls.iter().any(|call| {
-            call["function"]["name"].as_str().is_some_and(|name| {
-                crate::mcp::types::canonical_tool_name(name) == TODO_WRITE_TOOL_NAME
-            })
+fn calls_todo_write(message: &RuntimeMessage) -> bool {
+    message.model_message().is_some_and(|model| {
+        model.content.iter().any(|part| {
+            matches!(
+                part,
+                MessagePart::ToolCall { name, .. }
+                    if crate::mcp::types::canonical_tool_name(name) == TODO_WRITE_TOOL_NAME
+            )
         })
     })
 }
@@ -546,15 +619,15 @@ mod tests {
         }
     }
 
-    fn assistant(tool: Option<&str>) -> Value {
-        match tool {
+    fn assistant(tool: Option<&str>) -> RuntimeMessage {
+        RuntimeMessage::from_legacy(match tool {
             Some(name) => json!({
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [{ "id": "c", "type": "function", "function": { "name": name, "arguments": "{}" } }]
             }),
             None => json!({ "role": "assistant", "content": "step" }),
-        }
+        }).unwrap()
     }
 
     fn tool_record(
@@ -756,11 +829,11 @@ mod tests {
     fn reminder_restates_a_list_whose_writes_left_the_context() {
         let current = state(vec![item("Ship it", AgentTodoStatus::InProgress)]);
         let history = vec![
-            json!({ "role": "user", "content": "[context summary] ..." }),
+            RuntimeMessage::text(ModelRole::User, "[context summary] ..."),
             assistant(None),
         ];
         let reminder = reminder_for_next_step(&history, &current).expect("restate");
-        let text = reminder["content"].as_str().unwrap();
+        let text = reminder.text_content();
         assert!(text.starts_with(REMINDER_OPEN_TAG));
         assert!(text.contains("1. [in_progress] Ship it"), "{text}");
 
@@ -783,7 +856,7 @@ mod tests {
         ]);
         let reminder = final_check_reminder(&open).expect("open items");
         assert!(is_reminder_message(&reminder));
-        let text = reminder["content"].as_str().unwrap();
+        let text = reminder.text_content();
         assert!(text.contains("1 todo item(s)"), "{text}");
         assert!(text.contains("2. [in_progress] Ship it"), "{text}");
 
@@ -799,7 +872,7 @@ mod tests {
     fn reminder_nudges_after_ten_steps_without_a_write() {
         let current = state(vec![item("Ship it", AgentTodoStatus::Pending)]);
         let mut history = vec![
-            json!({ "role": "user", "content": "go" }),
+            RuntimeMessage::text(ModelRole::User, "go"),
             assistant(Some("todo_write")),
         ];
         for _ in 0..9 {
@@ -808,9 +881,8 @@ mod tests {
         assert!(reminder_for_next_step(&history, &current).is_none());
         history.push(assistant(None));
         let reminder = reminder_for_next_step(&history, &current).expect("nudge");
-        assert!(reminder["content"]
-            .as_str()
-            .unwrap()
+        assert!(reminder
+            .text_content()
             .contains("hasn't been used recently"));
 
         // The next nudge waits another ten steps.

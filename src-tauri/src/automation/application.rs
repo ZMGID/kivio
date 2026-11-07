@@ -3,24 +3,24 @@
 //! and Chat runs do not write a sidebar conversation (`auto_{id}` workspace
 //! only). External CLI needs a `conv_` session, so it uses an archived
 //! `conv_auto_{id}` conversation that stays off the default sidebar.
+use crate::chat::session_policy::{
+    run_session as run_agent_loop, ApplicationRunConfig as AgentRunConfig,
+};
+use crate::chat::tool_runtime::{ToolDispatcher as ToolExecutor, ToolExecutionContext};
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use crate::chat::agent::prepare::{available_builtin_tool_names, build_chat_prompt};
-use crate::chat::agent::{
-    run_agent_loop, AgentHost, AgentHostFuture, AgentRunConfig, AgentRunEntry,
-    ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
-};
+use crate::chat::agent::{AgentHost, AgentHostFuture, AgentRunEntry, ToolExecutorFuture};
+use crate::chat::agent_preparation::{available_builtin_tool_names, build_chat_prompt};
 use crate::chat::ask_user::{AskUserPromptPayload, AskUserResponseResult};
 use crate::chat::types::{
     AgentPlanState, AgentRuntimeConfig, AgentRuntimeKind, AgentTodoState, ChatMessage,
-    ChatMessageSegment, Conversation, ConversationContextState, ToolCallRecord, WebSearchMode,
+    Conversation, ConversationContextState, WebSearchMode,
 };
 use crate::mcp::ChatToolDefinition;
 use crate::skills;
@@ -173,69 +173,58 @@ pub(crate) async fn run_captured_command(
     crate::native_tools::run_captured_command(command, cwd, timeout_ms, Some(&*state)).await
 }
 
-struct WorkflowAgentHost {
-    app: AppHandle,
+#[derive(Default)]
+struct WorkflowAgentEvents {
     text: Mutex<String>,
 }
 
-impl AgentHost for WorkflowAgentHost {
-    fn emit_stream_delta(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        delta: &str,
-        _reasoning_delta: Option<&str>,
-        _segment: Option<&ChatMessageSegment>,
-    ) {
-        if !delta.is_empty() {
-            if let Ok(mut guard) = self.text.lock() {
-                guard.push_str(delta);
-            }
+fn apply_workflow_event(text: &mut String, event: &crate::chat::agent::events::AgentEvent<'_>) {
+    use crate::chat::agent::events::AgentEventKind;
+    match &event.kind {
+        AgentEventKind::Content { delta, .. } => text.push_str(delta),
+        AgentEventKind::AttemptDiscarded { text_chars, .. } => {
+            crate::chat::protocol::truncate_stream_tail(text, *text_chars);
         }
+        _ => {}
     }
+}
 
-    fn discard_stream_attempt(
+impl crate::chat::agent::events::AgentEventSink for WorkflowAgentEvents {
+    fn on_event(
         &self,
-        _run_id: &str,
-        text_chars: u32,
-        _reasoning_chars: u32,
-        _segment_ids: Vec<String>,
-        _tool_ids: Vec<String>,
-    ) {
+        event: &crate::chat::agent::events::AgentEvent<'_>,
+    ) -> crate::chat::agent::events::EventDelivery {
         if let Ok(mut text) = self.text.lock() {
-            crate::chat::protocol::truncate_stream_tail(&mut text, text_chars);
+            apply_workflow_event(&mut text, event);
         }
+        crate::chat::agent::events::EventDelivery::Accepted
     }
+}
 
-    fn emit_tool_record(
-        &self,
-        _conversation_id: &str,
-        _run_id: &str,
-        _message_id: &str,
-        _record: &ToolCallRecord,
-    ) {
-    }
+struct WorkflowAgentHost;
 
+impl AgentHost for WorkflowAgentHost {}
+
+impl crate::chat::tool_runtime::ApplicationHost for WorkflowAgentHost {
     fn request_tool_approval<'a>(
         &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
+        _record: &'a crate::chat::agent::content::AgentToolCall,
     ) -> AgentHostFuture<'a, bool> {
         Box::pin(async { true })
     }
 
     fn request_session_consent<'a>(
         &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
     ) -> AgentHostFuture<'a, bool> {
         Box::pin(async { true })
     }
 
     fn request_user_response<'a>(
         &'a self,
-        _ctx: &'a ToolExecutionContext<'a>,
-        _record: &'a ToolCallRecord,
+        _ctx: &'a crate::chat::tool_runtime::ToolExecutionContext<'a>,
+        _record: &'a crate::chat::agent::content::AgentToolCall,
         _prompt: AskUserPromptPayload,
     ) -> AgentHostFuture<'a, AskUserResponseResult> {
         Box::pin(async {
@@ -245,67 +234,42 @@ impl AgentHost for WorkflowAgentHost {
             }
         })
     }
-
-    fn is_generation_active(&self, conversation_id: &str, generation: u64) -> bool {
-        self.app
-            .state::<AppState>()
-            .chat_runtime()
-            .is_generation_active(conversation_id, generation)
-    }
-
-    fn wait_for_generation_inactive<'a>(
-        &'a self,
-        conversation_id: &'a str,
-        generation: u64,
-    ) -> AgentHostFuture<'a, ()> {
-        Box::pin(async move {
-            loop {
-                if !self.is_generation_active(conversation_id, generation) {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-    }
 }
 
 struct WorkflowToolExecutor {
     app: AppHandle,
+    skills: skills::SkillRunContext,
 }
 
 impl ToolExecutor for WorkflowToolExecutor {
-    fn prepare_result<'a>(
-        &'a self,
-        ctx: &ToolExecutionContext<'_>,
-        tool: &ChatToolDefinition,
-        arguments: &Value,
-        output: crate::mcp::types::McpToolCallResult,
-    ) -> ToolExecutorFuture<'a> {
-        crate::chat::artifacts::prepare_output(
-            &self.app,
-            ctx.tool_conversation_id,
-            ctx.message_id,
-            tool,
-            arguments,
-            output,
-        )
-    }
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ChatToolDefinition,
         arguments: Value,
-        skill_context: Option<&'a mut skills::SkillRunContext>,
     ) -> ToolExecutorFuture<'a> {
         Box::pin(async move {
-            let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
-            crate::mcp::registry::call_tool(
+            let result_arguments = arguments.clone();
+            let output: crate::mcp::types::McpToolCallResult = async {
+                let native_ctx = crate::mcp::registry::NativeToolContext::from_execution(ctx);
+                crate::mcp::registry::call_tool(
+                    &self.app,
+                    &self.app.state::<AppState>(),
+                    tool,
+                    arguments,
+                    Some(&self.skills),
+                    Some(native_ctx),
+                )
+                .await
+            }
+            .await?;
+            crate::chat::tool_output::prepare(
                 &self.app,
-                &self.app.state::<AppState>(),
+                ctx.tool_conversation_id,
+                ctx.message_id,
                 tool,
-                arguments,
-                skill_context,
-                Some(native_ctx),
+                &result_arguments,
+                output,
             )
             .await
         })
@@ -513,11 +477,12 @@ async fn run_builtin_agent_node(
         serde_json::json!({ "role": "user", "content": prompt }),
     ];
 
-    let host = WorkflowAgentHost {
+    let host = WorkflowAgentHost;
+    let events = WorkflowAgentEvents::default();
+    let executor = WorkflowToolExecutor {
         app: app.clone(),
-        text: Mutex::new(String::new()),
+        skills: skills::SkillRunContext::for_run(registry.clone(), None),
     };
-    let executor = WorkflowToolExecutor { app: app.clone() };
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize
     } else {
@@ -528,7 +493,9 @@ async fn run_builtin_agent_node(
     let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
 
     let config = AgentRunConfig {
-        provider_runtime: state,
+        state,
+        provider_runtime: None,
+        todo_state: Default::default(),
         conversation_id: conversation_id.clone(),
         tool_conversation_id: conversation_id.clone(),
         depth: 0,
@@ -553,34 +520,55 @@ async fn run_builtin_agent_node(
         web_search_mode,
         max_output_tokens,
         retry_attempts,
-        assistant_snapshot: None,
         provider_tools_fallback_prompt: system_prompt,
         initial_cache_usage: None,
         initial_anchor_total_tokens: None,
         initial_anchor_trailing_estimate: 0,
-        skill_registry: registry,
-        todo_state: Default::default(),
     };
 
-    let outcome = run_agent_loop(config, &host, &executor).await;
+    let control = crate::chat::runtime_state::ChatRunControl::new(
+        state.chat_runtime(),
+        &conversation_id,
+        generation,
+    );
+    let run_id = config.run_id.clone();
+    let message_id = config.message_id.clone();
+    let handle = crate::chat::agent::control::AgentRunHandle::new(
+        crate::chat::agent::events::AgentRunIdentity {
+            conversation_id: &conversation_id,
+            run_id: &run_id,
+            message_id: &message_id,
+            generation,
+        },
+        &control,
+    );
+    let outcome = run_agent_loop(config, &host, &executor, &events, handle).await;
     state
         .chat_runtime()
         .end_generation(&conversation_id, generation);
-    match outcome {
-        Ok(result) => {
-            let text = if result.content.trim().is_empty() {
-                host.text.lock().ok().map(|g| g.clone()).unwrap_or_default()
-            } else {
-                result.content
-            };
-            if text.trim().is_empty() {
-                Err("Agent returned an empty response".to_string())
-            } else {
-                Ok(NodeOutput::from_text(text))
-            }
-        }
-        Err(err) if err == "cancelled" => Err("cancelled".to_string()),
-        Err(err) => Err(err),
+    let fallback = events
+        .text
+        .lock()
+        .ok()
+        .map(|text| text.clone())
+        .unwrap_or_default();
+    builtin_agent_node_output(outcome, fallback)
+}
+
+fn builtin_agent_node_output(
+    outcome: Result<crate::chat::session_policy::ApplicationRunResult, String>,
+    fallback_text: String,
+) -> Result<NodeOutput, String> {
+    let result = outcome?;
+    let text = if result.content.trim().is_empty() {
+        fallback_text
+    } else {
+        result.content
+    };
+    if text.trim().is_empty() {
+        Err("Agent returned an empty response".to_string())
+    } else {
+        Ok(NodeOutput::from_text(text))
     }
 }
 
@@ -612,7 +600,7 @@ fn apply_agent_tool_whitelist(
             return true;
         }
         ids.iter()
-            .any(|entry| crate::chat::agent::filter::entry_matches(tool, entry))
+            .any(|entry| crate::chat::tool_filter::entry_matches(tool, entry))
     });
     if !ids.is_empty() && tools.is_empty() {
         return Err("None of the selected tools are currently available".into());
@@ -699,7 +687,7 @@ fn extra_loaded_skill_bodies(
 
 fn workflow_user_message(content: String) -> ChatMessage {
     ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: format!("msg_{}", uuid::Uuid::new_v4()),
         role: "user".to_string(),
         content,
@@ -755,11 +743,9 @@ async fn run_external_agent_node(
     let mut conversation =
         load_or_create_external_conversation(app, automation_id, node_id, spec, agent_id).await?;
     let state = app.state::<AppState>();
-    let _reservation = crate::chat::commands::ChatSendReservation::try_acquire(
-        &state,
-        &conversation.id,
-    )
-    .ok_or_else(|| "该对话正在生成中，请稍后再试".to_string())?;
+    let _reservation =
+        crate::chat::commands::ChatSendReservation::try_acquire(&state, &conversation.id)
+            .ok_or_else(|| "该对话正在生成中，请稍后再试".to_string())?;
     let user_message = workflow_user_message(prompt.clone());
     conversation = crate::chat::repository::repository(app)
         .mutate(app, &conversation.id, {
@@ -784,7 +770,8 @@ async fn run_external_agent_node(
         AgentRunEntry::Send,
         workdir.as_deref(),
     )
-    .await?;
+    .await?
+    .require_completed()?;
 
     let text = conversation
         .messages
@@ -1090,4 +1077,63 @@ mod tests {
         ensure_skill_activate_tool(&mut tools);
         assert_eq!(tools.len(), count);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn external_agent_node_rejects_failed_and_cancelled_partial_output() {
+        use crate::external_agents::run::regression_tests::{
+            isolated_peer_test, run_peer, with_acp_peer,
+        };
+        if isolated_peer_test() {
+            return;
+        }
+        for mode in ["error", "cancel", "complete"] {
+            with_acp_peer(mode, |app, _| {
+                run_peer(async {
+                    let output = run_agent_node(app, AgentNodeRequest {
+                        automation_id: "terminal-regression".into(),
+                        run_id: "run".into(),
+                        node_id: "agent".into(),
+                        spec: json!({"prompt":"produce output", "runtimeKind":"external", "externalAgentId":"grok"}),
+                    }).await;
+                    app.state::<AppState>()
+                        .external_live_sessions()
+                        .close_all()
+                        .await;
+                    let id = workspace::external_conversation_id("terminal-regression", "agent");
+                    let saved = crate::chat::repository::repository(app)
+                        .get(app, &id)
+                        .await
+                        .unwrap();
+                    let answer = saved.messages.last().unwrap();
+                    assert!(answer.content.contains("partial answer"));
+                    assert_eq!(
+                        saved.messages.len(),
+                        2,
+                        "one assistant message per automation run"
+                    );
+                    assert_eq!(
+                        answer.stream_outcome.as_deref(),
+                        Some(match mode {
+                            "cancel" => "cancelled",
+                            "error" => "error",
+                            _ => "completed",
+                        })
+                    );
+                    if mode == "complete" {
+                        assert_eq!(output.unwrap().text, "partial answer");
+                    } else {
+                        assert!(
+                            output.is_err(),
+                            "{mode} terminal became a successful automation output"
+                        );
+                    }
+                })
+            });
+        }
+    }
 }
+
+#[cfg(test)]
+#[path = "application_sdk04_tests.rs"]
+mod sdk04_tests;

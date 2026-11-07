@@ -1,11 +1,17 @@
 # Kivio Chat Runtime Model Contract
 
-The Chat runtime owns orchestration: conversation state, prompt construction, tool loop,
-cancellation, persistence, and Tauri events.
+The shared `kivio-agent-sdk` owns the model/tool loop, cancellation and neutral events.
+The application owns conversation state, prompt construction, product policies,
+persistence and projection into Tauri events.
 
-Provider adapters own provider JSON and wire protocols. Runtime code should pass
-`GenerateRequest` to a `LanguageModelProvider` and consume `GenerateOutput` plus
-`StreamPart` events. OpenAI-compatible and Anthropic Messages are peer providers.
+Provider adapters own provider JSON and wire protocols. `LanguageModelProvider`
+accepts `GenerateRequest` and returns `GenerateOutput` plus `StreamPart` events.
+The application `AppAgentModel` implements the SDK's `ModelRuntime`, resolves application
+request policy and owns its shared retry budget. Its history adapter retains Workbench
+prompt normalization. OpenAI Chat, Responses, Anthropic and Gemini use the same SDK
+model contracts. The application and standalone SDK provider also share the OpenAI
+Chat request encoder, SSE decoder and usage parsers. See the
+[SDK consumption guide](../../../../crates/kivio-agent-sdk/README.md) for the standalone scope.
 
 Rules:
 
@@ -16,15 +22,28 @@ Rules:
   client and provider-hosted tools on every supported provider wire format, including
   after provider-specific request overrides. Runtime finalization can request it
   without changing the default behavior of existing callers.
-- Storage can keep legacy `api_messages` for compatibility, but new replay logic should
-  prefer canonical model messages when available.
+- The loop keeps typed `RuntimeMessage` history and a separate generated-message
+  delta. `RuntimeBody` distinguishes system prompts from `ModelMessage` content;
+  `RuntimeSource` is an opaque metadata map; the application stores UI and subagent
+  origins there. Sources stay out of provider
+  requests. Legacy JSON is imported and exported at application storage and actual
+  L2 compression boundaries; existing saved conversations need no format migration.
+- `GenerateOutput::replay_message` is the replay projection. Display reasoning can
+  combine multiple steps; replay retains the content from the actual model response.
+  `FinishReason` and `ModelError` carry typed decisions alongside raw diagnostics.
+  Unknown provider finish values remain available without introducing a new rejection
+  policy. DSML fallback is normalized before empty/truncated-response validation;
+  native calls take precedence, and length-truncated batches are never executed.
+- The desktop dispatcher resolves OAuth and request configuration for each call.
+  Adapters borrow the selected HTTP client, shared retry state, and usage/debug
+  callbacks instead of `AppState`. Application-specific provider settings still
+  support headers and model metadata; standalone crate extraction is a later step.
 - Runtime developer messages retain their role on OpenAI Chat and Responses and
   survive canonical replay. Anthropic and Gemini lack an equivalent mid-turn role;
   their adapters send the message in order as a user turn, without hoisting it into
   the system prompt.
-- `GenerateOutput.canonical_message` and `ChatStreamOutput.canonical_message` preserve
-  ordered provider content for replay. Their legacy bridge also preserves `finish_reason`
-  so tool loops and compaction can reject truncated responses. Anthropic thinking and
+- `GenerateOutput.canonical_message` preserves ordered provider content for replay.
+  Tool loops and compaction consume the typed finish reason directly. Anthropic thinking and
   redacted thinking are
   distinct `MessagePart` variants; signatures and encrypted data are opaque and must
   survive tool rounds and storage reload unchanged, including empty thinking text.
@@ -34,8 +53,7 @@ Rules:
   only for the known official DeepSeek Anthropic endpoint; strict Claude requests omit
   unsigned legacy reasoning. The legacy runtime JSON bridge
   carries ordered parts in `anthropic_content`, which is stripped from Chat Completions
-  wire requests. Full runtime history still includes legacy JSON metadata; this output
-  contract does not imply that all history orchestration has migrated to typed messages.
+  wire requests. Runtime source metadata survives the application history codec.
 - Request serializers share typed tool-history repair. Every client tool-call batch
   receives exactly one result per call before later user content; existing results
   take precedence over synthetic interrupted/unavailable errors. Unpaired historical
@@ -47,7 +65,7 @@ Rules:
   text and never send native metadata. Anthropic `pause_turn` continues the native
   assistant turn at most eight times without executing server tools locally.
   Ordered native history and the final finish reason survive the continuation.
-  `GenerateOutput.usage` and `ChatStreamOutput.usage` belong to the final HTTP request;
+  `GenerateOutput.usage` belongs to the final HTTP request;
   optional `billing_usage` sums hidden continuation requests for billing only.
 - Model adapters share SSE data framing: blank lines dispatch events, multiple `data`
   fields join with newlines, and CRLF/CR/LF and split UTF-8 bytes are accepted. EOF does

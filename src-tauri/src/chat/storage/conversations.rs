@@ -104,7 +104,7 @@ pub fn load_conversation(app: &AppHandle, id: &str) -> Result<Conversation, Stri
     Ok(conversation)
 }
 
-fn write_conversation_file_at_path(
+pub(crate) fn write_conversation_file_at_path(
     path: &Path,
     conversation: Conversation,
 ) -> Result<Conversation, String> {

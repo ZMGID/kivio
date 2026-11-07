@@ -13,13 +13,16 @@ pub struct SkillRunContext {
 }
 
 impl SkillRunContext {
-    /// 设置助手技能白名单。在 run 启动时由 RunState 依据 assistant_snapshot 调用。
-    pub fn set_allowed_skill_ids(&mut self, ids: Option<Vec<String>>) {
-        self.allowed_skill_ids = ids;
-    }
-
-    pub fn set_registry(&mut self, registry: Arc<SkillRegistry>) {
-        self.registry = registry;
+    pub fn for_run(
+        registry: Arc<SkillRegistry>,
+        assistant: Option<&crate::chat::types::ChatAssistantSnapshot>,
+    ) -> Self {
+        Self {
+            allowed_skill_ids: assistant
+                .filter(|assistant| !crate::chat::voice_orchestrator::is_brain_snapshot(assistant))
+                .map(|assistant| assistant.skill_ids.clone()),
+            registry,
+        }
     }
 
     /// 某技能 id 是否在助手白名单内(无助手 = 不限)。
@@ -174,6 +177,27 @@ mod tests {
             argument_hint: None,
             arguments: vec![],
         }
+    }
+
+    #[test]
+    fn run_context_freezes_catalog_and_assistant_authority() {
+        let registry = Arc::new(SkillRegistry::default());
+        let mut assistant: crate::chat::types::ChatAssistantSnapshot = serde_json::from_value(
+            serde_json::json!({"id": "assistant", "name": "Assistant", "skill_ids": ["allowed"]}),
+        )
+        .unwrap();
+        let context = SkillRunContext::for_run(registry.clone(), Some(&assistant));
+        assistant.skill_ids.clear();
+        assert!(context.skill_id_allowed("allowed"));
+        assert!(!context.skill_id_allowed("other"));
+        assert!(std::ptr::eq(context.registry(), registry.as_ref()));
+        assert!(
+            !SkillRunContext::for_run(registry.clone(), Some(&assistant))
+                .skill_id_allowed("allowed")
+        );
+        assert!(SkillRunContext::for_run(registry.clone(), None).skill_id_allowed("other"));
+        assistant.id = "asst_voice_orchestrator".into();
+        assert!(SkillRunContext::for_run(registry, Some(&assistant)).skill_id_allowed("other"));
     }
 
     #[test]

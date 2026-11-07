@@ -146,7 +146,11 @@ mod tests {
         std::fs::create_dir_all(&user).unwrap();
         std::fs::create_dir_all(&project_agents).unwrap();
         std::fs::write(user.join("scout.md"), "---\nname: scout\n---\nuser").unwrap();
-        std::fs::write(project_agents.join("scout.md"), "---\nname: scout\n---\nproject").unwrap();
+        std::fs::write(
+            project_agents.join("scout.md"),
+            "---\nname: scout\n---\nproject",
+        )
+        .unwrap();
         let defs = load_agent_definitions(Some(&user), Some(&project), &[]);
         let scout = find_definition(&defs, "scout").unwrap();
         assert_eq!(scout.system_prompt, "project");
@@ -168,14 +172,30 @@ mod tests {
         let path = root.path().join("helper.md");
         let plugin = Resolved {
             package: Package {
-                id: "example-id".into(), name: "example".into(), description: String::new(),
-                version: None, format: "plugin".into(), source: String::new(), revision: None,
-                enabled: true, components: Default::default(), diagnostics: Vec::new(), marketplace: None,
+                id: "example-id".into(),
+                name: "example".into(),
+                description: String::new(),
+                version: None,
+                format: "plugin".into(),
+                source: String::new(),
+                revision: None,
+                enabled: true,
+                components: Default::default(),
+                diagnostics: Vec::new(),
+                marketplace: None,
             },
-            root: root.path().to_path_buf(), skills: Vec::new(), commands: Vec::new(),
-            agents: vec![path.clone()], hooks: Vec::new(), servers: Vec::new(),
+            root: root.path().to_path_buf(),
+            skills: Vec::new(),
+            commands: Vec::new(),
+            agents: vec![path.clone()],
+            hooks: Vec::new(),
+            servers: Vec::new(),
         };
-        std::fs::write(&path, "---\nname: helper\ntools: []\noutput:\n  type: object\n---\nbody").unwrap();
+        std::fs::write(
+            &path,
+            "---\nname: helper\ntools: []\noutput:\n  type: object\n---\nbody",
+        )
+        .unwrap();
         let defs = load_agent_definitions(None, None, std::slice::from_ref(&plugin));
         let helper = find_definition(&defs, "example:helper").unwrap();
         assert_eq!(helper.tools, Some(vec![]));
@@ -183,6 +203,9 @@ mod tests {
         assert!(helper.unsupported.is_empty());
         std::fs::write(&path, "---\nname: helper\ntools: null\n---\nbody").unwrap();
         let defs = load_agent_definitions(None, None, &[plugin]);
-        assert_eq!(find_definition(&defs, "example:helper").unwrap().tools, None);
+        assert_eq!(
+            find_definition(&defs, "example:helper").unwrap().tools,
+            None
+        );
     }
 }

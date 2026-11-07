@@ -383,7 +383,11 @@ impl SessionIdentity {
         matches!((self.instance_id(), other.instance_id()), (Some(a), Some(b)) if a == b)
     }
     pub(crate) fn instance_id(&self) -> Option<uuid::Uuid> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|instance| instance.id)
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|instance| instance.id)
     }
     pub(crate) fn sender(&self) -> Option<mpsc::Sender<SessionCommand>> {
         self.0
@@ -441,8 +445,13 @@ impl SessionControl {
             })),
         }
     }
-    pub(crate) fn observe_generation(&self, generation: u64) -> Option<crate::external_agents::diagnostics::ObservationGuard> {
-        self.diagnostics.as_ref().map(|capture| capture.observe_generation(generation))
+    pub(crate) fn observe_generation(
+        &self,
+        generation: u64,
+    ) -> Option<crate::external_agents::diagnostics::ObservationGuard> {
+        self.diagnostics
+            .as_ref()
+            .map(|capture| capture.observe_generation(generation))
     }
     pub(crate) fn abort(&self) {
         if let Some(owner) = &self.owner {

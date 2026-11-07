@@ -17,7 +17,14 @@ use crate::state::AppState;
 pub async fn read(app: &AppHandle, root: &str, url: &str) -> Result<String, String> {
     let dir = artifacts_dir(app, root)?;
     let state = app.state::<AppState>();
-    read_in(&dir, &state.sub_agents.registry, &state.sub_agents.jobs, root, url).await
+    read_in(
+        &dir,
+        &state.sub_agents.registry,
+        &state.sub_agents.jobs,
+        root,
+        url,
+    )
+    .await
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,7 +58,11 @@ fn parse_url(url: &str) -> Result<(Scheme, &str), String> {
     Ok((scheme, id))
 }
 
-async fn artifact(dir: &Path, id: &str, extension: &str) -> Result<Option<(String, Option<SystemTime>)>, String> {
+async fn artifact(
+    dir: &Path,
+    id: &str,
+    extension: &str,
+) -> Result<Option<(String, Option<SystemTime>)>, String> {
     if !valid_id(id) {
         return Err(format!("Invalid agent ID: {id}"));
     }
@@ -61,13 +72,16 @@ async fn artifact(dir: &Path, id: &str, extension: &str) -> Result<Option<(Strin
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("Could not open agent artifact {id}: {error}")),
     };
-    let metadata = file.metadata().await
+    let metadata = file
+        .metadata()
+        .await
         .map_err(|error| format!("Could not inspect agent artifact {id}: {error}"))?;
     if !metadata.is_file() {
         return Err(format!("Agent artifact {id} is not a regular file"));
     }
     let mut text = String::new();
-    file.read_to_string(&mut text).await
+    file.read_to_string(&mut text)
+        .await
         .map_err(|error| format!("Could not read agent artifact {id}: {error}"))?;
     Ok(Some((text, metadata.modified().ok())))
 }
@@ -84,13 +98,18 @@ async fn disk_ids(dir: &Path, extension: &str) -> Result<Vec<String>, String> {
         .await
         .map_err(|error| format!("Could not list subagent artifacts: {error}"))?
     {
-        let file_type = entry.file_type().await.map_err(|error| format!("Could not inspect agent artifact: {error}"))?;
+        let file_type = entry
+            .file_type()
+            .await
+            .map_err(|error| format!("Could not inspect agent artifact: {error}"))?;
         if !file_type.is_file() {
             continue;
         }
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let Some(id) = name.strip_suffix(extension) else { continue };
+        let Some(id) = name.strip_suffix(extension) else {
+            continue;
+        };
         if valid_id(id) {
             ids.push(id.to_string());
         }
@@ -110,30 +129,61 @@ async fn find_artifact(
     if !registered {
         let suffix = format!(".{extension}");
         let ids = disk_ids(dir, &suffix).await?;
-        let actual = ids.iter().find(|candidate| candidate.as_str() == id)
-            .or_else(|| ids.iter().find(|candidate| candidate.eq_ignore_ascii_case(id)));
+        let actual = ids
+            .iter()
+            .find(|candidate| candidate.as_str() == id)
+            .or_else(|| {
+                ids.iter()
+                    .find(|candidate| candidate.eq_ignore_ascii_case(id))
+            });
         if let Some(actual) = actual {
             if let Some((text, modified)) = artifact(dir, actual, extension).await? {
                 return Ok(Some((actual.clone(), text, modified)));
             }
         }
     }
-    Ok(artifact(dir, id, extension).await?.map(|(text, modified)| (id.to_string(), text, modified)))
+    Ok(artifact(dir, id, extension)
+        .await?
+        .map(|(text, modified)| (id.to_string(), text, modified)))
 }
 
-async fn not_found(dir: &Path, registry: &AgentRegistry, root: &str, id: &str, suffix: &str) -> Result<String, String> {
+async fn not_found(
+    dir: &Path,
+    registry: &AgentRegistry,
+    root: &str,
+    id: &str,
+    suffix: &str,
+) -> Result<String, String> {
     let agents = registry.list(root);
-    let hidden: HashSet<_> = agents.iter().filter(|agent| !agent.published)
-        .map(|agent| agent.id.to_lowercase()).collect();
-    let mut ids: Vec<String> = agents.into_iter().filter(|agent| agent.published).map(|agent| agent.id).collect();
-    ids.extend(disk_ids(dir, suffix).await?.into_iter().filter(|id| !hidden.contains(&id.to_lowercase())));
+    let hidden: HashSet<_> = agents
+        .iter()
+        .filter(|agent| !agent.published)
+        .map(|agent| agent.id.to_lowercase())
+        .collect();
+    let mut ids: Vec<String> = agents
+        .into_iter()
+        .filter(|agent| agent.published)
+        .map(|agent| agent.id)
+        .collect();
+    ids.extend(
+        disk_ids(dir, suffix)
+            .await?
+            .into_iter()
+            .filter(|id| !hidden.contains(&id.to_lowercase())),
+    );
     ids.sort_by_cached_key(|id| id.to_ascii_lowercase());
     ids.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     ids.retain(|candidate| !candidate.eq_ignore_ascii_case(id));
     let query = id.to_ascii_lowercase();
     ids.sort_by_key(|candidate| {
         let candidate = candidate.to_ascii_lowercase();
-        let rank = if candidate.starts_with(&query) { 0 } else if candidate.contains(&query) { 1 } else { 2 };
+        let rank = if candidate.starts_with(&query) {
+            0
+        } else if candidate.contains(&query) {
+            1
+        } else {
+            2
+        };
         (rank, candidate.len().abs_diff(query.len()), candidate)
     });
     ids.truncate(5);
@@ -156,40 +206,75 @@ async fn read_in(
     let (scheme, requested) = parse_url(url)?;
     if scheme == Scheme::History && requested.is_empty() {
         let agents = registry.list(root);
-        let hidden: HashSet<_> = agents.iter().filter(|agent| !agent.published)
-            .map(|agent| agent.id.to_lowercase()).collect();
-        let disk: Vec<_> = disk_ids(dir, ".jsonl").await?.into_iter()
-            .filter(|id| !hidden.contains(&id.to_lowercase())).collect();
+        let hidden: HashSet<_> = agents
+            .iter()
+            .filter(|agent| !agent.published)
+            .map(|agent| agent.id.to_lowercase())
+            .collect();
+        let disk: Vec<_> = disk_ids(dir, ".jsonl")
+            .await?
+            .into_iter()
+            .filter(|id| !hidden.contains(&id.to_lowercase()))
+            .collect();
         let visible: Vec<_> = agents.into_iter().filter(|agent| agent.published).collect();
         return Ok(format_index(&visible, &disk, now_ms()));
     }
 
     let agent = registry.resolve(root, requested);
-    if agent.as_ref().is_some_and(|agent| !registry.is_published(root, &agent.id)) {
-        return Err(not_found(dir, registry, root, requested, if scheme == Scheme::Agent { ".md" } else { ".jsonl" }).await?);
+    if agent
+        .as_ref()
+        .is_some_and(|agent| !registry.is_published(root, &agent.id))
+    {
+        return Err(not_found(
+            dir,
+            registry,
+            root,
+            requested,
+            if scheme == Scheme::Agent {
+                ".md"
+            } else {
+                ".jsonl"
+            },
+        )
+        .await?);
     }
-    let id = agent.as_ref().map(|agent| agent.id.as_str()).unwrap_or(requested);
+    let id = agent
+        .as_ref()
+        .map(|agent| agent.id.as_str())
+        .unwrap_or(requested);
     let registered = agent.is_some();
     if scheme == Scheme::Agent {
-        let output_id = agent.as_ref().and_then(|agent| agent.output_file.strip_prefix(dir).ok())
+        let output_id = agent
+            .as_ref()
+            .and_then(|agent| agent.output_file.strip_prefix(dir).ok())
             .filter(|path| path.components().count() == 1)
-            .and_then(|path| path.file_stem()).and_then(|stem| stem.to_str()).unwrap_or(id);
+            .and_then(|path| path.file_stem())
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(id);
         if let Some((_, text, modified)) = find_artifact(dir, output_id, "md", registered).await? {
             let actual = id;
-            let started_at = agent.as_ref()
+            let started_at = agent
+                .as_ref()
                 .filter(|agent| agent.status == AgentStatus::Running)
-                .and_then(|agent| jobs.running(root, &agent.parent_id).into_iter()
-                    .filter(|job| job.agent_id == agent.id)
-                    .map(|job| job.started_at)
-                    .max());
-            return Ok(if let Some(modified) = modified.filter(|modified| published_before(*modified, started_at)) {
-                format!(
+                .and_then(|agent| {
+                    jobs.running(root, &agent.parent_id)
+                        .into_iter()
+                        .filter(|job| job.agent_id == agent.id)
+                        .map(|job| job.started_at)
+                        .max()
+                });
+            return Ok(
+                if let Some(modified) =
+                    modified.filter(|modified| published_before(*modified, started_at))
+                {
+                    format!(
                     "> `{actual}` is running a newer turn. The output below is from its PREVIOUS run (published {} ago), not the current one. Live progress: `history://{actual}`; its next result auto-delivers to its owner.\n\n{text}",
                     elapsed(modified.elapsed().unwrap_or_default().as_secs())
                 )
-            } else {
-                text
-            });
+                } else {
+                    text
+                },
+            );
         }
         if let Some(agent) = agent {
             let (messages, incomplete) = match artifact(dir, &agent.id, "jsonl").await? {
@@ -204,36 +289,59 @@ async fn read_in(
                     .and_then(|job| job.progress)
                     .and_then(|progress| {
                         progress.get("recentOutput")?.as_array().map(|lines| {
-                            lines.iter().rev().filter_map(Value::as_str).collect::<Vec<_>>().join("\n")
+                            lines
+                                .iter()
+                                .rev()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join("\n")
                         })
                     })
                     .filter(|text| !text.trim().is_empty())
             } else {
                 None
             };
-            return Ok(note_incomplete(format_progress(&agent, &messages, live.as_deref()), incomplete));
+            return Ok(note_incomplete(
+                format_progress(&agent, &messages, live.as_deref()),
+                incomplete,
+            ));
         }
         return Err(not_found(dir, registry, root, requested, ".md").await?);
     }
 
     if let Some((actual, text, _)) = find_artifact(dir, id, "jsonl", registered).await? {
-        let status = agent.as_ref().map(|agent| status_name(agent.status)).unwrap_or("on disk");
+        let status = agent
+            .as_ref()
+            .map(|agent| status_name(agent.status))
+            .unwrap_or("on disk");
         let (messages, incomplete) = parse_jsonl(&text)?;
-        return Ok(note_incomplete(format_transcript(&actual, status, &messages), incomplete));
+        return Ok(note_incomplete(
+            format_transcript(&actual, status, &messages),
+            incomplete,
+        ));
     }
     if let Some(agent) = agent {
         if agent.status == AgentStatus::Running {
-            return Ok(format!("# {} (running)\n\nNo transcript has been written yet.\n", agent.id));
+            return Ok(format!(
+                "# {} (running)\n\nNo transcript has been written yet.\n",
+                agent.id
+            ));
         }
-        return Err(format!("Agent {} has no transcript: session is gone and no session file was retained", agent.id));
+        return Err(format!(
+            "Agent {} has no transcript: session is gone and no session file was retained",
+            agent.id
+        ));
     }
     Err(not_found(dir, registry, root, requested, ".jsonl").await?)
 }
 
 // shortcut: equal or coarse filesystem timestamps cannot prove turn provenance; persist publication generation if exact identification is needed.
 fn published_before(modified: SystemTime, started_at: Option<i64>) -> bool {
-    let Some(started_at) = started_at.filter(|start| *start >= 0) else { return false };
-    modified.duration_since(UNIX_EPOCH)
+    let Some(started_at) = started_at.filter(|start| *start >= 0) else {
+        return false;
+    };
+    modified
+        .duration_since(UNIX_EPOCH)
         .is_ok_and(|time| time.as_millis() < started_at as u128)
 }
 
@@ -267,7 +375,13 @@ fn format_index(agents: &[AgentRecord], disk: &[String], now: i64) -> String {
         lines.push("|---|---|---|---|---|".into());
         for agent in agents {
             let age = now.saturating_sub(agent.last_activity).max(0) as u64 / 1_000;
-            lines.push(format!("| {} | {} | sub | {} | {} ago |", agent.id, status_name(agent.status), agent.parent_id, elapsed(age)));
+            lines.push(format!(
+                "| {} | {} | sub | {} | {} ago |",
+                agent.id,
+                status_name(agent.status),
+                agent.parent_id,
+                elapsed(age)
+            ));
         }
         for id in disk {
             if !agents.iter().any(|agent| agent.id.eq_ignore_ascii_case(id)) {
@@ -294,7 +408,12 @@ fn parse_jsonl(text: &str) -> Result<(Vec<Value>, bool), String> {
                 incomplete = true;
                 break;
             }
-            Err(error) => return Err(format!("Invalid agent transcript on line {}: {error}", index + 1)),
+            Err(error) => {
+                return Err(format!(
+                    "Invalid agent transcript on line {}: {error}",
+                    index + 1
+                ))
+            }
         }
     }
     Ok((messages, incomplete))
@@ -311,33 +430,44 @@ fn content_text(content: &Value, include_images: bool) -> String {
     if let Some(text) = content.as_str() {
         return text.to_string();
     }
-    content.as_array().into_iter().flatten().filter_map(|block| {
-        match block.get("type").and_then(Value::as_str) {
-            Some("text" | "input_text" | "output_text") => block.get("text").and_then(Value::as_str),
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|block| match block.get("type").and_then(Value::as_str) {
+            Some("text" | "input_text" | "output_text") => {
+                block.get("text").and_then(Value::as_str)
+            }
             Some("image" | "image_url" | "input_image") if include_images => Some("[image]"),
             _ => None,
-        }
-    }).collect::<Vec<_>>().join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn format_progress(agent: &AgentRecord, messages: &[Value], live: Option<&str>) -> String {
     let last = live.map(str::to_string).or_else(|| {
-        messages.iter().rev()
+        messages
+            .iter()
+            .rev()
             .filter(|message| message["role"] == "assistant")
             .map(|message| content_text(&message["content"], false))
             .find(|text| !text.trim().is_empty())
     });
     let body = match last {
-        Some(text) if !text.trim().is_empty() => format!("## Latest assistant text\n\n{}", text.trim()),
+        Some(text) if !text.trim().is_empty() => {
+            format!("## Latest assistant text\n\n{}", text.trim())
+        }
         _ => "Nothing produced yet.".to_string(),
     };
     format!("# {} ({})\n\nNo final output yet: `agent://{}` shows progress until the run publishes its output. Full transcript: `history://{}`.\n\n{body}\n", agent.id, status_name(agent.status), agent.id, agent.id)
 }
 
 fn one_line(text: &str) -> String {
-    let mut chars = text.split_whitespace().enumerate().flat_map(|(index, word)| {
-        (index > 0).then_some(' ').into_iter().chain(word.chars())
-    });
+    let mut chars = text
+        .split_whitespace()
+        .enumerate()
+        .flat_map(|(index, word)| (index > 0).then_some(' ').into_iter().chain(word.chars()));
     let mut preview: String = chars.by_ref().take(120).collect();
     if chars.next().is_some() {
         preview.pop();
@@ -354,20 +484,31 @@ fn arg_value(value: &Value) -> Option<String> {
     if array.is_empty() || !array.iter().all(Value::is_string) {
         return None;
     }
-    Some(array.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "))
+    Some(
+        array
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
 }
 
 fn primary_arg(name: &str, args: &Value) -> String {
     let parsed;
     let args = if let Some(text) = args.as_str() {
         match serde_json::from_str::<Value>(text) {
-            Ok(value) => { parsed = value; &parsed }
+            Ok(value) => {
+                parsed = value;
+                &parsed
+            }
             Err(_) => return one_line(text),
         }
     } else {
         args
     };
-    let Some(object) = args.as_object() else { return String::new() };
+    let Some(object) = args.as_object() else {
+        return String::new();
+    };
     let get = |key: &str| object.get(key).and_then(arg_value);
     if name == "grep" {
         let pattern = get("pattern");
@@ -375,37 +516,85 @@ fn primary_arg(name: &str, args: &Value) -> String {
         if let (Some(pattern), Some(path)) = (&pattern, &path) {
             return one_line(&format!("{pattern} @ {path}"));
         }
-        if let Some(value) = pattern.or(path) { return one_line(&value); }
+        if let Some(value) = pattern.or(path) {
+            return one_line(&value);
+        }
     }
     if name == "glob" {
-        if let Some(value) = get("path").or_else(|| get("paths")) { return one_line(&value); }
+        if let Some(value) = get("path").or_else(|| get("paths")) {
+            return one_line(&value);
+        }
     }
     if name == "ast_grep" {
-        if let Some(value) = get("pat") { return one_line(&value); }
+        if let Some(value) = get("pat") {
+            return one_line(&value);
+        }
     }
-    for key in ["path", "file_path", "filePath", "command", "cmd", "pattern", "url", "query", "prompt", "assignment", "note", "message", "op", "name", "id"] {
-        if let Some(value) = get(key) { return one_line(&value); }
+    for key in [
+        "path",
+        "file_path",
+        "filePath",
+        "command",
+        "cmd",
+        "pattern",
+        "url",
+        "query",
+        "prompt",
+        "assignment",
+        "note",
+        "message",
+        "op",
+        "name",
+        "id",
+    ] {
+        if let Some(value) = get(key) {
+            return one_line(&value);
+        }
     }
     for (key, value) in object {
         if key != "i" {
-            if let Some(text) = value.as_str().filter(|text| !text.is_empty()) { return one_line(text); }
+            if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
+                return one_line(text);
+            }
         }
     }
-    let rest: serde_json::Map<String, Value> = object.iter().filter(|(key, _)| key.as_str() != "i").map(|(key, value)| (key.clone(), value.clone())).collect();
+    let rest: serde_json::Map<String, Value> = object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "i")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
     one_line(&Value::Object(rest).to_string())
 }
 
 fn tool_line(name: &str, args: &Value, result: Option<&Value>) -> String {
     let head = format!("→ {name}({})", primary_arg(name, args));
-    let Some(result) = result else { return format!("{head} ⇒ pending") };
+    let Some(result) = result else {
+        return format!("{head} ⇒ pending");
+    };
     let text = content_text(&result["content"], true);
-    let count = if text.is_empty() { 0 } else { text.bytes().filter(|byte| *byte == b'\n').count() + 1 };
-    let error = result.get("is_error").or_else(|| result.get("isError")).and_then(Value::as_bool);
-    let status = match error { Some(true) => "error", Some(false) => "ok", None => "unknown" };
-    let mut line = format!("{head} ⇒ {status} · {count} {}", if count == 1 { "line" } else { "lines" });
+    let count = if text.is_empty() {
+        0
+    } else {
+        text.bytes().filter(|byte| *byte == b'\n').count() + 1
+    };
+    let error = result
+        .get("is_error")
+        .or_else(|| result.get("isError"))
+        .and_then(Value::as_bool);
+    let status = match error {
+        Some(true) => "error",
+        Some(false) => "ok",
+        None => "unknown",
+    };
+    let mut line = format!(
+        "{head} ⇒ {status} · {count} {}",
+        if count == 1 { "line" } else { "lines" }
+    );
     if error == Some(true) {
         let preview = one_line(text.lines().next().unwrap_or_default());
-        if !preview.is_empty() { line.push_str(&format!(" — {preview}")); }
+        if !preview.is_empty() {
+            line.push_str(&format!(" — {preview}"));
+        }
     }
     line
 }
@@ -417,14 +606,23 @@ fn format_transcript(id: &str, status: &str, messages: &[Value]) -> String {
     for (message_index, message) in messages.iter().enumerate() {
         match message["role"].as_str() {
             Some("assistant") => {
-                for (call_index, call) in message["tool_calls"].as_array().into_iter().flatten().enumerate() {
+                for (call_index, call) in message["tool_calls"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
                     if let Some(id) = call["id"].as_str() {
-                        pending.entry(id).or_default().push_back((message_index, call_index));
+                        pending
+                            .entry(id)
+                            .or_default()
+                            .push_back((message_index, call_index));
                     }
                 }
             }
             Some("tool") => {
-                if let Some(call) = message["tool_call_id"].as_str()
+                if let Some(call) = message["tool_call_id"]
+                    .as_str()
                     .and_then(|id| pending.get_mut(id))
                     .and_then(VecDeque::pop_front)
                 {
@@ -441,15 +639,29 @@ fn format_transcript(id: &str, status: &str, messages: &[Value]) -> String {
             Some("user" | "developer") => {
                 let text = content_text(&message["content"], true);
                 if !text.trim().is_empty() {
-                    lines.extend([format!("## {}", message["role"].as_str().unwrap_or_default()), String::new(), text, String::new()]);
+                    lines.extend([
+                        format!("## {}", message["role"].as_str().unwrap_or_default()),
+                        String::new(),
+                        text,
+                        String::new(),
+                    ]);
                 }
             }
             Some("assistant") => {
                 let mut body = Vec::new();
                 let text = content_text(&message["content"], false);
-                if !text.trim().is_empty() { body.push(text); }
-                for (call_index, call) in message["tool_calls"].as_array().into_iter().flatten().enumerate() {
-                    let result = results.get(&(message_index, call_index)).map(|index| &messages[*index]);
+                if !text.trim().is_empty() {
+                    body.push(text);
+                }
+                for (call_index, call) in message["tool_calls"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    let result = results
+                        .get(&(message_index, call_index))
+                        .map(|index| &messages[*index]);
                     let function = &call["function"];
                     let name = function["name"].as_str().unwrap_or("tool");
                     body.push(tool_line(name, &function["arguments"], result));
@@ -463,7 +675,11 @@ fn format_transcript(id: &str, status: &str, messages: &[Value]) -> String {
             }
             Some("tool") => {
                 if !consumed.contains(&message_index) {
-                    lines.push(tool_line(message["name"].as_str().unwrap_or("tool"), &Value::Null, Some(message)));
+                    lines.push(tool_line(
+                        message["name"].as_str().unwrap_or("tool"),
+                        &Value::Null,
+                        Some(message),
+                    ));
                     lines.push(String::new());
                 }
             }
@@ -481,16 +697,30 @@ mod tests {
 
     fn record(root: &str, id: &str, status: AgentStatus) -> AgentRecord {
         AgentRecord {
-            id: id.into(), root: root.into(), parent_id: "Main".into(), generation: 0,
-            display_name: id.into(), agent_type: "scout".into(), status, depth: 1, published: true,
-            child_conversation_id: format!("child-{id}"), run_id: None,
-            session_file: PathBuf::new(), output_file: PathBuf::new(), last_activity: 0, activity: None,
+            id: id.into(),
+            root: root.into(),
+            parent_id: "Main".into(),
+            generation: 0,
+            display_name: id.into(),
+            agent_type: "scout".into(),
+            status,
+            depth: 1,
+            published: true,
+            child_conversation_id: format!("child-{id}"),
+            run_id: None,
+            session_file: PathBuf::new(),
+            output_file: PathBuf::new(),
+            last_activity: 0,
+            activity: None,
         }
     }
 
     #[test]
     fn history_index_formats_registered_and_disk_only_agents() {
-        let agents = [record("conv_root", "Scout", AgentStatus::Running), record("conv_root", "Scout.Child", AgentStatus::Parked)];
+        let agents = [
+            record("conv_root", "Scout", AgentStatus::Running),
+            record("conv_root", "Scout.Child", AgentStatus::Parked),
+        ];
         let disk = vec!["Scout".into(), "Old".into()];
         let table = format_index(&agents, &disk, 125_000);
         assert!(table.contains("| id | status | kind | parent | last activity |"));
@@ -538,9 +768,15 @@ mod tests {
     #[test]
     fn publication_must_precede_the_running_job_to_be_superseded() {
         let at_start = UNIX_EPOCH + Duration::from_millis(1_000);
-        assert!(published_before(at_start - Duration::from_millis(1), Some(1_000)));
+        assert!(published_before(
+            at_start - Duration::from_millis(1),
+            Some(1_000)
+        ));
         assert!(!published_before(at_start, Some(1_000)));
-        assert!(!published_before(at_start + Duration::from_nanos(500), Some(1_000)));
+        assert!(!published_before(
+            at_start + Duration::from_nanos(500),
+            Some(1_000)
+        ));
         assert!(!published_before(at_start, None));
     }
 
@@ -551,39 +787,99 @@ mod tests {
         let jobs = JobManager::default();
         registry.register(record("conv_root", "Scout", AgentStatus::Running));
         registry.register(record("conv_other", "Foreign", AgentStatus::Running));
-        tokio::fs::write(temp.path().join("Scout.jsonl"), concat!(
-            "{\"role\":\"assistant\",\"content\":\"first\"}\n",
-            "{\"role\":\"assistant\",\"content\":\"latest\"}\n",
-            "{\"role\":\"assistant\",\"content\":[{\"type\":\"image_url\"}]}\n"
-        )).await.unwrap();
-        let progress = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://scout").await.unwrap();
+        tokio::fs::write(
+            temp.path().join("Scout.jsonl"),
+            concat!(
+                "{\"role\":\"assistant\",\"content\":\"first\"}\n",
+                "{\"role\":\"assistant\",\"content\":\"latest\"}\n",
+                "{\"role\":\"assistant\",\"content\":[{\"type\":\"image_url\"}]}\n"
+            ),
+        )
+        .await
+        .unwrap();
+        let progress = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://scout")
+            .await
+            .unwrap();
         assert!(progress.contains("# Scout (running)"));
         assert!(progress.contains("## Latest assistant text\n\nlatest"));
         assert!(!progress.contains("\n\nfirst\n"));
         let output_path = temp.path().join("Scout.md");
-        tokio::fs::write(&output_path, "published output\n").await.unwrap();
-        assert_eq!(read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout").await.unwrap(), "published output\n");
+        tokio::fs::write(&output_path, "published output\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout")
+                .await
+                .unwrap(),
+            "published output\n"
+        );
         let (job, _) = jobs.register("conv_root", "Main", "Scout", "work");
         let started_at = jobs.get(&job).unwrap().started_at as u64;
         let set_modified = |millis| {
-            let file = std::fs::OpenOptions::new().write(true).open(&output_path).unwrap();
-            file.set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_millis(millis))).unwrap();
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&output_path)
+                .unwrap();
+            file.set_times(
+                std::fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_millis(millis)),
+            )
+            .unwrap();
         };
         set_modified(started_at + 5_000);
-        assert_eq!(read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout").await.unwrap(), "published output\n");
+        assert_eq!(
+            read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout")
+                .await
+                .unwrap(),
+            "published output\n"
+        );
         set_modified(started_at - 5_000);
-        let superseded = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout").await.unwrap();
+        let superseded = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout")
+            .await
+            .unwrap();
         assert!(superseded.contains("running a newer turn"));
         assert!(superseded.ends_with("published output\n"));
         registry.set_status("conv_root", "Scout", AgentStatus::Idle);
-        assert_eq!(read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout").await.unwrap(), "published output\n");
-        assert!(read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Foreign").await.is_err());
-        assert!(read_in(temp.path(), &registry, &jobs, "conv_root", "agent://../other/Foreign").await.is_err());
-        assert!(read_in(temp.path(), &registry, &jobs, "..", "history://").await.is_err());
-        let index = read_in(temp.path(), &registry, &jobs, "conv_root", "history://").await.unwrap();
+        assert_eq!(
+            read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout")
+                .await
+                .unwrap(),
+            "published output\n"
+        );
+        assert!(read_in(
+            temp.path(),
+            &registry,
+            &jobs,
+            "conv_root",
+            "agent://Foreign"
+        )
+        .await
+        .is_err());
+        assert!(read_in(
+            temp.path(),
+            &registry,
+            &jobs,
+            "conv_root",
+            "agent://../other/Foreign"
+        )
+        .await
+        .is_err());
+        assert!(read_in(temp.path(), &registry, &jobs, "..", "history://")
+            .await
+            .is_err());
+        let index = read_in(temp.path(), &registry, &jobs, "conv_root", "history://")
+            .await
+            .unwrap();
         assert!(index.contains("| Scout | idle |"));
         assert!(!index.contains("Foreign"));
-        let transcript = read_in(temp.path(), &registry, &jobs, "conv_root", "history://scout").await.unwrap();
+        let transcript = read_in(
+            temp.path(),
+            &registry,
+            &jobs,
+            "conv_root",
+            "history://scout",
+        )
+        .await
+        .unwrap();
         assert!(transcript.contains("# Scout (idle)\n\n## assistant\n\nfirst"));
         assert!(transcript.contains("## assistant\n\nlatest"));
     }
@@ -594,23 +890,56 @@ mod tests {
         let registry = AgentRegistry::default();
         let jobs = JobManager::default();
         registry.register(record("conv_root", "Live", AgentStatus::Running));
-        let empty = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Live").await.unwrap();
+        let empty = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Live")
+            .await
+            .unwrap();
         assert!(empty.contains("# Live (running)") && empty.contains("Nothing produced yet."));
         let (job, _) = jobs.register("conv_root", "Main", "Live", "work");
-        jobs.report_progress(&job, serde_json::json!({"recentOutput": ["second", "first"]}));
-        let progress = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Live").await.unwrap();
+        jobs.report_progress(
+            &job,
+            serde_json::json!({"recentOutput": ["second", "first"]}),
+        );
+        let progress = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Live")
+            .await
+            .unwrap();
         assert!(progress.contains("## Latest assistant text\n\nfirst\nsecond"));
-        tokio::fs::write(temp.path().join("Old.jsonl"), "{\"role\":\"user\",\"content\":\"earlier\"}\n").await.unwrap();
-        let index = read_in(temp.path(), &registry, &jobs, "conv_root", "history://").await.unwrap();
+        tokio::fs::write(
+            temp.path().join("Old.jsonl"),
+            "{\"role\":\"user\",\"content\":\"earlier\"}\n",
+        )
+        .await
+        .unwrap();
+        let index = read_in(temp.path(), &registry, &jobs, "conv_root", "history://")
+            .await
+            .unwrap();
         assert!(index.contains("| Old | on disk |"));
-        let transcript = read_in(temp.path(), &registry, &jobs, "conv_root", "history://old").await.unwrap();
+        let transcript = read_in(temp.path(), &registry, &jobs, "conv_root", "history://old")
+            .await
+            .unwrap();
         assert!(transcript.contains("# Old (on disk)\n\n## user\n\nearlier"));
-        tokio::fs::write(temp.path().join("Old.md"), "saved output").await.unwrap();
-        assert_eq!(read_in(temp.path(), &registry, &jobs, "conv_root", "agent://old").await.unwrap(), "saved output");
-        registry.register(record("conv_root", "分析者.文件 核对", AgentStatus::Idle));
-        tokio::fs::write(temp.path().join("分析者.文件 核对.md"), "unicode name").await.unwrap();
+        tokio::fs::write(temp.path().join("Old.md"), "saved output")
+            .await
+            .unwrap();
         assert_eq!(
-            read_in(temp.path(), &registry, &jobs, "conv_root", "agent://分析者.文件 核对").await.unwrap(),
+            read_in(temp.path(), &registry, &jobs, "conv_root", "agent://old")
+                .await
+                .unwrap(),
+            "saved output"
+        );
+        registry.register(record("conv_root", "分析者.文件 核对", AgentStatus::Idle));
+        tokio::fs::write(temp.path().join("分析者.文件 核对.md"), "unicode name")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_in(
+                temp.path(),
+                &registry,
+                &jobs,
+                "conv_root",
+                "agent://分析者.文件 核对"
+            )
+            .await
+            .unwrap(),
             "unicode name"
         );
     }
@@ -630,23 +959,49 @@ mod tests {
         registry.register(record("conv_second", "Secret", AgentStatus::Idle));
         registry.register(record("conv_first", "Shared", AgentStatus::Idle));
         registry.register(record("conv_second", "Shared", AgentStatus::Idle));
-        tokio::fs::write(first.join("Shared.md"), "first root").await.unwrap();
-        tokio::fs::write(second.join("Shared.md"), "second root").await.unwrap();
-        assert_eq!(read_in(&first, &registry, &jobs, "conv_first", "agent://Shared").await.unwrap(), "first root");
-        assert_eq!(read_in(&second, &registry, &jobs, "conv_second", "agent://Shared").await.unwrap(), "second root");
-        let error = read_in(&first, &registry, &jobs, "conv_first", "agent://Al").await.unwrap_err();
+        tokio::fs::write(first.join("Shared.md"), "first root")
+            .await
+            .unwrap();
+        tokio::fs::write(second.join("Shared.md"), "second root")
+            .await
+            .unwrap();
+        assert_eq!(
+            read_in(&first, &registry, &jobs, "conv_first", "agent://Shared")
+                .await
+                .unwrap(),
+            "first root"
+        );
+        assert_eq!(
+            read_in(&second, &registry, &jobs, "conv_second", "agent://Shared")
+                .await
+                .unwrap(),
+            "second root"
+        );
+        let error = read_in(&first, &registry, &jobs, "conv_first", "agent://Al")
+            .await
+            .unwrap_err();
         let suggestions = error.split("Did you mean: ").nth(1).unwrap();
         assert_eq!(suggestions.split(", ").count(), 5);
         assert!(!error.contains("Secret"));
-        assert!(read_in(&first, &registry, &jobs, "conv_first", "history://../conv_second/Secret").await.is_err());
+        assert!(read_in(
+            &first,
+            &registry,
+            &jobs,
+            "conv_first",
+            "history://../conv_second/Secret"
+        )
+        .await
+        .is_err());
     }
-
 
     #[test]
     fn tool_previews_collapse_whitespace_and_truncate_unicode() {
         assert_eq!(one_line("  a \n b  "), "a b");
         assert_eq!(one_line(&"测".repeat(120)), "测".repeat(120));
-        assert_eq!(one_line(&"测".repeat(121)), format!("{}…", "测".repeat(119)));
+        assert_eq!(
+            one_line(&"测".repeat(121)),
+            format!("{}…", "测".repeat(119))
+        );
     }
 
     #[test]
@@ -654,8 +1009,10 @@ mod tests {
         let text = "{\"role\":\"user\",\"content\":\"ok\"}\n{\"role\":\"assistant\"";
         let (messages, incomplete) = parse_jsonl(text).unwrap();
         assert_eq!(messages.len(), 1);
-        assert!(note_incomplete(format_transcript("Scout", "on disk", &messages), incomplete)
-            .contains("final transcript entry is incomplete"));
+        assert!(
+            note_incomplete(format_transcript("Scout", "on disk", &messages), incomplete)
+                .contains("final transcript entry is incomplete")
+        );
         assert!(parse_jsonl("{bad}\n").is_err());
         assert!(parse_jsonl("{bad}\n{\"role\":\"user\"}\n").is_err());
     }
@@ -666,32 +1023,87 @@ mod tests {
         let registry = AgentRegistry::default();
         let jobs = JobManager::default();
         registry.register(record("conv_root", "Scout", AgentStatus::Idle));
-        let lines = (1..=2_501).map(|line| format!("line-{line}")).collect::<Vec<_>>().join("\n");
-        tokio::fs::write(temp.path().join("Scout.md"), &lines).await.unwrap();
-        let output = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout").await.unwrap();
-        let first = crate::native_tools::read_text_content("agent://Scout", output.clone(), &serde_json::json!({})).unwrap();
+        let lines = (1..=2_501)
+            .map(|line| format!("line-{line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        tokio::fs::write(temp.path().join("Scout.md"), &lines)
+            .await
+            .unwrap();
+        let output = read_in(temp.path(), &registry, &jobs, "conv_root", "agent://Scout")
+            .await
+            .unwrap();
+        let first = crate::native_tools::read_text_content(
+            "agent://Scout",
+            output.clone(),
+            &serde_json::json!({}),
+        )
+        .unwrap();
         assert_eq!(first.end_line, 2_000);
         assert_eq!(first.next_offset, Some(2_001));
         assert!(first.content.len() <= crate::native_tools::TOOL_OUTPUT_MAX_BYTES);
-        let page = crate::native_tools::read_text_content("agent://Scout", output, &serde_json::json!({ "offset": 2_001, "limit": 2 })).unwrap();
+        let page = crate::native_tools::read_text_content(
+            "agent://Scout",
+            output,
+            &serde_json::json!({ "offset": 2_001, "limit": 2 }),
+        )
+        .unwrap();
         assert_eq!(page.content, "line-2001\nline-2002");
         assert_eq!(page.next_offset, Some(2_003));
 
-        let journal = (1..=1_000).map(|line| serde_json::json!({"role":"assistant","content":format!("history-{line}")}).to_string())
-            .collect::<Vec<_>>().join("\n");
-        tokio::fs::write(temp.path().join("Scout.jsonl"), journal).await.unwrap();
-        let history = read_in(temp.path(), &registry, &jobs, "conv_root", "history://Scout").await.unwrap();
-        let page = crate::native_tools::read_text_content("history://Scout", history.clone(), &serde_json::json!({ "offset": 3, "limit": 4 })).unwrap();
+        let journal = (1..=1_000)
+            .map(|line| {
+                serde_json::json!({"role":"assistant","content":format!("history-{line}")})
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        tokio::fs::write(temp.path().join("Scout.jsonl"), journal)
+            .await
+            .unwrap();
+        let history = read_in(
+            temp.path(),
+            &registry,
+            &jobs,
+            "conv_root",
+            "history://Scout",
+        )
+        .await
+        .unwrap();
+        let page = crate::native_tools::read_text_content(
+            "history://Scout",
+            history.clone(),
+            &serde_json::json!({ "offset": 3, "limit": 4 }),
+        )
+        .unwrap();
         assert_eq!((page.start_line, page.end_line), (3, 6));
         assert_eq!(page.next_offset, Some(7));
-        assert!(crate::native_tools::read_text_content("history://Scout", history, &serde_json::json!({ "offset": 99_999 })).is_err());
+        assert!(crate::native_tools::read_text_content(
+            "history://Scout",
+            history,
+            &serde_json::json!({ "offset": 99_999 })
+        )
+        .is_err());
 
-        let oversized = format!("{}\nsafe", "x".repeat(crate::native_tools::TOOL_OUTPUT_MAX_BYTES + 1));
-        let page = crate::native_tools::read_text_content("agent://Scout", oversized.clone(), &serde_json::json!({})).unwrap();
+        let oversized = format!(
+            "{}\nsafe",
+            "x".repeat(crate::native_tools::TOOL_OUTPUT_MAX_BYTES + 1)
+        );
+        let page = crate::native_tools::read_text_content(
+            "agent://Scout",
+            oversized.clone(),
+            &serde_json::json!({}),
+        )
+        .unwrap();
         assert!(page.content.is_empty());
         assert_eq!(page.next_offset, Some(2));
         assert!(!page.warnings[0].contains("bash"));
-        let page = crate::native_tools::read_text_content("agent://Scout", oversized, &serde_json::json!({ "offset": 2 })).unwrap();
+        let page = crate::native_tools::read_text_content(
+            "agent://Scout",
+            oversized,
+            &serde_json::json!({ "offset": 2 }),
+        )
+        .unwrap();
         assert_eq!(page.content, "safe");
     }
 
@@ -703,11 +1115,32 @@ mod tests {
         let mut hidden = record("conv_root", "Hidden", AgentStatus::Running);
         hidden.published = false;
         registry.register(hidden);
-        tokio::fs::write(temp.path().join("Hidden.jsonl"), "{\"role\":\"assistant\",\"content\":\"secret\"}\n").await.unwrap();
-        tokio::fs::write(temp.path().join("Hidden.md"), "secret").await.unwrap();
-        let index = read_in(temp.path(), &registry, &jobs, "conv_root", "history://").await.unwrap();
+        tokio::fs::write(
+            temp.path().join("Hidden.jsonl"),
+            "{\"role\":\"assistant\",\"content\":\"secret\"}\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(temp.path().join("Hidden.md"), "secret")
+            .await
+            .unwrap();
+        let index = read_in(temp.path(), &registry, &jobs, "conv_root", "history://")
+            .await
+            .unwrap();
         assert!(!index.contains("Hidden"));
-        assert!(read_in(temp.path(), &registry, &jobs, "conv_root", "agent://hidden").await.is_err());
-        assert!(read_in(temp.path(), &registry, &jobs, "conv_root", "history://Hidden").await.is_err());
+        assert!(
+            read_in(temp.path(), &registry, &jobs, "conv_root", "agent://hidden")
+                .await
+                .is_err()
+        );
+        assert!(read_in(
+            temp.path(),
+            &registry,
+            &jobs,
+            "conv_root",
+            "history://Hidden"
+        )
+        .await
+        .is_err());
     }
 }

@@ -15,11 +15,18 @@ use kivio::chat::protocol::{
     ChatTodoStatus, ChatToolArtifactPayload, ChatToolPayload, ChatWarningSnapshot,
     CHAT_PROTOCOL_VERSION,
 };
+use kivio::chat::sub_agent::{
+    registry::AgentStatus,
+    view::{
+        SubagentActivity, SubagentActivityKind, SubagentIrcMessage, SubagentRoster,
+        SubagentSendReceipt, SubagentTranscriptCursor, SubagentTranscriptEntry,
+        SubagentTranscriptKind, SubagentTranscriptPage, SubagentView,
+    },
+};
 use kivio::external_agents::types::{CapabilitySupport, ProviderCapabilities};
 use schemars::schema_for;
 use serde_json::Value;
 use ts_rs::{Config, TS};
-use kivio::chat::sub_agent::{registry::AgentStatus, view::{SubagentView, SubagentRoster, SubagentTranscriptCursor, SubagentTranscriptKind, SubagentTranscriptEntry, SubagentTranscriptPage, SubagentSendReceipt, SubagentIrcMessage, SubagentActivity, SubagentActivityKind}};
 
 fn generated_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

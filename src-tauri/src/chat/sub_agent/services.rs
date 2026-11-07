@@ -1,31 +1,52 @@
+use super::{SubAgentManager, MAIN_AGENT_ID};
+use crate::{native_tools::BackgroundCommandStatus, state::AppState};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
-use crate::{native_tools::BackgroundCommandStatus, state::AppState};
-use super::{SubAgentManager, MAIN_AGENT_ID};
 
 pub(crate) fn owner_for_run(manager: &SubAgentManager, root: &str, run: &str) -> String {
-    manager.registry.find_by_run(run).filter(|(found_root, _)| found_root == root)
+    manager
+        .registry
+        .find_by_run(run)
+        .filter(|(found_root, _)| found_root == root)
         .and_then(|(_, id)| manager.registry.get(root, &id))
         .map_or_else(|| root.to_string(), |record| record.child_conversation_id)
 }
 
 fn scope(manager: &SubAgentManager, root: &str, owner: &str) -> Result<String, String> {
-    if owner == MAIN_AGENT_ID { return Ok(root.into()); }
-    manager.registry.resolve(root, owner).map(|record| record.child_conversation_id).ok_or("Agent not found".into())
+    if owner == MAIN_AGENT_ID {
+        return Ok(root.into());
+    }
+    manager
+        .registry
+        .resolve(root, owner)
+        .map(|record| record.child_conversation_id)
+        .ok_or("Agent not found".into())
 }
 
 pub(crate) fn subscribe(app: &AppHandle) -> tokio::sync::watch::Receiver<u64> {
-    app.state::<AppState>().background_commands_handle().subscribe()
+    app.state::<AppState>()
+        .background_commands_handle()
+        .subscribe()
 }
 
 pub(crate) fn running(app: &AppHandle, root: &str, owner: &str) -> Result<Vec<String>, String> {
     let state = app.state::<AppState>();
     let owner = scope(&state.sub_agents, root, owner)?;
-    Ok(state.background_commands_handle().snapshots(Some(&owner), false).into_iter()
-        .filter(|job| matches!(job.status, BackgroundCommandStatus::Running)).map(|job| job.job_id).collect())
+    Ok(state
+        .background_commands_handle()
+        .snapshots(Some(&owner), false)
+        .into_iter()
+        .filter(|job| matches!(job.status, BackgroundCommandStatus::Running))
+        .map(|job| job.job_id)
+        .collect())
 }
 
-pub(crate) fn completed(app: &AppHandle, root: &str, owner: &str, ids: &[String]) -> Result<Vec<Value>, String> {
+pub(crate) fn completed(
+    app: &AppHandle,
+    root: &str,
+    owner: &str,
+    ids: &[String],
+) -> Result<Vec<Value>, String> {
     let state = app.state::<AppState>();
     let owner = scope(&state.sub_agents, root, owner)?;
     let commands = state.background_commands_handle();
@@ -39,9 +60,16 @@ pub(crate) fn completed(app: &AppHandle, root: &str, owner: &str, ids: &[String]
     }).collect())
 }
 
-pub(crate) async fn read(app: &AppHandle, root: &str, run: &str, url: &str) -> Result<String, String> {
+pub(crate) async fn read(
+    app: &AppHandle,
+    root: &str,
+    run: &str,
+    url: &str,
+) -> Result<String, String> {
     let id = url.strip_prefix("proc://").ok_or("Invalid process URL")?;
-    if id.contains(['/', '\\', '?', '#']) { return Err("Invalid process URL".into()); }
+    if id.contains(['/', '\\', '?', '#']) {
+        return Err("Invalid process URL".into());
+    }
     let state = app.state::<AppState>();
     let owner = owner_for_run(&state.sub_agents, root, run);
     if id.is_empty() {

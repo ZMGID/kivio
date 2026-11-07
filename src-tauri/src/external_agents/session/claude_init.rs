@@ -1170,7 +1170,8 @@ mod live_probe_hygiene_tests {
         use tokio::io::AsyncBufReadExt;
 
         let def = get_agent_def("claude").expect("claude def");
-        let args = crate::external_agents::providers::claude::ephemeral_probe_args(&(def.build_args)(
+        let args = crate::external_agents::providers::claude::ephemeral_probe_args(&(def
+            .build_args)(
             &RuntimeContext {
                 extra_allowed_dirs: Vec::new(),
                 resume_session_id: None,

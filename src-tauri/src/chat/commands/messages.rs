@@ -212,7 +212,7 @@ pub(super) fn build_assistant_message(
     };
 
     ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: message_id,
         role: "assistant".to_string(),
         content: stored_content,
@@ -288,7 +288,7 @@ pub(crate) async fn push_assistant_message(
     anchor_usage: Option<crate::chat::model::ModelUsage>,
     agent_plan: Option<AgentPlanState>,
     // 降级兜底的结构化描述；Some 时前端渲染成独立错误卡片。
-    degraded: Option<crate::chat::agent::recovery::DegradedAnswer>,
+    degraded: Option<crate::chat::recovery_policy::DegradedAnswer>,
     history_attempt: Option<&crate::external_agents::session::HistoryAttempt>,
 ) -> Result<(), String> {
     let message = build_assistant_message(
@@ -496,31 +496,30 @@ pub(super) fn upsert_assistant_message(conversation: &mut Conversation, mut mess
 /// replayable on a later "continue" — `model_messages` are derived from them
 /// exactly as the final write does, keeping the storage shape consistent. No-op
 /// when nothing has been produced yet.
-pub(super) async fn persist_partial_assistant_snapshot(
-    app: &AppHandle,
-    conversation_id: &str,
+pub(super) fn build_partial_assistant_snapshot(
     message_id: &str,
     tool_records: &[ToolCallRecord],
     segments: &[ChatMessageSegment],
-    api_messages: &[Value],
-) -> Result<(), String> {
+    api_messages: &[crate::chat::agent::history::RuntimeMessage],
+) -> Option<ChatMessage> {
     if tool_records.is_empty() && segments.is_empty() {
-        return Ok(());
+        return None;
     }
+    let api_messages = crate::chat::agent::history::export_history(api_messages);
     let segments = segments.to_vec();
     // 中断草稿是「永不完成」run 的最终存档，最易出孤立工具分段——同样反向对账补齐。
     let mut tool_records = tool_records.to_vec();
-    reconcile_orphan_tool_segments(&mut tool_records, &segments, api_messages);
+    reconcile_orphan_tool_segments(&mut tool_records, &segments, &api_messages);
     let content = content_from_segments(&segments).unwrap_or_default();
     let reasoning = reasoning_from_segments(&segments);
     let model_messages = assistant_model_messages_for_storage(
         &content,
         reasoning.as_deref(),
-        api_messages,
+        &api_messages,
         &tool_records,
     );
     let draft = ChatMessage {
-            irc_message: None,
+        irc_message: None,
         id: message_id.to_string(),
         role: "assistant".to_string(),
         content,
@@ -530,7 +529,7 @@ pub(super) async fn persist_partial_assistant_snapshot(
         tool_calls: tool_records,
         segments,
         agent_plan: None,
-        api_messages: api_messages.to_vec(),
+        api_messages,
         model_messages,
         active_skill_id: None,
         run_entry: None,
@@ -544,6 +543,22 @@ pub(super) async fn persist_partial_assistant_snapshot(
         model: None,
         timestamp: chrono::Local::now().timestamp(),
         degraded: None,
+    };
+    Some(draft)
+}
+
+pub(super) async fn persist_partial_assistant_snapshot(
+    app: &AppHandle,
+    conversation_id: &str,
+    message_id: &str,
+    tool_records: &[ToolCallRecord],
+    segments: &[ChatMessageSegment],
+    api_messages: &[crate::chat::agent::history::RuntimeMessage],
+) -> Result<(), String> {
+    let Some(draft) =
+        build_partial_assistant_snapshot(message_id, tool_records, segments, api_messages)
+    else {
+        return Ok(());
     };
     // 草稿不再整会话重写:追加进 append-only 日志(见 chat::draft_journal 模块注释),
     // 主会话文件与索引在 run 期间完全不动;终态写入后 push_assistant_message 清日志。

@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use super::diagnostics::{
+    AgentPipe, AgentStderr, AgentStdin, AgentStdout, ConnectionCapture, Direction,
+};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use super::diagnostics::{AgentPipe, AgentStdin, AgentStdout, AgentStderr, ConnectionCapture, Direction};
 use tokio::time::timeout;
 
 use crate::external_agents::types::{AgentHomeStrategy, AgentLaunchPolicy, RuntimeAgentDef};
@@ -120,9 +122,18 @@ impl AgentChild {
         Ok(Self {
             #[cfg(unix)]
             group: child.id(),
-            stdin: child.stdin().take().map(|pipe| AgentPipe::new(pipe, Direction::Stdin, capture.clone())),
-            stdout: child.stdout().take().map(|pipe| AgentPipe::new(pipe, Direction::Stdout, capture.clone())),
-            stderr: child.stderr().take().map(|pipe| AgentPipe::new(pipe, Direction::Stderr, capture)),
+            stdin: child
+                .stdin()
+                .take()
+                .map(|pipe| AgentPipe::new(pipe, Direction::Stdin, capture.clone())),
+            stdout: child
+                .stdout()
+                .take()
+                .map(|pipe| AgentPipe::new(pipe, Direction::Stdout, capture.clone())),
+            stderr: child
+                .stderr()
+                .take()
+                .map(|pipe| AgentPipe::new(pipe, Direction::Stderr, capture)),
             child: Some(child),
             _maintenance: super::session::live::MAINTENANCE_OWNER
                 .try_with(Clone::clone)
@@ -367,7 +378,11 @@ pub fn cli_command(program: impl AsRef<OsStr>) -> Command {
     // 必须用原始路径（UNC 的 file_stem 仍是 `claude`），不能用改写后的 `wsl.exe`。
     let extra = crate::external_agents::overrides::env_for_bin(Path::new(program));
     let has_codex_home = extra.keys().any(|key| {
-        if cfg!(windows) { key.eq_ignore_ascii_case("CODEX_HOME") } else { key == "CODEX_HOME" }
+        if cfg!(windows) {
+            key.eq_ignore_ascii_case("CODEX_HOME")
+        } else {
+            key == "CODEX_HOME"
+        }
     });
     for (key, value) in extra {
         apply_env_for_cli(&mut command, Path::new(program), &key, value);
@@ -954,10 +969,14 @@ mod tests {
         std::fs::write(&path, b"old").unwrap();
         let file = std::fs::File::options().write(true).open(&path).unwrap();
         let timestamp = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        file.set_times(std::fs::FileTimes::new().set_modified(timestamp)).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(timestamp))
+            .unwrap();
         let before = probe_cache_key(&path).unwrap();
         std::fs::write(&path, b"new").unwrap();
-        file.set_times(std::fs::FileTimes::new().set_modified(timestamp + Duration::from_millis(100))).unwrap();
+        file.set_times(
+            std::fs::FileTimes::new().set_modified(timestamp + Duration::from_millis(100)),
+        )
+        .unwrap();
         assert_ne!(before, probe_cache_key(&path).unwrap());
     }
 

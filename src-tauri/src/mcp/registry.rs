@@ -45,7 +45,9 @@ pub struct NativeToolContext<'a> {
 }
 
 impl<'a> NativeToolContext<'a> {
-    pub(crate) fn from_execution(ctx: &crate::chat::agent::ToolExecutionContext<'a>) -> Self {
+    pub(crate) fn from_execution(
+        ctx: &crate::chat::tool_runtime::ToolExecutionContext<'a>,
+    ) -> Self {
         Self {
             conversation_id: ctx.tool_conversation_id.to_string(),
             message_id: ctx.message_id.to_string(),
@@ -809,7 +811,7 @@ pub async fn call_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
-    skill_context: Option<&mut crate::skills::SkillRunContext>,
+    skill_context: Option<&crate::skills::SkillRunContext>,
     native_ctx: Option<NativeToolContext<'_>>,
 ) -> Result<McpToolCallResult, String> {
     if tool.source == "native" {
@@ -1043,7 +1045,7 @@ async fn call_skill_tool(
     state: &AppState,
     tool: &ChatToolDefinition,
     arguments: Value,
-    skill_context: Option<&mut crate::skills::SkillRunContext>,
+    skill_context: Option<&crate::skills::SkillRunContext>,
 ) -> Result<McpToolCallResult, String> {
     let settings = state.settings_read().clone();
     let skill_name = crate::skills::extract_skill_name(&arguments)?;
@@ -1168,36 +1170,79 @@ async fn call_native_tool(
     }
 
     if tool.name == "write" {
-        if let Some(path) = arguments.get("path").and_then(Value::as_str).filter(|path| path.starts_with("agent://")) {
-            let ctx = native_ctx.as_ref().ok_or("write agent:// requires an agent context")?;
+        if let Some(path) = arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| path.starts_with("agent://"))
+        {
+            let ctx = native_ctx
+                .as_ref()
+                .ok_or("write agent:// requires an agent context")?;
             let sender = state.sub_agents.owner_for_run(&ctx.run_id);
-            if ctx.depth > 0 && sender == crate::chat::sub_agent::MAIN_AGENT_ID { return Err("The sending agent is no longer active".into()); }
-            let content = arguments.get("content").and_then(Value::as_str).ok_or("Agent messages require text content")?;
-            let runtime_conversation = state.sub_agents.registry.find_by_run(&ctx.run_id)
+            if ctx.depth > 0 && sender == crate::chat::sub_agent::MAIN_AGENT_ID {
+                return Err("The sending agent is no longer active".into());
+            }
+            let content = arguments
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or("Agent messages require text content")?;
+            let runtime_conversation = state
+                .sub_agents
+                .registry
+                .find_by_run(&ctx.run_id)
                 .filter(|(root, _)| root == &ctx.conversation_id)
-                .and_then(|(root,id)| state.sub_agents.registry.get(&root,&id))
-                .map_or_else(|| ctx.conversation_id.clone(), |record| record.child_conversation_id);
-            if !state.chat_runtime().is_generation_active(&runtime_conversation, ctx.generation) { return Err("cancelled".into()); }
+                .and_then(|(root, id)| state.sub_agents.registry.get(&root, &id))
+                .map_or_else(
+                    || ctx.conversation_id.clone(),
+                    |record| record.child_conversation_id,
+                );
+            if !state
+                .chat_runtime()
+                .is_generation_active(&runtime_conversation, ctx.generation)
+            {
+                return Err("cancelled".into());
+            }
             let receipt = tokio::select! {
                 biased;
                 _ = state.chat_runtime().wait_for_generation_inactive(&runtime_conversation, ctx.generation) => return Err("cancelled".into()),
                 receipt = crate::chat::sub_agent::irc::send(app, &ctx.conversation_id, &sender, path, content) => receipt?,
             };
-            return Ok(McpToolCallResult { content: serde_json::to_string(&receipt).map_err(|error| error.to_string())?, structured_content: Some(serde_json::to_value(&receipt).map_err(|error| error.to_string())?), is_error: receipt.status == "failed", ..Default::default() });
+            return Ok(McpToolCallResult {
+                content: serde_json::to_string(&receipt).map_err(|error| error.to_string())?,
+                structured_content: Some(
+                    serde_json::to_value(&receipt).map_err(|error| error.to_string())?,
+                ),
+                is_error: receipt.status == "failed",
+                ..Default::default()
+            });
         }
     }
     if tool.name == "read" {
         if let Some(path) = arguments.get("path").and_then(Value::as_str) {
             if path.starts_with("proc://") {
-                let ctx = native_ctx.as_ref().ok_or("read proc:// requires an agent context")?;
-                let content = crate::chat::sub_agent::services::read(app, &ctx.conversation_id, &ctx.run_id, path).await?;
-                return read_file_tool_result(crate::native_tools::read_text_content(path, content, &arguments)?);
+                let ctx = native_ctx
+                    .as_ref()
+                    .ok_or("read proc:// requires an agent context")?;
+                let content = crate::chat::sub_agent::services::read(
+                    app,
+                    &ctx.conversation_id,
+                    &ctx.run_id,
+                    path,
+                )
+                .await?;
+                return read_file_tool_result(crate::native_tools::read_text_content(
+                    path, content, &arguments,
+                )?);
             }
             if path.starts_with("agent://") || path.starts_with("history://") {
-                let ctx = native_ctx.as_ref()
-                    .ok_or_else(|| "read requires an agent context for internal URLs".to_string())?;
-                let content = crate::chat::sub_agent::urls::read(app, &ctx.conversation_id, path).await?;
-                return read_file_tool_result(crate::native_tools::read_text_content(path, content, &arguments)?);
+                let ctx = native_ctx.as_ref().ok_or_else(|| {
+                    "read requires an agent context for internal URLs".to_string()
+                })?;
+                let content =
+                    crate::chat::sub_agent::urls::read(app, &ctx.conversation_id, path).await?;
+                return read_file_tool_result(crate::native_tools::read_text_content(
+                    path, content, &arguments,
+                )?);
             }
         }
     }
@@ -1210,7 +1255,7 @@ async fn call_native_tool(
     )
     .await?;
 
-    match &entry.call {
+    let mut result = match &entry.call {
         NativeToolCall::SyncText(call) => Ok(text_tool_result(call(&workspace, &arguments)?)),
         NativeToolCall::SyncResult(call) => call(&workspace, &arguments),
         NativeToolCall::BlockingText(call) => {
@@ -1219,18 +1264,7 @@ async fn call_native_tool(
         }
         NativeToolCall::BlockingMutation(call) => {
             let result = run_blocking_file_mutation(&workspace, &arguments, *call).await?;
-            let mut tool_result = file_mutation_tool_result(result)?;
-            // If an ordinary-chat `write` lands inside that conversation's
-            // workbench, attach a downloadable file-card artifact. Explicit writes
-            // elsewhere and project edits do not become delivery cards.
-            if tool.name == "write" {
-                if let Some(artifact) =
-                    delivery_artifact_for_write(&workspace, &arguments, native_ctx.as_ref())
-                {
-                    tool_result.artifacts.push(artifact);
-                }
-            }
-            Ok(tool_result)
+            file_mutation_tool_result(result)
         }
         NativeToolCall::Async(call) => {
             call(NativeCallCtx {
@@ -1246,7 +1280,15 @@ async fn call_native_tool(
         NativeToolCall::Conversation(_)
         | NativeToolCall::HostMediated
         | NativeToolCall::SubAgent(_) => unreachable!(),
+    }?;
+    if tool.name == "write" {
+        if let Some(artifact) =
+            delivery_artifact_for_write(&workspace, &arguments, native_ctx.as_ref())
+        {
+            result.artifacts.push(artifact);
+        }
     }
+    Ok(result)
 }
 
 /// Runs a file mutation tool on the blocking thread pool so in-process path
@@ -1268,31 +1310,8 @@ where
         .map_err(|err| format!("File mutation task failed: {err}"))?
 }
 
-/// 文件变更结果给模型的 diff 最多带多少行（对齐 clawspring 的 80 行裁剪）。
-const FILE_MUTATION_DIFF_MAX_LINES: usize = 80;
-
 pub fn file_mutation_tool_result(result: FileMutationResult) -> Result<McpToolCallResult, String> {
-    let summary = result.summary();
-    let mut content = summary;
-    if !result.warnings.is_empty() {
-        content = format!("{}\n{}", content, result.warnings.join("\n"));
-    }
-    // 成功只回传摘要和警告；完整 diff 仍留在 structured_content 中用于审阅。
-    // 失败保留原有诊断回显，不修改调用参数或实际文件内容。
-    if !result.ok && !result.diff.trim().is_empty() {
-        let lines: Vec<&str> = result.diff.lines().collect();
-        if lines.len() > FILE_MUTATION_DIFF_MAX_LINES {
-            let clipped = lines[..FILE_MUTATION_DIFF_MAX_LINES].join("\n");
-            content = format!(
-                "{}\n\n{}\n[... diff clipped: showing first {FILE_MUTATION_DIFF_MAX_LINES} of {} lines ...]",
-                content,
-                clipped,
-                lines.len()
-            );
-        } else {
-            content = format!("{}\n\n{}", content, result.diff);
-        }
-    }
+    let content = result.model_content();
     let is_error = !result.ok;
     let structured = serde_json::to_value(&result)
         .map_err(|err| format!("Serialize file mutation result failed: {err}"))?;
@@ -1393,7 +1412,10 @@ async fn resolve_native_workspace(
     let Some(native_ctx) = native_ctx else {
         return Ok(NativeToolWorkspace::standalone());
     };
-    if let Some(directory) = crate::chat::sub_agent::lifecycle::cwd_for_run(&app.state::<AppState>().sub_agents, &native_ctx.run_id) {
+    if let Some(directory) = crate::chat::sub_agent::lifecycle::cwd_for_run(
+        &app.state::<AppState>().sub_agents,
+        &native_ctx.run_id,
+    ) {
         return Ok(NativeToolWorkspace::conversation(directory));
     }
     if let Some(workspace) = crate::automation::workspace_for_conversation(
@@ -1436,12 +1458,20 @@ mod tests {
         second.id = "mcp__allowed__search".into();
         let mut malformed = first.clone();
         malformed.server_id = None;
-        let tools = vec![first, second, malformed, crate::mcp::types::native_read_file_tool()];
+        let tools = vec![
+            first,
+            second,
+            malformed,
+            crate::mcp::types::native_read_file_tool(),
+        ];
         let (tool_ids, server_ids) = super::mcp_grants(&tools);
-        assert_eq!(tool_ids, vec![
-            ("allowed".to_string(), "mcp__allowed__read".to_string()),
-            ("allowed".to_string(), "mcp__allowed__search".to_string()),
-        ]);
+        assert_eq!(
+            tool_ids,
+            vec![
+                ("allowed".to_string(), "mcp__allowed__read".to_string()),
+                ("allowed".to_string(), "mcp__allowed__search".to_string()),
+            ]
+        );
         assert_eq!(server_ids, vec!["allowed".to_string()]);
         assert_eq!(super::mcp_grants(&[]), (Vec::new(), Vec::new()));
     }
@@ -1456,9 +1486,10 @@ mod tests {
         let source = "def answer():\n    return 42\n".repeat(100);
         let mut mutation = crate::native_tools::write_file(
             &workspace,
-            &serde_json::json!({
-                "path": "answer.py", "content": source,
-            }),
+            &crate::native_tools::WriteArgs {
+                path: "answer.py".into(),
+                content: source.clone(),
+            },
         )
         .unwrap();
         mutation.warnings.push("retained warning".into());

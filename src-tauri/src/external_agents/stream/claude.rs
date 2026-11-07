@@ -23,7 +23,7 @@ fn claude_usage_parts(usage: &Value) -> CliUsageParts {
         cache_read: field("cache_read_input_tokens"),
         cache_creation: field("cache_creation_input_tokens"),
         // Anthropic 口径：`input_tokens` 是**非缓存**部分，与两个 cache 字段不相交，
-        // 三者相加才是全量输入。与内置路径 `context_estimate::anchor_total_tokens`
+        // 三者相加才是全量输入。与内置路径 `crate::chat::model::context_usage::anchor_total_tokens`
         // 的 `anthropic_messages` 分支同口径。（codex 相反，cache ⊆ input，别照抄。）
         cache_included_in_input: false,
         ..Default::default()
@@ -3693,7 +3693,9 @@ mod live_tests {
     use tokio::process::Child;
     use tokio::time::timeout;
 
-    use crate::external_agents::providers::claude::{append_system_prompt_file_args, build_claude_args};
+    use crate::external_agents::providers::claude::{
+        append_system_prompt_file_args, build_claude_args,
+    };
     use crate::external_agents::registry::get_agent_def;
     use crate::external_agents::spawn::{cli_command, resolve_binary};
     use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext, UnifiedAgentEvent};

@@ -4,7 +4,7 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::chat::agent::execute::truncate_chars;
-use crate::chat::agent::prepare as agent_prepare;
+use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::attachments::{
     compose_text_attachments_for_api, text_attachments_from_attachments,
 };
@@ -29,7 +29,9 @@ use super::agent_host::{ChatAgentHost, RegistryToolExecutor};
 use super::catalog::{
     chat_memory_prompt_for_request, is_builder_conversation, project_prompt_context_for,
 };
-use super::context::{build_chat_api_messages_with_video, resolve_usage_anchor};
+use super::context::{
+    accumulate_source_ids, build_chat_api_messages_with_video, resolve_usage_anchor,
+};
 use super::direct_image::complete_direct_image_generation_reply;
 use super::interaction::{emit_chat_stream_delta, emit_chat_tool_record, wait_for_chat_cancel};
 use super::messages::{
@@ -195,10 +197,14 @@ pub(super) async fn complete_assistant_reply_inner(
             entry,
         )
         .await
-        .map(|_| ArmReplyOutcome {
-            message: None,
-            run_id: None,
-            error: None,
+        .map(|outcome| match outcome {
+            crate::external_agents::ExternalCliTurnOutcome::Completed
+            | crate::external_agents::ExternalCliTurnOutcome::Failed(_)
+            | crate::external_agents::ExternalCliTurnOutcome::Cancelled => ArmReplyOutcome {
+                message: None,
+                run_id: None,
+                error: None,
+            },
         });
     }
 
@@ -262,7 +268,9 @@ pub(super) async fn complete_assistant_reply_inner(
                 .into(),
         );
     }
-    let run_generation = state.chat_runtime().begin_reply_generation(&conversation.id)
+    let run_generation = state
+        .chat_runtime()
+        .begin_reply_generation(&conversation.id)
         .ok_or_else(|| "cancelled".to_string())?;
     let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
     let assistant_message_id = format!("msg_{}", Uuid::new_v4());
@@ -626,12 +634,18 @@ pub(super) async fn complete_assistant_reply_inner(
         crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
     }
     let project_prompt_context = project_prompt_context_for(app, conversation);
-    append_main_subagent_tools(&mut tools, &settings, &resources.agents, chat_mode, builder_mode);
+    append_main_subagent_tools(
+        &mut tools,
+        &settings,
+        &resources.agents,
+        chat_mode,
+        builder_mode,
+    );
     let runtime_tools_available = !tools.is_empty();
     let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
-    let task_available = tools.iter().any(|tool| {
-        tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
-    });
+    let task_available = tools
+        .iter()
+        .any(|tool| tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME);
     let agent_ask_user_prompt = crate::chat::ask_user::format_prompt(ask_user_tools_available);
     let runtime_prompts = agent_prepare::resolve_runtime_prompt_sources(
         chat_mode,
@@ -795,7 +809,9 @@ pub(super) async fn complete_assistant_reply_inner(
                     .map(|m| m.content.clone()),
             );
             if resumed_jobs.is_some() {
-                runtime.hooks.retain(|hook| hook.event != "UserPromptSubmit");
+                runtime
+                    .hooks
+                    .retain(|hook| hook.event != "UserPromptSubmit");
             }
             runtime
         },
@@ -836,7 +852,7 @@ pub(super) async fn complete_assistant_reply_inner(
         app: app.clone(),
         state: state.inner(),
     };
-    let host: &dyn crate::chat::agent::AgentHost = {
+    let host: &dyn crate::chat::tool_runtime::ApplicationHost = {
         #[cfg(debug_assertions)]
         {
             if probe {
@@ -854,6 +870,10 @@ pub(super) async fn complete_assistant_reply_inner(
     let executor = RegistryToolExecutor {
         app: app.clone(),
         state: state.inner(),
+        skills: crate::skills::SkillRunContext::for_run(
+            skill_registry.clone(),
+            conversation.assistant_snapshot.as_ref(),
+        ),
         video_analysis: tokio::sync::Mutex::new(crate::chat::video_analysis::VideoTool::new(
             conversation.clone(),
             video_plan,
@@ -875,9 +895,39 @@ pub(super) async fn complete_assistant_reply_inner(
         conversation.context_state.request_measurement.as_ref(),
     );
     let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
-    let result = crate::chat::agent::run_agent_loop(
-        crate::chat::agent::AgentRunConfig {
-            provider_runtime: state.inner(),
+    let control = crate::chat::runtime_state::ChatRunControl::new(
+        state.chat_runtime(),
+        &conversation.id,
+        run_generation,
+    );
+    let handle = crate::chat::agent::control::AgentRunHandle::new(
+        crate::chat::agent::events::AgentRunIdentity {
+            conversation_id: &conversation.id,
+            run_id: &run_id,
+            message_id: &assistant_message_id,
+            generation: run_generation,
+        },
+        &control,
+    );
+    let events: &dyn crate::chat::agent::events::AgentEventSink = {
+        #[cfg(debug_assertions)]
+        {
+            if probe {
+                &probe_host
+            } else {
+                &chat_host
+            }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            &chat_host
+        }
+    };
+    let result = crate::chat::session_policy::run_session(
+        crate::chat::session_policy::ApplicationRunConfig {
+            state: state.inner(),
+            provider_runtime: None,
+            todo_state: conversation.agent_todo_state.clone(),
             conversation_id: conversation.id.clone(),
             tool_conversation_id: conversation.id.clone(),
             depth: 0,
@@ -906,16 +956,15 @@ pub(super) async fn complete_assistant_reply_inner(
             web_search_mode,
             max_output_tokens,
             retry_attempts,
-            assistant_snapshot: conversation.assistant_snapshot.clone(),
             provider_tools_fallback_prompt,
             initial_cache_usage: super::context::conversation_cache_usage(conversation, &settings),
             initial_anchor_total_tokens,
             initial_anchor_trailing_estimate,
-            skill_registry: skill_registry.clone(),
-            todo_state: conversation.agent_todo_state.clone(),
         },
         host,
         &executor,
+        events,
+        handle,
     )
     .await;
     let result = match result {
@@ -955,7 +1004,8 @@ pub(super) async fn complete_assistant_reply_inner(
     // A saved document, not the wording of the final response, identifies a plan.
     let message_plan = if plan_mode
         && result.tool_records.iter().any(|tool| {
-            tool.name == "save_plan" && tool.status == crate::chat::types::ToolCallStatus::Success
+            tool.name == "save_plan"
+                && tool.status == crate::chat::agent::content::AgentToolStatus::Success
         }) {
         let latest = crate::chat::storage::load_conversation(app, &conversation.id)?;
         (crate::chat::plan::is_plan_mode(&latest.agent_plan_state)
@@ -964,10 +1014,15 @@ pub(super) async fn complete_assistant_reply_inner(
     } else {
         None
     };
+    let (projected_tools, projected_blocks) = crate::chat::agent_presentation::project_snapshot(
+        &result.tool_records,
+        &result.segments,
+        Some(&run_id),
+    );
     let mut segments = auxiliary_tool_segments(&auxiliary_tool_records);
-    segments.extend(result.segments);
+    segments.extend(projected_blocks);
     let mut tool_records = auxiliary_tool_records;
-    tool_records.extend(result.tool_records);
+    tool_records.extend(projected_tools);
     // 模型原生生成的图片（Gemini native image gen，任务 07-24）→ assistant 消息级 artifacts，
     // 前端答案下方图片画廊直接展示（消费 message.artifacts）。空则无开销。
     let artifacts = generated_image_artifacts(&result.images);
@@ -984,7 +1039,7 @@ pub(super) async fn complete_assistant_reply_inner(
             segments,
             skill_id.as_deref(),
             Some(run_entry),
-            Some(result.stream_outcome.as_str()),
+            Some(crate::chat::agent_presentation::run_status(&result.status)),
             result.usage,
             result.last_step_usage,
             message_plan,
@@ -1017,15 +1072,13 @@ pub(super) async fn complete_assistant_reply_inner(
     if let Some(mut summary) = result.compaction_summary.clone() {
         // L2 产出的 summary.source_message_ids 为空（运行时侧拿不到完整 UI id 列表）——
         // 在此按 source_until_message_id 从 conversation 累积（含旧 summary 覆盖范围），
-        // 与落盘路径 compact_conversation_inner 口径一致。必须在替换 summary **之前**读旧 S1。
-        summary.source_message_ids = crate::chat::agent::compaction::accumulate_source_ids(
-            conversation,
-            &summary.source_until_message_id,
-        );
+        // 与落盘路径 compress_conversation_context 口径一致。必须在替换 summary **之前**读旧 S1。
+        summary.source_message_ids =
+            accumulate_source_ids(conversation, &summary.source_until_message_id);
         // Files-touched ledger: recompute cumulatively here (this L2 summary was
         // built on the runtime Value stream, which lacks the Conversation). Same
         // recompute as the disk path, so neither clobbers the other's ledger.
-        let ledger = crate::chat::agent::file_ledger::build_for_boundary(
+        let ledger = crate::chat::file_ledger::build_for_boundary(
             conversation,
             &summary.source_until_message_id,
         );
@@ -1037,13 +1090,13 @@ pub(super) async fn complete_assistant_reply_inner(
             .compression_count
             .saturating_add(1);
         conversation.context_state.summary = Some(summary);
-        // R-4：多次链式压缩后提示准确性下降（与 compact_conversation 口径一致）。
-        conversation.context_state.warning = crate::chat::agent::compaction::decay_warning_for(
+        // R-4：多次链式压缩后提示准确性下降（与 compress_conversation_context 口径一致）。
+        conversation.context_state.warning = crate::chat::context_policy::decay_warning_for(
             conversation.context_state.compression_count,
         );
     }
     let terminal_content = result.content.clone();
-    let terminal_outcome = result.stream_outcome.clone();
+    let terminal_outcome = crate::chat::agent_presentation::run_status(&result.status).to_string();
     let goal_assistant_message_id = assistant_message_id.clone();
     let goal_run = conversation
         .goal_state
@@ -1067,7 +1120,7 @@ pub(super) async fn complete_assistant_reply_inner(
         skill_id.as_deref(),
         title_from_first_user,
         Some(run_entry),
-        Some(result.stream_outcome.as_str()),
+        Some(crate::chat::agent_presentation::run_status(&result.status)),
         result.usage,
         result.last_step_usage,
         message_plan,
@@ -1245,12 +1298,17 @@ mod tests {
             settings.chat_tools.task_max_recursion_depth = depth;
             let mut tools = Vec::new();
             append_main_subagent_tools(&mut tools, &settings, &[], chat_mode, builder_mode);
-            let task = tools.iter().any(|tool| tool.name == crate::chat::sub_agent::TASK_TOOL_NAME);
-            let wait = tools.iter().any(|tool| tool.name == crate::chat::sub_agent::WAIT_TOOL_NAME);
+            let task = tools
+                .iter()
+                .any(|tool| tool.name == crate::chat::sub_agent::TASK_TOOL_NAME);
+            let wait = tools
+                .iter()
+                .any(|tool| tool.name == crate::chat::sub_agent::WAIT_TOOL_NAME);
             assert_eq!(task, expected_task);
             assert_eq!(wait, expected_wait);
             assert_eq!(
-                crate::chat::plan::format_prompt(&plan, task).contains("read-only planning investigations"),
+                crate::chat::plan::format_prompt(&plan, task)
+                    .contains("read-only planning investigations"),
                 expected_task,
             );
         }

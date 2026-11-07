@@ -24,10 +24,10 @@ use crate::external_agents::session::live::TurnDelivery;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 use uuid::Uuid;

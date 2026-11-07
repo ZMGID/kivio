@@ -44,7 +44,9 @@ pub struct AgentDefinition {
 
 /// Built-in OMP agent personas, with tool names mapped to Kivio's registry.
 pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
-    use crate::chat::sub_agent::prompts::{AGENT_REVIEWER, AGENT_SCOUT, AGENT_SEANCE, AGENT_SECURITY_REVIEWER, AGENT_TASK};
+    use crate::chat::sub_agent::prompts::{
+        AGENT_REVIEWER, AGENT_SCOUT, AGENT_SEANCE, AGENT_SECURITY_REVIEWER, AGENT_TASK,
+    };
 
     vec![
         AgentDefinition {
@@ -153,7 +155,17 @@ mod tests {
     #[test]
     fn builtins_expose_omp_personas_and_spawn_policies() {
         let defs = builtin_agent_definitions();
-        assert_eq!(defs.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["task", "sonic", "scout", "reviewer", "security-reviewer", "seance"]);
+        assert_eq!(
+            defs.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(),
+            [
+                "task",
+                "sonic",
+                "scout",
+                "reviewer",
+                "security-reviewer",
+                "seance"
+            ]
+        );
         assert_eq!(defs[0].spawns.as_deref(), Some("*"));
         assert!(defs[0].tools.is_none());
         assert_eq!(defs[0].thinking_level.as_deref(), Some("auto"));
@@ -165,7 +177,12 @@ mod tests {
         assert!(scout_tools.iter().any(|tool| tool == "glob"));
         assert!(!scout_tools.iter().any(|tool| tool == "write"));
         assert_eq!(defs[3].spawns.as_deref(), Some("scout"));
-        assert!(defs[3].tools.as_ref().unwrap().iter().any(|tool| tool == "bash"));
+        assert!(defs[3]
+            .tools
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|tool| tool == "bash"));
         assert!(defs[4].system_prompt.contains("attacker-controlled"));
         assert_eq!(defs[5].name, "seance");
         assert!(defs[5].unsupported.is_empty());

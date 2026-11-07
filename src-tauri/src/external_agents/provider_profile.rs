@@ -175,10 +175,13 @@ fn effective_env_path(
         .or_else(|| nonempty_env_path(key))
 }
 fn effective_user_home(def: &RuntimeAgentDef, config: &ExternalCliAgentConfig) -> Option<PathBuf> {
+    effective_user_home_in(&|key| effective_env_path(def, config, key))
+}
+fn effective_user_home_in(env_path: &impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
     let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
-    effective_env_path(def, config, key)
-        .or_else(|| effective_env_path(def, config, "HOME"))
-        .or_else(|| directories::BaseDirs::new().map(|base| base.home_dir().to_path_buf()))
+    env_path(key)
+        .or_else(|| env_path("HOME"))
+        .or_else(default_user_home)
 }
 fn bound_state(path: PathBuf, target: &Path) -> PathBuf {
     use sha2::{Digest, Sha256};
@@ -193,48 +196,55 @@ fn effective_native_paths(
     def: &RuntimeAgentDef,
     config: &ExternalCliAgentConfig,
 ) -> Option<NativePaths> {
-    let mut paths = match def.provider_profile {
-        ProviderProfileStrategy::OpenCode => opencode_paths_in(
-            Some(
-                effective_env_path(def, config, "XDG_CONFIG_HOME")
-                    .unwrap_or(effective_user_home(def, config)?.join(".config")),
-            ),
-            Some(
-                effective_env_path(def, config, "XDG_DATA_HOME")
-                    .unwrap_or(effective_user_home(def, config)?.join(".local/share")),
-            ),
-        )?,
-        ProviderProfileStrategy::Pi => pi_paths_in(
-            effective_env_path(def, config, "PI_CODING_AGENT_DIR")
-                .unwrap_or(effective_user_home(def, config)?.join(".pi/agent")),
-        )?,
-        _ => return None,
-    };
+    let mut paths = native_paths_in(def, &|key| effective_env_path(def, config, key))?;
     paths.state = bound_state(paths.state, &paths.config);
     Some(paths)
+}
+fn native_paths_in(
+    def: &RuntimeAgentDef,
+    env_path: &impl Fn(&str) -> Option<PathBuf>,
+) -> Option<NativePaths> {
+    match def.provider_profile {
+        ProviderProfileStrategy::OpenCode => opencode_paths_in(
+            env_path("XDG_CONFIG_HOME")
+                .or_else(|| effective_user_home_in(env_path).map(|home| home.join(".config")))?,
+            env_path("XDG_DATA_HOME").or_else(|| {
+                effective_user_home_in(env_path).map(|home| home.join(".local/share"))
+            })?,
+        ),
+        ProviderProfileStrategy::Pi => pi_paths_in(
+            env_path("PI_CODING_AGENT_DIR")
+                .or_else(|| effective_user_home_in(env_path).map(|home| home.join(".pi/agent")))?,
+        ),
+        _ => None,
+    }
 }
 fn effective_toml_paths(
     def: &RuntimeAgentDef,
     config: &ExternalCliAgentConfig,
 ) -> Option<(PathBuf, PathBuf)> {
-    let (key, fallback, state) = if def.provider_profile == ProviderProfileStrategy::Grok {
-        (
-            "GROK_HOME",
-            effective_user_home(def, config)?.join(".grok/config.toml"),
-            grok_state_path()?,
-        )
+    let target = toml_config_path_in(def, &|key| effective_env_path(def, config, key))?;
+    let state = if def.provider_profile == ProviderProfileStrategy::Grok {
+        grok_state_path()?
     } else {
-        (
-            "KIMI_CODE_HOME",
-            effective_user_home(def, config)?.join(".kimi-code/config.toml"),
-            kimi_state_path()?,
-        )
+        kimi_state_path()?
     };
-    let target = effective_env_path(def, config, key)
-        .map(|home| home.join("config.toml"))
-        .unwrap_or(fallback);
     Some((target.clone(), bound_state(state, &target)))
 }
+fn toml_config_path_in(
+    def: &RuntimeAgentDef,
+    env_path: &impl Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let (key, fallback) = if def.provider_profile == ProviderProfileStrategy::Grok {
+        ("GROK_HOME", ".grok")
+    } else {
+        ("KIMI_CODE_HOME", ".kimi-code")
+    };
+    env_path(key)
+        .or_else(|| effective_user_home_in(env_path).map(|home| home.join(fallback)))
+        .map(|home| home.join("config.toml"))
+}
+
 pub(super) fn effective_dsh_path(config: &ExternalCliAgentConfig) -> Option<PathBuf> {
     let def = get_agent_def("dsh")?;
     effective_env_path(def, config, "DSH_HOME")
@@ -762,26 +772,32 @@ fn profiles_dir() -> Option<PathBuf> {
 }
 
 fn nonempty_env_path(key: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    if TEST_PROFILE_ROOT.with(|root| root.borrow().is_some()) {
+        return None;
+    }
     std::env::var_os(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
 
+fn default_user_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_PROFILE_ROOT.with(|root| root.borrow().clone()) {
+        return Some(root.join("home"));
+    }
+    directories::BaseDirs::new().map(|base| base.home_dir().to_path_buf())
+}
+
 fn opencode_paths() -> Option<NativePaths> {
+    let home = default_user_home()?;
     opencode_paths_in(
-        nonempty_env_path("XDG_CONFIG_HOME"),
-        nonempty_env_path("XDG_DATA_HOME"),
+        nonempty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")),
+        nonempty_env_path("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")),
     )
 }
 
-fn opencode_paths_in(
-    config_home: Option<PathBuf>,
-    data_home: Option<PathBuf>,
-) -> Option<NativePaths> {
-    let base = directories::BaseDirs::new()?;
-    let home = base.home_dir();
-    let config_home = config_home.unwrap_or_else(|| home.join(".config"));
-    let data_home = data_home.unwrap_or_else(|| home.join(".local/share"));
+fn opencode_paths_in(config_home: PathBuf, data_home: PathBuf) -> Option<NativePaths> {
     let config_dir = config_home.join("opencode");
     let candidates: Vec<PathBuf> = ["config.json", "opencode.json", "opencode.jsonc"]
         .into_iter()
@@ -1014,13 +1030,15 @@ pub(super) fn launch_file_revision(
     use ProviderProfileStrategy::*;
 
     let env_path = |key: &str| {
-        env.iter().find(|(name, _)| {
-            if cfg!(windows) {
-                name.to_string_lossy().eq_ignore_ascii_case(key)
-            } else {
-                name.as_os_str() == OsStr::new(key)
-            }
-        }).map(|(_, value)| value)
+        env.iter()
+            .find(|(name, _)| {
+                if cfg!(windows) {
+                    name.to_string_lossy().eq_ignore_ascii_case(key)
+                } else {
+                    name.as_os_str() == OsStr::new(key)
+                }
+            })
+            .map(|(_, value)| value)
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     };
@@ -1053,29 +1071,13 @@ pub(super) fn launch_file_revision(
             }
         }
         OpenCode | Pi if !wsl => {
-            let paths = if def.provider_profile == Pi {
-                env_path("PI_CODING_AGENT_DIR")
-                    .or_else(pi_agent_dir)
-                    .and_then(pi_paths_in)
-            } else {
-                opencode_paths_in(env_path("XDG_CONFIG_HOME"), env_path("XDG_DATA_HOME"))
-            };
-            if let Some(paths) = paths {
+            if let Some(paths) = native_paths_in(def, &env_path) {
                 files.extend([paths.config, paths.auth]);
                 files.extend(paths.alternate_configs);
                 files.extend(paths.settings);
             }
         }
-        Grok if !wsl => files.extend(
-            env_path("GROK_HOME")
-                .map(|home| home.join("config.toml"))
-                .or_else(grok_config_path),
-        ),
-        Kimi if !wsl => files.extend(
-            env_path("KIMI_CODE_HOME")
-                .map(|home| home.join("config.toml"))
-                .or_else(kimi_config_path),
-        ),
+        Grok | Kimi if !wsl => files.extend(toml_config_path_in(def, &env_path)),
         Dsh if !wsl => {
             if let Some(home) = env_path("DSH_HOME").or_else(super::dsh_profile::dsh_home) {
                 files.extend([home.join(".credentials.yaml"), home.join(".env")]);
@@ -1757,7 +1759,7 @@ fn grok_config_path() -> Option<PathBuf> {
     if let Some(home) = nonempty_env_path("GROK_HOME") {
         return Some(home.join("config.toml"));
     }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".grok").join("config.toml"))
+    default_user_home().map(|home| home.join(".grok/config.toml"))
 }
 
 fn grok_state_path() -> Option<PathBuf> {
@@ -1912,7 +1914,7 @@ fn kimi_config_path() -> Option<PathBuf> {
     if let Some(home) = nonempty_env_path("KIMI_CODE_HOME") {
         return Some(home.join("config.toml"));
     }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".kimi-code").join("config.toml"))
+    default_user_home().map(|home| home.join(".kimi-code/config.toml"))
 }
 
 fn kimi_state_path() -> Option<PathBuf> {
@@ -2920,6 +2922,217 @@ mod tests {
         ProfileRoot
     }
 
+    fn assert_user_home_file_changes_launch_identity(agent: &str, relative: &str) {
+        use super::super::overrides::LaunchIdentity;
+
+        let keys = if cfg!(windows) {
+            vec!["USERPROFILE", "userprofile", "HOME", "home"]
+        } else {
+            vec!["HOME"]
+        };
+        for key in keys {
+            let temp = tempfile::tempdir().unwrap();
+            let _root = isolated_profiles(temp.path());
+            let home = temp.path().join("child-home");
+            let path = home.join(relative);
+            let def = get_agent_def(agent).unwrap();
+            let config = ExternalCliAgentConfig {
+                env: vec![crate::settings::CliEnvVar {
+                    key: key.into(),
+                    value: home.to_string_lossy().into_owned(),
+                }],
+                ..Default::default()
+            };
+            let effective = if agent == "opencode" {
+                let paths = effective_native_paths(def, &config).unwrap();
+                if relative.ends_with("auth.json") {
+                    paths.auth
+                } else {
+                    paths.config
+                }
+            } else {
+                let fallback = match agent {
+                    "grok" => grok_config_path().unwrap(),
+                    "kimi" => kimi_config_path().unwrap(),
+                    _ => unreachable!(),
+                };
+                assert!(fallback.starts_with(temp.path()));
+                effective_toml_paths(def, &config).unwrap().0
+            };
+            assert_eq!(effective, path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"first account").unwrap();
+            let host_path = temp.path().join("home").join(relative);
+            std::fs::create_dir_all(host_path.parent().unwrap()).unwrap();
+            std::fs::write(&host_path, b"host account").unwrap();
+            let bin = temp.path().join(agent);
+            std::fs::write(&bin, b"fixture executable").unwrap();
+            let environment = [(OsString::from(key), home.into_os_string())].into();
+            let capture = || {
+                LaunchIdentity::from_environment(def, &bin, Some(0), Some(&config), &environment)
+            };
+            let first = capture();
+            assert_eq!(first, capture());
+            std::fs::write(host_path, b"changed host account").unwrap();
+            assert_eq!(first, capture(), "{agent} must ignore the host home");
+            std::fs::write(&path, b"second account").unwrap();
+            assert_ne!(
+                first,
+                capture(),
+                "{agent} must observe {relative} under {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn launch_identity_tracks_opencode_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("opencode", ".config/opencode/opencode.json");
+    }
+
+    #[test]
+    fn launch_identity_tracks_opencode_auth_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity(
+            "opencode",
+            ".local/share/opencode/auth.json",
+        );
+    }
+
+    #[test]
+    fn launch_identity_tracks_grok_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("grok", ".grok/config.toml");
+    }
+
+    #[test]
+    fn launch_identity_tracks_kimi_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("kimi", ".kimi-code/config.toml");
+    }
+
+    #[test]
+    fn launch_identity_keeps_captured_directory_precedence() {
+        use super::super::overrides::LaunchIdentity;
+
+        for (agent, key, relative, fallback) in [
+            (
+                "opencode",
+                "XDG_CONFIG_HOME",
+                "opencode/opencode.json",
+                ".config/opencode/opencode.json",
+            ),
+            (
+                "opencode",
+                "XDG_DATA_HOME",
+                "opencode/auth.json",
+                ".local/share/opencode/auth.json",
+            ),
+            (
+                "pi",
+                "PI_CODING_AGENT_DIR",
+                "auth.json",
+                ".pi/agent/auth.json",
+            ),
+            ("grok", "GROK_HOME", "config.toml", ".grok/config.toml"),
+            (
+                "kimi",
+                "KIMI_CODE_HOME",
+                "config.toml",
+                ".kimi-code/config.toml",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let _root = isolated_profiles(temp.path());
+            let home = temp.path().join("child-home");
+            let dedicated = temp.path().join("captured-directory");
+            let current = temp.path().join("current-config-directory");
+            let target = dedicated.join(relative);
+            let decoys = [home.join(fallback), current.join(relative)];
+            for path in std::iter::once(&target).chain(decoys.iter()) {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"first account").unwrap();
+            }
+            let home_key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+            let directory_key = if cfg!(windows) {
+                key.to_ascii_lowercase()
+            } else {
+                key.to_owned()
+            };
+            let environment = [
+                (OsString::from(home_key), home.into_os_string()),
+                (OsString::from(directory_key), dedicated.into_os_string()),
+            ]
+            .into();
+            let config = ExternalCliAgentConfig {
+                env: vec![crate::settings::CliEnvVar {
+                    key: key.into(),
+                    value: current.to_string_lossy().into_owned(),
+                }],
+                ..Default::default()
+            };
+            let def = get_agent_def(agent).unwrap();
+            let capture = || {
+                LaunchIdentity::from_environment(
+                    def,
+                    Path::new(agent),
+                    Some(0),
+                    Some(&config),
+                    &environment,
+                )
+            };
+            let first = capture();
+            for path in decoys {
+                std::fs::write(path, b"changed decoy account").unwrap();
+            }
+            assert_eq!(first, capture(), "{agent} must use captured {key}");
+            std::fs::write(target, b"changed captured account").unwrap();
+            assert_ne!(first, capture(), "{agent} must track captured {key}");
+        }
+    }
+
+    #[test]
+    fn launch_identity_does_not_read_lossy_home_alias() {
+        use super::super::overrides::LaunchIdentity;
+        #[cfg(unix)]
+        use std::os::unix::ffi::OsStringExt;
+        #[cfg(windows)]
+        use std::os::windows::ffi::OsStringExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(temp.path());
+        #[cfg(unix)]
+        let home = temp.path().join(OsString::from_vec(b"child-\xff".to_vec()));
+        #[cfg(windows)]
+        let home = temp.path().join(OsString::from_wide(&[0x63, 0xd800]));
+        let lossy_home = PathBuf::from(home.to_string_lossy().into_owned());
+        let path = lossy_home.join(".grok/config.toml");
+        let fallback_path = temp.path().join("home/.grok/config.toml");
+        for path in [&path, &fallback_path] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"first account").unwrap();
+        }
+        let def = get_agent_def("grok").unwrap();
+        let capture = |home: &Path| {
+            let home_key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+            let environment = [(OsString::from(home_key), home.as_os_str().to_owned())].into();
+            LaunchIdentity::from_environment(def, Path::new("grok"), Some(0), None, &environment)
+        };
+        let original = capture(&home);
+        let lossy = capture(&lossy_home);
+        for path in [&path, &fallback_path] {
+            std::fs::write(path, b"changed account").unwrap();
+        }
+        assert_eq!(original, capture(&home));
+        assert_ne!(lossy, capture(&lossy_home));
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let path = home.join(".grok/config.toml");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"first account").unwrap();
+            let original = capture(&home);
+            std::fs::write(path, b"changed account").unwrap();
+            assert_ne!(original, capture(&home));
+        }
+    }
+
     #[cfg(windows)]
     #[test]
     fn maintenance_review_lowercase_home_tracks_changed_credentials() {
@@ -2934,7 +3147,10 @@ mod tests {
         let hasher = std::collections::hash_map::RandomState::new();
         let first = launch_file_revision(def, Path::new("codex.exe"), None, &env, &hasher);
         std::fs::write(&auth, "second account").unwrap();
-        assert_ne!(first, launch_file_revision(def, Path::new("codex.exe"), None, &env, &hasher));
+        assert_ne!(
+            first,
+            launch_file_revision(def, Path::new("codex.exe"), None, &env, &hasher)
+        );
     }
     fn codex_settings(
         providers: Vec<ExternalCliProvider>,

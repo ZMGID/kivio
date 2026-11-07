@@ -9,9 +9,15 @@ use tokio::io::AsyncWriteExt;
 use super::{executor::PreparedWorker, registry::AgentRecord};
 
 pub(crate) fn policy_tool_record(record: &crate::chat::types::ToolCallRecord) -> Option<Value> {
-    if record.source != "native" || !matches!(record.name.as_str(), "edit" | "write" | "todo_write")
-        || super::policies::PolicyToolResult::from_record(record).is_none() { return None; }
-    let path = serde_json::from_str::<Value>(&record.arguments).ok().and_then(|args| args.get("path").cloned());
+    if record.source != "native"
+        || !matches!(record.name.as_str(), "edit" | "write" | "todo_write")
+        || super::policies::PolicyToolResult::from_record(record).is_none()
+    {
+        return None;
+    }
+    let path = serde_json::from_str::<Value>(&record.arguments)
+        .ok()
+        .and_then(|args| args.get("path").cloned());
     let details = record.structured_content.as_ref();
     Some(serde_json::json!({
         "id":record.id, "name":record.name, "source":record.source, "status":record.status,
@@ -22,12 +28,20 @@ pub(crate) fn policy_tool_record(record: &crate::chat::types::ToolCallRecord) ->
     }))
 }
 
-fn policy_result_from_message(message: &Value) -> Result<Option<crate::chat::types::ToolCallRecord>, String> {
-    let Some(saved) = message.get("_subagent_policy_tool") else { return Ok(None); };
+fn policy_result_from_message(
+    message: &Value,
+) -> Result<Option<crate::chat::types::ToolCallRecord>, String> {
+    let Some(saved) = message.get("_subagent_policy_tool") else {
+        return Ok(None);
+    };
     let record: crate::chat::types::ToolCallRecord = serde_json::from_value(saved.clone())
         .map_err(|error| format!("Invalid saved policy tool result: {error}"))?;
-    if message["role"] != "tool" || message["tool_call_id"] != record.id
-        || policy_tool_record(&record).is_none() { return Err("Saved policy tool result does not match its call".into()); }
+    if message["role"] != "tool"
+        || message["tool_call_id"] != record.id
+        || policy_tool_record(&record).is_none()
+    {
+        return Err("Saved policy tool result does not match its call".into());
+    }
     Ok(Some(record))
 }
 
@@ -292,14 +306,22 @@ fn replay_checked(
                 worker.contract = Some(contract);
             }
             Some("policy_state") => {
-                if worker.contract.is_none() { return Err("Policy update precedes session contract".into()); }
+                if worker.contract.is_none() {
+                    return Err("Policy update precedes session contract".into());
+                }
                 let policies = serde_json::from_value(entry["policies"].clone())
                     .map_err(|error| format!("Invalid subagent policy state: {error}"))?;
-                let messages = entry["messages"].as_array().ok_or("Invalid subagent policy messages")?;
-                for message in messages { validate_message(message)?; }
+                let messages = entry["messages"]
+                    .as_array()
+                    .ok_or("Invalid subagent policy messages")?;
+                for message in messages {
+                    validate_message(message)?;
+                }
                 worker.policies = Arc::new(tokio::sync::Mutex::new(policies));
                 pending_policy_tools.clear();
-                if !messages.is_empty() { transcript_tail.clear(); }
+                if !messages.is_empty() {
+                    transcript_tail.clear();
+                }
                 worker.history.extend(messages.iter().cloned());
             }
             Some("compaction") => {
@@ -315,7 +337,9 @@ fn replay_checked(
                     return Err("Invalid compaction transcript cursor".into());
                 }
                 for message in &history[start..] {
-                    if let Some(record) = policy_result_from_message(message)? { pending_policy_tools.push(record); }
+                    if let Some(record) = policy_result_from_message(message)? {
+                        pending_policy_tools.push(record);
+                    }
                 }
                 transcript_tail = history[start..].iter().cloned().collect();
                 worker.history = history;
@@ -363,7 +387,9 @@ fn replay_checked(
                     continue;
                 }
                 transcript_tail.clear();
-                if let Some(record) = policy_result_from_message(&entry)? { pending_policy_tools.push(record); }
+                if let Some(record) = policy_result_from_message(&entry)? {
+                    pending_policy_tools.push(record);
+                }
                 worker.history.push(entry);
             }
         }
@@ -403,9 +429,17 @@ fn replay_checked(
         }
         validate_tool_pairs(&worker.history)?;
     }
-    let todo_available = contract.tools.iter().any(|tool| tool == "native__todo_write");
-    let mut policies = worker.policies.try_lock().expect("replayed policy state is not shared");
-    for turn in pending_policy_tools.chunk_by(|left, right| left.trace_id == right.trace_id && left.round == right.round) {
+    let todo_available = contract
+        .tools
+        .iter()
+        .any(|tool| tool == "native__todo_write");
+    let mut policies = worker
+        .policies
+        .try_lock()
+        .expect("replayed policy state is not shared");
+    for turn in pending_policy_tools
+        .chunk_by(|left, right| left.trace_id == right.trace_id && left.round == right.round)
+    {
         if policies.observe_tools(turn, todo_available).nudge.is_some() {
             // Replay recovers effects; the live checkpoint persists any missing nudge.
             policies.prewalk.plan_nudged = false;
@@ -482,17 +516,20 @@ fn validate_tool_pairs(history: &[Value]) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn contract(cwd: &std::path::Path) -> Value {
-        json!({"type":"session_init","version":1,"id":"A","root":"r","parentId":"Main","depth":1,
+pub(super) fn test_contract(cwd: &std::path::Path) -> Value {
+    serde_json::json!({"type":"session_init","version":1,"id":"A","root":"r","parentId":"Main","depth":1,
             "generation":1,"conversationId":"subagent-r-A","cwd":cwd,"systemPrompt":"system","runtimeContext":"context",
             "task":"task","agentDefinition":crate::agents::builtin_agent_definitions()[0],"tools":[],"mcpToolIds":[],"mcpServerIds":[],
             "readOnly":true,"resolvedModel":{"provider":"provider","model":"model"},"thinkingEnabled":false,"resolvedThinkingLevel":null,
             "approvalPolicy":"always_confirm","planState":crate::chat::types::AgentPlanState::default()})
-    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    use super::test_contract as contract;
 
     fn bytes(entries: &[Value]) -> Vec<u8> {
         entries
@@ -595,9 +632,16 @@ mod tests {
     async fn replay_restores_policy_handoff_advisor_and_injected_messages() {
         use super::super::policies::{AdvisorState, PolicyModel, PrewalkState, SessionPolicies};
         let cwd = tempfile::tempdir().unwrap();
-        let model = PolicyModel { provider_id: "provider".into(), model: "implementation".into(), thinking_level: Some("low".into()) };
+        let model = PolicyModel {
+            provider_id: "provider".into(),
+            model: "implementation".into(),
+            thinking_level: Some("low".into()),
+        };
         let mut initial = SessionPolicies::default();
-        initial.prewalk = PrewalkState { target: Some(model.clone()), ..Default::default() };
+        initial.prewalk = PrewalkState {
+            target: Some(model.clone()),
+            ..Default::default()
+        };
         initial.read_summarize = Some(false);
         let mut init = contract(cwd.path());
         init["policies"] = serde_json::to_value(&initial).unwrap();
@@ -607,13 +651,22 @@ mod tests {
             serde_json::from_value(json!({"id":"edit","name":"edit","source":"native","status":"error","arguments":"{\"path\":\"code.rs\"}","trace_id":"run"})).unwrap(),
         ];
         assert!(advanced.observe_tools(&[], true).nudge.is_some());
-        assert_eq!(advanced.observe_tools(&records, true).handoff, Some(model.clone()));
+        assert_eq!(
+            advanced.observe_tools(&records, true).handoff,
+            Some(model.clone())
+        );
         advanced.advisor = Some(AdvisorState {
-            model: model.clone(), messages: vec![json!({"role":"assistant","content":"Check errors."})], last_history_digest: Some("checkpoint".into()),
+            model: model.clone(),
+            messages: vec![json!({"role":"assistant","content":"Check errors."})],
+            last_history_digest: Some("checkpoint".into()),
         });
         let nudge = json!({"role":"user","content":"Plan before edits.","_subagent_prewalk":true});
-        let entries = vec![init, json!({"role":"system","content":"system"}), json!({"role":"user","content":"task"}),
-            json!({"type":"policy_state","policies":advanced,"messages":[nudge.clone()]})];
+        let entries = vec![
+            init,
+            json!({"role":"system","content":"system"}),
+            json!({"role":"user","content":"task"}),
+            json!({"type":"policy_state","policies":advanced,"messages":[nudge.clone()]}),
+        ];
         let worker = replay(&bytes(&entries), "r", "A").unwrap();
         assert_eq!(worker.history.len(), 3);
         assert_eq!(worker.history.last(), Some(&nudge));
@@ -621,7 +674,15 @@ mod tests {
         let mut restored = worker.policies.lock().await;
         assert_eq!(restored.handoff_model(), Some(&model));
         assert_eq!(restored.read_summarize, Some(false));
-        assert_eq!(restored.advisor.as_ref().unwrap().last_history_digest.as_deref(), Some("checkpoint"));
+        assert_eq!(
+            restored
+                .advisor
+                .as_ref()
+                .unwrap()
+                .last_history_digest
+                .as_deref(),
+            Some("checkpoint")
+        );
         assert!(restored.observe_tools(&records, true).handoff.is_none());
     }
 
@@ -629,10 +690,20 @@ mod tests {
     fn replay_rejects_invalid_or_orphaned_policy_updates() {
         let cwd = tempfile::tempdir().unwrap();
         let update = json!({"type":"policy_state","policies":{},"messages":[]});
-        assert!(replay(&bytes(&[update]), "r", "A").err().unwrap().contains("precedes"));
-        for update in [json!({"type":"policy_state","policies":null,"messages":[]}),
-            json!({"type":"policy_state","policies":{},"messages":[{"role":"forged"}]})] {
-            let entries = vec![contract(cwd.path()), json!({"role":"system","content":"system"}), json!({"role":"user","content":"task"}), update];
+        assert!(replay(&bytes(&[update]), "r", "A")
+            .err()
+            .unwrap()
+            .contains("precedes"));
+        for update in [
+            json!({"type":"policy_state","policies":null,"messages":[]}),
+            json!({"type":"policy_state","policies":{},"messages":[{"role":"forged"}]}),
+        ] {
+            let entries = vec![
+                contract(cwd.path()),
+                json!({"role":"system","content":"system"}),
+                json!({"role":"user","content":"task"}),
+                update,
+            ];
             assert!(replay(&bytes(&entries), "r", "A").is_err());
         }
     }
@@ -642,47 +713,84 @@ mod tests {
         use super::super::policies::{PolicyModel, PrewalkState, SessionPolicies};
         let cwd = tempfile::tempdir().unwrap();
         let mut policies = SessionPolicies::default();
-        policies.prewalk = PrewalkState { target: Some(PolicyModel {
-            provider_id: "provider".into(), model: "implementation".into(), thinking_level: None,
-        }), ..Default::default() };
+        policies.prewalk = PrewalkState {
+            target: Some(PolicyModel {
+                provider_id: "provider".into(),
+                model: "implementation".into(),
+                thinking_level: None,
+            }),
+            ..Default::default()
+        };
         let mut init = contract(cwd.path());
         init["policies"] = serde_json::to_value(&policies).unwrap();
         init["tools"] = json!(["native__todo_write"]);
-        let mut entries = vec![init, json!({"role":"system","content":"system"}), json!({"role":"user","content":"task"})];
-        let todo = crate::chat::todo::apply_todo_write(json!({"todos":[{"content":"Verify the effect","status":"in_progress"}]})).unwrap();
+        let mut entries = vec![
+            init,
+            json!({"role":"system","content":"system"}),
+            json!({"role":"user","content":"task"}),
+        ];
+        let todo = crate::chat::todo::apply_todo_write(
+            json!({"todos":[{"content":"Verify the effect","status":"in_progress"}]}),
+        )
+        .unwrap();
         for (round, name, status, arguments) in [
-            (1, "edit", "error", json!({"path":"code.rs","content":"source contents are not duplicated"})),
+            (
+                1,
+                "edit",
+                "error",
+                json!({"path":"code.rs","content":"source contents are not duplicated"}),
+            ),
             (2, "todo_write", "success", json!({"todos":[]})),
         ] {
             let mut record: crate::chat::types::ToolCallRecord = serde_json::from_value(json!({
                 "id":format!("call-{round}"), "name":name, "source":"native", "status":status,
                 "arguments":arguments.to_string(), "round":round, "trace_id":"run",
-            })).unwrap();
-            if name == "todo_write" { record.structured_content = crate::chat::todo::tool_result(&todo).structured_content; }
+            }))
+            .unwrap();
+            if name == "todo_write" {
+                record.structured_content =
+                    crate::chat::todo::tool_result(&todo).structured_content;
+            }
             let compact = policy_tool_record(&record).unwrap();
-            assert!(!compact.to_string().contains("source contents are not duplicated"));
+            assert!(!compact
+                .to_string()
+                .contains("source contents are not duplicated"));
             entries.push(json!({"role":"assistant","tool_calls":[{"id":record.id}]}));
             entries.push(json!({"role":"tool","tool_call_id":record.id,"content":"completed","_subagent_policy_tool":compact}));
         }
         let worker = replay(&bytes(&entries), "r", "A").unwrap();
         let restored = worker.policies.lock().await;
         assert!(restored.prewalk.todo_seen);
-        assert!(restored.handoff_model().is_none(), "an earlier edit cannot use a later round's todo gate");
-        assert!(!restored.prewalk.plan_nudged, "a missing live nudge must remain due");
+        assert!(
+            restored.handoff_model().is_none(),
+            "an earlier edit cannot use a later round's todo gate"
+        );
+        assert!(
+            !restored.prewalk.plan_nudged,
+            "a missing live nudge must remain due"
+        );
         assert_eq!(restored.todo_state.items.len(), 1);
         drop(restored);
 
-        let edit: crate::chat::types::ToolCallRecord = serde_json::from_value(json!({"id":"call-3","name":"write","source":"native",
-            "status":"error","arguments":"{\"path\":\"code.rs\"}","round":3,"trace_id":"run"})).unwrap();
+        let edit: crate::chat::types::ToolCallRecord =
+            serde_json::from_value(json!({"id":"call-3","name":"write","source":"native",
+            "status":"error","arguments":"{\"path\":\"code.rs\"}","round":3,"trace_id":"run"}))
+            .unwrap();
         entries.push(json!({"role":"assistant","tool_calls":[{"id":edit.id}]}));
         entries.push(json!({"role":"tool","tool_call_id":edit.id,"content":"failed","_subagent_policy_tool":policy_tool_record(&edit)}));
         let worker = replay(&bytes(&entries), "r", "A").unwrap();
-        assert_eq!(worker.policies.lock().await.handoff_model().unwrap().model, "implementation");
+        assert_eq!(
+            worker.policies.lock().await.handoff_model().unwrap().model,
+            "implementation"
+        );
         let mut checkpoint = worker.policies.lock().await.clone();
         checkpoint.todo_state = Default::default();
         entries.push(json!({"type":"policy_state","policies":checkpoint,"messages":[]}));
         entries.push(json!({"type":"compaction","messages":worker.history,"appendStart":worker.history.len()}));
         let worker = replay(&bytes(&entries), "r", "A").unwrap();
-        assert!(worker.policies.lock().await.todo_state.items.is_empty(), "older transcript annotations must not override a newer policy snapshot");
+        assert!(
+            worker.policies.lock().await.todo_state.items.is_empty(),
+            "older transcript annotations must not override a newer policy snapshot"
+        );
     }
 }
