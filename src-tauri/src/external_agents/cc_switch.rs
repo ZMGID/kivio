@@ -36,7 +36,7 @@ pub struct ImportedProvider {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportScan {
-    pub providers: Vec<ImportedProvider>,
+    pub providers: Vec<ProviderSummary>,
     /// 认得出但 Kivio 没有落地通道而跳过的条数（hermes / openclaw…）。
     pub skipped: usize,
 }
@@ -56,8 +56,66 @@ fn map_app_type(app_type: &str) -> Option<&'static str> {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSummary {
+    pub agent_id: String,
+    pub id: String,
+    pub name: String,
+    pub remark: String,
+    pub has_api_key: bool,
+    pub is_current: bool,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSelection {
+    pub agent_id: String,
+    pub provider_id: String,
+}
+impl From<ImportedProvider> for ProviderSummary {
+    fn from(p: ImportedProvider) -> Self {
+        Self {
+            agent_id: p.agent_id,
+            id: p.id,
+            name: p.name,
+            remark: p.remark,
+            has_api_key: p.has_api_key,
+            is_current: p.is_current,
+        }
+    }
+}
 pub fn scan() -> Result<ImportScan, String> {
+    let (providers, skipped) = read_providers(None)?;
+    Ok(ImportScan {
+        providers: providers.into_iter().map(Into::into).collect(),
+        skipped,
+    })
+}
+pub fn import_selected(selections: &[ImportSelection]) -> Result<Vec<ImportedProvider>, String> {
+    if selections.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (providers, _) = read_providers(Some(selections))?;
+    if selections.iter().any(|item| {
+        !providers
+            .iter()
+            .any(|p| p.agent_id == item.agent_id && p.id == item.provider_id)
+    }) {
+        return Err("Selected provider changed; scan again".into());
+    }
+    Ok(providers)
+}
+
+fn read_providers(
+    selections: Option<&[ImportSelection]>,
+) -> Result<(Vec<ImportedProvider>, usize), String> {
     let path = db_path().ok_or_else(|| "找不到用户主目录".to_string())?;
+    read_providers_at(&path, selections)
+}
+fn read_providers_at(
+    path: &std::path::Path,
+    selections: Option<&[ImportSelection]>,
+) -> Result<(Vec<ImportedProvider>, usize), String> {
     if !path.is_file() {
         return Err(format!("未找到 cc-switch 数据：{}", path.display()));
     }
@@ -67,14 +125,22 @@ pub fn scan() -> Result<ImportScan, String> {
     )
     .map_err(|e| format!("打开 cc-switch 数据库失败：{e}"))?;
 
+    let ids: Vec<&str> = selections
+        .unwrap_or_default()
+        .iter()
+        .map(|item| item.provider_id.as_str())
+        .collect();
+    let condition = if selections.is_some() {
+        format!(" WHERE id IN ({})", vec!["?"; ids.len()].join(","))
+    } else {
+        String::new()
+    };
+    let sql = format!("SELECT id, app_type, name, settings_config, website_url, is_current FROM providers{condition} ORDER BY app_type, COALESCE(sort_index, 999999), COALESCE(created_at, 0)");
     let mut stmt = conn
-        .prepare(
-            "SELECT id, app_type, name, settings_config, website_url, is_current \
-             FROM providers ORDER BY app_type, COALESCE(sort_index, 999999), COALESCE(created_at, 0)",
-        )
+        .prepare(&sql)
         .map_err(|e| format!("读取 cc-switch 供应商失败：{e}"))?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params_from_iter(ids), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -97,6 +163,13 @@ pub fn scan() -> Result<ImportScan, String> {
             skipped += 1;
             continue;
         };
+        if selections.is_some_and(|selected| {
+            !selected
+                .iter()
+                .any(|item| item.agent_id == agent_id && item.provider_id == id)
+        }) {
+            continue;
+        }
         // 单条 JSON 解析失败不拖垮整批（cc-switch 的库里混过手工编辑的条目）。
         let Ok(config) = serde_json::from_str::<serde_json::Value>(&settings_config) else {
             skipped += 1;
@@ -114,7 +187,7 @@ pub fn scan() -> Result<ImportScan, String> {
             None => skipped += 1,
         }
     }
-    Ok(ImportScan { providers, skipped })
+    Ok((providers, skipped))
 }
 
 fn convert(
@@ -192,6 +265,43 @@ fn convert(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn scan_summary_has_no_secret_fields_and_selected_read_only_returns_selected_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("cc.db");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE providers(id TEXT,app_type TEXT,name TEXT,settings_config TEXT,website_url TEXT,is_current INTEGER,sort_index INTEGER,created_at INTEGER);").unwrap();
+        for id in ["selected", "other"] {
+            db.execute(
+                "INSERT INTO providers VALUES (?1,'claude',?1,?2,NULL,0,0,0)",
+                rusqlite::params![
+                    id,
+                    format!(r#"{{"env":{{"ANTHROPIC_AUTH_TOKEN":"secret-{id}"}}}}"#)
+                ],
+            )
+            .unwrap();
+        }
+        drop(db);
+        let (all, _) = read_providers_at(&path, None).unwrap();
+        let summaries: Vec<ProviderSummary> = all.into_iter().map(Into::into).collect();
+        let serialized = serde_json::to_string(&summaries).unwrap();
+        assert!(!serialized.contains("secret"));
+        assert!(!serialized.contains("authJson"));
+        assert!(!serialized.contains("configToml"));
+        assert!(!serialized.contains("\"env\""));
+        let (selected, _) = read_providers_at(
+            &path,
+            Some(&[ImportSelection {
+                agent_id: "claude".into(),
+                provider_id: "selected".into(),
+            }]),
+        )
+        .unwrap();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, "selected");
+        assert_eq!(selected[0].env[0].value, "secret-selected");
+    }
 
     #[test]
     fn claude_takes_env_only() {

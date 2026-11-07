@@ -174,65 +174,101 @@ pub fn update_stored_session_id(
     save_session(app, &stored)
 }
 
-// Rewinding truncates only Kivio's copy of an external conversation; the CLI's native session
-// still holds the removed turns. This marker records that the native history must be brought
-// back to the visible history before the next ordinary send. It lives beside the bindings but
-// is not a `.json` binding file, so binding scans (`import::bound_sessions`) never see it.
+// Legacy markers are adopted into the conversation before their next ordinary turn.
 fn rewound_marker_path(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
     Ok(sessions_dir(app)?.join(format!("rewound-{conversation_id}.marker")))
 }
 
-const REPLAY_MARKER: &str = "replay";
-
-/// How a pending rewind is to be applied on the next send.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PendingRewind {
-    /// Try the CLI's native way of trimming its session first.
-    Native,
-    /// A native attempt already failed: start a fresh session carrying the visible history.
-    Replay,
+pub fn runtime_locked(app: &AppHandle, conversation: &crate::chat::Conversation) -> bool {
+    !conversation.messages.is_empty()
+        || conversation.external_history.is_some()
+        || conversation.external_cwd.is_some()
+        || load_session(app, &conversation.id).is_some()
+        || load_live_handle(app, &conversation.id).is_some()
+        || crate::external_agents::import::load_import_record(app, &conversation.id).is_some()
 }
 
-pub fn mark_history_rewound(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
-    let path = rewound_marker_path(app, conversation_id)?;
-    crate::chat::storage::atomic_write(&path, "", "external agent rewind marker")
+pub fn has_legacy_rewind(app: &AppHandle, conversation_id: &str) -> bool {
+    rewound_marker_path(app, conversation_id).is_ok_and(|path| path.is_file())
 }
 
-/// A native rewind turn failed; retrying it would fail the same way (e.g. a CLI that dropped a
-/// flag), so the next send replays instead.
-pub fn require_rewind_replay(app: &AppHandle, conversation_id: &str) {
-    if let Ok(path) = rewound_marker_path(app, conversation_id) {
-        let _ = crate::chat::storage::atomic_write(
-            &path,
-            REPLAY_MARKER,
-            "external agent rewind marker",
-        );
-    }
-}
-
-pub fn pending_rewind(app: &AppHandle, conversation_id: &str) -> Option<PendingRewind> {
-    let raw = fs::read_to_string(rewound_marker_path(app, conversation_id).ok()?).ok()?;
-    Some(if raw.trim() == REPLAY_MARKER {
-        PendingRewind::Replay
-    } else {
-        PendingRewind::Native
-    })
-}
-
-/// Drop this conversation's native session binding (resume record and live handle) so the next
-/// connection starts a fresh native session. The CLI's own transcript is left untouched, and so is
-/// the import record and the rewind marker.
-pub fn forget_native_session(app: &AppHandle, conversation_id: &str) {
-    if let Ok(path) = session_path(app, conversation_id) {
-        let _ = fs::remove_file(path);
-    }
-    clear_live_handle(app, conversation_id);
-}
-
-/// Called once a turn has run against the realigned native history.
 pub fn clear_history_rewound(app: &AppHandle, conversation_id: &str) {
     if let Ok(path) = rewound_marker_path(app, conversation_id) {
         let _ = fs::remove_file(path);
+    }
+}
+
+pub fn forget_native_session(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
+    for path in [
+        session_path(app, conversation_id)?,
+        live_handle_path(app, conversation_id)?,
+    ] {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Cannot retire native binding {}: {error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub struct HistoryAttempt {
+    pub transition_id: String,
+    pub native_id: String,
+    pub attempt_id: String,
+    pub generation: u64,
+}
+
+pub async fn begin_history_delivery(
+    app: &AppHandle,
+    conversation_id: &str,
+    transition_id: &str,
+    generation: u64,
+    native_id: &str,
+) -> Result<HistoryAttempt, String> {
+    use crate::chat::types::ExternalHistoryDelivery;
+    if native_id.trim().is_empty() {
+        return Err("Native session identity is unavailable".into());
+    }
+    let attempt = HistoryAttempt {
+        transition_id: transition_id.into(),
+        native_id: native_id.into(),
+        attempt_id: Uuid::new_v4().to_string(),
+        generation,
+    };
+    crate::chat::repository::repository(app).mutate(app, conversation_id, |latest| {
+        if !app.state::<crate::state::AppState>().chat_runtime().is_generation_active(conversation_id, generation) {
+            return Err("cancelled".into());
+        }
+        let history = latest.external_history.as_ref().filter(|history| history.id == transition_id)
+            .ok_or_else(|| "External history transition changed".to_string())?;
+        history.prefix(latest)?;
+        if matches!(&history.delivery, ExternalHistoryDelivery::MayHaveSent { native_id: previous, .. } if previous == native_id) {
+            return Err("History delivery is uncertain; a fresh native session is required".into());
+        }
+        latest.external_history.as_mut().unwrap().delivery = ExternalHistoryDelivery::MayHaveSent {
+            native_id: attempt.native_id.clone(), attempt_id: attempt.attempt_id.clone(), generation,
+        };
+        Ok(())
+    }).await.map_err(crate::chat::repository::repository_error)?;
+    Ok(attempt)
+}
+
+pub fn settle_history_delivery(
+    conversation: &mut crate::chat::Conversation,
+    attempt: &HistoryAttempt,
+) {
+    use crate::chat::types::ExternalHistoryDelivery;
+    if conversation.external_history.as_ref().is_some_and(|history| history.id == attempt.transition_id
+        && matches!(&history.delivery, ExternalHistoryDelivery::MayHaveSent { native_id, attempt_id, generation }
+            if native_id == &attempt.native_id && attempt_id == &attempt.attempt_id && generation == &attempt.generation)) {
+        conversation.external_history = None;
     }
 }
 

@@ -786,6 +786,7 @@ fn dispatch_with_mode(ctx: SubAgentCallCtx<'_>, invocation: spawn::ModelInvocati
 
 fn progress_event(tool_call_id: &str, record: &registry::AgentRecord, status: &str) -> crate::chat::protocol::ChatRunEvent {
     crate::chat::protocol::ChatRunEvent::SubagentUpdated {
+        external_session_id: None,
         parent_tool_call_id: tool_call_id.into(),
         task_id: record.id.clone(),
         name: record.display_name.clone(),

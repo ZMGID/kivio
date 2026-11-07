@@ -35,12 +35,14 @@
 //!    `input` / `defaultInput` / `reasoningEfforts`（官方 web 贴图与 effort 门控），
 //!    不新建供应商、不写密钥。
 //!
-//! 物化时机是**保存 / 切换供应商那一次**（`commands::chat_external_cli_provider_apply`），
+//! 设置保存事务负责物化与删除，并在设置文件写入失败时恢复精确文件原貌，
 //! 不是每轮。ccgui 用的是 per-turn 临时目录 + `Drop` 删除，那套在 Kivio 会把常驻 claude
 //! 会话中途要读的文件删掉。代价是文件长期留在 app data 里（0600，与 settings.json 里
 //! 本来就明文存 key 同一威胁模型）。
-use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
+use std::hash::BuildHasher;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -48,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::external_agents::registry::get_agent_def;
-use crate::external_agents::types::ProviderProfileStrategy;
+use crate::external_agents::types::{ProviderProfileStrategy, RuntimeAgentDef};
 use crate::settings::{ExternalCliAgentConfig, ExternalCliProvider};
 
 /// 设置保存与删除命令可能并发触发；三份原生文件必须作为一个逻辑事务串行合并。
@@ -127,21 +129,675 @@ const CLAUDE_CHAT_MODEL_ENV_KEYS: &[&str] = &[
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 ];
 
+pub(crate) struct NativeFileUpdate {
+    _resource: super::session::live::ResourceLease,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+pub(crate) fn native_file_update(path: &Path) -> Result<NativeFileUpdate, String> {
+    let resource = super::session::live::ResourceLease::acquire(
+        vec![format!(
+            "profile:{}",
+            super::session::live::resource_path(path)
+        )],
+        true,
+    )?;
+    let lock = NATIVE_CONFIG_LOCK
+        .lock()
+        .map_err(|_| "原生 CLI 配置写锁已损坏")?;
+    Ok(NativeFileUpdate {
+        _resource: resource,
+        _lock: lock,
+    })
+}
+
+fn effective_env_path(
+    def: &RuntimeAgentDef,
+    config: &ExternalCliAgentConfig,
+    key: &str,
+) -> Option<PathBuf> {
+    super::overrides::env_for_config(def.id, Some(config))
+        .iter()
+        .find(|(name, value)| {
+            !value.is_empty()
+                && if cfg!(windows) {
+                    name.eq_ignore_ascii_case(key)
+                } else {
+                    name.as_str() == key
+                }
+        })
+        .map(|(_, value)| PathBuf::from(value))
+        .or_else(|| {
+            def.env
+                .iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| PathBuf::from(value))
+        })
+        .or_else(|| nonempty_env_path(key))
+}
+fn effective_user_home(def: &RuntimeAgentDef, config: &ExternalCliAgentConfig) -> Option<PathBuf> {
+    effective_user_home_in(&|key| effective_env_path(def, config, key))
+}
+fn effective_user_home_in(env_path: &impl Fn(&str) -> Option<PathBuf>) -> Option<PathBuf> {
+    let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    env_path(key)
+        .or_else(|| env_path("HOME"))
+        .or_else(default_user_home)
+}
+fn bound_state(path: PathBuf, target: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(super::session::live::resource_path(target).as_bytes());
+    path.with_file_name(format!(
+        "{}-{digest:x}.json",
+        path.file_stem().unwrap_or_default().to_string_lossy()
+    ))
+}
+
+fn effective_native_paths(
+    def: &RuntimeAgentDef,
+    config: &ExternalCliAgentConfig,
+) -> Option<NativePaths> {
+    let mut paths = native_paths_in(def, &|key| effective_env_path(def, config, key))?;
+    paths.state = bound_state(paths.state, &paths.config);
+    Some(paths)
+}
+fn native_paths_in(
+    def: &RuntimeAgentDef,
+    env_path: &impl Fn(&str) -> Option<PathBuf>,
+) -> Option<NativePaths> {
+    match def.provider_profile {
+        ProviderProfileStrategy::OpenCode => opencode_paths_in(
+            env_path("XDG_CONFIG_HOME")
+                .or_else(|| effective_user_home_in(env_path).map(|home| home.join(".config")))?,
+            env_path("XDG_DATA_HOME").or_else(|| {
+                effective_user_home_in(env_path).map(|home| home.join(".local/share"))
+            })?,
+        ),
+        ProviderProfileStrategy::Pi => pi_paths_in(
+            env_path("PI_CODING_AGENT_DIR")
+                .or_else(|| effective_user_home_in(env_path).map(|home| home.join(".pi/agent")))?,
+        ),
+        _ => None,
+    }
+}
+fn effective_toml_paths(
+    def: &RuntimeAgentDef,
+    config: &ExternalCliAgentConfig,
+) -> Option<(PathBuf, PathBuf)> {
+    let target = toml_config_path_in(def, &|key| effective_env_path(def, config, key))?;
+    let state = if def.provider_profile == ProviderProfileStrategy::Grok {
+        grok_state_path()?
+    } else {
+        kimi_state_path()?
+    };
+    Some((target.clone(), bound_state(state, &target)))
+}
+fn toml_config_path_in(
+    def: &RuntimeAgentDef,
+    env_path: &impl Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let (key, fallback) = if def.provider_profile == ProviderProfileStrategy::Grok {
+        ("GROK_HOME", ".grok")
+    } else {
+        ("KIMI_CODE_HOME", ".kimi-code")
+    };
+    env_path(key)
+        .or_else(|| effective_user_home_in(env_path).map(|home| home.join(fallback)))
+        .map(|home| home.join("config.toml"))
+}
+
+pub(super) fn effective_dsh_path(config: &ExternalCliAgentConfig) -> Option<PathBuf> {
+    let def = get_agent_def("dsh")?;
+    effective_env_path(def, config, "DSH_HOME")
+        .or_else(|| effective_user_home(def, config).map(|home| home.join(".dsh")))
+        .map(|home| home.join("settings.yaml"))
+}
+
+fn validate_private_target(path: &Path) -> Result<(), String> {
+    let Some(root) = profiles_dir() else {
+        return Ok(());
+    };
+    if !path.starts_with(&root) {
+        return Ok(());
+    }
+    for ancestor in path
+        .ancestors()
+        .take_while(|ancestor| ancestor.starts_with(&root))
+    {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(metadata) if metadata.file_type().is_symlink() || is_reparse_point(ancestor) => {
+                return Err(format!("拒绝链接配置路径：{}", ancestor.display()))
+            }
+            Ok(metadata) if ancestor == path && !metadata.is_file() => {
+                return Err(format!("配置路径不是文件：{}", path.display()))
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+fn remove_profile_file(path: &Path) -> Result<(), String> {
+    validate_private_target(path)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("删除 {} 失败：{error}", path.display())),
+    }
+}
+
+struct FilePreimage {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
+    permissions: Option<std::fs::Permissions>,
+}
+pub(crate) struct ProfileUndo {
+    files: Vec<FilePreimage>,
+    new_links: Vec<PathBuf>,
+    new_dirs: Vec<PathBuf>,
+    _lock: std::sync::MutexGuard<'static, ()>,
+    resource: Option<super::session::live::ResourceLease>,
+}
+impl ProfileUndo {
+    fn capture(
+        paths: Vec<PathBuf>,
+        links: Vec<PathBuf>,
+        lock: std::sync::MutexGuard<'static, ()>,
+    ) -> Result<Self, String> {
+        let mut files = Vec::new();
+        let mut new_dirs = Vec::new();
+        let mut seen = HashSet::new();
+        for path in paths {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            validate_private_target(&path)?;
+            let (bytes, permissions) = match std::fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => (
+                    Some(std::fs::read(&path).map_err(|e| e.to_string())?),
+                    Some(metadata.permissions()),
+                ),
+                Ok(_) => return Err(format!("配置路径不是普通文件：{}", path.display())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (None, None),
+                Err(error) => return Err(error.to_string()),
+            };
+            for parent in path
+                .ancestors()
+                .skip(1)
+                .take_while(|parent| !parent.exists())
+            {
+                if !new_dirs.contains(&parent.to_path_buf()) {
+                    new_dirs.push(parent.to_path_buf());
+                }
+            }
+            files.push(FilePreimage {
+                path,
+                bytes,
+                permissions,
+            });
+        }
+        Ok(Self {
+            files,
+            new_links: links
+                .into_iter()
+                .filter(|path| std::fs::symlink_metadata(path).is_err())
+                .collect(),
+            new_dirs,
+            _lock: lock,
+            resource: super::session::live::MAINTENANCE_OWNER
+                .try_with(Clone::clone)
+                .ok(),
+        })
+    }
+    pub(crate) fn rollback(self) -> Result<(), String> {
+        let mut errors = Vec::new();
+        for file in self.files.iter().rev() {
+            let result = match &file.bytes {
+                Some(bytes) => (|| {
+                    validate_private_target(&file.path)?;
+                    write_private_bytes(&file.path, bytes)?;
+                    if let Some(permissions) = &file.permissions {
+                        std::fs::set_permissions(&file.path, permissions.clone())
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Ok(())
+                })(),
+                None => remove_profile_file(&file.path),
+            };
+            if let Err(error) = result {
+                errors.push(error);
+            }
+        }
+        for link in &self.new_links {
+            if is_reparse_point(link) {
+                unlink_directory_link(link);
+            }
+        }
+        for dir in &self.new_dirs {
+            let _ = std::fs::remove_dir(dir);
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            *FAILED_RECOVERY.lock().unwrap_or_else(|e| e.into_inner()) = Some(ProfileRecovery {
+                files: self.files,
+                new_links: self.new_links,
+                new_dirs: self.new_dirs,
+                resource: self.resource,
+            });
+            Err(format!(
+                "凭据回滚失败，已阻止受影响 CLI 启动；重试保存以恢复：{}",
+                errors.join("; ")
+            ))
+        }
+    }
+}
+struct ProfileRecovery {
+    files: Vec<FilePreimage>,
+    new_links: Vec<PathBuf>,
+    new_dirs: Vec<PathBuf>,
+    resource: Option<super::session::live::ResourceLease>,
+}
+static FAILED_RECOVERY: LazyLock<Mutex<Option<ProfileRecovery>>> = LazyLock::new(Default::default);
+pub(crate) fn retry_profile_recovery() -> Result<(), String> {
+    if FAILED_RECOVERY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_none()
+    {
+        return Ok(());
+    }
+    let lock = NATIVE_CONFIG_LOCK.lock().map_err(|_| "原生配置锁不可用")?;
+    let recovery = FAILED_RECOVERY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(recovery) = recovery {
+        ProfileUndo {
+            files: recovery.files,
+            new_links: recovery.new_links,
+            new_dirs: recovery.new_dirs,
+            resource: recovery.resource,
+            _lock: lock,
+        }
+        .rollback()?;
+    }
+    Ok(())
+}
+
+pub(crate) fn changed_agents(
+    previous: &crate::settings::Settings,
+    next: &crate::settings::Settings,
+) -> Vec<String> {
+    super::registry::AGENT_DEFS
+        .iter()
+        .filter(|def| {
+            previous.chat.external_cli_agents.get(def.id)
+                != next.chat.external_cli_agents.get(def.id)
+        })
+        .map(|def| def.id.to_string())
+        .collect()
+}
+
+fn legacy_native_paths(def: &RuntimeAgentDef) -> Option<NativePaths> {
+    let paths = match def.provider_profile {
+        ProviderProfileStrategy::OpenCode => opencode_paths()?,
+        ProviderProfileStrategy::Pi => {
+            let home = nonempty_env_path("PI_CODING_AGENT_DIR").or_else(|| {
+                directories::BaseDirs::new().map(|base| base.home_dir().join(".pi/agent"))
+            })?;
+            pi_paths_in(home)?
+        }
+        _ => return None,
+    };
+    if paths.state.exists()
+        && read_managed_state(&paths.state)
+            .is_ok_and(|state| state.managed_provider_ids.is_empty() && !state.defaults_managed)
+    {
+        return None;
+    }
+    paths.state.exists().then_some(paths)
+}
+fn legacy_toml_paths(def: &RuntimeAgentDef) -> Option<(PathBuf, PathBuf)> {
+    let pair = match def.provider_profile {
+        ProviderProfileStrategy::Grok => (grok_config_path()?, grok_state_path()?),
+        ProviderProfileStrategy::Kimi => (kimi_config_path()?, kimi_state_path()?),
+        _ => return None,
+    };
+    let inactive = if def.provider_profile == ProviderProfileStrategy::Grok {
+        read_grok_state(&pair.1).is_ok_and(|state| !state.managed)
+    } else {
+        read_kimi_state(&pair.1).is_ok_and(|state| !state.managed)
+    };
+    (pair.1.exists() && !inactive).then_some(pair)
+}
+fn legacy_profile_files(def: &RuntimeAgentDef) -> Vec<PathBuf> {
+    if let Some(paths) = legacy_native_paths(def) {
+        let mut files = vec![paths.config, paths.auth, paths.state];
+        files.extend(paths.settings);
+        files.extend(paths.alternate_configs);
+        files
+    } else if let Some((path, state)) = legacy_toml_paths(def) {
+        vec![path, state]
+    } else {
+        Vec::new()
+    }
+}
+
+fn profile_paths(
+    def: &RuntimeAgentDef,
+    config: &ExternalCliAgentConfig,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>), String> {
+    let mut paths = Vec::new();
+    let mut links = Vec::new();
+    match def.provider_profile {
+        ProviderProfileStrategy::Claude | ProviderProfileStrategy::Codex => {
+            for provider in &config.providers {
+                if def.provider_profile == ProviderProfileStrategy::Claude {
+                    paths.push(claude_settings_path_for(&provider.id).ok_or("非法供应商 id")?);
+                } else {
+                    let home = codex_home_for(&provider.id).ok_or("非法供应商 id")?;
+                    paths.extend([home.join("config.toml"), home.join("auth.json")]);
+                    links.push(home.join("sessions"));
+                }
+            }
+        }
+        ProviderProfileStrategy::OpenCode | ProviderProfileStrategy::Pi => {
+            let native = effective_native_paths(def, config).ok_or("无法定位原生配置")?;
+            paths.extend([native.config, native.auth, native.state]);
+            paths.extend(native.alternate_configs);
+            paths.extend(native.settings);
+        }
+        ProviderProfileStrategy::Grok | ProviderProfileStrategy::Kimi => {
+            let (target, state) = effective_toml_paths(def, config).ok_or("无法定位原生配置")?;
+            paths.extend([target, state]);
+        }
+        ProviderProfileStrategy::Dsh => paths.extend(effective_dsh_path(config)),
+        _ => {}
+    }
+    Ok((paths, links))
+}
+
+pub(crate) fn config_resource_keys(
+    def: &RuntimeAgentDef,
+    config: &ExternalCliAgentConfig,
+) -> Vec<String> {
+    profile_paths(def, config)
+        .map(|(paths, _)| {
+            paths
+                .into_iter()
+                .map(|path| format!("profile:{}", super::session::live::resource_path(&path)))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+pub(crate) fn settings_resource_keys(
+    previous: &crate::settings::Settings,
+    next: &crate::settings::Settings,
+) -> Vec<String> {
+    let empty = ExternalCliAgentConfig::default();
+    let mut keys = Vec::new();
+    for agent in changed_agents(previous, next) {
+        keys.push(format!("agent:{agent}"));
+        if let Some(def) = get_agent_def(&agent) {
+            keys.extend(
+                legacy_profile_files(def)
+                    .into_iter()
+                    .map(|path| format!("profile:{}", super::session::live::resource_path(&path))),
+            );
+            for settings in [previous, next] {
+                keys.extend(config_resource_keys(
+                    def,
+                    settings
+                        .chat
+                        .external_cli_agents
+                        .get(&agent)
+                        .unwrap_or(&empty),
+                ));
+            }
+        }
+    }
+    keys
+}
+
+pub(crate) fn persist_with_profiles(
+    previous: &crate::settings::Settings,
+    next: &crate::settings::Settings,
+    persist: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    let profiles = apply_settings_profiles(previous, next)?;
+    match persist() {
+        Ok(()) => Ok(()),
+        Err(error) => match profiles.rollback() {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}; {rollback}")),
+        },
+    }
+}
+
+fn apply_settings_profiles(
+    previous: &crate::settings::Settings,
+    next: &crate::settings::Settings,
+) -> Result<ProfileUndo, String> {
+    let lock = NATIVE_CONFIG_LOCK
+        .lock()
+        .map_err(|_| "原生 CLI 配置写锁已损坏")?;
+    let empty = ExternalCliAgentConfig::default();
+    let agents = changed_agents(previous, next);
+    let mut paths = Vec::new();
+    let mut links = Vec::new();
+    for id in &agents {
+        let def = get_agent_def(id).ok_or("未知外部 Agent")?;
+        let before = previous.chat.external_cli_agents.get(id).unwrap_or(&empty);
+        let after = next.chat.external_cli_agents.get(id).unwrap_or(&empty);
+        if let Some(legacy) = legacy_native_paths(def)
+            .map(|paths| paths.state)
+            .or_else(|| legacy_toml_paths(def).map(|(_, state)| state))
+        {
+            return Err(format!("旧版供应商备份缺少原始目录记录，无法安全迁移。请先确认原安装目录并恢复备份，再移除旧备份记录后重试：{}", legacy.display()));
+        }
+        if cfg!(windows)
+            && (after.path.starts_with('/') || super::wsl::is_wsl_target(Path::new(&after.path)))
+            && !after.providers.is_empty()
+            && !matches!(
+                def.provider_profile,
+                ProviderProfileStrategy::Claude
+                    | ProviderProfileStrategy::Codex
+                    | ProviderProfileStrategy::Environment
+            )
+        {
+            return Err("WSL 原生供应商配置请在发行版中维护".into());
+        }
+        if matches!(
+            def.provider_profile,
+            ProviderProfileStrategy::OpenCode | ProviderProfileStrategy::Pi
+        ) {
+            parse_native_entries_for(def.provider_profile, &after.providers)?;
+        }
+        if def.provider_profile == ProviderProfileStrategy::Codex {
+            if let Some(provider) = super::overrides::selected_provider(after) {
+                let private_home = codex_home_for(&provider.id).ok_or("非法供应商 id")?;
+                for pair in &after.env {
+                    let is_codex_home = if cfg!(windows) {
+                        pair.key.eq_ignore_ascii_case("CODEX_HOME")
+                    } else {
+                        pair.key == "CODEX_HOME"
+                    };
+                    if is_codex_home
+                        && super::session::live::resource_path(Path::new(&pair.value))
+                            != super::session::live::resource_path(&private_home)
+                    {
+                        return Err("私有 Codex 供应商不能同时覆盖 CODEX_HOME。请移除该环境变量，或切换到 CLI 自身配置模式".into());
+                    }
+                }
+            }
+        }
+        for provider in &after.providers {
+            if !provider.config_toml.trim().is_empty() {
+                toml::from_str::<toml::Value>(&provider.config_toml).map_err(|e| e.to_string())?;
+            }
+            if !provider.auth_json.trim().is_empty() {
+                let auth: Value =
+                    serde_json::from_str(&provider.auth_json).map_err(|e| e.to_string())?;
+                if !auth.is_object() {
+                    return Err("auth.json 必须是对象".into());
+                }
+            }
+        }
+        for config in [before, after] {
+            if cfg!(windows)
+                && matches!(
+                    def.provider_profile,
+                    ProviderProfileStrategy::OpenCode
+                        | ProviderProfileStrategy::Pi
+                        | ProviderProfileStrategy::Grok
+                        | ProviderProfileStrategy::Kimi
+                        | ProviderProfileStrategy::Dsh
+                )
+            {
+                let names: std::collections::HashSet<_> =
+                    config.env.iter().map(|pair| &pair.key).collect();
+                for key in [
+                    "HOME",
+                    "USERPROFILE",
+                    "XDG_CONFIG_HOME",
+                    "XDG_DATA_HOME",
+                    "PI_CODING_AGENT_DIR",
+                    "GROK_HOME",
+                    "KIMI_CODE_HOME",
+                    "DSH_HOME",
+                ] {
+                    if names
+                        .iter()
+                        .filter(|name| name.eq_ignore_ascii_case(key))
+                        .count()
+                        > 1
+                    {
+                        return Err(format!(
+                            "Windows 环境变量 {key} 使用了多种大小写，请统一变量名后重试"
+                        ));
+                    }
+                }
+            }
+            let (files, session_links) = profile_paths(def, config)?;
+            if files.iter().any(|path| !path.is_absolute()) {
+                return Err("原生 CLI 配置目录必须使用绝对路径".into());
+            }
+            paths.extend(files);
+            links.extend(session_links);
+        }
+    }
+    let undo = ProfileUndo::capture(paths, links, lock)?;
+    let result = (|| {
+        for id in &agents {
+            let def = get_agent_def(id).ok_or("未知外部 Agent")?;
+            let before = previous.chat.external_cli_agents.get(id).unwrap_or(&empty);
+            let after = next.chat.external_cli_agents.get(id).unwrap_or(&empty);
+            if profile_paths(def, before)?.0 != profile_paths(def, after)?.0
+                && matches!(
+                    def.provider_profile,
+                    ProviderProfileStrategy::OpenCode
+                        | ProviderProfileStrategy::Pi
+                        | ProviderProfileStrategy::Grok
+                        | ProviderProfileStrategy::Kimi
+                )
+            {
+                let restore = ExternalCliAgentConfig::default();
+                match def.provider_profile {
+                    ProviderProfileStrategy::OpenCode | ProviderProfileStrategy::Pi => {
+                        materialize_native_with_strategy_at(
+                            def.provider_profile,
+                            id,
+                            &restore,
+                            &effective_native_paths(def, before).ok_or("无法定位先前配置")?,
+                        )?
+                    }
+                    ProviderProfileStrategy::Grok | ProviderProfileStrategy::Kimi => {
+                        let (path, state) =
+                            effective_toml_paths(def, before).ok_or("无法定位先前配置")?;
+                        if def.provider_profile == ProviderProfileStrategy::Grok {
+                            materialize_grok_at(&restore, &path, &state)?;
+                        } else {
+                            materialize_kimi_at(&restore, &path, &state)?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            materialize_config(id, after)?;
+            for provider in &before.providers {
+                if after.providers.iter().any(|item| item.id == provider.id) {
+                    continue;
+                }
+                match def.provider_profile {
+                    ProviderProfileStrategy::Claude => remove_profile_file(
+                        &claude_settings_path_for(&provider.id).ok_or("非法供应商 id")?,
+                    )?,
+                    ProviderProfileStrategy::Codex => {
+                        let home = codex_home_for(&provider.id).ok_or("非法供应商 id")?;
+                        remove_profile_file(&home.join("config.toml"))?;
+                        remove_profile_file(&home.join("auth.json"))?;
+                    }
+                    ProviderProfileStrategy::Dsh
+                        if !provider.native_provider_id.trim().is_empty() =>
+                    {
+                        super::dsh_plugins::delete_native_provider_at(
+                            &effective_dsh_path(before).ok_or("无法定位 dsh 配置")?,
+                            &provider.native_provider_id,
+                        )?
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok::<_, String>(())
+    })();
+    if let Err(error) = result {
+        return match undo.rollback() {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}; {rollback}")),
+        };
+    }
+    Ok(undo)
+}
+
+#[cfg(test)]
+thread_local! { static TEST_PROFILE_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
 fn profiles_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_PROFILE_ROOT.with(|root| root.borrow().clone()) {
+        return Some(root);
+    }
     crate::app_data::app_data_dir().map(|dir| dir.join("external-cli-providers"))
 }
 
 fn nonempty_env_path(key: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    if TEST_PROFILE_ROOT.with(|root| root.borrow().is_some()) {
+        return None;
+    }
     std::env::var_os(key)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
 }
 
+fn default_user_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_PROFILE_ROOT.with(|root| root.borrow().clone()) {
+        return Some(root.join("home"));
+    }
+    directories::BaseDirs::new().map(|base| base.home_dir().to_path_buf())
+}
+
 fn opencode_paths() -> Option<NativePaths> {
-    let base = directories::BaseDirs::new()?;
-    let home = base.home_dir();
-    let config_home = nonempty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
-    let data_home = nonempty_env_path("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share"));
+    let home = default_user_home()?;
+    opencode_paths_in(
+        nonempty_env_path("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config")),
+        nonempty_env_path("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")),
+    )
+}
+
+fn opencode_paths_in(config_home: PathBuf, data_home: PathBuf) -> Option<NativePaths> {
     let config_dir = config_home.join("opencode");
     let candidates: Vec<PathBuf> = ["config.json", "opencode.json", "opencode.jsonc"]
         .into_iter()
@@ -167,15 +823,15 @@ fn opencode_paths() -> Option<NativePaths> {
 }
 
 pub fn pi_agent_dir() -> Option<PathBuf> {
-    let base = directories::BaseDirs::new()?;
+    let def = get_agent_def("pi")?;
+    let config = super::overrides::agent_config("pi").unwrap_or_default();
     Some(
-        nonempty_env_path("PI_CODING_AGENT_DIR")
-            .unwrap_or_else(|| base.home_dir().join(".pi/agent")),
+        effective_env_path(def, &config, "PI_CODING_AGENT_DIR")
+            .unwrap_or(effective_user_home(def, &config)?.join(".pi/agent")),
     )
 }
 
-fn pi_paths() -> Option<NativePaths> {
-    let agent = pi_agent_dir()?;
+fn pi_paths_in(agent: PathBuf) -> Option<NativePaths> {
     Some(NativePaths {
         config: agent.join("models.json"),
         alternate_configs: Vec::new(),
@@ -217,6 +873,10 @@ fn codex_home_for(provider_id: &str) -> Option<PathBuf> {
 /// Codex CLI / TUI 读的那份用户 home（`~/.codex`）。Kivio 进程在 Windows 上时就是
 /// `%USERPROFILE%\.codex`，与用户在终端里跑 `codex` 看到的是同一处。
 pub fn native_codex_home() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = TEST_PROFILE_ROOT.with(|root| root.borrow().clone()) {
+        return Some(root.join("shared-codex"));
+    }
     directories::BaseDirs::new().map(|base| base.home_dir().join(".codex"))
 }
 
@@ -276,16 +936,23 @@ fn dsh_provider_env(config: &ExternalCliAgentConfig) -> HashMap<String, String> 
 
 /// 要注入这个 CLI 子进程的供应商环境变量。dsh 合并全部并存供应商，其余 CLI 只用默认项。
 pub fn provider_env(agent_id: &str) -> HashMap<String, String> {
+    super::overrides::agent_config(agent_id)
+        .map(|config| provider_env_for(agent_id, &config))
+        .unwrap_or_default()
+}
+
+pub(super) fn provider_env_for(
+    agent_id: &str,
+    config: &ExternalCliAgentConfig,
+) -> HashMap<String, String> {
     let Some(def) = get_agent_def(agent_id) else {
         return HashMap::new();
     };
     if matches!(def.provider_profile, ProviderProfileStrategy::Dsh) {
-        return super::overrides::agent_config(agent_id)
-            .map(|config| dsh_provider_env(&config))
-            .unwrap_or_default();
+        return dsh_provider_env(config);
     }
 
-    let Some(provider) = super::overrides::active_provider(agent_id) else {
+    let Some(provider) = super::overrides::selected_provider(config) else {
         return HashMap::new();
     };
     if matches!(def.provider_profile, ProviderProfileStrategy::Codex) {
@@ -300,12 +967,195 @@ pub fn provider_env(agent_id: &str) -> HashMap<String, String> {
     }
     provider
         .env
-        .into_iter()
-        .map(|pair| (pair.key, pair.value))
+        .iter()
+        .map(|pair| (pair.key.clone(), pair.value.clone()))
         .collect()
 }
 
+pub(super) fn launch_profile_changed(
+    strategy: ProviderProfileStrategy,
+    before: &ExternalCliAgentConfig,
+    after: &ExternalCliAgentConfig,
+) -> bool {
+    use ProviderProfileStrategy::*;
+
+    let selected = super::overrides::selected_provider;
+    if matches!(strategy, OpenCode | Pi | Dsh) {
+        if selected(before).map(|provider| &provider.id)
+            != selected(after).map(|provider| &provider.id)
+        {
+            return true;
+        }
+        let before = before
+            .providers
+            .iter()
+            .filter(|provider| !provider.disabled);
+        let after = after.providers.iter().filter(|provider| !provider.disabled);
+        return before.clone().count() != after.clone().count()
+            || before.zip(after).any(|(before, after)| {
+                before.id != after.id
+                    || before.native_provider_id != after.native_provider_id
+                    || before.config_json != after.config_json
+                    || before.default_model != after.default_model
+                    || (strategy != Dsh
+                        && (before.auth_json != after.auth_json
+                            || resolve_native_provider_id(before).ok()
+                                != resolve_native_provider_id(after).ok()))
+                    || (strategy == Pi && before.default_reasoning != after.default_reasoning)
+            });
+    }
+    match (selected(before), selected(after)) {
+        (Some(before), Some(after)) => match strategy {
+            Claude => before.id != after.id || before.env != after.env,
+            Codex => {
+                before.id != after.id
+                    || before.config_toml != after.config_toml
+                    || before.auth_json != after.auth_json
+            }
+            Grok | Kimi => before.config_toml != after.config_toml,
+            _ => false,
+        },
+        (None, None) => false,
+        _ => strategy != Environment,
+    }
+}
+
+pub(super) fn launch_file_revision(
+    def: &RuntimeAgentDef,
+    bin: &Path,
+    config: Option<&ExternalCliAgentConfig>,
+    env: &BTreeMap<OsString, OsString>,
+    hasher: &impl BuildHasher,
+) -> u64 {
+    use ProviderProfileStrategy::*;
+
+    let env_path = |key: &str| {
+        env.iter()
+            .find(|(name, _)| {
+                if cfg!(windows) {
+                    name.to_string_lossy().eq_ignore_ascii_case(key)
+                } else {
+                    name.as_os_str() == OsStr::new(key)
+                }
+            })
+            .map(|(_, value)| value)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    let wsl = super::wsl::is_wsl_target(bin);
+    let mut files = Vec::new();
+    match def.provider_profile {
+        Codex => {
+            if let Some(home) = env_path("CODEX_HOME")
+                .or_else(native_codex_home)
+                .filter(|home| !wsl || (home.is_absolute() && !super::wsl::is_wsl_target(home)))
+            {
+                files.extend([home.join("config.toml"), home.join("auth.json")]);
+            }
+        }
+        Claude => {
+            if let Some(path) = config
+                .and_then(super::overrides::selected_provider)
+                .and_then(|provider| claude_settings_path_for(&provider.id))
+            {
+                files.push(path);
+            }
+            if !wsl {
+                let settings = env_path("CLAUDE_CONFIG_DIR")
+                    .map(claude_settings_path_in)
+                    .or_else(claude_native_settings_path);
+                if let Some(settings) = settings {
+                    files.push(settings.with_file_name(".credentials.json"));
+                    files.push(settings);
+                }
+            }
+        }
+        OpenCode | Pi if !wsl => {
+            if let Some(paths) = native_paths_in(def, &env_path) {
+                files.extend([paths.config, paths.auth]);
+                files.extend(paths.alternate_configs);
+                files.extend(paths.settings);
+            }
+        }
+        Grok | Kimi if !wsl => files.extend(toml_config_path_in(def, &env_path)),
+        Dsh if !wsl => {
+            if let Some(home) = env_path("DSH_HOME").or_else(super::dsh_profile::dsh_home) {
+                files.extend([home.join(".credentials.yaml"), home.join(".env")]);
+            }
+        }
+        _ => {}
+    }
+
+    let revisions: Vec<_> = files
+        .into_iter()
+        .filter_map(|path| {
+            let revision = launch_config_file_revision(&path, def.provider_profile, hasher)?;
+            Some((path, revision))
+        })
+        .collect();
+    hasher.hash_one(revisions)
+}
+
+fn launch_config_file_revision(
+    path: &Path,
+    strategy: ProviderProfileStrategy,
+    hasher: &impl BuildHasher,
+) -> Option<u64> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    // shortcut: use metadata for large files. Stream a digest if a CLI starts storing large credential files.
+    const LIMIT: u64 = 2 * 1024 * 1024;
+    let metadata_revision = || hasher.hash_one((metadata.len(), metadata.modified().ok()));
+    if metadata.len() > LIMIT {
+        return Some(metadata_revision());
+    }
+    let mut content = Vec::new();
+    if std::fs::File::open(path)
+        .and_then(|file| file.take(LIMIT + 1).read_to_end(&mut content))
+        .is_err()
+        || content.len() as u64 > LIMIT
+    {
+        return Some(metadata_revision());
+    }
+    match (strategy, path.file_name().and_then(OsStr::to_str)) {
+        (ProviderProfileStrategy::Codex, Some("config.toml")) => {
+            if let Some(mut config) = std::str::from_utf8(&content)
+                .ok()
+                .and_then(|text| toml::from_str::<toml::Table>(text).ok())
+            {
+                config.remove("model");
+                config.remove("model_reasoning_effort");
+                return (!config.is_empty())
+                    .then(|| hasher.hash_one(toml::Value::Table(config).to_string()));
+            }
+        }
+        (ProviderProfileStrategy::Claude, Some(name)) if name != ".credentials.json" => {
+            if let Ok(mut config) = serde_json::from_slice::<Map<String, Value>>(&content) {
+                config.remove("model");
+                if let Some(env) = config.get_mut("env").and_then(Value::as_object_mut) {
+                    env.retain(|key, _| !CLAUDE_CHAT_MODEL_ENV_KEYS.contains(&key.as_str()));
+                    if env.is_empty() {
+                        config.remove("env");
+                    }
+                }
+                return (!config.is_empty())
+                    .then(|| hasher.hash_one(Value::Object(config).to_string()));
+            }
+        }
+        _ => {}
+    }
+    Some(hasher.hash_one(content))
+}
+
 /// claude 启动时要追加的 `--settings <path>`；无供应商 / 文件没物化成功时返回 None。
+pub(crate) fn claude_overlay_args() -> Vec<String> {
+    claude_settings_override("claude")
+        .map(|path| vec!["--settings".into(), path.to_string_lossy().into_owned()])
+        .unwrap_or_default()
+}
+
 pub fn claude_settings_override(agent_id: &str) -> Option<PathBuf> {
     let def = get_agent_def(agent_id)?;
     if !matches!(def.provider_profile, ProviderProfileStrategy::Claude) {
@@ -318,65 +1168,50 @@ pub fn claude_settings_override(agent_id: &str) -> Option<PathBuf> {
 
 /// 给所有 CLI 物化一遍当前生效的供应商。由 `persist_settings` 在同步完镜像后调用。
 /// 尝试全部定义并汇总错误，让设置事务可以回滚已经部分落地的配置。
-pub fn materialize_all() -> Result<(), String> {
-    let mut errors = Vec::new();
-    for def in crate::external_agents::registry::AGENT_DEFS {
-        if let Err(err) = materialize(def.id) {
-            errors.push(format!("{}: {err}", def.id));
-        }
-    }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(format!("供应商配置落地失败：{}", errors.join("; ")))
-    }
-}
 
 /// 把供应商写到盘上。OpenCode / Pi / Grok / Kimi 即使当前未启用，也要同步（或恢复）原生配置。
-pub fn materialize(agent_id: &str) -> Result<(), String> {
-    let def = get_agent_def(agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
+
+fn materialize_config(agent_id: &str, config: &ExternalCliAgentConfig) -> Result<(), String> {
+    let def = get_agent_def(agent_id).ok_or("未知外部 Agent")?;
     match def.provider_profile {
         ProviderProfileStrategy::OpenCode | ProviderProfileStrategy::Pi => {
-            let config = super::overrides::agent_config(agent_id).unwrap_or_default();
-            materialize_native(def.provider_profile, agent_id, &config)
+            let paths = effective_native_paths(def, config).ok_or("无法定位原生配置目录")?;
+            materialize_native_with_strategy_at(def.provider_profile, agent_id, config, &paths)
         }
-        ProviderProfileStrategy::Grok => {
-            let config = super::overrides::agent_config(agent_id).unwrap_or_default();
-            materialize_grok(&config)
-        }
-        ProviderProfileStrategy::Kimi => {
-            let config = super::overrides::agent_config(agent_id).unwrap_or_default();
-            materialize_kimi(&config)
-        }
-        ProviderProfileStrategy::Dsh => {
-            let config = super::overrides::agent_config(agent_id).unwrap_or_default();
-            let providers: Vec<_> = config
-                .providers
-                .into_iter()
-                .filter(|provider| !provider.disabled)
-                .collect();
-            crate::external_agents::dsh_plugins::sync_kivio_model_capabilities(&providers)
-        }
-        ProviderProfileStrategy::Claude
-        | ProviderProfileStrategy::Codex
-        | ProviderProfileStrategy::Environment => {
-            let Some(provider) = super::overrides::active_provider(agent_id) else {
-                return Ok(());
-            };
-            match def.provider_profile {
-                ProviderProfileStrategy::Claude => materialize_claude(&provider),
-                ProviderProfileStrategy::Codex => materialize_codex(&provider),
-                ProviderProfileStrategy::Environment => Ok(()),
-                _ => unreachable!("profile strategy was narrowed above"),
+        ProviderProfileStrategy::Grok | ProviderProfileStrategy::Kimi => {
+            let (path, state) = effective_toml_paths(def, config).ok_or("无法定位原生配置目录")?;
+            if def.provider_profile == ProviderProfileStrategy::Grok {
+                materialize_grok_at(config, &path, &state)
+            } else {
+                materialize_kimi_at(config, &path, &state)
             }
         }
+        ProviderProfileStrategy::Dsh => {
+            let path = effective_dsh_path(config).ok_or("无法定位 dsh 配置目录")?;
+            if !path.exists() {
+                return Ok(());
+            }
+            let providers = config
+                .providers
+                .iter()
+                .filter(|p| !p.disabled)
+                .cloned()
+                .collect::<Vec<_>>();
+            super::dsh_plugins::sync_kivio_model_capabilities_at(&path, &providers)
+        }
+        _ => match super::overrides::selected_provider(config) {
+            Some(provider) if def.provider_profile == ProviderProfileStrategy::Claude => {
+                materialize_claude(provider)
+            }
+            Some(provider) if def.provider_profile == ProviderProfileStrategy::Codex => {
+                materialize_codex(provider)
+            }
+            _ => Ok(()),
+        },
     }
 }
 
 fn materialize_claude(provider: &ExternalCliProvider) -> Result<(), String> {
-    let _guard = NATIVE_CONFIG_LOCK
-        .lock()
-        .map_err(|_| "原生 CLI 配置写锁已损坏".to_string())?;
     let path = claude_settings_path_for(&provider.id)
         .ok_or_else(|| format!("供应商 id 不能作为文件名：{}", provider.id))?;
     materialize_claude_to(&path, provider)
@@ -445,27 +1280,38 @@ fn materialize_claude_to(path: &Path, provider: &ExternalCliProvider) -> Result<
 }
 
 fn materialize_codex(provider: &ExternalCliProvider) -> Result<(), String> {
-    let _guard = NATIVE_CONFIG_LOCK
-        .lock()
-        .map_err(|_| "原生 CLI 配置写锁已损坏".to_string())?;
     let home = codex_home_for(&provider.id)
         .ok_or_else(|| format!("供应商 id 不能作为目录名：{}", provider.id))?;
     // 写之前先验一遍：坏 TOML 会让 codex 整个起不来，报的错还跟供应商八竿子打不着。
     toml::from_str::<toml::Value>(&provider.config_toml)
         .map_err(|e| format!("config.toml 解析失败：{e}"))?;
+    if !provider.auth_json.trim().is_empty() {
+        let auth: Value = serde_json::from_str(&provider.auth_json)
+            .map_err(|e| format!("auth.json 解析失败：{e}"))?;
+        if !auth.is_object() {
+            return Err("auth.json 必须是对象".into());
+        }
+    }
+    validate_private_target(&home.join("config.toml"))?;
+    validate_private_target(&home.join("auth.json"))?;
     std::fs::create_dir_all(&home).map_err(|e| format!("创建 {} 失败：{e}", home.display()))?;
     let config_path = home.join("config.toml");
     write_codex_config_preserving_chat_model(&config_path, &provider.config_toml)?;
     let auth = provider.auth_json.trim();
     if auth.is_empty() {
-        let _ = std::fs::remove_file(home.join("auth.json"));
+        remove_profile_file(&home.join("auth.json"))?;
     } else {
         serde_json::from_str::<serde_json::Value>(auth)
             .map_err(|e| format!("auth.json 解析失败：{e}"))?;
         write_private(&home.join("auth.json"), auth)?;
     }
-    if let Err(err) = share_codex_sessions_with_user_home(&home) {
-        eprintln!("[external-agent] Codex 会话目录未能接到用户 ~/.codex：{err}");
+    let sessions = home.join("sessions");
+    if std::fs::symlink_metadata(&sessions).is_err() {
+        let target = native_codex_home()
+            .ok_or("无法定位 Codex 会话目录")?
+            .join("sessions");
+        std::fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+        create_directory_link(&sessions, &target)?;
     }
     Ok(())
 }
@@ -642,6 +1488,8 @@ pub fn persist_selected_model(
     let Some(def) = get_agent_def(agent_id) else {
         return Err(format!("未知外部 Agent: {agent_id}"));
     };
+    let _resource =
+        super::session::live::ResourceLease::acquire(vec![format!("agent:{agent_id}")], false)?;
     match def.provider_profile {
         ProviderProfileStrategy::Claude => {
             let Some(wire) =
@@ -694,15 +1542,19 @@ fn persist_codex_model(model: &str, reasoning: Option<&str>) -> Result<(), Strin
 fn claude_native_settings_path() -> Option<PathBuf> {
     let dir = nonempty_env_path("CLAUDE_CONFIG_DIR")
         .or_else(|| directories::BaseDirs::new().map(|base| base.home_dir().join(".claude")))?;
+    Some(claude_settings_path_in(dir))
+}
+
+fn claude_settings_path_in(dir: PathBuf) -> PathBuf {
     let settings = dir.join("settings.json");
     if settings.is_file() {
-        return Some(settings);
+        return settings;
     }
     let legacy = dir.join("claude.json");
     if legacy.is_file() {
-        return Some(legacy);
+        return legacy;
     }
-    Some(settings)
+    settings
 }
 
 fn codex_native_config_path() -> Option<PathBuf> {
@@ -907,7 +1759,7 @@ fn grok_config_path() -> Option<PathBuf> {
     if let Some(home) = nonempty_env_path("GROK_HOME") {
         return Some(home.join("config.toml"));
     }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".grok").join("config.toml"))
+    default_user_home().map(|home| home.join(".grok/config.toml"))
 }
 
 fn grok_state_path() -> Option<PathBuf> {
@@ -1007,15 +1859,6 @@ fn merge_grok_provider_config(base: &str, provider_config: &str) -> Result<Strin
     Ok(rendered)
 }
 
-fn materialize_grok(config: &ExternalCliAgentConfig) -> Result<(), String> {
-    let path = grok_config_path().ok_or_else(|| "无法定位 Grok 配置目录".to_string())?;
-    let state_path = grok_state_path().ok_or_else(|| "无法定位 Grok 状态文件".to_string())?;
-    let _guard = NATIVE_CONFIG_LOCK
-        .lock()
-        .map_err(|_| "原生 CLI 配置写锁已损坏".to_string())?;
-    materialize_grok_at(config, &path, &state_path)
-}
-
 fn materialize_grok_at(
     config: &ExternalCliAgentConfig,
     path: &Path,
@@ -1071,7 +1914,7 @@ fn kimi_config_path() -> Option<PathBuf> {
     if let Some(home) = nonempty_env_path("KIMI_CODE_HOME") {
         return Some(home.join("config.toml"));
     }
-    directories::BaseDirs::new().map(|base| base.home_dir().join(".kimi-code").join("config.toml"))
+    default_user_home().map(|home| home.join(".kimi-code/config.toml"))
 }
 
 fn kimi_state_path() -> Option<PathBuf> {
@@ -1168,15 +2011,6 @@ fn merge_kimi_provider_config(base: &str, provider_config: &str) -> Result<Strin
     Ok(rendered)
 }
 
-fn materialize_kimi(config: &ExternalCliAgentConfig) -> Result<(), String> {
-    let path = kimi_config_path().ok_or_else(|| "无法定位 Kimi 配置目录".to_string())?;
-    let state_path = kimi_state_path().ok_or_else(|| "无法定位 Kimi 状态文件".to_string())?;
-    let _guard = NATIVE_CONFIG_LOCK
-        .lock()
-        .map_err(|_| "原生 CLI 配置写锁已损坏".to_string())?;
-    materialize_kimi_at(config, &path, &state_path)
-}
-
 fn materialize_kimi_at(
     config: &ExternalCliAgentConfig,
     path: &Path,
@@ -1232,23 +2066,6 @@ struct NativeProviderEntry {
     auth: Option<Value>,
     default_model: String,
     default_thinking_level: Option<String>,
-}
-
-fn materialize_native(
-    strategy: ProviderProfileStrategy,
-    agent_id: &str,
-    config: &ExternalCliAgentConfig,
-) -> Result<(), String> {
-    let paths = match strategy {
-        ProviderProfileStrategy::OpenCode => opencode_paths(),
-        ProviderProfileStrategy::Pi => pi_paths(),
-        _ => None,
-    }
-    .ok_or_else(|| format!("无法定位 {agent_id} 的原生配置目录"))?;
-    let _guard = NATIVE_CONFIG_LOCK
-        .lock()
-        .map_err(|_| "原生 CLI 配置写锁已损坏".to_string())?;
-    materialize_native_with_strategy_at(strategy, agent_id, config, &paths)
 }
 
 fn materialize_native_with_strategy_at(
@@ -2019,166 +2836,17 @@ fn write_object_if_changed(
     write_private_atomic(path, &text)
 }
 
-/// 删除供应商时清掉它物化出来的文件。失败只记日志：残留一个读不到的旧文件不影响正确性。
-pub fn cleanup(
-    agent_id: &str,
-    provider_id: &str,
-    native_provider_id: Option<&str>,
-    provider_name: Option<&str>,
-) {
-    let Some(def) = get_agent_def(agent_id) else {
-        return;
-    };
-    match def.provider_profile {
-        ProviderProfileStrategy::Claude => {
-            if let Some(path) = claude_settings_path_for(provider_id) {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-        ProviderProfileStrategy::Codex => {
-            if let Some(home) = codex_home_for(provider_id) {
-                // `sessions/` 可能是接到用户 ~/.codex/sessions 的 junction；必须先拆掉
-                // 联接再删私有 home，否则 remove_dir_all 可能顺着联接把用户会话清掉。
-                unlink_directory_link(&home.join("sessions"));
-                let _ = std::fs::remove_dir_all(home);
-            }
-        }
-        ProviderProfileStrategy::OpenCode | ProviderProfileStrategy::Pi => {
-            if let Err(err) = cleanup_native(
-                def.provider_profile,
-                agent_id,
-                provider_id,
-                native_provider_id,
-                provider_name,
-            ) {
-                eprintln!("[external-agent] 清理 {agent_id} 原生供应商失败：{err}");
-            }
-        }
-        _ => {}
-    }
-}
-
-fn cleanup_native(
-    strategy: ProviderProfileStrategy,
-    agent_id: &str,
-    provider_id: &str,
-    native_provider_id: Option<&str>,
-    provider_name: Option<&str>,
-) -> Result<(), String> {
-    let paths = match strategy {
-        ProviderProfileStrategy::OpenCode => opencode_paths(),
-        ProviderProfileStrategy::Pi => pi_paths(),
-        _ => None,
-    }
-    .ok_or_else(|| format!("无法定位 {agent_id} 的原生配置目录"))?;
-    let _guard = NATIVE_CONFIG_LOCK
-        .lock()
-        .map_err(|_| "原生 CLI 配置写锁已损坏".to_string())?;
-    cleanup_native_with_strategy_at(
-        strategy,
-        agent_id,
-        provider_id,
-        native_provider_id,
-        provider_name,
-        &paths,
-    )
-}
-
-fn cleanup_native_with_strategy_at(
-    strategy: ProviderProfileStrategy,
-    _agent_id: &str,
-    provider_id: &str,
-    configured_native_id: Option<&str>,
-    provider_name: Option<&str>,
-    paths: &NativePaths,
-) -> Result<(), String> {
-    let native_ids = native_cleanup_ids(provider_id, provider_name, configured_native_id);
-    if native_ids.is_empty() {
-        return Ok(());
-    }
-    let matches_id =
-        |value: Option<&str>| value.is_some_and(|value| native_ids.iter().any(|id| id == value));
-    let mut state = read_managed_state(&paths.state)?;
-    match strategy {
-        ProviderProfileStrategy::OpenCode => {
-            for config_path in std::iter::once(&paths.config).chain(&paths.alternate_configs) {
-                let mut config = read_object_file(config_path, true, false, "原生 provider 配置")?;
-                let before_config = config.clone();
-                if state.defaults_managed
-                    && config
-                        .get("model")
-                        .and_then(Value::as_str)
-                        .and_then(|model| model.split_once('/'))
-                        .is_some_and(|(provider, _)| matches_id(Some(provider)))
-                {
-                    apply_default_fields(&mut config, &mut state, &["model"], None);
-                }
-                if let Some(providers) = config.get_mut("provider").and_then(Value::as_object_mut) {
-                    for id in &native_ids {
-                        providers.remove(id);
-                    }
-                }
-                write_object_if_changed(config_path, before_config, &config)?;
-            }
-        }
-        ProviderProfileStrategy::Pi => {
-            let mut config = read_object_file(&paths.config, false, false, "原生 provider 配置")?;
-            let before_config = config.clone();
-            if let Some(providers) = config.get_mut("providers").and_then(Value::as_object_mut) {
-                for id in &native_ids {
-                    providers.remove(id);
-                }
-            }
-            write_object_if_changed(&paths.config, before_config, &config)?;
-
-            if let Some(settings_path) = paths.settings.as_ref() {
-                let mut settings =
-                    read_object_file(settings_path, false, false, "Pi settings.json")?;
-                let before_settings = settings.clone();
-                if state.defaults_managed
-                    && matches_id(settings.get("defaultProvider").and_then(Value::as_str))
-                {
-                    apply_default_fields(
-                        &mut settings,
-                        &mut state,
-                        &["defaultProvider", "defaultModel", "defaultThinkingLevel"],
-                        None,
-                    );
-                }
-                write_object_if_changed(settings_path, before_settings, &settings)?;
-            }
-        }
-        _ => return Ok(()),
-    }
-    let mut auth = read_object_file(&paths.auth, false, true, "原生 auth.json")?;
-    let before_auth = auth.clone();
-    for id in &native_ids {
-        auth.remove(id);
-    }
-    write_object_if_changed(&paths.auth, before_auth, &auth)?;
-    state
-        .managed_provider_ids
-        .retain(|id| !native_ids.iter().any(|candidate| candidate == id));
-    write_managed_state(&paths.state, &state)
-}
-
 /// 文件里有 API key，权限收到 0600（Windows 无 unix 权限位，靠 app data 目录本身的 ACL）。
 fn write_private(path: &Path, content: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("创建 {} 失败：{e}", parent.display()))?;
-    }
-    std::fs::write(path, content).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    Ok(())
+    write_private_atomic(path, content)
 }
 
 /// 原生配置会被独立 CLI 同时读取：同目录临时文件 fsync 后 rename，避免读到半截 JSON。
 pub(crate) fn write_private_atomic(path: &Path, content: &str) -> Result<(), String> {
+    write_private_bytes(path, content.as_bytes())
+}
+fn write_private_bytes(path: &Path, content: &[u8]) -> Result<(), String> {
+    validate_private_target(path)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("创建 {} 失败：{e}", parent.display()))?;
@@ -2197,7 +2865,7 @@ pub(crate) fn write_private_atomic(path: &Path, content: &str) -> Result<(), Str
             options.mode(0o600);
         }
         let mut file = options.open(&temp)?;
-        file.write_all(content.as_bytes())?;
+        file.write_all(content)?;
         file.sync_all()?;
         drop(file);
         std::fs::rename(&temp, path)?;
@@ -2232,24 +2900,6 @@ fn materialize_native_at(
 }
 
 #[cfg(test)]
-fn cleanup_native_at(
-    agent_id: &str,
-    provider_id: &str,
-    configured_native_id: Option<&str>,
-    provider_name: Option<&str>,
-    paths: &NativePaths,
-) -> Result<(), String> {
-    cleanup_native_with_strategy_at(
-        native_strategy_for_test(agent_id),
-        agent_id,
-        provider_id,
-        configured_native_id,
-        provider_name,
-        paths,
-    )
-}
-
-#[cfg(test)]
 fn parse_native_entries(
     agent_id: &str,
     providers: &[ExternalCliProvider],
@@ -2261,9 +2911,612 @@ fn parse_native_entries(
 mod tests {
     use super::*;
 
+    struct ProfileRoot;
+    impl Drop for ProfileRoot {
+        fn drop(&mut self) {
+            TEST_PROFILE_ROOT.with(|root| *root.borrow_mut() = None);
+        }
+    }
+    fn isolated_profiles(root: &Path) -> ProfileRoot {
+        TEST_PROFILE_ROOT.with(|value| *value.borrow_mut() = Some(root.to_owned()));
+        ProfileRoot
+    }
+
+    fn assert_user_home_file_changes_launch_identity(agent: &str, relative: &str) {
+        use super::super::overrides::LaunchIdentity;
+
+        let keys = if cfg!(windows) {
+            vec!["USERPROFILE", "userprofile", "HOME", "home"]
+        } else {
+            vec!["HOME"]
+        };
+        for key in keys {
+            let temp = tempfile::tempdir().unwrap();
+            let _root = isolated_profiles(temp.path());
+            let home = temp.path().join("child-home");
+            let path = home.join(relative);
+            let def = get_agent_def(agent).unwrap();
+            let config = ExternalCliAgentConfig {
+                env: vec![crate::settings::CliEnvVar {
+                    key: key.into(),
+                    value: home.to_string_lossy().into_owned(),
+                }],
+                ..Default::default()
+            };
+            let effective = if agent == "opencode" {
+                let paths = effective_native_paths(def, &config).unwrap();
+                if relative.ends_with("auth.json") {
+                    paths.auth
+                } else {
+                    paths.config
+                }
+            } else {
+                let fallback = match agent {
+                    "grok" => grok_config_path().unwrap(),
+                    "kimi" => kimi_config_path().unwrap(),
+                    _ => unreachable!(),
+                };
+                assert!(fallback.starts_with(temp.path()));
+                effective_toml_paths(def, &config).unwrap().0
+            };
+            assert_eq!(effective, path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"first account").unwrap();
+            let host_path = temp.path().join("home").join(relative);
+            std::fs::create_dir_all(host_path.parent().unwrap()).unwrap();
+            std::fs::write(&host_path, b"host account").unwrap();
+            let bin = temp.path().join(agent);
+            std::fs::write(&bin, b"fixture executable").unwrap();
+            let environment = [(OsString::from(key), home.into_os_string())].into();
+            let capture = || {
+                LaunchIdentity::from_environment(def, &bin, Some(0), Some(&config), &environment)
+            };
+            let first = capture();
+            assert_eq!(first, capture());
+            std::fs::write(host_path, b"changed host account").unwrap();
+            assert_eq!(first, capture(), "{agent} must ignore the host home");
+            std::fs::write(&path, b"second account").unwrap();
+            assert_ne!(
+                first,
+                capture(),
+                "{agent} must observe {relative} under {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn launch_identity_tracks_opencode_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("opencode", ".config/opencode/opencode.json");
+    }
+
+    #[test]
+    fn launch_identity_tracks_opencode_auth_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity(
+            "opencode",
+            ".local/share/opencode/auth.json",
+        );
+    }
+
+    #[test]
+    fn launch_identity_tracks_grok_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("grok", ".grok/config.toml");
+    }
+
+    #[test]
+    fn launch_identity_tracks_kimi_config_under_user_home_override() {
+        assert_user_home_file_changes_launch_identity("kimi", ".kimi-code/config.toml");
+    }
+
+    #[test]
+    fn launch_identity_keeps_captured_directory_precedence() {
+        use super::super::overrides::LaunchIdentity;
+
+        for (agent, key, relative, fallback) in [
+            (
+                "opencode",
+                "XDG_CONFIG_HOME",
+                "opencode/opencode.json",
+                ".config/opencode/opencode.json",
+            ),
+            (
+                "opencode",
+                "XDG_DATA_HOME",
+                "opencode/auth.json",
+                ".local/share/opencode/auth.json",
+            ),
+            (
+                "pi",
+                "PI_CODING_AGENT_DIR",
+                "auth.json",
+                ".pi/agent/auth.json",
+            ),
+            ("grok", "GROK_HOME", "config.toml", ".grok/config.toml"),
+            (
+                "kimi",
+                "KIMI_CODE_HOME",
+                "config.toml",
+                ".kimi-code/config.toml",
+            ),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let _root = isolated_profiles(temp.path());
+            let home = temp.path().join("child-home");
+            let dedicated = temp.path().join("captured-directory");
+            let current = temp.path().join("current-config-directory");
+            let target = dedicated.join(relative);
+            let decoys = [home.join(fallback), current.join(relative)];
+            for path in std::iter::once(&target).chain(decoys.iter()) {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, b"first account").unwrap();
+            }
+            let home_key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+            let directory_key = if cfg!(windows) {
+                key.to_ascii_lowercase()
+            } else {
+                key.to_owned()
+            };
+            let environment = [
+                (OsString::from(home_key), home.into_os_string()),
+                (OsString::from(directory_key), dedicated.into_os_string()),
+            ]
+            .into();
+            let config = ExternalCliAgentConfig {
+                env: vec![crate::settings::CliEnvVar {
+                    key: key.into(),
+                    value: current.to_string_lossy().into_owned(),
+                }],
+                ..Default::default()
+            };
+            let def = get_agent_def(agent).unwrap();
+            let capture = || {
+                LaunchIdentity::from_environment(
+                    def,
+                    Path::new(agent),
+                    Some(0),
+                    Some(&config),
+                    &environment,
+                )
+            };
+            let first = capture();
+            for path in decoys {
+                std::fs::write(path, b"changed decoy account").unwrap();
+            }
+            assert_eq!(first, capture(), "{agent} must use captured {key}");
+            std::fs::write(target, b"changed captured account").unwrap();
+            assert_ne!(first, capture(), "{agent} must track captured {key}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launch_identity_preserves_non_utf8_captured_home() {
+        use super::super::overrides::LaunchIdentity;
+        use std::os::unix::ffi::OsStringExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(temp.path());
+        let home = temp.path().join(OsString::from_vec(b"child-\xff".to_vec()));
+        let path = home.join(".grok/config.toml");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"first account").unwrap();
+        let environment = [(OsString::from("HOME"), home.into_os_string())].into();
+        let def = get_agent_def("grok").unwrap();
+        let capture = || {
+            LaunchIdentity::from_environment(def, Path::new("grok"), Some(0), None, &environment)
+        };
+        let first = capture();
+        std::fs::write(path, b"changed account").unwrap();
+        assert_ne!(first, capture());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn maintenance_review_lowercase_home_tracks_changed_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(temp.path());
+        let home = temp.path().join("custom");
+        std::fs::create_dir(&home).unwrap();
+        let auth = home.join("auth.json");
+        std::fs::write(&auth, "first account").unwrap();
+        let env = [(OsString::from("codex_home"), home.into_os_string())].into();
+        let def = super::super::registry::get_agent_def("codex").unwrap();
+        let hasher = std::collections::hash_map::RandomState::new();
+        let first = launch_file_revision(def, Path::new("codex.exe"), None, &env, &hasher);
+        std::fs::write(&auth, "second account").unwrap();
+        assert_ne!(
+            first,
+            launch_file_revision(def, Path::new("codex.exe"), None, &env, &hasher)
+        );
+    }
+    fn codex_settings(
+        providers: Vec<ExternalCliProvider>,
+        current: &str,
+    ) -> crate::settings::Settings {
+        let mut settings = crate::settings::Settings::default();
+        settings.chat.external_cli_agents.insert(
+            "codex".into(),
+            ExternalCliAgentConfig {
+                providers,
+                current_provider: current.into(),
+                ..Default::default()
+            },
+        );
+        settings
+    }
+    fn codex_provider(id: &str, key: &str) -> ExternalCliProvider {
+        ExternalCliProvider {
+            id: id.into(),
+            name: id.into(),
+            config_toml: "model = 'fixture'\n".into(),
+            auth_json: format!(r#"{{"OPENAI_API_KEY":"{key}"}}"#),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn private_codex_rejects_conflicting_home_but_native_mode_preserves_it() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let native = root.path().join("native");
+        std::fs::create_dir_all(&native).unwrap();
+        std::fs::write(native.join("auth.json"), b"native credentials").unwrap();
+        let before = codex_settings(vec![], "");
+        let mut after = codex_settings(vec![codex_provider("private", "new")], "private");
+        after
+            .chat
+            .external_cli_agents
+            .get_mut("codex")
+            .unwrap()
+            .env
+            .push(crate::settings::CliEnvVar {
+                key: "CODEX_HOME".into(),
+                value: native.to_string_lossy().into_owned(),
+            });
+        assert!(
+            persist_with_profiles(&before, &after, || panic!("conflicting home"))
+                .unwrap_err()
+                .contains("CODEX_HOME")
+        );
+        assert!(!root.path().join("codex-private").exists());
+        after
+            .chat
+            .external_cli_agents
+            .get_mut("codex")
+            .unwrap()
+            .current_provider
+            .clear();
+        persist_with_profiles(&before, &after, || Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read(native.join("auth.json")).unwrap(),
+            b"native credentials"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_home_accepts_windows_case_alias_and_rejects_ambiguous_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let home = root.path().join("grok");
+        let mut config = ExternalCliAgentConfig {
+            env: vec![crate::settings::CliEnvVar {
+                key: "grok_home".into(),
+                value: home.to_string_lossy().into_owned(),
+            }],
+            ..Default::default()
+        };
+        let def = get_agent_def("grok").unwrap();
+        assert_eq!(
+            effective_toml_paths(def, &config).unwrap().0,
+            home.join("config.toml")
+        );
+        let mut before = crate::settings::Settings::default();
+        before
+            .chat
+            .external_cli_agents
+            .insert("grok".into(), config.clone());
+        config.env.push(crate::settings::CliEnvVar {
+            key: "GROK_HOME".into(),
+            value: root.path().join("different").to_string_lossy().into_owned(),
+        });
+        let mut after = before.clone();
+        after.chat.external_cli_agents.insert("grok".into(), config);
+        assert!(
+            persist_with_profiles(&before, &after, || panic!("ambiguous home"))
+                .unwrap_err()
+                .contains("多种大小写")
+        );
+        assert!(!home.exists());
+    }
+
+    #[tokio::test]
+    async fn prepared_pi_settings_reuses_one_maintenance_owner_through_file_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let home = root.path().join("pi");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("settings.json"), "{\"theme\":\"fixture\"}").unwrap();
+        let mut before = crate::settings::Settings::default();
+        before.chat.external_cli_agents.insert(
+            "pi".into(),
+            ExternalCliAgentConfig {
+                env: vec![crate::settings::CliEnvVar {
+                    key: "PI_CODING_AGENT_DIR".into(),
+                    value: home.to_string_lossy().into_owned(),
+                }],
+                ..Default::default()
+            },
+        );
+        let mut after = before.clone();
+        after
+            .chat
+            .external_cli_agents
+            .get_mut("pi")
+            .unwrap()
+            .disabled = true;
+        let keys = config_resource_keys(
+            get_agent_def("pi").unwrap(),
+            &after.chat.external_cli_agents["pi"],
+        );
+        let registry = super::super::session::live::LiveSessionRegistry::default();
+        let lease = registry
+            .prepare_settings_change(&["fixture".into()], keys.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        super::super::session::live::MAINTENANCE_OWNER.sync_scope(lease.clone(), || {
+            let inherited =
+                super::super::session::live::ResourceLease::acquire(keys, true).unwrap();
+            assert_eq!(inherited.id(), lease.id());
+            super::super::session::live::MAINTENANCE_OWNER.sync_scope(inherited, || {
+                persist_with_profiles(&before, &after, || {
+                    std::fs::write(root.path().join("settings-document"), b"committed")
+                        .map_err(|e| e.to_string())
+                })
+                .unwrap();
+            });
+        });
+        assert_eq!(
+            std::fs::read(root.path().join("settings-document")).unwrap(),
+            b"committed"
+        );
+        assert!(std::fs::read_to_string(home.join("settings.json"))
+            .unwrap()
+            .contains("fixture"));
+    }
+
+    #[test]
+    fn relative_home_and_unbound_legacy_backup_fail_before_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let mut before = crate::settings::Settings::default();
+        before.chat.external_cli_agents.insert(
+            "grok".into(),
+            ExternalCliAgentConfig {
+                env: vec![crate::settings::CliEnvVar {
+                    key: "GROK_HOME".into(),
+                    value: root.path().join("native").to_string_lossy().into_owned(),
+                }],
+                ..Default::default()
+            },
+        );
+        let mut after = before.clone();
+        after.chat.external_cli_agents.get_mut("grok").unwrap().env[0].value =
+            "relative-home".into();
+        assert!(
+            persist_with_profiles(&before, &after, || panic!("invalid home cannot persist"))
+                .unwrap_err()
+                .contains("绝对路径")
+        );
+        after = before.clone();
+        after
+            .chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .disabled = true;
+        let backup = root.path().join("grok-native-state.json");
+        std::fs::write(&backup, b"legacy sentinel").unwrap();
+        assert!(
+            persist_with_profiles(&before, &after, || panic!("legacy target must be known"))
+                .unwrap_err()
+                .contains("原始目录")
+        );
+        assert_eq!(std::fs::read(backup).unwrap(), b"legacy sentinel");
+        assert!(!root.path().join("native").exists());
+    }
+    #[test]
+    fn profile_undo_excludes_native_and_pi_side_writers_until_rollback_finishes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("settings.json");
+        std::fs::write(&path, b"original native bytes").unwrap();
+        let keys = vec![format!(
+            "profile:{}",
+            super::super::session::live::resource_path(&path)
+        )];
+        let lease = super::super::session::live::ResourceLease::acquire(keys, true).unwrap();
+        let guard = NATIVE_CONFIG_LOCK.lock().unwrap();
+        let undo = ProfileUndo::capture(vec![path.clone()], vec![], guard).unwrap();
+        std::fs::write(&path, b"changed by account save").unwrap();
+        let probe_path = path.clone();
+        std::thread::spawn(move || {
+            assert!(native_file_update(&probe_path).is_err());
+            assert!(
+                crate::external_agents::pi_extensions::lock_settings_file(&probe_path).is_err()
+            );
+        })
+        .join()
+        .unwrap();
+        undo.rollback().unwrap();
+        drop(lease);
+        assert_eq!(std::fs::read(&path).unwrap(), b"original native bytes");
+        assert!(crate::external_agents::pi_extensions::lock_settings_file(&path).is_ok());
+    }
+    #[test]
+    fn backup_identity_survives_first_materialization() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("new").join("nested").join("config.toml");
+        let state = root.path().join("grok-native-state.json");
+        let before = bound_state(state.clone(), &path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"model = 'fixture'").unwrap();
+        assert_eq!(before, bound_state(state, &path));
+    }
+
+    #[test]
+    fn failed_settings_save_restores_active_inactive_bytes_absence_and_shared_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let active = root.path().join("codex-active");
+        let inactive = root.path().join("codex-inactive");
+        std::fs::create_dir_all(&active).unwrap();
+        std::fs::create_dir_all(&inactive).unwrap();
+        let auth = b"{ \"OPENAI_API_KEY\": \"original bytes\" }\n";
+        std::fs::write(active.join("auth.json"), auth).unwrap();
+        std::fs::write(inactive.join("auth.json"), b"inactive credential").unwrap();
+        let shared = root.path().join("shared-codex").join("sessions");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("sentinel"), b"history").unwrap();
+        create_directory_link(&inactive.join("sessions"), &shared).unwrap();
+        create_directory_link(&active.join("sessions"), &shared).unwrap();
+        let before = codex_settings(
+            vec![
+                codex_provider("active", "old"),
+                codex_provider("inactive", "old"),
+            ],
+            "active",
+        );
+        let after = codex_settings(vec![codex_provider("active", "new")], "active");
+        let error = persist_with_profiles(&before, &after, || {
+            std::fs::write(root.path(), "settings").map_err(|e| e.to_string())
+        })
+        .unwrap_err();
+        assert!(!error.is_empty());
+        assert_eq!(std::fs::read(active.join("auth.json")).unwrap(), auth);
+        assert_eq!(
+            std::fs::read(inactive.join("auth.json")).unwrap(),
+            b"inactive credential"
+        );
+        assert!(!active.join("config.toml").exists());
+        assert_eq!(std::fs::read(shared.join("sentinel")).unwrap(), b"history");
+        persist_with_profiles(&before, &after, || Ok(())).unwrap();
+        assert!(!inactive.join("auth.json").exists());
+        assert_eq!(std::fs::read(shared.join("sentinel")).unwrap(), b"history");
+        assert!(std::fs::read_to_string(active.join("auth.json"))
+            .unwrap()
+            .contains("new"));
+    }
+    #[test]
+    fn invalid_auth_is_rejected_before_any_profile_write() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let before = codex_settings(vec![], "");
+        let mut provider = codex_provider("bad", "new");
+        provider.auth_json = "not json".into();
+        let after = codex_settings(vec![provider], "bad");
+        assert!(persist_with_profiles(&before, &after, || panic!("must not persist")).is_err());
+        assert!(!root.path().join("codex-bad").exists());
+    }
+    #[test]
+    fn private_parent_junction_cannot_change_outside_credentials() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        std::fs::write(outside.path().join("auth.json"), b"outside").unwrap();
+        create_directory_link(&root.path().join("codex-linked"), outside.path()).unwrap();
+        let before = codex_settings(vec![], "");
+        let after = codex_settings(vec![codex_provider("linked", "new")], "linked");
+        assert!(persist_with_profiles(&before, &after, || Ok(())).is_err());
+        assert_eq!(
+            std::fs::read(outside.path().join("auth.json")).unwrap(),
+            b"outside"
+        );
+    }
+    #[test]
+    fn moving_provider_home_restores_old_native_bytes_and_binds_new_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let old = root.path().join("old");
+        let new = root.path().join("new");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("config.toml"), "[ui]\ncolor = 'old'\n").unwrap();
+        std::fs::write(new.join("config.toml"), "[ui]\ncolor = 'new'\n").unwrap();
+        let mut provider = ExternalCliProvider { id: "relay".into(), name: "Relay".into(), config_toml: "[models]\ndefault = 'test'\n[model.test]\nmodel = 'test'\nbase_url = 'https://example.test'\n".into(), ..Default::default() };
+        provider.env.push(crate::settings::CliEnvVar {
+            key: "GROK_HOME".into(),
+            value: old.to_string_lossy().into_owned(),
+        });
+        let mut before = crate::settings::Settings::default();
+        before.chat.external_cli_agents.insert(
+            "grok".into(),
+            ExternalCliAgentConfig {
+                providers: vec![provider],
+                current_provider: "relay".into(),
+                ..Default::default()
+            },
+        );
+        let mut empty = before.clone();
+        empty
+            .chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .current_provider
+            .clear();
+        persist_with_profiles(&empty, &before, || Ok(())).unwrap();
+        let mut after = before.clone();
+        after
+            .chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .providers[0]
+            .env[0]
+            .value = new.to_string_lossy().into_owned();
+        persist_with_profiles(&before, &after, || Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(old.join("config.toml")).unwrap(),
+            "[ui]\ncolor = 'old'\n"
+        );
+        let def = get_agent_def("grok").unwrap();
+        assert_ne!(
+            effective_toml_paths(def, &before.chat.external_cli_agents["grok"])
+                .unwrap()
+                .1,
+            effective_toml_paths(def, &after.chat.external_cli_agents["grok"])
+                .unwrap()
+                .1
+        );
+        let mut restore = after.clone();
+        restore
+            .chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .current_provider
+            .clear();
+        // Keep the resolved home when returning to the native configuration.
+        restore
+            .chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .env
+            .push(crate::settings::CliEnvVar {
+                key: "GROK_HOME".into(),
+                value: new.to_string_lossy().into_owned(),
+            });
+        persist_with_profiles(&after, &restore, || Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.toml")).unwrap(),
+            "[ui]\ncolor = 'new'\n"
+        );
+    }
+
     #[test]
     fn unknown_agent_has_no_provider_profile_route() {
-        let error = materialize("unknown-agent").unwrap_err();
+        let error =
+            materialize_config("unknown-agent", &ExternalCliAgentConfig::default()).unwrap_err();
         assert!(error.contains("未知外部 Agent"));
     }
 
@@ -2455,7 +3708,7 @@ mod tests {
         assert_eq!(restored["model"], "anthropic/claude-old");
         assert!(restored["provider"]["relay-one"].is_object());
 
-        cleanup_native_at("opencode", "p-msoeiznl", None, Some("Relay One"), &paths).unwrap();
+        materialize_native_at("opencode", &ExternalCliAgentConfig::default(), &paths).unwrap();
         let cleaned: Value =
             serde_json::from_str(&std::fs::read_to_string(&paths.config).unwrap()).unwrap();
         assert!(cleaned["provider"].get("relay-one").is_none());
@@ -2517,14 +3770,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&paths.auth).unwrap()).unwrap();
         assert!(auth.get("team-relay").is_none());
 
-        cleanup_native_at(
-            "opencode",
-            "internal-timestamp-id",
-            Some("team-relay"),
-            Some("Relay"),
-            &paths,
-        )
-        .unwrap();
+        materialize_native_at("opencode", &ExternalCliAgentConfig::default(), &paths).unwrap();
         let cleaned: Value =
             serde_json::from_str(&std::fs::read_to_string(&paths.config).unwrap()).unwrap();
         assert!(cleaned["provider"].get("team-relay").is_none());
@@ -2657,7 +3903,7 @@ mod tests {
         };
 
         materialize_native_at("opencode", &config, &paths).unwrap();
-        cleanup_native_at("opencode", "p-msoeiznl", None, Some("Relay One"), &paths).unwrap();
+        materialize_native_at("opencode", &ExternalCliAgentConfig::default(), &paths).unwrap();
         let cleaned: Value =
             serde_json::from_str(&std::fs::read_to_string(&paths.config).unwrap()).unwrap();
         assert_eq!(cleaned["model"], "user-relay/old");
@@ -2777,7 +4023,7 @@ mod tests {
         };
 
         materialize_native_at("pi", &config, &paths).unwrap();
-        cleanup_native_at("pi", "p-msoeiznl", None, Some("Relay One"), &paths).unwrap();
+        materialize_native_at("pi", &ExternalCliAgentConfig::default(), &paths).unwrap();
         let settings: Value = serde_json::from_str(
             &std::fs::read_to_string(paths.settings.as_ref().unwrap()).unwrap(),
         )
@@ -2818,7 +4064,7 @@ mod tests {
         )
         .unwrap();
 
-        cleanup_native_at("pi", "p-msoeiznl", None, Some("Relay One"), &paths).unwrap();
+        materialize_native_at("pi", &ExternalCliAgentConfig::default(), &paths).unwrap();
         let models: Value =
             serde_json::from_str(&std::fs::read_to_string(&paths.config).unwrap()).unwrap();
         assert!(models["providers"].get("relay-one").is_none());

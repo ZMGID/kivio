@@ -102,6 +102,9 @@ pub(crate) async fn chat_compress_context(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
+    let _reservation =
+        super::reply_runtime::ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+            .ok_or(super::reply_runtime::CHAT_REPLY_BUSY_ERROR)?;
     let mut conversation = load_conversation(&app, &conversation_id)?;
     if conversation.agent_runtime.is_external() {
         crate::external_agents::compact::request_external_compaction(
@@ -135,9 +138,6 @@ pub(crate) async fn chat_compress_context(
             "conversation": conversation,
         }));
     }
-    let _reservation =
-        super::reply_runtime::ChatSendReservation::try_acquire(state.inner(), &conversation_id)
-            .ok_or(super::reply_runtime::CHAT_REPLY_BUSY_ERROR)?;
     let generation = state.chat_runtime().begin_generation(&conversation_id);
     let run_id = format!("compact-{}", uuid::Uuid::new_v4());
     let _generation_guard = super::reply_runtime::ChatReplyGuard::try_new(

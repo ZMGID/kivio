@@ -13,7 +13,9 @@ opencode 和 kimi 在 Kivio 里是 ACP 代理。导入它们的会话时，用 A
 
 **gemini 因此不支持导入**：Kivio 驱动 gemini 走的就是 ACP，`loadSession=false` 意味着导入后无法续聊，与 [ADR-0001](./0001-imported-cli-conversations-stay-on-their-cli.md)「导入必须能续聊」直接冲突。这是本机 gemini CLI 版本的能力；将来若它实现了 ACP 会话方法，可原样加回。
 
-**kimi 需要额外的历史来源**：`session/load` 能绑定但不重放，所以显示用的历史仍要读 `~/.kimi-code/sessions/<wd_*>/<session_*>/context.jsonl`（`~/.kimi-code/session_index.jsonl` 提供 `sessionId → sessionDir / workDir` 的明文映射）。枚举仍走 `session/list`。
+**当时的 kimi 需要额外的历史来源**：上述版本的 `session/load` 能绑定但不重放，当时计划从本地历史补齐显示快照，枚举仍走 `session/list`。
+
+2026-11-07 核验官方 Kimi Code 源码 `eb2035f3cad57cc12d4d5082ec626f7f0ea5f651` 后更新此判断。[`loadSession`](https://github.com/MoonshotAI/kimi-code/blob/eb2035f3cad57cc12d4d5082ec626f7f0ea5f651/packages/acp-server/src/server.ts#L297) 在返回前等待 `replayHistory`，[重放实现](https://github.com/MoonshotAI/kimi-code/blob/eb2035f3cad57cc12d4d5082ec626f7f0ea5f651/packages/acp-server/src/replay.ts) 把主代理历史转换为 ACP `session/update`。Kivio 因此复用 ACP 重放，不新增私有文件解析器。加载后没有可显示历史时拒绝导入，避免把有原生上下文的会话保存为空快照。此处是源码核验，本机未安装 Kimi，未证明所有已发布版本均支持重放。
 
 ## Considered Options
 
@@ -24,7 +26,7 @@ opencode 和 kimi 在 Kivio 里是 ACP 代理。导入它们的会话时，用 A
 - 列会话要先起进程、握一次 ACP，比读文件慢。
 - 依赖 agent 声明 `loadSession` 且实现 `session/list`；两者缺一即退回"不支持导入"，与 paseo 把会话枚举做成 provider 可选能力的做法一致。
 - **`session/list` 必须带 `cwd` 参数**。不带的话 agent 返回的是全局最近的会话，分页 `limit` 会在够到当前目录的会话之前就截断——本来就要按项目根过滤，正好在源头传。
-- 仍需读文件的：**claude**（`~/.claude/projects/<编码 cwd>/<uuid>.jsonl`）、**grok**（`~/.grok/sessions/<百分号编码 cwd>/<uuid>/`）、**codex**（若 CodexAppServer 协议没有等价方法，则读 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`），以及 **kimi 的历史部分**（见上）。
+- 仍需读文件的：**claude**（`~/.claude/projects/<编码 cwd>/<uuid>.jsonl`）、**grok**（`~/.grok/sessions/<百分号编码 cwd>/<uuid>/`）、**codex**（若 CodexAppServer 协议没有等价方法，则读 `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`）。
 
 ## claude 的目录编码规则（易错，写下来）
 

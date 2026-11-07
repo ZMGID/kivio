@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import type { ProviderCapabilities } from '../generated/chatProtocol'
 import { isTauriRuntime } from './tauri'
 
 export interface NativeProviderSummary {
@@ -25,10 +26,7 @@ export interface DetectedExternalAgent {
   authStatus?: string | null
   auth_status?: string | null
   disabled?: boolean
-  supportsSteering?: boolean
-  supports_steering?: boolean
-  supportsFollowUp?: boolean
-  supports_follow_up?: boolean
+  capabilities: ProviderCapabilities
 }
 
 /** `chat_external_cli_scan_cc_switch` response; secret keys are never returned. */
@@ -37,11 +35,14 @@ export interface CcSwitchProvider {
   id: string
   name: string
   remark: string
+  hasApiKey: boolean
+  isCurrent: boolean
+}
+
+export interface ImportedCcSwitchProvider extends CcSwitchProvider {
   env: Array<{ key: string; value: string }>
   configToml: string
   authJson: string
-  hasApiKey: boolean
-  isCurrent: boolean
 }
 
 export interface CcSwitchScan {
@@ -186,6 +187,12 @@ export interface ExternalCliInstallInfo {
   command: string | null
   docsUrl: string
   configDir: string | null
+  planId: string | null
+  manualReason: string | null
+  binaryPath: string | null
+  targetVersion: string | null
+  environment: string | null
+  source: string | null
 }
 
 export interface ExternalCliAccount {
@@ -205,7 +212,21 @@ export const externalCliSettingsApi = {
   },
   async detectExternalAgents(forceRefresh = false, conversationId?: string | null): Promise<DetectedExternalAgent[]> {
     if (!isTauriRuntime()) {
-      return [{ id: 'claude', name: 'Claude Code', available: false, models: [{ id: 'default', label: 'Default' }] }]
+      return [{
+        id: 'claude',
+        name: 'Claude Code',
+        available: false,
+        models: [{ id: 'default', label: 'Default' }],
+        capabilities: {
+          steering: 'unavailable',
+          followUp: 'unavailable',
+          imageInput: 'unavailable',
+          rewind: 'unavailable',
+          conversationBranch: 'unavailable',
+          importHistory: 'unavailable',
+          account: 'unavailable',
+        },
+      }]
     }
     const result = await invoke<{ success: boolean; agents: DetectedExternalAgent[] }>(
       'chat_detect_external_agents',
@@ -252,9 +273,9 @@ export const externalCliSettingsApi = {
     return invoke<ExternalCliInstallInfo>('chat_external_cli_install_info', { agentId })
   },
 
-  async externalCliInstall(agentId: string): Promise<void> {
+  async externalCliInstall(agentId: string, planId: string): Promise<void> {
     if (!isTauriRuntime()) return
-    await invoke('chat_external_cli_install', { agentId })
+    await invoke('chat_external_cli_install', { agentId, planId })
   },
 
   async piExtensionsInventory(): Promise<PiExtensionInventory | null> {
@@ -372,11 +393,6 @@ export const externalCliSettingsApi = {
     return Array.isArray(list) ? list : []
   },
 
-  async externalCliProviderCleanup(agentId: string, providerId: string, nativeProviderId?: string, providerName?: string): Promise<void> {
-    if (!isTauriRuntime()) return
-    await invoke('chat_external_cli_provider_cleanup', { agentId, providerId, nativeProviderId, providerName })
-  },
-
   async externalCliFetchRelayModels(baseUrl: string, apiKey: string): Promise<string[]> {
     if (!isTauriRuntime()) return []
     return invoke<string[]>('chat_external_cli_fetch_relay_models', { baseUrl, apiKey })
@@ -386,14 +402,27 @@ export const externalCliSettingsApi = {
     if (!isTauriRuntime()) return { providers: [], skipped: 0 }
     return invoke<CcSwitchScan>('chat_external_cli_scan_cc_switch')
   },
+
+  async externalCliImportCcSwitch(selections: Array<{ agentId: string; providerId: string }>): Promise<ImportedCcSwitchProvider[]> {
+    if (!isTauriRuntime()) return []
+    return invoke<ImportedCcSwitchProvider[]>('chat_external_cli_import_cc_switch', { selections })
+  },
+}
+
+export interface ExternalCliInstallLog {
+  agentId: string
+  planId: string
+  line: string | null
+  done: boolean
+  success: boolean
 }
 
 export async function onExternalCliInstallLog(
-  handler: (event: { agentId: string; line: string | null; done: boolean; success: boolean }) => void,
+  handler: (event: ExternalCliInstallLog) => void,
 ): Promise<() => void> {
   if (!isTauriRuntime()) return () => {}
   const { listen } = await import('@tauri-apps/api/event')
-  return listen<{ agentId: string; line: string | null; done: boolean; success: boolean }>(
+  return listen<ExternalCliInstallLog>(
     'external-cli-install',
     (event) => handler(event.payload),
   )

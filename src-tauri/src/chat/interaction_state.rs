@@ -43,7 +43,7 @@ pub(crate) struct ChatInteractionState {
     pending_session_consents: Mutex<HashMap<String, PendingSessionConsent>>,
     consent_prompt_lock: AsyncMutex<()>,
     pending_user_prompts: Mutex<HashMap<String, PendingAskUserPrompt>>,
-    answered_ask_user_content: Mutex<HashMap<String, Value>>,
+    answered_ask_user_content: Mutex<HashMap<(String, String), Value>>,
 }
 
 impl ChatInteractionState {
@@ -107,13 +107,13 @@ impl ChatInteractionState {
 
     pub(crate) fn begin_tool_approval(
         &self,
-        tool_call_id: &str,
+        interaction_id: &str,
         conversation_id: &str,
         tool_name: &str,
     ) -> oneshot::Receiver<ToolApprovalOutcome> {
         let (sender, receiver) = oneshot::channel();
         Self::lock(&self.pending_tool_approvals).insert(
-            tool_call_id.to_string(),
+            interaction_id.to_string(),
             PendingToolApproval {
                 conversation_id: conversation_id.to_string(),
                 tool_name: tool_name.to_string(),
@@ -125,11 +125,11 @@ impl ChatInteractionState {
 
     pub(crate) fn respond_tool_approval(
         &self,
-        tool_call_id: &str,
+        interaction_id: &str,
         outcome: ToolApprovalOutcome,
         always: bool,
     ) -> bool {
-        let Some(pending) = Self::lock(&self.pending_tool_approvals).remove(tool_call_id) else {
+        let Some(pending) = Self::lock(&self.pending_tool_approvals).remove(interaction_id) else {
             return false;
         };
         if outcome.approved && always {
@@ -142,21 +142,21 @@ impl ChatInteractionState {
         true
     }
 
-    pub(crate) fn cancel_tool_approval(&self, tool_call_id: &str) -> bool {
+    pub(crate) fn cancel_tool_approval(&self, interaction_id: &str) -> bool {
         Self::lock(&self.pending_tool_approvals)
-            .remove(tool_call_id)
+            .remove(interaction_id)
             .is_some()
     }
 
     pub(crate) fn begin_user_prompt(
         &self,
-        tool_call_id: &str,
+        interaction_id: &str,
         run_id: &str,
         prompt: AskUserPromptPayload,
     ) -> oneshot::Receiver<AskUserResponseResult> {
         let (sender, receiver) = oneshot::channel();
         Self::lock(&self.pending_user_prompts).insert(
-            tool_call_id.to_string(),
+            interaction_id.to_string(),
             PendingAskUserPrompt {
                 run_id: run_id.to_string(),
                 prompt,
@@ -170,12 +170,12 @@ impl ChatInteractionState {
     /// success sends exactly one response and removes it before any observer can claim it again.
     pub(crate) fn respond_user_prompt(
         &self,
-        tool_call_id: &str,
+        interaction_id: &str,
         response: AskUserResponseResult,
     ) -> Result<String, String> {
         let (pending, response) = take_validated_response(
             &mut Self::lock(&self.pending_user_prompts),
-            tool_call_id,
+            interaction_id,
             response,
         )?;
         let run_id = pending.run_id;
@@ -183,33 +183,37 @@ impl ChatInteractionState {
         Ok(run_id)
     }
 
-    pub(crate) fn cancel_user_prompt(&self, tool_call_id: &str) -> Option<String> {
+    pub(crate) fn cancel_user_prompt(&self, interaction_id: &str) -> Option<String> {
         Self::lock(&self.pending_user_prompts)
-            .remove(tool_call_id)
+            .remove(interaction_id)
             .map(|pending| pending.run_id)
     }
 
-    pub(crate) fn forget_tool_interactions(&self, tool_call_ids: &[String]) {
+    pub(crate) fn forget_tool_interactions(&self, interaction_ids: &[String]) {
         {
             let mut approvals = Self::lock(&self.pending_tool_approvals);
-            for id in tool_call_ids {
+            for id in interaction_ids {
                 approvals.remove(id);
             }
         }
         {
             let mut prompts = Self::lock(&self.pending_user_prompts);
-            for id in tool_call_ids {
+            for id in interaction_ids {
                 prompts.remove(id);
             }
         }
     }
 
-    pub(crate) fn remember_answered_ask_user(&self, tool_call_id: String, content: Value) {
-        Self::lock(&self.answered_ask_user_content).insert(tool_call_id, content);
+    pub(crate) fn remember_answered_ask_user(&self, run_id: &str, tool_call_id: String, content: Value) {
+        Self::lock(&self.answered_ask_user_content).insert((run_id.to_string(), tool_call_id), content);
     }
 
-    pub(crate) fn take_answered_ask_user(&self, tool_call_id: &str) -> Option<Value> {
-        Self::lock(&self.answered_ask_user_content).remove(tool_call_id)
+    pub(crate) fn take_answered_ask_user(&self, run_id: &str, tool_call_id: &str) -> Option<Value> {
+        Self::lock(&self.answered_ask_user_content).remove(&(run_id.to_string(), tool_call_id.to_string()))
+    }
+
+    pub(crate) fn forget_answered_ask_user(&self, run_id: &str) {
+        Self::lock(&self.answered_ask_user_content).retain(|(run, _), _| run != run_id);
     }
 
     pub(crate) fn forget_conversation(&self, conversation_id: &str) {
@@ -309,5 +313,42 @@ mod tests {
         );
         assert!(consent.await.unwrap());
         assert!(state.respond_session_consent("conv-1", false).is_none());
+    }
+
+    #[tokio::test]
+    async fn retired_interaction_cannot_claim_or_withdraw_a_later_request() {
+        let state = ChatInteractionState::default();
+        let retired = state.begin_tool_approval("first-interaction", "conv-1", "Write");
+        state.forget_tool_interactions(&["first-interaction".into()]);
+        assert!(retired.await.is_err());
+
+        let fresh = state.begin_tool_approval("next-interaction", "conv-1", "Write");
+        state.forget_tool_interactions(&["first-interaction".into()]);
+        assert!(!state.respond_tool_approval(
+            "first-interaction",
+            ToolApprovalOutcome::default(),
+            false,
+        ));
+        assert!(state.respond_tool_approval(
+            "next-interaction",
+            ToolApprovalOutcome { approved: true, ..Default::default() },
+            false,
+        ));
+        assert!(fresh.await.unwrap().approved);
+    }
+
+    #[test]
+    fn repeated_tool_ids_keep_separate_run_answers() {
+        let state = ChatInteractionState::default();
+        let first = serde_json::json!({"answer": "A"});
+        let second = serde_json::json!({"answer": "B"});
+        state.remember_answered_ask_user("first-run", "same-tool".into(), first.clone());
+        state.remember_answered_ask_user("second-run", "same-tool".into(), second.clone());
+
+        assert_eq!(state.take_answered_ask_user("first-run", "same-tool"), Some(first));
+        state.remember_answered_ask_user("first-run", "same-tool".into(), serde_json::Value::Null);
+        state.forget_answered_ask_user("first-run");
+        assert_eq!(state.take_answered_ask_user("first-run", "same-tool"), None);
+        assert_eq!(state.take_answered_ask_user("second-run", "same-tool"), Some(second));
     }
 }

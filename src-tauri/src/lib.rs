@@ -340,6 +340,7 @@ pub fn run() {
             }
 
             let mut settings = load_settings(&app.handle());
+            external_agents::overrides::sync_from_settings(&settings);
             // 旧版本随应用附带的内置专家已全部下线：启动时清理残留条目，并清空集里
             // 指向已不存在助手的默认助手。用户自建专家不受影响；清理幂等，旧备份恢复后
             // 再次出现的条目也会在下次启动被移除。
@@ -726,9 +727,9 @@ pub fn run() {
             external_agents::commands::chat_detect_external_agent_models,
             external_agents::commands::chat_external_cli_account,
             external_agents::commands::chat_list_external_cli_slash_commands,
-            external_agents::commands::chat_external_cli_provider_cleanup,
             external_agents::commands::chat_external_cli_pi_agent_dir,
             external_agents::commands::chat_external_cli_scan_cc_switch,
+            external_agents::commands::chat_external_cli_import_cc_switch,
             external_agents::commands::chat_external_cli_fetch_relay_models,
             external_agents::installer::chat_external_cli_install_info,
             external_agents::installer::chat_external_cli_install,

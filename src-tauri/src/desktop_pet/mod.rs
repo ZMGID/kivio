@@ -106,13 +106,13 @@ impl Activity {
         // Withdrawal is emitted after releasing the protocol hub lock, so a
         // resumed tool can overtake it. Compare against this approval's sequence,
         // not the unrelated latest text/tool event; never remove a newer request.
-        if let ChatRunEvent::ToolApprovalWithdrawn { tool_call_id } = &envelope.event {
+        if let ChatRunEvent::ToolApprovalWithdrawn { interaction_id } = &envelope.event {
             if run
                 .approvals
-                .get(tool_call_id)
+                .get(interaction_id)
                 .is_some_and(|seq| *seq < envelope.seq)
             {
-                run.approvals.remove(tool_call_id);
+                run.approvals.remove(interaction_id);
             }
             run.seq = run.seq.max(envelope.seq);
             return;
@@ -148,11 +148,11 @@ impl Activity {
                 run.phase = Mood::Working
             }
             ChatRunEvent::SessionConsentRequested => run.session_consent = true,
-            ChatRunEvent::ToolApprovalRequested { tool_call_id, .. } => {
-                run.approvals.insert(tool_call_id.clone(), envelope.seq);
+            ChatRunEvent::ToolApprovalRequested { interaction_id, .. } => {
+                run.approvals.insert(interaction_id.clone(), envelope.seq);
             }
-            ChatRunEvent::UserPromptRequested { tool_call_id, .. } => {
-                run.questions.insert(tool_call_id.clone());
+            ChatRunEvent::UserPromptRequested { interaction_id, .. } => {
+                run.questions.insert(interaction_id.clone());
             }
             ChatRunEvent::RunCompleted { .. }
             | ChatRunEvent::RunFailed { .. }
@@ -169,9 +169,9 @@ impl Activity {
         }
     }
 
-    fn resolve(&mut self, run_id: &str, tool_call_id: Option<&str>) {
+    fn resolve(&mut self, run_id: &str, interaction_id: Option<&str>) {
         if let Some(run) = self.runs.get_mut(run_id) {
-            if let Some(id) = tool_call_id {
+            if let Some(id) = interaction_id {
                 run.questions.remove(id);
             } else {
                 run.session_consent = false;
@@ -616,9 +616,9 @@ fn request_today_usage(app: &AppHandle) {
     });
 }
 
-pub fn resolve_interaction(app: &AppHandle, run_id: &str, tool_call_id: Option<&str>) {
+pub fn resolve_interaction(app: &AppHandle, run_id: &str, interaction_id: Option<&str>) {
     if let Some(state) = state(app) {
-        state.inner.lock().activity.resolve(run_id, tool_call_id);
+        state.inner.lock().activity.resolve(run_id, interaction_id);
     }
 }
 
@@ -792,6 +792,7 @@ mod tests {
             "a",
             2,
             ChatRunEvent::ToolApprovalRequested {
+                interaction_id: "interaction".into(),
                 tool_call_id: "tool".into(),
                 name: "shell".into(),
                 source: "native".into(),
@@ -807,7 +808,7 @@ mod tests {
                 "a",
                 3,
                 ChatRunEvent::ToolApprovalWithdrawn {
-                    tool_call_id: "tool".into(),
+                    interaction_id: "interaction".into(),
                 },
             ),
             now,
@@ -826,6 +827,7 @@ mod tests {
                 "a",
                 seq,
                 ChatRunEvent::ToolApprovalRequested {
+                    interaction_id: "interaction".into(),
                     tool_call_id: "tool".into(),
                     name: "shell".into(),
                     source: "native".into(),
@@ -841,7 +843,7 @@ mod tests {
                 "a",
                 seq,
                 ChatRunEvent::ToolApprovalWithdrawn {
-                    tool_call_id: "tool".into(),
+                    interaction_id: "interaction".into(),
                 },
             )
         };

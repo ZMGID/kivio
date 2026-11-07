@@ -15,6 +15,7 @@ use kivio::chat::protocol::{
     ChatTodoStatus, ChatToolArtifactPayload, ChatToolPayload, ChatWarningSnapshot,
     CHAT_PROTOCOL_VERSION,
 };
+use kivio::external_agents::types::{CapabilitySupport, ProviderCapabilities};
 use schemars::schema_for;
 use serde_json::Value;
 use ts_rs::{Config, TS};
@@ -30,6 +31,8 @@ fn generated_dir() -> PathBuf {
 fn typescript() -> String {
     let config = Config::default().with_large_int("number");
     let declarations = [
+        CapabilitySupport::decl(&config),
+        ProviderCapabilities::decl(&config),
         AgentStatus::decl(&config),
         SubagentView::decl(&config),
         SubagentRoster::decl(&config),
@@ -93,7 +96,14 @@ fn typescript() -> String {
          export type JsonValue = unknown\n\n{}\n",
         declarations
             .into_iter()
-            .map(|declaration| format!("export {declaration}"))
+            .map(|declaration| {
+                let declaration = declaration
+                    .lines()
+                    .map(str::trim_end)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("export {declaration}")
+            })
             .collect::<Vec<_>>()
             .join("\n\n")
     )

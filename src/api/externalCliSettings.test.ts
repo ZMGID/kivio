@@ -38,6 +38,16 @@ describe('external CLI settings transport', () => {
     expect(invoke).toHaveBeenCalledWith('chat_detect_external_agent_models', expect.objectContaining({ force: false }))
   })
 
+  it('executes the displayed plan and reads only selected cc-switch records', async () => {
+    await externalCliSettingsApi.externalCliInstall('claude', 'displayed-plan')
+    expect(invoke).toHaveBeenCalledWith('chat_external_cli_install', {
+      agentId: 'claude', planId: 'displayed-plan',
+    })
+    const selections = [{ agentId: 'claude', providerId: 'selected' }]
+    await externalCliSettingsApi.externalCliImportCcSwitch(selections)
+    expect(invoke).toHaveBeenCalledWith('chat_external_cli_import_cc_switch', { selections })
+  })
+
   it('normalizes missing agents from a native snapshot', async () => {
     vi.mocked(invoke).mockResolvedValue({ success: true })
     expect(await externalCliSettingsApi.detectExternalAgents(true)).toEqual([])

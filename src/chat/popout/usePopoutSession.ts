@@ -25,6 +25,7 @@ import type { MessageListProps } from '../MessageList'
 import type { AgentPlanState, AgentTodoState, Conversation, GoalState, PendingAttachment, ThinkingLevel } from '../types'
 import { insertTextIntoComposer } from '../composerInsert'
 import { usePopoutComposer } from './usePopoutComposer'
+import { useDetectedExternalAgents } from '../permissionModes'
 import type {
   ChatSessionConsentPayload,
   ChatToolConfirmPayload,
@@ -47,7 +48,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const [hookWarning, setHookWarning] = useState<ChatHookPayload | null>(null)
   const [toolConfirmError, setToolConfirmError] = useState('')
   const [sessionConsentError, setSessionConsentError] = useState('')
-  const [toolConfirmSubmitting, setToolConfirmSubmitting] = useState(false)
+  const [submittingInteractionId, setSubmittingInteractionId] = useState<string | null>(null)
   const [sessionConsentSubmitting, setSessionConsentSubmitting] = useState(false)
   const [approvalPolicy, setApprovalPolicy] = useState('readonly_auto_sensitive_confirm')
 
@@ -168,7 +169,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       let changed = false
       const messages = current.messages.map((message) => {
         const tools = messageToolCalls(message)
-        const index = payload.parentToolCallId
+        const index = payload.parentToolCallId && payload.externalSessionId === undefined
           ? tools.findIndex((tool) => tool.id === payload.parentToolCallId)
           : inFlight ? -1 : findSubagentToolIndex(tools, payload)
         if (index < 0) return message
@@ -182,17 +183,17 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   useTauriEvent(api.onChatToolConfirm, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
     const queue = pendingToolConfirmsRef.current
-    if (!queue.some((item) => item.toolCallId === payload.toolCallId)) queue.push(payload)
+    if (!queue.some((item) => item.interactionId === payload.interactionId)) queue.push(payload)
     setPendingToolConfirm(queue[0] ?? null)
     setToolConfirmError('')
   }, [])
 
   useTauriEvent(api.onChatToolConfirmWithdraw, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
-    const rest = pendingToolConfirmsRef.current.filter((item) => item.toolCallId !== payload.toolCallId)
+    const rest = pendingToolConfirmsRef.current.filter((item) => item.interactionId !== payload.interactionId)
     pendingToolConfirmsRef.current = rest
     setPendingToolConfirm((current) => (
-      current?.toolCallId === payload.toolCallId ? rest[0] ?? null : current
+      current?.interactionId === payload.interactionId ? rest[0] ?? null : current
     ))
   }, [])
 
@@ -205,14 +206,14 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   useTauriEvent(api.onChatUserPrompt, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
     const queue = pendingUserPromptsRef.current
-    if (!queue.some((item) => item.toolCallId === payload.toolCallId)) queue.push(payload)
+    if (!queue.some((item) => item.interactionId === payload.interactionId)) queue.push(payload)
     setPendingUserPrompt(queue[0] ?? null)
   }, [])
 
   useTauriEvent(api.onChatUserPromptResolved, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
     const rest = pendingUserPromptsRef.current.filter((item) => (
-      item.runId !== payload.runId || item.toolCallId !== payload.toolCallId
+      item.runId !== payload.runId || item.interactionId !== payload.interactionId
     ))
     pendingUserPromptsRef.current = rest
     setPendingUserPrompt(rest[0] ?? null)
@@ -383,20 +384,23 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     permissionMode: string | null = null,
   ) => {
     const prompt = pendingToolConfirm
-    if (!prompt) return
-    setToolConfirmSubmitting(true)
+    if (!prompt || pendingToolConfirmsRef.current[0]?.interactionId !== prompt.interactionId
+      || submittingInteractionId === prompt.interactionId) return
+    setSubmittingInteractionId(prompt.interactionId)
     setToolConfirmError('')
     try {
-      await api.chatConfirmToolCall(prompt.toolCallId, approved, always, permissionMode)
-      const rest = pendingToolConfirmsRef.current.filter((item) => item.toolCallId !== prompt.toolCallId)
+      await api.chatConfirmToolCall(prompt.interactionId, approved, always, permissionMode)
+      const rest = pendingToolConfirmsRef.current.filter((item) => item.interactionId !== prompt.interactionId)
       pendingToolConfirmsRef.current = rest
       setPendingToolConfirm(rest[0] ?? null)
     } catch (error) {
-      setToolConfirmError(typeof error === 'string' ? error : (error as Error).message || '提交审批失败')
+      if (pendingToolConfirmsRef.current[0]?.interactionId === prompt.interactionId) {
+        setToolConfirmError(typeof error === 'string' ? error : error instanceof Error ? error.message : '提交审批失败')
+      }
     } finally {
-      setToolConfirmSubmitting(false)
+      setSubmittingInteractionId((current) => current === prompt.interactionId ? null : current)
     }
-  }, [pendingToolConfirm])
+  }, [pendingToolConfirm, submittingInteractionId])
 
   const resolveSessionConsent = useCallback(async (granted: boolean) => {
     const prompt = pendingSessionConsent
@@ -460,6 +464,8 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const runtime = normalizeAgentRuntime(conversation)
   const usesChatRuntime = runtime.kind === 'chat'
   const usesExternalRuntime = runtime.kind === 'external'
+  const detectedExternalAgents = useDetectedExternalAgents(conversationId)
+  const externalAgent = detectedExternalAgents.find((agent) => agent.id === runtime.externalAgentId)
 
   const runGoalMutation = useCallback(async (
     mutation: (id: string) => Promise<Conversation>,
@@ -487,6 +493,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     usesChatRuntime,
     usesExternalRuntime,
     runtime,
+    detectedExternalAgents,
     onSend: handleSend,
     onCancel: handleCancel,
     cancelVisible: streamCoarse.streaming,
@@ -506,6 +513,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     conversation,
     loadError,
     runtime,
+    externalAgent,
     usesChatRuntime,
     usesExternalRuntime,
     approvalPolicy,
@@ -518,14 +526,14 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     pendingUserPromptRecord,
     toolConfirmError,
     sessionConsentError,
-    toolConfirmSubmitting,
+    toolConfirmSubmitting: pendingToolConfirm !== null && submittingInteractionId === pendingToolConfirm.interactionId,
     sessionConsentSubmitting,
     resolveToolConfirm,
     resolveSessionConsent,
     dismissUserPrompt: () => {
       const current = pendingUserPrompt
       const rest = pendingUserPromptsRef.current.filter((item) => (
-        current ? item.toolCallId !== current.toolCallId : true
+        current ? item.interactionId !== current.interactionId : true
       ))
       pendingUserPromptsRef.current = rest
       setPendingUserPrompt(rest[0] ?? null)

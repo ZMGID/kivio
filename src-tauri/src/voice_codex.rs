@@ -15,7 +15,6 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{ChildStdin, ChildStdout},
     sync::{mpsc, oneshot, watch},
     time::timeout,
 };
@@ -23,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     external_agents::{
+        diagnostics::{AgentStdin, AgentStdout},
         registry::get_agent_def,
         spawn::{agent_cli_command, resolve_binary, AgentChild},
     },
@@ -802,8 +802,8 @@ fn thread_params(
 // Own the child and its process group together with the bounded, cancellation-safe line reader.
 struct Rpc {
     _child: AgentChild,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
+    input: AgentStdin,
+    output: BufReader<AgentStdout>,
     line: Vec<u8>,
     pending: VecDeque<Value>,
     next_id: u64,
@@ -836,17 +836,17 @@ impl Rpc {
         command
             .env("NO_PROXY", &no_proxy)
             .env("no_proxy", &no_proxy);
-        let mut child = command
-            .arg("app-server")
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .no_console_window()
-            .kill_on_drop(true)
-            .spawn()
-            .map(AgentChild::from)
-            .map_err(|_| "Could not start the Codex app-server".to_string())?;
+        let mut child = AgentChild::spawn(
+            command
+                .arg("app-server")
+                .current_dir(cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .no_console_window()
+                .kill_on_drop(true),
+        )
+        .map_err(|_| "Could not start the Codex app-server".to_string())?;
         let input = child
             .stdin
             .take()

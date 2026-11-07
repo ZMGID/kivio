@@ -8,7 +8,7 @@ import type { AgentRuntimeConfig } from '../types'
 import { PopoutTitlebar } from './PopoutTitlebar'
 
 vi.mock('../RuntimePicker', () => ({
-  RuntimePicker: () => <span data-testid="runtime-picker" />,
+  RuntimePicker: ({ locked }: { locked: boolean }) => <button data-testid="runtime-picker" disabled={locked} />,
   ExternalModelSelector: () => <span />,
 }))
 vi.mock('../ModelSelector', () => ({ ModelSelector: () => <span data-testid="model-selector" /> }))
@@ -18,12 +18,13 @@ vi.mock('../PermissionPicker', () => ({ PermissionPicker: () => <span /> }))
 const runtime: AgentRuntimeConfig = { kind: 'builtin' }
 
 describe('PopoutTitlebar', () => {
-  it('places the conversation title to the right of the model pills', () => {
+  it.each([false, true])('keeps title placement and the empty conversation runtime lock (%s)', (locked) => {
     const { container } = render(
       <LangContext.Provider value="zh">
         <PopoutTitlebar
           conversation={{
             id: 'c1',
+            runtime_locked: locked,
             revision: 1,
             title: '商品图片批量生成工作流搭建',
             provider_id: 'p',
@@ -45,6 +46,7 @@ describe('PopoutTitlebar', () => {
         />
       </LangContext.Provider>,
     )
+    expect(container.querySelector('[data-testid="runtime-picker"]')).toHaveProperty('disabled', locked)
     const pills = container.querySelector('[data-popout-pills]')
     const title = container.querySelector('[data-popout-title]')
     expect(pills).toBeTruthy()

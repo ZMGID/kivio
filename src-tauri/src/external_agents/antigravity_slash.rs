@@ -1,6 +1,7 @@
 //! Kivio-maintained command catalog, verified with agy 1.2.6. No runtime discovery.
 //! Reports cannot enter the NDJSON stream: agy emits ERROR and exits. Run them
 //! separately without a conversation binding; native skill expansion stays in-stream.
+use super::spawn::CliProcessOutput;
 use std::path::Path;
 use std::time::Duration;
 
@@ -162,7 +163,7 @@ pub async fn report(
             .current_dir(cwd)
             .no_console_window()
             .kill_on_drop(true)
-            .output(),
+            .group_output(),
     )
     .await
     .map_err(|_| "Antigravity 命令超时（60s）".to_string())?

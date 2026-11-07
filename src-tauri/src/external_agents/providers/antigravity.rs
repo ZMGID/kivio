@@ -1,3 +1,4 @@
+use super::super::types::{CapabilitySupport, RewindStrategy};
 use super::super::types::{
     PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, SlashStrategy,
     StreamFormat,
@@ -119,9 +120,11 @@ pub const ANTIGRAVITY_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     prompt_input_format: PromptInputFormat::Text,
     stream_format: StreamFormat::AntigravityStreamJson,
     resumes_session_via_cli: true,
-    supports_native_image: false,
-    supports_steering: false,
-    supports_follow_up: false,
+    image_input: CapabilitySupport::Fallback,
+    steering: CapabilitySupport::Unavailable,
+    follow_up: CapabilitySupport::Fallback,
+    rewind: RewindStrategy::Replay,
+    account: None,
     image_mime_whitelist: &[],
     build_args: build_antigravity_args,
 };

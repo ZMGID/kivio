@@ -550,6 +550,7 @@ impl Host {
         steps: Vec<String>,
     ) -> crate::chat::protocol::ChatRunEvent {
         crate::chat::protocol::ChatRunEvent::SubagentUpdated {
+            external_session_id: None,
             parent_tool_call_id: self.parent_tool_call_id.clone(),
             task_id: self.record.id.clone(),
             generation: Some(self.record.generation),
@@ -3707,6 +3708,7 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
                 &req.record.root,
                 &req.parent_run_id,
                 crate::chat::protocol::ChatRunEvent::SubagentUpdated {
+                    external_session_id: None,
                     parent_tool_call_id: req.parent_tool_call_id.clone(),
                     task_id: req.record.id.clone(),
                     generation: Some(req.record.generation),

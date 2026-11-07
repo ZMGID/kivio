@@ -342,6 +342,7 @@ impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
                 ctx.run_id,
                 ctx.generation,
                 &record,
+                &uuid::Uuid::new_v4().to_string(),
             )
             .await
         })
@@ -385,6 +386,7 @@ impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost<'_> {
                 ctx.run_id,
                 ctx.generation,
                 &record,
+                &uuid::Uuid::new_v4().to_string(),
                 prompt,
             )
             .await

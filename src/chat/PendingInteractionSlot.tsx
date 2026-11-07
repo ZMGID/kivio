@@ -9,9 +9,9 @@ import type { AgentRuntimeConfig } from './types'
 export interface PendingInteractionSlotProps {
   snapshot: RunInteractionSnapshot
   activeAgentRuntime: AgentRuntimeConfig
-  onResolveToolConfirm: (approved: boolean, always?: boolean, permissionMode?: string | null) => Promise<boolean>
+  onResolveToolConfirm: (interactionId: string, approved: boolean, always?: boolean, permissionMode?: string | null) => Promise<boolean>
   onResolveSessionConsent: (granted: boolean) => Promise<boolean>
-  onDismissUserPrompt: (conversationId: string, runId: string, toolCallId: string) => void
+  onDismissUserPrompt: (conversationId: string, runId: string, interactionId: string) => void
   onPersistApprovedSandbox: (conversationId: string, runtime: AgentRuntimeConfig, sandbox: string) => Promise<void>
 }
 
@@ -42,7 +42,7 @@ export const PendingInteractionSlot = memo(function PendingInteractionSlot({
 
   const toolActions = useMemo(() => (toolConfirm
     ? buildToolApprovalActions(toolConfirm, toolConfirmSubmitting, {
-      resolve: onResolveToolConfirm,
+      resolve: (approved, always, permissionMode) => onResolveToolConfirm(toolConfirm.interactionId, approved, always, permissionMode),
       persistSandbox: (mode) => onPersistApprovedSandbox(toolConfirm.conversationId, activeAgentRuntime, mode),
     })
     : []), [activeAgentRuntime, onPersistApprovedSandbox, onResolveToolConfirm, toolConfirm, toolConfirmSubmitting])
@@ -54,13 +54,16 @@ export const PendingInteractionSlot = memo(function PendingInteractionSlot({
       <div className="mx-auto w-full max-w-4xl">
         {userPrompt && userPromptRecord && (
           <AskUserBlock
+            key={userPrompt.interactionId}
             variant="docked"
+            interactionId={userPrompt.interactionId}
             toolCall={userPromptRecord}
-            onResolved={() => onDismissUserPrompt(userPrompt.conversationId, userPrompt.runId, userPrompt.toolCallId)}
+            onResolved={() => onDismissUserPrompt(userPrompt.conversationId, userPrompt.runId, userPrompt.interactionId)}
           />
         )}
         {toolConfirm && (
           <ApprovalCard
+            key={toolConfirm.interactionId}
             title={toolApprovalTitle(toolConfirm)}
             subtitle={`${toolConfirm.source}${toolConfirm.serverId ? ` · ${toolConfirm.serverId}` : ''}`}
             detail={toolConfirm.argumentsPreview}

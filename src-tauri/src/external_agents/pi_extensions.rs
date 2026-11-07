@@ -1,3 +1,4 @@
+use super::spawn::CliProcessOutput;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
@@ -57,8 +58,12 @@ pub struct PiExtensionCommandResult {
 }
 
 pub(crate) fn agent_dir() -> Result<PathBuf, String> {
-    crate::external_agents::provider_profile::pi_agent_dir()
-        .ok_or_else(|| "无法解析 Pi 配置目录".to_string())
+    let path =
+        crate::external_agents::provider_profile::pi_agent_dir().ok_or("无法解析 Pi 配置目录")?;
+    if !path.is_absolute() {
+        return Err("Pi 配置目录必须使用绝对路径".into());
+    }
+    Ok(path)
 }
 
 fn settings_path(agent_dir: &Path) -> PathBuf {
@@ -67,6 +72,7 @@ fn settings_path(agent_dir: &Path) -> PathBuf {
 
 pub(crate) struct PiSettingsFileLock {
     lock_dir: PathBuf,
+    _resource: super::session::live::ResourceLease,
 }
 
 impl Drop for PiSettingsFileLock {
@@ -76,13 +82,25 @@ impl Drop for PiSettingsFileLock {
 }
 
 pub(crate) fn lock_settings_file(path: &Path) -> Result<PiSettingsFileLock, String> {
+    let resource = super::session::live::ResourceLease::acquire(
+        vec![format!(
+            "profile:{}",
+            super::session::live::resource_path(path)
+        )],
+        true,
+    )?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| format!("创建 Pi 设置目录失败：{err}"))?;
     }
     let lock_dir = PathBuf::from(format!("{}.lock", path.to_string_lossy()));
     for attempt in 0..SETTINGS_LOCK_ATTEMPTS {
         match std::fs::create_dir(&lock_dir) {
-            Ok(()) => return Ok(PiSettingsFileLock { lock_dir }),
+            Ok(()) => {
+                return Ok(PiSettingsFileLock {
+                    lock_dir,
+                    _resource: resource,
+                })
+            }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 let stale = std::fs::metadata(&lock_dir)
                     .and_then(|metadata| metadata.modified())
@@ -466,7 +484,7 @@ async fn run_pi_output(agent_dir: &Path, args: &[&str]) -> Result<String, String
         .stderr(std::process::Stdio::piped())
         .no_console_window()
         .kill_on_drop(true);
-    let output = tokio::time::timeout(COMMAND_TIMEOUT, command.output())
+    let output = tokio::time::timeout(COMMAND_TIMEOUT, command.group_output())
         .await
         .map_err(|_| "Pi 扩展命令执行超时".to_string())?
         .map_err(|err| format!("启动 Pi 扩展命令失败：{err}"))?;
@@ -646,6 +664,7 @@ pub fn chat_pi_extension_set_enabled(
     id: String,
     enabled: bool,
 ) -> Result<(), String> {
+    let _agent = super::session::live::ResourceLease::acquire(vec!["agent:pi".into()], true)?;
     let agent_dir = agent_dir()?;
     match kind.as_str() {
         "package" => set_package_enabled_at(&agent_dir, &id, enabled),
@@ -656,6 +675,7 @@ pub fn chat_pi_extension_set_enabled(
 
 #[tauri::command]
 pub async fn chat_pi_extension_install(source: String) -> Result<PiExtensionCommandResult, String> {
+    let _resource = super::session::live::ResourceLease::pending("pi")?;
     let source = validate_source(&source)?;
     let agent_dir = agent_dir()?;
     let output = run_pi_output(&agent_dir, &["install", &source, "--no-approve"]).await?;
@@ -666,6 +686,7 @@ pub async fn chat_pi_extension_install(source: String) -> Result<PiExtensionComm
 pub async fn chat_pi_extension_update(
     source: Option<String>,
 ) -> Result<PiExtensionCommandResult, String> {
+    let _resource = super::session::live::ResourceLease::pending("pi")?;
     let agent_dir = agent_dir()?;
     let output = if let Some(source) = source {
         let source = validate_source(&source)?;
@@ -686,6 +707,7 @@ pub async fn chat_pi_extension_update(
 
 #[tauri::command]
 pub async fn chat_pi_extension_remove(source: String) -> Result<PiExtensionCommandResult, String> {
+    let _resource = super::session::live::ResourceLease::pending("pi")?;
     let source = validate_source(&source)?;
     let agent_dir = agent_dir()?;
     let settings = read_settings(&agent_dir)?;

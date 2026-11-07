@@ -1,3 +1,4 @@
+use super::super::types::{AccountProbe, AccountProtocol, CapabilitySupport, RewindStrategy};
 use super::super::types::{
     ModelProbeStrategy, PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext,
     StreamFormat,
@@ -160,11 +161,7 @@ pub fn build_claude_args(
     // 第三方供应商：光注入环境变量不够 —— 用户 `~/.claude/settings.json` 的 `env` 段会被
     // Claude Code 注入自己进程、盖掉继承来的同名变量（那份文件通常已被 cc-switch 写满）。
     // 这份只含 `{"env": …}` 的覆盖文件才是压得住的一层，见 `provider_profile` 模块头。
-    if let Some(path) = crate::external_agents::provider_profile::claude_settings_override("claude")
-    {
-        args.push("--settings".to_string());
-        args.push(path.to_string_lossy().into_owned());
-    }
+    args.extend(crate::external_agents::provider_profile::claude_overlay_args());
     if let Some(model) = options
         .model
         .as_ref()
@@ -507,9 +504,22 @@ pub const CLAUDE_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     prompt_input_format: PromptInputFormat::StreamJson,
     stream_format: StreamFormat::ClaudeStreamJson,
     resumes_session_via_cli: true,
-    supports_native_image: true,
-    supports_steering: true,
-    supports_follow_up: false,
+    image_input: CapabilitySupport::Native,
+    steering: CapabilitySupport::Native,
+    follow_up: CapabilitySupport::Fallback,
+    rewind: RewindStrategy::ClaudeTranscript,
+    account: Some(AccountProbe {
+        args: &[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--replay-user-messages",
+        ],
+        protocol: AccountProtocol::ClaudeControl,
+    }),
     image_mime_whitelist: &["image/jpeg", "image/png", "image/gif", "image/webp"],
     build_args: build_claude_args,
 };

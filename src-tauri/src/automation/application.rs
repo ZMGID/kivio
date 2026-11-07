@@ -742,6 +742,12 @@ async fn run_external_agent_node(
 
     let mut conversation =
         load_or_create_external_conversation(app, automation_id, node_id, spec, agent_id).await?;
+    let state = app.state::<AppState>();
+    let _reservation = crate::chat::commands::ChatSendReservation::try_acquire(
+        &state,
+        &conversation.id,
+    )
+    .ok_or_else(|| "该对话正在生成中，请稍后再试".to_string())?;
     let user_message = workflow_user_message(prompt.clone());
     conversation = crate::chat::repository::repository(app)
         .mutate(app, &conversation.id, {
@@ -754,7 +760,6 @@ async fn run_external_agent_node(
         .await
         .map_err(crate::chat::repository::repository_error)?;
 
-    let state = app.state::<AppState>();
     crate::external_agents::run_external_cli_reply_in(
         app,
         &state,
@@ -767,7 +772,8 @@ async fn run_external_agent_node(
         AgentRunEntry::Send,
         workdir.as_deref(),
     )
-    .await?;
+    .await?
+    .require_completed()?;
 
     let text = conversation
         .messages
@@ -820,6 +826,9 @@ async fn load_or_create_external_conversation(
 
     let now = chrono::Local::now().timestamp();
     let conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id,
         revision: 0,
         title: format!("Automation {automation_id}"),
@@ -1069,6 +1078,61 @@ mod tests {
         let count = tools.len();
         ensure_skill_activate_tool(&mut tools);
         assert_eq!(tools.len(), count);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn external_agent_node_rejects_failed_and_cancelled_partial_output() {
+        use crate::external_agents::run::regression_tests::{
+            isolated_peer_test, run_peer, with_acp_peer,
+        };
+        if isolated_peer_test() {
+            return;
+        }
+        for mode in ["error", "cancel", "complete"] {
+            with_acp_peer(mode, |app, _| {
+                run_peer(async {
+                    let output = run_agent_node(app, AgentNodeRequest {
+                        automation_id: "terminal-regression".into(),
+                        run_id: "run".into(),
+                        node_id: "agent".into(),
+                        spec: json!({"prompt":"produce output", "runtimeKind":"external", "externalAgentId":"grok"}),
+                    }).await;
+                    app.state::<AppState>()
+                        .external_live_sessions()
+                        .close_all()
+                        .await;
+                    let id = workspace::external_conversation_id("terminal-regression", "agent");
+                    let saved = crate::chat::repository::repository(app)
+                        .get(app, &id)
+                        .await
+                        .unwrap();
+                    let answer = saved.messages.last().unwrap();
+                    assert!(answer.content.contains("partial answer"));
+                    assert_eq!(
+                        saved.messages.len(),
+                        2,
+                        "one assistant message per automation run"
+                    );
+                    assert_eq!(
+                        answer.stream_outcome.as_deref(),
+                        Some(match mode {
+                            "cancel" => "cancelled",
+                            "error" => "error",
+                            _ => "completed",
+                        })
+                    );
+                    if mode == "complete" {
+                        assert_eq!(output.unwrap().text, "partial answer");
+                    } else {
+                        assert!(
+                            output.is_err(),
+                            "{mode} terminal became a successful automation output"
+                        );
+                    }
+                })
+            });
+        }
     }
 }
 

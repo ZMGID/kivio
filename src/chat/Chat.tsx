@@ -94,7 +94,7 @@ import {
   pruneSettledOptimisticItems,
   settleOptimisticConversationListItems,
 } from './optimisticSidebar'
-import { additionalDirectoriesOf, isPlainBlankConversation } from './conversationFields'
+import { additionalDirectoriesOf, conversationRuntimeLocked, isPlainBlankConversation } from './conversationFields'
 import { isEmptyChatPresentation } from './emptyHero'
 import { scheduleIdleTask } from './idleTask'
 import {
@@ -834,6 +834,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // 底栏模式胶囊：内置 Agent = Act/Plan/Orchestrate；Kivio Chat 无此胶囊；本地 CLI = 沙盒档位。
   // CLI 没有档位时返回空表 → 胶囊隐藏。
   const detectedExternalAgents = useDetectedExternalAgents(currentConversation?.id ?? null)
+  const activeExternalAgent = detectedExternalAgents.find((agent) => agent.id === activeAgentRuntime.externalAgentId)
   const activeAgentPlanMode = currentConversation?.agent_plan_state?.mode
     ?? currentConversation?.agentPlanState?.mode
     ?? 'act'
@@ -1528,7 +1529,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         let changed = false
         const messages = prev.messages.map((message) => {
           const tools = messageToolCalls(message)
-          const index = payload.parentToolCallId
+          const index = payload.parentToolCallId && payload.externalSessionId === undefined
             ? tools.findIndex(item => item.id === payload.parentToolCallId)
             : inFlight ? -1 : findSubagentToolIndex(tools, payload)
           if (index < 0) return message
@@ -1559,16 +1560,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [interactionInbox])
 
   /** 本地答复成功后立即收起；上游撤回也经同一个队列入口清理。 */
-  const dismissPendingUserPrompt = useCallback((conversationId: string, runId: string, toolCallId: string) => {
-    interactionInbox.observe({ kind: 'userAnswered', conversationId, runId, toolCallId })
+  const dismissPendingUserPrompt = useCallback((conversationId: string, runId: string, interactionId: string) => {
+    interactionInbox.observe({ kind: 'userAnswered', conversationId, runId, interactionId })
   }, [interactionInbox])
 
   useTauriEvent(api.onChatToolConfirm, (payload) => {
     if (popoutOwner.owns(payload.conversationId)) return
     if (!executionOwner.allowsStreamPayload(payload)) return
     if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
-    // 排队而不是覆盖：一条消息里并行调多个工具时，后端会同时挂着多条询问等答复
-    // （按 request_id 路由）。覆盖会让用户没看见的那条静默超时 ⇒ 模型收到「用户拒绝」。
     const queued = interactionInbox.observe({ kind: 'toolRequested', payload })
     if (queued && currentConversationIdRef.current === payload.conversationId) {
       // 计划卡一出现就在右侧栏摊开整份计划 —— 卡片上那块小灰框读不完。
@@ -1580,17 +1579,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useTauriEvent(api.onChatToolConfirmWithdraw, (payload) => {
     if (popoutOwner.owns(payload.conversationId)) return
-    // 旧适配器只暴露 conversationId + toolCallId，没有 runId；撤销是清理事件，
-    // 取消栅栏不能阻断它，否则已经超时的卡片会留在界面。run 身份由 inbox 的
-    // request_id 队列定位；协议迁移时应补回 runId。
     interactionInbox.observe({ kind: 'toolWithdrawn', ...payload })
   }, [interactionInbox])
 
   const resolvePendingToolConfirm = useCallback(async (
+    interactionId: string,
     approved: boolean,
     always = false,
     permissionMode: string | null = null,
-  ): Promise<boolean> => interactionInbox.respondTool({ approved, always, permissionMode }), [interactionInbox])
+  ): Promise<boolean> => interactionInbox.respondTool({ interactionId, approved, always, permissionMode }), [interactionInbox])
 
   useTauriEvent(api.onChatSessionConsent, (payload) => {
     if (popoutOwner.owns(payload.conversationId)) return
@@ -2048,30 +2045,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const currentQueuedMessages = currentConversation
     ? messageQueue.queued[currentConversation.id] ?? NO_QUEUED_MESSAGES
     : NO_QUEUED_MESSAGES
-  // 「立刻引导」能不能给入口，取决于这一轮由谁在跑：
-  //   - 内置 agent 循环 → 能（轮首注入，见 chat/agent/steering.rs）；
-  //   - 外部 CLI → 看它的协议支不支持（`supportsSteering`，后端 RuntimeAgentDef 是唯一真源）。
-  //     codex 有 `turn/steer`；pi 有 RPC `steer`；dsh 有 bridge `session/steer`。
-  //     claude 使用 priority="now" 的输入并等待回显；ACP 只有 prompt/cancel。
-  //   - 多模型一问多答 → 一律不给：同会话 N 条并发 run，按 conversation 键的信箱定不到某条臂。
-  const activeExternalAgentSupportsSteering = useMemo(() => {
-    const agentId = activeAgentRuntime.externalAgentId
-    if (!agentId) return false
-    const agent = detectedExternalAgents.find((item) => item.id === agentId)
-    return Boolean(agent?.supportsSteering ?? agent?.supports_steering)
-  }, [activeAgentRuntime.externalAgentId, detectedExternalAgents])
-  const activeExternalAgentSupportsFollowUp = useMemo(() => {
-    const agentId = activeAgentRuntime.externalAgentId
-    if (!agentId) return false
-    const agent = detectedExternalAgents.find((item) => item.id === agentId)
-    return Boolean(agent?.supportsFollowUp ?? agent?.supports_follow_up)
-  }, [activeAgentRuntime.externalAgentId, detectedExternalAgents])
   const canSteerCurrentConversation =
-    (usesExternalRuntime ? activeExternalAgentSupportsSteering : true)
+    (!usesExternalRuntime || activeExternalAgent?.capabilities.steering === 'native')
     && activeReplyModels.length < 2
   // Prefer steering even for goals/Pi; native follow-up is only a compatibility fallback.
   const canFollowUpCurrentConversation =
-    ((usesExternalRuntime && activeExternalAgentSupportsFollowUp) || goalActive)
+    ((usesExternalRuntime && activeExternalAgent?.capabilities.followUp === 'native') || goalActive)
     && activeReplyModels.length < 2
 
   const handleSendWhileRunning = useCallback((content: string, attachments: PendingAttachment[]) => {
@@ -2622,12 +2601,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const conversationTitlebarControls = useMemo(() => (
     <ConversationTitlebarControls
       activeAgentRuntime={activeAgentRuntime}
+      externalAgent={activeExternalAgent}
       conversationId={currentConversation?.id ?? null}
       runtimeLocked={
         // 一 agent 一对话：有消息后锁死 kind/agent（内置 Kivio 与本地 CLI 一律）。
         // 拉出独立窗口后主窗卸掉了消息，仍按「已有对话」锁死。
         !!currentConversation && (
-          (currentConversation.messages?.length ?? 0) > 0
+          conversationRuntimeLocked(currentConversation)
           || popoutConversationIds.has(currentConversation.id)
         )
       }
@@ -2658,6 +2638,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     />
   ), [
     activeAgentRuntime,
+    activeExternalAgent,
     activeModel,
     activeProviderId,
     approvalPolicy,

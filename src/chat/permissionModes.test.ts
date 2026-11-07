@@ -10,12 +10,23 @@ function externalRuntime(id: string, sandbox?: string | null): AgentRuntimeConfi
   return { kind: 'external', externalAgentId: id, externalSandbox: sandbox ?? null }
 }
 
+const capabilities: DetectedExternalAgent['capabilities'] = {
+  steering: 'unavailable',
+  followUp: 'fallback',
+  imageInput: 'native',
+  rewind: 'fallback',
+  conversationBranch: 'fallback',
+  importHistory: 'native',
+  account: 'unavailable',
+}
+
 // 后端 detection::sandbox_options_for 的档位表（claude 四档 / codex 三档 / opencode 两档）。
 const agents: DetectedExternalAgent[] = [
   {
     id: 'claude',
     name: 'Claude Code',
     available: true,
+    capabilities,
     models: [],
     sandboxOptions: [
       { id: 'plan', label: '计划 (只读)' },
@@ -28,6 +39,7 @@ const agents: DetectedExternalAgent[] = [
     id: 'codex',
     name: 'Codex',
     available: true,
+    capabilities,
     models: [],
     sandboxOptions: [
       { id: 'read-only', label: '只读' },
@@ -37,6 +49,7 @@ const agents: DetectedExternalAgent[] = [
   },
   {
     id: 'opencode', name: 'OpenCode', available: true, models: [],
+    capabilities,
     sandboxOptions: [
       { id: 'build', label: '构建 (默认)' },
       { id: 'plan', label: '计划 (只读)' },

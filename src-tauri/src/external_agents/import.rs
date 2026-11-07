@@ -12,7 +12,8 @@ use serde::Serialize;
 
 use crate::external_agents::registry::{get_agent_def, AGENT_DEFS};
 use crate::external_agents::types::{
-    HistorySourceStrategy, HistoryTitleStrategy, ImportDiscoveryStrategy, RuntimeAgentDef,
+    CapabilitySupport, HistorySourceStrategy, HistoryTitleStrategy, ImportDiscoveryStrategy,
+    RuntimeAgentDef,
 };
 
 /// 一条可导入的原生会话。
@@ -21,6 +22,7 @@ use crate::external_agents::types::{
 pub struct ImportableSession {
     /// `RuntimeAgentDef.id`：`claude` / `codex` / `grok` / `kimi` / `opencode`。
     pub agent_id: String,
+    pub import_history: CapabilitySupport,
     /// 该 CLI 自己的会话 id——`session/load` / `--resume` 认的就是这个。
     pub session_id: String,
     pub title: Option<String>,
@@ -47,9 +49,23 @@ pub struct ImportableSession {
 /// 于是"项目内导入"什么都列不出来。`canonicalize` 失败（目录已不存在）时退回原路径，
 /// 让调用方仍能做纯字符串比对，而不是直接把这条会话丢掉。
 pub fn canonical_key(path: &str) -> String {
-    let raw = Path::new(path);
-    let resolved = std::fs::canonicalize(raw).unwrap_or_else(|_| raw.to_path_buf());
-    let text = resolved.to_string_lossy();
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+    let resolved = crate::utils::strip_windows_verbatim_prefix(resolved);
+    let path = resolved.to_string_lossy();
+    if let Some(target) = crate::external_agents::wsl::parse_wsl_unc(&path) {
+        return format!(
+            "wsl:{}/{}",
+            target.distro.to_lowercase(),
+            target.linux_path.trim_end_matches('/')
+        );
+    }
+    if cfg!(windows)
+        && path.starts_with('/')
+        && !crate::external_agents::wsl::is_windows_drive_mount(&path)
+    {
+        return path.trim_end_matches('/').to_owned();
+    }
+    let text = path;
     let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
     let text = text.replace('\\', "/");
     let trimmed = text.trim_end_matches('/');
@@ -68,7 +84,21 @@ pub fn canonical_key(path: &str) -> String {
 
 /// 两个路径是否指向同一个目录。
 pub fn paths_match(a: &str, b: &str) -> bool {
-    !a.trim().is_empty() && !b.trim().is_empty() && canonical_key(a) == canonical_key(b)
+    if a.trim().is_empty() || b.trim().is_empty() {
+        return false;
+    }
+    if canonical_key(a) == canonical_key(b) {
+        return true;
+    }
+    for (host, linux) in [(a, b), (b, a)] {
+        if linux.starts_with('/')
+            && crate::external_agents::wsl::host_path_to_wsl(Path::new(host))
+                .is_some_and(|mapped| canonical_key(&mapped) == canonical_key(linux))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -334,6 +364,7 @@ pub fn list_claude_sessions(project_root: &str) -> Vec<ImportableSession> {
             }
             out.push(ImportableSession {
                 agent_id: "claude".to_string(),
+                import_history: CapabilitySupport::Native,
                 session_id,
                 title,
                 cwd,
@@ -453,6 +484,7 @@ fn grok_session_from_summary(
         .map(truncate_title);
     Some(ImportableSession {
         agent_id: "grok".to_string(),
+        import_history: CapabilitySupport::Native,
         session_id,
         title,
         cwd,
@@ -620,6 +652,7 @@ fn collect_codex_in_dir(dir: &Path, project_root: &str, out: &mut Vec<Importable
         }
         out.push(ImportableSession {
             agent_id: "codex".to_string(),
+            import_history: CapabilitySupport::Native,
             session_id,
             title,
             cwd,
@@ -701,6 +734,7 @@ pub async fn list_acp_sessions(
             .filter(|s| paths_match(&s.cwd, project_root))
             .map(|s| ImportableSession {
                 agent_id: agent_id.to_string(),
+                import_history: def.import.history_support(),
                 session_id: s.session_id,
                 title: s.title.as_deref().map(truncate_title),
                 cwd: s.cwd,
@@ -736,6 +770,8 @@ pub struct ImportRecord {
     #[serde(default)]
     pub message_count: usize,
     pub imported_at: i64,
+    #[serde(default)]
+    pub original_cwd: Option<String>,
 }
 
 fn import_record_path(app: &tauri::AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
@@ -752,7 +788,7 @@ fn import_record_path(app: &tauri::AppHandle, conversation_id: &str) -> Result<P
 pub fn save_import_record(app: &tauri::AppHandle, record: &ImportRecord) -> Result<(), String> {
     let path = import_record_path(app, &record.conversation_id)?;
     let raw = serde_json::to_string_pretty(record).map_err(|e| e.to_string())?;
-    std::fs::write(path, raw).map_err(|e| format!("write import record: {e}"))
+    crate::chat::storage::atomic_write(&path, &raw, "import record")
 }
 
 pub fn load_import_record(app: &tauri::AppHandle, conversation_id: &str) -> Option<ImportRecord> {
@@ -839,7 +875,6 @@ fn classify_binding_files(
             if let Some(id) = value.get("conversationId").and_then(|v| v.as_str()) {
                 imported_conversations.insert(id.to_string());
             }
-            continue;
         }
         // 三种文件形态字段名不同：`conv_*.json` 是 camelCase，`live-*.json` 是 snake_case。
         let agent = value
@@ -1003,14 +1038,32 @@ async fn load_import_history(
         ImportDiscoveryStrategy::FileHistory => {
             let path = history_source_path(def.id, session_id, project_root)
                 .ok_or_else(|| "原生会话文件已移动或删除，请刷新导入列表".to_string())?;
+            let record = ImportRecord {
+                conversation_id: String::new(),
+                agent_id: def.id.into(),
+                session_id: session_id.into(),
+                source_path: Some(path.to_string_lossy().into_owned()),
+                source_mtime_ms: None,
+                message_count: 0,
+                imported_at: 0,
+                original_cwd: None,
+            };
+            let cwd = original_import_cwd(&record)
+                .ok_or_else(|| "无法确认原生会话文件的身份和目录".to_string())?;
+            if !paths_match(&cwd, project_root) {
+                return Err("原生会话文件不属于此项目目录".into());
+            }
             let messages = parse_file_history(def.import.history_source, &path)?;
             let mtime = file_mtime_ms(&path);
             Ok((messages, Some(path), mtime))
         }
-        ImportDiscoveryStrategy::Acp => {
+        ImportDiscoveryStrategy::Acp { .. } => {
             let messages = load_acp_history(def.id, project_root, session_id)
                 .await
                 .ok_or_else(|| "该代理当前不支持读取原生会话历史".to_string())?;
+            if messages.is_empty() {
+                return Err("该代理未重放可显示的历史，无法安全导入此会话".into());
+            }
             Ok((messages, None, None))
         }
         ImportDiscoveryStrategy::None => Err(format!("{} 不支持导入原生会话", def.name)),
@@ -1046,7 +1099,7 @@ pub async fn list_importable_for_project(
     let mut sessions = list_file_based_sessions(&root);
     for def in AGENT_DEFS
         .iter()
-        .filter(|def| def.import.discovery == ImportDiscoveryStrategy::Acp)
+        .filter(|def| matches!(def.import.discovery, ImportDiscoveryStrategy::Acp { .. }))
     {
         if let Some(list) = list_acp_sessions(def.id, &root).await {
             sessions.extend(list);
@@ -1064,6 +1117,121 @@ pub async fn list_importable_for_project(
     Ok(sessions)
 }
 
+fn import_lock(agent_id: &str, session_id: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
+    type Locks = std::collections::HashMap<(String, String), Weak<tokio::sync::Mutex<()>>>;
+    static LOCKS: OnceLock<Mutex<Locks>> = OnceLock::new();
+    let mut locks = LOCKS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let key = (agent_id.to_owned(), session_id.to_owned());
+    if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+pub(crate) fn original_import_cwd(record: &ImportRecord) -> Option<String> {
+    if let Some(cwd) = &record.original_cwd {
+        return Some(cwd.clone());
+    }
+    let path = Path::new(record.source_path.as_deref()?);
+    let (id, cwd) = match record.agent_id.as_str() {
+        "claude" => claude_session_identity(path)?,
+        "codex" => codex_session_meta(path)?,
+        "grok" => {
+            let value: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(path.parent()?.join("summary.json")).ok()?,
+            )
+            .ok()?;
+            (
+                value.get("info")?.get("id")?.as_str()?.to_owned(),
+                value.get("info")?.get("cwd")?.as_str()?.to_owned(),
+            )
+        }
+        _ => return None,
+    };
+    (id == record.session_id).then_some(cwd)
+}
+
+pub(crate) fn native_session_original_cwd(agent_id: &str, session_id: &str) -> Option<String> {
+    let source = history_source_path(agent_id, session_id, "")?;
+    original_import_cwd(&ImportRecord {
+        conversation_id: String::new(),
+        agent_id: agent_id.into(),
+        session_id: session_id.into(),
+        source_path: Some(source.to_string_lossy().into_owned()),
+        original_cwd: None,
+        source_mtime_ms: None,
+        message_count: 0,
+        imported_at: 0,
+    })
+}
+
+pub(crate) fn cleanup_unpublished_conversation(app: &tauri::AppHandle, id: &str) {
+    let Ok(body) = crate::chat::storage::conversation_file_path(app, id) else {
+        return;
+    };
+    if body.exists() {
+        return;
+    }
+    for warning in crate::external_agents::session::remove_all_bindings(app, id) {
+        eprintln!("{warning}");
+    }
+    if let Ok(path) = crate::chat::storage::conversation_attachments_path(app, id) {
+        if path.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&path) {
+                eprintln!("remove staged attachments: {error}");
+            }
+        }
+    }
+}
+
+pub(crate) struct ConversationStaging {
+    pub app: tauri::AppHandle,
+    pub id: String,
+}
+impl Drop for ConversationStaging {
+    fn drop(&mut self) {
+        cleanup_unpublished_conversation(&self.app, &self.id);
+    }
+}
+
+fn recover_unpublished_imports(
+    app: &tauri::AppHandle,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("external-agent-sessions");
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("imported-") {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_str::<ImportRecord>(&raw) else {
+            continue;
+        };
+        if record.agent_id == agent_id && record.session_id == session_id {
+            cleanup_unpublished_conversation(app, &record.conversation_id);
+        }
+    }
+    Ok(())
+}
+
 /// 导入一条会话，返回新建的对话 id。
 pub async fn import_one_session(
     app: &tauri::AppHandle,
@@ -1071,12 +1239,30 @@ pub async fn import_one_session(
     agent_id: &str,
     session_id: &str,
 ) -> Result<String, String> {
-    use crate::chat::types::{
-        AgentPlanState, AgentRuntimeConfig, AgentRuntimeKind, Attachment, Conversation,
-        ConversationContextState,
-    };
-    use crate::external_agents::registry::get_agent_def;
+    let (app, project_id, agent_id, session_id) = (
+        app.clone(),
+        project_id.to_owned(),
+        agent_id.to_owned(),
+        session_id.to_owned(),
+    );
+    tauri::async_runtime::spawn(async move {
+        let lock = import_lock(&agent_id, &session_id);
+        let _guard = lock.lock().await;
+        if let Some(id) = existing_import(&app, &agent_id, &session_id).await? {
+            return Ok(id);
+        }
+        import_one_session_owned(&app, &project_id, &agent_id, &session_id).await
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 
+async fn import_one_session_owned(
+    app: &tauri::AppHandle,
+    project_id: &str,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<String, String> {
     let def = get_agent_def(agent_id).ok_or_else(|| format!("未知的 CLI：{agent_id}"))?;
     let project = crate::chat::storage::find_project_by_id(app, project_id)?;
     let root = project
@@ -1085,13 +1271,97 @@ pub async fn import_one_session(
         .filter(|p| !p.trim().is_empty())
         .ok_or_else(|| "该项目没有绑定本地目录".to_string())?;
 
+    if !Path::new(&root).is_dir() {
+        return Err(format!("项目目录不存在：{root}"));
+    }
+    let selected = match def.import.discovery {
+        ImportDiscoveryStrategy::FileHistory => list_file_sessions_for(def, &root),
+        ImportDiscoveryStrategy::Acp { .. } => list_acp_sessions(agent_id, &root)
+            .await
+            .ok_or_else(|| "该代理当前不支持枚举原生会话".to_string())?,
+        ImportDiscoveryStrategy::None => return Err(format!("{} 不支持导入原生会话", def.name)),
+    }
+    .into_iter()
+    .find(|item| item.agent_id == agent_id && item.session_id == session_id)
+    .ok_or_else(|| "原生会话不属于此项目目录，请刷新导入列表".to_string())?;
+    if !paths_match(&selected.cwd, &root) {
+        return Err("原生会话工作目录不匹配".into());
+    }
+    let root = crate::utils::strip_windows_verbatim_prefix(
+        std::fs::canonicalize(&root).map_err(|error| error.to_string())?,
+    )
+    .to_string_lossy()
+    .into_owned();
     let (messages, source, source_mtime) = load_import_history(def, &root, session_id).await?;
+    publish_import(
+        app,
+        project_id,
+        def,
+        session_id,
+        root,
+        (messages, source, source_mtime),
+    )
+    .await
+}
+
+async fn existing_import(
+    app: &tauri::AppHandle,
+    agent_id: &str,
+    session_id: &str,
+) -> Result<Option<String>, String> {
+    recover_unpublished_imports(app, agent_id, session_id)?;
+    if let Some(bound) = bound_sessions(app).get(&(agent_id.into(), session_id.into())) {
+        crate::chat::repository::repository(app)
+            .list(app, 0, 1, None, None, None)
+            .await
+            .map_err(crate::chat::repository::repository_error)?;
+        return Ok(Some(bound.conversation_id.clone()));
+    }
+    Ok(None)
+}
+
+async fn publish_import(
+    app: &tauri::AppHandle,
+    project_id: &str,
+    def: &RuntimeAgentDef,
+    session_id: &str,
+    root: String,
+    history: (
+        Vec<crate::external_agents::import_history::ImportedMessage>,
+        Option<PathBuf>,
+        Option<i64>,
+    ),
+) -> Result<String, String> {
+    use crate::chat::types::{
+        AgentPlanState, AgentRuntimeConfig, AgentRuntimeKind, Attachment, Conversation,
+        ConversationContextState,
+    };
+    let agent_id = def.id;
+    let (messages, source, source_mtime) = history;
 
     // 与对话的 created_at/updated_at 一致：**秒**。
     let now = chrono::Local::now().timestamp();
     let conversation_id = format!("conv_{}", uuid::Uuid::new_v4());
+    let _staging = ConversationStaging {
+        app: app.clone(),
+        id: conversation_id.clone(),
+    };
+    save_import_record(
+        app,
+        &ImportRecord {
+            conversation_id: conversation_id.clone(),
+            agent_id: agent_id.into(),
+            session_id: session_id.into(),
+            source_path: source
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            source_mtime_ms: source_mtime,
+            message_count: messages.len(),
+            imported_at: now,
+            original_cwd: Some(root.clone()),
+        },
+    )?;
 
-    // 图片落盘：解析器刻意不写盘，到这里才知道对话 id。写失败只丢这张图，不让整条导入失败。
     let mut chat_messages = Vec::with_capacity(messages.len());
     let mut image_seq = 0usize;
     for item in messages {
@@ -1105,16 +1375,14 @@ pub async fn import_one_session(
                 _ => "png",
             };
             let name = format!("imported-{image_seq}.{ext}");
-            match write_imported_image(app, &conversation_id, &name, &image.data_base64) {
-                Ok(()) => message.attachments.push(Attachment {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    attachment_type: "image".to_string(),
-                    name: name.clone(),
-                    path: name,
-                    content: None,
-                }),
-                Err(err) => eprintln!("导入图片失败（已跳过）：{err}"),
-            }
+            write_imported_image(app, &conversation_id, &name, &image.data_base64)?;
+            message.attachments.push(Attachment {
+                id: uuid::Uuid::new_v4().to_string(),
+                attachment_type: "image".into(),
+                name: name.clone(),
+                path: name,
+                content: None,
+            });
         }
         chat_messages.push(message);
     }
@@ -1129,6 +1397,9 @@ pub async fn import_one_session(
         .unwrap_or_else(|| format!("{} 导入的会话", def.name));
 
     let conversation = Conversation {
+        external_history: None,
+        external_cwd: None,
+        runtime_locked: false,
         id: conversation_id.clone(),
         revision: 0,
         title,
@@ -1168,12 +1439,6 @@ pub async fn import_one_session(
             external_agent_preset: None,
         },
     };
-    let message_count = conversation.messages.len();
-    crate::chat::repository::repository(app)
-        .create(app, conversation)
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
-
     // 会话绑定：写哪种文件由 `resumes_session_via_cli` 决定（claude 走 CLI 的 `--resume`，
     // 其余走 live handle）。写错了续聊就会开一条全新会话，历史静默丢失。
     if def.resumes_session_via_cli {
@@ -1204,18 +1469,20 @@ pub async fn import_one_session(
         )?;
     }
 
-    save_import_record(
-        app,
-        &ImportRecord {
-            conversation_id: conversation_id.clone(),
-            agent_id: agent_id.to_string(),
-            session_id: session_id.to_string(),
-            source_path: source.map(|p| p.to_string_lossy().to_string()),
-            source_mtime_ms: source_mtime,
-            message_count,
-            imported_at: now,
-        },
-    )?;
+    let current_project = crate::chat::storage::find_project_by_id(app, project_id)?;
+    let current_root = crate::external_agents::workspace::project_cli_root(current_project)?;
+    crate::external_agents::workspace::validate_bound_cwd(&root, Some(&current_root))?;
+    match crate::chat::repository::repository(app)
+        .create(app, conversation)
+        .await
+    {
+        Ok(_) => {}
+        Err(error) => {
+            return Err(format!(
+                "导入保存失败（可重试恢复 {conversation_id}）：{error}"
+            ))
+        }
+    }
 
     Ok(conversation_id)
 }
@@ -1318,6 +1585,43 @@ pub fn imported_history_is_stale(app: &tauri::AppHandle, conversation_id: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wsl_paths_preserve_linux_case_and_match_host_spelling() {
+        assert!(paths_match(r"\\wsl$\Ubuntu\home\User", "/home/User"));
+        assert!(!paths_match(r"\\wsl$\Ubuntu\home\User", "/home/user"));
+        assert!(!paths_match(
+            r"\\wsl$\Ubuntu\home\User",
+            r"\\wsl$\Ubuntu\home\user"
+        ));
+    }
+
+    #[test]
+    fn legacy_import_directory_requires_matching_source_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("session.jsonl");
+        std::fs::write(
+            &path,
+            serde_json::json!({"sessionId":"native", "cwd":directory.path()}).to_string(),
+        )
+        .unwrap();
+        let mut record = ImportRecord {
+            conversation_id: "conv_test".into(),
+            agent_id: "claude".into(),
+            session_id: "wrong".into(),
+            source_path: Some(path.to_string_lossy().into_owned()),
+            source_mtime_ms: None,
+            message_count: 0,
+            imported_at: 0,
+            original_cwd: None,
+        };
+        assert!(original_import_cwd(&record).is_none());
+        record.session_id = "native".into();
+        assert_eq!(
+            original_import_cwd(&record).unwrap(),
+            directory.path().to_string_lossy()
+        );
+    }
 
     #[test]
     fn canonical_key_normalizes_separators_and_trailing_slash() {
@@ -1644,7 +1948,7 @@ mod tests {
             .unwrap_or_else(|_| std::env::current_dir().unwrap().display().to_string());
         for def in AGENT_DEFS
             .iter()
-            .filter(|def| def.import.discovery == ImportDiscoveryStrategy::Acp)
+            .filter(|def| matches!(def.import.discovery, ImportDiscoveryStrategy::Acp { .. }))
         {
             match list_acp_sessions(def.id, &root).await {
                 None => println!(
@@ -1684,3 +1988,7 @@ mod tests {
         assert!(error.contains("不支持导入"));
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "history_lifecycle_tests.rs"]
+mod history_lifecycle_tests;

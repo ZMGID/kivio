@@ -1,6 +1,7 @@
 //! Official agy NDJSON protocol (1.3.3 flags/error output; documented stream contract).
 //! https://antigravity.google/docs/cli/headless/
 //! One init per process, one result per turn. No control RPCs or native image blocks.
+use crate::external_agents::session::live::TurnDelivery;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -9,7 +10,7 @@ use std::time::Duration;
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout};
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -268,8 +269,8 @@ pub struct AntigravitySession {
     cwd: PathBuf,
     args: Vec<String>,
     child: Child,
-    stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    stdin: AgentStdin,
+    reader: Lines<BufReader<AgentStdout>>,
     stderr_task: tokio::task::JoinHandle<()>,
     stderr_rx: mpsc::Receiver<String>,
     stderr_tail: Arc<Mutex<String>>,
@@ -298,9 +299,7 @@ impl AntigravitySession {
         }
         #[cfg(unix)]
         command.process_group(0);
-        let mut child = command
-            .spawn()
-            .map(crate::external_agents::spawn::AgentChild::from)
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(&mut command)
             .map_err(|e| format!("Start Antigravity CLI: {e}"))?;
         let stdin = child.stdin.take().ok_or("Antigravity stdin unavailable")?;
         let stdout = child
@@ -400,6 +399,7 @@ impl AntigravitySession {
 
     async fn run_turn(
         &mut self,
+        delivery: &TurnDelivery,
         prompt: &str,
         events: &mpsc::Sender<UnifiedAgentEvent>,
         commands: &mut mpsc::Receiver<SessionCommand>,
@@ -462,6 +462,7 @@ impl AntigravitySession {
             // and the existing conversation. Do not prepend Kivio instructions.
         }
         let line = format!("{}\n", json!({"event":"user","message":{"content":prompt}}));
+        delivery.mark_possibly_sent();
         self.stdin
             .write_all(line.as_bytes())
             .await
@@ -518,9 +519,9 @@ impl Drop for AntigravitySession {
 
 pub fn spawn_antigravity_session_actor(
     mut session: AntigravitySession,
-) -> mpsc::Sender<SessionCommand> {
+) -> crate::external_agents::session::live::SessionControl {
     let (tx, mut rx) = mpsc::channel(8);
-    tokio::spawn(async move {
+    crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         loop {
             let command = tokio::select! {
                 command = rx.recv() => match command { Some(command) => command, None => break },
@@ -528,14 +529,22 @@ pub fn spawn_antigravity_session_actor(
             };
             match command {
                 SessionCommand::RunTurn {
+                    delivery,
+                    cancelled,
                     prompt,
                     images,
                     events,
                     done,
                     ..
                 } => {
+                    if done.is_closed()
+                        || cancelled.as_ref().is_some_and(|token| token.is_cancelled())
+                    {
+                        let _ = done.send(Err("cancelled".into()));
+                        continue;
+                    }
                     let result = if images.is_empty() {
-                        session.run_turn(&prompt, &events, &mut rx).await
+                        session.run_turn(&delivery, &prompt, &events, &mut rx).await
                     } else {
                         Err("Antigravity stream accepts text only; images must be supplied as file paths".into())
                     };
@@ -568,8 +577,7 @@ pub fn spawn_antigravity_session_actor(
             }
         }
         session.shutdown().await;
-    });
-    tx
+    })
 }
 
 #[cfg(test)]
@@ -594,6 +602,8 @@ mod tests {
         let (done, completion) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
+                cancelled: None,
                 prompt: prompt.into(),
                 model: None,
                 reasoning: None,
@@ -639,7 +649,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires signed-in agy; runs model requests in an isolated temp workspace"]
     async fn live_antigravity_multiturn_tools_cancel_and_resume() {
-        use crate::external_agents::defs::antigravity::ANTIGRAVITY_AGENT_DEF;
+        use crate::external_agents::providers::antigravity::ANTIGRAVITY_AGENT_DEF;
         use crate::external_agents::types::{RuntimeBuildOptions, RuntimeContext};
         let bin = if let Some(bin) = std::env::var_os("KIVIO_AGY_TEST_BIN") {
             PathBuf::from(bin)
@@ -741,6 +751,8 @@ mod tests {
         let (done, completion) = tokio::sync::oneshot::channel();
         control
             .send(SessionCommand::RunTurn {
+                delivery: TurnDelivery::default(),
+                cancelled: None,
                 prompt: "Do not use tools. Explain the first 100 prime numbers in detail.".into(),
                 model: None,
                 reasoning: None,
@@ -919,3 +931,7 @@ mod tests {
         assert_eq!(text(&events), "answer");
     }
 }
+
+#[cfg(test)]
+#[path = "antigravity_replay_tests.rs"]
+mod replay_tests;

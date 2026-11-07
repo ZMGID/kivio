@@ -155,15 +155,6 @@ pub(super) async fn complete_assistant_reply_inner(
     resumed_jobs: Option<&[String]>,
 ) -> Result<ArmReplyOutcome, String> {
     if conversation.agent_runtime.is_external() {
-        // 外部 CLI 路径在 run.rs 内自带 generation；这里登记一条 per-run 回复槽位，
-        // 让 `chat_runtime().has_active_reply` 在外部回复期间也能拒绝并发新发送（防回归）。
-        let ext_generation = state
-            .chat_runtime()
-            .begin_reply_generation(&conversation.id)
-            .ok_or_else(|| "cancelled".to_string())?;
-        let ext_run_id = format!("chat-run-ext-{}-{}", ext_generation, Uuid::new_v4());
-        let _ext_reply_guard =
-            ChatReplyGuard::try_new(state.inner(), &conversation.id, &ext_run_id, ext_generation);
         let latest_user = conversation
             .messages
             .iter()
@@ -206,10 +197,14 @@ pub(super) async fn complete_assistant_reply_inner(
             entry,
         )
         .await
-        .map(|_| ArmReplyOutcome {
-            message: None,
-            run_id: None,
-            error: None,
+        .map(|outcome| match outcome {
+            crate::external_agents::ExternalCliTurnOutcome::Completed
+            | crate::external_agents::ExternalCliTurnOutcome::Failed(_)
+            | crate::external_agents::ExternalCliTurnOutcome::Cancelled => ArmReplyOutcome {
+                message: None,
+                run_id: None,
+                error: None,
+            },
         });
     }
 
@@ -1130,6 +1125,7 @@ pub(super) async fn complete_assistant_reply_inner(
         result.last_step_usage,
         message_plan,
         result.degraded,
+        None,
     )
     .await?;
     if let Some((goal_id, goal_version)) = goal_run {

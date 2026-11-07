@@ -16,6 +16,7 @@
 //! Echoing `item/permissions/requestApproval` without those roots leaves `:workspace_roots`
 //! empty — native Codex TUI sets them, which is why "同意一路下去" works there and not here.
 
+use super::super::types::{AccountProbe, AccountProtocol, CapabilitySupport, RewindStrategy};
 use super::super::types::{
     PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, StreamFormat,
 };
@@ -47,6 +48,45 @@ pub fn build_codex_args(
     // The app-server protocol negotiates cwd / model / sandbox / approval over JSON-RPC
     // (`Thread/start` + `Turn/start`), so no model / sandbox CLI flags are needed here.
     vec!["app-server".to_string()]
+}
+
+pub(crate) fn service_tier_args(tier: Option<&str>) -> Vec<String> {
+    tier.filter(|tier| !tier.is_empty())
+        .map_or_else(Vec::new, |tier| {
+            vec![
+                "-c".to_string(),
+                format!("service_tier={}", serde_json::to_string(tier).unwrap()),
+            ]
+        })
+}
+
+pub(crate) fn append_service_tier_fingerprint(flags: &mut String, tier: Option<&str>) {
+    flags.push_str("|service-tier:");
+    flags.push_str(tier.unwrap_or_default());
+}
+
+pub(crate) fn launch_config(
+    sandbox: Option<&str>,
+) -> crate::external_agents::session::live::LaunchConfig {
+    use crate::external_agents::session::{
+        codex_app_server::normalize_codex_sandbox, live::LaunchConfig,
+    };
+
+    // Changing sandbox reloads the process-bound network and writable-directory policy.
+    // Model and effort are turn settings.
+    LaunchConfig {
+        identity: None,
+        flags: normalize_codex_sandbox(sandbox).to_string(),
+        instructions: None,
+    }
+}
+
+pub(crate) fn is_missing_codex_thread_error(raw: &str) -> bool {
+    let hay = raw.to_ascii_lowercase();
+    hay.contains("thread not found")
+        || hay.contains("unknown thread")
+        || hay.contains("no such thread")
+        || hay.contains("thread does not exist")
 }
 
 pub const CODEX_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
@@ -111,9 +151,14 @@ pub const CODEX_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     prompt_input_format: PromptInputFormat::Text,
     stream_format: StreamFormat::CodexAppServer,
     resumes_session_via_cli: false,
-    supports_native_image: true,
-    supports_steering: true,
-    supports_follow_up: false,
+    image_input: CapabilitySupport::Native,
+    steering: CapabilitySupport::Native,
+    follow_up: CapabilitySupport::Fallback,
+    rewind: RewindStrategy::CodexRevert,
+    account: Some(AccountProbe {
+        args: &["app-server"],
+        protocol: AccountProtocol::CodexAppServer,
+    }),
     image_mime_whitelist: &[],
     build_args: build_codex_args,
 };
@@ -121,6 +166,32 @@ pub const CODEX_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_codex_thread_is_recognized() {
+        assert!(is_missing_codex_thread_error("thread not found: thr_abc"));
+        assert!(is_missing_codex_thread_error("Unknown thread"));
+        assert!(!is_missing_codex_thread_error(
+            "codex app-server handshake timeout"
+        ));
+        assert!(!is_missing_codex_thread_error(
+            "codex app-server exited mid-turn"
+        ));
+    }
+
+    #[test]
+    fn service_tier_reaches_argv_and_reconnect_fingerprint() {
+        assert!(service_tier_args(None).is_empty());
+        assert!(service_tier_args(Some("")).is_empty());
+        assert_eq!(
+            service_tier_args(Some("fast")),
+            ["-c", "service_tier=\"fast\""]
+        );
+
+        let mut launch = launch_config(Some("read-only"));
+        append_service_tier_fingerprint(&mut launch.flags, Some("fast"));
+        assert_eq!(launch.flags, "read-only|service-tier:fast");
+    }
 
     #[test]
     fn codex_build_args_uses_app_server() {

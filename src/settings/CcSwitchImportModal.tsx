@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import {
   externalCliSettingsApi,
   type CcSwitchProvider,
+  type ImportedCcSwitchProvider,
 } from '../api/externalCliSettings'
 import { Button, IconButton } from '../components/Button'
 import { i18n, type Lang } from '../components/i18n'
@@ -24,7 +25,7 @@ export function CcSwitchImportModal({
   lang: Lang
   agentId: string
   existingIds: string[]
-  onImport: (providers: CcSwitchProvider[]) => void
+  onImport: (providers: ImportedCcSwitchProvider[]) => void
   onClose: () => void
 }) {
   const t = i18n[lang]
@@ -32,8 +33,12 @@ export function CcSwitchImportModal({
   const [skipped, setSkipped] = useState(0)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [error, setError] = useState('')
+  const [importing, setImporting] = useState(false)
+  const request = useRef({ version: 0 })
 
   useEffect(() => {
+    const tracker = request.current
+    tracker.version++
     let cancelled = false
     void externalCliSettingsApi
       .externalCliScanCcSwitch()
@@ -49,6 +54,7 @@ export function CcSwitchImportModal({
       })
     return () => {
       cancelled = true
+      tracker.version++
     }
   }, [agentId])
 
@@ -61,6 +67,23 @@ export function CcSwitchImportModal({
     })
 
   const allSelected = !!items && items.length > 0 && selected.size === items.length
+
+  const importSelected = async () => {
+    const version = ++request.current.version
+    setImporting(true)
+    setError('')
+    try {
+      const providers = await externalCliSettingsApi.externalCliImportCcSwitch(
+        (items ?? []).filter((item) => selected.has(item.id))
+          .map((item) => ({ agentId: item.agentId, providerId: item.id })),
+      )
+      if (request.current.version === version) onImport(providers)
+    } catch (error) {
+      if (request.current.version === version) setError(String(error))
+    } finally {
+      if (request.current.version === version) setImporting(false)
+    }
+  }
 
   return createPortal(
     <div
@@ -96,6 +119,7 @@ export function CcSwitchImportModal({
             <label className="flex items-center gap-2 text-[12px]">
               <input
                 type="checkbox"
+                disabled={importing}
                 checked={allSelected}
                 onChange={() => setSelected(allSelected ? new Set() : new Set(items.map((p) => p.id)))}
               />
@@ -106,6 +130,7 @@ export function CcSwitchImportModal({
                 <label key={item.id} className="kv-row !py-1.5">
                   <input
                     type="checkbox"
+                    disabled={importing}
                     checked={selected.has(item.id)}
                     onChange={() => toggle(item.id)}
                     className="mr-2"
@@ -137,8 +162,8 @@ export function CcSwitchImportModal({
           </Button>
           <Button
             variant="primary"
-            disabled={selected.size === 0}
-            onClick={() => onImport((items ?? []).filter((item) => selected.has(item.id)))}
+            disabled={selected.size === 0 || importing}
+            onClick={() => void importSelected()}
             data-tauri-drag-region="false"
           >
             {t.externalAgentsProviderImportConfirm.replace('{count}', String(selected.size))}

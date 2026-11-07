@@ -14,7 +14,11 @@ pub fn resolve_effective_cwd(
     conversation_id: &str,
     project_id: Option<&str>,
 ) -> Result<PathBuf, String> {
-    if let Some(path) = project_cli_root_for_conversation(app, conversation_id, project_id)? {
+    let project = project_cli_root_for_conversation(app, conversation_id, project_id)?;
+    if let Some(original) = bound_original_cwd(app, conversation_id)? {
+        return validate_bound_cwd(&original, project.as_deref());
+    }
+    if let Some(path) = project {
         return Ok(path);
     }
 
@@ -34,6 +38,69 @@ pub fn resolve_effective_cwd(
         conversation_id,
     )
     .map(strip_windows_verbatim_prefix)
+}
+
+pub(crate) fn bound_original_cwd(app: &AppHandle, id: &str) -> Result<Option<String>, String> {
+    if let Some(record) = crate::external_agents::import::load_import_record(app, id) {
+        return crate::external_agents::import::original_import_cwd(&record)
+            .or_else(|| {
+                crate::external_agents::session::load_live_handle(app, id).map(|handle| handle.cwd)
+            })
+            .map(Some)
+            .ok_or_else(|| "无法确认导入会话的原工作目录，请重新导入".into());
+    }
+    if let Some(cwd) = load_conversation(app, id)
+        .ok()
+        .and_then(|conversation| conversation.external_cwd)
+    {
+        return Ok(Some(cwd));
+    }
+    if let Some(handle) = crate::external_agents::session::load_live_handle(app, id) {
+        return Ok(Some(handle.cwd));
+    }
+    if let Some(binding) = crate::external_agents::session::load_session(app, id) {
+        return crate::external_agents::import::native_session_original_cwd(
+            &binding.agent_id,
+            &binding.session_id,
+        )
+        .map(Some)
+        .ok_or_else(|| "无法确认原生会话的原工作目录".into());
+    }
+    Ok(None)
+}
+
+pub(crate) fn validate_bound_cwd(
+    original: &str,
+    requested: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let path = cli_dir_if_exists(PathBuf::from(original))
+        .or_else(|| {
+            requested
+                .filter(|path| {
+                    crate::external_agents::import::paths_match(original, &path.to_string_lossy())
+                })
+                .and_then(|path| cli_dir_if_exists(path.to_path_buf()))
+        })
+        .ok_or_else(|| format!("原工作目录不存在：{original}"))?;
+    if requested.is_some_and(|requested| {
+        !requested.is_dir()
+            || !crate::external_agents::import::paths_match(original, &requested.to_string_lossy())
+    }) {
+        return Err(format!("此会话只能在原工作目录续聊：{original}"));
+    }
+    Ok(path)
+}
+
+pub(crate) fn validate_working_directory_override(
+    app: &AppHandle,
+    id: &str,
+    path: &Path,
+) -> Result<(), String> {
+    if let Some(original) = bound_original_cwd(app, id)? {
+        resolve_effective_cwd(app, id, None)?;
+        validate_bound_cwd(&original, Some(path))?;
+    }
+    Ok(())
 }
 
 fn project_cli_root_for_conversation(
@@ -147,6 +214,54 @@ pub fn extra_allowed_dirs_for_agent(
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn bound_directory_rejects_relocation_and_missing_original() {
+        let original = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        assert!(
+            validate_bound_cwd(&original.path().to_string_lossy(), Some(other.path())).is_err()
+        );
+        assert!(
+            validate_bound_cwd(&original.path().join("missing").to_string_lossy(), None).is_err()
+        );
+        assert!(
+            validate_bound_cwd(&original.path().to_string_lossy(), Some(original.path())).is_ok()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn bound_directory_accepts_windows_junction() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original");
+        let alias = directory.path().join("alias");
+        std::fs::create_dir(&original).unwrap();
+        let output = std::process::Command::new("cmd.exe")
+            .args(["/C", "mklink", "/J"])
+            .arg(&alias)
+            .arg(&original)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(validate_bound_cwd(&original.to_string_lossy(), Some(&alias)).is_ok());
+        std::fs::remove_dir(alias).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn bound_directory_accepts_posix_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("original");
+        let alias = directory.path().join("alias");
+        std::fs::create_dir(&original).unwrap();
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        assert!(validate_bound_cwd(&original.to_string_lossy(), Some(&alias)).is_ok());
+    }
 
     #[test]
     fn bound_project_requires_an_existing_directory() {
