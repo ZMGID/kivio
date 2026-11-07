@@ -1359,9 +1359,9 @@ fn estimate_model_message_tokens(message: &ModelMessage) -> usize {
                     + estimate_json_text_tokens(id)
                     + estimate_json_text_tokens(name)
                     + estimate_json_text_tokens(arguments_raw)
-                    + signature.as_deref().map_or(0, |signature| {
+                    + signature.as_ref().map_or(0, |signature| {
                         estimate_tokens(r#","thought_signature":" "#)
-                            + estimate_json_text_tokens(signature)
+                            + estimate_json_text_tokens(signature.value())
                     })
             }
             MessagePart::ToolResult { content, .. } => estimate_tokens(content),

@@ -83,12 +83,13 @@ The standalone providers currently support these protocols. Desktop adapters sha
 | Chat Completions | `model::openai::{OpenAiChatConfig, OpenAiChatProvider}` | Complete `/chat/completions` URL |
 | Responses, including xAI format | `model::responses::{OpenAiResponsesConfig, OpenAiResponsesProvider}` | Complete `/responses` URL |
 | Anthropic Messages | `model::anthropic::{AnthropicMessagesConfig, AnthropicMessagesProvider}` | Complete `/messages` URL |
+| Gemini Generate Content | `model::gemini::{GeminiConfig, GeminiProvider}` | Native API root, for example `/v1beta`; the requested model and method are appended |
 
 Construct a provider with your HTTP client and config. Each implements `LanguageModelProvider` for direct generation and `ModelRuntime` for `AgentSession`. Responses accepts buffered JSON or SSE-only responses, preserves encrypted reasoning for same-model replay, and supports function tools and provider-side search. Use `ResponsesFormat::Xai` explicitly for xAI wire behavior. The host resolves cache keys, credentials and compatibility options; the standalone providers do not learn endpoint failures or rotate keys.
 
 Anthropic preserves signed thinking, redacted thinking and native server-tool blocks. Its explicit options select adaptive or budget-based thinking, cache TTL and an opaque provider identity for replay isolation. Native `pause_turn` responses continue up to eight times; final context usage remains separate from cumulative billing usage. Claude Code identity and model-profile selection remain host responsibilities.
 
-Gemini remains an application adapter until its T3 extraction step.
+Gemini supports native function calls, images, inline video, grounding and thought signatures. Select `GeminiThinkingMode::Level` to encode the call's thinking level or `Budget(tokens)` for a host-resolved numeric budget. The default requests thoughts without choosing a level or budget. Model profiles and Antigravity authentication remain in the host. New tool signatures carry their model and optional provider identity; old string signatures remain readable.
 
 Set environment variables in the example process. `KIVIO_SDK_BASE_URL` is the **full endpoint**, such as `https://api.example.com/v1/chat/completions`, rather than a base directory. `KIVIO_SDK_MODEL` selects your provider's model. `KIVIO_SDK_API_KEY` is optional for endpoints without bearer authentication. Supply the key through your process environment or secret manager, and omit it from command arguments and committed files.
 

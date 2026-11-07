@@ -3,7 +3,7 @@ name = "kivio-agent-sdk"
 version = "0.1.0-alpha.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Host-independent agent runtime and OpenAI-compatible protocol"
+description = "Host-independent agent runtime with Chat, Responses, Anthropic and Gemini providers"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

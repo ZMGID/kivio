@@ -48,20 +48,27 @@ impl Server {
     }
 
     pub async fn start_at(path: &str, responses: Vec<Response>) -> Self {
+        Self::start_paths(path, vec![path.to_owned()], responses).await
+    }
+
+    pub async fn start_paths(
+        base_path: &str,
+        paths: Vec<String>,
+        responses: Vec<Response>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let endpoint = format!("http://{}{path}", listener.local_addr().unwrap())
+        let endpoint = format!("http://{}{base_path}", listener.local_addr().unwrap())
             .parse()
             .unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = requests.clone();
         let disconnected = Arc::new(Notify::new());
         let closed = disconnected.clone();
-        let path = path.to_owned();
         let task = tokio::spawn(async move {
             let mut responses = VecDeque::from(responses);
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                let request = timeout(LIMIT, read_request(&mut socket, &path))
+                let request = timeout(LIMIT, read_request(&mut socket, &paths))
                     .await
                     .unwrap();
                 recorded.lock().unwrap().push(request);
@@ -131,7 +138,7 @@ impl Server {
     }
 }
 
-async fn read_request(socket: &mut TcpStream, path: &str) -> Request {
+async fn read_request(socket: &mut TcpStream, paths: &[String]) -> Request {
     let mut bytes = Vec::new();
     let header_end = loop {
         let mut chunk = [0; 2048];
@@ -144,7 +151,13 @@ async fn read_request(socket: &mut TcpStream, path: &str) -> Request {
         }
     };
     let headers = String::from_utf8(bytes[..header_end].to_vec()).unwrap();
-    assert!(headers.starts_with(&format!("POST {path} HTTP/1.1\r\n")));
+    assert!(
+        paths
+            .iter()
+            .any(|path| headers.starts_with(&format!("POST {path} HTTP/1.1\r\n"))),
+        "unexpected request path: {}",
+        headers.lines().next().unwrap()
+    );
     let length: usize = headers
         .lines()
         .find_map(|line| {

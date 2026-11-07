@@ -11,10 +11,11 @@ use kivio_agent_sdk::{
     },
     model::{
         anthropic::{AnthropicMessagesConfig, AnthropicMessagesProvider},
+        gemini::{GeminiConfig, GeminiProvider, GeminiThinkingMode},
         openai::{OpenAiChatConfig, OpenAiChatProvider},
         responses::{OpenAiResponsesConfig, OpenAiResponsesProvider},
-        GenerateOutput, GenerateRequest, LanguageModelProvider, ModelError, ModelErrorKind,
-        StreamPart, StreamSink, ToolChoice,
+        GenerateOutput, GenerateRequest, LanguageModelProvider, MessagePart, ModelError,
+        ModelErrorKind, ModelMessage, ProviderSignature, StreamPart, StreamSink, ToolChoice,
     },
 };
 use kivio_agent_sdk_consumer::{echo_definition, initial_history, EchoTool};
@@ -30,15 +31,34 @@ enum ProtocolCase {
     Chat,
     Responses,
     Anthropic,
+    Gemini,
 }
 
 const CASES: &[ProtocolCase] = &[
     ProtocolCase::Chat,
     ProtocolCase::Responses,
     ProtocolCase::Anthropic,
+    ProtocolCase::Gemini,
 ];
 
 impl ProtocolCase {
+    async fn server(self, path: &str, responses: Vec<Response>) -> Server {
+        match self {
+            Self::Gemini => {
+                Server::start_paths(
+                    path,
+                    vec![
+                        format!("{path}/models/test-model:streamGenerateContent?alt=sse"),
+                        format!("{path}/models/test-model:generateContent"),
+                    ],
+                    responses,
+                )
+                .await
+            }
+            _ => Server::start_at(path, responses).await,
+        }
+    }
+
     fn provider(self, server: &Server) -> Arc<dyn ConformanceProvider> {
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -51,6 +71,8 @@ impl ProtocolCase {
             Self::Responses => json!({"temperature":0.1,"max_output_tokens":1,
                 "reasoning":{"effort":"low"},"vendor":"default"}),
             Self::Anthropic => json!({"temperature":0.1,"max_tokens":1,"vendor":"default"}),
+            Self::Gemini => json!({"generationConfig":{"temperature":0.1,"maxOutputTokens":1,
+                "thinkingConfig":{"thinkingLevel":"low"}},"vendor":"default"}),
         };
         match self {
             Self::Chat => {
@@ -83,6 +105,19 @@ impl ProtocolCase {
                 config.options.extra_body = extra;
                 Arc::new(AnthropicMessagesProvider::new(client, config))
             }
+            Self::Gemini => {
+                let mut config = GeminiConfig::new(server.endpoint.clone());
+                config.api_key = Some("fixture-key".into());
+                config
+                    .headers
+                    .insert("x-consumer", "standalone".parse().unwrap());
+                config.options.temperature = Some(0.2);
+                config.options.thinking = GeminiThinkingMode::Level;
+                config.options.include_tool_ids = true;
+                config.options.provider_id = Some("fixture".into());
+                config.options.extra_body = extra;
+                Arc::new(GeminiProvider::new(client, config))
+            }
         }
     }
 
@@ -93,6 +128,9 @@ impl ProtocolCase {
             Self::Anthropic => event(
                 json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":text}}),
             ),
+            Self::Gemini => {
+                event(json!({"candidates":[{"content":{"role":"model","parts":[{"text":text}]}}]}))
+            }
         }
     }
 
@@ -104,6 +142,8 @@ impl ProtocolCase {
                 "input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":2}}),
             Self::Anthropic => json!({"input_tokens":12,"output_tokens":5,
                 "cache_read_input_tokens":4,"cache_creation_input_tokens":2}),
+            Self::Gemini => json!({"promptTokenCount":12,"candidatesTokenCount":5,
+                "totalTokenCount":19,"thoughtsTokenCount":2,"cachedContentTokenCount":4}),
         }
     }
 
@@ -117,6 +157,9 @@ impl ProtocolCase {
             }
             Self::Anthropic => json!({"temperature":0.9,"max_tokens":999,"vendor":"call",
                 "tools":[{"type":"web_search_20250305","name":"web_search"}],"tool_choice":{"type":"auto"}}),
+            Self::Gemini => json!({"generationConfig":{"temperature":0.9,"maxOutputTokens":999,
+                "thinkingConfig":{"thinkingLevel":"xhigh"}},"vendor":"call",
+                "tools":[{"googleSearch":{}}],"toolConfig":{"functionCallingConfig":{"mode":"AUTO"}}}),
         }
     }
 
@@ -140,6 +183,9 @@ impl ProtocolCase {
                 ),
                 event(json!({"type":"message_stop"}))
             ),
+            Self::Gemini => {
+                event(json!({"candidates":[{"finishReason":"STOP"}],"usageMetadata":self.usage()}))
+            }
         }
     }
 
@@ -159,6 +205,7 @@ impl ProtocolCase {
                 event(json!({"type":"content_block_stop","index":0})),
                 event(json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}})),
             ].concat(),
+            Self::Gemini => event(json!({"candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"considered"}]}}]})),
         };
         Response::Sse(format!(
             "{reasoning}{}{}",
@@ -180,6 +227,10 @@ impl ProtocolCase {
                 Response::Json(json!({"id":"msg_42","type":"message","role":"assistant",
                 "content":[{"type":"thinking","thinking":"considered","signature":"signed-reasoning"},{"type":"text","text":text}],
                 "stop_reason":"end_turn","usage":self.usage()}))
+            }
+            Self::Gemini => {
+                Response::Json(json!({"candidates":[{"content":{"role":"model","parts":[
+                {"thought":true,"text":"considered"},{"text":text}]},"finishReason":"STOP"}],"usageMetadata":self.usage()}))
             }
         }
     }
@@ -208,6 +259,12 @@ impl ProtocolCase {
                 event(json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":self.usage()})),
                 event(json!({"type":"message_stop"})),
             ].concat()),
+            Self::Gemini => {
+                let arguments = serde_json::from_str::<Value>(arguments).unwrap();
+                Response::Sse(event(json!({"candidates":[{"content":{"role":"model","parts":[
+                    {"functionCall":{"id":"call-42","name":"echo","args":arguments},"thoughtSignature":"signed-call"}]},
+                    "finishReason":"STOP"}]})))
+            }
         }
     }
 
@@ -253,6 +310,32 @@ impl ProtocolCase {
                     .unwrap();
                 assert_eq!(result["tool_use_id"], "call-42");
                 assert!(result["content"].as_str().unwrap().contains(expected));
+            }
+            Self::Gemini => {
+                let parts = body["contents"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .flat_map(|message| message["parts"].as_array().unwrap())
+                    .collect::<Vec<_>>();
+                let call = parts
+                    .iter()
+                    .find(|part| part["functionCall"].is_object())
+                    .unwrap();
+                assert_eq!(call["functionCall"]["id"], "call-42");
+                assert_eq!(call["thoughtSignature"], "signed-call");
+                let result = parts
+                    .iter()
+                    .find(|part| part["functionResponse"].is_object())
+                    .unwrap();
+                assert_eq!(result["functionResponse"]["id"], "call-42");
+                assert_eq!(result["functionResponse"]["name"], "echo");
+                assert!(
+                    result["functionResponse"]["response"]
+                        .to_string()
+                        .contains(expected),
+                    "expected {expected}, received {result}"
+                );
             }
         }
     }
@@ -328,15 +411,16 @@ impl ModelOutputSink for Sink {
 #[tokio::test]
 async fn streamed_collected_and_buffered_results_share_the_public_contract() {
     for case in CASES {
-        let server = Server::start_at(
-            "/custom/provider",
-            vec![
-                case.answer("answer"),
-                case.answer("answer"),
-                case.buffered("answer"),
-            ],
-        )
-        .await;
+        let server = case
+            .server(
+                "/custom/provider",
+                vec![
+                    case.answer("answer"),
+                    case.answer("answer"),
+                    case.buffered("answer"),
+                ],
+            )
+            .await;
         let provider = case.provider(&server);
         let mut outputs = vec![];
         for delivery in [ModelDelivery::Streamed, ModelDelivery::Collected] {
@@ -376,7 +460,10 @@ async fn streamed_collected_and_buffered_results_share_the_public_contract() {
             let usage = output.usage.as_ref().unwrap();
             assert_eq!(
                 (usage.input_tokens, usage.output_tokens, usage.total_tokens),
-                (Some(12), Some(5), Some(17)),
+                match case {
+                    ProtocolCase::Gemini => (Some(12), Some(5), Some(19)),
+                    _ => (Some(12), Some(5), Some(17)),
+                },
                 "{case:?}"
             );
             assert_eq!(
@@ -406,13 +493,26 @@ async fn streamed_collected_and_buffered_results_share_the_public_contract() {
         assert_eq!(outputs[0], outputs[1], "{case:?}");
         assert_eq!(outputs[0], normalized(&buffered), "{case:?}");
         assert_eq!(server.count(), 3, "{case:?}");
+        if matches!(case, ProtocolCase::Gemini) {
+            let requests = server.requests.lock().unwrap();
+            assert!(requests[..2].iter().all(|received| {
+                received.headers.starts_with(
+                "POST /custom/provider/models/test-model:streamGenerateContent?alt=sse HTTP/1.1"
+            )
+            }));
+            assert!(requests[2]
+                .headers
+                .starts_with("POST /custom/provider/models/test-model:generateContent HTTP/1.1"));
+        }
     }
 }
 
 #[tokio::test]
 async fn responses_buffered_generation_accepts_sse_only_endpoints() {
     let case = ProtocolCase::Responses;
-    let server = Server::start_at("/responses-sse", vec![case.answer("answer")]).await;
+    let server = case
+        .server("/responses-sse", vec![case.answer("answer")])
+        .await;
     let provider = case.provider(&server);
     let output = LanguageModelProvider::generate(provider.as_ref(), request())
         .await
@@ -431,11 +531,12 @@ async fn anthropic_native_continuations_keep_final_usage_separate_from_billing()
         } else {
             case.buffered("answer")
         };
-        let server = Server::start_at(
-            "/native-messages",
-            vec![anthropic_pause(streamed), final_answer],
-        )
-        .await;
+        let server = case
+            .server(
+                "/native-messages",
+                vec![anthropic_pause(streamed), final_answer],
+            )
+            .await;
         let provider = case.provider(&server);
         let mut sink = Sink::default();
         let output = if streamed {
@@ -480,11 +581,12 @@ async fn anthropic_native_continuations_keep_final_usage_separate_from_billing()
         assert_eq!(replay["content"][0]["type"], "server_tool_use");
         assert_eq!(replay["content"][1]["tool_use_id"], "srv_42");
     }
-    let server = Server::start_at(
-        "/bounded-native-messages",
-        (0..9).map(|_| anthropic_pause(false)).collect(),
-    )
-    .await;
+    let server = case
+        .server(
+            "/bounded-native-messages",
+            (0..9).map(|_| anthropic_pause(false)).collect(),
+        )
+        .await;
     let provider = case.provider(&server);
     assert!(timeout(
         LIMIT,
@@ -499,7 +601,9 @@ async fn anthropic_native_continuations_keep_final_usage_separate_from_billing()
 #[tokio::test]
 async fn anthropic_thinking_omits_temperature_on_the_wire() {
     let case = ProtocolCase::Anthropic;
-    let server = Server::start_at("/thinking-messages", vec![case.answer("answer")]).await;
+    let server = case
+        .server("/thinking-messages", vec![case.answer("answer")])
+        .await;
     let provider = case.provider(&server);
     let mut request = request();
     request.options.temperature = Some(0.7);
@@ -516,15 +620,16 @@ async fn anthropic_thinking_omits_temperature_on_the_wire() {
 #[tokio::test]
 async fn explicit_endpoint_headers_and_call_overrides_reach_the_wire() {
     for case in CASES {
-        let server = Server::start_at(
-            "/gateway/custom-generation",
-            vec![
-                case.answer("answer"),
-                case.answer("answer"),
-                case.answer("answer"),
-            ],
-        )
-        .await;
+        let server = case
+            .server(
+                "/gateway/custom-generation",
+                vec![
+                    case.answer("answer"),
+                    case.answer("answer"),
+                    case.answer("answer"),
+                ],
+            )
+            .await;
         let provider = case.provider(&server);
         for (temperature, overrides) in [
             (None, json!({})),
@@ -550,12 +655,19 @@ async fn explicit_endpoint_headers_and_call_overrides_reach_the_wire() {
             (&requests[2], 0.9, "call", 999, "xhigh"),
         ] {
             let headers = received.headers.to_ascii_lowercase();
+            let path = match case {
+                ProtocolCase::Gemini => {
+                    "/gateway/custom-generation/models/test-model:streamgeneratecontent?alt=sse"
+                }
+                _ => "/gateway/custom-generation",
+            };
             assert!(
-                headers.starts_with("post /gateway/custom-generation http/1.1"),
+                headers.starts_with(&format!("post {path} http/1.1")),
                 "{case:?}"
             );
             let auth_header = match case {
                 ProtocolCase::Anthropic => "x-api-key: fixture-key",
+                ProtocolCase::Gemini => "x-goog-api-key: fixture-key",
                 _ => "authorization: bearer fixture-key",
             };
             assert!(headers.contains(auth_header), "{case:?}");
@@ -563,25 +675,38 @@ async fn explicit_endpoint_headers_and_call_overrides_reach_the_wire() {
                 assert!(headers.contains("anthropic-version: 2023-06-01"));
             }
             assert!(headers.contains("x-consumer: standalone"), "{case:?}");
-            assert_eq!(received.body["temperature"], temperature, "{case:?}");
             assert_eq!(received.body["vendor"], vendor, "{case:?}");
+            let generation_config = match case {
+                ProtocolCase::Gemini => &received.body["generationConfig"],
+                _ => &received.body,
+            };
+            assert_eq!(generation_config["temperature"], temperature, "{case:?}");
             let token_field = match case {
                 ProtocolCase::Chat => "max_tokens",
                 ProtocolCase::Responses => "max_output_tokens",
                 ProtocolCase::Anthropic => "max_tokens",
+                ProtocolCase::Gemini => "maxOutputTokens",
             };
-            assert_eq!(received.body[token_field], max_tokens, "{case:?}");
+            assert_eq!(generation_config[token_field], max_tokens, "{case:?}");
             match case {
                 ProtocolCase::Chat => assert_eq!(received.body["reasoning_effort"], effort),
                 ProtocolCase::Responses => assert_eq!(received.body["reasoning"]["effort"], effort),
                 ProtocolCase::Anthropic => {}
+                ProtocolCase::Gemini => {
+                    assert_eq!(generation_config["thinkingConfig"]["thinkingLevel"], effort)
+                }
             }
             assert!(received.body.get("tools").is_none(), "{case:?}");
-            let prohibited = match case {
-                ProtocolCase::Anthropic => json!({"type":"none"}),
-                _ => json!("none"),
-            };
-            assert_eq!(received.body["tool_choice"], prohibited, "{case:?}");
+            match case {
+                ProtocolCase::Gemini => assert_eq!(
+                    received.body["toolConfig"]["functionCallingConfig"]["mode"],
+                    "NONE"
+                ),
+                ProtocolCase::Anthropic => {
+                    assert_eq!(received.body["tool_choice"], json!({"type":"none"}))
+                }
+                _ => assert_eq!(received.body["tool_choice"], "none", "{case:?}"),
+            }
         }
     }
 }
@@ -594,15 +719,20 @@ async fn session_tool_authorization_and_later_prompt_do_not_reexecute_history() 
             (r#"{"text":"hello"}"#, false, 0, "Host denied echo"),
             (r#"{"text":"unfinished"#, true, 0, "invalid"),
         ] {
-            let server = Server::start_at(
-                "/conformance",
-                vec![
-                    case.tool(arguments),
-                    case.answer("done"),
-                    case.answer("continued"),
-                ],
-            )
-            .await;
+            let (arguments, expected) = match (case, expected) {
+                (ProtocolCase::Gemini, "invalid") => (r#"{"text":{}}"#, "must be string"),
+                _ => (arguments, expected),
+            };
+            let server = case
+                .server(
+                    "/conformance",
+                    vec![
+                        case.tool(arguments),
+                        case.answer("done"),
+                        case.answer("continued"),
+                    ],
+                )
+                .await;
             let provider = case.provider(&server);
             let executor = Arc::new(EchoTool::new(allowed));
             let mut config = AgentSessionConfig::new(provider, "test-model");
@@ -640,6 +770,109 @@ async fn session_tool_authorization_and_later_prompt_do_not_reexecute_history() 
 }
 
 #[tokio::test]
+async fn gemini_tool_signatures_survive_persistence_and_only_replay_to_their_source() {
+    let case = ProtocolCase::Gemini;
+    let server = case
+        .server(
+            "/signed",
+            vec![case.tool(r#"{"text":"hello"}"#), case.answer("done")],
+        )
+        .await;
+    let executor = Arc::new(EchoTool::new(true));
+    let mut config = AgentSessionConfig::new(case.provider(&server), "test-model");
+    config
+        .tools
+        .register_dynamic(echo_definition(), executor.clone())
+        .unwrap();
+    let session = AgentSession::new(config);
+    assert_eq!(
+        timeout(LIMIT, session.prompt("echo hello"))
+            .await
+            .unwrap()
+            .unwrap()
+            .content,
+        "done"
+    );
+    assert_eq!(executor.call_count(), 1);
+    let mut replay = request_from_history(
+        &session.history(),
+        "test-model",
+        vec![echo_definition().model],
+        Default::default(),
+        Default::default(),
+    );
+    let persisted = serde_json::to_vec(&replay.messages).unwrap();
+    replay.messages = serde_json::from_slice::<Vec<ModelMessage>>(&persisted).unwrap();
+    let signature = replay
+        .messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .find_map(|part| match part {
+            MessagePart::ToolCall { signature, .. } => signature.as_ref(),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        signature,
+        &ProviderSignature::Scoped {
+            value: "signed-call".into(),
+            model: "test-model".into(),
+            provider_id: Some("fixture".into()),
+        }
+    );
+
+    for (model, provider_id, expected_signature) in [
+        ("test-model", "fixture", true),
+        ("changed-model", "fixture", false),
+        ("test-model", "changed-provider", false),
+    ] {
+        let server = Server::start_paths(
+            "/replay",
+            vec![format!("/replay/models/{model}:generateContent")],
+            vec![case.buffered("replayed")],
+        )
+        .await;
+        let mut config = GeminiConfig::new(server.endpoint.clone());
+        config.options.provider_id = Some(provider_id.into());
+        config.options.include_tool_ids = true;
+        let provider = GeminiProvider::new(
+            reqwest::Client::builder()
+                .no_proxy()
+                .timeout(LIMIT)
+                .build()
+                .unwrap(),
+            config,
+        );
+        replay.model = model.into();
+        assert_eq!(
+            LanguageModelProvider::generate(&provider, replay.clone())
+                .await
+                .unwrap()
+                .text,
+            "replayed"
+        );
+        let requests = server.requests.lock().unwrap();
+        let call = requests[0].body["contents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|message| message["parts"].as_array().unwrap())
+            .find(|part| part["functionCall"].is_object())
+            .unwrap();
+        assert_eq!(call["functionCall"]["name"], "echo");
+        assert_eq!(call["functionCall"]["args"]["text"], "hello");
+        assert_eq!(
+            call.get("thoughtSignature").is_some(),
+            expected_signature,
+            "{model}/{provider_id}"
+        );
+        if expected_signature {
+            assert_eq!(call["thoughtSignature"], "signed-call");
+        }
+    }
+}
+
+#[tokio::test]
 async fn http_errors_keep_status_code_and_retry_after_without_retrying() {
     for case in CASES {
         for (status, code, kind) in [
@@ -649,23 +882,29 @@ async fn http_errors_keep_status_code_and_retry_after_without_retrying() {
             let code = match (case, status) {
                 (ProtocolCase::Anthropic, 401) => "authentication_error",
                 (ProtocolCase::Anthropic, 429) => "rate_limit_error",
+                (ProtocolCase::Gemini, 401) => "UNAUTHENTICATED",
+                (ProtocolCase::Gemini, 429) => "RESOURCE_EXHAUSTED",
                 _ => code,
             };
             let body = match case {
                 ProtocolCase::Anthropic => {
                     json!({"type":"error","error":{"type":code,"message":"fixture failure"}})
                 }
+                ProtocolCase::Gemini => {
+                    json!({"error":{"code":status,"status":code,"message":"fixture failure"}})
+                }
                 _ => json!({"error":{"code":code,"message":"fixture failure"}}),
             };
-            let server = Server::start_at(
-                "/conformance",
-                vec![Response::HttpHeaders(
-                    status,
-                    body.to_string(),
-                    vec![("Retry-After", "7")],
-                )],
-            )
-            .await;
+            let server = case
+                .server(
+                    "/conformance",
+                    vec![Response::HttpHeaders(
+                        status,
+                        body.to_string(),
+                        vec![("Retry-After", "7")],
+                    )],
+                )
+                .await;
             let provider = case.provider(&server);
             let error =
                 LanguageModelProvider::stream(provider.as_ref(), request(), &mut |_| Ok(()))
@@ -688,7 +927,7 @@ async fn http_errors_keep_status_code_and_retry_after_without_retrying() {
 async fn empty_or_unterminated_streams_cannot_report_success() {
     for case in CASES {
         for body in [String::new(), case.delta("unfinished")] {
-            let server = Server::start_at("/conformance", vec![Response::Sse(body)]).await;
+            let server = case.server("/conformance", vec![Response::Sse(body)]).await;
             let provider = case.provider(&server);
             let error =
                 LanguageModelProvider::stream(provider.as_ref(), request(), &mut |_| Ok(()))
@@ -704,14 +943,15 @@ async fn empty_or_unterminated_streams_cannot_report_success() {
 #[tokio::test]
 async fn dropping_a_stream_or_rejecting_a_delta_closes_its_http_read() {
     for case in CASES {
-        let server = Server::start_at(
-            "/conformance",
-            vec![
-                Response::Hold(case.delta("partial")),
-                Response::Hold(case.delta("rejected")),
-            ],
-        )
-        .await;
+        let server = case
+            .server(
+                "/conformance",
+                vec![
+                    Response::Hold(case.delta("partial")),
+                    Response::Hold(case.delta("rejected")),
+                ],
+            )
+            .await;
         let provider = case.provider(&server);
         let observed = tokio::sync::Notify::new();
         let mut sink = |part| {

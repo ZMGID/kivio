@@ -4,7 +4,7 @@ This reference describes the SDK v2 working API (not yet published). [The README
 
 ## Public interfaces
 
-`agent::run_agent_loop` combines a `ModelRuntime`, `ToolExecutor`, `AgentHost`, `SessionPolicy`, `AgentEventSink`, and `AgentRunHandle`. `agent::RuntimeMessage` carries typed model history and opaque host source metadata. The `model` module provides normalized model types and standalone Chat, Responses and Anthropic providers. The `tools` module provides tool definitions, argument schemas, and tool output.
+`agent::run_agent_loop` combines a `ModelRuntime`, `ToolExecutor`, `AgentHost`, `SessionPolicy`, `AgentEventSink`, and `AgentRunHandle`. `agent::RuntimeMessage` carries typed model history and opaque host source metadata. The `model` module provides normalized model types and standalone Chat, Responses, Anthropic and Gemini providers. The `tools` module provides tool definitions, argument schemas, and tool output.
 
 Rustdoc lists the exported items. Other public modules contain lower-level stream, protocol, and loop helpers. Their visibility does not provide a stable compatibility guarantee during this alpha. Private and `pub(crate)` modules are implementation details. Consumers use the crate dependency and public imports, rather than compiling SDK source files directly.
 
@@ -112,7 +112,7 @@ Provider calls return `ModelError` with `kind`, an optional HTTP `status`, an op
 
 `run_agent_loop` returns `Result<AgentRunResult, AgentRunError>`. `Admission` means no run lifecycle started. `Failed { cause, partial }` retains completed tool work, history, segments, images and reported usage. The caller owns saving that partial result. `AgentFailure::Model` preserves `ModelError` and the failure stage; `Host` identifies the failed host operation; `InvalidOutput` identifies invalid final output. A successful Rust `Result` can still have status `Cancelled`, `Failed(AgentFailure)`, or `CompactionBlocked`. `Recovered` identifies a policy-assisted recovery. Consumers inspect the status as well as the outer result. Tool failures appear in tool records and feedback, so a model can finish after a failed tool.
 
-The standalone Chat and Responses providers call the supplied client's `send()` once per provider invocation. It performs no SDK-level retry, key rotation, or cache fallback. The client can still retry or follow redirects. Reqwest's default retry policy includes safe protocol failures; a host that requires retries to be disabled sets `ClientBuilder::retry(reqwest::retry::never())`. Redirect policy is configured separately. The agent loop can issue further requests for tool rounds, queued input, empty-response handling, or policy-directed recovery. Hosts own the combined retry budget and output withdrawal.
+The standalone Chat, Responses and Gemini providers call the supplied client's `send()` once per provider invocation. They perform no SDK-level retry, key rotation, or cache fallback. The client can still retry or follow redirects. Reqwest's default retry policy includes safe protocol failures; a host that requires retries to be disabled sets `ClientBuilder::retry(reqwest::retry::never())`. Redirect policy is configured separately. The agent loop can issue further requests for tool rounds, queued input, empty-response handling, or policy-directed recovery. Hosts own the combined retry budget and output withdrawal.
 
 ## Credentials and transport
 
@@ -127,6 +127,12 @@ Responses JSON summaries and encrypted replay items are separate outputs and bot
 Anthropic's public generation completes at most eight native `pause_turn` continuations after the initial request. Each HTTP request sends once without an SDK transport retry. It replays completed native assistant blocks, rejects unresolved client tools at that boundary, and suppresses intermediate finish events. `usage` describes the last request; `billing_usage` sums the continuation requests. Hosts must not use the cumulative bill as a context-size anchor.
 
 Anthropic native output records its model and optional opaque `provider_id`. Replay excludes blocks from a different model or an explicitly different provider identity. Legacy blocks without provenance remain readable. Hosts that need provider isolation supply a stable identity; the SDK does not derive it from credentials. Application adapters share the encoder, decoders and bounded continuation helper while retaining authentication, tool-name policy, retry budgets and accounting.
+
+`GeminiConfig.base_url` is the native API root. The provider appends the requested model and `generateContent` or `streamGenerateContent` method, and authenticates with `x-goog-api-key`. Options explicitly select numeric thinking budget or the call's thinking level, image output, tool IDs and response envelope format. The host resolves model profiles. The encoder and decoders are shared with the desktop adapter; Antigravity endpoints, request wrapping, OAuth and capability policy remain in the application.
+
+Gemini tool signatures use `ProviderSignature`, which keeps opaque data and its origin together. A different model or explicitly different provider omits the signature while preserving the tool call and result. Typed history and the legacy storage bridge retain scoped signatures; old strings deserialize as `Legacy`. Chat wire requests omit this metadata. Rust callers constructing a legacy signature use `Some(value.into())`; callers reading its opaque value use `signature.value()`.
+
+Gemini's standalone provider validates the serialized body against the existing 20,000,000-byte inline-video request budget before sending. The desktop shares that check on its final body, including any wrapper. Filesystem reads, attachment restoration and model capability decisions remain host-owned.
 
 The host supplies `reqwest::Client` and selects proxy behavior, TLS, connection limits, and stream timeouts. `OpenAiChatConfig.request_timeout` applies only to buffered generation. The agent runtime uses streaming generation, including collected delivery, so it relies on the client configuration for its timeout.
 

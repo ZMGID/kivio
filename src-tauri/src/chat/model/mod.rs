@@ -12,7 +12,6 @@ pub mod gemini;
 mod legacy;
 pub mod openai;
 pub mod responses;
-mod sse;
 pub mod types;
 
 use crate::chat::provider_runtime::ProviderRuntimeState;
