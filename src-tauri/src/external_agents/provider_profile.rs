@@ -3087,26 +3087,50 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
-    fn launch_identity_preserves_non_utf8_captured_home() {
+    fn launch_identity_does_not_read_lossy_home_alias() {
         use super::super::overrides::LaunchIdentity;
+        #[cfg(unix)]
         use std::os::unix::ffi::OsStringExt;
+        #[cfg(windows)]
+        use std::os::windows::ffi::OsStringExt;
 
         let temp = tempfile::tempdir().unwrap();
         let _root = isolated_profiles(temp.path());
+        #[cfg(unix)]
         let home = temp.path().join(OsString::from_vec(b"child-\xff".to_vec()));
-        let path = home.join(".grok/config.toml");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, b"first account").unwrap();
-        let environment = [(OsString::from("HOME"), home.into_os_string())].into();
+        #[cfg(windows)]
+        let home = temp.path().join(OsString::from_wide(&[0x63, 0xd800]));
+        let lossy_home = PathBuf::from(home.to_string_lossy().into_owned());
+        let path = lossy_home.join(".grok/config.toml");
+        let fallback_path = temp.path().join("home/.grok/config.toml");
+        for path in [&path, &fallback_path] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"first account").unwrap();
+        }
         let def = get_agent_def("grok").unwrap();
-        let capture = || {
+        let capture = |home: &Path| {
+            let home_key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+            let environment = [(OsString::from(home_key), home.as_os_str().to_owned())].into();
             LaunchIdentity::from_environment(def, Path::new("grok"), Some(0), None, &environment)
         };
-        let first = capture();
-        std::fs::write(path, b"changed account").unwrap();
-        assert_ne!(first, capture());
+        let original = capture(&home);
+        let lossy = capture(&lossy_home);
+        for path in [&path, &fallback_path] {
+            std::fs::write(path, b"changed account").unwrap();
+        }
+        assert_eq!(original, capture(&home));
+        assert_ne!(lossy, capture(&lossy_home));
+
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let path = home.join(".grok/config.toml");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"first account").unwrap();
+            let original = capture(&home);
+            std::fs::write(path, b"changed account").unwrap();
+            assert_ne!(original, capture(&home));
+        }
     }
 
     #[cfg(windows)]
