@@ -53,6 +53,15 @@ pub enum ToolsRejected {
     Plain(Option<PromptUpdate>),
 }
 
+/// Scheduling decision after one assistant message and its tool results.
+#[derive(Debug, Default)]
+pub enum TurnDecision {
+    #[default]
+    Default,
+    Stop,
+    Continue(Vec<RuntimeMessage>),
+}
+
 pub trait SessionPolicy: Send {
     fn start<'a>(
         &'a mut self,
@@ -119,12 +128,38 @@ pub trait SessionPolicy: Send {
 
     fn context_rejected(&mut self, _phase: &str, _progress: &dyn PolicyProgress) {}
 
+    /// Appends canonical context after input admission, before preparing a request view.
     fn before_step(&mut self, _run: RunSnapshot<'_>) -> Vec<RuntimeMessage> {
         Vec::new()
     }
 
-    fn before_finish(&mut self, _run: RunSnapshot<'_>) -> Option<RuntimeMessage> {
-        None
+    /// Edits the next request without changing canonical history.
+    fn prepare_request<'a>(
+        &'a mut self,
+        _run: RunSnapshot<'a>,
+        _request: &'a mut super::provider_runtime::ModelCall,
+        _control: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Returns the temporary context sent to the model. The returned view is not persisted.
+    fn transform_context<'a>(
+        &'a mut self,
+        history: &'a [RuntimeMessage],
+        _control: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
+        Box::pin(async move { Ok(history.to_vec()) })
+    }
+
+    /// Runs once after each complete assistant/tool turn, including tool rounds.
+    /// Default follows normal scheduling; Continue appends messages and requests another turn.
+    fn finish_turn<'a>(
+        &'a mut self,
+        _run: RunSnapshot<'a>,
+        _control: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
+        Box::pin(async { Ok(TurnDecision::Default) })
     }
 }
 

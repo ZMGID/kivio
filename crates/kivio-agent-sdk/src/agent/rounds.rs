@@ -1,4 +1,5 @@
 use super::content::{AgentToolCall, AgentToolStatus};
+use super::error::AgentFailure;
 use super::history::RuntimeMessage;
 use crate::model::{FinishKind, MessagePart, ModelMessage, ModelRole};
 
@@ -21,6 +22,7 @@ pub(crate) const MAX_PARALLEL_TOOL_CALLS_PER_ROUND: usize = 12;
 pub(crate) enum ToolRoundOutcome {
     /// The round completed; the skeleton continues to the next planning round.
     Continue,
+    Failed(AgentFailure),
     /// The round was cancelled mid-flight; done("cancelled") was emitted and a
     /// final result built. The skeleton returns it.
     Cancelled(AgentRunResult),
@@ -83,6 +85,9 @@ pub(crate) async fn run_tool_round(
     state.runtime_messages.extend(responses.iter().cloned());
     state.generated_api_messages.extend(responses);
     state.tool_records.extend(round_result.tool_records);
+    if let Some(failure) = round_result.failure {
+        return ToolRoundOutcome::Failed(failure);
+    }
     if round_cancelled {
         return ToolRoundOutcome::Cancelled(cancelled_tool_round_run_result(
             &state.planning_reasoning_parts,
@@ -107,6 +112,7 @@ pub struct ToolRoundResult {
     pub response_messages: Vec<ModelMessage>,
     pub tool_records: Vec<AgentToolCall>,
     pub cancelled: bool,
+    pub failure: Option<AgentFailure>,
 }
 
 struct ToolExecutionResult {
@@ -114,12 +120,14 @@ struct ToolExecutionResult {
     record: Option<AgentToolCall>,
     cancelled: bool,
     follow_up_messages: Vec<ModelMessage>,
+    failure: Option<AgentFailure>,
 }
 
 #[derive(Default)]
 struct ToolMessages {
     results: Vec<ModelMessage>,
     follow_ups: Vec<ModelMessage>,
+    failure: Option<AgentFailure>,
 }
 
 impl ToolMessages {
@@ -174,13 +182,14 @@ pub async fn execute_tool_round(
             response_messages: response_messages.finish(),
             tool_records,
             cancelled: false,
+            failure: None,
         };
     }
 
     let mut response_messages = ToolMessages::default();
     let mut tool_records = Vec::new();
     let mut parallel_batch: Vec<ExecutableToolCall<'_>> = Vec::new();
-    let mut cancelled = false;
+    let mut stopped = false;
 
     let mut tool_calls = tool_calls.into_iter();
     while let Some(tool_call) = tool_calls.next() {
@@ -195,7 +204,7 @@ pub async fn execute_tool_round(
             )
             .await
             {
-                cancelled = true;
+                stopped = true;
                 push_cancelled_tool_call(
                     host,
                     &ctx,
@@ -237,7 +246,7 @@ pub async fn execute_tool_round(
             )
             .await
             {
-                cancelled = true;
+                stopped = true;
                 push_cancelled_tool_call(
                     host,
                     &ctx,
@@ -277,7 +286,7 @@ pub async fn execute_tool_round(
                 )
                 .await
                 {
-                    cancelled = true;
+                    stopped = true;
                     push_cancelled_tool_calls(
                         host,
                         &ctx,
@@ -302,7 +311,7 @@ pub async fn execute_tool_round(
         )
         .await
         {
-            cancelled = true;
+            stopped = true;
             push_cancelled_tool_call(
                 host,
                 &ctx,
@@ -323,7 +332,7 @@ pub async fn execute_tool_round(
         }
         let result = execute_serial_tool_call(host, executor, &ctx, tool, tool_call).await;
         if push_tool_execution_result(result, &mut response_messages, &mut tool_records) {
-            cancelled = true;
+            stopped = true;
             push_cancelled_tool_calls(
                 host,
                 &ctx,
@@ -336,8 +345,8 @@ pub async fn execute_tool_round(
         }
     }
 
-    if !cancelled {
-        cancelled = flush_parallel_batch(
+    if !stopped {
+        stopped = flush_parallel_batch(
             &mut parallel_batch,
             &mut response_messages,
             &mut tool_records,
@@ -348,10 +357,12 @@ pub async fn execute_tool_round(
         .await;
     }
 
+    let failure = response_messages.failure.take();
     ToolRoundResult {
         response_messages: response_messages.finish(),
         tool_records,
-        cancelled,
+        cancelled: stopped && failure.is_none(),
+        failure,
     }
 }
 
@@ -361,6 +372,10 @@ fn push_tool_execution_result(
     tool_records: &mut Vec<AgentToolCall>,
 ) -> bool {
     let cancelled = result.cancelled;
+    if response_messages.failure.is_none() {
+        response_messages.failure = result.failure;
+    }
+    let stopped = cancelled || response_messages.failure.is_some();
     if let Some(record) = result.record {
         tool_records.push(record);
     }
@@ -368,7 +383,7 @@ fn push_tool_execution_result(
     response_messages
         .follow_ups
         .extend(result.follow_up_messages);
-    cancelled
+    stopped
 }
 
 async fn flush_parallel_batch(
@@ -383,23 +398,29 @@ async fn flush_parallel_batch(
         return false;
     }
 
-    let mut cancelled = false;
+    let mut stopped = false;
     while !batch.is_empty() {
         let limit = batch.len().min(MAX_PARALLEL_TOOL_CALLS_PER_ROUND);
         let mut chunk = batch.drain(..limit).collect::<Vec<_>>();
         let results = execute_parallel_chunk(host, executor, ctx, &mut chunk).await;
         for result in results {
-            cancelled |= push_tool_execution_result(result, response_messages, tool_records);
+            stopped |= push_tool_execution_result(result, response_messages, tool_records);
         }
-        if cancelled {
+        if stopped {
             for item in batch.drain(..) {
-                let result = cancelled_tool_result(host, ctx, &item.call, Some(item.tool));
+                let result = not_executed_tool_result(
+                    host,
+                    ctx,
+                    &item.call,
+                    Some(item.tool),
+                    response_messages.failure.as_ref(),
+                );
                 push_tool_execution_result(result, response_messages, tool_records);
             }
             break;
         }
     }
-    cancelled
+    stopped
 }
 
 async fn execute_parallel_chunk(
@@ -462,23 +483,24 @@ async fn execute_tool_call_result(
         &tool_call_id,
         &tool.label.name,
     );
-    let (record, tool_content, follow_up_messages) =
-        execute_tool_call(host, executor, &execution_ctx, tool, tool_call).await;
+    let result = execute_tool_call(host, executor, &execution_ctx, tool, tool_call).await;
+    let record = result.record;
     lifecycle.cancelled = matches!(record.status, AgentToolStatus::Cancelled);
-    let cancelled = matches!(record.status, AgentToolStatus::Cancelled);
+    let cancelled = matches!(record.status, AgentToolStatus::Cancelled) || !host.control.active();
     ToolExecutionResult {
         response_message: ModelMessage {
             role: ModelRole::Tool,
             content: vec![MessagePart::ToolResult {
                 tool_call_id: tool_call_id.clone(),
-                content: tool_content,
+                content: result.content,
                 is_error: !matches!(record.status, AgentToolStatus::Success),
                 artifacts: record.artifacts.clone(),
             }],
         },
         record: Some(record),
         cancelled,
-        follow_up_messages,
+        follow_up_messages: result.follow_up_messages,
+        failure: result.failure,
     }
 }
 
@@ -504,16 +526,28 @@ fn push_cancelled_tool_call(
     tool_records: &mut Vec<AgentToolCall>,
 ) {
     let tool = match_tool_call(tools, &tool_call.function_name);
-    let result = cancelled_tool_result(host, ctx, &tool_call, tool);
+    let result = not_executed_tool_result(
+        host,
+        ctx,
+        &tool_call,
+        tool,
+        response_messages.failure.as_ref(),
+    );
     push_tool_execution_result(result, response_messages, tool_records);
 }
 
-fn cancelled_tool_result(
+fn not_executed_tool_result(
     host: &super::context::AgentContext<'_>,
     ctx: &ToolRoundContext<'_>,
     tool_call: &PendingToolCall,
     tool: Option<&ToolDefinition>,
+    failure: Option<&AgentFailure>,
 ) -> ToolExecutionResult {
+    let reason = if failure.is_some() {
+        "Tool call skipped because a previous hook failed"
+    } else {
+        "Tool call cancelled"
+    };
     let now = chrono::Local::now().timestamp();
     let record = AgentToolCall {
         id: tool_call.id.clone(),
@@ -525,10 +559,14 @@ fn cancelled_tool_result(
             .unwrap_or_else(|| "unknown".to_string()),
         server_id: tool.and_then(|tool| tool.label.server_id.clone()),
         arguments: tool_call.arguments_raw.clone(),
-        status: AgentToolStatus::Cancelled,
+        status: if failure.is_some() {
+            AgentToolStatus::Skipped
+        } else {
+            AgentToolStatus::Cancelled
+        },
         output: None,
         output_limit: None,
-        error: Some("Tool call cancelled".to_string()),
+        error: Some(reason.to_string()),
         duration_ms: Some(0),
         started_at: Some(now),
         completed_at: Some(now),
@@ -540,10 +578,11 @@ fn cancelled_tool_result(
     };
     host.tool_updated(&record);
     ToolExecutionResult {
-        response_message: tool_error_message(tool_call.id.clone(), "Tool call cancelled"),
+        response_message: tool_error_message(tool_call.id.clone(), reason),
         record: Some(record),
-        cancelled: true,
+        cancelled: failure.is_none(),
         follow_up_messages: Vec::new(),
+        failure: None,
     }
 }
 
@@ -564,6 +603,7 @@ fn unknown_or_disabled_tool_result(
             record: Some(record),
             cancelled: false,
             follow_up_messages: Vec::new(),
+            failure: None,
         };
     }
 
@@ -592,6 +632,7 @@ fn unknown_or_disabled_tool_result(
         record,
         cancelled: false,
         follow_up_messages: Vec::new(),
+        failure: None,
     }
 }
 
@@ -663,6 +704,7 @@ fn invalid_tool_arguments_result(
         record: Some(record),
         cancelled: false,
         follow_up_messages: Vec::new(),
+        failure: None,
     }
 }
 
@@ -694,6 +736,7 @@ fn truncated_tool_call_result(
         record: Some(record),
         cancelled: false,
         follow_up_messages: Vec::new(),
+        failure: None,
     }
 }
 
@@ -735,6 +778,7 @@ mod tests {
             record: None,
             cancelled: false,
             follow_up_messages: vec![image_msg.clone()],
+            failure: None,
         };
         let mut response_messages = ToolMessages::default();
         let mut tool_records = Vec::new();
@@ -758,6 +802,7 @@ mod tests {
             record: None,
             cancelled: false,
             follow_up_messages: Vec::new(),
+            failure: None,
         };
         let mut response_messages = ToolMessages::default();
         let mut tool_records = Vec::new();
@@ -779,6 +824,7 @@ mod tests {
                     response_message: tool_error_message(id.into(), id),
                     record: None,
                     cancelled: false,
+                    failure: None,
                     follow_up_messages: if id == "first" {
                         vec![follow_up.clone()]
                     } else {

@@ -20,6 +20,13 @@ pub enum AgentStreamPolicy {
     SynthesisDeferEmpty,
 }
 
+/// Optional bounds for a run. Provider transport retries are not model steps.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunLimits {
+    pub max_model_steps: Option<std::num::NonZeroU32>,
+    pub timeout: Option<std::time::Duration>,
+}
+
 #[derive(Clone)]
 pub struct AgentRunConfig<'a> {
     pub provider_runtime: &'a dyn super::provider_runtime::ModelRuntime,
@@ -38,6 +45,7 @@ pub struct AgentRunConfig<'a> {
     pub capabilities: crate::model::ModelCapabilities,
     pub initial_cache_usage: Option<(u64, u64)>,
     pub report_context: bool,
+    pub limits: RunLimits,
 }
 
 impl AgentRunConfig<'_> {
@@ -46,6 +54,14 @@ impl AgentRunConfig<'_> {
         call: &super::provider_runtime::ModelCall,
     ) -> Result<(), crate::model::ModelError> {
         use crate::model::{MessagePart, ModelError, ModelErrorKind, ToolChoice};
+        let unknown = crate::model::ModelCapabilities::default();
+        let capabilities = call.capabilities.as_ref().unwrap_or_else(|| {
+            if call.provider_id == self.provider_id && call.model == self.model {
+                &self.capabilities
+            } else {
+                &unknown
+            }
+        });
         let tools_enabled = call.options.tool_choice != ToolChoice::None;
         let native_tools = call
             .options
@@ -58,7 +74,7 @@ impl AgentRunConfig<'_> {
             })
         });
         if tools_enabled
-            && self.capabilities.tools == Some(false)
+            && capabilities.tools == Some(false)
             && (!call.tools.is_empty() || native_functions)
         {
             return Err(ModelError::with_kind(
@@ -71,7 +87,7 @@ impl AgentRunConfig<'_> {
             .thinking_level
             .as_deref()
             .is_some_and(|level| !matches!(level, "none" | "off"));
-        if self.capabilities.reasoning == Some(false) && reasoning {
+        if capabilities.reasoning == Some(false) && reasoning {
             return Err(ModelError::with_kind(
                 "Selected model does not support reasoning",
                 ModelErrorKind::InvalidRequest,
@@ -86,7 +102,7 @@ impl AgentRunConfig<'_> {
             })
         });
         if tools_enabled
-            && self.capabilities.builtin_web_search == Some(false)
+            && capabilities.builtin_web_search == Some(false)
             && (call.options.builtin_web_search || native_search)
         {
             return Err(ModelError::with_kind(
@@ -94,7 +110,7 @@ impl AgentRunConfig<'_> {
                 ModelErrorKind::InvalidRequest,
             ));
         }
-        if self.capabilities.vision == Some(false)
+        if capabilities.vision == Some(false)
             && call
                 .history
                 .iter()
@@ -129,6 +145,7 @@ impl AgentRunConfig<'_> {
         super::provider_runtime::ModelCall {
             provider_id: self.provider_id.clone(),
             model: self.model.clone(),
+            capabilities: None,
             history,
             tools,
             delivery,
@@ -178,4 +195,7 @@ pub struct AgentRunResult {
     pub compacted: bool,
     /// Generated image payloads accumulated during this run. The host owns persistence.
     pub images: Vec<crate::model::GeneratedImageData>,
+    /// Inputs taken from the host but not consumed, in original queue order.
+    pub pending_steering: Vec<super::steering::SteeringMessage>,
+    pub pending_follow_up: Vec<super::steering::SteeringMessage>,
 }

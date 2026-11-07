@@ -455,6 +455,7 @@ mod anonymous_http_tests {
                         agent_runtime::AppAgentModel::new(&state, &provider, 1)
                             .generate(
                                 ModelCall {
+                                    capabilities: None,
                                     provider_id: provider.id.clone(),
                                     model: "local-model".into(),
                                     history: vec![RuntimeMessage::text(ModelRole::User, "hello")],
@@ -546,6 +547,7 @@ mod anonymous_http_tests {
         let result = agent_runtime::AppAgentModel::new(&state, &provider, 1)
             .generate(
                 ModelCall {
+                    capabilities: None,
                     provider_id: provider.id.clone(),
                     model: "local-model".into(),
                     history: vec![RuntimeMessage::text(ModelRole::User, "hello")],

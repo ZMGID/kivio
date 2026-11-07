@@ -10,8 +10,8 @@ use kivio_agent_sdk::{
         control::{AgentRunControl, AgentRunHandle, InputAdmission, StopAdmission},
         events::{AgentEvent, AgentEventKind, AgentRunIdentity, EventDelivery, InputKind},
         execute::{
-            execute_tool_call, limit_tool_text_for_model, PreparedToolCall, ToolPreparation,
-            ToolProgress,
+            execute_tool_call, limit_tool_text_for_model, PreparedToolCall, ToolCallResult,
+            ToolPreparation, ToolProgress, ToolResultUpdate,
         },
         host::{AgentHost, AgentHostFuture, SpeculativeTaskScope},
         rounds::{execute_tool_round, ToolRoundContext},
@@ -169,7 +169,12 @@ async fn static_registration_generates_schema_and_returns_typed_output_after_aut
     let host = Host;
     let sink = |_: &AgentEvent<'_>| EventDelivery::Accepted;
     let host = AgentContext::new(&host, &sink, AgentRunHandle::new(identity(), &host));
-    let (record, content, follow_ups) = execute_tool_call(
+    let ToolCallResult {
+        record,
+        content,
+        follow_up_messages: follow_ups,
+        ..
+    } = execute_tool_call(
         &host,
         &registry,
         &context(),
@@ -224,7 +229,11 @@ async fn schema_and_authorization_rejections_never_execute_the_static_tool() {
             EventDelivery::Accepted
         };
         let host = AgentContext::new(&host, &sink, AgentRunHandle::new(identity(), &host));
-        let (record, _, follow_ups) = execute_tool_call(
+        let ToolCallResult {
+            record,
+            follow_up_messages: follow_ups,
+            ..
+        } = execute_tool_call(
             &host,
             &registry,
             &context(),
@@ -251,17 +260,17 @@ struct Dynamic {
     speculation: AtomicUsize,
 }
 impl ToolExecutor for Dynamic {
-    fn prepare<'a>(
+    fn before_tool_call<'a>(
         &'a self,
         _: &'a ToolProgress<'a>,
         _: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
-    ) -> ToolFuture<'a, ToolPreparation> {
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
         Box::pin(async move {
             assert_eq!(tool.model.input_schema, json!(false));
-            ToolPreparation::Ready(PreparedToolCall {
+            Ok(ToolPreparation::Ready(PreparedToolCall {
                 record,
                 arguments: call.arguments,
                 timeout_ms: None,
@@ -269,7 +278,7 @@ impl ToolExecutor for Dynamic {
                 output_limit: Some(2),
                 drain_on_cancel: true,
                 feedback: vec!["hook".into()],
-            })
+            }))
         })
     }
     fn call<'a>(
@@ -284,19 +293,22 @@ impl ToolExecutor for Dynamic {
             Ok(ToolOutput::text("dynamic output"))
         })
     }
-    fn after<'a>(
+    fn after_tool_call<'a>(
         &'a self,
         _: &'a ToolProgress<'a>,
         _: &'a ToolExecutionContext<'a>,
         _: &'a ToolDefinition,
         _: Value,
-        _: &'a str,
+        content: &'a str,
         feedback: Vec<String>,
-    ) -> ToolFuture<'a, String> {
+    ) -> ToolFuture<'a, Result<ToolResultUpdate, String>> {
         Box::pin(async move {
             self.after.fetch_add(1, Ordering::SeqCst);
             assert_eq!(feedback, vec!["hook"]);
-            " feedback".into()
+            Ok(ToolResultUpdate {
+                content: Some(format!("{content} feedback")),
+                follow_up_messages: None,
+            })
         })
     }
     fn unknown_feedback(&self, _: &str) -> Option<String> {

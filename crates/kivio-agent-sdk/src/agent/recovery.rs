@@ -85,13 +85,12 @@ pub(crate) async fn stream_with_truncation_recovery(
 ) -> Result<crate::model::GenerateOutput, AgentFailure> {
     let mut attempted = false;
     loop {
-        env.config
-            .validate_call(&request.call)
-            .map_err(|error| AgentFailure::model("request", error))?;
+        let mut call = request.call.clone();
+        super::loop_::prepare_model_request(env, state, session, &mut call).await?;
         let result = super::planning::stream_model_call(
             env.config.provider_runtime,
             env.host,
-            request.call.clone(),
+            call,
             request.policy,
             request.text_segment.clone(),
             request.reasoning_segment.clone(),

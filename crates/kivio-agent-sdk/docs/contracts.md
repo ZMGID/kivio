@@ -20,13 +20,47 @@ The existing hosts keep their admission and persistence owners while sharing the
 
 The adapter saves the supplied partial draft before rendering a structured core failure into the application's existing error path. The SDK retains the machine-readable cause; product retry and error presentation stay in the application.
 
+## Owned AgentSession
+
+`AgentSessionConfig::new(Arc<dyn ModelRuntime>, model)` supplies an in-memory host, empty registry, and `NoSessionPolicy`. The session owns its history and each run's identity, queues, subscriptions, and cancellation handle. Desktop, automation, and OMP keep their existing lower-level owners shown above; they do not create a second session store or capacity manager.
+
+`prompt` accepts a nonempty user message, appends it on successful admission, and starts work immediately. `continue_run` accepts history ending in a user message or a complete tool round. Empty history, an assistant tail, and incomplete or mismatched tool rounds are rejected. Neither operation re-executes historical tool results. An active session rejects another run with `Admission(Busy)` before changing history.
+
+Session states are `Idle`, `Running`, `StopRequested`, and `Finishing`. `abort` only requests stop. `wait_inactive` captures the current generation when called and waits for core cleanup, `AgentHost::commit_run`, and release of session admission. A later run cannot prolong that wait. Keep the Tokio runtime alive through cleanup; runtime shutdown and process termination cannot guarantee asynchronous draining or persistence.
+
+`SessionRun` is the awaitable result. Dropping a pending waiter requests cancellation; the owned worker still drains managed tools and commits the result. Dropping the session also requests stop. `commit_run` defaults to no persistence. Its failure returns `Failed { cause, partial }` with a failed status and preserves the completed in-memory history. Core `RunEnded` describes the loop, not successful storage. Hosts must return commit errors instead of hiding them.
+
+`history()` returns the admitted input plus the last completed core snapshot; it does not expose each streaming mutation. `steer` and `follow_up` target the current running generation. Repeated IDs return `Duplicate` across both queues in that generation. After settlement, `unconsumed_inputs` and `take_unconsumed_inputs` expose inputs that were accepted but not consumed, including inputs held in the core queue when a hook fails. These inputs are never silently submitted to the next run.
+
+`subscribe` returns a guard; dropping it unregisters the subscriber. `Closed` or a panicking subscriber detaches that subscriber without cancelling execution. Callbacks run outside the session-state lock, so reading `history()` inside one is allowed. Delivery remains synchronous and ordered with no unbounded queue.
+
+## Execution hooks and limits
+
+Session configuration owns the policy and registry used by a run. `with_policy` configures request and turn hooks; `set_policy` only succeeds while idle. Tool hooks use the existing registry executor. Advanced hosts pass the same interfaces directly to the loop. There is no second plugin dispatcher.
+
+| Hook | Result and ordering |
+| --- | --- |
+| `SessionPolicy::prepare_request` | Mutates only the next `ModelCall`, after input admission and before projection. Model/provider changes use explicitly supplied capabilities or unknown capabilities, never the previous model's assumptions. |
+| `SessionPolicy::transform_context` | Returns the complete temporary request history. It does not mutate canonical history or commit a compaction. |
+| `ToolExecutor::before_tool_call` | Trusted host boundary for normalization, policy, final validation and authorization. `Ready` permits execution; `Complete` records a refusal or other final result without executing. |
+| `ToolExecutor::after_tool_call` | `ToolResultUpdate` replaces only supplied model-facing text or the entire follow-up list. `None` retains the original field. Raw records, structured execution output, errors and artifacts remain facts. |
+| `SessionPolicy::finish_turn` | Runs after each completed assistant/tool turn. `Default` follows normal scheduling, `Continue(messages)` appends messages and schedules another turn, and `Stop` ends the run. It cannot revive cancellation or bypass limits. |
+
+The order is input admission, request preparation, context transformation, existing `request_from_history` conversion, provider generation, tool before/call/after, then turn decision. Conversion gathers system text and excludes opaque source metadata; native provider blocks still obey the effective provider/model replay rules. No separate `convertToLlm` hook duplicates this boundary.
+
+Hooks are asynchronous and receive the current cancellation handle. Cancellation discards late modifications and prevents new tool execution. Returned hook errors become `AgentFailure::Hook`, retain paired history and completed effects, and use normal cleanup. After-hook failure does not rerun a tool. Different tools retain the existing parallel execution rules; one tool's before/call/after phases remain ordered. Managed tool cleanup is awaited even after cancellation or a deadline.
+
+`SessionPolicy::start` and `input` retain workflow injection; `prepare_context` retains explicit reset/compaction and checkpoint coordination; recovery remains with its existing owner. The application moves transient image pruning into request projection. Todo reminders remain canonical messages admitted through the existing `before_step` lifecycle operation, preserving cadence across runs and queued follow-ups. Todo final checks use `finish_turn`. `ContextUpdate::SendView` remains an explicit history reset, distinct from `transform_context`'s temporary view. `before_step` remains the synchronous canonical-input admission operation; it is not interchangeable with the temporary `prepare_request` view. The old `before_finish` method is removed. Executors migrate `prepare` to `before_tool_call` and `after` to `after_tool_call` with explicit result fields.
+
+`RunLimits` optionally sets `max_model_steps: NonZeroU32` and `timeout: Duration`. Both are unlimited by default to preserve existing desktop behavior. Step limits cover loop-owned planning, synthesis, and recovery model requests; a custom policy must bound any independent I/O it performs. Exhaustion returns `AgentFailure::LimitExceeded` and partial history. The deadline requests cancellation and awaits managed cleanup, so elapsed wall time can exceed the deadline while cleanup finishes. It is not a durable execution checkpoint or an automatic retry policy.
+
 ## Tool registration and authorization
 
 `AgentRunConfig.tools` advertises model-visible definitions. Each `ToolDefinition` supplies a schema and execution metadata. The core matches calls to registered definitions and reports unknown or blocked tools. A schema describes valid arguments. It does not grant permission to execute them.
 
-`ToolExecutor::prepare` is the host's authorization and validation boundary. The host selects an authorization policy explicitly, parses untrusted model arguments, and validates them before returning `ToolPreparation::Ready`. The echo example allows exactly its registered echo tool and calls `tools::schema::validate_arguments` before execution. It has no desktop approval dialog and no filesystem, shell, or network tools.
+`ToolExecutor::before_tool_call` is the host's authorization and validation boundary. The host selects an authorization policy explicitly, parses untrusted model arguments, and validates them before returning `ToolPreparation::Ready`. The echo example allows exactly its registered echo tool and calls `tools::schema::validate_arguments` before execution. It has no desktop approval dialog and no filesystem, shell, or network tools.
 
-An executor can await host approval in `prepare`. The SDK event observer does not grant that approval. Missing or closed event observers cannot approve tools. When `prepare` returns `ToolPreparation::Complete`, the core publishes the final record exactly once. Executors must not publish that terminal update themselves. A rejected call produces feedback for the model without calling the tool implementation.
+An executor can await host approval in `before_tool_call`. The SDK event observer does not grant that approval. Missing or closed event observers cannot approve tools. When `before_tool_call` returns `ToolPreparation::Complete`, the core publishes the final record exactly once. Executors must not publish that terminal update themselves. A rejected call produces feedback for the model without calling the tool implementation.
 
 Tool authors own validation that depends on real resources, such as permitted paths and target state. Timeouts and cancellation do not undo effects already performed by a tool.
 
@@ -36,7 +70,7 @@ The host supplies a conversation ID, run ID, result message ID, and generation. 
 
 A handle starts at most one core invocation. Reusing a running or finished handle returns an error. A fresh invocation uses a fresh handle and a control bound to that invocation. The example allocates a fresh mailbox for continuation. A host that reuses its own mailbox must isolate generations and clear unconsumed input during cancellation and cleanup.
 
-`steer` and `follow_up` return `InputAdmission::Accepted`, `Inactive`, or `Unsupported`. Accepted means the host queued the input. It does not mean the core consumed or persisted it. Input admitted near completion may remain unconsumed. Finished handles reject new input and stop requests.
+`steer` and `follow_up` return `InputAdmission::Accepted`, `Inactive`, `Unsupported`, or `Duplicate`. Accepted means the host queued the input. It does not mean the core consumed or persisted it. Input admitted near completion may remain unconsumed. Finished handles reject new input and stop requests.
 
 Steer is consumed at step boundaries after prior tool work and before the next model step. Follow-up is consumed at an answer boundary after the current answer. These boundaries also apply when no tools are registered or the provider rejects tools. Both inject one message per applicable boundary. The host-supplied message ID survives in `ContentKind::Input`. A consumed input appears once in the ordered content blocks and replay history. The constructor `SteeringMessage::new` trims text, rejects empty input, and retains at most 4,000 Unicode characters.
 
@@ -50,7 +84,7 @@ Within one invocation, sequence numbers increase strictly. `RunStarted` precedes
 
 When an adapter retries a visible stream, `AttemptDiscarded` identifies text, reasoning, blocks, and tools withdrawn from the failed attempt. A consumer that renders tentative output must apply that withdrawal before rendering the next attempt. The standalone HTTP provider has no SDK-level retry loop. Its supplied HTTP client owns transport retries and redirects.
 
-`RunEnded` is emitted once after paired inner scopes end. No later facts reach the sink. Its outcome is `Completed`, `Recovered`, `CompactionBlocked`, `Cancelled`, `Failed(AgentFailure)`, or `Dropped`. Returned status and terminal event use the same completion reason.
+`RunEnded` is emitted once after paired inner scopes end. No later facts reach the sink. Its outcome is `Completed`, `Recovered`, `CompactionBlocked`, `Cancelled`, `Failed(AgentFailure)`, or `Dropped`. The core returned status and terminal event use the same completion reason. An outer session commit can fail afterward and changes the session result to a host failure; it does not rewrite the already emitted core event.
 
 Core completion does not report successful outer persistence. The host awaits the loop, writes the final result, finishes resource cleanup, and only then releases its run slot or publishes its own durable completion notification.
 

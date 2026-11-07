@@ -124,6 +124,18 @@ pub fn import_history(messages: Vec<Value>) -> Vec<RuntimeMessage> {
         .collect()
 }
 
+impl From<String> for RuntimeMessage {
+    fn from(text: String) -> Self {
+        Self::text(ModelRole::User, text)
+    }
+}
+
+impl From<&str> for RuntimeMessage {
+    fn from(text: &str) -> Self {
+        Self::from(text.to_owned())
+    }
+}
+
 pub fn export_history(messages: &[RuntimeMessage]) -> Vec<Value> {
     messages
         .iter()

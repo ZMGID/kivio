@@ -11,10 +11,27 @@ pub enum AgentFailure {
         operation: &'static str,
         message: String,
     },
+    Hook {
+        hook: &'static str,
+        message: String,
+    },
+    LimitExceeded {
+        limit: RunLimit,
+    },
     InvalidOutput(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunLimit {
+    ModelSteps,
+    Timeout,
+}
+
 impl AgentFailure {
+    pub(crate) fn hook(hook: &'static str) -> impl FnOnce(String) -> Self {
+        move |message| Self::Hook { hook, message }
+    }
+
     pub(crate) fn host(operation: &'static str) -> impl FnOnce(String) -> Self {
         move |message| Self::Host { operation, message }
     }
@@ -28,7 +45,13 @@ impl std::fmt::Display for AgentFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Model { source, .. } => source.fmt(f),
-            Self::Host { message, .. } | Self::InvalidOutput(message) => f.write_str(message),
+            Self::Host { message, .. }
+            | Self::Hook { message, .. }
+            | Self::InvalidOutput(message) => f.write_str(message),
+            Self::LimitExceeded { limit } => f.write_str(match limit {
+                RunLimit::ModelSteps => "Agent model step limit exceeded",
+                RunLimit::Timeout => "Agent run timeout exceeded",
+            }),
         }
     }
 }
@@ -45,6 +68,10 @@ impl std::error::Error for AgentFailure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentAdmissionError {
     IdentityMismatch,
+    Busy,
+    EmptyInput,
+    InvalidContinuation,
+    NoRuntime,
     Control(RunStartError),
 }
 
@@ -64,6 +91,18 @@ impl std::fmt::Display for AgentRunError {
                 f.write_str("Agent run identity does not match its control handle")
             }
             Self::Admission(AgentAdmissionError::Control(error)) => error.fmt(f),
+            Self::Admission(AgentAdmissionError::Busy) => {
+                f.write_str("Agent session is already running")
+            }
+            Self::Admission(AgentAdmissionError::EmptyInput) => {
+                f.write_str("Agent prompt is empty")
+            }
+            Self::Admission(AgentAdmissionError::InvalidContinuation) => {
+                f.write_str("Agent history cannot be continued")
+            }
+            Self::Admission(AgentAdmissionError::NoRuntime) => {
+                f.write_str("Agent session requires a Tokio runtime")
+            }
             Self::Failed { cause, .. } => cause.fmt(f),
         }
     }

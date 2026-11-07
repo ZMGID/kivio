@@ -530,6 +530,7 @@ mod tests {
             &Completed,
             &context,
             ModelCall {
+                capabilities: None,
                 provider_id: String::new(),
                 model: String::new(),
                 history: Vec::new(),

@@ -321,7 +321,7 @@ pub(crate) async fn recover_synthesis(
     } else {
         "Chat synthesis recovery"
     };
-    let call = env.config.model_call(
+    let mut call = env.config.model_call(
         history,
         Vec::new(),
         crate::model::ToolChoice::None,
@@ -332,9 +332,7 @@ pub(crate) async fn recover_synthesis(
         host: env.host,
         report_context: display,
     };
-    env.config
-        .validate_call(&call)
-        .map_err(|error| AgentFailure::model("recovery", error))?;
+    super::loop_::prepare_model_request(env, state, session, &mut call).await?;
     let result = tokio::select! {
         result = env.config.provider_runtime.generate(call, &mut sink) => result,
         _ = env.host.control.wait_inactive() => Err(ModelError::with_kind("cancelled", ModelErrorKind::Cancelled)),

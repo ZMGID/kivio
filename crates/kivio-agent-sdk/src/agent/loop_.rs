@@ -1,5 +1,6 @@
 use super::content::AgentToolCall;
 use super::history::RuntimeMessage;
+use futures::FutureExt;
 
 use crate::tools::ToolDefinition;
 
@@ -23,6 +24,7 @@ pub(crate) struct LoopEnv<'a> {
     pub(crate) config: &'a AgentRunConfig<'a>,
     pub(crate) host: &'a super::context::AgentContext<'a>,
     pub(crate) executor: &'a dyn ToolExecutor,
+    deadline: Option<tokio::time::Instant>,
 }
 
 /// Mutable accumulators threaded through the loop phases.
@@ -35,6 +37,7 @@ pub(crate) struct RunState {
     pub(crate) planning_reasoning_parts: Vec<String>,
     pub(crate) segment_builder: SegmentBuilder,
     pub(crate) step_number: u8,
+    pub(crate) model_steps: u32,
     pub(crate) provider_tools_unsupported: bool,
     pub(crate) fallback_prompt: Option<super::session::PromptUpdate>,
     /// 空响应重试守门（一次）：抽风网关会间歇性返回 200 + 空正文（无文本无工具调用）。
@@ -152,6 +155,80 @@ impl RunState {
     }
 }
 
+/// One request boundary for streamed, collected and recovery calls.
+pub(crate) async fn prepare_model_request(
+    env: &LoopEnv<'_>,
+    state: &mut RunState,
+    session: &mut dyn super::session::SessionPolicy,
+    call: &mut super::provider_runtime::ModelCall,
+) -> Result<(), AgentFailure> {
+    if env.host.control.active()
+        && env
+            .deadline
+            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+    {
+        env.host.control.stop();
+        return Err(AgentFailure::LimitExceeded {
+            limit: super::error::RunLimit::Timeout,
+        });
+    }
+    let cancelled = || {
+        AgentFailure::model(
+            "request",
+            crate::model::ModelError::with_kind(
+                "cancelled",
+                crate::model::ModelErrorKind::Cancelled,
+            ),
+        )
+    };
+    if !env.host.control.active() {
+        return Err(cancelled());
+    }
+    if env
+        .config
+        .limits
+        .max_model_steps
+        .is_some_and(|max| state.model_steps >= max.get())
+    {
+        return Err(AgentFailure::LimitExceeded {
+            limit: super::error::RunLimit::ModelSteps,
+        });
+    }
+    tokio::select! {
+        biased;
+        _ = env.host.control.wait_inactive() => return Err(cancelled()),
+        prepared = session.prepare_request(state.snapshot(), call, env.host.control.clone()) =>
+            prepared.map_err(AgentFailure::hook("prepare_request"))?,
+    }
+    if !env.host.control.active() {
+        return Err(cancelled());
+    }
+    let history = tokio::select! {
+        biased;
+        _ = env.host.control.wait_inactive() => return Err(cancelled()),
+        history = session.transform_context(&call.history, env.host.control.clone()) =>
+            history.map_err(AgentFailure::hook("transform_context"))?,
+    };
+    if !env.host.control.active() {
+        return Err(cancelled());
+    }
+    if env
+        .deadline
+        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+    {
+        env.host.control.stop();
+        return Err(AgentFailure::LimitExceeded {
+            limit: super::error::RunLimit::Timeout,
+        });
+    }
+    call.history = history;
+    env.config
+        .validate_call(call)
+        .map_err(|error| AgentFailure::model("request", error))?;
+    state.model_steps = state.model_steps.saturating_add(1);
+    Ok(())
+}
+
 struct RunGuard<'a> {
     host: &'a super::context::AgentContext<'a>,
     outcome: super::events::AgentRunOutcome,
@@ -229,7 +306,34 @@ pub async fn run_agent_loop(
         host: &host,
         outcome: AgentRunOutcome::Dropped,
     };
-    let result = run_agent_loop_inner(config, &host, executor, session).await;
+    let deadline = config
+        .limits
+        .timeout
+        .and_then(|timeout| tokio::time::Instant::now().checked_add(timeout));
+    let running = run_agent_loop_inner(config, &host, executor, session, deadline);
+    tokio::pin!(running);
+    let result = if let Some(deadline) = deadline {
+        tokio::select! {
+            biased;
+            result = &mut running => result,
+            _ = tokio::time::sleep_until(deadline) => {
+                let timed_out = host.control.active();
+                if timed_out { host.control.stop(); }
+                let result = running.await;
+                if timed_out { timeout_result(result) } else { result }
+            }
+        }
+    } else {
+        running.await
+    };
+    let result = if host.control.active()
+        && deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+    {
+        host.control.stop();
+        timeout_result(result)
+    } else {
+        result
+    };
     guard.outcome = match &result {
         Ok(result) => match &result.status {
             super::types::AgentRunStatus::Cancelled => AgentRunOutcome::Cancelled,
@@ -244,14 +348,65 @@ pub async fn run_agent_loop(
     result
 }
 
+fn timeout_result(
+    result: Result<AgentRunResult, AgentRunError>,
+) -> Result<AgentRunResult, AgentRunError> {
+    let cause = AgentFailure::LimitExceeded {
+        limit: super::error::RunLimit::Timeout,
+    };
+    let mut partial = match result {
+        Ok(result) => result,
+        Err(AgentRunError::Failed { partial, .. }) => *partial,
+        Err(error) => return Err(error),
+    };
+    partial.status = super::types::AgentRunStatus::Failed(cause.clone());
+    Err(AgentRunError::Failed {
+        cause,
+        partial: Box::new(partial),
+    })
+}
+
 enum Answer {
     Planning(crate::model::GenerateOutput),
     Synthesis(SynthesisCompleted),
+    Recovered(AgentRunResult),
 }
 
 impl Answer {
+    fn message(&self) -> RuntimeMessage {
+        match self {
+            Self::Planning(output) => RuntimeMessage::model(output.replay_message()),
+            Self::Recovered(result) => {
+                RuntimeMessage::model(result.final_message.clone().unwrap_or_else(|| {
+                    super::stop::final_assistant_message(
+                        &result.content,
+                        result.reasoning.as_deref(),
+                    )
+                }))
+            }
+            Self::Synthesis(completed) => {
+                completed.generated_message.clone().unwrap_or_else(|| {
+                    RuntimeMessage::model(completed.replay.clone().unwrap_or_else(|| {
+                        super::stop::final_assistant_message(
+                            &completed.response,
+                            completed.response_reasoning.as_deref(),
+                        )
+                    }))
+                })
+            }
+        }
+    }
+
     fn absorb(self, state: &mut RunState) {
         let message = match self {
+            Self::Recovered(result) => {
+                RuntimeMessage::model(result.final_message.unwrap_or_else(|| {
+                    super::stop::final_assistant_message(
+                        &result.content,
+                        result.reasoning.as_deref(),
+                    )
+                }))
+            }
             Self::Planning(output) => RuntimeMessage::model(output.replay_message()),
             Self::Synthesis(completed) => {
                 if let Some(reasoning) = completed.response_reasoning.as_deref() {
@@ -280,6 +435,7 @@ impl Answer {
                 finalize_planning_final(state, output).map_err(AgentFailure::InvalidOutput)
             }
             Self::Synthesis(completed) => Ok(finalize_completed(state, completed)),
+            Self::Recovered(result) => Ok(result),
         }
     }
 
@@ -288,6 +444,15 @@ impl Answer {
         result.status = super::types::AgentRunStatus::Cancelled;
         Ok(attach_usage(result, state))
     }
+}
+
+// Early recovery builders own the accumulated facts; restore them before scheduling another turn.
+fn restore_completed_result(state: &mut RunState, result: &AgentRunResult) {
+    state.tool_records = result.tool_records.clone();
+    state.generated_api_messages = result.generated_history.clone();
+    state
+        .segment_builder
+        .append_existing_segments(result.segments.clone());
 }
 
 enum AnswerBoundary {
@@ -327,8 +492,10 @@ async fn admit_step(
     );
     if env.host.control.active() {
         let inputs = session.before_step(state.snapshot());
-        state.runtime_messages.extend(inputs.iter().cloned());
-        state.generated_api_messages.extend(inputs);
+        if env.host.control.active() {
+            state.runtime_messages.extend(inputs.iter().cloned());
+            state.generated_api_messages.extend(inputs);
+        }
     }
     Ok(())
 }
@@ -342,6 +509,36 @@ async fn answer_boundary(
 ) -> Result<AnswerBoundary, AgentFailure> {
     if !env.host.control.active() {
         return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
+    }
+    let mut history = state.runtime_messages.clone();
+    history.push(answer.message());
+    let decision = tokio::select! {
+        biased;
+        _ = env.host.control.wait_inactive() => return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?)),
+        decision = std::panic::AssertUnwindSafe(async {
+            session.finish_turn(super::session::RunSnapshot {
+                history: &history,
+                tools: &state.tools,
+                tool_records: &state.tool_records,
+            }, env.host.control.clone()).await
+        }).catch_unwind() => decision.unwrap_or_else(|_| Err("finish_turn panicked".into())),
+    };
+    if !env.host.control.active() {
+        return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
+    }
+    match decision {
+        Err(message) => {
+            answer.absorb(state);
+            return Err(AgentFailure::hook("finish_turn")(message));
+        }
+        Ok(super::session::TurnDecision::Continue(messages)) => {
+            answer.absorb(state);
+            state.runtime_messages.extend(messages.iter().cloned());
+            state.generated_api_messages.extend(messages);
+            return Ok(AnswerBoundary::Continue);
+        }
+        Ok(super::session::TurnDecision::Stop) => return Ok(AnswerBoundary::Finish(answer)),
+        Ok(super::session::TurnDecision::Default) => {}
     }
     let incoming = match env
         .host
@@ -370,8 +567,8 @@ async fn answer_boundary(
                 .generated_history
                 .extend(result.final_message.clone().map(RuntimeMessage::model));
         }
-        result
-            .history
+        state
+            .runtime_messages
             .extend(incoming.iter().map(|input| input.message.clone()));
         result.generated_history.extend(
             incoming
@@ -428,16 +625,6 @@ async fn answer_boundary(
         }
         return Ok(AnswerBoundary::Continue);
     }
-    let reminder = session.before_finish(state.snapshot());
-    if !env.host.control.active() {
-        return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
-    }
-    if let Some(reminder) = reminder {
-        answer.absorb(state);
-        state.runtime_messages.push(reminder.clone());
-        state.generated_api_messages.push(reminder);
-        return Ok(AnswerBoundary::Continue);
-    }
     Ok(AnswerBoundary::Finish(answer))
 }
 
@@ -446,6 +633,7 @@ async fn run_agent_loop_inner(
     host: &super::context::AgentContext<'_>,
     executor: &dyn ToolExecutor,
     session: &mut dyn super::session::SessionPolicy,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<AgentRunResult, AgentRunError> {
     let mut state = RunState {
         runtime_messages: std::mem::take(&mut config.runtime_messages),
@@ -456,6 +644,7 @@ async fn run_agent_loop_inner(
         planning_reasoning_parts: Vec::new(),
         segment_builder: SegmentBuilder::new(),
         step_number: 0,
+        model_steps: 0,
         provider_tools_unsupported: false,
         fallback_prompt: None,
         planning_empty_retried: false,
@@ -471,18 +660,24 @@ async fn run_agent_loop_inner(
         compaction_blocked: false,
         generated_images: Vec::new(),
     };
-    let result: Result<AgentRunResult, AgentFailure> = async {
+    let result: Result<AgentRunResult, AgentFailure> = std::panic::AssertUnwindSafe(async {
         let tool_loop_ran = !state.tools.is_empty();
-        let inputs = session
-            .start(state.snapshot(), host.control.clone())
-            .await
-            .map_err(AgentFailure::host("session.start"))?;
+        let inputs = tokio::select! {
+            biased;
+            _ = host.control.wait_inactive() => Vec::new(),
+            inputs = session.start(state.snapshot(), host.control.clone()) =>
+                inputs.map_err(AgentFailure::hook("start"))?,
+        };
+        if !host.control.active() {
+            return Ok(cancelled_run_result_from_state(&mut state));
+        }
         state.runtime_messages.extend(inputs.iter().cloned());
         state.generated_api_messages.extend(inputs);
         let env = LoopEnv {
             config: &config,
             host,
             executor,
+            deadline,
         };
         let mut round = 0u32;
         let planning_final = if tool_loop_ran {
@@ -496,7 +691,7 @@ async fn run_agent_loop_inner(
                     // Ok(cancelled_result) instead of a bare Err("cancelled") — the
                     // latter skipped persistence and dropped the whole turn.
                     let result = cancelled_run_result_from_state(&mut state);
-                    return Ok(attach_run_state(result, &mut state));
+                    return Ok(result);
                 }
 
                 // 本轮的 turn_start / message_start 由 guard 构造时发；turn_end / message_end
@@ -506,7 +701,7 @@ async fn run_agent_loop_inner(
                 admit_step(&env, &mut state, round, session).await?;
                 if !host.control.active() {
                     let result = cancelled_run_result_from_state(&mut state);
-                    return Ok(attach_run_state(result, &mut state));
+                    return Ok(result);
                 }
 
                 let planned = match planning_step(&env, &mut state, round, session).await? {
@@ -535,7 +730,23 @@ async fn run_agent_loop_inner(
                         return Ok(attach_usage(result, &mut state));
                     }
                     PlanningStepOutcome::Recovered(result) => {
-                        return Ok(attach_usage(result, &mut state));
+                        if result.status != super::types::AgentRunStatus::Recovered {
+                            return Ok(attach_usage(result, &mut state));
+                        }
+                        restore_completed_result(&mut state, &result);
+                        match answer_boundary(
+                            &env,
+                            &mut state,
+                            round,
+                            session,
+                            Answer::Recovered(result),
+                        )
+                        .await?
+                        {
+                            AnswerBoundary::Continue => continue,
+                            AnswerBoundary::Finish(answer) => break Some(answer),
+                            AnswerBoundary::Cancelled(result) => return Ok(result),
+                        }
                     }
                     PlanningStepOutcome::Cancelled(result) => {
                         return Ok(attach_usage(result, &mut state));
@@ -549,8 +760,29 @@ async fn run_agent_loop_inner(
                     ToolRoundOutcome::Continue => {
                         state.completed_tool_rounds += 1;
                     }
+                    ToolRoundOutcome::Failed(failure) => return Err(failure),
                     ToolRoundOutcome::Cancelled(result) => {
                         return Ok(attach_usage(result, &mut state));
+                    }
+                }
+                let decision = tokio::select! {
+                    biased;
+                    _ = host.control.wait_inactive() => super::session::TurnDecision::Default,
+                    decision = session.finish_turn(state.snapshot(), host.control.clone()) =>
+                        decision.map_err(AgentFailure::hook("finish_turn"))?,
+                };
+                if host.control.active() {
+                    match decision {
+                        super::session::TurnDecision::Default => {}
+                        super::session::TurnDecision::Continue(messages) => {
+                            state.runtime_messages.extend(messages.iter().cloned());
+                            state.generated_api_messages.extend(messages);
+                        }
+                        super::session::TurnDecision::Stop => {
+                            let mut result = cancelled_run_result_from_state(&mut state);
+                            result.status = super::types::AgentRunStatus::Completed;
+                            return Ok(result);
+                        }
                     }
                 }
                 // 本轮到此完整结束（turn_end 随 guard 落地），再落盘快照。
@@ -598,7 +830,7 @@ async fn run_agent_loop_inner(
         // synthesis.
         if !host.control.active() {
             let result = cancelled_run_result_from_state(&mut state);
-            return Ok(attach_run_state(result, &mut state));
+            return Ok(result);
         }
         let incoming = host
             .checkpoint_runtime(
@@ -636,20 +868,42 @@ async fn run_agent_loop_inner(
         loop {
             if !host.control.active() {
                 let result = cancelled_run_result_from_state(&mut state);
-                return Ok(attach_run_state(result, &mut state));
+                return Ok(result);
             }
             round = round.saturating_add(1);
             let _turn = HookTurnGuard::new(&host.events, round);
             admit_step(&env, &mut state, round, session).await?;
             if !host.control.active() {
                 let result = cancelled_run_result_from_state(&mut state);
-                return Ok(attach_run_state(result, &mut state));
+                return Ok(result);
             }
             let completed = match synthesis_step(&env, &mut state, session).await? {
-                SynthesisFlow::Early(result) => return Ok(attach_usage(result, &mut state)),
+                SynthesisFlow::Early(result) => {
+                    if result.status != super::types::AgentRunStatus::Recovered {
+                        return Ok(attach_usage(result, &mut state));
+                    }
+                    restore_completed_result(&mut state, &result);
+                    match answer_boundary(
+                        &env,
+                        &mut state,
+                        round,
+                        session,
+                        Answer::Recovered(result),
+                    )
+                    .await?
+                    {
+                        AnswerBoundary::Continue => continue,
+                        AnswerBoundary::Finish(answer) => {
+                            return answer
+                                .finish(&mut state)
+                                .map(|result| attach_usage(result, &mut state))
+                        }
+                        AnswerBoundary::Cancelled(result) => return Ok(result),
+                    }
+                }
                 SynthesisFlow::CancelledState => {
                     let result = cancelled_run_result_from_state(&mut state);
-                    return Ok(attach_run_state(result, &mut state));
+                    return Ok(result);
                 }
                 SynthesisFlow::Completed(completed) => completed,
             };
@@ -671,17 +925,26 @@ async fn run_agent_loop_inner(
                 AnswerBoundary::Cancelled(result) => return Ok(result),
             }
         }
-    }
-    .await;
-    result.or_else(|cause| {
-        let mut partial = cancelled_run_result_from_state(&mut state);
-        if !host.control.active() {
-            return Ok(attach_run_state(partial, &mut state));
-        }
-        partial.status = super::types::AgentRunStatus::Failed(cause.clone());
-        let partial = Box::new(attach_run_state(partial, &mut state));
-        Err(AgentRunError::Failed { cause, partial })
     })
+    .catch_unwind()
+    .await
+    .unwrap_or_else(|_| {
+        Err(AgentFailure::Host {
+            operation: "run_agent_loop.panic",
+            message: "Agent run panicked".into(),
+        })
+    });
+    result
+        .map(|result| attach_run_state(result, &mut state))
+        .or_else(|cause| {
+            let mut partial = cancelled_run_result_from_state(&mut state);
+            if !host.control.active() && !matches!(cause, AgentFailure::LimitExceeded { .. }) {
+                return Ok(attach_run_state(partial, &mut state));
+            }
+            partial.status = super::types::AgentRunStatus::Failed(cause.clone());
+            let partial = Box::new(attach_run_state(partial, &mut state));
+            Err(AgentRunError::Failed { cause, partial })
+        })
 }
 
 /// 把本轮累计的 provider usage 挂到运行结果上（finalize 构造器们不感知 usage）。
@@ -697,15 +960,21 @@ fn attach_usage(result: AgentRunResult, state: &mut RunState) -> AgentRunResult 
             .runtime_messages
             .push(RuntimeMessage::model(final_message));
     }
-    attach_run_state(result, state)
+    result
 }
 
 fn attach_run_state(mut result: AgentRunResult, state: &mut RunState) -> AgentRunResult {
+    result.history = std::mem::take(&mut state.runtime_messages);
     result.usage = state.usage.take();
     result.cache_pairs = state.cache_pairs.take();
     result.last_step_usage = state.last_step_usage.take();
-    result.history = std::mem::take(&mut state.runtime_messages);
     result.compacted = state.compacted;
-    result.images = std::mem::take(&mut state.generated_images);
+    result.images.append(&mut state.generated_images);
+    result
+        .pending_steering
+        .extend(state.pending_steering.drain(..));
+    result
+        .pending_follow_up
+        .extend(state.pending_follow_up.drain(..));
     result
 }

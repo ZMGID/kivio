@@ -58,10 +58,14 @@ pub(crate) async fn inject_steering_messages(
     state
         .pending_steering
         .extend(env.host.control.take_steering());
-    let Some(message) = state.pending_steering.pop_front() else {
+    let Some(message) = state.pending_steering.front().cloned() else {
         return Ok(());
     };
     apply_prompt_hooks(env, state, &message.text, session).await?;
+    if !env.host.control.active() {
+        return Ok(());
+    }
+    state.pending_steering.pop_front();
     append_injected_user_turn(
         env,
         state,
@@ -98,10 +102,14 @@ pub(crate) async fn inject_follow_up_messages(
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
 ) -> Result<(), AgentFailure> {
-    let Some(message) = state.pending_follow_up.pop_front() else {
+    let Some(message) = state.pending_follow_up.front().cloned() else {
         return Ok(());
     };
     apply_prompt_hooks(env, state, &message.text, session).await?;
+    if !env.host.control.active() {
+        return Ok(());
+    }
+    state.pending_follow_up.pop_front();
     append_injected_user_turn(
         env,
         state,
@@ -118,10 +126,15 @@ async fn apply_prompt_hooks(
     prompt: &str,
     session: &mut dyn super::session::SessionPolicy,
 ) -> Result<(), AgentFailure> {
-    let inputs = session
-        .input(prompt, env.host.control.clone())
-        .await
-        .map_err(AgentFailure::host("session.input"))?;
+    let inputs = tokio::select! {
+        biased;
+        _ = env.host.control.wait_inactive() => return Ok(()),
+        inputs = session.input(prompt, env.host.control.clone()) =>
+            inputs.map_err(AgentFailure::hook("input"))?,
+    };
+    if !env.host.control.active() {
+        return Ok(());
+    }
     state.runtime_messages.extend(inputs.iter().cloned());
     state.generated_api_messages.extend(inputs);
     Ok(())

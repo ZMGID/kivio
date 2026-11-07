@@ -89,6 +89,12 @@ impl<'a> ContextPolicy<'a> {
         progress.compaction("failed", Some(trigger), None);
     }
 
+    pub(crate) fn transform_context(&self, history: &[RuntimeMessage]) -> Vec<RuntimeMessage> {
+        let mut messages = history.to_vec();
+        prune_runtime_images(&mut messages, IMAGE_BYTES_BUDGET);
+        messages
+    }
+
     pub(crate) async fn prepare_context(
         &mut self,
         reason: ContextReason,
@@ -164,7 +170,7 @@ impl<'a> ContextPolicy<'a> {
         .0
         .max(estimate_full);
         let mut result = ContextPreparation {
-            update: (saved_bytes > 0).then(|| ContextUpdate::SendView(messages.clone())),
+            update: None,
             blocked: control.active() && hard_pressure,
         };
         if (!force && estimated < budget)

@@ -22,26 +22,35 @@ pub(crate) async fn compact_send_view(
     tools: &[ModelTool],
     session: &mut dyn SessionPolicy,
 ) -> Result<Vec<RuntimeMessage>, AgentFailure> {
-    let prepared = session
-        .prepare_context(
-            if force {
-                ContextReason::Overflow
-            } else {
-                ContextReason::BeforeRequest
-            },
-            ContextSnapshot {
-                history: &state.runtime_messages,
-                tools,
-                last_step_usage: state.last_step_usage.as_ref(),
-                runtime_len_at_last_call: state.runtime_len_at_last_call,
-                initial_anchor_valid: state.initial_anchor_valid,
-                completed_tool_rounds: state.completed_tool_rounds,
-            },
-            env.host.control.clone(),
-            env.host,
-        )
-        .await
-        .map_err(AgentFailure::host("session.prepare_context"))?;
+    let preparation = session.prepare_context(
+        if force {
+            ContextReason::Overflow
+        } else {
+            ContextReason::BeforeRequest
+        },
+        ContextSnapshot {
+            history: &state.runtime_messages,
+            tools,
+            last_step_usage: state.last_step_usage.as_ref(),
+            runtime_len_at_last_call: state.runtime_len_at_last_call,
+            initial_anchor_valid: state.initial_anchor_valid,
+            completed_tool_rounds: state.completed_tool_rounds,
+        },
+        env.host.control.clone(),
+        env.host,
+    );
+    let prepared = tokio::select! {
+        biased;
+        _ = env.host.control.wait_inactive() => {
+            session.context_rejected("interrupted", env.host);
+            return Ok(state.runtime_messages.clone());
+        }
+        prepared = preparation => prepared.map_err(AgentFailure::hook("prepare_context"))?,
+    };
+    if !env.host.control.active() {
+        session.context_rejected("interrupted", env.host);
+        return Ok(state.runtime_messages.clone());
+    }
     state.compaction_blocked |= prepared.blocked;
     match prepared.update {
         None => {}
@@ -92,9 +101,14 @@ pub(crate) async fn compact_send_view(
             state.compacted = true;
             state.last_step_usage = None;
             state.initial_anchor_valid = false;
-            let (inputs, blocked) = session
-                .context_applied(&state.runtime_messages, env.host.control.clone(), env.host)
-                .await;
+            let (inputs, blocked) = tokio::select! {
+                biased;
+                _ = env.host.control.wait_inactive() => (Vec::new(), false),
+                applied = session.context_applied(&state.runtime_messages, env.host.control.clone(), env.host) => applied,
+            };
+            if !env.host.control.active() {
+                return Ok(state.runtime_messages.clone());
+            }
             state.runtime_messages.extend(inputs);
             state.compaction_blocked |= blocked;
         }

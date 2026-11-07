@@ -6,7 +6,7 @@ use kivio_agent_sdk::{
         host::{AgentHost, AgentHostFuture, InputPersistence, SessionInput},
         provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
         run_agent_loop,
-        session::{NoSessionPolicy, PolicyFuture, RunSnapshot, SessionPolicy},
+        session::{NoSessionPolicy, PolicyFuture, RunSnapshot, SessionPolicy, TurnDecision},
         types::AgentRunStatus,
         RuntimeMessage, SteeringMessage,
     },
@@ -186,16 +186,37 @@ struct Reminders {
     finishes: usize,
 }
 impl SessionPolicy for Reminders {
-    fn before_step(&mut self, _: RunSnapshot<'_>) -> Vec<RuntimeMessage> {
-        self.steps += 1;
-        vec![RuntimeMessage::text(
-            ModelRole::User,
-            format!("step {}", self.steps),
-        )]
+    fn prepare_request<'a>(
+        &'a mut self,
+        _: RunSnapshot<'a>,
+        request: &'a mut ModelCall,
+        _: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            self.steps += 1;
+            request.history.push(RuntimeMessage::text(
+                ModelRole::User,
+                format!("step {}", self.steps),
+            ));
+            Ok(())
+        })
     }
-    fn before_finish(&mut self, _: RunSnapshot<'_>) -> Option<RuntimeMessage> {
-        self.finishes += 1;
-        (self.finishes == 1).then(|| RuntimeMessage::text(ModelRole::User, "finish reminder"))
+    fn finish_turn<'a>(
+        &'a mut self,
+        _: RunSnapshot<'a>,
+        _: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
+        Box::pin(async move {
+            self.finishes += 1;
+            Ok(if self.finishes == 1 {
+                TurnDecision::Continue(vec![RuntimeMessage::text(
+                    ModelRole::User,
+                    "finish reminder",
+                )])
+            } else {
+                TurnDecision::Default
+            })
+        })
     }
 }
 
@@ -368,9 +389,15 @@ async fn cancellation_during_plain_input_admission_makes_no_request() {
 struct CancelFinish<'a>(AgentRunHandle<'a>);
 
 impl SessionPolicy for CancelFinish<'_> {
-    fn before_finish(&mut self, _: RunSnapshot<'_>) -> Option<RuntimeMessage> {
-        assert_eq!(self.0.stop(), StopAdmission::Requested);
-        None
+    fn finish_turn<'a>(
+        &'a mut self,
+        _: RunSnapshot<'a>,
+        _: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
+        Box::pin(async move {
+            assert_eq!(self.0.stop(), StopAdmission::Requested);
+            Ok(TurnDecision::Default)
+        })
     }
 }
 

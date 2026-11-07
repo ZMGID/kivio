@@ -12,6 +12,8 @@ pub type ProviderFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct ModelCall {
     pub provider_id: String,
     pub model: String,
+    /// Optional capability snapshot for this request. A changed model otherwise has unknown capabilities.
+    pub capabilities: Option<crate::model::ModelCapabilities>,
     pub history: Vec<RuntimeMessage>,
     pub tools: Vec<ModelTool>,
     pub options: GenerateOptions,

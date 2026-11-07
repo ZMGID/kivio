@@ -1,8 +1,8 @@
 # Kivio Agent SDK 第二版方案
 
-状态为实施中。T1 已完成测试与提交，下一项为 T2。更新于 2026-11-07。
+状态为实施中。T1、T2 已完成测试与提交，下一项为 T3。更新于 2026-11-07。
 
-执行队列分为九个交付单元。T1 核心契约，T2 Session 与 hooks，T3 四协议 Provider，T4a Skill，T4b MCP，T5a 上下文，T5b 会话树，T5c 持久化迁移，T6 应用回归与交付。详细范围、依赖和验收集中在第 5 节。下一项是 T2。
+执行队列分为九个交付单元。T1 核心契约，T2 Session 与 hooks，T3 四协议 Provider，T4a Skill，T4b MCP，T5a 上下文，T5b 会话树，T5c 持久化迁移，T6 应用回归与交付。详细范围、依赖和验收集中在第 5 节。下一项是 T3。
 
 第二版面向两类使用者。外部 Rust 程序可以直接创建 Agent、注册工具、选择协议并管理多轮运行。Kivio 桌面、自动化和 OMP 子代理继续共享同一核心，维护者只在一个地方修改协议和运行规则。
 
@@ -256,14 +256,14 @@ T1 按第 4.1 节确定身份、历史投影、配对、压缩覆盖范围和提
 
 ## 5. 按独立交付单元依次推进
 
-计划采用九个交付单元，按 T1、T2、T3、T4a、T4b、T5a、T5b、T5c、T6 顺序推进。Skill 和 MCP 分别验收，上下文、会话树和持久化迁移分别验收。T1 至 T4b 为 P0，T5a 至 T5c 为 P1，T6 为整体验收。P1 仍属于第二版范围。目前全部未开始实现，下一项为 T1。
+计划采用九个交付单元，按 T1、T2、T3、T4a、T4b、T5a、T5b、T5c、T6 顺序推进。Skill 和 MCP 分别验收，上下文、会话树和持久化迁移分别验收。T1 至 T4b 为 P0，T5a 至 T5c 为 P1，T6 为整体验收。P1 仍属于第二版范围。T1、T2 已完成，其余任务按表中顺序推进，下一项为 T3。
 
 以下任务表是唯一执行编号。任务内部仍可分小提交，完成验收后再推进。直接调用方迁移及重复实现删除随对应任务完成，最终验收不承担积压实现。
 
 | 顺序 | 任务 | 执行前置 | 可独立验收的结果 | 状态 |
 |---|---|---|---|---|
 | T1 | 核心契约与 ToolRegistry | 无 | 类型化工具往返、完整选项、错误和明确历史投影语义 | 已完成 |
-| T2 | AgentSession 与 hooks | T1 | 可控制、可扩展的多轮 Agent | 未开始 |
+| T2 | AgentSession 与 hooks | T1 | 可控制、可扩展的多轮 Agent | 已完成 |
 | T3 | 四协议 Provider | T2 | 四协议通过同一套公共契约用例 | 未开始 |
 | T4a | Skill 加载 | T3 | 目录发现、按需激活及显式重新加载 | 未开始 |
 | T4b | MCP 接入 | T4a | 两种传输发现、授权、工具执行和清理 | 未开始 |
@@ -317,15 +317,19 @@ T1 按第 4.1 节确定身份、历史投影、配对、压缩覆盖范围和提
 
 依赖 T1。先完成 Session 所有权，再加入 hooks，最后迁移产品策略。主要入口为 SDK 的 agent、control、events、host 和 session 模块，以及桌面 `chat/session_policy.rs` 与三个宿主入口。
 
-- [ ] 实现 `AgentSession` 的 `prompt`、`continue_run`、`steer`、`follow_up`、`subscribe`、`abort` 和 `wait_inactive`。Session 管理历史、队列、订阅、身份与当前运行句柄，高级宿主复用同一循环。
-- [ ] 定义空闲、运行、停止请求中和收尾状态。区分 Session 完成与底层核心 inactive，等待绑定当前 generation。落实 Busy、未消费输入查询、订阅释放和取消后新轮语义。
-- [ ] 加入明确的最大模型步数与截止时间配置，保持工具清理和部分结果。默认值不得悄悄截断现有桌面任务。
-- [ ] 实现 `transform_context`、`prepare_request`、`finish_turn`、`before_tool_call`、`after_tool_call`。按第 4.6 节固定 Session 配置、本轮状态、返回值、顺序、错误及取消契约。验证现有 request_from_history 承担 convertToLlm 对应转换，不重复新增转换框架。
-- [ ] 适配现有 workflow hooks，验证前后工具处理器各执行一次、参数修改后重新校验及授权。区分现有 SendView 更新与新的请求投影，验证上下文清空、压缩检查点和新到输入不丢失。
-- [ ] 逐项迁移 `SessionPolicy` 中 prompt、技能注入、Todo 和上下文处理行为。保留明确的恢复及提交负责人，删除已迁移旧入口，不复制成另一个巨型策略接口。
-- [ ] 改写最小示例，使无工具会话不需要空 host、executor 或手写信箱。验证现有高级宿主及 OMP 的身份、容量、作业和投递规则。
+- [x] 实现 `AgentSession` 的 `prompt`、`continue_run`、`steer`、`follow_up`、`subscribe`、`abort` 和 `wait_inactive`。Session 管理历史、队列、订阅、身份与当前运行句柄，高级宿主复用同一循环。
+- [x] 定义空闲、运行、停止请求中和收尾状态。区分 Session 完成与底层核心 inactive，等待绑定当前 generation。落实 Busy、未消费输入查询、订阅释放和取消后新轮语义。
+- [x] 加入明确的最大模型步数与截止时间配置，保持工具清理和部分结果。默认值不得悄悄截断现有桌面任务。
+- [x] 实现 `transform_context`、`prepare_request`、`finish_turn`、`before_tool_call`、`after_tool_call`。按第 4.6 节固定 Session 配置、本轮状态、返回值、顺序、错误及取消契约。验证现有 request_from_history 承担 convertToLlm 对应转换，不重复新增转换框架。
+- [x] 适配现有 workflow hooks，验证前后工具处理器各执行一次、参数修改后重新校验及授权。区分现有 SendView 更新与新的请求投影，验证上下文清空、压缩检查点和新到输入不丢失。
+- [x] 逐项迁移 `SessionPolicy` 中 prompt、技能注入、Todo 和上下文处理行为。保留明确的恢复及提交负责人，删除已迁移旧入口，不复制成另一个巨型策略接口。
+- [x] 改写最小示例，使无工具会话不需要空 host、executor 或手写信箱。验证现有高级宿主及 OMP 的身份、容量、作业和投递规则。
 
 验收覆盖完整多轮、两类输入顺序、重复发送、错误后再发送、取消并等待清理、晚到结果隔离、future 丢弃和保存失败。hooks 需证明请求投影不改历史、阻止工具不执行、处理结果不重跑工具、继续决策不重复请求，且预算耗尽和取消不可被 hook 绕过。
+
+实施验收（2026-11-07）：SDK 106 项、独立消费者 70 项、桌面 Rust 全库 3200 项通过，56 项按现有配置忽略；四个离线示例、示例编译、rustdoc、依赖边界、架构与文档链接检查通过。公开 Session 消费用例覆盖 Busy、取消 drain、generation 等待、future 丢弃、未消费输入、订阅和保存失败。工具与请求 hooks 验证错误、panic、预算、投影隔离及原生模型签名过滤。
+
+保留 `before_step` 作为正式历史消息的准入操作：临时请求视图不能替代 Todo 的持久提醒，启动或工具 turn 钩子也不能覆盖连续 follow-up 的每个请求边界。应用复用原 Todo 计数逻辑，新增跨运行及连续 follow-up 回归，`before_finish` 则已迁入 `finish_turn`。桌面、自动化和 OMP 继续使用原准入及保存负责人。真实供应商和桌面 UI 实机未在本项执行。
 
 ### T3 完成四协议 Provider
 

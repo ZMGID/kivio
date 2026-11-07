@@ -107,7 +107,7 @@ use crate::chat::agent::{
     recovery::{FallbackReason, RecoveryDecision, RecoveryFailure, RecoverySnapshot},
     session::{
         ContextPreparation, ContextReason, ContextSnapshot, PolicyFuture, PolicyProgress,
-        PromptUpdate, RunSnapshot, SessionPolicy, ToolsRejected,
+        PromptUpdate, RunSnapshot, SessionPolicy, ToolsRejected, TurnDecision,
     },
 };
 
@@ -324,8 +324,41 @@ impl SessionPolicy for AppSessionPolicy<'_> {
         self.todo.before_step(run)
     }
 
-    fn before_finish(&mut self, run: RunSnapshot<'_>) -> Option<RuntimeMessage> {
-        self.todo.before_finish(run)
+    fn transform_context<'a>(
+        &'a mut self,
+        history: &'a [RuntimeMessage],
+        _control: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
+        Box::pin(async move { Ok(self.context.transform_context(history)) })
+    }
+
+    fn finish_turn<'a>(
+        &'a mut self,
+        run: RunSnapshot<'a>,
+        _control: AgentRunHandle<'a>,
+    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
+        Box::pin(async move {
+            let tool_turn = run
+                .history
+                .iter()
+                .rev()
+                .filter_map(RuntimeMessage::model_message)
+                .find(|message| message.role == crate::chat::model::ModelRole::Assistant)
+                .is_some_and(|message| {
+                    message.content.iter().any(|part| {
+                        matches!(part, crate::chat::model::MessagePart::ToolCall { .. })
+                    })
+                });
+            if tool_turn {
+                return Ok(TurnDecision::Default);
+            }
+            Ok(self
+                .todo
+                .final_reminder(run)
+                .map_or(TurnDecision::Default, |message| {
+                    TurnDecision::Continue(vec![message])
+                }))
+        })
     }
 }
 
@@ -445,6 +478,7 @@ pub(crate) async fn run_session(
         ),
         initial_cache_usage: config.initial_cache_usage,
         report_context: config.depth == 0,
+        limits: Default::default(),
     };
     let executor = ApplicationToolExecutor {
         settings: &config.settings,

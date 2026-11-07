@@ -15,6 +15,11 @@ pub mod provider_runtime;
 pub mod recovery;
 pub mod rounds;
 pub mod session;
+pub mod session_runtime;
+pub use session_runtime::{
+    AgentSession, AgentSessionConfig, SessionPendingInput, SessionRun, SessionStatus,
+    SessionSubscription,
+};
 pub mod steering;
 pub mod stop;
 pub mod stream;

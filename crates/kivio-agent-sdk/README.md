@@ -42,11 +42,30 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 ```
 
-Compose the same public interfaces as the example.
+For a normal multi-turn host, use `AgentSession`. It owns history, input queues, subscriptions, and one active invocation:
+
+```rust,no_run
+use std::sync::Arc;
+use kivio_agent_sdk::agent::{AgentSession, AgentSessionConfig, provider_runtime::ModelRuntime};
+
+async fn chat(runtime: Arc<dyn ModelRuntime>) -> Result<(), Box<dyn std::error::Error>> {
+    let session = AgentSession::new(AgentSessionConfig::new(runtime, "your-model"));
+    let first = session.prompt("Explain agent sessions briefly.").await?;
+    let next = session.prompt("Give one example.").await?;
+    println!("{}\n{}", first.content, next.content);
+    Ok(())
+}
+```
+
+The [session example](examples/session.rs) constructs the provider and sends two prompts. Run it with the environment variables below using `cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example session`. No empty executor, host, or mailbox implementation is required. Set `config.tools` to a `ToolRegistry` to add tools. Set `config.host` only when the host needs checkpoints or a final `commit_run` operation.
+
+`prompt` admits immediately and returns a waiter; concurrent sends return `Admission(Busy)`. `abort()` requests cancellation. `wait_inactive().await` waits for the current invocation's tool cleanup and commit. Dropping the waiter requests stop while the owned worker finishes cleanup. Keep the Tokio runtime alive until this wait completes. `continue_run()` continues an unanswered user message or completed tool round; it never executes saved tool results. See [session and hook contracts](docs/contracts.md#owned-agent-session) for queue, subscription, and failure semantics.
+
+Advanced hosts with existing admission and persistence owners can compose the lower-level interfaces as the original example does:
 
 1. Construct `OpenAiChatProvider` with your HTTP client and an `OpenAiChatConfig` containing the complete Chat Completions endpoint URL.
 2. Implement `AgentRunControl` for one invocation's input mailbox and stop signal. Create an `AgentRunHandle`, and clone that handle for controls that target the same invocation.
-3. Implement `ToolExecutor::prepare` to authorize the registered tool and validate its arguments. Implement `call` to execute only the prepared operation.
+3. Implement `ToolExecutor::before_tool_call` to authorize the registered tool and validate its arguments. Implement `call` to execute only the prepared operation.
 4. Set `AgentRunConfig.runtime_messages`, model, tools, and host-supplied identity. Use matching identity values when constructing the handle.
 5. Call `run_agent_loop(config, &host, &executor, &mut NoSessionPolicy, &events, handle).await`.
 6. Check both the returned `Result` and `AgentRunResult.status`. Persist `AgentRunResult.history` in your own session store before releasing your application's run capacity.

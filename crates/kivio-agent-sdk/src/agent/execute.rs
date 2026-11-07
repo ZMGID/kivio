@@ -7,9 +7,11 @@ use crate::{
     model::{ModelArtifact, ModelMessage, PendingToolCall},
     tools::{ToolDefinition, ToolOutput},
 };
+use futures::FutureExt;
 use serde_json::Value;
 use std::{
     future::Future,
+    panic::AssertUnwindSafe,
     pin::Pin,
     time::{Duration, Instant},
 };
@@ -55,23 +57,53 @@ pub enum ToolPreparation {
     Complete(AgentToolCall, String, Vec<ModelMessage>),
 }
 
+/// Explicit replacements for model-facing output. Execution records remain raw facts.
+#[derive(Default)]
+pub struct ToolResultUpdate {
+    /// `None` keeps the original model text, including any output limit.
+    pub content: Option<String>,
+    /// `Some` replaces the whole list; an empty list explicitly clears it.
+    pub follow_up_messages: Option<Vec<ModelMessage>>,
+}
+
+pub struct ToolCallResult {
+    pub record: AgentToolCall,
+    pub content: String,
+    pub follow_up_messages: Vec<ModelMessage>,
+    pub failure: Option<super::error::AgentFailure>,
+}
+
+impl ToolCallResult {
+    fn new(record: AgentToolCall, content: String, follow_up_messages: Vec<ModelMessage>) -> Self {
+        Self {
+            record,
+            content,
+            follow_up_messages,
+            failure: None,
+        }
+    }
+}
+
 pub trait ToolExecutor: Send + Sync {
-    /// Authorize and validate the call. The core publishes the final `Complete` record.
-    fn prepare<'a>(
+    /// Trusted host preparation: normalize and validate, apply policy, then authorize final values.
+    /// Rejection returns `Complete`; a hook error fails the run. The core publishes terminal records.
+    fn before_tool_call<'a>(
         &'a self,
         progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
-    ) -> ToolFuture<'a, ToolPreparation>;
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>>;
     fn call<'a>(
         &'a self,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         arguments: Value,
     ) -> ToolExecutorFuture<'a>;
-    fn after<'a>(
+    /// Replace model-facing fields before the terminal event and history commit.
+    /// Errors retain the original result and fail the run without retrying the tool.
+    fn after_tool_call<'a>(
         &'a self,
         _progress: &'a ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
@@ -79,8 +111,8 @@ pub trait ToolExecutor: Send + Sync {
         _arguments: Value,
         _content: &'a str,
         _feedback: Vec<String>,
-    ) -> ToolFuture<'a, String> {
-        Box::pin(async { String::new() })
+    ) -> ToolFuture<'a, Result<ToolResultUpdate, String>> {
+        Box::pin(async { Ok(ToolResultUpdate::default()) })
     }
     fn start_speculation(
         &self,
@@ -204,18 +236,39 @@ pub async fn execute_tool_call(
     ctx: &ToolExecutionContext<'_>,
     tool: &ToolDefinition,
     call: PendingToolCall,
-) -> (AgentToolCall, String, Vec<ModelMessage>) {
+) -> ToolCallResult {
     let record = pending_tool_record(tool, &call, ctx.round);
     host.tool_updated(&record);
     let progress = ToolProgress {
         control: host.control.clone(),
         events: &host.events,
     };
-    let prepared = executor.prepare(&progress, ctx, tool, call, record).await;
+    if !host.control.active() {
+        return interrupted_tool_call(host, record, None);
+    }
+    let pending_record = record.clone();
+    let before = AssertUnwindSafe(async {
+        executor
+            .before_tool_call(&progress, ctx, tool, call, pending_record)
+            .await
+    })
+    .catch_unwind();
+    let prepared = tokio::select! {
+        biased;
+        _ = host.control.wait_inactive() => return interrupted_tool_call(host, record, None),
+        prepared = before => prepared.unwrap_or_else(|_| Err("before_tool_call hook panicked".into())),
+    };
+    if !host.control.active() {
+        return interrupted_tool_call(host, record, None);
+    }
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(message) => return interrupted_tool_call(host, record, Some(message)),
+    };
     let mut prepared = match prepared {
         ToolPreparation::Complete(record, content, follow_ups) => {
             host.tool_updated(&record);
-            return (record, content, follow_ups);
+            return ToolCallResult::new(record, content, follow_ups);
         }
         ToolPreparation::Ready(prepared) => prepared,
     };
@@ -226,10 +279,13 @@ pub async fn execute_tool_call(
         record.completed_at = Some(chrono::Local::now().timestamp());
         record.error = Some("Tool call cancelled".into());
         host.tool_updated(&record);
-        return (record, "Tool call cancelled".into(), Vec::new());
+        return ToolCallResult::new(record, "Tool call cancelled".into(), Vec::new());
     }
     record.status = AgentToolStatus::Running;
     host.tool_updated(&record);
+    if !host.control.active() {
+        return interrupted_tool_call(host, record, None);
+    }
     let started = Instant::now();
     let call_fut = executor.call(ctx, tool, prepared.arguments.clone());
     let result = if prepared.drain_on_cancel {
@@ -247,7 +303,7 @@ pub async fn execute_tool_call(
                 record.completed_at = Some(chrono::Local::now().timestamp());
                 record.error = Some("Tool call cancelled".into());
                 host.tool_updated(&record);
-                return (record, "Tool call cancelled".into(), Vec::new());
+                return ToolCallResult::new(record, "Tool call cancelled".into(), Vec::new());
             }
         }
     };
@@ -257,7 +313,7 @@ pub async fn execute_tool_call(
         record.completed_at = Some(chrono::Local::now().timestamp());
         record.error = Some("Tool call cancelled".into());
         host.tool_updated(&record);
-        return (record, "Tool call cancelled".into(), Vec::new());
+        return ToolCallResult::new(record, "Tool call cancelled".into(), Vec::new());
     }
     record.duration_ms = Some(started.elapsed().as_millis() as u64);
     record.completed_at = Some(chrono::Local::now().timestamp());
@@ -288,19 +344,82 @@ pub async fn execute_tool_call(
             prepared.timeout_message
         }
     };
-    let feedback = executor
-        .after(
-            &progress,
-            ctx,
-            tool,
-            prepared.arguments,
-            &content,
-            std::mem::take(&mut prepared.feedback),
-        )
-        .await;
-    content.push_str(&feedback);
+    // Managed tools retain their real completion even when cancellation arrived in-flight.
+    let mut failure = None;
+    if host.control.active() {
+        let after = AssertUnwindSafe(async {
+            executor
+                .after_tool_call(
+                    &progress,
+                    ctx,
+                    tool,
+                    prepared.arguments,
+                    &content,
+                    std::mem::take(&mut prepared.feedback),
+                )
+                .await
+        })
+        .catch_unwind();
+        let update = tokio::select! {
+            biased;
+            _ = host.control.wait_inactive() => None,
+            update = after => Some(update.unwrap_or_else(|_| Err("after_tool_call hook panicked".into()))),
+        };
+        if host.control.active() {
+            match update {
+                Some(Ok(update)) => {
+                    if let Some(updated) = update.content {
+                        content = updated;
+                    }
+                    if let Some(updated) = update.follow_up_messages {
+                        follow_ups = updated;
+                    }
+                }
+                Some(Err(message)) => {
+                    failure = Some(super::error::AgentFailure::Hook {
+                        hook: "after_tool_call",
+                        message,
+                    })
+                }
+                None => {}
+            }
+        }
+    }
     host.tool_updated(&record);
-    (record, content, follow_ups)
+    ToolCallResult {
+        record,
+        content,
+        follow_up_messages: follow_ups,
+        failure,
+    }
+}
+
+fn interrupted_tool_call(
+    host: &super::context::AgentContext<'_>,
+    mut record: AgentToolCall,
+    failure: Option<String>,
+) -> ToolCallResult {
+    record.status = if failure.is_some() {
+        AgentToolStatus::Skipped
+    } else {
+        AgentToolStatus::Cancelled
+    };
+    let content = failure
+        .clone()
+        .unwrap_or_else(|| "Tool call cancelled".into());
+    record.duration_ms = Some(0);
+    record.completed_at = Some(chrono::Local::now().timestamp());
+    record.error = Some(content.clone());
+    host.tool_updated(&record);
+    ToolCallResult {
+        record,
+        content,
+        follow_up_messages: Vec::new(),
+        failure: failure.map(|message| super::error::AgentFailure::Hook {
+            hook: "before_tool_call",
+            message,
+        }),
+    }
 }
 
 pub fn truncate_chars(value: &str, max_chars: usize) -> String {

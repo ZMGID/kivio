@@ -871,14 +871,14 @@ mod tests {
     impl AgentHost for TestHost {}
 
     impl ToolExecutor for TestHost {
-        fn prepare<'a>(
+        fn before_tool_call<'a>(
             &'a self,
             _: &'a ToolProgress<'a>,
             _: &'a ToolExecutionContext<'a>,
             _: &'a ToolDefinition,
             _: PendingToolCall,
             _: AgentToolCall,
-        ) -> ToolFuture<'a, ToolPreparation> {
+        ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
             unreachable!("stream tests do not execute tools")
         }
         fn call<'a>(
@@ -1422,6 +1422,7 @@ mod tests {
                 AgentStreamSink::new(&agent, true, None, None, Some(tracker.clone()), None)
                     .with_speculation(Some((&host, &context)));
             sink.request_started(&ModelCall {
+                capabilities: None,
                 provider_id: String::new(),
                 model: String::new(),
                 history: Vec::new(),
@@ -1470,6 +1471,7 @@ mod tests {
                     AgentStreamSink::new(&agent, true, None, None, Some(tracker.clone()), None)
                         .with_speculation(Some((&host, &context)));
                 sink.request_started(&ModelCall {
+                    capabilities: None,
                     provider_id: String::new(),
                     model: String::new(),
                     history: Vec::new(),

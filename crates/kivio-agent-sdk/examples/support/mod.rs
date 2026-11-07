@@ -125,6 +125,7 @@ pub fn config(
         capabilities: Default::default(),
         initial_cache_usage: None,
         report_context: false,
+        limits: Default::default(),
     }
 }
 
@@ -163,14 +164,14 @@ impl EchoTool {
 }
 
 impl ToolExecutor for EchoTool {
-    fn prepare<'a>(
+    fn before_tool_call<'a>(
         &'a self,
         _progress: &'a ToolProgress<'a>,
         _ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         mut record: AgentToolCall,
-    ) -> ToolFuture<'a, ToolPreparation> {
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
         Box::pin(async move {
             let validated = (|| {
                 if call.function_name != "echo" || tool.model.name != "echo" {
@@ -184,7 +185,7 @@ impl ToolExecutor for EchoTool {
                 validate_arguments(&echo_definition().model.input_schema, &arguments)?;
                 Ok(arguments)
             })();
-            match validated {
+            Ok(match validated {
                 Ok(arguments) => ToolPreparation::Ready(PreparedToolCall {
                     record,
                     arguments,
@@ -199,7 +200,7 @@ impl ToolExecutor for EchoTool {
                     record.error = Some(error.clone());
                     ToolPreparation::Complete(record, error, vec![])
                 }
-            }
+            })
         })
     }
 

@@ -140,6 +140,8 @@ impl<'a> RunResultBuilder<'a> {
             history: Vec::new(),
             compacted: false,
             images: Vec::new(),
+            pending_steering: Vec::new(),
+            pending_follow_up: Vec::new(),
         }
     }
 }
@@ -303,6 +305,8 @@ pub(crate) fn finalize_planning_final(
         history: Vec::new(),
         compacted: false,
         images: Vec::new(),
+        pending_steering: Vec::new(),
+        pending_follow_up: Vec::new(),
     })
 }
 
@@ -333,6 +337,8 @@ pub(crate) fn finalize_completed(
         history: Vec::new(),
         compacted: false,
         images: Vec::new(),
+        pending_steering: Vec::new(),
+        pending_follow_up: Vec::new(),
     }
 }
 
@@ -391,6 +397,8 @@ pub(crate) fn cancelled_tool_round_run_result(
         history: Vec::new(),
         compacted: false,
         images: Vec::new(),
+        pending_steering: Vec::new(),
+        pending_follow_up: Vec::new(),
     }
 }
 

@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::{
     agent::{
         content::{AgentToolCall, AgentToolStatus},
-        execute::{PreparedToolCall, ToolPreparation, ToolProgress},
+        execute::{PreparedToolCall, ToolPreparation, ToolProgress, ToolResultUpdate},
         host::SpeculativeTaskScope,
         ToolExecutionContext, ToolExecutor, ToolExecutorFuture,
     },
@@ -108,26 +108,26 @@ fn identifiers(tool: &ToolDefinition) -> Vec<(&str, bool)> {
 }
 
 impl ToolExecutor for ToolRegistry {
-    fn prepare<'a>(
+    fn before_tool_call<'a>(
         &'a self,
         progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
-    ) -> ToolFuture<'a, ToolPreparation> {
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
         Box::pin(async move {
             match self.entry(&tool.key) {
                 Some((definition, executor)) => {
                     executor
-                        .prepare(progress, ctx, definition, call, record)
+                        .before_tool_call(progress, ctx, definition, call, record)
                         .await
                 }
-                None => complete(
+                None => Ok(complete(
                     record,
                     AgentToolStatus::Error,
                     format!("Tool `{}` is not registered", tool.key),
-                ),
+                )),
             }
         })
     }
@@ -146,7 +146,7 @@ impl ToolExecutor for ToolRegistry {
         })
     }
 
-    fn after<'a>(
+    fn after_tool_call<'a>(
         &'a self,
         progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
@@ -154,15 +154,15 @@ impl ToolExecutor for ToolRegistry {
         arguments: Value,
         content: &'a str,
         feedback: Vec<String>,
-    ) -> ToolFuture<'a, String> {
+    ) -> ToolFuture<'a, Result<ToolResultUpdate, String>> {
         Box::pin(async move {
             match self.entry(&tool.key) {
                 Some((definition, executor)) => {
                     executor
-                        .after(progress, ctx, definition, arguments, content, feedback)
+                        .after_tool_call(progress, ctx, definition, arguments, content, feedback)
                         .await
                 }
-                None => String::new(),
+                None => Ok(ToolResultUpdate::default()),
             }
         })
     }
@@ -212,42 +212,46 @@ struct RegisteredStatic<T> {
 }
 
 impl<T: StaticTool<HostData = Vec<ModelArtifact>>> ToolExecutor for RegisteredStatic<T> {
-    fn prepare<'a>(
+    fn before_tool_call<'a>(
         &'a self,
         progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         tool: &'a ToolDefinition,
         call: PendingToolCall,
         mut record: AgentToolCall,
-    ) -> ToolFuture<'a, ToolPreparation> {
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
         Box::pin(async move {
             if let Some(error) = call.arguments_parse_error {
-                return complete(record, AgentToolStatus::Error, error);
+                return Ok(complete(record, AgentToolStatus::Error, error));
             }
             if tool
                 .argument_limit
                 .is_some_and(|limit| call.arguments_raw.chars().count() > limit)
             {
-                return complete(
+                return Ok(complete(
                     record,
                     AgentToolStatus::Error,
                     tool.argument_limit_error
                         .clone()
                         .unwrap_or_else(|| format!("{} arguments are too large", tool.model.name)),
-                );
+                ));
             }
             if let Err(error) = validate_arguments(&tool.model.input_schema, &call.arguments) {
-                return complete(record, AgentToolStatus::Error, error);
+                return Ok(complete(record, AgentToolStatus::Error, error));
             }
             if let Err(error) = self
                 .authorization
                 .authorize(progress, ctx, tool, &call.arguments)
                 .await
             {
-                return complete(record, AgentToolStatus::Skipped, error.to_string());
+                return Ok(complete(
+                    record,
+                    AgentToolStatus::Skipped,
+                    error.to_string(),
+                ));
             }
             record.arguments = call.arguments.to_string();
-            ToolPreparation::Ready(PreparedToolCall {
+            Ok(ToolPreparation::Ready(PreparedToolCall {
                 record,
                 timeout_ms: ToolTimeout::Default.milliseconds(60_000, &call.arguments),
                 timeout_message: format!("Tool `{}` timed out after 60 seconds", tool.model.name),
@@ -255,7 +259,7 @@ impl<T: StaticTool<HostData = Vec<ModelArtifact>>> ToolExecutor for RegisteredSt
                 output_limit: None,
                 drain_on_cancel: false,
                 feedback: Vec::new(),
-            })
+            }))
         })
     }
 

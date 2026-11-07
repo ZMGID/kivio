@@ -68,8 +68,10 @@ impl crate::chat::agent::session::SessionPolicy for RunPolicy {
             .into_iter()
             .collect()
     }
+}
 
-    fn before_finish(
+impl RunPolicy {
+    pub(crate) fn final_reminder(
         &mut self,
         run: crate::chat::agent::session::RunSnapshot<'_>,
     ) -> Option<RuntimeMessage> {

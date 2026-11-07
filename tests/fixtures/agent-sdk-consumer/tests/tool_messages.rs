@@ -38,25 +38,25 @@ fn artifact() -> ModelArtifact {
 
 struct ImageTool;
 impl ToolExecutor for ImageTool {
-    fn prepare<'a>(
+    fn before_tool_call<'a>(
         &'a self,
         _progress: &'a ToolProgress<'a>,
         ctx: &'a ToolExecutionContext<'a>,
         _tool: &'a ToolDefinition,
         call: PendingToolCall,
         mut record: AgentToolCall,
-    ) -> ToolFuture<'a, ToolPreparation> {
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
         Box::pin(async move {
             if call.arguments["complete"] == true {
                 record.status = AgentToolStatus::Success;
                 record.artifacts = vec![artifact()];
-                return ToolPreparation::Complete(
+                return Ok(ToolPreparation::Complete(
                     record,
                     "prepared output".into(),
                     vec![image(ctx.tool_call_id)],
-                );
+                ));
             }
-            ToolPreparation::Ready(PreparedToolCall {
+            Ok(ToolPreparation::Ready(PreparedToolCall {
                 record,
                 arguments: call.arguments,
                 timeout_ms: Some(1000),
@@ -64,7 +64,7 @@ impl ToolExecutor for ImageTool {
                 output_limit: None,
                 drain_on_cancel: false,
                 feedback: vec![],
-            })
+            }))
         })
     }
 
@@ -245,22 +245,22 @@ async fn cancellation_during_preparation_does_not_execute_side_effects() {
         drain_on_cancel: bool,
     }
     impl ToolExecutor for CancelDuringPreparation {
-        fn prepare<'a>(
+        fn before_tool_call<'a>(
             &'a self,
             progress: &'a ToolProgress<'a>,
             ctx: &'a ToolExecutionContext<'a>,
             tool: &'a ToolDefinition,
             call: PendingToolCall,
             record: AgentToolCall,
-        ) -> ToolFuture<'a, ToolPreparation> {
+        ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
             Box::pin(async move {
-                let prepared = ImageTool.prepare(progress, ctx, tool, call, record).await;
+                let prepared = ImageTool.before_tool_call(progress, ctx, tool, call, record).await?;
                 progress.control.stop();
                 let ToolPreparation::Ready(mut ready) = prepared else {
                     unreachable!()
                 };
                 ready.drain_on_cancel = self.drain_on_cancel;
-                ToolPreparation::Ready(ready)
+                Ok(ToolPreparation::Ready(ready))
             })
         }
 

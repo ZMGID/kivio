@@ -35,6 +35,14 @@ impl SessionInput {
 }
 
 pub trait AgentHost: Send + Sync {
+    /// Final persistence owned by the convenience Session; direct loop callers commit themselves.
+    fn commit_run<'a>(
+        &'a self,
+        _identity: super::events::AgentRunIdentity<'a>,
+        _result: &'a super::types::AgentRunResult,
+    ) -> AgentHostFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
     /// Hosts may require an in-flight tool to finish before cancellation returns.
     fn requires_tool_completion(&self) -> bool {
         false

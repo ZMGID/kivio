@@ -3,7 +3,7 @@ use crate::chat::agent::{
     content::{AgentToolCall, AgentToolStatus},
     execute::{
         limit_tool_text_for_model, PreparedToolCall, ToolExecutorFuture, ToolFuture,
-        ToolPreparation, ToolProgress,
+        ToolPreparation, ToolProgress, ToolResultUpdate,
     },
 };
 use crate::chat::agent_preparation::{
@@ -115,14 +115,14 @@ impl ApplicationToolContext<'_> {
     }
 }
 
-async fn prepare_tool_call(
+async fn before_tool_call(
     host: &ApplicationToolContext<'_>,
     settings: &Settings,
     ctx: &ToolExecutionContext<'_>,
     tool: &ChatToolDefinition,
     call: PendingToolCall,
     mut record: AgentToolCall,
-) -> ToolPreparation {
+) -> Result<ToolPreparation, String> {
     let task_preflight = tool.argument_policy() == ArgumentPolicy::ToolAfterApproval;
     let mut call = call;
     if !task_preflight {
@@ -142,13 +142,20 @@ async fn prepare_tool_call(
             record.status = AgentToolStatus::Skipped;
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some("Plugin has been disabled".into());
-            return ToolPreparation::Complete(
+            return Ok(ToolPreparation::Complete(
                 record,
                 "Plugin has been disabled".into(),
                 Vec::new(),
-            );
+            ));
         }
     }
+    // Task batches own validation after approval; all other tools validate before policy hooks.
+    if !task_preflight {
+        if let Err(error) = validate_tool_arguments(tool, &call.arguments) {
+            return Ok(schema_rejection(record, error));
+        }
+    }
+    record.arguments = call.arguments.to_string();
     if let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) {
         let mut input = runtime.input("PreToolUse", ctx.conversation_id);
         input["tool_name"] = serde_json::json!(tool.name);
@@ -167,12 +174,17 @@ async fn prepare_tool_call(
                     call.arguments = updated;
                     call.arguments_raw = call.arguments.to_string();
                     record.arguments = call.arguments_raw.clone();
+                    if !task_preflight {
+                        if let Err(error) = validate_tool_arguments(tool, &call.arguments) {
+                            return Ok(schema_rejection(record, error));
+                        }
+                    }
                 }
                 hook_context = out.context;
                 hook_approval_reason = out.ask;
                 out.denied
             }
-            Err(err) => Some(err),
+            Err(err) => return Err(err),
         };
         if let Some(reason) = failure {
             record.status = if host.control.active() {
@@ -182,24 +194,12 @@ async fn prepare_tool_call(
             };
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some(reason.clone());
-            return ToolPreparation::Complete(
+            return Ok(ToolPreparation::Complete(
                 record,
                 format!("Workflow hook: {reason}"),
                 Vec::new(),
-            );
+            ));
         }
-    }
-    // The native task handler validates the entire batch after hooks and approval.
-    if let Err(err) = if task_preflight {
-        Ok(())
-    } else {
-        validate_tool_arguments(tool, &call.arguments)
-    } {
-        record.status = AgentToolStatus::Error;
-        record.duration_ms = Some(0);
-        record.completed_at = Some(chrono::Local::now().timestamp());
-        record.error = Some(err.clone());
-        return ToolPreparation::Complete(record, format!("Tool arguments failed schema validation: {err}. Retry this tool call with arguments that match the declared JSON schema."), Vec::new());
     }
 
     let interactive_approval = host.supports_interactive_approval();
@@ -212,7 +212,7 @@ async fn prepare_tool_call(
         record.duration_ms = Some(0);
         record.completed_at = Some(chrono::Local::now().timestamp());
         record.error = Some(reason.into());
-        return ToolPreparation::Complete(record, reason.into(), Vec::new());
+        return Ok(ToolPreparation::Complete(record, reason.into(), Vec::new()));
     }
 
     let hook_approved = if let Some(reason) = hook_approval_reason {
@@ -221,11 +221,11 @@ async fn prepare_tool_call(
             record.status = AgentToolStatus::Skipped;
             record.completed_at = Some(chrono::Local::now().timestamp());
             record.error = Some("Workflow hook approval was declined".into());
-            return ToolPreparation::Complete(
+            return Ok(ToolPreparation::Complete(
                 record,
                 "Workflow hook approval was declined".into(),
                 Vec::new(),
-            );
+            ));
         }
         true
     } else {
@@ -234,7 +234,7 @@ async fn prepare_tool_call(
     if tool.source == "native" && ask_user::is_ask_user_tool_name(&tool.name) {
         let (record, content) =
             execute_ask_user_call(host, settings, ctx, record, call.arguments.clone()).await;
-        return ToolPreparation::Complete(record, content, Vec::new());
+        return Ok(ToolPreparation::Complete(record, content, Vec::new()));
     }
 
     // Gate. The file/shell tools (read/write/edit/bash/grep/find/ls) are
@@ -259,24 +259,24 @@ async fn prepare_tool_call(
             if !host.request_tool_approval(ctx, &record).await {
                 skip(&mut record, "Tool call was not approved");
                 let content = record.error.clone().unwrap_or_default();
-                return ToolPreparation::Complete(record, content, Vec::new());
+                return Ok(ToolPreparation::Complete(record, content, Vec::new()));
             }
         } else if policy != "auto" && !host.request_session_consent(ctx).await {
             skip(&mut record, "用户未授权本会话使用文件 / 命令工具");
             let content = record.error.clone().unwrap_or_default();
-            return ToolPreparation::Complete(record, content, Vec::new());
+            return Ok(ToolPreparation::Complete(record, content, Vec::new()));
         }
     } else if !hook_approved && tool_requires_approval(settings, tool) {
         let approved = host.request_tool_approval(ctx, &record).await;
         if !approved {
             skip(&mut record, "Tool call was not approved");
             let content = record.error.clone().unwrap_or_default();
-            return ToolPreparation::Complete(record, content, Vec::new());
+            return Ok(ToolPreparation::Complete(record, content, Vec::new()));
         }
     }
 
     let timeout_ms = effective_tool_timeout_ms(settings, tool, &call.arguments);
-    ToolPreparation::Ready(PreparedToolCall {
+    Ok(ToolPreparation::Ready(PreparedToolCall {
         record,
         timeout_ms: (timeout_ms != NO_OUTER_TOOL_TIMEOUT).then_some(timeout_ms),
         timeout_message: format_tool_timeout_error(tool, timeout_ms, &call.arguments),
@@ -284,7 +284,15 @@ async fn prepare_tool_call(
         output_limit: settings.chat_tools.max_tool_output_chars,
         drain_on_cancel: host.requires_tool_completion(),
         feedback: hook_context,
-    })
+    }))
+}
+
+fn schema_rejection(mut record: AgentToolCall, error: String) -> ToolPreparation {
+    record.status = AgentToolStatus::Error;
+    record.duration_ms = Some(0);
+    record.completed_at = Some(chrono::Local::now().timestamp());
+    record.error = Some(error.clone());
+    ToolPreparation::Complete(record, format!("Tool arguments failed schema validation: {error}. Retry this tool call with arguments that match the declared JSON schema."), Vec::new())
 }
 
 async fn after_tool_call(
@@ -294,7 +302,7 @@ async fn after_tool_call(
     arguments: Value,
     content: &str,
     mut hook_context: Vec<String>,
-) -> String {
+) -> Result<ToolResultUpdate, String> {
     if let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) {
         let mut input = runtime.input("PostToolUse", ctx.conversation_id);
         input["tool_name"] = serde_json::json!(tool.name);
@@ -315,16 +323,19 @@ async fn after_tool_call(
                     hook_context.push(reason);
                 }
             }
-            Err(err) => hook_context.push(format!("PostToolUse hook failed: {err}")),
+            Err(err) => return Err(err),
         }
     }
     if !hook_context.is_empty() {
-        return format!(
-            "\n\n[Workflow hook feedback]\n{}",
-            hook_context.join("\n\n")
-        );
+        return Ok(ToolResultUpdate {
+            content: Some(format!(
+                "{content}\n\n[Workflow hook feedback]\n{}",
+                hook_context.join("\n\n")
+            )),
+            follow_up_messages: None,
+        });
     }
-    String::new()
+    Ok(ToolResultUpdate::default())
 }
 
 async fn execute_ask_user_call(
@@ -564,21 +575,21 @@ impl ApplicationToolExecutor<'_> {
 }
 
 impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
-    fn prepare<'a>(
+    fn before_tool_call<'a>(
         &'a self,
         progress: &'a ToolProgress<'a>,
         ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
         tool: &'a crate::chat::tools::ToolDefinition,
         call: PendingToolCall,
         record: AgentToolCall,
-    ) -> ToolFuture<'a, ToolPreparation> {
+    ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
         Box::pin(async move {
             let host = ApplicationToolContext {
                 host: self.host,
                 control: progress.control.clone(),
                 progress,
             };
-            prepare_tool_call(
+            before_tool_call(
                 &host,
                 self.settings,
                 &self.authority.context(ctx),
@@ -607,7 +618,7 @@ impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
         })
     }
 
-    fn after<'a>(
+    fn after_tool_call<'a>(
         &'a self,
         progress: &'a ToolProgress<'a>,
         ctx: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
@@ -615,7 +626,7 @@ impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor<'_> {
         arguments: Value,
         content: &'a str,
         feedback: Vec<String>,
-    ) -> ToolFuture<'a, String> {
+    ) -> ToolFuture<'a, Result<ToolResultUpdate, String>> {
         Box::pin(async move {
             let host = ApplicationToolContext {
                 host: self.host,

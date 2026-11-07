@@ -1731,6 +1731,7 @@ async fn stream_request_none_reaches_provider_wire() {
     let output = runtime
         .generate(
             ModelCall {
+                capabilities: None,
                 provider_id: provider.id.clone(),
                 model: "test-model".into(),
                 history: vec![RuntimeMessage::text(
@@ -1795,6 +1796,7 @@ async fn model_request_shares_retry_budget_across_http_and_stream_failures() {
         let result = runtime
             .generate(
                 ModelCall {
+                    capabilities: None,
                     provider_id: provider.id.clone(),
                     model: "test-model".into(),
                     history: vec![RuntimeMessage::text(
@@ -5606,10 +5608,13 @@ async fn compaction_fix_overflow_finish_exhaustion_preserves_original_history() 
 /// does not repeat it on later steps.
 #[tokio::test]
 async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
-    let server = MockModelServer::start(vec![MockResponse::Sse(vec![
-        r#"{"choices":[{"delta":{"content":"继续推进。"}}]}"#.to_string(),
-        "[DONE]".to_string(),
-    ])]);
+    let response = || {
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"继续推进。"}}]}"#.to_string(),
+            "[DONE]".to_string(),
+        ])
+    };
+    let server = MockModelServer::start(vec![response(), response()]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
     config.tools.push(crate::chat::todo::todo_write_tool());
@@ -5626,6 +5631,7 @@ async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
     let executor = RecordingExecutor::default();
 
     config.todo_state = initial_todo;
+    let mut reopened = config.clone();
     let result = run_agent_loop(config, &host, &executor)
         .await
         .expect("run completes");
@@ -5657,6 +5663,79 @@ async fn todo_list_missing_from_history_is_restated_once_at_the_end() {
         1,
         "the reminder is persisted with the turn so later turns see it was sent"
     );
+    reopened.runtime_messages.extend(result.api_messages);
+    reopened
+        .runtime_messages
+        .push(serde_json::json!({"role":"user","content":"继续"}));
+    let result = run_agent_loop(reopened, &host, &executor)
+        .await
+        .expect("reopened run completes");
+    assert!(!result.api_messages.iter().any(|message| message["content"]
+        .as_str()
+        .is_some_and(|text| text.starts_with("<todo-reminder>"))));
+    let bodies = server.captured_bodies();
+    assert_eq!(bodies.len(), 2);
+    let body: serde_json::Value = serde_json::from_str(&bodies[1]).expect("reopened request");
+    assert_eq!(
+        body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("<todo-reminder>")))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn queued_follow_ups_without_tool_calls_keep_periodic_todo_reminders() {
+    let server = MockModelServer::start(
+        (0..12)
+            .map(|_| {
+                MockResponse::Sse(vec![
+                    r#"{"choices":[{"delta":{"content":"answer"}}]}"#.to_string(),
+                    "[DONE]".to_string(),
+                ])
+            })
+            .collect(),
+    );
+    let state = test_app_state();
+    let mut config = test_run_config(&state, &server.base_url);
+    config.tools.push(crate::chat::todo::todo_write_tool());
+    let host = TestHost::with_follow_up_batches(vec![(0..11)
+        .map(|index| SteeringMessage::new(format!("follow-{index}"), "continue").unwrap())
+        .collect()]);
+    let executor = RecordingExecutor::default();
+    let result = run_agent_loop(config, &host, &executor)
+        .await
+        .expect("queued run completes");
+    let bodies: Vec<serde_json::Value> = server
+        .captured_bodies()
+        .iter()
+        .map(|body| serde_json::from_str(body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 12);
+    assert!(!serde_json::to_string(&bodies[9])
+        .unwrap()
+        .contains("<todo-reminder>"));
+    let reminder = bodies[10]["messages"].as_array().unwrap().last().unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(reminder.starts_with("<todo-reminder>"));
+    assert!(reminder.contains("hasn't been used recently"));
+    assert_eq!(
+        result
+            .api_messages
+            .iter()
+            .filter(|message| message["content"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("<todo-reminder>")))
+            .count(),
+        1
+    );
+    assert!(executor.events().is_empty());
 }
 
 /// A run that did work and is about to end with todo items still open gets one
@@ -7338,16 +7417,16 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
     };
     struct RegisteredTool(AtomicUsize);
     impl crate::chat::agent::execute::ToolExecutor for RegisteredTool {
-        fn prepare<'a>(
+        fn before_tool_call<'a>(
             &'a self,
             _: &'a ToolProgress<'a>,
             _: &'a crate::chat::agent::execute::ToolExecutionContext<'a>,
             _: &'a crate::chat::tools::ToolDefinition,
             call: PendingToolCall,
             record: AgentToolCall,
-        ) -> ToolFuture<'a, ToolPreparation> {
+        ) -> ToolFuture<'a, Result<ToolPreparation, String>> {
             Box::pin(async move {
-                ToolPreparation::Ready(PreparedToolCall {
+                Ok(ToolPreparation::Ready(PreparedToolCall {
                     record,
                     arguments: call.arguments,
                     timeout_ms: None,
@@ -7355,7 +7434,7 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
                     output_limit: None,
                     drain_on_cancel: false,
                     feedback: Vec::new(),
-                })
+                }))
             })
         }
         fn call<'a>(
@@ -7407,6 +7486,7 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
         capabilities: Default::default(),
         initial_cache_usage: None,
         report_context: false,
+        limits: Default::default(),
     };
     let host = TestHost::default();
     let identity = AgentRunIdentity {
