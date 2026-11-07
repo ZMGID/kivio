@@ -152,9 +152,13 @@ impl AgentImportPolicy {
     pub fn history_support(self) -> CapabilitySupport {
         match self.discovery {
             ImportDiscoveryStrategy::None => CapabilitySupport::Unavailable,
-            ImportDiscoveryStrategy::Acp { replays_history: false } => CapabilitySupport::Fallback,
+            ImportDiscoveryStrategy::Acp {
+                replays_history: false,
+            } => CapabilitySupport::Fallback,
             ImportDiscoveryStrategy::FileHistory
-            | ImportDiscoveryStrategy::Acp { replays_history: true } => CapabilitySupport::Native,
+            | ImportDiscoveryStrategy::Acp {
+                replays_history: true,
+            } => CapabilitySupport::Native,
         }
     }
 }

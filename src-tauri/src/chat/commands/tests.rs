@@ -4624,12 +4624,15 @@ fn maintenance_review_deleting_pending_history_boundary_keeps_handoff_sendable()
         crate::chat::types::ExternalHistoryMethod::Replay,
     ));
     remove_assistant_answer(&mut conversation, "answer_a").unwrap();
-    conversation.messages.push(test_chat_message("user_b", "user", "question B", 3));
+    conversation
+        .messages
+        .push(test_chat_message("user_b", "user", "question B", 3));
     let prompt = crate::external_agents::prompt::compose_history_handoff(
         &conversation,
         crate::external_agents::prompt::compose_external_prompt_passthrough("question B"),
         "question B",
-    ).expect("deleting a displayed answer must not block a branch's first send");
+    )
+    .expect("deleting a displayed answer must not block a branch's first send");
     assert!(prompt.full_prompt.contains("question A"));
     assert!(!prompt.full_prompt.contains("answer A"));
     assert_eq!(prompt.full_prompt.matches("question B").count(), 1);
@@ -4637,7 +4640,9 @@ fn maintenance_review_deleting_pending_history_boundary_keeps_handoff_sendable()
 
 #[test]
 fn maintenance_review_history_deletion_rejects_old_delivery_receipts() {
-    use crate::chat::types::{ExternalHistoryDelivery, ExternalHistoryMethod, ExternalHistoryTransition};
+    use crate::chat::types::{
+        ExternalHistoryDelivery, ExternalHistoryMethod, ExternalHistoryTransition,
+    };
     for removed in ["answer_a", "answer_b"] {
         let mut conversation = test_conversation_with_messages(vec![
             test_chat_message("user_a", "user", "question A", 1),
@@ -4645,22 +4650,34 @@ fn maintenance_review_history_deletion_rejects_old_delivery_receipts() {
             test_chat_message("user_b", "user", "question B", 3),
             test_chat_message("answer_b", "assistant", "answer B", 4),
         ]);
-        let mut history = ExternalHistoryTransition::new(&conversation, ExternalHistoryMethod::NativeRewind);
+        let mut history =
+            ExternalHistoryTransition::new(&conversation, ExternalHistoryMethod::NativeRewind);
         let attempt = crate::external_agents::session::HistoryAttempt {
-            transition_id: history.id.clone(), native_id: "old-native".into(),
-            attempt_id: "old-attempt".into(), generation: 1,
+            transition_id: history.id.clone(),
+            native_id: "old-native".into(),
+            attempt_id: "old-attempt".into(),
+            generation: 1,
         };
         history.delivery = ExternalHistoryDelivery::MayHaveSent {
-            native_id: attempt.native_id.clone(), attempt_id: attempt.attempt_id.clone(), generation: 1,
+            native_id: attempt.native_id.clone(),
+            attempt_id: attempt.attempt_id.clone(),
+            generation: 1,
         };
         let delivery = history.delivery.clone();
         conversation.external_history = Some(history);
         remove_assistant_answer(&mut conversation, removed).unwrap();
         crate::external_agents::session::settle_history_delivery(&mut conversation, &attempt);
-        let history = conversation.external_history.as_ref().expect("old receipt cannot settle edited history");
+        let history = conversation
+            .external_history
+            .as_ref()
+            .expect("old receipt cannot settle edited history");
         assert_ne!(history.id, attempt.transition_id);
         assert_eq!(history.method, ExternalHistoryMethod::Replay);
         assert_eq!(history.delivery, delivery);
-        assert!(history.prefix(&conversation).unwrap().iter().all(|message| message.id != removed));
+        assert!(history
+            .prefix(&conversation)
+            .unwrap()
+            .iter()
+            .all(|message| message.id != removed));
     }
 }

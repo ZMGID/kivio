@@ -8,10 +8,10 @@ use std::sync::{
 };
 use std::time::Duration;
 
+use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use crate::external_agents::spawn::AgentChild as Child;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use crate::external_agents::diagnostics::{AgentStdin, AgentStdout};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::time::timeout;
 
@@ -1599,8 +1599,7 @@ where
             current_turn_seen = matches!(
                 kind,
                 "agent_start" | "turn_start" | "message_start" | "compaction_start"
-            )
-                || response_is_pending_control
+            ) || response_is_pending_control
                 || (kind == "response"
                     && value.get("command").and_then(Value::as_str) == Some("prompt")
                     && value.get("id").and_then(Value::as_i64) == Some(1));
@@ -5080,7 +5079,8 @@ mod tests {
                 let mut requests = BufReader::new(server_stdin).lines();
                 for turn in 0..2 {
                     let request: Value =
-                        serde_json::from_str(&requests.next_line().await.unwrap().unwrap()).unwrap();
+                        serde_json::from_str(&requests.next_line().await.unwrap().unwrap())
+                            .unwrap();
                     assert_eq!(request["type"], "compact");
                     if turn == 1 && compaction_started {
                         server_stdout

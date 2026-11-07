@@ -31,7 +31,10 @@ pub(crate) struct BackgroundCommandRegistry {
 }
 impl Default for BackgroundCommandRegistry {
     fn default() -> Self {
-        Self { jobs: Mutex::default(), changed: tokio::sync::watch::channel(0).0 }
+        Self {
+            jobs: Mutex::default(),
+            changed: tokio::sync::watch::channel(0).0,
+        }
     }
 }
 fn visible(job: &BackgroundCommand, caller: Option<&str>, include_unowned: bool) -> bool {
@@ -40,8 +43,13 @@ fn visible(job: &BackgroundCommand, caller: Option<&str>, include_unowned: bool)
         || (include_unowned && job.conversation_id.is_none())
 }
 impl BackgroundCommandRegistry {
-    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> { self.changed.subscribe() }
-    fn notify(&self) { self.changed.send_modify(|sequence| *sequence = sequence.wrapping_add(1)); }
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
+    }
+    fn notify(&self) {
+        self.changed
+            .send_modify(|sequence| *sequence = sequence.wrapping_add(1));
+    }
     pub(crate) fn register(&self, job: crate::native_tools::BackgroundCommand) {
         const MAX_TRACKED_BACKGROUND_COMMANDS: usize = 64;
         let mut evicted_logs = Vec::new();
@@ -230,12 +238,19 @@ mod tests {
         owner.register(job("B-service", Some("subagent-root-B")));
         changed.borrow_and_update();
         owner.complete("A-service", Status::Exited { code: Some(0) });
-        tokio::time::timeout(std::time::Duration::from_secs(1), changed.changed()).await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), changed.changed())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(owner.snapshots(Some("subagent-root-A"), false).len(), 1);
-        assert!(owner.snapshot("B-service", Some("subagent-root-A")).is_none());
+        assert!(owner
+            .snapshot("B-service", Some("subagent-root-A"))
+            .is_none());
         owner.kill_for_conversation("subagent-root-A");
         changed.changed().await.unwrap();
-        assert!(owner.snapshot("B-service", Some("subagent-root-B")).is_some());
+        assert!(owner
+            .snapshot("B-service", Some("subagent-root-B"))
+            .is_some());
     }
 
     #[test]

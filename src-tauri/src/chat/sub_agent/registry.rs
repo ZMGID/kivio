@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
@@ -91,20 +91,41 @@ pub(crate) fn is_accepted(session_file: &Path, root: &str, id: &str) -> Result<b
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(format!("Cannot inspect subagent acceptance: {error}")),
     };
-    if !metadata.is_file() || metadata.file_type().is_symlink() { return Ok(false); }
-    let bytes = std::fs::read(path).map_err(|error| format!("Cannot read subagent acceptance: {error}"))?;
-    Ok(serde_json::from_slice::<AcceptedIdentity>(&bytes).is_ok_and(|accepted| accepted.root == root && accepted.id == id))
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Ok(false);
+    }
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("Cannot read subagent acceptance: {error}"))?;
+    Ok(serde_json::from_slice::<AcceptedIdentity>(&bytes)
+        .is_ok_and(|accepted| accepted.root == root && accepted.id == id))
 }
 
 impl AgentRegistry {
-    pub(crate) fn publish(&self, root: &str, id: &str, generation: u64) -> Result<AgentRecord, String> {
+    pub(crate) fn publish(
+        &self,
+        root: &str,
+        id: &str,
+        generation: u64,
+    ) -> Result<AgentRecord, String> {
         let mut inner = self.lock();
-        let record = inner.agents.get_mut(root).and_then(|agents| agents.get_mut(id))
-            .filter(|record| record.generation == generation && record.status != AgentStatus::Aborted)
+        let record = inner
+            .agents
+            .get_mut(root)
+            .and_then(|agents| agents.get_mut(id))
+            .filter(|record| {
+                record.generation == generation && record.status != AgentStatus::Aborted
+            })
             .ok_or("Subagent changed before task acceptance")?;
-        let accepted = serde_json::to_string(&AcceptedIdentity { root: root.into(), id: id.into() })
-            .map_err(|error| error.to_string())?;
-        crate::chat::storage::atomic_write(&acceptance_path(&record.session_file), &accepted, "subagent acceptance")?;
+        let accepted = serde_json::to_string(&AcceptedIdentity {
+            root: root.into(),
+            id: id.into(),
+        })
+        .map_err(|error| error.to_string())?;
+        crate::chat::storage::atomic_write(
+            &acceptance_path(&record.session_file),
+            &accepted,
+            "subagent acceptance",
+        )?;
         record.published = true;
         record.last_activity = now_ms();
         Ok(record.clone())
@@ -114,19 +135,38 @@ impl AgentRegistry {
         let mut current = record.clone();
         let mut seen = std::collections::HashSet::new();
         loop {
-            if !seen.insert(current.id.clone()) || !current.published
-                || !is_accepted(&current.session_file, &current.root, &current.id)? { return Ok(false); }
-            if current.parent_id == super::MAIN_AGENT_ID { return Ok(true); }
-            let Some(parent) = self.get(&current.root, &current.parent_id) else { return Ok(false); };
+            if !seen.insert(current.id.clone())
+                || !current.published
+                || !is_accepted(&current.session_file, &current.root, &current.id)?
+            {
+                return Ok(false);
+            }
+            if current.parent_id == super::MAIN_AGENT_ID {
+                return Ok(true);
+            }
+            let Some(parent) = self.get(&current.root, &current.parent_id) else {
+                return Ok(false);
+            };
             current = parent;
         }
     }
 
-    pub fn update_checked(&self, root: &str, id: &str, generation: u64, run: Option<&str>, update: impl FnOnce(&mut AgentRecord)) -> Option<AgentRecord> {
+    pub fn update_checked(
+        &self,
+        root: &str,
+        id: &str,
+        generation: u64,
+        run: Option<&str>,
+        update: impl FnOnce(&mut AgentRecord),
+    ) -> Option<AgentRecord> {
         let mut inner = self.lock();
         let agent = inner.agents.get_mut(root)?.get_mut(id)?;
-        if agent.generation != generation || agent.status == AgentStatus::Aborted
-            || run.is_some_and(|run| agent.run_id.as_deref() != Some(run)) { return None; }
+        if agent.generation != generation
+            || agent.status == AgentStatus::Aborted
+            || run.is_some_and(|run| agent.run_id.as_deref() != Some(run))
+        {
+            return None;
+        }
         update(agent);
         agent.last_activity = now_ms();
         Some(agent.clone())
@@ -135,15 +175,25 @@ impl AgentRegistry {
     pub fn restore(&self, record: AgentRecord) -> AgentRecord {
         let mut inner = self.lock();
         inner.next_generation = inner.next_generation.max(record.generation);
-        inner.agents.entry(record.root.clone()).or_default().entry(record.id.clone()).or_insert(record).clone()
+        inner
+            .agents
+            .entry(record.root.clone())
+            .or_default()
+            .entry(record.id.clone())
+            .or_insert(record)
+            .clone()
     }
 
     pub fn is_ancestor(&self, root: &str, ancestor: &str, child: &str) -> bool {
         let mut child = child.to_string();
         let mut seen = std::collections::HashSet::new();
         while seen.insert(child.clone()) {
-            let Some(record) = self.get(root, &child) else { return false; };
-            if record.parent_id == ancestor { return true; }
+            let Some(record) = self.get(root, &child) else {
+                return false;
+            };
+            if record.parent_id == ancestor {
+                return true;
+            }
             child = record.parent_id;
         }
         false
@@ -208,8 +258,12 @@ impl AgentRegistry {
         let mut id = id.to_string();
         let mut seen = std::collections::HashSet::new();
         while seen.insert(id.clone()) {
-            let Some(record) = self.get(root, &id).filter(|record| record.published) else { return false; };
-            if record.parent_id == super::MAIN_AGENT_ID { return true; }
+            let Some(record) = self.get(root, &id).filter(|record| record.published) else {
+                return false;
+            };
+            if record.parent_id == super::MAIN_AGENT_ID {
+                return true;
+            }
             id = record.parent_id;
         }
         false
@@ -220,7 +274,9 @@ impl AgentRegistry {
         self.list(root)
             .into_iter()
             .filter(|agent| {
-                self.is_published(root, &agent.id) && agent.id != id && matches!(agent.status, AgentStatus::Running | AgentStatus::Idle)
+                self.is_published(root, &agent.id)
+                    && agent.id != id
+                    && matches!(agent.status, AgentStatus::Running | AgentStatus::Idle)
             })
             .collect()
     }
@@ -261,7 +317,10 @@ impl AgentRegistry {
     }
 
     /// `(root, id)` of the agent running under synthetic conversation `child_conversation_id`.
-    pub fn find_by_child_conversation(&self, child_conversation_id: &str) -> Option<(String, String)> {
+    pub fn find_by_child_conversation(
+        &self,
+        child_conversation_id: &str,
+    ) -> Option<(String, String)> {
         let inner = self.lock();
         inner.agents.iter().find_map(|(root, agents)| {
             agents
@@ -308,9 +367,16 @@ mod tests {
         registry.register(record("c", "C"));
         assert!(b.generation > a.generation);
         registry.set_status("c", "C", AgentStatus::Parked);
-        let visible: Vec<_> = registry.list_visible_to("c", "A").into_iter().map(|r| r.id).collect();
+        let visible: Vec<_> = registry
+            .list_visible_to("c", "A")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         assert_eq!(visible, vec!["B".to_string()]);
-        assert_eq!(registry.find_by_run("run-B"), Some(("c".into(), "B".into())));
+        assert_eq!(
+            registry.find_by_run("run-B"),
+            Some(("c".into(), "B".into()))
+        );
         registry.set_status("c", "B", AgentStatus::Idle);
         assert_eq!(registry.find_by_run("run-B"), None, "idle clears the run");
         assert_eq!(registry.resolve("c", "a").map(|r| r.id), Some("A".into()));
@@ -332,7 +398,10 @@ mod tests {
         assert!(!is_accepted(&a.session_file, "other", "A").unwrap());
         assert!(!is_accepted(&a.session_file, "root", "B").unwrap());
         let reopened = registry.register(accepted);
-        assert!(registry.accepted_lineage(&reopened).unwrap(), "an accepted identity remains accepted after explicit generation advance");
+        assert!(
+            registry.accepted_lineage(&reopened).unwrap(),
+            "an accepted identity remains accepted after explicit generation advance"
+        );
         std::fs::write(acceptance_path(&a.session_file), b"{broken").unwrap();
         assert!(!registry.accepted_lineage(&reopened).unwrap());
 
@@ -359,10 +428,14 @@ mod tests {
         child.parent_id = parent.id.clone();
         child.session_file = directory.path().join("Parent.Child.jsonl");
         let child = registry.register(child);
-        registry.publish("root", &child.id, child.generation).unwrap();
+        registry
+            .publish("root", &child.id, child.generation)
+            .unwrap();
         assert!(!registry.is_published("root", &child.id));
         assert!(registry.list_visible_to("root", "Main").is_empty());
-        registry.publish("root", &parent.id, parent.generation).unwrap();
+        registry
+            .publish("root", &parent.id, parent.generation)
+            .unwrap();
         assert!(registry.is_published("root", &child.id));
         assert_eq!(registry.list_visible_to("root", "Main").len(), 2);
     }

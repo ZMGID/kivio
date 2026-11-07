@@ -175,9 +175,19 @@ mod tests {
                     .trim(),
                 version
             );
-            let plugin_agent = catalog.agents.iter().find(|a| a.source == "plugin").unwrap();
+            let plugin_agent = catalog
+                .agents
+                .iter()
+                .find(|a| a.source == "plugin")
+                .unwrap();
             assert_eq!(
-                plugin_agent.tools.as_ref().unwrap().iter().map(String::as_str).collect::<Vec<_>>(),
+                plugin_agent
+                    .tools
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
                 vec!["read", "grep", "task"]
             );
         };
