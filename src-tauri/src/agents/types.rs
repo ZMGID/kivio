@@ -87,7 +87,7 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "MUST be used for exploratory codebase research, rapid code analysis, and broad pattern searches. Fast read-only scout returning compressed context for handoff.".into(),
             system_prompt: AGENT_SCOUT.into(),
             model: Some("@smol".into()),
-            models: Vec::new(), structured: false, output: None,
+            models: Vec::new(), structured: false, output: Some(serde_json::from_str(include_str!("../chat/sub_agent/prompts/agents/scout.schema.json")).expect("builtin OMP output schema")),
             prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: Some("medium".into()),
             blocking: false,
@@ -103,7 +103,7 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "Code review specialist for quality/security analysis".into(),
             system_prompt: AGENT_REVIEWER.into(),
             model: Some("@slow".into()),
-            models: Vec::new(), structured: false, output: None,
+            models: Vec::new(), structured: false, output: Some(serde_json::from_str(include_str!("../chat/sub_agent/prompts/agents/reviewer.schema.json")).expect("builtin OMP output schema")),
             prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: None,
             blocking: false,
@@ -119,7 +119,7 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
             description: "Read-only security specialist for evidence-backed repository vulnerability discovery".into(),
             system_prompt: AGENT_SECURITY_REVIEWER.into(),
             model: None,
-            models: Vec::new(), structured: false, output: None,
+            models: Vec::new(), structured: false, output: Some(serde_json::from_str(include_str!("../chat/sub_agent/prompts/agents/security-reviewer.schema.json")).expect("builtin OMP output schema")),
             prewalk: None, advisor: None, read_summarize: None, metadata: Default::default(),
             thinking_level: None,
             blocking: false,
@@ -151,6 +151,72 @@ pub fn builtin_agent_definitions() -> Vec<AgentDefinition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builtin_structured_roles_require_their_report_fields() {
+        for definition in builtin_agent_definitions()
+            .into_iter()
+            .filter(|definition| {
+                matches!(
+                    definition.id.as_str(),
+                    "scout" | "reviewer" | "security-reviewer"
+                )
+            })
+        {
+            let schema = definition.output.as_ref().expect("builtin report schema");
+            crate::chat::sub_agent::structured::validate_schema(schema).unwrap();
+            assert!(
+                crate::chat::sub_agent::structured::validate_result(
+                    schema,
+                    &serde_json::json!({}),
+                )
+                .is_err(),
+                "{} must reject a report missing its required fields",
+                definition.id,
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_report_schemas_validate_real_reports_and_nested_constraints() {
+        use serde_json::json;
+        let definitions = builtin_agent_definitions();
+        for (role, valid, invalid) in [
+            (
+                "scout",
+                json!({"summary":"Found call sites","files":[{"path":"src/lib.rs:1-5","description":"Entry"}],"architecture":"Single entry","report":"Full report"}),
+                json!({"summary":"Found call sites","files":[{"path":"src/lib.rs:1-5"}],"architecture":"Single entry"}),
+            ),
+            (
+                "reviewer",
+                json!({"overall_correctness":"incorrect","explanation":"A bug","confidence":0.75,"findings":[{"title":"Fix result","body":"Trigger and impact","priority":2,"confidence":0.85,"file_path":"src/lib.rs","line_start":1,"line_end":2}]}),
+                json!({"overall_correctness":"correct","explanation":"A verdict","confidence":"high"}),
+            ),
+            (
+                "security-reviewer",
+                json!({"coverage_summary":"Reviewed inputs","findings":[{"rule_id":"R1","title":"Validate input","summary":"Untrusted input","severity":"high","confidence":"medium","category":"validation","locations":[{"path":"src/lib.rs","start_line":1,"end_line":2}],"cwe":["CWE-20"],"evidence":[{"label":"Input","explanation":"Reaches sink"}]}],"reviewed_paths":["src/lib.rs"],"deferred":[{"reason":"Out of scope","paths":["vendor"]}]}),
+                json!({"coverage_summary":"Reviewed inputs","findings":[{"rule_id":"R1","title":"Validate input","summary":"Untrusted input","severity":"urgent","confidence":"medium","category":"validation","locations":[],"cwe":[],"evidence":[]}]}),
+            ),
+        ] {
+            let definition = definitions
+                .iter()
+                .find(|definition| definition.id == role)
+                .unwrap();
+            assert!(!definition.structured);
+            let schema = definition.output.as_ref().unwrap();
+            crate::chat::sub_agent::structured::validate_result(schema, &valid).unwrap();
+            assert!(
+                crate::chat::sub_agent::structured::validate_result(schema, &invalid).is_err(),
+                "{role}"
+            );
+            let mut extra = valid;
+            extra["unrecognized"] = json!(true);
+            assert!(
+                crate::chat::sub_agent::structured::validate_result(schema, &extra).is_err(),
+                "{role}"
+            );
+        }
+    }
 
     #[test]
     fn builtins_expose_omp_personas_and_spawn_policies() {

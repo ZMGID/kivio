@@ -474,7 +474,7 @@ pub fn native_run_command_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__run_command".to_string(),
         name: "bash".to_string(),
-        description: format!("Run a host shell command (build, test, etc.).{shell_hint} Each call starts a fresh process; use cwd and command-local environment variables for the current call. With cwd omitted, start in the current working directory (project root or conversation workbench). An explicit absolute or ~/ cwd can point outside it and must be an existing directory; it is a startup directory, not a filesystem boundary. Normal OS permissions and tool approvals apply. Pass the startup directory through `cwd`, including paths with spaces, and put the operation itself in `command`. Foreground commands wait until they exit — omit timeout_ms unless you want the process killed at a deadline. Do not background finite jobs (builds, tests, image-generation batches); put parallel work inside one command. Long-running never-ending servers such as `npm run dev`, `npm run tauri dev`, and `vite` are started in the background automatically and return immediately with a job_id. Obey user constraints and obtain any required authorization for destructive, network, or environment-changing commands. A non-zero exit code is returned as a tool error with stdout/stderr. Host Python package installs require an explicit user request and allow_host_python_package_install=true."),
+        description: format!("Run a host shell command (build, test, etc.).{shell_hint} Each call starts a fresh process; use cwd and command-local environment variables for the current call. With cwd omitted, start in the current working directory (project root or conversation workbench). An explicit absolute or ~/ cwd can point outside it and must be an existing directory; it is a startup directory, not a filesystem boundary. Normal OS permissions and tool approvals apply. Pass the startup directory through `cwd`, including paths with spaces, and put the operation itself in `command`. Foreground commands have a default kill deadline of 300000 ms; set timeout_ms to 0 for no deadline. Do not background finite jobs (builds, tests, image-generation batches); put parallel work inside one command. Long-running never-ending servers such as `npm run dev`, `npm run tauri dev`, and `vite` are started in the background automatically and return immediately with a job_id. Obey user constraints and obtain any required authorization for destructive, network, or environment-changing commands. A non-zero exit code is returned as a tool error with stdout/stderr. Host Python package installs require an explicit user request and allow_host_python_package_install=true."),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -484,7 +484,7 @@ pub fn native_run_command_tool() -> ChatToolDefinition {
                 "command": { "type": "string", "description": "Shell command" },
                 "cwd": { "type": "string", "description": "Existing startup directory, defaults to the current working directory. Relative paths use that base; absolute and ~/ paths can point outside it. To run in another directory, pass it here, including when it contains spaces; do not use a leading `cd ... &&`." },
                 "background": { "type": "boolean", "description": "Run in background and return a job_id immediately. Auto-enabled for never-ending dev servers. Do not use this for finite jobs that will exit." },
-                "timeout_ms": { "type": "integer", "description": "Optional kill deadline in ms (max 600000). Omit to wait until the command exits. Timeout kills the process and returns partial output; it does not background the job." },
+                "timeout_ms": { "type": "integer", "minimum": 0, "description": "Foreground kill deadline in ms. Default 300000; 0 disables the deadline. Positive values are clamped to 1000 to 600000. Timeout kills the process and returns partial output; it does not background the job." },
                 "allow_host_python_package_install": { "type": "boolean", "description": "Only true when the user explicitly asked to modify the host Python environment; installs must use --user or a virtual environment." }
             },
             "required": ["command"]
@@ -1456,6 +1456,23 @@ mod tests {
         assert!(native_write_file_tool().sensitive);
         assert!(native_edit_file_tool().sensitive);
         assert!(native_run_command_tool().sensitive);
+    }
+
+    #[test]
+    fn bash_timeout_schema_accepts_zero_and_values_above_the_cap() {
+        let tool = native_run_command_tool();
+        for timeout in [0, 600_001] {
+            assert!(crate::chat::tool_runtime::validate_tool_arguments(
+                &tool,
+                &serde_json::json!({ "command": "echo ok", "timeout_ms": timeout })
+            )
+            .is_ok());
+        }
+        assert!(crate::chat::tool_runtime::validate_tool_arguments(
+            &tool,
+            &serde_json::json!({ "command": "echo ok", "timeout_ms": -1 })
+        )
+        .is_err());
     }
 
     #[test]

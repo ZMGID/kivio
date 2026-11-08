@@ -385,14 +385,14 @@ pub async fn run_captured_command(
     })
 }
 
-/// Optional foreground kill deadline for `bash`. `None` = wait until the
-/// process exits (user stop still cancels). Explicit `timeout_ms` is a kill,
-/// not a promote-to-background.
+/// Foreground kill deadline for `bash`. Omission defaults to five minutes;
+/// explicit zero disables the deadline. User stop still cancels the process.
 pub fn bash_foreground_timeout_ms(arguments: &Value) -> Option<u64> {
-    arguments
-        .get("timeout_ms")
-        .and_then(|value| value.as_u64())
-        .map(|ms| ms.clamp(CHAT_TOOL_MIN_TIMEOUT_MS, CHAT_TOOL_MAX_TIMEOUT_MS))
+    match arguments.get("timeout_ms").and_then(|value| value.as_u64()) {
+        Some(0) => None,
+        Some(ms) => Some(ms.clamp(CHAT_TOOL_MIN_TIMEOUT_MS, CHAT_TOOL_MAX_TIMEOUT_MS)),
+        None => Some(300_000),
+    }
 }
 
 pub async fn run_command(
@@ -1238,11 +1238,6 @@ async fn run_shell_command(
     exec_shell_command(build_shell_command(command), cwd, timeout_ms, state).await
 }
 
-/// Spawn an already-built shell `Command` and capture its output.
-/// `timeout_ms` is a kill deadline (Pi-style): omit it and the command runs
-/// until it exits. Split from `run_shell_command` so tests can exercise a
-/// specific shell builder (e.g. the PowerShell fallback) regardless of which
-/// shell `build_shell_command` would pick on this machine.
 async fn exec_shell_command(
     mut cmd: Command,
     cwd: PathBuf,
@@ -2433,9 +2428,37 @@ mod tests {
         assert_eq!(cwd.as_deref(), Some("focus-pomodoro"));
     }
 
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn windows_run_command_extracts_drive_alias_cwd() {
+        let temp = std::env::temp_dir().to_string_lossy().replace('\\', "/");
+        let (drive, _) = temp.split_once(':').expect("temp directory has a drive");
+        let drive = drive.to_ascii_lowercase();
+        let expected = [format!("{drive}:\\"), format!("/{drive}")];
+        for alias in [format!("/{drive}"), format!("/mnt/{drive}")] {
+            let output = run_command(
+                &NativeToolWorkspace::standalone(),
+                &serde_json::json!({ "command": format!("cd {alias} && pwd"), "timeout_ms": 5_000 }),
+                None,
+                None,
+            )
+            .await
+            .expect("drive alias cwd should run");
+            assert!(
+                output.lines().any(|line| expected
+                    .iter()
+                    .any(|root| line.trim().eq_ignore_ascii_case(root))),
+                "unexpected cwd for {alias}: {output}"
+            );
+        }
+    }
+
     #[test]
-    fn bash_foreground_timeout_ms_is_none_when_omitted() {
-        assert_eq!(bash_foreground_timeout_ms(&serde_json::json!({})), None);
+    fn bash_foreground_timeout_ms_is_none_when_zero() {
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 0 })),
+            None
+        );
         assert_eq!(
             bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 5_000 })),
             Some(5_000)
@@ -2443,6 +2466,34 @@ mod tests {
         assert_eq!(
             bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 1 })),
             Some(CHAT_TOOL_MIN_TIMEOUT_MS)
+        );
+    }
+
+    #[test]
+    fn bash_foreground_timeout_defaults_to_five_minutes() {
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({})),
+            Some(300_000)
+        );
+    }
+
+    #[test]
+    fn bash_foreground_timeout_zero_is_unlimited_and_positive_values_are_clamped() {
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 0 })),
+            None
+        );
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 1 })),
+            Some(CHAT_TOOL_MIN_TIMEOUT_MS)
+        );
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 5_000 })),
+            Some(5_000)
+        );
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": u64::MAX })),
+            Some(600_000)
         );
     }
 

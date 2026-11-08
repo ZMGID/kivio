@@ -463,8 +463,8 @@ fn format_tool_timeout_error(
     }
     if tool.source == "native" && tool.name == "bash" {
         msg.push_str(
-            " 请勿原样重试同一条调用。有限长命令应省略 timeout_ms，让 bash 等到进程退出；\
-不要改成 background:true。只有永不退出的 server 才进后台。需要硬性杀进程时再传更大的 timeout_ms。",
+            " 请勿原样重试同一条调用。先缩小命令范围；确需更长时间时设置更大的 timeout_ms，\
+明确不设期限时使用 timeout_ms:0。不要把有限命令改成 background:true；只有永不退出的 server 才进后台。",
         );
     } else {
         msg.push_str(

@@ -71,6 +71,7 @@ pub struct SubAgentManager {
     pub(crate) sessions: session::Sessions,
     pub irc: irc::Bus,
     pub(crate) awaits: awaits::AwaitGraph,
+    pub(crate) waits: wait::WaitState,
     pub(crate) eval: eval::Kernels,
     pub(crate) pools: workpool::Pools,
     user_interrupted: std::sync::Mutex<std::collections::HashMap<String, Interruption>>,
@@ -97,6 +98,7 @@ impl SubAgentManager {
         self.eval.forget_root(root);
         self.pools.forget_root(root);
         self.irc.forget(root);
+        self.waits.forget(root);
         self.jobs.cancel_root(root);
         self.jobs.remove_root(root);
         self.registry.remove_root(root);

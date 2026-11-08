@@ -81,7 +81,7 @@ const JTD_TYPES: &[&str] = &[
     "uint32",
 ];
 
-fn is_jtd_document(schema: &Value) -> bool {
+fn is_jtd_document(schema: &Value, allow_number: bool) -> bool {
     let Some(schema) = schema.as_object() else {
         return false;
     };
@@ -89,20 +89,26 @@ fn is_jtd_document(schema: &Value) -> bool {
         "metadata" => true,
         "nullable" | "additionalProperties" => value.is_boolean(),
         "ref" | "discriminator" => value.is_string(),
-        "type" => value.as_str().is_some_and(|kind| JTD_TYPES.contains(&kind)),
+        "type" => value
+            .as_str()
+            .is_some_and(|kind| JTD_TYPES.contains(&kind) || (allow_number && kind == "number")),
         "enum" => value
             .as_array()
             .is_some_and(|values| values.iter().all(Value::is_string)),
-        "elements" | "values" => is_jtd_document(value),
-        "properties" | "optionalProperties" | "definitions" | "mapping" => value
-            .as_object()
-            .is_some_and(|map| map.values().all(is_jtd_document)),
+        "elements" | "values" => is_jtd_document(value, allow_number),
+        "properties" | "optionalProperties" | "definitions" | "mapping" => {
+            value.as_object().is_some_and(|map| {
+                map.values()
+                    .all(|value| is_jtd_document(value, allow_number))
+            })
+        }
         _ => false,
     })
 }
 
 fn convert_jtd(schema: &Value) -> Result<Value, String> {
-    if !is_jtd_document(schema) {
+    // OMP passes `number` through inside explicit JTD forms, but not for format detection.
+    if !is_jtd_document(schema, true) {
         return Err("Invalid JTD output schema.".into());
     }
     let forms = ["enum", "elements", "type", "values", "discriminator", "ref"]
@@ -125,7 +131,7 @@ fn convert_jtd(schema: &Value) -> Result<Value, String> {
     } else if let Some(kind) = schema.get("type").and_then(Value::as_str) {
         let kind = match kind {
             "timestamp" => "string",
-            "float32" | "float64" => "number",
+            "float32" | "float64" | "number" => "number",
             "boolean" | "string" => kind,
             _ => "integer",
         };
@@ -218,7 +224,7 @@ fn normalize_schema_node(schema: &Value, root: bool) -> Result<Value, String> {
     let root_jtd = root
         && schema.get("properties").is_some()
         && schema.get("type").is_none()
-        && is_jtd_document(schema);
+        && is_jtd_document(schema, false);
     let jtd_type = schema
         .get("type")
         .and_then(Value::as_str)
@@ -1109,6 +1115,37 @@ mod tests {
         assert!(validate_result(&schema, &json!({"items":["wrong"]})).is_err());
         assert!(validate_result(&schema, &json!({"comment":"missing items"})).is_err());
         assert!(validate_result(&json!(schema.to_string()), &json!({"items":["wrong"]})).is_err());
+    }
+
+    #[test]
+    fn omp_numeric_shorthand_preserves_fractional_values_and_json_schema_constraints() {
+        let schema = json!({"properties":{"confidence":{"type":"number"}},"optionalProperties":{"scores":{"elements":{"type":"number"}}}});
+        assert!(validate_result(&schema, &json!({"confidence":0.75,"scores":[1.25]})).is_ok());
+        for invalid in [
+            json!({}),
+            json!({"confidence":"0.75"}),
+            json!({"confidence":0.75,"scores":["wrong"]}),
+            json!({"confidence":0.75,"extra":1}),
+        ] {
+            assert!(validate_result(&schema, &invalid).is_err());
+        }
+        let json_schema = json!({"properties":{"score":{"type":"number","minimum":0.5}}});
+        assert!(validate_result(&json_schema, &json!({})).is_ok());
+        assert!(validate_result(&json_schema, &json!({"score":0.25})).is_err());
+        assert!(validate_result(&json_schema, &json!({"score":0.75})).is_ok());
+        assert!(validate_result(
+            &json!({"properties":{"score":{"type":"number"}}}),
+            &json!({})
+        )
+        .is_ok());
+        for invalid in [
+            json!({"elements":{"type":"unknown"}}),
+            json!({"elements":{"type":"number","elements":{}}}),
+            json!({"properties":{"score":{"type":"number"}},"optionalProperties":{"score":{"type":"number"}}}),
+            json!({"optionalProperties":{"score":{"type":"number","minimum":0.5}}}),
+        ] {
+            assert!(validate_schema(&invalid).is_err());
+        }
     }
 
     #[test]

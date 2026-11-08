@@ -200,7 +200,7 @@ fn resolve_tool_path(
     raw_path: &str,
     allow_missing: bool,
 ) -> Result<PathBuf, String> {
-    let expanded = expand_home_prefix(raw_path)?;
+    let expanded = expand_tool_path(raw_path)?;
     if expanded.trim().is_empty() {
         return Err("File path cannot be empty".to_string());
     }
@@ -224,7 +224,7 @@ pub fn resolve_tool_existing_dir(
 ) -> Result<PathBuf, String> {
     if workspace.has_project() {
         if let Some(cwd_arg) = raw_path.map(str::trim).filter(|path| !path.is_empty()) {
-            let expanded = expand_home_prefix(cwd_arg)?;
+            let expanded = expand_tool_path(cwd_arg)?;
             if Path::new(&expanded).is_absolute() {
                 let path = resolve_read_path(cwd_arg)?;
                 if !path.is_dir() {
@@ -328,7 +328,7 @@ fn resolve_project_path(
     allow_missing: bool,
 ) -> Result<PathBuf, String> {
     let root = project_root_required(workspace)?;
-    let expanded = expand_home_prefix(raw_path)?;
+    let expanded = expand_tool_path(raw_path)?;
     if expanded.trim().is_empty() {
         return Err("路径为空，请提供项目内的文件或目录路径。".to_string());
     }
@@ -367,8 +367,7 @@ fn canonicalize_existing_or_missing(path: &Path, _allow_missing: bool) -> Result
     Ok(resolved)
 }
 
-/// Expands a leading `~` / `~/` / `~\` to the user home directory (shell-style).
-fn expand_home_prefix(raw_path: &str) -> Result<String, String> {
+fn expand_tool_path(raw_path: &str) -> Result<String, String> {
     let trimmed = raw_path.trim();
     if trimmed.is_empty() {
         return Ok(String::new());
@@ -385,11 +384,30 @@ fn expand_home_prefix(raw_path: &str) -> Result<String, String> {
         let home = user_home_dir()?;
         return Ok(home.join(rest).to_string_lossy().to_string());
     }
+    #[cfg(target_os = "windows")]
+    {
+        let mut parts = trimmed.split('/');
+        if parts.next() == Some("") {
+            let first = parts.next().unwrap_or_default();
+            let drive = if first.eq_ignore_ascii_case("mnt") {
+                parts.next().unwrap_or_default()
+            } else {
+                first
+            };
+            if drive.len() == 1 && drive.as_bytes()[0].is_ascii_alphabetic() {
+                let rest = parts
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                return Ok(format!("{}:/{rest}", drive.to_ascii_uppercase()));
+            }
+        }
+    }
     Ok(trimmed.to_string())
 }
 
 fn candidate_path(raw_path: &str) -> Result<PathBuf, String> {
-    let expanded = expand_home_prefix(raw_path)?;
+    let expanded = expand_tool_path(raw_path)?;
     if expanded.is_empty() {
         return Err("路径为空，请提供要访问的文件或目录路径。".to_string());
     }
@@ -413,6 +431,71 @@ fn fs_canonicalize_existing_or_self(path: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_drive_aliases_resolve_for_file_and_cwd_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().to_str().unwrap().replace('\\', "/");
+        let (drive, rest) = native.split_once(':').expect("temp directory has a drive");
+        let alias = format!("/{}{}", drive.to_ascii_lowercase(), rest);
+        let aliases = [alias.clone(), format!("/mnt{alias}")];
+        let file = dir.path().join("existing.txt");
+        fs::write(&file, "hello").unwrap();
+        let workbench = dir.path().join("workbench");
+        let project_root = dir.path().join("project");
+        fs::create_dir(&project_root).unwrap();
+        let workspaces = [
+            NativeToolWorkspace::conversation(workbench.clone()),
+            NativeToolWorkspace::project(
+                "project_test".into(),
+                "Test".into(),
+                Some(project_root.display().to_string()),
+            ),
+        ];
+        for workspace in &workspaces {
+            for alias in &aliases {
+                assert_eq!(
+                    resolve_tool_existing_dir(workspace, Some(alias)).unwrap(),
+                    dir.path().canonicalize().unwrap(),
+                    "cwd alias {alias}"
+                );
+                assert_eq!(
+                    resolve_tool_read_path(workspace, &format!("{alias}/existing.txt")).unwrap(),
+                    file.canonicalize().unwrap(),
+                    "read alias {alias}"
+                );
+                assert_eq!(
+                    resolve_tool_write_path(workspace, &format!("{alias}/new.txt")).unwrap(),
+                    dir.path().canonicalize().unwrap().join("new.txt"),
+                    "write alias {alias}"
+                );
+            }
+        }
+        assert!(!workbench.exists());
+    }
+
+    #[test]
+    fn path_expansion_preserves_non_drive_aliases() {
+        for path in ["/data", "/mnt/data", r"\\server\share\file"] {
+            assert_eq!(expand_tool_path(path).unwrap(), path);
+        }
+        #[cfg(not(target_os = "windows"))]
+        for path in ["/d/folder", "/mnt/d/folder"] {
+            assert_eq!(expand_tool_path(path).unwrap(), path);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_drive_aliases_include_drive_roots() {
+        for alias in ["/d", "/d/", "/mnt/D", "/MNT/d/"] {
+            assert_eq!(
+                Path::new(&expand_tool_path(alias).unwrap()),
+                Path::new(r"D:\")
+            );
+        }
+    }
 
     #[test]
     fn project_tools_reject_missing_roots_without_creating_them() {

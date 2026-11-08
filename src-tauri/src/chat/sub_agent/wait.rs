@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::future::Future;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -14,10 +15,53 @@ use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
 use super::jobs::{JobManager, JobSnapshot, JobStatus};
 use super::{prompts, SubAgentCallCtx, WAIT_TOOL_NAME};
 
-const WAIT_LIMIT: Duration = Duration::from_secs(300);
+const WAIT_LADDER: [u64; 5] = [5, 10, 30, 60, 300];
+const WAIT_IDLE_NOTICE: &str = "<system-notice>\nNothing new after {{waited}} of back-to-back waits. Waiting is not progress: each response MUST advance the task. Make as much progress as you can on everything that does not need what you are waiting on; call `wait` again only once nothing else is left. Results and messages arrive on their own.\n</system-notice>";
 const SETTLE_WINDOW: Duration = Duration::from_millis(1500);
 const NOTHING_TO_WAIT_FOR: &str =
     "Nothing to wait for: no background subagent job you started is running.";
+
+#[derive(Default)]
+pub(crate) struct WaitState {
+    idle: Mutex<HashMap<(String, String), IdleStreak>>,
+}
+
+struct IdleStreak {
+    rung: usize,
+    ended_at: Instant,
+    waited: Duration,
+}
+
+impl WaitState {
+    fn take(&self, root: &str, owner: &str) -> Option<IdleStreak> {
+        self.idle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&(root.into(), owner.into()))
+            .filter(|streak| streak.ended_at.elapsed() < Duration::from_secs(60))
+    }
+
+    fn elapsed(&self, root: &str, owner: &str, rung: usize, waited: Duration) {
+        self.idle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                (root.into(), owner.into()),
+                IdleStreak {
+                    rung,
+                    ended_at: Instant::now(),
+                    waited,
+                },
+            );
+    }
+
+    pub(crate) fn forget(&self, root: &str) {
+        self.idle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retain(|(conversation, _), _| conversation != root);
+    }
+}
 
 pub fn definition() -> ChatToolDefinition {
     ChatToolDefinition {
@@ -158,6 +202,11 @@ where
     P: Fn(super::irc::Message) -> F,
     F: Future<Output = Result<(), String>>,
 {
+    let streak = manager.waits.take(root, owner);
+    let rung = streak
+        .as_ref()
+        .map_or(0, |streak| (streak.rung + 1).min(WAIT_LADDER.len() - 1));
+    let window = Duration::from_secs(WAIT_LADDER[rung]);
     let mut incoming = manager.irc.subscribe();
     let mut changed_jobs = manager.jobs.subscribe();
     let mut changed_awaits = manager.awaits.subscribe();
@@ -174,18 +223,14 @@ where
     tokio::pin!(job_wait);
     tokio::pin!(cancelled);
     tokio::pin!(steering);
-    let deadline = tokio::time::sleep(WAIT_LIMIT);
+    let deadline = tokio::time::sleep(window);
     tokio::pin!(deadline);
     loop {
-        let asked_targets: Vec<_> = asked.iter().map(|debt| debt.target.clone()).collect();
         let parent = manager
             .registry
             .get(root, owner)
             .map(|record| record.parent_id);
-        let mut claim = manager.irc.claim(root, owner, |message| {
-            (!message.progress || parent.as_ref() == Some(&message.from))
-                && (!message.broadcast || asked_targets.contains(&message.from))
-        });
+        let mut claim = manager.irc.claim_wait(root, owner, parent.as_deref());
         if !claim.messages().is_empty() {
             let messages = claim.messages().to_vec();
             if owner == super::MAIN_AGENT_ID {
@@ -269,7 +314,17 @@ where
             changed = changed_awaits.changed() => if changed.is_err() { return Err("Agent wait graph stopped".into()); },
             changed = io.services.changed() => if changed.is_err() { return Err("Background service manager stopped".into()); },
             output = &mut job_wait, if has_jobs => return Ok(output),
-            _ = &mut deadline => return Ok(result("No result or reply arrived before the wait limit. Background updates arrive automatically.".into(), &[])),
+            _ = &mut deadline => {
+                let waited = streak.as_ref().map_or(Duration::ZERO, |streak| streak.waited) + window;
+                let _ = manager.admission.with_active_root(root, || manager.waits.elapsed(root, owner, rung, waited));
+                let jobs = manager.jobs.running(root, owner);
+                let mut output = result("No result or reply arrived before the wait limit. Background updates arrive automatically.".into(), &jobs.iter().collect::<Vec<_>>());
+                if rung > 0 {
+                    output.content.push_str("\n\n");
+                    output.content.push_str(&prompts::render(WAIT_IDLE_NOTICE, &json!({ "waited": format_duration(waited.as_millis() as u64) })));
+                }
+                return Ok(output);
+            },
         }
     }
 }
@@ -330,6 +385,7 @@ async fn wait_for_jobs(
     let progress_interval = Duration::from_millis(500);
     let mut progress =
         tokio::time::interval_at(Instant::now() + progress_interval, progress_interval);
+    progress.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut settle_deadline = None;
     loop {
         let mut any_running = false;
@@ -672,7 +728,79 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn wait_stays_pending_until_background_work_finishes() {
+    async fn broadcast_answer_before_wait_is_consumed_once() {
+        broadcast_answer_is_consumed_once(false).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn broadcast_answer_during_wait_is_consumed_once() {
+        broadcast_answer_is_consumed_once(true).await;
+    }
+
+    async fn broadcast_answer_is_consumed_once(during_wait: bool) {
+        let manager = SubAgentManager::default();
+        manager
+            .irc
+            .seed_message(peer_message(1, "ChildA", "Main", false));
+        let wait = || async {
+            let (_services, changed) = tokio::sync::watch::channel(0);
+            wait_for_events(
+                &manager,
+                "root",
+                "ChildA",
+                pending(),
+                pending(),
+                pending(),
+                CoordinationIo {
+                    services: changed,
+                    service_ids: Vec::new(),
+                    completed_services: |_: &[String]| Ok(Vec::new()),
+                    persist_message: |_| std::future::ready(Ok(())),
+                },
+            )
+            .await
+        };
+        let mut waiting = Box::pin(wait());
+        if during_wait {
+            assert!(futures::poll!(&mut waiting).is_pending());
+        }
+        let mut reply = peer_message(2, "Main", "ChildA", false);
+        reply.broadcast = true;
+        manager.irc.seed_message(reply);
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("a correlated broadcast must answer the wait");
+        };
+        assert_eq!(output.unwrap().raw["messages"][0]["id"], "2");
+        assert!(manager.irc.pending_replies("root", "ChildA").is_empty());
+        let mut second = Box::pin(wait());
+        let std::task::Poll::Ready(output) = futures::poll!(&mut second) else {
+            panic!("consumed answers must not leave reply debt");
+        };
+        assert_eq!(output.unwrap().content, NOTHING_TO_WAIT_FOR);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_idle_wait_returns_after_five_seconds() {
+        let manager = SubAgentManager::default();
+        manager.jobs.register("root", "Main", "Scout", "research");
+        let mut waiting = Box::pin(test_coordinated_wait(
+            &manager,
+            pending(),
+            pending(),
+            |_| {},
+        ));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("first idle wait must return after five seconds");
+        };
+        assert_eq!(output.unwrap().raw["useless"], true);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_window_leaves_background_result_available_once() {
         let manager = SubAgentManager::default();
         let (job, _) = manager.jobs.register("root", "Main", "Scout", "research");
         let mut waiting = Box::pin(test_coordinated_wait(
@@ -683,16 +811,217 @@ mod tests {
         ));
         assert!(futures::poll!(&mut waiting).is_pending());
 
-        tokio::time::advance(Duration::from_secs(120)).await;
-        assert!(
-            futures::poll!(&mut waiting).is_pending(),
-            "an idle timeout must not wake the model while work continues"
-        );
-
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("idle wait must yield without consuming running work");
+        };
+        assert_eq!(output.unwrap().raw["jobs"][0]["status"], "running");
+        drop(waiting);
         manager.jobs.settle(&job, Ok("research finished".into()));
-        let output = waiting.await.unwrap();
+        let output = test_coordinated_wait(&manager, pending(), pending(), |_| {})
+            .await
+            .unwrap();
         assert!(output.content.contains("research finished"));
         assert!(manager.jobs.take_deliverable("root", "Main").is_empty());
+        let output = test_coordinated_wait(&manager, pending(), pending(), |_| {})
+            .await
+            .unwrap();
+        assert_eq!(output.content, NOTHING_TO_WAIT_FOR);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_wait_ladder_reminds_and_resets_after_work() {
+        let manager = SubAgentManager::default();
+        manager.jobs.register("root", "Main", "Scout", "research");
+        let mut total = 0;
+        for seconds in [5, 10, 30, 60, 300, 300] {
+            let updates = Mutex::new(0);
+            let mut waiting = Box::pin(test_coordinated_wait(
+                &manager,
+                pending(),
+                pending(),
+                |_| *updates.lock().unwrap() += 1,
+            ));
+            assert!(futures::poll!(&mut waiting).is_pending());
+            tokio::time::advance(Duration::from_secs(seconds - 1)).await;
+            assert!(futures::poll!(&mut waiting).is_pending());
+            tokio::time::advance(Duration::from_secs(1)).await;
+            let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+                panic!("wait must return after {seconds} seconds");
+            };
+            assert!(
+                *updates.lock().unwrap() <= 3,
+                "progress snapshots must not replay missed ticks after a long pause"
+            );
+            total += seconds;
+            let output = output.unwrap();
+            assert_eq!(output.content.contains("<system-notice>"), seconds != 5);
+            if seconds != 5 {
+                assert!(output.content.contains(&format!(
+                    "Nothing new after {}",
+                    format_duration(total * 1000)
+                )));
+            }
+        }
+        tokio::time::advance(Duration::from_secs(60)).await;
+        let mut waiting = Box::pin(test_coordinated_wait(
+            &manager,
+            pending(),
+            pending(),
+            |_| {},
+        ));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("60 seconds outside wait must reset the ladder");
+        };
+        assert!(!output.unwrap().content.contains("<system-notice>"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_wait_state_is_owner_scoped_and_drop_resets_it() {
+        let manager = SubAgentManager::default();
+        for (root, owner) in [("root", "Main"), ("root", "Child"), ("other", "Main")] {
+            manager.jobs.register(root, owner, "Scout", "research");
+            let (_services, changed) = tokio::sync::watch::channel(0);
+            let mut waiting = Box::pin(wait_for_events(
+                &manager,
+                root,
+                owner,
+                pending(),
+                pending(),
+                pending(),
+                CoordinationIo {
+                    services: changed,
+                    service_ids: Vec::new(),
+                    completed_services: |_: &[String]| Ok(Vec::new()),
+                    persist_message: |_| std::future::ready(Ok(())),
+                },
+            ));
+            assert!(futures::poll!(&mut waiting).is_pending());
+            tokio::time::advance(Duration::from_secs(5)).await;
+            let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+                panic!("each owner must start at five seconds");
+            };
+            assert!(!output.unwrap().content.contains("<system-notice>"));
+        }
+        let mut waiting = Box::pin(test_coordinated_wait(
+            &manager,
+            pending(),
+            pending(),
+            |_| {},
+        ));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        drop(waiting);
+        let mut waiting = Box::pin(test_coordinated_wait(
+            &manager,
+            pending(),
+            pending(),
+            |_| {},
+        ));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(futures::poll!(&mut waiting).is_ready());
+        drop(waiting);
+        let (_services, changed) = tokio::sync::watch::channel(0);
+        let mut deleting = Box::pin(wait_for_events(
+            &manager,
+            "root",
+            "Main",
+            pending(),
+            pending(),
+            pending(),
+            CoordinationIo {
+                services: changed,
+                service_ids: vec!["running-service".into()],
+                completed_services: |_: &[String]| Ok(Vec::new()),
+                persist_message: |_| std::future::ready(Ok(())),
+            },
+        ));
+        assert!(futures::poll!(&mut deleting).is_pending());
+        manager.forget_conversation("root");
+        tokio::time::advance(Duration::from_secs(10)).await;
+        assert!(futures::poll!(&mut deleting).is_ready());
+        assert!(manager
+            .waits
+            .idle
+            .lock()
+            .unwrap()
+            .keys()
+            .all(|(root, _)| root != "root"));
+        assert!(manager
+            .waits
+            .idle
+            .lock()
+            .unwrap()
+            .contains_key(&("other".into(), "Main".into())));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn useful_cancelled_and_failed_waits_reset_idle_streak() {
+        for outcome in ["reply", "cancel", "error"] {
+            let manager = SubAgentManager::default();
+            manager.jobs.register("root", "Main", "Scout", "research");
+            let mut first = Box::pin(test_coordinated_wait(
+                &manager,
+                pending(),
+                pending(),
+                |_| {},
+            ));
+            assert!(futures::poll!(&mut first).is_pending());
+            tokio::time::advance(Duration::from_secs(5)).await;
+            assert!(futures::poll!(&mut first).is_ready());
+            drop(first);
+            if outcome != "cancel" {
+                manager
+                    .irc
+                    .seed_message(peer_message(1, "Peer", "Main", false));
+            }
+            let (_services, changed) = tokio::sync::watch::channel(0);
+            let output = wait_for_events(
+                &manager,
+                "root",
+                "Main",
+                pending(),
+                std::future::ready(()),
+                pending(),
+                CoordinationIo {
+                    services: changed,
+                    service_ids: Vec::new(),
+                    completed_services: |_: &[String]| Ok(Vec::new()),
+                    persist_message: |_| {
+                        std::future::ready(if outcome == "error" {
+                            Err("disk failure".into())
+                        } else {
+                            Ok(())
+                        })
+                    },
+                },
+            )
+            .await;
+            match outcome {
+                "reply" => assert_eq!(output.unwrap().raw["messages"][0]["id"], "1"),
+                "cancel" => assert_eq!(output.unwrap_err(), "cancelled"),
+                _ => {
+                    assert_eq!(output.unwrap_err(), "disk failure");
+                    let mut retry = manager.irc.claim("root", "Main", |_| true);
+                    assert_eq!(retry.messages().len(), 1);
+                    retry.commit();
+                }
+            }
+            let mut next = Box::pin(test_coordinated_wait(
+                &manager,
+                pending(),
+                pending(),
+                |_| {},
+            ));
+            assert!(futures::poll!(&mut next).is_pending());
+            tokio::time::advance(Duration::from_secs(5)).await;
+            let std::task::Poll::Ready(output) = futures::poll!(&mut next) else {
+                panic!("{outcome} must reset the idle ladder");
+            };
+            assert!(!output.unwrap().content.contains("<system-notice>"));
+        }
     }
 
     #[tokio::test(start_paused = true)]

@@ -140,6 +140,187 @@ fn provider() -> MockModelServer {
     ])
 }
 
+#[tokio::test]
+async fn completion_probe_preserves_effective_request_without_mutating_history() {
+    use crate::chat::agent::provider_runtime::DiscardModelSink;
+    use crate::chat::model::{GenerateOptions, ModelTool, RequestMetadata, ToolChoice};
+
+    let response = || {
+        MockResponse::Sse(vec![
+        json!({"choices":[{"delta":{"content":"{\"pct\":25}","tool_calls":[{"index":0,"id":"unexecuted","function":{"name":"read","arguments":"{\"path\":\"never-opened\"}"}}]},"finish_reason":"tool_calls"}]}).to_string(),
+        "[DONE]".into(),
+    ])
+    };
+    let server = MockModelServer::start((0..4).map(|_| response()).collect());
+    let state = test_app_state();
+    let provider = crate::chat::agent::loop_::tests::test_provider(&server.base_url);
+    let runtime = crate::chat::model::agent_runtime::AppAgentModel::new(&state, &provider, 1);
+    let mut call = ModelCall {
+        provider_id: provider.id.clone(),
+        model: "test-model".into(),
+        capabilities: None,
+        history: vec![
+            RuntimeMessage::system("persona and skills"),
+            RuntimeMessage::text(ModelRole::User, "work"),
+        ],
+        tools: vec![ModelTool {
+            name: "read".into(),
+            description: "Read file".into(),
+            input_schema: json!({"type":"object","properties":{"path":{"type":"string"}}}),
+        }],
+        options: GenerateOptions {
+            max_tokens: 2345,
+            thinking_enabled: true,
+            thinking_level: Some("high".into()),
+            temperature: Some(0.3),
+            provider_options: json!({"parallel_tool_calls":false}),
+            ..Default::default()
+        },
+        metadata: RequestMetadata {
+            label: "worker".into(),
+            conversation_id: Some("probe-conversation".into()),
+            message_id: Some("probe-message".into()),
+            ..Default::default()
+        },
+        delivery: ModelDelivery::Streamed,
+    };
+    for forced in [false, true] {
+        if forced {
+            force_budget_completion(&mut call);
+        }
+        let saved = crate::chat::agent::history::request_from_history(
+            &call.history,
+            &call.model,
+            call.tools.clone(),
+            call.options.clone(),
+            call.metadata.clone(),
+        );
+        let probe = completion_probe_call(
+            &call,
+            vec![("read".into(), "{\"path\":\"a\"}".into())],
+            "partial work".into(),
+            None,
+        );
+        assert_eq!(
+            probe.metadata.conversation_id,
+            call.metadata.conversation_id
+        );
+        assert_eq!(probe.metadata.message_id, call.metadata.message_id);
+        assert_eq!(
+            serde_json::to_value(&probe.options).unwrap(),
+            serde_json::to_value(&call.options).unwrap()
+        );
+        assert_eq!(
+            probe.options.tool_choice,
+            if forced {
+                ToolChoice::None
+            } else {
+                ToolChoice::Auto
+            }
+        );
+        runtime
+            .generate(call.clone(), &mut DiscardModelSink)
+            .await
+            .unwrap();
+        runtime
+            .generate(probe, &mut DiscardModelSink)
+            .await
+            .unwrap();
+        let bodies = server.captured_bodies();
+        let worker: Value = serde_json::from_str(&bodies[bodies.len() - 2]).unwrap();
+        let mut probe: Value = serde_json::from_str(bodies.last().unwrap()).unwrap();
+        assert_eq!(worker["max_tokens"], 2345);
+        assert_eq!(worker["reasoning_effort"], "high");
+        assert_eq!(worker["prompt_cache_key"], "probe-conversation");
+        if !forced {
+            assert_eq!(worker["tools"][0]["function"]["name"], "read");
+        }
+        assert_eq!(probe["tools"], worker["tools"]);
+        assert_eq!(
+            probe["messages"].as_array().unwrap().len(),
+            worker["messages"].as_array().unwrap().len() + 2
+        );
+        probe["messages"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(worker["messages"].as_array().unwrap().len());
+        assert_eq!(
+            probe, worker,
+            "all wire controls and the full history prefix must match"
+        );
+        let after = crate::chat::agent::history::request_from_history(
+            &call.history,
+            &call.model,
+            call.tools.clone(),
+            call.options.clone(),
+            call.metadata.clone(),
+        );
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(saved).unwrap(),
+            "ephemeral tools and text must never enter worker history"
+        );
+    }
+}
+
+#[test]
+fn retained_persona_refreshes_completion_and_visible_identity_without_losing_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let registry = registry::AgentRegistry::default();
+    let own = record(dir.path());
+    registry.restore(own.clone());
+    let mut peer = own.clone();
+    peer.id = "B".into();
+    peer.display_name = "Visible peer".into();
+    registry.restore(peer.clone());
+    peer.id = "hidden".into();
+    peer.published = false;
+    registry.restore(peer.clone());
+    peer.id = "parked".into();
+    peer.published = true;
+    peer.status = registry::AgentStatus::Parked;
+    registry.restore(peer);
+    let peers = registry.list_visible_to("r", "A");
+    let mut options = super::super::spawn::SpawnOptions::default();
+    let render = |options: &super::super::spawn::SpawnOptions| {
+        render_worker_persona(
+            "role marker\n\nPreloaded Skill (skill):\nskill contents",
+            "context contents",
+            &Default::default(),
+            options,
+            "A",
+            &peers,
+        )
+    };
+    let mut system = format!("project scaffold\n\n{}", render(&options));
+    for structured in [true, false, true] {
+        options.completion = if structured {
+            super::super::spawn::CompletionPolicy::Yield {
+                schema: Some(json!({"type":"object"})),
+                strict: true,
+            }
+        } else {
+            super::super::spawn::CompletionPolicy::Text
+        };
+        refresh_worker_persona(&mut system, &render(&options));
+        assert_eq!(system.matches("§ Role").count(), 1);
+        assert_eq!(system.contains("No `yield` tool exists"), !structured);
+        assert!(system.contains("Your id is `A`"));
+        assert!(system.contains("`B`"));
+        assert!(!system.contains("`hidden`"));
+        assert!(!system.contains("`parked`"));
+        assert!(system.contains("history://"));
+        for content in [
+            "project scaffold",
+            "role marker",
+            "skill contents",
+            "context contents",
+        ] {
+            assert!(system.contains(content));
+        }
+    }
+}
+
 async fn transcript(record: &registry::AgentRecord, cwd: &std::path::Path) {
     create_transcript(&record.session_file, &record.output_file)
         .await

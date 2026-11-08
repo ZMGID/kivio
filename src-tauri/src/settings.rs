@@ -1368,8 +1368,8 @@ fn default_skill_fallback_mode() -> String {
 }
 
 pub const CHAT_TOOL_MIN_TIMEOUT_MS: u64 = 1_000;
-/// 显式 `bash` `timeout_ms` 与 `bash_output` wait 的上限。省略 timeout 的
-/// 前台 bash 等到进程退出，不受默认 60s 工具超时约束。
+/// 显式 `bash` `timeout_ms` 与 `bash_output` wait 的上限。前台 bash 默认
+/// 300s，显式 0 时不限时，不受默认 60s 工具超时约束。
 pub const CHAT_TOOL_MAX_TIMEOUT_MS: u64 = 600_000;
 /// 单条工具结果字符上限的合法区间。低于下限会把编译错误/测试输出截到没意义；
 /// 高于上限则失去"防上下文撑爆"的作用。`None`（不截断）由 sanitize 归一到默认值。

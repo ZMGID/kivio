@@ -43,6 +43,15 @@ struct AdmissionState {
 }
 
 impl Admission {
+    pub(crate) fn with_active_root<T>(&self, root: &str, apply: impl FnOnce() -> T) -> Option<T> {
+        let admission = self.root(root);
+        let retired = admission
+            .allocation
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (!*retired).then(apply)
+    }
+
     pub(crate) async fn acquire_wake(
         &self,
         app: &tauri::AppHandle,

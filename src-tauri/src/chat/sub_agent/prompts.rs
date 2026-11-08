@@ -303,6 +303,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn structured_worker_prompt_requires_the_available_yield_tool() {
+        let prompt = render(
+            SUBAGENT_SYSTEM,
+            &json!({"agent": "Reviewer", "structured": true}),
+        );
+        assert!(!prompt.contains("No `yield` tool exists"));
+        assert!(prompt.contains("`yield`"));
+    }
+
+    #[test]
     fn renders_conditionals_loops_and_root_paths() {
         let template = "{{#if multiple}}{{jobs.length}} jobs{{else}}Job {{jobs.[0].id}}{{/if}}:{{#each jobs}}{{#if @root.multiple}}[{{this.id}}]{{/if}}{{this.result}}{{#unless @last}},{{/unless}}{{/each}}{{#unless missing}}!{{/unless}}";
         let one = render(
@@ -417,7 +427,8 @@ pub const TASK_FOLLOW_UP: &str = include_str!("prompts/task-follow-up.md");
 pub const ASYNC_RESULT: &str = include_str!("prompts/async-result.md");
 /// Stage-one background-job wait description; no variables.
 pub const WAIT_TOOL: &str = include_str!("prompts/wait.md");
-/// Worker system prompt: `agent`, `context`, `planReference`,
+/// Worker system prompt: `agent`, `context`, `structured`, `outputSchema`,
+/// `workPoolYieldItems`, `planReference`,
 /// `planReferencePath`, `worktree`, `ircSelfId`, `ircPeers` (each has `id`,
 /// `displayName`, `kind`, `status`, `activity`), `ircOmittedCount`, and
 /// `ircParkedCount`.
