@@ -672,6 +672,72 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn broadcast_answer_before_wait_is_consumed_once() {
+        broadcast_answer_is_consumed_once(false).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn broadcast_answer_during_wait_is_consumed_once() {
+        broadcast_answer_is_consumed_once(true).await;
+    }
+
+    async fn broadcast_answer_is_consumed_once(during_wait: bool) {
+        let manager = SubAgentManager::default();
+        manager.irc.seed_message(peer_message(1, "ChildA", "Main", false));
+        let wait = || async {
+            let (_services, changed) = tokio::sync::watch::channel(0);
+            wait_for_events(
+                &manager,
+                "root",
+                "ChildA",
+                pending(),
+                pending(),
+                pending(),
+                CoordinationIo {
+                    services: changed,
+                    service_ids: Vec::new(),
+                    completed_services: |_: &[String]| Ok(Vec::new()),
+                    persist_message: |_| std::future::ready(Ok(())),
+                },
+            ).await
+        };
+        let mut waiting = Box::pin(wait());
+        if during_wait {
+            assert!(futures::poll!(&mut waiting).is_pending());
+        }
+        let mut reply = peer_message(2, "Main", "ChildA", false);
+        reply.broadcast = true;
+        manager.irc.seed_message(reply);
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("a correlated broadcast must answer the wait");
+        };
+        assert_eq!(output.unwrap().raw["messages"][0]["id"], "2");
+        assert!(manager.irc.pending_replies("root", "ChildA").is_empty());
+        let mut second = Box::pin(wait());
+        let std::task::Poll::Ready(output) = futures::poll!(&mut second) else {
+            panic!("consumed answers must not leave reply debt");
+        };
+        assert_eq!(output.unwrap().content, NOTHING_TO_WAIT_FOR);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_idle_wait_returns_after_five_seconds() {
+        let manager = SubAgentManager::default();
+        manager.jobs.register("root", "Main", "Scout", "research");
+        let mut waiting = Box::pin(test_coordinated_wait(
+            &manager, pending(), pending(), |_| {},
+        ));
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(Duration::from_secs(4)).await;
+        assert!(futures::poll!(&mut waiting).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let std::task::Poll::Ready(output) = futures::poll!(&mut waiting) else {
+            panic!("first idle wait must return after five seconds");
+        };
+        assert_eq!(output.unwrap().raw["useless"], true);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn wait_stays_pending_until_background_work_finishes() {
         let manager = SubAgentManager::default();
         let (job, _) = manager.jobs.register("root", "Main", "Scout", "research");

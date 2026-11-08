@@ -153,6 +153,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn builtin_structured_roles_require_their_report_fields() {
+        for definition in builtin_agent_definitions().into_iter().filter(|definition| {
+            matches!(definition.id.as_str(), "scout" | "reviewer" | "security-reviewer")
+        }) {
+            let schema = definition.output.as_ref().expect("builtin report schema");
+            crate::chat::sub_agent::structured::validate_schema(schema).unwrap();
+            assert!(
+                crate::chat::sub_agent::structured::validate_result(
+                    schema,
+                    &serde_json::json!({}),
+                )
+                .is_err(),
+                "{} must reject a report missing its required fields",
+                definition.id,
+            );
+        }
+    }
+
+    #[test]
     fn builtins_expose_omp_personas_and_spawn_policies() {
         let defs = builtin_agent_definitions();
         assert_eq!(

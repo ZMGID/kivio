@@ -2446,6 +2446,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bash_foreground_timeout_defaults_to_five_minutes() {
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({})),
+            Some(300_000)
+        );
+    }
+
+    #[test]
+    fn bash_foreground_timeout_zero_is_unlimited_and_positive_values_are_clamped() {
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 0 })),
+            None
+        );
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 1 })),
+            Some(CHAT_TOOL_MIN_TIMEOUT_MS)
+        );
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": 5_000 })),
+            Some(5_000)
+        );
+        assert_eq!(
+            bash_foreground_timeout_ms(&serde_json::json!({ "timeout_ms": u64::MAX })),
+            Some(600_000)
+        );
+    }
+
     #[tokio::test]
     async fn foreground_timeout_kills_and_returns_partial_output() {
         let dir = std::env::temp_dir().join(format!("kivio_timeout_{}", uuid::Uuid::new_v4()));

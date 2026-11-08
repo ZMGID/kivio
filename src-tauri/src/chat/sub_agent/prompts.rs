@@ -303,6 +303,16 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn structured_worker_prompt_requires_the_available_yield_tool() {
+        let prompt = render(
+            SUBAGENT_SYSTEM,
+            &json!({"agent": "Reviewer", "structured": true}),
+        );
+        assert!(!prompt.contains("No `yield` tool exists"));
+        assert!(prompt.contains("`yield`"));
+    }
+
+    #[test]
     fn renders_conditionals_loops_and_root_paths() {
         let template = "{{#if multiple}}{{jobs.length}} jobs{{else}}Job {{jobs.[0].id}}{{/if}}:{{#each jobs}}{{#if @root.multiple}}[{{this.id}}]{{/if}}{{this.result}}{{#unless @last}},{{/unless}}{{/each}}{{#unless missing}}!{{/unless}}";
         let one = render(

@@ -1170,6 +1170,64 @@ mod tests {
         assert!(bus.pending_replies("r", "A").is_empty());
     }
 
+    #[test]
+    fn broadcast_reply_clears_question_with_or_without_progress() {
+        for progress in [false, true] {
+            let bus = Bus::default();
+            bus.seed_message(message(1, "ChildA", "Main", false));
+            if progress {
+                bus.seed_message(message(2, "Main", "ChildA", true));
+            }
+            let pending = bus.pending_replies("r", "ChildA");
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].target, "Main");
+            assert_eq!(pending[0].promised, progress);
+
+            let mut broadcast = message(3, "Main", "ChildA", false);
+            broadcast.broadcast = true;
+            bus.seed_message(broadcast);
+            assert!(bus.pending_replies("r", "Main").is_empty());
+            assert!(bus.pending_replies("r", "ChildA").is_empty());
+        }
+    }
+
+    #[test]
+    fn broadcast_reply_preserves_newer_and_unrelated_questions() {
+        let bus = Bus::default();
+        bus.seed_message(message(3, "ChildA", "Main", false));
+        bus.seed_message(message(4, "ChildA", "ChildB", false));
+        assert_eq!(bus.pending_replies("r", "ChildA").len(), 2);
+
+        let mut old_broadcast = message(2, "Main", "ChildA", false);
+        old_broadcast.broadcast = true;
+        bus.seed_message(old_broadcast);
+        assert_eq!(bus.pending_replies("r", "ChildA").len(), 2);
+
+        bus.seed_message(message(5, "ChildC", "ChildA", false));
+        assert_eq!(bus.pending_replies("r", "ChildA").len(), 2);
+
+        let mut other_root = message(6, "Main", "ChildA", false);
+        other_root.root = "other".into();
+        other_root.broadcast = true;
+        bus.seed_message(other_root);
+        assert_eq!(bus.pending_replies("r", "ChildA").len(), 2);
+        assert!(bus.pending_replies("other", "Main").is_empty());
+
+        let mut unrelated_broadcast = message(7, "Main", "ChildB", false);
+        unrelated_broadcast.broadcast = true;
+        bus.seed_message(unrelated_broadcast);
+        assert_eq!(bus.pending_replies("r", "ChildA").len(), 2);
+        assert!(bus.pending_replies("r", "Main").is_empty());
+
+        let mut answer = message(8, "Main", "ChildA", false);
+        answer.broadcast = true;
+        bus.seed_message(answer);
+        let pending = bus.pending_replies("r", "ChildA");
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].target, "ChildB");
+        assert!(bus.pending_replies("r", "Main").is_empty());
+    }
+
     #[tokio::test]
     async fn descendant_question_releases_the_ancestor_barrier_but_peer_and_progress_do_not() {
         let manager = super::super::SubAgentManager::default();

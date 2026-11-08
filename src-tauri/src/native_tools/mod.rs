@@ -414,6 +414,58 @@ fn fs_canonicalize_existing_or_self(path: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_drive_aliases_resolve_for_file_and_cwd_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let native = dir.path().to_str().unwrap().replace('\\', "/");
+        let (drive, rest) = native.split_once(':').expect("temp directory has a drive");
+        let alias = format!("/{}{}", drive.to_ascii_lowercase(), rest);
+        let aliases = [alias.clone(), format!("/mnt{alias}")];
+        let file = dir.path().join("existing.txt");
+        fs::write(&file, "hello").unwrap();
+        let workbench = dir.path().join("workbench");
+        let workspaces = [
+            NativeToolWorkspace::conversation(workbench.clone()),
+            NativeToolWorkspace::project(
+                "project_test".into(),
+                "Test".into(),
+                Some(dir.path().display().to_string()),
+            ),
+        ];
+        for workspace in &workspaces {
+            for alias in &aliases {
+                assert_eq!(
+                    resolve_tool_existing_dir(workspace, Some(alias)).unwrap(),
+                    dir.path().canonicalize().unwrap(),
+                    "cwd alias {alias}"
+                );
+                assert_eq!(
+                    resolve_tool_read_path(workspace, &format!("{alias}/existing.txt")).unwrap(),
+                    file.canonicalize().unwrap(),
+                    "read alias {alias}"
+                );
+                assert_eq!(
+                    resolve_tool_write_path(workspace, &format!("{alias}/new.txt")).unwrap(),
+                    dir.path().canonicalize().unwrap().join("new.txt"),
+                    "write alias {alias}"
+                );
+            }
+        }
+        assert!(!workbench.exists());
+    }
+
+    #[test]
+    fn path_expansion_preserves_non_drive_aliases() {
+        for path in ["/data", "/mnt/data", r"\\server\share\file"] {
+            assert_eq!(expand_home_prefix(path).unwrap(), path);
+        }
+        #[cfg(not(target_os = "windows"))]
+        for path in ["/d/folder", "/mnt/d/folder"] {
+            assert_eq!(expand_home_prefix(path).unwrap(), path);
+        }
+    }
+
     #[test]
     fn project_tools_reject_missing_roots_without_creating_them() {
         let dir = tempfile::tempdir().unwrap();
