@@ -2643,6 +2643,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         disabled: isCurrentConversationBusy() || streamCoarse.streaming || streamCoarse.streamFrozen || streamCoarse.cancelling || conversationOccupied,
         onSwitch: handleSwitchBranch,
       } : null}
+      workspaceBlank={!currentConversation || currentConversationIsBlank}
     />
   ), [
     activeAgentRuntime,
@@ -2668,6 +2669,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     isCurrentConversationBusy,
     conversationOccupied,
     conversationProject?.name,
+    currentConversationIsBlank,
     selectedProject?.name,
     popoutConversationIds,
     streamCoarse.streaming,

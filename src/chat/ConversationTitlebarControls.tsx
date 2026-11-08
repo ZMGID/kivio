@@ -42,6 +42,8 @@ export interface ConversationTitlebarControlsProps {
   onOpenGitPanel: () => void
   onOpenTasks: () => void
   historyBranches?: WorkspaceHistoryBranches | null
+  /** 空白新对话：工作区面板默认收起。 */
+  workspaceBlank?: boolean
 }
 
 /** 会话页顶栏控件。非 mac 渲染进全宽标题栏带，mac 仍留在主区 52px 顶栏。 */
@@ -72,6 +74,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   onOpenGitPanel,
   onOpenTasks,
   historyBranches,
+  workspaceBlank,
 }: ConversationTitlebarControlsProps) {
   return (
     <>
@@ -140,7 +143,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
           </div>
         )}
         {!usesChatRuntime && workdir && (
-          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} />
+          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} blank={workspaceBlank} />
         )}
         {!usesChatRuntime && !dockOpen && (
           <div className="shrink-0" data-tauri-drag-region="false">

@@ -205,7 +205,7 @@ export const dockApi = {
   },
 
   async gitBranches(workdir: string): Promise<GitBranchesResult> {
-    if (!isTauriRuntime()) return { branches: [], remotes: [] }
+    if (!isTauriRuntime()) return { branches: [], remotes: [], remoteBranches: [], defaultBranch: '' }
     const raw = await invoke('dock_git_branches', { workdir })
     return normalizeGitBranchesResult(raw)
   },
@@ -256,6 +256,11 @@ export const dockApi = {
   async gitPush(workdir: string): Promise<GitMutationResult> {
     if (!isTauriRuntime()) return MOCK_MUTATION
     return normalizeGitMutationResult(await invoke('dock_git_push', { workdir }))
+  },
+
+  async gitPull(workdir: string): Promise<GitMutationResult> {
+    if (!isTauriRuntime()) return MOCK_MUTATION
+    return normalizeGitMutationResult(await invoke('dock_git_pull', { workdir }))
   },
 
   async gitSwitchBranch(workdir: string, branch: string): Promise<GitMutationResult> {

@@ -299,6 +299,52 @@ export function rememberEditor(editor: string) {
   setLocalStorageItem(CHAT_PREFERRED_EDITOR_KEY, editor)
 }
 
+// ---------- 工作区面板：按对话记住内联展开/收起 ----------
+
+const CHAT_WORKSPACE_PANEL_KEY = 'kivio-chat-workspace-panel'
+const WORKSPACE_PANEL_MAX_ENTRIES = 300
+
+function readWorkspacePanelMap(): Record<string, boolean> {
+  try {
+    const parsed = JSON.parse(getLocalStorageItem(CHAT_WORKSPACE_PANEL_KEY) ?? '{}')
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, boolean> : {}
+  } catch {
+    return {}
+  }
+}
+
+/** null = 用户没对这条对话操作过，按默认规则决定。 */
+export function getWorkspacePanelOpen(conversationId: string): boolean | null {
+  const value = readWorkspacePanelMap()[conversationId]
+  return typeof value === 'boolean' ? value : null
+}
+
+export function rememberWorkspacePanelOpen(conversationId: string, open: boolean) {
+  const map = readWorkspacePanelMap()
+  delete map[conversationId]
+  map[conversationId] = open
+  const keys = Object.keys(map)
+  for (const key of keys.slice(0, Math.max(0, keys.length - WORKSPACE_PANEL_MAX_ENTRIES))) delete map[key]
+  setLocalStorageItem(CHAT_WORKSPACE_PANEL_KEY, JSON.stringify(map))
+}
+
+// ---------- 工作区面板：显示哪些项（参照 T3 的 threadDetailsItems，只存与默认不同的选择） ----------
+
+const CHAT_WORKSPACE_ITEMS_KEY = 'kivio-chat-workspace-items'
+
+export function getWorkspaceHiddenItems(): string[] {
+  try {
+    const parsed = JSON.parse(getLocalStorageItem(CHAT_WORKSPACE_ITEMS_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+export function rememberWorkspaceHiddenItems(items: string[]) {
+  setLocalStorageItem(CHAT_WORKSPACE_ITEMS_KEY, JSON.stringify(items))
+}
+
 function normalizeChatWindowGeometry(
   parsed: Partial<ChatWindowGeometry>,
 ): ChatWindowGeometry | null {

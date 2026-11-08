@@ -97,9 +97,21 @@ pub struct GitBranchItem {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitBranchesResponse {
+    /// 本地分支，按最近提交排序。
     pub branches: Vec<GitBranchItem>,
     /// 已配置的远程名；为空时面板不提供推送。
     pub remotes: Vec<String>,
+    /// 远程分支（如 origin/feat）；与本地同名的 origin 分支已去重，符号引用（origin/HEAD）已排除。
+    pub remote_branches: Vec<GitRemoteBranchItem>,
+    /// origin/HEAD 指向的默认分支；缺失时回退 main / master。
+    pub default_branch: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRemoteBranchItem {
+    pub name: String,
+    pub remote: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -965,33 +977,77 @@ fn git_branches_sync(workdir: &str) -> Result<GitBranchesResponse, String> {
         &state.repo_root,
         &[
             "for-each-ref",
-            "--format=%(refname:short)%00%(upstream:short)%00%(HEAD)%00%(upstream:track)",
+            "--sort=-committerdate",
+            "--format=%(refname)%00%(upstream:short)%00%(HEAD)%00%(upstream:track)%00%(symref)",
             "refs/heads",
+            "refs/remotes",
         ],
     )?;
     let mut branches = Vec::new();
+    let mut remote_refs = Vec::new();
     for line in output.stdout.lines() {
         let parts: Vec<&str> = line.split('\0').collect();
-        if parts.len() < 4 {
+        if parts.len() < 5 || !parts[4].trim().is_empty() {
             continue;
         }
-        let name = parts[0].trim();
-        if name.is_empty() {
-            continue;
+        let full = parts[0].trim();
+        if let Some(name) = full.strip_prefix("refs/heads/") {
+            let (ahead, behind) = parse_upstream_track(parts[3]);
+            branches.push(GitBranchItem {
+                name: name.to_string(),
+                current: parts[2].trim() == "*" || name == state.head,
+                upstream: parts[1].trim().to_string(),
+                ahead,
+                behind,
+            });
+        } else if let Some(name) = full.strip_prefix("refs/remotes/") {
+            remote_refs.push(name.to_string());
         }
-        let (ahead, behind) = parse_upstream_track(parts[3]);
-        branches.push(GitBranchItem {
-            name: name.to_string(),
-            current: parts[2].trim() == "*" || name == state.head,
-            upstream: parts[1].trim().to_string(),
-            ahead,
-            behind,
-        });
     }
+    let remotes = list_remotes(&state.repo_root)?;
+    let local: std::collections::HashSet<&str> =
+        branches.iter().map(|branch| branch.name.as_str()).collect();
+    let remote_branches = remote_refs
+        .into_iter()
+        // 和 T3 一样：origin 上与本地同名的分支不重复列出，其他远程保留。
+        .filter(|name| {
+            name.strip_prefix("origin/")
+                .map_or(true, |branch| !local.contains(branch))
+        })
+        .map(|name| {
+            let remote = remotes
+                .iter()
+                .find(|remote| name.starts_with(&format!("{remote}/")))
+                .cloned()
+                .unwrap_or_default();
+            GitRemoteBranchItem { name, remote }
+        })
+        .collect();
+    let default_branch = resolve_default_branch(&state.repo_root, &local);
     Ok(GitBranchesResponse {
         branches,
-        remotes: list_remotes(&state.repo_root)?,
+        remotes,
+        remote_branches,
+        default_branch,
     })
+}
+
+fn resolve_default_branch(repo_root: &str, local: &std::collections::HashSet<&str>) -> String {
+    let symbolic = run_git(
+        repo_root,
+        &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .ok()
+    .filter(|output| output.status.success())
+    .map(|output| trim_output(&output.stdout));
+    if let Some(branch) = symbolic.as_deref().and_then(|value| value.strip_prefix("origin/")) {
+        return branch.to_string();
+    }
+    ["main", "master"]
+        .into_iter()
+        .find(|name| local.contains(name))
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn list_remotes(repo_root: &str) -> Result<Vec<String>, String> {
@@ -1273,14 +1329,32 @@ dock_git_mutation!(dock_git_push, git_push_sync, ());
 fn git_switch_branch_sync(workdir: &str, branch: String) -> Result<GitOperationResponse, String> {
     let state = ensure_ready_state(workdir)?;
     let branch = validate_branch_name(&state.repo_root, &branch)?;
-    operation_response(
-        workdir,
-        git_success(&state.repo_root, &["switch", branch.as_str()]),
-        "分支已切换。",
-    )
+    let repo = state.repo_root.as_str();
+    // 选中远程分支（origin/feat）时建立同名本地跟踪分支，和 T3 的 checkout 行为一致。
+    let from_remote = !ref_exists(repo, &format!("refs/heads/{branch}"))
+        && ref_exists(repo, &format!("refs/remotes/{branch}"));
+    let args: Vec<&str> = if from_remote {
+        vec!["switch", "--track", branch.as_str()]
+    } else {
+        vec!["switch", branch.as_str()]
+    };
+    operation_response(workdir, git_success(repo, &args), "分支已切换。")
 }
 
 dock_git_mutation!(dock_git_switch_branch, git_switch_branch_sync, (branch: String));
+
+fn git_pull_sync(workdir: &str) -> Result<GitOperationResponse, String> {
+    let state = ensure_ready_state(workdir)?;
+    let result = if state.upstream.is_empty() {
+        Err("当前分支没有上游，无法拉取。".to_string())
+    } else {
+        // 只快进：分叉时报错交给用户处理，不替用户合并。
+        git_success(&state.repo_root, &["pull", "--ff-only"])
+    };
+    operation_response(workdir, result, "已拉取。")
+}
+
+dock_git_mutation!(dock_git_pull, git_pull_sync, ());
 
 fn git_create_branch_sync(
     workdir: &str,
@@ -1754,6 +1828,70 @@ mod tests {
             git_branches_sync(&root).expect("branches").remotes,
             vec!["upstream".to_string()]
         );
+    }
+
+    #[test]
+    fn branches_list_remote_refs_and_switching_to_one_tracks_it() {
+        let dir = temp_dir("remote-branches");
+        let root = dir.to_str().unwrap().to_string();
+        let remote = temp_dir("remote-branches-origin");
+        let remote_path = remote.to_str().unwrap().to_string();
+        git_success(&remote_path, &["init", "--bare", "-q"]).expect("bare remote");
+        // Windows 的规范化路径带 \\?\ 前缀，git 会当成 SSH 主机名；用 file:// URL。
+        let remote_url = format!(
+            "file:///{}",
+            remote_path
+                .trim_start_matches(r"\\?\")
+                .replace('\\', "/")
+                .trim_start_matches('/')
+        );
+        git_init_sync(&root, Some("main".to_string())).expect("init ok");
+        fs::write(dir.join("a.txt"), "a\n").expect("write a");
+        git_success(&root, &["add", "-A", "--"]).expect("add");
+        let commit = |message: &str| {
+            git_success(
+                &root,
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    message,
+                ],
+            )
+            .expect("commit");
+        };
+        commit("init");
+        git_success(&root, &["remote", "add", "origin", remote_url.as_str()]).expect("remote");
+        git_success(&root, &["push", "-q", "-u", "origin", "main"]).expect("push main");
+        git_success(&root, &["switch", "-q", "-c", "feat"]).expect("feat");
+        commit("feat");
+        git_success(&root, &["push", "-q", "origin", "feat"]).expect("push feat");
+        git_success(&root, &["switch", "-q", "main"]).expect("back to main");
+        git_success(&root, &["branch", "-q", "-D", "feat"]).expect("drop local feat");
+
+        let listed = git_branches_sync(&root).expect("branches");
+        let remote_names: Vec<&str> = listed
+            .remote_branches
+            .iter()
+            .map(|branch| branch.name.as_str())
+            .collect();
+        // origin/main 与本地 main 同名，去重；origin/feat 没有本地分支，保留。
+        assert_eq!(remote_names, vec!["origin/feat"]);
+        assert_eq!(listed.remote_branches[0].remote, "origin");
+        assert_eq!(listed.default_branch, "main");
+
+        let switched = git_switch_branch_sync(&root, "origin/feat".to_string()).expect("switch");
+        assert!(switched.ok, "{}", switched.message);
+        assert_eq!(switched.state.head, "feat");
+        assert_eq!(switched.state.upstream, "origin/feat");
+
+        let pulled = git_pull_sync(&root).expect("pull");
+        assert!(pulled.ok, "{}", pulled.message);
     }
 
     #[test]

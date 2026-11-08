@@ -900,6 +900,7 @@ pub fn run() {
             dock::git::dock_git_discard_all,
             dock::git::dock_git_commit,
             dock::git::dock_git_push,
+            dock::git::dock_git_pull,
             dock::git::dock_git_switch_branch,
             dock::git::dock_git_create_branch,
             dock::git::dock_git_init,

@@ -5,13 +5,13 @@
 // 位置：浮层贴触发按钮右下展开；内联常驻时贴对话区右缘，并通过 --chat-details-inset 让出内容宽度。
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, ArrowDown, ArrowUp, Check, CloudUpload, Code2, FileDiff, FolderOpen, GitBranch, GitCommitHorizontal, GitFork, Loader2, Monitor, Square, SquareMenu } from 'lucide-react'
-import { Button, IconButton } from '../../components/Button'
-import { notifyError, notifySuccess } from '../../components/appNoticeStore'
+import { Activity, ArrowDown, ArrowUp, Check, CloudDownload, CloudUpload, Code2, FileDiff, FolderOpen, GitBranch, GitCommitHorizontal, GitFork, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu } from 'lucide-react'
+import { IconButton } from '../../components/Button'
+import { notifyError } from '../../components/appNoticeStore'
 import { i18n, type Lang } from '../../components/i18n'
-import { Input } from '../../settings/public/controls'
-import type { GitBranchItem } from '../../api/dockContracts'
-import { getRememberedEditor, rememberEditor } from '../persistence'
+import type { GitBranchesResult } from '../../api/dockContracts'
+import { getRememberedEditor, getWorkspaceHiddenItems, getWorkspacePanelOpen, rememberEditor, rememberWorkspaceHiddenItems, rememberWorkspacePanelOpen } from '../persistence'
+import { chatApi, type ConversationBranch } from '../api'
 import { dockApi } from './api'
 import { PANEL_ICON, PANEL_SCOPE_ATTR, PanelRow, PanelSection, PanelSkeletonRows, SplitRow } from './WorkspacePanelParts'
 import { motionClass, usePresence } from './workspacePanelMotion'
@@ -23,8 +23,10 @@ import { subagentsApi } from '../../api/subagents'
 import { useGitBadge } from './useGitBadge'
 import { useBackgroundTasks } from '../useBackgroundTasks'
 import { partitionTasks } from '../backgroundTasks'
-import { ConversationBranchDialog } from '../ConversationBranches'
-import { resolveGitMenu, resolveGitQuickAction, type GitAction, type GitHint } from './workspaceGitAction'
+import { defaultCommitMessage, resolveGitMenu, resolveGitQuickAction, type GitAction, type GitHint } from './workspaceGitAction'
+import { WorkspaceBranchPicker, type BranchPick } from './WorkspaceBranchPicker'
+import { WorkspaceItemsMenu } from './WorkspaceItemsMenu'
+import { WORKSPACE_ITEMS, type WorkspaceItemId } from './workspaceItems'
 
 export type WorkspaceHistoryBranches = {
   disabled: boolean
@@ -43,10 +45,14 @@ type WorkspaceActionsMenuProps = {
   onOpenGitPanel?: () => void
   onOpenTasks?: () => void
   historyBranches?: WorkspaceHistoryBranches | null
+  /** 空白新对话：内联常驻默认不展开，用户点开后才显示。 */
+  blank?: boolean
 }
 
 const EDITOR_LABELS: Record<string, string> = { vscode: 'VS Code', cursor: 'Cursor', zed: 'Zed', windsurf: 'Windsurf' }
 const ITEM = 'kv-menu-row w-full text-neutral-800 transition-colors hover:bg-neutral-100 disabled:opacity-50'
+/** 动作结果在按钮原位停留的时长。 */
+const SUCCESS_VISIBLE_MS = 4000
 const PANEL_WIDTH = 300
 const PANEL_GAP = 16
 /** 面板离窗口/对话区右缘的最小距离。 */
@@ -89,13 +95,20 @@ export function WorkspaceActionsMenu({
   onOpenGitPanel,
   onOpenTasks,
   historyBranches,
+  blank = false,
 }: WorkspaceActionsMenuProps) {
   const t = i18n[lang]
   const inline = useInlineRoom(inlineAllowed && !dockOpen, conversationId)
-  const [choice, setChoice] = useState<boolean | null>(null)
-  const open = choice ?? inline
+  // 用户按对话的展开/收起选择；没选过时，空白新对话默认不展开（T3 也让空草稿保持安静）。
+  const [choice, setChoiceState] = useState<boolean | null>(() => conversationId ? getWorkspacePanelOpen(conversationId) : null)
+  useEffect(() => { setChoiceState(conversationId ? getWorkspacePanelOpen(conversationId) : null) }, [conversationId])
+  const setChoice = useCallback((next: boolean) => {
+    setChoiceState(next)
+    // 只记内联常驻的选择；浮层是临时的，不影响下次。
+    if (conversationId && inline) rememberWorkspacePanelOpen(conversationId, next)
+  }, [conversationId, inline])
+  const open = inline ? (choice ?? !blank) : choice === true
   const presence = usePresence(open)
-  // 行内点击后的「关闭」在内联模式下不生效，面板常驻。
   const setOpen = (next: boolean) => { if (next || !inline) setChoice(next) }
   const showGit = Boolean(projectName)
   const { state, diffStat, loading: gitLoading, applyMutationState, refresh } = useGitBadge(open && showGit ? workdir : '', true)
@@ -105,16 +118,42 @@ export function WorkspaceActionsMenu({
   const wrapRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [busy, setBusy] = useState<GitAction | 'branch' | 'init' | null>(null)
+  /** 动作完成后在按钮原位显示几秒结果，代替弹窗/通知（参照 T3 的 inline success）。 */
+  const [done, setDone] = useState<string | null>(null)
+  useEffect(() => {
+    if (!done) return
+    const timer = window.setTimeout(() => setDone(null), SUCCESS_VISIBLE_MS)
+    return () => window.clearTimeout(timer)
+  }, [done])
   const [editors, setEditors] = useState<string[] | null>(null)
-  const [commitDialog, setCommitDialog] = useState<'commit' | 'commit_push' | null>(null)
-  const [branchDialog, setBranchDialog] = useState(false)
-  const [message, setMessage] = useState('')
-  const [branches, setBranches] = useState<GitBranchItem[] | null>(null)
-  const [remotes, setRemotes] = useState<string[] | null>(null)
+  const [branchData, setBranchData] = useState<GitBranchesResult | null>(null)
+  const [hiddenItems, setHiddenItems] = useState<string[]>(() => getWorkspaceHiddenItems())
+  const [itemsMenu, setItemsMenu] = useState<{ x: number; y: number } | null>(null)
+  const show = Object.fromEntries(WORKSPACE_ITEMS.map((id) => [id, !hiddenItems.includes(id)])) as Record<WorkspaceItemId, boolean>
+  const allHidden = WORKSPACE_ITEMS.every((id) => !show[id])
+  const toggleItem = (id: WorkspaceItemId) => {
+    setHiddenItems((prev) => {
+      const next = prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+      rememberWorkspaceHiddenItems(next)
+      return next
+    })
+  }
+  const [historyList, setHistoryList] = useState<ConversationBranch[] | null>(null)
+  const [historySwitching, setHistorySwitching] = useState(false)
   const { roster, refresh: refreshRoster } = useSubagentRoster(open ? conversationId : null)
 
-  // 模式切换时回到「按空间自动展开」。
-  useEffect(() => { setChoice(null) }, [inline])
+  const historyEnabled = Boolean(historyBranches)
+  // 历史分支随面板打开读取，作为下拉直接切换，不再弹对话框。
+  useEffect(() => {
+    setHistoryList(null)
+    if (!open || !conversationId || !historyEnabled) return
+    let cancelled = false
+    chatApi.getBranches(conversationId).then((list) => { if (!cancelled) setHistoryList(list) }).catch(() => { if (!cancelled) setHistoryList([]) })
+    return () => { cancelled = true }
+  }, [open, conversationId, historyEnabled])
+
+  // 浮层在切到内联模式时作废，避免回到浮层模式后自己弹出来。
+  useEffect(() => { if (!inline) setChoiceState((prev) => (prev === true ? null : prev)) }, [inline])
   // 浮层：顶边贴按钮下沿、右边与按钮右缘对齐；内联：贴对话区右缘，与标题栏下沿留同样间距。
   useLayoutEffect(() => {
     if (!presence.present) return
@@ -155,7 +194,7 @@ export function WorkspaceActionsMenu({
       document.removeEventListener('pointerdown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [open, inline])
+  }, [open, inline, setChoice])
 
   // 打开浮层时把焦点移进面板，键盘可直接 Tab 操作；内联常驻不抢焦点。
   useEffect(() => {
@@ -176,13 +215,9 @@ export function WorkspaceActionsMenu({
   const loadBranches = useCallback(() => {
     let cancelled = false
     dockApi.gitBranches(workdir).then((result) => {
-      if (cancelled) return
-      setBranches(result.branches)
-      setRemotes(result.remotes)
+      if (!cancelled) setBranchData(result)
     }).catch(() => {
-      if (cancelled) return
-      setBranches([])
-      setRemotes([])
+      if (!cancelled) setBranchData({ branches: [], remotes: [], remoteBranches: [], defaultBranch: '' })
     })
     return () => { cancelled = true }
   }, [workdir])
@@ -190,43 +225,48 @@ export function WorkspaceActionsMenu({
     if (!open || !isRepo) return
     return loadBranches()
   }, [open, isRepo, head, loadBranches])
-  useEffect(() => {
-    setBranches(null)
-    setRemotes(null)
-  }, [workdir])
+  useEffect(() => { setBranchData(null) }, [workdir])
 
   const name = projectName || workdir.split(/[\\/]/).filter(Boolean).pop() || workdir
   const editorList = editors ?? []
   // PATH 探测为空时仍显示 VS Code 行：真的找不到时由后端报错提示。
   const preferred = editorList.find((id) => id === getRememberedEditor()) ?? editorList[0] ?? 'vscode'
   const editorName = (id: string) => EDITOR_LABELS[id] ?? id
-  const remotesLoaded = remotes !== null
-  const hasRemote = (remotes?.length ?? 0) > 0
+  const remotesLoaded = branchData !== null
+  const hasRemote = (branchData?.remotes.length ?? 0) > 0
   const quick = resolveGitQuickAction(isRepo ? state : null, hasRemote, Boolean(busy) || !remotesLoaded)
   const menuState = resolveGitMenu(isRepo ? state : null, hasRemote, Boolean(busy) || !remotesLoaded)
   const gitPending = showGit && (!state || (isRepo && !remotesLoaded))
   const syncMeta = isRepo && (state.ahead > 0 || state.behind > 0) ? (
-    <span className="inline-flex items-center gap-1.5">
+    <span className="inline-flex items-center gap-1.5" title={t.workspaceSyncTitle.replace('{ahead}', String(state.ahead)).replace('{behind}', String(state.behind))}>
       {state.ahead > 0 && <span className="inline-flex items-center"><ArrowUp className="size-3" />{state.ahead}</span>}
       {state.behind > 0 && <span className="inline-flex items-center"><ArrowDown className="size-3" />{state.behind}</span>}
     </span>
-  ) : isRepo && quick.kind === 'hint' && quick.hint === 'upToDate' ? <Check className="size-3.5" /> : null
+  ) : null
   const actionLabel: Record<GitAction, string> = {
     commit: t.workspaceCommit,
     commit_push: t.workspaceCommitPush,
     push: t.workspacePush,
+    pull: t.workspacePull,
   }
   const busyLabel: Record<GitAction, string> = {
     commit: t.workspaceCommitting,
     commit_push: t.workspaceCommittingPushing,
     push: t.workspacePushing,
+    pull: t.workspacePulling,
+  }
+  const doneLabel: Record<GitAction, string> = {
+    commit: t.workspaceCommitted,
+    commit_push: t.workspaceCommittedPushed,
+    push: t.workspacePushed,
+    pull: t.workspacePulled,
   }
   const hintLabel: Record<GitHint, string> = {
     busy: '',
     unavailable: t.workspaceHintUnavailable,
     detached: t.workspaceHintDetached,
     noRemote: t.workspaceHintNoRemote,
-    behind: t.workspaceHintBehind,
+    diverged: t.workspaceHintDiverged,
     upToDate: t.workspaceHintUpToDate,
   }
   /** 行内放得下的短说明，完整原因在悬停提示里。 */
@@ -235,7 +275,7 @@ export function WorkspaceActionsMenu({
     unavailable: t.workspaceShortUnavailable,
     detached: t.workspaceShortDetached,
     noRemote: t.workspaceShortNoRemote,
-    behind: t.workspaceShortBehind,
+    diverged: t.workspaceShortDiverged,
     upToDate: t.workspaceShortUpToDate,
   }
 
@@ -249,20 +289,18 @@ export function WorkspaceActionsMenu({
 
   const openInEditor = (editor: string) => {
     rememberEditor(editor)
-    void run(async () => {
-      await dockApi.openInEditor(workdir, editor)
-      notifySuccess(t.workspaceOpenedIn.replace('{editor}', editorName(editor)))
-    })
+    void run(() => dockApi.openInEditor(workdir, editor))
   }
 
-  const switchBranch = (branch: GitBranchItem) => {
-    if (branch.current || busy) return
+  const pickBranch = (pick: BranchPick) => {
+    if (busy) return
     setBusy('branch')
     void run(async () => {
-      const result = await dockApi.gitSwitchBranch(workdir, branch.name)
+      const result = pick.kind === 'create'
+        ? await dockApi.gitCreateBranch(workdir, pick.name)
+        : await dockApi.gitSwitchBranch(workdir, pick.name)
       applyMutationState(result.state)
       if (!result.ok) throw new Error(result.message)
-      notifySuccess(t.workspaceSwitchedTo.replace('{branch}', branch.name))
     }).finally(() => {
       setBusy(null)
       loadBranches()
@@ -284,51 +322,66 @@ export function WorkspaceActionsMenu({
   const gitAction = async (action: GitAction) => {
     if (busy) return
     setBusy(action)
+    setDone(null)
     await run(async () => {
-      if (action !== 'push') {
-        const staged = await dockApi.gitStageAll(workdir)
-        if (!staged.ok) throw new Error(staged.message)
-        const committed = await dockApi.gitCommit(workdir, message.trim())
-        applyMutationState(committed.state)
-        if (!committed.ok) throw new Error(committed.message)
-        setMessage('')
+      if (action === 'pull') {
+        const pulled = await dockApi.gitPull(workdir)
+        applyMutationState(pulled.state)
+        if (!pulled.ok) throw new Error(pulled.message)
+      } else {
+        if (action !== 'push') {
+          // 和 T3 一样直接执行、不弹窗：提交信息按改动文件自动生成。
+          const entries = isRepo ? state.entries : []
+          const staged = await dockApi.gitStageAll(workdir)
+          if (!staged.ok) throw new Error(staged.message)
+          const committed = await dockApi.gitCommit(workdir, defaultCommitMessage(entries))
+          applyMutationState(committed.state)
+          if (!committed.ok) throw new Error(committed.message)
+        }
+        if (action !== 'commit') {
+          const pushed = await dockApi.gitPush(workdir)
+          applyMutationState(pushed.state)
+          if (!pushed.ok) throw new Error(pushed.message)
+        }
       }
-      if (action !== 'commit') {
-        const pushed = await dockApi.gitPush(workdir)
-        applyMutationState(pushed.state)
-        if (!pushed.ok) throw new Error(pushed.message)
-      }
-      notifySuccess(action === 'commit' ? t.workspaceCommitted : action === 'push' ? t.workspacePushed : t.workspaceCommittedPushed)
+      setDone(doneLabel[action])
       void refresh({ silent: true })
+      loadBranches()
     })
     setBusy(null)
   }
 
-  const startAction = (action: GitAction) => {
-    if (action === 'push') void gitAction('push')
-    else setCommitDialog(action)
+  const switchHistory = (branch: ConversationBranch) => {
+    if (!historyBranches || branch.active || historySwitching) return
+    setHistorySwitching(true)
+    void historyBranches.onSwitch(branch.id).then((applied) => {
+      if (!applied || !conversationId) return
+      return chatApi.getBranches(conversationId).then(setHistoryList)
+    }).catch((err) => notifyError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setHistorySwitching(false))
   }
-
-  const submitCommit = async () => {
-    if (!commitDialog || !message.trim()) return
-    const action = commitDialog
-    setCommitDialog(null)
-    await gitAction(action)
-  }
+  const activeHistory = historyList?.find((branch) => branch.active)
 
   const tasksLabel = runningTasks > 0 ? t.chatBgJobsRunning.replace('{n}', String(runningTasks)) : t.dockTabTasks
-  const conversationSection = conversationId ? (
+  const showHistoryRow = show.history && Boolean(historyBranches) && (historyList?.length ?? 0) > 1
+  const conversationSection = conversationId && (showHistoryRow || show.tasks) ? (
     <PanelSection>
-      {historyBranches && (
-        <PanelRow
-          icon={<GitFork className={PANEL_ICON} />}
-          disabled={historyBranches.disabled}
-          onClick={() => setBranchDialog(true)}
-        >
-          <span className="min-w-0 flex-1 truncate">{t.workspaceHistoryBranches}</span>
-        </PanelRow>
+      {showHistoryRow && historyBranches && (
+        <SplitRow
+          icon={historySwitching ? <Loader2 className={`${PANEL_ICON} animate-spin`} /> : <GitFork className={PANEL_ICON} />}
+          label={activeHistory?.label ?? t.workspaceHistoryBranches}
+          meta={t.workspaceHistoryCount.replace('{n}', String(historyList?.length ?? 0))}
+          disabled={historyBranches.disabled || historySwitching}
+          menuLabel={t.workspaceHistoryBranches}
+          menu={(close) => (historyList ?? []).map((branch) => (
+            <button key={branch.id} type="button" role="menuitemradio" aria-checked={branch.active} disabled={branch.active || historyBranches.disabled} className={`${ITEM} ${branch.active ? 'font-medium disabled:opacity-100' : ''}`} onClick={() => { close(); switchHistory(branch) }}>
+              <span className="min-w-0 flex-1 truncate">{branch.label}</span>
+              {branch.active && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />}
+            </button>
+          ))}
+        />
       )}
-      <PanelRow
+      {show.tasks && <PanelRow
         icon={<Activity className={`${PANEL_ICON} ${runningTasks > 0 ? '!text-emerald-500' : ''}`} />}
         onClick={onOpenTasks ? () => { setOpen(false); onOpenTasks() } : undefined}
       >
@@ -338,7 +391,7 @@ export function WorkspaceActionsMenu({
             {runningTasks}
           </span>
         )}
-      </PanelRow>
+      </PanelRow>}
     </PanelSection>
   ) : null
 
@@ -380,17 +433,46 @@ export function WorkspaceActionsMenu({
           aria-hidden={presence.closing || undefined}
           data-inline={inline || undefined}
           data-tauri-drag-region="false"
+          onContextMenu={(event) => {
+            // 参照 T3：右键面板空白处选择显示哪些项；输入框和选中的文字保留系统菜单。
+            const target = event.target as Element
+            if (target.closest('input, textarea') || !window.getSelection()?.isCollapsed) return
+            event.preventDefault()
+            setItemsMenu({ x: event.clientX, y: event.clientY })
+          }}
         >
-          <PanelSection>
-            <PanelRow
+          {itemsMenu && (
+            <WorkspaceItemsMenu
+              at={itemsMenu}
+              lang={lang}
+              hidden={hiddenItems}
+              onToggle={toggleItem}
+              onClose={() => setItemsMenu(null)}
+            />
+          )}
+          {allHidden && (
+            <PanelSection>
+              <PanelRow
+                icon={<SlidersHorizontal className={PANEL_ICON} />}
+                onClick={() => {
+                  const rect = panelRef.current?.getBoundingClientRect()
+                  setItemsMenu({ x: rect?.left ?? 0, y: (rect?.top ?? 0) + 36 })
+                }}
+              >
+                <span className="min-w-0 flex-1 truncate">{t.workspaceCustomize}</span>
+              </PanelRow>
+            </PanelSection>
+          )}
+          {(show.openIn || show.project) && <PanelSection>
+            {show.project && <PanelRow
               icon={<Monitor className={PANEL_ICON} />}
               title={workdir}
               trailing={<FolderOpen className={PANEL_ICON} />}
               onClick={() => void run(() => dockApi.fsOpenPath(workdir, '', 'open'))}
             >
               <span className="min-w-0 flex-1 truncate">{name}</span>
-            </PanelRow>
-            <SplitRow
+            </PanelRow>}
+            {show.openIn && <SplitRow
               icon={<Code2 className={PANEL_ICON} />}
               label={t.workspaceOpenIn.replace('{editor}', editorName(preferred))}
               onPrimary={() => openInEditor(preferred)}
@@ -401,10 +483,10 @@ export function WorkspaceActionsMenu({
                   {id === preferred && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />}
                 </button>
               )) : null}
-            />
-          </PanelSection>
+            />}
+          </PanelSection>}
 
-          {gitPending && (
+          {gitPending && (show.branch || show.gitActions || show.changes) && (
             <PanelSection>
               <div role="status" aria-label={t.dockLoading}>
                 <PanelSkeletonRows widths={[72, 120, 96]} />
@@ -412,52 +494,56 @@ export function WorkspaceActionsMenu({
             </PanelSection>
           )}
 
-          {showGit && state && !gitPending && (isRepo ? (
+          {showGit && state && !gitPending && (isRepo ? ((show.branch || show.gitActions || show.changes) &&
             <PanelSection>
-              <SplitRow
+              {show.branch && <SplitRow
                 icon={busy === 'branch' ? <Loader2 className={`${PANEL_ICON} animate-spin`} /> : <GitBranch className={PANEL_ICON} />}
                 label={state.head || 'HEAD'}
                 meta={syncMeta}
                 disabled={Boolean(busy)}
                 menuLabel={t.dockGitBranchLabel}
-                menu={(close) => (branches ?? []).length === 0 ? (
-                  <div className="px-3 py-2 text-[11px] text-neutral-400">{branches === null ? t.dockLoading : t.dockGitBranchesEmpty}</div>
-                ) : (branches ?? []).map((branch) => (
-                  <button key={branch.name} type="button" role="menuitemradio" aria-checked={branch.current} disabled={branch.current || Boolean(busy)} className={`${ITEM} ${branch.current ? 'font-medium disabled:opacity-100' : ''}`} onClick={() => { close(); switchBranch(branch) }}>
-                    <span className="min-w-0 flex-1 truncate">{branch.name}</span>
-                    {branch.current && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />}
-                  </button>
-                ))}
-              />
-              <SplitRow
-                icon={busy && busy !== 'branch' && busy !== 'init' ? <Loader2 className={`${PANEL_ICON} animate-spin`} /> : quick.action === 'commit' ? <GitCommitHorizontal className={PANEL_ICON} /> : <CloudUpload className={PANEL_ICON} />}
-                label={busy && busy !== 'branch' && busy !== 'init' ? busyLabel[busy] : actionLabel[quick.action]}
-                meta={quick.kind === 'hint' && quick.hint !== 'busy' && !busy ? hintShort[quick.hint] : undefined}
-                disabled={quick.kind === 'hint'}
+                menu={(close) => (
+                  <WorkspaceBranchPicker
+                    data={branchData}
+                    lang={lang}
+                    disabled={Boolean(busy)}
+                    onPick={(pick) => { close(); pickBranch(pick) }}
+                  />
+                )}
+              />}
+              {show.gitActions && <SplitRow
+                icon={done ? <Check className={`${PANEL_ICON} !text-emerald-500`} /> : busy && busy !== 'branch' && busy !== 'init' ? <Loader2 className={`${PANEL_ICON} animate-spin`} /> : quick.action === 'pull' ? <CloudDownload className={PANEL_ICON} /> : quick.action === 'commit' ? <GitCommitHorizontal className={PANEL_ICON} /> : <CloudUpload className={PANEL_ICON} />}
+                label={done ? <span role="status" aria-live="polite">{done}</span> : busy && busy !== 'branch' && busy !== 'init' ? busyLabel[busy] : actionLabel[quick.action]}
+                meta={!done && quick.kind === 'hint' && quick.hint !== 'busy' && !busy ? hintShort[quick.hint] : undefined}
+                disabled={Boolean(done) || quick.kind === 'hint'}
                 hint={quick.kind === 'hint' ? hintLabel[quick.hint] || undefined : undefined}
-                onPrimary={() => { if (quick.kind === 'run') startAction(quick.action) }}
+                onPrimary={() => { if (quick.kind === 'run') void gitAction(quick.action) }}
                 menuLabel={t.workspaceGitOptions}
                 menu={(close) => (
                   <>
-                    <button type="button" role="menuitem" disabled={!menuState.commit} className={ITEM} onClick={() => { close(); startAction('commit') }}>
+                    <button type="button" role="menuitem" disabled={!menuState.commit} className={ITEM} onClick={() => { close(); void gitAction('commit') }}>
                       <GitCommitHorizontal size={14} strokeWidth={1.8} className="shrink-0" />
                       <span className="min-w-0 flex-1">{t.workspaceCommit}</span>
                     </button>
-                    <button type="button" role="menuitem" disabled={!menuState.commit_push} className={ITEM} onClick={() => { close(); startAction('commit_push') }}>
+                    <button type="button" role="menuitem" disabled={!menuState.commit_push} className={ITEM} onClick={() => { close(); void gitAction('commit_push') }}>
                       <CloudUpload size={14} strokeWidth={1.8} className="shrink-0" />
                       <span className="min-w-0 flex-1">{t.workspaceCommitPush}</span>
                     </button>
-                    <button type="button" role="menuitem" disabled={!menuState.push} className={ITEM} onClick={() => { close(); startAction('push') }}>
+                    <button type="button" role="menuitem" disabled={!menuState.push} className={ITEM} onClick={() => { close(); void gitAction('push') }}>
                       <CloudUpload size={14} strokeWidth={1.8} className="shrink-0" />
                       <span className="min-w-0 flex-1">{t.workspacePush}</span>
+                    </button>
+                    <button type="button" role="menuitem" disabled={!menuState.pull} className={ITEM} onClick={() => { close(); void gitAction('pull') }}>
+                      <CloudDownload size={14} strokeWidth={1.8} className="shrink-0" />
+                      <span className="min-w-0 flex-1">{t.workspacePull}</span>
                     </button>
                     {remotesLoaded && !hasRemote && (
                       <div className="px-3 py-1.5 text-[11px] text-neutral-400">{t.workspaceHintNoRemote}</div>
                     )}
                   </>
                 )}
-              />
-              <PanelRow icon={<FileDiff className={PANEL_ICON} />} onClick={onOpenGitPanel ? () => { setOpen(false); onOpenGitPanel() } : undefined}>
+              />}
+              {show.changes && <PanelRow icon={<FileDiff className={PANEL_ICON} />} onClick={onOpenGitPanel ? () => { setOpen(false); onOpenGitPanel() } : undefined}>
                 <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
                   <span className="shrink-0">{t.workspaceChanges}</span>
                   <span className="min-w-0 truncate font-normal text-neutral-400">
@@ -472,9 +558,9 @@ export function WorkspaceActionsMenu({
                     <span aria-hidden className="kv-skeleton ml-auto h-3 w-14 shrink-0 self-center rounded" />
                   ) : null}
                 </span>
-              </PanelRow>
+              </PanelRow>}
             </PanelSection>
-          ) : state.status === 'not_repo' ? (
+          ) : state.status === 'not_repo' && show.gitActions ? (
             <PanelSection>
               <PanelRow
                 icon={busy === 'init' ? <Loader2 className={`${PANEL_ICON} animate-spin`} /> : <GitBranch className={PANEL_ICON} />}
@@ -488,7 +574,7 @@ export function WorkspaceActionsMenu({
 
           {conversationSection}
 
-          {roster && roster.agents.length > 0 && (
+          {show.subagents && roster && roster.agents.length > 0 && (
             <PanelSection>
               <div className="flex items-center justify-between px-2.5 pb-1 pt-1.5 text-[12px] font-medium text-neutral-400">
                 <span>{t.workspaceSubagents}</span>
@@ -531,62 +617,6 @@ export function WorkspaceActionsMenu({
           )}
         </div>,
         document.body)}
-
-      {commitDialog && (
-        <CommitDialog
-          lang={lang}
-          branch={state?.head ?? ''}
-          fileCount={isRepo ? state.entries.length : 0}
-          action={commitDialog}
-          message={message}
-          onMessage={setMessage}
-          onSubmit={() => void submitCommit()}
-          onClose={() => setCommitDialog(null)}
-        />
-      )}
-      {branchDialog && historyBranches && conversationId && (
-        <ConversationBranchDialog
-          key={conversationId}
-          conversationId={conversationId}
-          disabled={historyBranches.disabled}
-          lang={lang}
-          onSwitch={historyBranches.onSwitch}
-          onClose={() => setBranchDialog(false)}
-        />
-      )}
     </div>
-  )
-}
-
-/** 对应 T3 的 Commit 对话框：分支、将提交的范围与提交信息，确认后执行。 */
-function CommitDialog({ lang, branch, fileCount, action, message, onMessage, onSubmit, onClose }: {
-  lang: Lang
-  branch: string
-  fileCount: number
-  action: 'commit' | 'commit_push'
-  message: string
-  onMessage: (value: string) => void
-  onSubmit: () => void
-  onClose: () => void
-}) {
-  const t = i18n[lang]
-  const [dialog, setDialog] = useState<HTMLDialogElement | null>(null)
-  useEffect(() => { dialog?.showModal() }, [dialog])
-  const title = action === 'commit_push' ? t.workspaceCommitPush : t.workspaceCommit
-  return (
-    <dialog ref={setDialog} className="kv-modal" aria-label={title} onCancel={(event) => { event.preventDefault(); onClose() }}>
-      <form onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
-        <h2>{title}</h2>
-        <p className="kv-market-muted">{t.dockGitBranchLabel}: {branch}</p>
-        <p className="kv-market-muted">{t.workspaceCommitScope.replace('{n}', String(fileCount))}</p>
-        <label className="kv-market-field"><span>{t.workspaceCommitMessage}</span>
-          <Input autoFocus aria-label={t.workspaceCommitMessage} value={message} onChange={onMessage} />
-        </label>
-        <footer className="kv-market-dialog-actions">
-          <Button variant="ghost" onClick={onClose}>{t.workspaceCancel}</Button>
-          <Button type="submit" variant="primary" disabled={!message.trim()}>{title}</Button>
-        </footer>
-      </form>
-    </dialog>
   )
 }

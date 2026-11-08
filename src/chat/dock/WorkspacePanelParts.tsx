@@ -132,7 +132,8 @@ function SplitMenu({ anchor, closing, onClose, children }: {
   useLayoutEffect(() => { setRect(anchor.current?.getBoundingClientRect() ?? null) }, [anchor])
   useEffect(() => {
     if (closing) return
-    menuRef.current?.querySelector<HTMLElement>(MENU_ITEM_SELECTOR)?.focus({ preventScroll: true })
+    const menu = menuRef.current
+    ;(menu?.querySelector<HTMLElement>('input') ?? menu?.querySelector<HTMLElement>(MENU_ITEM_SELECTOR))?.focus({ preventScroll: true })
     const onDown = (event: PointerEvent) => {
       const target = event.target as Node
       if (!menuRef.current?.contains(target) && !anchor.current?.contains(target)) onClose()
@@ -185,7 +186,7 @@ function SplitMenu({ anchor, closing, onClose, children }: {
       style={{
         left: rect.left,
         width: rect.width,
-        maxHeight: Math.min(240, Math.max(placeAbove ? rect.top - 12 : below, 96)),
+        maxHeight: Math.min(320, Math.max(placeAbove ? rect.top - 12 : below, 96)),
         ['--chat-popover-origin' as string]: placeAbove ? 'bottom center' : 'top center',
         ['--chat-popover-start-y' as string]: placeAbove ? '3px' : '-3px',
         ...(placeAbove ? { bottom: window.innerHeight - rect.top + 4 } : { top: rect.bottom + 4 }),

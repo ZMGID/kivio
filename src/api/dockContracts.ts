@@ -91,9 +91,16 @@ export type GitBranchItem = {
   behind: number
 }
 
+export type GitRemoteBranchItem = {
+  name: string
+  remote: string
+}
+
 export type GitBranchesResult = {
   branches: GitBranchItem[]
   remotes: string[]
+  remoteBranches: GitRemoteBranchItem[]
+  defaultBranch: string
 }
 
 /** 状态条 diff 徽标：工作区相对 HEAD 的 numstat 汇总。 */
@@ -271,6 +278,14 @@ export function normalizeGitBranchesResult(raw: unknown): GitBranchesResult {
   return {
     branches: Array.isArray(record.branches) ? record.branches.map(normalizeGitBranchItem) : [],
     remotes: pickStringArray(record, 'remotes', 'remotes'),
+    remoteBranches: (() => {
+      const raw = record.remoteBranches ?? record.remote_branches
+      return Array.isArray(raw) ? raw.map((item) => {
+        const entry = asRecord(item)
+        return { name: pickString(entry, 'name', 'name'), remote: pickString(entry, 'remote', 'remote') }
+      }) : []
+    })(),
+    defaultBranch: pickString(record, 'defaultBranch', 'default_branch'),
   }
 }
 
