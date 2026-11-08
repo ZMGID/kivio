@@ -427,7 +427,8 @@ pub const TASK_FOLLOW_UP: &str = include_str!("prompts/task-follow-up.md");
 pub const ASYNC_RESULT: &str = include_str!("prompts/async-result.md");
 /// Stage-one background-job wait description; no variables.
 pub const WAIT_TOOL: &str = include_str!("prompts/wait.md");
-/// Worker system prompt: `agent`, `context`, `planReference`,
+/// Worker system prompt: `agent`, `context`, `structured`, `outputSchema`,
+/// `workPoolYieldItems`, `planReference`,
 /// `planReferencePath`, `worktree`, `ircSelfId`, `ircPeers` (each has `id`,
 /// `displayName`, `kind`, `status`, `activity`), `ircOmittedCount`, and
 /// `ircParkedCount`.

@@ -165,6 +165,7 @@ struct Progress {
     description: Option<String>,
     last_assistant: String,
     history: Vec<RuntimeMessage>,
+    model_call: Option<(ModelCall, ModelProvider)>,
     inflight: Vec<(String, String)>,
     streaming: bool,
     last_finish_reason: Option<FinishReason>,
@@ -249,6 +250,7 @@ pub(crate) struct PreparedWorker {
     thinking_level: Option<String>,
     tools: Vec<ChatToolDefinition>,
     prompt: crate::chat::agent_preparation::PreparedChatPrompt,
+    persona: String,
     skills: Arc<crate::skills::SkillRegistry>,
     hooks: crate::chat::workflow_hooks::Runtime,
     cwd: std::path::PathBuf,
@@ -1355,6 +1357,21 @@ impl ToolExecutor for Executor {
     }
 }
 
+fn force_budget_completion(call: &mut ModelCall) {
+    call.tools.clear();
+    call.options.tool_choice = crate::chat::model::ToolChoice::None;
+    call.options.builtin_web_search = false;
+    let reminder = budget_reminder();
+    if !call
+        .history
+        .iter()
+        .any(|message| message.text_content().contains(&reminder))
+    {
+        call.history
+            .push(RuntimeMessage::text(ModelRole::User, reminder));
+    }
+}
+
 struct Metered<'a> {
     state: &'a AppState,
     host: &'a Host,
@@ -1456,22 +1473,12 @@ impl ModelRuntime for Metered<'_> {
                 ));
             }
             if forced {
-                call.tools.clear();
-                call.options.tool_choice = crate::chat::model::ToolChoice::None;
-                call.options.builtin_web_search = false;
-                let reminder = budget_reminder();
-                if !call
-                    .history
-                    .iter()
-                    .any(|message| message.text_content().contains(&reminder))
-                {
-                    call.history
-                        .push(RuntimeMessage::text(ModelRole::User, reminder));
-                }
+                force_budget_completion(&mut call);
             }
             {
                 let mut progress = self.host.lock();
                 progress.history = call.history.clone();
+                progress.model_call = Some((call.clone(), self.provider.clone()));
                 progress.inflight.clear();
                 progress.streaming = true;
                 progress.last_finish_reason = None;
@@ -1619,12 +1626,31 @@ fn partial_path(raw: &str) -> Option<String> {
     None
 }
 
-async fn completion_probes(
-    host: Arc<Host>,
-    provider: ModelProvider,
-    model: String,
-    message_id: String,
-) {
+fn completion_probe_call(
+    call: &ModelCall,
+    drafts: Vec<(String, String)>,
+    partial: String,
+    previous: Option<Value>,
+) -> ModelCall {
+    let mut probe = call.clone();
+    if !partial.trim().is_empty() {
+        probe
+            .history
+            .push(RuntimeMessage::text(ModelRole::Assistant, partial));
+    }
+    let prompt = prompts::render(
+        prompts::COMPLETION_PROBE,
+        &json!({"inflight": probe_inflight(drafts), "previous": previous}),
+    );
+    probe
+        .history
+        .push(RuntimeMessage::text(ModelRole::User, prompt));
+    probe.delivery = ModelDelivery::Collected;
+    probe.metadata.label = "subagent completion probe".into();
+    probe
+}
+
+async fn completion_probes(host: Arc<Host>) {
     let delays = [2, 5, 10, 30, 60];
     let mut previous: Option<(u32, Option<String>, Instant)> = None;
     let mut step = 0;
@@ -1634,7 +1660,7 @@ async fn completion_probes(
         if host.stopped() {
             return;
         }
-        let (mut history, drafts, partial) = {
+        let snapshot = {
             let p = host.lock();
             if !p.streaming
                 && !p
@@ -1644,44 +1670,27 @@ async fn completion_probes(
             {
                 continue;
             }
-            (p.history.clone(), p.inflight.clone(), p.text.clone())
+            p.model_call
+                .clone()
+                .map(|(call, provider)| (call, provider, p.inflight.clone(), p.text.clone()))
         };
-        if history.is_empty() {
+        let Some((call, provider, drafts, partial)) = snapshot else {
             continue;
-        }
-        let inflight = probe_inflight(drafts);
-        if !partial.trim().is_empty() {
-            history.push(RuntimeMessage::text(ModelRole::Assistant, partial));
-        }
+        };
         let prior = previous.as_ref().map(|(percent, stage, time)| json!({"percent": percent, "stage": stage, "ago": duration_text(time.elapsed().as_millis() as u64)}));
-        let prompt = prompts::render(
-            prompts::COMPLETION_PROBE,
-            &json!({"inflight": inflight, "previous": prior}),
-        );
-        history.push(RuntimeMessage::text(ModelRole::User, prompt));
+        let probe = completion_probe_call(&call, drafts, partial, prior);
         let state = host.app.state::<AppState>();
-        let request = crate::chat::agent::history::request_from_history(
-            &history,
-            &model,
-            Vec::new(),
-            crate::chat::model::GenerateOptions {
-                max_tokens: 512,
-                thinking_enabled: false,
-                ..Default::default()
-            },
-            crate::chat::model::RequestMetadata {
-                label: "subagent completion probe".into(),
-                conversation_id: Some(host.record.child_conversation_id.clone()),
-                message_id: Some(message_id.clone()),
-                ..Default::default()
-            },
-        );
-        let result =
-            crate::chat::model::generate_via_stream_collect(&state, &provider, 1, request).await;
+        let runtime = crate::chat::model::agent_runtime::AppAgentModel::new(&state, &provider, 1);
+        let result = runtime
+            .generate(
+                probe,
+                &mut crate::chat::agent::provider_runtime::DiscardModelSink,
+            )
+            .await;
         if let Ok(output) = result {
             host.note_usage(
                 &provider,
-                &model,
+                &call.model,
                 output.billing_usage.as_ref().or(output.usage.as_ref()),
                 false,
             );
@@ -2265,6 +2274,9 @@ fn render_worker_persona(
     persona: &str,
     context: &str,
     plan_state: &crate::chat::types::AgentPlanState,
+    options: &super::spawn::SpawnOptions,
+    self_id: &str,
+    peers: &[registry::AgentRecord],
 ) -> String {
     let plan = if plan_state.mode != crate::chat::types::AgentPlanMode::Plan {
         plan_state
@@ -2277,10 +2289,20 @@ fn render_worker_persona(
     prompts::render(
         prompts::SUBAGENT_SYSTEM,
         &json!({
-            "agent": persona, "context": context, "ircSelfId": "", "structured": false,
+            "agent": persona, "context": context, "ircSelfId": self_id,
+            "structured": matches!(options.completion, super::spawn::CompletionPolicy::Yield { .. }),
+            "workPoolYieldItems": !options.workpool_items.is_empty(),
+            "outputSchema": match &options.completion { super::spawn::CompletionPolicy::Yield { schema, .. } => schema.as_ref(), _ => None },
+            "ircPeers": peers.iter().map(|peer| json!({"id": peer.id, "displayName": peer.display_name, "kind": peer.agent_type, "status": peer.status, "activity": peer.activity})).collect::<Vec<_>>(),
             "planReference": plan, "planReferencePath": plan_state.document.as_ref().map(|document| &document.path),
         }),
     )
+}
+
+fn refresh_worker_persona(system: &mut String, persona: &str) {
+    if let Some((base, _)) = system.split_once("\n\n§ Role\n") {
+        *system = format!("{base}\n\n{persona}");
+    }
 }
 
 fn constrain_plan_tools(tools: &mut Vec<ChatToolDefinition>, definition: &AgentDefinition) {
@@ -2718,7 +2740,17 @@ async fn prepare(
             ));
         }
     }
-    let persona = render_worker_persona(&persona, context, &host.plan_state);
+    let rendered_persona = render_worker_persona(
+        &persona,
+        context,
+        &host.plan_state,
+        &host.options,
+        &host.record.id,
+        &state
+            .sub_agents
+            .registry
+            .list_visible_to(&host.record.root, &host.record.id),
+    );
     let mut tools = host
         .until_inactive(crate::mcp::registry::list_enabled_tool_catalog_for_run(
             app,
@@ -2799,11 +2831,12 @@ async fn prepare(
         &resources.skills,
         &effective,
         &tools,
-        &persona,
+        &rendered_persona,
         workdir.as_deref(),
     );
     if let Some(saved) = &worker.contract {
         prompt.system = saved.system_prompt.clone();
+        refresh_worker_persona(&mut prompt.system, &rendered_persona);
         prompt.context = saved.runtime_context.clone();
     }
     let assignment = prompts::render(
@@ -2884,6 +2917,7 @@ async fn prepare(
         thinking_level,
         tools,
         prompt,
+        persona,
         skills: resources.skills.clone(),
         hooks: host.workflow_hooks.get().cloned().unwrap_or_default(),
         cwd: cwd.ok_or("Subagent cwd unavailable")?,
@@ -2930,7 +2964,8 @@ async fn execute(
         thinking_enabled,
         thinking_level,
         mut tools,
-        prompt,
+        mut prompt,
+        persona,
         skills,
         hooks,
         cwd,
@@ -3026,6 +3061,25 @@ async fn execute(
     *host.model.lock().unwrap_or_else(|error| error.into_inner()) = model.clone();
     host.lock().context_window =
         crate::chat::model_metadata::context_window_for_model(Some(&provider), &model).0;
+    let rendered_persona = render_worker_persona(
+        &persona,
+        context,
+        &host.plan_state,
+        &host.options,
+        &host.record.id,
+        &state
+            .sub_agents
+            .registry
+            .list_visible_to(&host.record.root, &host.record.id),
+    );
+    refresh_worker_persona(&mut prompt.system, &rendered_persona);
+    if let Some(system) = worker
+        .history
+        .iter_mut()
+        .find(|message| message["role"] == "system")
+    {
+        system["content"] = Value::String(prompt.system.clone());
+    }
     let initial = worker.history.clone();
     host.slot
         .control
@@ -3058,6 +3112,7 @@ async fn execute(
         thinking_level: thinking_level.clone(),
         tools: tools.clone(),
         prompt: prompt.clone(),
+        persona,
         skills: skills.clone(),
         hooks,
         cwd,
@@ -3066,12 +3121,7 @@ async fn execute(
     });
     let probe = if host.record.depth == 1 && host.interactive_host && host.completion_probe_enabled
     {
-        Some(tokio::spawn(completion_probes(
-            host.clone(),
-            provider.clone(),
-            model.clone(),
-            format!("submsg-{}", host.job_id),
-        )))
+        Some(tokio::spawn(completion_probes(host.clone())))
     } else {
         None
     };
@@ -4708,7 +4758,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["read"]
         );
-        assert!(!render_worker_persona("role", "context", &plan).contains("<plan path="));
+        assert!(
+            !render_worker_persona("role", "context", &plan, &Default::default(), "A", &[])
+                .contains("<plan path=")
+        );
 
         let mut tools = vec![
             tool("native", "read", "read", None),
@@ -4752,7 +4805,14 @@ mod tests {
             plan: Some("  snapshot contents\n".into()),
             ..Default::default()
         };
-        let rendered = render_worker_persona("role marker", "context marker", &plan);
+        let rendered = render_worker_persona(
+            "role marker",
+            "context marker",
+            &plan,
+            &Default::default(),
+            "A",
+            &[],
+        );
         assert!(rendered.find("role marker").unwrap() < rendered.find("context marker").unwrap());
         assert!(
             rendered.find("context marker").unwrap() < rendered.find("snapshot contents").unwrap()

@@ -108,11 +108,17 @@ pub(crate) struct Debt {
     pub promised: bool,
 }
 
+#[derive(Clone)]
+struct QueuedMessage {
+    message: Message,
+    answers_debt: bool,
+}
+
 #[derive(Default)]
 struct Inner {
     sequence: u64,
-    incoming: HashMap<(String, String), VecDeque<Message>>,
-    failed: HashMap<(String, String), VecDeque<Message>>,
+    incoming: HashMap<(String, String), VecDeque<QueuedMessage>>,
+    failed: HashMap<(String, String), VecDeque<QueuedMessage>>,
     debts: HashMap<(String, String), Vec<Debt>>,
     waking: HashMap<(String, String, u64), Vec<Message>>,
     sent: HashMap<(String, String, String), u64>,
@@ -135,6 +141,7 @@ impl Default for Bus {
 pub(crate) struct IncomingClaim<'a> {
     bus: &'a Bus,
     messages: Vec<Message>,
+    queued: Vec<QueuedMessage>,
     committed: bool,
 }
 
@@ -157,12 +164,13 @@ impl Drop for IncomingClaim<'_> {
             .inner
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        for message in self.messages.iter().rev() {
+        for queued in self.queued.iter().rev() {
+            let message = &queued.message;
             inner
                 .incoming
                 .entry((message.root.clone(), message.to.clone()))
                 .or_default()
-                .push_front(message.clone());
+                .push_front(queued.clone());
         }
         drop(inner);
         self.bus.bump();
@@ -210,6 +218,7 @@ impl Bus {
     fn enqueue(&self, message: Message) {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let debt_key = (message.root.clone(), message.to.clone());
+        let mut answers_debt = false;
         if let Some(debts) = inner.debts.get_mut(&debt_key) {
             debts.retain_mut(|debt| {
                 if debt.target != message.from || message.sequence <= debt.sequence {
@@ -219,7 +228,8 @@ impl Bus {
                     debt.promised = true;
                     true
                 } else {
-                    message.broadcast
+                    answers_debt = true;
+                    false
                 }
             });
         }
@@ -227,7 +237,10 @@ impl Bus {
             .incoming
             .entry((message.root.clone(), message.to.clone()))
             .or_default()
-            .push_back(message);
+            .push_back(QueuedMessage {
+                message,
+                answers_debt,
+            });
         drop(inner);
         self.bump();
     }
@@ -259,6 +272,28 @@ impl Bus {
         id: &str,
         eligible: impl Fn(&Message) -> bool,
     ) -> IncomingClaim<'a> {
+        self.claim_matching(root, id, |queued| eligible(&queued.message))
+    }
+
+    pub(crate) fn claim_wait<'a>(
+        &'a self,
+        root: &str,
+        id: &str,
+        parent: Option<&str>,
+    ) -> IncomingClaim<'a> {
+        self.claim_matching(root, id, |queued| {
+            let message = &queued.message;
+            (!message.progress || parent == Some(message.from.as_str()))
+                && (!message.broadcast || queued.answers_debt)
+        })
+    }
+
+    fn claim_matching<'a>(
+        &'a self,
+        root: &str,
+        id: &str,
+        eligible: impl Fn(&QueuedMessage) -> bool,
+    ) -> IncomingClaim<'a> {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let key = (root.into(), id.into());
         let mut messages = Vec::new();
@@ -278,10 +313,14 @@ impl Bus {
                 *queue = keep;
             }
         }
-        messages.sort_by_key(|message| message.sequence);
+        messages.sort_by_key(|queued| queued.message.sequence);
         IncomingClaim {
             bus: self,
-            messages,
+            messages: messages
+                .iter()
+                .map(|queued| queued.message.clone())
+                .collect(),
+            queued: messages,
             committed: false,
         }
     }
@@ -323,7 +362,7 @@ impl Bus {
         while failed.len() > 100 {
             failed.pop_front();
         }
-        messages.into_iter().collect()
+        messages.into_iter().map(|queued| queued.message).collect()
     }
 
     pub fn forget(&self, root: &str) {
@@ -666,7 +705,8 @@ pub(crate) fn has_interrupting(manager: &super::SubAgentManager, root: &str, own
         .iter()
         .filter_map(|queue| queue.get(&(root.into(), owner.into())))
         .flatten()
-        .any(|message| {
+        .any(|queued| {
+            let message = &queued.message;
             !message.broadcast
                 && (message.from == "@user"
                     || parent.as_ref() == Some(&message.from)
@@ -1226,6 +1266,33 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].target, "ChildB");
         assert!(bus.pending_replies("r", "Main").is_empty());
+    }
+
+    #[test]
+    fn broadcast_answer_survives_claim_rollback_and_failed_handoff() {
+        let bus = Bus::default();
+        let mut aside = message(1, "Main", "ChildA", false);
+        aside.broadcast = true;
+        bus.seed_message(aside);
+        bus.seed_message(message(2, "ChildA", "Main", false));
+        bus.seed_message(message(3, "Main", "ChildA", true));
+        let mut answer = message(4, "Main", "ChildA", false);
+        answer.broadcast = true;
+        bus.seed_message(answer);
+        assert!(bus.pending_replies("r", "ChildA").is_empty());
+        {
+            let claim = bus.claim_wait("r", "ChildA", None);
+            assert_eq!(claim.messages().len(), 1);
+            assert_eq!(claim.messages()[0].sequence, 4);
+        }
+        bus.failed_handoff("r", "ChildA");
+        let mut claim = bus.claim_wait("r", "ChildA", None);
+        assert_eq!(claim.messages().len(), 1);
+        assert_eq!(claim.messages()[0].sequence, 4);
+        claim.commit();
+        assert!(bus.claim_wait("r", "ChildA", None).messages().is_empty());
+        let remaining = bus.claim("r", "ChildA", |_| true);
+        assert_eq!(remaining.messages().len(), 2);
     }
 
     #[tokio::test]
