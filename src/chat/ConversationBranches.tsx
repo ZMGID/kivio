@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { GitBranch } from 'lucide-react'
-import { Button, IconButton } from '../components/Button'
+import { Button } from '../components/Button'
 import { notifyError } from '../components/appNoticeStore'
 import type { Lang } from '../components/i18n'
 import { Select } from '../settings/public/controls'
 import { chatApi, type ConversationBranch } from './api'
 
-function BranchDialog({ conversationId, disabled, lang, onSwitch, onClose }: {
+/** 历史分支对话框：入口在标题栏工作区面板。打开时读取，确认切换成功后才关闭。 */
+export function ConversationBranchDialog({ conversationId, disabled, lang, onSwitch, onClose }: {
   conversationId: string
   disabled: boolean
   lang: Lang
@@ -59,20 +59,4 @@ function BranchDialog({ conversationId, disabled, lang, onSwitch, onClose }: {
       </footer>
     </form>
   </dialog>
-}
-
-export function ConversationBranches(props: {
-  conversationId: string
-  disabled: boolean
-  lang: Lang
-  onSwitch: (branchId: string) => Promise<boolean>
-}) {
-  const [open, setOpen] = useState(false)
-  return <>
-    <IconButton label={props.lang === 'zh' ? '历史分支' : 'History branches'} variant="ghost"
-      disabled={props.disabled} aria-haspopup="dialog" onClick={() => setOpen(true)}>
-      <GitBranch size={15} strokeWidth={1.75} />
-    </IconButton>
-    {open && <BranchDialog {...props} onClose={() => setOpen(false)} />}
-  </>
 }

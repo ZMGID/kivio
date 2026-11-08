@@ -1,14 +1,14 @@
-import { memo, type ReactNode } from 'react'
+import { memo } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { i18n, type Lang } from '../components/i18n'
-import { BackgroundJobsIndicator } from './BackgroundJobsIndicator'
 import { ExternalModelSelector, RuntimePicker } from './RuntimePicker'
 import { ModelSelector } from './ModelSelector'
 import { PermissionPicker } from './PermissionPicker'
 import { ExternalCliAccount } from './ExternalCliAccount'
 import { ThinkingLevelSelector } from './ThinkingLevelSelector'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
+import { WorkspaceActionsMenu, type WorkspaceHistoryBranches } from './dock/WorkspaceActionsMenu'
 import type { AgentRuntimeConfig, DetectedExternalAgent, ThinkingLevel } from './types'
 
 export interface ConversationTitlebarControlsProps {
@@ -33,10 +33,15 @@ export interface ConversationTitlebarControlsProps {
   onSandboxChange: (value: string) => void | Promise<void>
   /** 当前会话有运行中的回合：锁住 CLI 沙盒档位。 */
   busy: boolean
-  historyBranches?: ReactNode
   onOpenPopout: (conversationId: string) => void
-  onOpenDockTasks: () => void
   onToggleDock: () => void
+  /** 有工作目录的会话显示工作区面板（打开 / 分支 / 提交推送 / 变更 / 历史分支 / 任务）。 */
+  workdir: string
+  /** 关联项目名；无项目对话不显示 Git。 */
+  projectName: string | null
+  onOpenGitPanel: () => void
+  onOpenTasks: () => void
+  historyBranches?: WorkspaceHistoryBranches | null
 }
 
 /** 会话页顶栏控件。非 mac 渲染进全宽标题栏带，mac 仍留在主区 52px 顶栏。 */
@@ -60,10 +65,13 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   onApprovalPolicyChange,
   onSandboxChange,
   busy,
-  historyBranches,
   onOpenPopout,
-  onOpenDockTasks,
   onToggleDock,
+  workdir,
+  projectName,
+  onOpenGitPanel,
+  onOpenTasks,
+  historyBranches,
 }: ConversationTitlebarControlsProps) {
   return (
     <>
@@ -111,14 +119,6 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
             sandboxLocked={busy}
           />
         </div>
-        {!usesChatRuntime && (
-          <div className="shrink-0" data-tauri-drag-region="false">
-            <BackgroundJobsIndicator
-              conversationId={conversationId}
-              onOpen={onOpenDockTasks}
-            />
-          </div>
-        )}
         {usesExternalRuntime && (
           <div className="shrink-0" data-tauri-drag-region="false">
             <ExternalCliAccount agent={externalAgent} conversationId={conversationId} />
@@ -127,7 +127,6 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
       </div>
       <div className="min-w-5 flex-1" data-tauri-drag-region />
       <div className="flex min-w-0 shrink items-center justify-end gap-1">
-        {historyBranches}
         {conversationId && (
           <div className="shrink-0" data-tauri-drag-region="false">
             <IconButton
@@ -139,6 +138,9 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
               <ExternalLink size={15} strokeWidth={1.75} />
             </IconButton>
           </div>
+        )}
+        {!usesChatRuntime && workdir && (
+          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} />
         )}
         {!usesChatRuntime && !dockOpen && (
           <div className="shrink-0" data-tauri-drag-region="false">

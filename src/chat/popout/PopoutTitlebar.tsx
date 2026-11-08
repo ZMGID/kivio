@@ -7,6 +7,8 @@ import { ExternalModelSelector, RuntimePicker } from '../RuntimePicker'
 import { ThinkingLevelSelector } from '../ThinkingLevelSelector'
 import { conversationTitleSource, displayConversationTitle } from '../conversationTitle'
 import { chatTitlebarMacInsetClass, chatTitlebarRowClass, usesNativeTitlebar } from '../platform'
+import { WorkspaceActionsMenu } from '../dock/WorkspaceActionsMenu'
+import type { Lang } from '../../components/i18n'
 import type { AgentRuntimeConfig, Conversation, DetectedExternalAgent, ThinkingLevel } from '../types'
 
 type PopoutTitlebarProps = {
@@ -22,6 +24,10 @@ type PopoutTitlebarProps = {
   onApprovalPolicyChange: (policy: string) => void | Promise<void>
   onSandboxChange: (value: string) => void | Promise<void>
   busy: boolean
+  /** 有工作目录时显示工作区面板；弹出窗口没有右栏，面板始终以浮层打开。 */
+  workdir: string
+  projectName: string | null
+  lang: Lang
 }
 
 function TitlebarPills({
@@ -37,6 +43,9 @@ function TitlebarPills({
   onApprovalPolicyChange,
   onSandboxChange,
   busy,
+  workdir,
+  projectName,
+  lang,
 }: PopoutTitlebarProps) {
   const firstUser = conversation?.messages?.find((message) => message.role === 'user')
   const titleFallback = conversationTitleSource(
@@ -109,6 +118,16 @@ function TitlebarPills({
       >
         {title}
       </div>
+      {runtime.kind !== 'chat' && workdir && (
+        <WorkspaceActionsMenu
+          workdir={workdir}
+          projectName={projectName}
+          conversationId={conversation?.id ?? null}
+          dockOpen={false}
+          lang={lang}
+          inlineAllowed={false}
+        />
+      )}
     </>
   )
 }

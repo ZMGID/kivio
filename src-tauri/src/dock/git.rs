@@ -98,6 +98,8 @@ pub struct GitBranchItem {
 #[serde(rename_all = "camelCase")]
 pub struct GitBranchesResponse {
     pub branches: Vec<GitBranchItem>,
+    /// 已配置的远程名；为空时面板不提供推送。
+    pub remotes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -986,7 +988,20 @@ fn git_branches_sync(workdir: &str) -> Result<GitBranchesResponse, String> {
             behind,
         });
     }
-    Ok(GitBranchesResponse { branches })
+    Ok(GitBranchesResponse {
+        branches,
+        remotes: list_remotes(&state.repo_root)?,
+    })
+}
+
+fn list_remotes(repo_root: &str) -> Result<Vec<String>, String> {
+    Ok(git_success(repo_root, &["remote"])?
+        .stdout
+        .lines()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect())
 }
 
 #[tauri::command]
@@ -1228,6 +1243,32 @@ fn git_commit_sync(workdir: &str, message: String) -> Result<GitOperationRespons
 }
 
 dock_git_mutation!(dock_git_commit, git_commit_sync, (message: String));
+
+fn git_push_sync(workdir: &str) -> Result<GitOperationResponse, String> {
+    let state = ensure_ready_state(workdir)?;
+    let result = if !state.upstream.is_empty() {
+        git_success(&state.repo_root, &["push"])
+    } else if state.head.is_empty() || state.head == "HEAD" || state.head == "(detached)" {
+        Err("当前不在任何分支上，无法推送。".to_string())
+    } else {
+        // 首次推送：优先 origin，否则用唯一/第一个远程，并建立跟踪。
+        let remotes = list_remotes(&state.repo_root)?;
+        match remotes
+            .iter()
+            .find(|name| *name == "origin")
+            .or_else(|| remotes.first())
+        {
+            Some(remote) => git_success(
+                &state.repo_root,
+                &["push", "-u", remote.as_str(), state.head.as_str()],
+            ),
+            None => Err("仓库没有配置远程，无法推送。".to_string()),
+        }
+    };
+    operation_response(workdir, result, "已推送。")
+}
+
+dock_git_mutation!(dock_git_push, git_push_sync, ());
 
 fn git_switch_branch_sync(workdir: &str, branch: String) -> Result<GitOperationResponse, String> {
     let state = ensure_ready_state(workdir)?;
@@ -1680,6 +1721,39 @@ mod tests {
         // 不存在的目录被拒绝。
         assert!(git_init_sync("/nonexistent/kivio-dock-git-init-dir", None).is_err());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn push_without_remote_reports_reason_and_branches_list_remotes() {
+        let dir = temp_dir("push-no-remote");
+        let root = dir.to_str().unwrap().to_string();
+        git_init_sync(&root, Some("main".to_string())).expect("init ok");
+        fs::write(dir.join("a.txt"), "a\n").expect("write a");
+        git_success(&root, &["add", "-A", "--"]).expect("add");
+        git_success(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "init",
+            ],
+        )
+        .expect("commit");
+        assert!(git_branches_sync(&root).expect("branches").remotes.is_empty());
+        let pushed = git_push_sync(&root).expect("push response");
+        assert!(!pushed.ok);
+        assert!(pushed.message.contains("没有配置远程"));
+
+        git_success(&root, &["remote", "add", "upstream", "https://example.invalid/r.git"])
+            .expect("add remote");
+        assert_eq!(
+            git_branches_sync(&root).expect("branches").remotes,
+            vec!["upstream".to_string()]
+        );
     }
 
     #[test]

@@ -27,3 +27,10 @@ export function notifyError(message: string) {
   if (notices.some(notice => notice.message === message && notice.tone === 'error')) return
   publishNotice({ id: `operation-${++sequence}`, message, tone: 'error' })
 }
+
+/** Short confirmation for a user-initiated action that has no other visible result; dismisses itself. */
+export function notifySuccess(message: string, durationMs = 2600) {
+  const id = `operation-${++sequence}`
+  publishNotice({ id, message, tone: 'success' })
+  setTimeout(() => dismissNotice(id), durationMs)
+}

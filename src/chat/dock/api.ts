@@ -132,6 +132,17 @@ export const dockApi = {
     return invoke<DockFsOpenResult>('dock_fs_open_path', { workdir, path, mode })
   },
 
+  /** PATH 上可用的编辑器 id（vscode / cursor / zed / windsurf）。 */
+  async availableEditors(): Promise<string[]> {
+    if (!isTauriRuntime()) return []
+    return invoke<string[]>('dock_available_editors')
+  },
+
+  async openInEditor(workdir: string, editor: string): Promise<void> {
+    if (!isTauriRuntime()) throw new Error('Dock requires the desktop app')
+    await invoke('dock_open_in_editor', { workdir, editor })
+  },
+
   /** 整体替换监听目标集。 */
   async workspaceWatchSet(workdirs: string[]): Promise<void> {
     if (!isTauriRuntime()) return
@@ -194,7 +205,7 @@ export const dockApi = {
   },
 
   async gitBranches(workdir: string): Promise<GitBranchesResult> {
-    if (!isTauriRuntime()) return { branches: [] }
+    if (!isTauriRuntime()) return { branches: [], remotes: [] }
     const raw = await invoke('dock_git_branches', { workdir })
     return normalizeGitBranchesResult(raw)
   },
@@ -240,6 +251,11 @@ export const dockApi = {
   async gitCommit(workdir: string, message: string): Promise<GitMutationResult> {
     if (!isTauriRuntime()) return MOCK_MUTATION
     return normalizeGitMutationResult(await invoke('dock_git_commit', { workdir, message }))
+  },
+
+  async gitPush(workdir: string): Promise<GitMutationResult> {
+    if (!isTauriRuntime()) return MOCK_MUTATION
+    return normalizeGitMutationResult(await invoke('dock_git_push', { workdir }))
   },
 
   async gitSwitchBranch(workdir: string, branch: string): Promise<GitMutationResult> {

@@ -15,10 +15,6 @@ vi.mock('./ThinkingLevelSelector', () => ({
 vi.mock('./PermissionPicker', () => ({
   PermissionPicker: () => <div data-testid="permission" />,
 }))
-vi.mock('./BackgroundJobsIndicator', () => ({
-  BackgroundJobsIndicator: () => <div data-testid="jobs" />,
-}))
-
 const base = {
   conversationId: 'c1',
   runtimeLocked: false,
@@ -37,8 +33,11 @@ const base = {
   onSandboxChange: vi.fn(),
   busy: false,
   onOpenPopout: vi.fn(),
-  onOpenDockTasks: vi.fn(),
   onToggleDock: vi.fn(),
+  workdir: '',
+  projectName: null,
+  onOpenGitPanel: vi.fn(),
+  onOpenTasks: vi.fn(),
 }
 
 describe('ConversationTitlebarControls', () => {
@@ -66,5 +65,13 @@ describe('ConversationTitlebarControls', () => {
     expect(getByTestId('model-selector')).toBeTruthy()
     expect(getByTestId('thinking')).toBeTruthy()
     expect(queryByTestId('external-model')).toBeNull()
+  })
+
+  it('keeps task and history branch entries out of the titlebar', () => {
+    const { container, queryByRole } = render(
+      <ConversationTitlebarControls {...base} activeAgentRuntime={{ kind: 'builtin' }} usesExternalRuntime={false} />,
+    )
+    expect(container.querySelector('.lucide-list-checks')).toBeNull()
+    expect(queryByRole('button', { name: '历史分支' })).toBeNull()
   })
 })

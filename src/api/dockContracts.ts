@@ -93,6 +93,7 @@ export type GitBranchItem = {
 
 export type GitBranchesResult = {
   branches: GitBranchItem[]
+  remotes: string[]
 }
 
 /** 状态条 diff 徽标：工作区相对 HEAD 的 numstat 汇总。 */
@@ -269,6 +270,7 @@ export function normalizeGitBranchesResult(raw: unknown): GitBranchesResult {
   const record = asRecord(raw)
   return {
     branches: Array.isArray(record.branches) ? record.branches.map(normalizeGitBranchItem) : [],
+    remotes: pickStringArray(record, 'remotes', 'remotes'),
   }
 }
 

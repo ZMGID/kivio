@@ -59,7 +59,6 @@ import { useMessageActions } from './hooks/useMessageActions'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { ModelSelector } from './ModelSelector'
 import { ConversationTitlebarControls } from './ConversationTitlebarControls'
-import { ConversationBranches } from './ConversationBranches'
 import {
   captureConversationNavigation,
   completeConversationTransition,
@@ -2634,16 +2633,16 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       onApprovalPolicyChange={handleApprovalPolicyChange}
       onSandboxChange={handleExternalSandboxChange}
       busy={streamCoarse.streaming}
-      historyBranches={currentConversation && !usesExternalRuntime ? <ConversationBranches
-        key={currentConversation.id}
-        conversationId={currentConversation.id}
-        disabled={isCurrentConversationBusy() || streamCoarse.streaming || streamCoarse.streamFrozen || streamCoarse.cancelling || conversationOccupied}
-        lang={uiLang}
-        onSwitch={handleSwitchBranch}
-      /> : undefined}
       onOpenPopout={(conversationId) => { void handleOpenConversationPopout(conversationId) }}
-      onOpenDockTasks={handleOpenDockTasks}
       onToggleDock={handleToggleDock}
+      workdir={dockWorkdir}
+      projectName={selectedProject?.name || conversationProject?.name || null}
+      onOpenGitPanel={handleOpenDockGit}
+      onOpenTasks={handleOpenDockTasks}
+      historyBranches={currentConversation && !usesExternalRuntime ? {
+        disabled: isCurrentConversationBusy() || streamCoarse.streaming || streamCoarse.streamFrozen || streamCoarse.cancelling || conversationOccupied,
+        onSwitch: handleSwitchBranch,
+      } : null}
     />
   ), [
     activeAgentRuntime,
@@ -2659,13 +2658,17 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleExternalModelChange,
     handleModelChange,
     handleOpenConversationPopout,
-    handleOpenDockTasks,
     handleRuntimeChange,
     handleThinkingLevelChange,
     handleToggleDock,
+    dockWorkdir,
+    handleOpenDockGit,
+    handleOpenDockTasks,
     handleSwitchBranch,
     isCurrentConversationBusy,
     conversationOccupied,
+    conversationProject?.name,
+    selectedProject?.name,
     popoutConversationIds,
     streamCoarse.streaming,
     streamCoarse.streamFrozen,
@@ -2750,9 +2753,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         hideCost={usesExternalRuntime}
       />
     ),
-    gitWorkdir: usesChatRuntime ? null : dockWorkdir || null,
-    gitLang: uiLang,
-    onOpenGitPanel: handleOpenDockGit,
     modeOptions: composerModes.options,
     modeValue: composerModes.current,
     onModeChange: handleComposerModeChange,
@@ -2779,7 +2779,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     conversationProject,
     currentConversation,
     currentConversationIsBlank,
-    dockWorkdir,
     enabledTools,
     handleAgentPlanModeChange,
     handleReloadSkills,
@@ -2792,7 +2791,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleComposerModeChange,
     handleExternalPresetChange,
     handleOpenChatSettings,
-    handleOpenDockGit,
     handleSendWhileRunning,
     handleSelectAssistant,
     handleSendMessage,

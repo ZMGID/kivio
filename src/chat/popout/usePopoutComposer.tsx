@@ -15,7 +15,6 @@ import { chatApi, type AgentRuntimeConfig } from '../api'
 import { setGoalDraftMode, useGoalDraft } from '../goalPresentation'
 import { keepNewerContextMeasurement, mergeContextMeasurement } from '../contextPanel'
 import { ContextIndicator } from '../ContextIndicator'
-import { dockApi } from '../dock/api'
 import { useTauriEvent } from '../hooks/useTauriEvent'
 import { keepNewerTodoState } from '../agentTodoState'
 import type { InputBarProps } from '../InputBar'
@@ -118,6 +117,8 @@ type UsePopoutComposerArgs = {
   cancelVisible: boolean
   cancelling: boolean
   disabled: boolean
+  /** 由 usePopoutSession 解析，标题栏工作区面板共用。 */
+  workdir: string
 }
 
 export function usePopoutComposer({
@@ -136,6 +137,7 @@ export function usePopoutComposer({
   cancelVisible,
   cancelling,
   disabled,
+  workdir: gitWorkdir,
 }: UsePopoutComposerArgs): InputBarProps {
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
@@ -159,7 +161,6 @@ export function usePopoutComposer({
   const [disabledSkillIds, setDisabledSkillIds] = useState<string[]>([])
   const [boundProject, setBoundProject] = useState<ChatProject | null>(null)
   const [boundSet, setBoundSet] = useState<ChatSet | null>(null)
-  const [gitWorkdir, setGitWorkdir] = useState('')
 
   const dshCustomPresets = useDshCustomPresets(runtime)
   const activeAgentPlanMode = conversation?.agent_plan_state?.mode
@@ -343,18 +344,6 @@ export function usePopoutComposer({
       cancelled = true
     }
   }, [setId])
-
-  useEffect(() => {
-    let cancelled = false
-    dockApi.resolveCwd(conversationId, projectId).then((cwd) => {
-      if (!cancelled) setGitWorkdir(cwd)
-    }).catch(() => {
-      if (!cancelled) setGitWorkdir('')
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [conversationId, projectId, runtime.kind, runtime.externalAgentId])
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -727,9 +716,6 @@ export function usePopoutComposer({
         hideCost={usesExternalRuntime}
       />
     ),
-    gitWorkdir: usesChatRuntime ? null : gitWorkdir || null,
-    gitLang: lang,
-    onOpenGitPanel: () => {},
     modeOptions: composerModes.options,
     modeValue: composerModes.current,
     onModeChange: handleComposerModeChange,

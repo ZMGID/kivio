@@ -98,6 +98,18 @@
   margin: 0;
 }
 
+/* 工作区面板内联展开时由它写入 --chat-details-inset：只让内容让位，滚动条仍贴窗口右缘。
+   让位与收回随面板入场/退场一起平滑过渡。 */
+.chat-main-pane .chat-scroll-viewport {
+  padding-right: var(--chat-details-inset, 0px);
+  transition: padding-right var(--kv-dur-normal) var(--kv-ease-standard);
+}
+
+.chat-main-pane .chat-composer-footer {
+  padding-right: calc(1.5rem + var(--chat-details-inset, 0px));
+  transition: padding-right var(--kv-dur-normal) var(--kv-ease-standard);
+}
+
 /* 弹出窗同样铺满窗口。 */
 .chat-main-pane--lone {
   margin: 0;
@@ -486,16 +498,6 @@
   min-height: 28px;
 }
 
-.chat-composer-project {
-  max-width: min(18rem, 60cqw);
-}
-
-.chat-composer-git,
-.chat-composer-git > div {
-  min-width: 0;
-  max-width: 100%;
-}
-
 .chat-composer-environment .chat-composer-status-item {
   max-width: 100%;
 }
@@ -513,23 +515,6 @@
   flex-basis: 8rem;
   white-space: normal;
   overflow-wrap: anywhere;
-}
-
-@container chat-main (max-width: 640px) {
-  .chat-composer-project,
-  .chat-composer-git > div {
-    position: static;
-  }
-
-  .chat-composer-project > .kv-menu,
-  .chat-composer-git > div > .kv-menu {
-    max-width: 100%;
-  }
-
-  .chat-composer-git > div > .kv-menu {
-    left: auto;
-    right: 0;
-  }
 }
 
 /* 排队中的消息使用 soft 底和 faint 字，不抢走正在生成的回答的注意力。 */
@@ -667,7 +652,7 @@ button.chat-composer-status-item:hover {
   position: absolute;
   top: 16px;
   bottom: 16px;
-  right: 12px;
+  right: calc(12px + var(--chat-details-inset, 0px));
   z-index: 12;
   width: 26px;
   pointer-events: none;

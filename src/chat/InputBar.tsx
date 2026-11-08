@@ -29,11 +29,9 @@ import { SlashCommandIcon } from './SlashCommandIcon'
 import { canOptimizeComposerText } from './promptOptimize'
 import { AssistantPicker } from './AssistantPicker'
 import { MultiModelSelector } from './MultiModelSelector'
-import { GitStatusPill } from './dock/GitStatusPill'
-import { GitDiffChip } from './dock/GitDiffChip'
 import { AgentTodoIndicator } from './AgentTodoIndicator'
 import { Button, IconButton } from '../components/Button'
-import { useT, type I18n, type Lang } from '../components/i18n'
+import { useT, type I18n } from '../components/i18n'
 import { api, type ChatToolDefinition, type ChatMcpServer } from '../api/tauri'
 import { chatApi } from './api'
 import type { AdditionalDirectory, AgentPlanMode, AgentPlanState, AgentTodoState, ChatAssistant, ChatProject, ChatSet, ModelRef, PendingAttachment, WebSearchMode } from './types'
@@ -424,11 +422,6 @@ export interface InputBarProps {
   /** 已有对话内容后锁定（dsh 只允许空白 agent 换 preset）。 */
   presetLocked?: boolean
   presetLockedReason?: string
-  /** Git 状态胶囊：Dock 解析出的工作目录；空则不渲染 */
-  gitWorkdir?: string | null
-  gitLang?: Lang
-  /** 胶囊卡片里「在 Git 面板中打开」：打开 Dock 并切到 Git 页 */
-  onOpenGitPanel?: () => void
   /** 常驻费用、缓存及 token 用量，位于底栏模式按钮左侧。 */
   usageSlot?: ReactNode
 }
@@ -498,9 +491,6 @@ export const InputBar = memo(function InputBar({
   onPresetChange,
   presetLocked = false,
   presetLockedReason,
-  gitWorkdir = null,
-  gitLang,
-  onOpenGitPanel,
   usageSlot,
 }: InputBarProps) {
   const t = useT()
@@ -637,12 +627,8 @@ export const InputBar = memo(function InputBar({
   const showAssistantEntry = Boolean(onOpenAssistantCenter)
   const modeEntryEnabled = Boolean(onModeChange) && modeOptions.length > 0
   const presetEntryEnabled = Boolean(onPresetChange) && presetOptions.length > 0
-  // 状态条展示当前项目或集及其 Git 状态。
-  const gitStatusEnabled = Boolean(effectiveProject && gitWorkdir && gitLang && onOpenGitPanel)
   const todoBarVisible = (agentTodoState?.items?.length ?? 0) > 0
-  const statusBarVisible = Boolean(
-    (projectEntryEnabled && effectiveProject) || effectiveSet,
-  )
+  const statusBarVisible = Boolean(effectiveSet)
   const activePresetOption = presetOptions.find((option) => option.value === presetValue) ?? presetOptions[0]
   const activePresetPillClass = MODE_PILL_CLASS[activePresetOption?.tone ?? 'neutral']
 
@@ -2015,45 +2001,11 @@ export const InputBar = memo(function InputBar({
             </div>
           </div>
         )}
-        {/* 状态条：项目/集、Git 分支及按需显示的任务和改动。 */}
-        {(statusBarVisible || todoBarVisible || goalSlot || gitStatusEnabled) && (
+        {/* 状态条：项目/集及按需显示的任务和改动。 */}
+        {(statusBarVisible || todoBarVisible || goalSlot) && (
           <div className="chat-composer-status" data-tauri-drag-region="false">
-            {(statusBarVisible || gitStatusEnabled) && (
+            {statusBarVisible && (
               <div className="chat-composer-environment">
-            {statusBarVisible && effectiveProject && (
-              <div className="chat-composer-project relative min-w-0">
-                <button
-                  type="button"
-                  onClick={toggleProjectMenu}
-                  disabled={disabled}
-                  className="chat-composer-status-item"
-                  title={t.chatProjectChip.replace('{name}', effectiveProject.name)}
-                  aria-haspopup="menu"
-                  aria-expanded={projectMenuOpen}
-                >
-                  <Folder strokeWidth={1.75} />
-                  <span className="min-w-0 truncate">{effectiveProject.name}</span>
-                  <ChevronDown size={12} strokeWidth={2} className={`shrink-0 transition-transform ${projectMenuOpen ? 'rotate-180' : ''}`} />
-                </button>
-                {projectMenuOpen && projectEntryEnabled && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-30"
-                      onClick={closeProjectMenu}
-                      aria-hidden
-                    />
-                    <div
-                      ref={projectMenuRef}
-                      className={`chat-motion-popover absolute left-0 z-50 w-[min(260px,calc(100vw-24px))] overflow-visible kv-menu ${projectPanelPlacementClass}`}
-                      style={{ ['--chat-popover-origin' as string]: projectPanelOrigin }}
-                      data-tauri-drag-region="false"
-                    >
-                      {projectMenuBody}
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
             {statusBarVisible && effectiveSet && (
               <button
                 type="button"
@@ -2069,31 +2021,11 @@ export const InputBar = memo(function InputBar({
                 <span className="min-w-0 truncate">{effectiveSet.name}</span>
               </button>
             )}
-            {gitStatusEnabled && gitWorkdir && gitLang && onOpenGitPanel && (
-              <div className="chat-composer-git">
-                <GitStatusPill
-                  key={`${effectiveProject?.id ?? ''}:${gitWorkdir}`}
-                  workdir={gitWorkdir}
-                  projectId={effectiveProject?.id ?? null}
-                  onChooseProject={projectEntryEnabled ? toggleProjectMenu : undefined}
-                  lang={gitLang}
-                  disabled={disabled}
-                  onOpenGitPanel={onOpenGitPanel}
-                />
-              </div>
-            )}
               </div>
             )}
             {goalSlot}
             {!goalSlot && todoBarVisible && (
               <AgentTodoIndicator todoState={agentTodoState} placement="status" />
-            )}
-            {gitStatusEnabled && gitWorkdir && gitLang && onOpenGitPanel && (
-              <GitDiffChip
-                workdir={gitWorkdir}
-                lang={gitLang}
-                onOpenGitPanel={onOpenGitPanel}
-              />
             )}
           </div>
         )}
@@ -2233,14 +2165,13 @@ export const InputBar = memo(function InputBar({
                 layout={layout}
               />
             )}
-            {/* 已选项目时这个入口移到状态条（那里是「当前上下文」的位置），
-                工具栏只在未选项目时保留「进入项目」这个动作。 */}
-            {projectEntryEnabled && !effectiveProject && (
+            {/* 项目入口：未选项目时进入项目；已选时切换或退出（项目名与 Git 在标题栏工作区面板）。 */}
+            {projectEntryEnabled && (
               <div className="relative shrink-0">
                 <IconButton
                   size="sm"
                   shape="circle"
-                  label={t.chatEnterProject}
+                  label={effectiveProject ? t.chatProjectChip.replace('{name}', effectiveProject.name) : t.chatEnterProject}
                   onClick={toggleProjectMenu}
                   disabled={disabled}
                   aria-expanded={projectMenuOpen}
@@ -2251,7 +2182,9 @@ export const InputBar = memo(function InputBar({
                       : ''
                   }`}
                 >
-                  <FolderPlus size={18} strokeWidth={1.75} />
+                  {effectiveProject
+                    ? <Folder size={18} strokeWidth={1.75} />
+                    : <FolderPlus size={18} strokeWidth={1.75} />}
                 </IconButton>
                 {projectMenuOpen && (
                   <>
@@ -2308,8 +2241,6 @@ export const InputBar = memo(function InputBar({
             >
               <WandSparkles size={18} strokeWidth={1.75} />
             </IconButton>
-
-
             </div>
             <div className="chat-composer-tool-actions ml-auto flex items-center justify-end gap-2">
             {usageSlot}

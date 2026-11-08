@@ -55,49 +55,12 @@ describe('InputBar 底栏模式胶囊', () => {
     render(<InputBar onSend={() => {}} conversationId="root" />)
     expect(screen.queryByRole('button', { name: '子代理' })).not.toBeInTheDocument()
   })
-  it('shows Git only for project chats and hides it when leaving the project', () => {
-    const props = { onSend: () => {}, gitWorkdir: '/shared', gitLang: 'en' as const, onOpenGitPanel: () => {} }
-    const view = render(<InputBar {...props} />)
-    expect(screen.queryByTitle('Git')).not.toBeInTheDocument()
-    view.rerender(<InputBar {...props} conversationProject={{ id: 'project', name: 'Project' }} />)
-    const git = screen.getByTitle('Git')
-    expect(git.closest('.chat-composer-status')).toBeInTheDocument()
-    expect(git.closest('.chat-composer-tools')).not.toBeInTheDocument()
-    view.rerender(<InputBar {...props} conversationProject={null} />)
-    expect(screen.queryByTitle('Git')).not.toBeInTheDocument()
-  })
-
-  it('keeps project and Git as separate status actions and opens the project picker', async () => {
-    const selectProject = vi.fn()
-    const project = { id: 'project', name: 'A very long project name', created_at: 0, updated_at: 0 }
-    render(<InputBar onSend={() => {}} selectedProject={project} showProjectEntry onSelectProject={selectProject}
-      gitWorkdir="/shared" gitLang="en" onOpenGitPanel={() => {}} contextSlot="Context" />)
-
-    const projectButton = screen.getByTitle(`项目 · ${project.name}`)
-    const gitButton = screen.getByTitle('Git')
-    expect(projectButton.closest('.chat-composer-environment')).toBe(gitButton.closest('.chat-composer-environment'))
-    expect(projectButton).not.toContainElement(gitButton)
-    expect(projectButton.querySelector('.lucide-chevron-down')).toBeInTheDocument()
-    expect(screen.getByText('Context').closest('.chat-composer-tools')).toBeInTheDocument()
-
-    fireEvent.click(gitButton)
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(projectButton).toHaveAttribute('aria-expanded', 'false')
-    fireEvent.click(gitButton)
-    await act(async () => { fireEvent.click(projectButton) })
-    expect(projectButton).toHaveAttribute('aria-expanded', 'true')
-    await act(async () => { fireEvent.click(screen.getByText('退出项目工作')) })
-    expect(selectProject).toHaveBeenCalledWith(null)
-  })
-
-  it('keeps collection exit available without showing Git', () => {
+  it('keeps collection exit available', () => {
     const selectSet = vi.fn()
     const set = { id: 'set', name: 'Collection', created_at: 0, updated_at: 0 }
-    render(<InputBar onSend={() => {}} selectedSet={set} onSelectSet={selectSet}
-      gitWorkdir="/shared" gitLang="en" onOpenGitPanel={() => {}} />)
+    render(<InputBar onSend={() => {}} selectedSet={set} onSelectSet={selectSet} />)
     fireEvent.click(screen.getByTitle('集 · Collection（点击退出）'))
     expect(selectSet).toHaveBeenCalledWith(null)
-    expect(screen.queryByTitle('Git')).not.toBeInTheDocument()
   })
 
   it('selects Goal via Shift+Tab and leaves it without losing the objective', async () => {

@@ -1373,8 +1373,6 @@ function ReadingWorkspace({
                   onOpenAssistantCenter={undefined}
                   onChangeReplyModels={undefined}
                   replyModels={[]}
-                  onOpenGitPanel={undefined}
-                  gitWorkdir={null}
                   onOpenTools={undefined}
                   onReloadSkills={undefined}
                   usesChatRuntime

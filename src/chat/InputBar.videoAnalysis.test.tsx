@@ -25,7 +25,7 @@ describe('video attachments use the ordinary composer', () => {
   it('does not ask the user to select analysis or add a command', async () => {
     videoDraft('video-normal')
     const onSend = vi.fn()
-    render(<InputBar conversationId="video-normal" onSend={onSend} gitLang="zh" />)
+    render(<InputBar conversationId="video-normal" onSend={onSend} />)
     expect(screen.queryByRole('button', { name: /分析.*视频|Analyze.*video/ })).toBeNull()
     expect(screen.queryByText(/混音器分析|随下一条消息|14 MiB/)).toBeNull()
     expect(onSend).not.toHaveBeenCalled()

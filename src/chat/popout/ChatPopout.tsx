@@ -153,6 +153,9 @@ function ChatPopoutBody({
       onApprovalPolicyChange={session.handleApprovalPolicyChange}
       onSandboxChange={session.handleSandboxChange}
       busy={Boolean(session.inputBarProps.disabled)}
+      workdir={session.workdir}
+      projectName={session.inputBarProps.conversationProject?.name || null}
+      lang={lang}
     />
   )
   const pane = session.loadError ? (

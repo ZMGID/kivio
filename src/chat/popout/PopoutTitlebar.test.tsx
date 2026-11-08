@@ -14,6 +14,11 @@ vi.mock('../RuntimePicker', () => ({
 vi.mock('../ModelSelector', () => ({ ModelSelector: () => <span data-testid="model-selector" /> }))
 vi.mock('../ThinkingLevelSelector', () => ({ ThinkingLevelSelector: () => <span /> }))
 vi.mock('../PermissionPicker', () => ({ PermissionPicker: () => <span /> }))
+vi.mock('../dock/WorkspaceActionsMenu', () => ({
+  WorkspaceActionsMenu: ({ inlineAllowed }: { inlineAllowed?: boolean }) => (
+    <span data-testid="workspace-panel" data-inline={String(inlineAllowed ?? true)} />
+  ),
+}))
 
 const runtime: AgentRuntimeConfig = { kind: 'builtin' }
 
@@ -43,6 +48,9 @@ describe('PopoutTitlebar', () => {
           onApprovalPolicyChange={() => {}}
           onSandboxChange={() => {}}
           busy={false}
+          workdir=""
+          projectName={null}
+          lang="zh"
         />
       </LangContext.Provider>,
     )
@@ -53,5 +61,30 @@ describe('PopoutTitlebar', () => {
     expect(title?.textContent).toBe('商品图片批量生成工作流搭建')
     expect(title).toHaveAttribute('data-tauri-drag-region')
     expect(Boolean(pills && title && (pills.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true)
+    expect(container.querySelector('[data-testid="workspace-panel"]')).toBeNull()
+  })
+
+  it('offers the workspace panel as a popover when the conversation has a working directory', () => {
+    const { getByTestId } = render(
+      <LangContext.Provider value="zh">
+        <PopoutTitlebar
+          conversation={{ id: 'c1', revision: 1, title: 't', provider_id: 'p', model: 'm', messages: [], created_at: 0, updated_at: 0 }}
+          runtime={runtime}
+          usesExternalRuntime={false}
+          approvalPolicy="readonly_auto_sensitive_confirm"
+          onRuntimeChange={() => {}}
+          onModelChange={() => {}}
+          onExternalModelChange={() => {}}
+          onThinkingLevelChange={() => {}}
+          onApprovalPolicyChange={() => {}}
+          onSandboxChange={() => {}}
+          busy={false}
+          workdir="/repo"
+          projectName="Repo"
+          lang="zh"
+        />
+      </LangContext.Provider>,
+    )
+    expect(getByTestId('workspace-panel')).toHaveAttribute('data-inline', 'false')
   })
 })

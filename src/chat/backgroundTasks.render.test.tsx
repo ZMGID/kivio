@@ -2,7 +2,7 @@ import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type BackgroundTaskInfo } from '../api/tauri'
-import { BackgroundJobsIndicator } from './BackgroundJobsIndicator'
+import { useBackgroundTasks } from './useBackgroundTasks'
 import { BackgroundTasksPanel } from './dock/BackgroundTasksPanel'
 
 vi.mock('../api/tauri', () => ({ api: {
@@ -11,6 +11,11 @@ vi.mock('../api/tauri', () => ({ api: {
   chatStopExternalBackgroundTask: vi.fn(),
   chatClearFinishedBackgroundTasks: vi.fn(),
 } }))
+
+function TaskSubscriber({ conversationId }: { conversationId: string }) {
+  useBackgroundTasks(conversationId)
+  return null
+}
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -32,9 +37,9 @@ const running: BackgroundTaskInfo = {
 }
 
 describe('background task consumers', () => {
-  it('shares each request between the header indicator and open task panel', async () => {
+  it('shares each request between subscribers and the open task panel', async () => {
     render(<>
-      <BackgroundJobsIndicator conversationId="conv_shared" onOpen={() => {}} />
+      <TaskSubscriber conversationId="conv_shared" />
       <BackgroundTasksPanel active lang="en" conversationId="conv_shared" />
     </>)
     await act(async () => { await Promise.resolve() })
@@ -46,7 +51,7 @@ describe('background task consumers', () => {
   it('does not overlap slow reads, and stops when the last consumer leaves', async () => {
     let resolve!: (value: BackgroundTaskInfo[]) => void
     vi.mocked(api.chatListBackgroundTasks).mockImplementationOnce(() => new Promise((done) => { resolve = done }))
-    const view = render(<StrictMode><BackgroundJobsIndicator conversationId="conv_slow" onOpen={() => {}} /></StrictMode>)
+    const view = render(<StrictMode><TaskSubscriber conversationId="conv_slow" /></StrictMode>)
     await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
     expect(api.chatListBackgroundTasks).toHaveBeenCalledTimes(1)
     view.unmount()
@@ -66,7 +71,7 @@ describe('background task consumers', () => {
   })
 
   it('pauses while hidden and refreshes immediately when visible again', async () => {
-    render(<BackgroundJobsIndicator conversationId="conv_visibility" onOpen={() => {}} />)
+    render(<TaskSubscriber conversationId="conv_visibility" />)
     await act(async () => { await Promise.resolve() })
     vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
     fireEvent(document, new Event('visibilitychange'))
@@ -84,7 +89,7 @@ describe('background task consumers', () => {
       .mockImplementationOnce(() => new Promise((done) => { resolve = done }))
     vi.mocked(api.chatKillBackgroundCommand).mockResolvedValueOnce(undefined)
     render(<>
-      <BackgroundJobsIndicator conversationId="conv_stop" onOpen={() => {}} />
+      <TaskSubscriber conversationId="conv_stop" />
       <BackgroundTasksPanel active lang="en" conversationId="conv_stop" />
     </>)
     await act(async () => { await Promise.resolve() })

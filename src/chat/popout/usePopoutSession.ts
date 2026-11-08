@@ -25,6 +25,7 @@ import type { MessageListProps } from '../MessageList'
 import type { AgentPlanState, AgentTodoState, Conversation, GoalState, PendingAttachment, ThinkingLevel } from '../types'
 import { insertTextIntoComposer } from '../composerInsert'
 import { usePopoutComposer } from './usePopoutComposer'
+import { usePopoutWorkdir } from './usePopoutWorkdir'
 import { useDetectedExternalAgents } from '../permissionModes'
 import type {
   ChatSessionConsentPayload,
@@ -482,6 +483,11 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   }, [acceptPersistedConversation, conversationId])
 
   const displayMessages = executionOwner.overlayMessages(conversation?.id, conversation?.messages ?? [])
+  const workdir = usePopoutWorkdir(
+    conversationId,
+    conversation?.project_id ?? conversation?.projectId ?? null,
+    `${runtime.kind}:${runtime.externalAgentId ?? ''}`,
+  )
 
   const inputBarProps = usePopoutComposer({
     conversation,
@@ -499,6 +505,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     cancelVisible: streamCoarse.streaming,
     cancelling: streamCoarse.cancelling,
     disabled: streamCoarse.streaming || executionOwner.snapshot(conversationId).inFlight,
+    workdir,
   })
 
   const messageListProps: MessageListProps = {
@@ -517,6 +524,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     usesChatRuntime,
     usesExternalRuntime,
     approvalPolicy,
+    workdir,
     inputBarProps,
     messageListProps,
     streamError: streamCoarse.streamError,

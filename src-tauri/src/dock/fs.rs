@@ -854,6 +854,84 @@ pub async fn dock_fs_open_path(
     .map_err(|e| format!("dock_fs_open_path join: {e}"))?
 }
 
+/// 支持的编辑器：(id, PATH 上的启动命令)。文件管理器走 dock_fs_open_path，不在此列。
+const EDITORS: &[(&str, &str)] = &[
+    ("vscode", "code"),
+    ("cursor", "cursor"),
+    ("zed", "zed"),
+    ("windsurf", "windsurf"),
+];
+
+fn find_on_path(command: &str, paths: &std::ffi::OsStr) -> Option<PathBuf> {
+    // Windows 只认可执行扩展名：VS Code 的 bin 目录同时放着无扩展名的 sh 脚本。
+    let suffixes: &[&str] = if cfg!(target_os = "windows") {
+        &[".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    std::env::split_paths(paths).find_map(|dir| {
+        suffixes
+            .iter()
+            .map(|suffix| dir.join(format!("{command}{suffix}")))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn editor_launcher(command: &str) -> Option<PathBuf> {
+    find_on_path(command, &std::env::var_os("PATH")?)
+}
+
+/// 当前机器 PATH 上能找到启动命令的编辑器 id。
+#[tauri::command]
+pub async fn dock_available_editors() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        EDITORS
+            .iter()
+            .filter(|(_, command)| editor_launcher(command).is_some())
+            .map(|(id, _)| (*id).to_string())
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("dock_available_editors join: {e}"))
+}
+
+/// 用指定编辑器打开工作目录。直接运行解析出的启动器：.cmd 由标准库负责参数转义，
+/// 路径中的 `&` 等字符不会被 cmd 当作命令分隔符。
+#[tauri::command]
+pub async fn dock_open_in_editor(workdir: String, editor: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some((_, program)) = EDITORS.iter().find(|(id, _)| *id == editor) else {
+            return Err(format!("不支持的编辑器：{editor}"));
+        };
+        let wd = canonicalize_workdir(&workdir)?;
+        let launcher = editor_launcher(program)
+            .ok_or_else(|| format!("找不到 {editor}：需要 {program} 命令在 PATH 中。"))?;
+        let mut command = Command::new(&launcher);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            let text = wd.to_string_lossy();
+            command.arg(text.strip_prefix(r"\\?\").unwrap_or(&text));
+            command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        #[cfg(not(target_os = "windows"))]
+        command.arg(&wd);
+        let mut child = command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("无法启动 {editor}：{e}"))?;
+        // 启动器很快退出；回收它，避免留下僵尸进程。
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("dock_open_in_editor join: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -868,6 +946,22 @@ mod tests {
             std::env::temp_dir().join(format!("kivio-dock-fs-{tag}-{}-{id}", std::process::id()));
         fs::create_dir_all(&dir).expect("create temp workdir");
         fs::canonicalize(&dir).expect("canonicalize temp workdir")
+    }
+
+    #[test]
+    fn editor_launcher_lookup_ignores_extensionless_scripts_on_windows() {
+        let first = temp_workdir("editor-path-a");
+        let second = temp_workdir("editor-path-b");
+        fs::write(first.join("code"), "#!/bin/sh").unwrap();
+        let expected = if cfg!(target_os = "windows") {
+            fs::write(second.join("code.cmd"), "@echo off").unwrap();
+            second.join("code.cmd")
+        } else {
+            first.join("code")
+        };
+        let paths = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(find_on_path("code", &paths), Some(expected));
+        assert_eq!(find_on_path("zed", &paths), None);
     }
 
     #[test]
