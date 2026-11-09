@@ -226,6 +226,41 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn conversation_disposal_waits_for_real_process_exit() {
+        use windows::Win32::{
+            Foundation::{CloseHandle, WAIT_OBJECT_0},
+            System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+        };
+        let owner = std::sync::Arc::new(BackgroundCommandRegistry::default());
+        let mut command = tokio::process::Command::new("powershell.exe");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"])
+            .creation_flags(0x08000000 | 0x00000200)
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let pid = child.id().unwrap();
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let mut running = job("process", Some("conv"));
+        running.pid = Some(pid);
+        running.kill_tx = Some(tx);
+        owner.register(running);
+        let waiter_owner = owner.clone();
+        let waiter = tokio::spawn(async move {
+            let _ = rx.await;
+            kill_process_group(pid);
+            child.wait().await.unwrap();
+            waiter_owner.complete("process", Status::Killed);
+        });
+
+        owner.kill_for_conversation("conv");
+        let stopped_at_return = unsafe { WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 };
+        waiter.await.unwrap();
+        unsafe { let _ = CloseHandle(handle); }
+        assert!(stopped_at_return, "disposal returned before its waiter killed/reaped the process");
+    }
+
     #[test]
     fn kill_signal_is_once_only_and_late_completion_cannot_undo_it() {
         let owner = BackgroundCommandRegistry::default();

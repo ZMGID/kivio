@@ -1378,6 +1378,79 @@ mod subagent_cleanup_tests {
     };
     use std::path::Path;
 
+    #[cfg(windows)]
+    struct RunningCommand {
+        pid: u32,
+        handle: windows::Win32::Foundation::HANDLE,
+    }
+
+    #[cfg(windows)]
+    impl RunningCommand {
+        async fn start(state: &crate::state::AppState, owner: &str, cwd: &Path) -> Self {
+            use windows::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+            let output = crate::native_tools::run_command(
+                &crate::native_tools::NativeToolWorkspace::conversation(cwd.to_owned()),
+                &serde_json::json!({
+                    "command": "powershell.exe -NoProfile -NonInteractive -Command \"Start-Sleep -Seconds 60\"",
+                    "background": true,
+                }),
+                Some(state),
+                Some(owner),
+            ).await.unwrap();
+            let pid = output.lines().find_map(|line| line.strip_prefix("pid: "))
+                .unwrap().parse().unwrap();
+            Self { pid, handle: unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.unwrap() }
+        }
+
+        fn stopped(&self) -> bool {
+            use windows::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject};
+            unsafe { WaitForSingleObject(self.handle, 0) == WAIT_OBJECT_0 }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for RunningCommand {
+        fn drop(&mut self) {
+            if !self.stopped() { crate::native_tools::kill_process_group(self.pid); }
+            unsafe { let _ = windows::Win32::Foundation::CloseHandle(self.handle); }
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn root_deletion_reaps_root_and_child_commands_before_removing_artifacts() {
+        let state = crate::state::test_app_state();
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = dir.path().join("conv_a");
+        std::fs::create_dir(&artifacts).unwrap();
+        register_agent(&state.sub_agents, "conv_a", "child", &artifacts);
+        register_agent(&state.sub_agents, "conv_a", "legacy", &artifacts);
+        let commands = state.background_commands_handle();
+        let child_queue = state.runtime_injections.queue("subagent-conv_a-child", "conv_a", commands.clone());
+        let root = RunningCommand::start(&state, "conv_a", dir.path()).await;
+        let child = RunningCommand::start(&state, "subagent-conv_a-child", &artifacts).await;
+        let legacy = RunningCommand::start(&state, "subagent-conv_a-legacy", &artifacts).await;
+        let unrelated = RunningCommand::start(&state, "conv_ab", dir.path()).await;
+        let child_notice = commands.snapshots(Some("subagent-conv_a-child"), false).pop().unwrap();
+        assert!(state.runtime_injections.shell_completed(child_notice.clone()));
+        assert!(child_queue.has_waking_input());
+
+        let result = forget_subagents(&state.sub_agents, "conv_a", || Ok(artifacts.clone()));
+        assert!(root.stopped(), "root process still alive when cleanup returned: {result:?}");
+        assert!(child.stopped(), "child process still alive when cleanup returned: {result:?}");
+        assert!(legacy.stopped(), "child without mailbox survived root deletion: {result:?}");
+        result.unwrap();
+        assert!(!artifacts.exists());
+        assert!(!unrelated.stopped());
+        assert!(commands.snapshots(Some("conv_a"), false).is_empty());
+        assert!(commands.snapshots(Some("subagent-conv_a-child"), false).is_empty());
+        assert!(commands.snapshots(Some("subagent-conv_a-legacy"), false).is_empty());
+        assert_eq!(commands.snapshots(Some("conv_ab"), false).len(), 1);
+        assert!(!child_queue.has_waking_input());
+        assert!(!state.runtime_injections.shell_completed(child_notice));
+        forget_subagents(&state.sub_agents, "conv_a", || Ok(artifacts.clone())).unwrap();
+    }
+
     fn register_agent(manager: &SubAgentManager, root: &str, id: &str, dir: &Path) {
         manager.registry.register(AgentRecord {
             id: id.into(),

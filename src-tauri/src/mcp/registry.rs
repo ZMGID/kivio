@@ -1512,6 +1512,98 @@ mod tests {
     }
 
     #[test]
+    fn resource_only_server_keeps_authority_without_exposing_tools() {
+        let settings = settings_with_servers(vec![enabled_server("resources")]);
+        let (tools, servers) = super::mcp_grants(&[]);
+        assert!(tools.is_empty());
+        assert_eq!(servers, vec![settings.chat_tools.servers[0].id.clone()]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resource_only_server_is_discovered_and_read_by_native_dispatch() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut context = tauri::generate_context!();
+        context.config_mut().identifier = directory.path().to_string_lossy().into_owned();
+        context.config_mut().app.windows.clear();
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/kivio-agent-sdk/tests/fixtures/resource_server.py");
+        let server = ChatMcpServer {
+            id: "resources-only".into(),
+            name: "Resources only".into(),
+            enabled: true,
+            command: "py".into(),
+            args: vec!["-X".into(), "utf8".into(), "-u".into(), script.to_string_lossy().into_owned()],
+            env: HashMap::from([("MCP_RESOURCE_ONLY".into(), "1".into())]),
+            ..Default::default()
+        };
+        let state = crate::state::test_app_state();
+        crate::settings::update_settings_in_memory(&state, |settings| {
+            settings.chat_tools.enabled = true;
+            settings.chat_tools.servers = vec![server.clone()];
+            Ok(())
+        }).unwrap();
+        let application = tauri::Builder::default()
+            .any_thread()
+            .manage(state)
+            .build(context)
+            .unwrap();
+        let app = application.handle();
+        tauri::async_runtime::block_on(async {
+            let state = app.state::<AppState>();
+            let catalog = list_enabled_tool_catalog_for_run(app, &state, Some(&[server.id.clone()])).await;
+            assert!(!catalog.tools.iter().any(|tool| tool.source == "mcp"));
+            assert!(catalog.unavailable_mcp_servers.is_empty());
+            let (tool_ids, server_ids) = mcp_grants(&catalog.tools);
+            assert!(tool_ids.is_empty());
+            let provider = crate::chat::agent::loop_::tests::test_provider("http://unused");
+            let plan_state = Default::default();
+            let native = NativeToolContext {
+                control: None,
+                conversation_id: "resource-owner".into(),
+                message_id: "message".into(),
+                provider: &provider,
+                model: "test",
+                tool_call_id: None,
+                run_id: "resource-run".into(),
+                generation: 0,
+                round: 0,
+                depth: 0,
+                plan_state: &plan_state,
+                mcp_tool_ids: &tool_ids,
+                mcp_server_ids: &server_ids,
+                approval_policy: "auto",
+                interactive_host: false,
+            };
+            state.runtime_injections.queue(
+                &native.conversation_id,
+                &native.conversation_id,
+                state.background_commands_handle(),
+            );
+            let read = super::super::types::native_read_file_tool();
+            let discovery = call_tool(app, &state, &read, serde_json::json!({"path":"mcp://"}), None, Some(native.clone())).await.unwrap();
+            assert!(discovery.content.contains("mcp://resources-only"), "{}", discovery.content);
+            let catalog = call_tool(app, &state, &read, serde_json::json!({"path":"mcp://resources-only"}), None, Some(native.clone())).await.unwrap();
+            assert!(catalog.content.contains("test%3A%2F%2Fresource%2Fcurrent"), "{}", catalog.content);
+            let resource = call_tool(app, &state, &read, serde_json::json!({"path":"mcp://resources-only/test%3A%2F%2Fresource%2Fcurrent"}), None, Some(native.clone())).await.unwrap();
+            assert!(resource.content.contains("resource-body-1"), "{}", resource.content);
+
+            let denied = NativeToolContext { mcp_server_ids: &[], ..native.clone() };
+            let discovery = call_tool(app, &state, &read, serde_json::json!({"path":"mcp://"}), None, Some(denied.clone())).await.unwrap();
+            assert!(!discovery.content.contains("resources-only"));
+            assert!(call_tool(app, &state, &read, serde_json::json!({"path":"mcp://resources-only"}), None, Some(denied)).await.is_err());
+            crate::settings::update_settings_in_memory(&state, |settings| {
+                settings.chat_tools.servers[0].enabled = false;
+                Ok(())
+            }).unwrap();
+            assert!(call_tool(app, &state, &read, serde_json::json!({"path":"mcp://resources-only"}), None, Some(native)).await.is_err());
+            state.runtime_injections.forget("resource-owner");
+            state.mcp_disconnect_all().await;
+            let _ = fs::remove_dir_all(&state.usage_dir);
+        });
+    }
+
+    #[test]
     fn successful_file_receipt_omits_code_but_preserves_disk_and_review() {
         let dir = tempfile::tempdir().unwrap();
         let workspace = crate::native_tools::NativeToolWorkspace::global(&[dir
