@@ -145,6 +145,7 @@ pub(crate) fn with_acp_peer(mode: &str, test: impl FnOnce(&AppHandle, &Path)) {
         .any_thread()
         .manage(state)
         .manage(crate::chat::repository::ConversationRepository::default())
+        .manage(crate::app_mcp::KivioServer::default())
         .build(context)
         .unwrap();
     test(application.handle(), directory.path());
