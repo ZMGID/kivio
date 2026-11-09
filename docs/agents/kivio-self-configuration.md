@@ -15,7 +15,7 @@
 | settings.json 有 Store 外壳，设置同时存在内存中 | `settings.rs::{load_settings,persist_settings}`；`state.rs` | 修改在最新设置锁内合并、保存，再更新内存；不写运行中的裸 JSON |
 | 通用插件已有校验/托管副本/启停/MCP 清理 | `plugins/packages.rs` | 复用现有包服务，导入不执行安装脚本，诊断非空不绕过启用限制 |
 | Hook 有旁路通知与同步工作流两套机制 | `chat/hooks.rs`；`chat/workflow_hooks.rs`；`plugins/packages.rs` | 分开说明事件、格式、单位及可影响的执行范围 |
-| 内置 Chat 不加载 skill；外部 CLI 有独立配置与原生会话 | `chat/agent/prepare.rs`；`chat/commands/tooling.rs`；`external_agents/` | 自配置目标必须先分清宿主，导入会话仍绑定原 CLI |
+| 内置 Chat 不加载 skill；外部 CLI 有独立配置与原生会话 | `chat/agent_preparation.rs`；`chat/commands/tooling.rs`；`external_agents/` | 自配置目标必须先分清宿主，导入会话仍绑定原 CLI |
 | 工具和技能注册信息每轮冻结；前端设置有缓存 | `skills/runtime.rs`；`chat/agent/`；`src/api/settingsCache.ts` | 返回下一轮刷新提示；操作成功通过无敏感载荷的事件刷新设置缓存 |
 
 ## 统一内置入口
@@ -33,7 +33,7 @@ Kivio 不读取 `agents/openai.yaml` 的调用策略，因此这套资源采用 
 
 ## 操作实现
 
-`src-tauri/src/self_config/` 提供两个原生工具，在 `mcp/native_registry.rs` 统一注册，遵守原有审批/会话授权。inspect 跟随读取开关；configure 跟随命令执行开关，并限制主会话使用；规划模式和 Kivio Chat 的原有筛选保持有效。没有新增监听端口、任意代码执行 API、通用 settings 覆盖或免审批通道。
+`src-tauri/src/self_config/` 提供两个原生工具，在 `mcp/native_registry.rs` 统一注册，遵守原有审批/会话授权。inspect 跟随读取开关；configure 跟随命令执行开关，并限制主会话使用；规划模式和 Kivio Chat 的原有筛选保持有效。没有新增监听端口、任意代码执行 API、通用 settings 覆盖或免审批通道。两者属于按需工具（[ADR-0008](../adr/0008-low-frequency-tools-load-on-demand.md)），默认不进模型工具列表，经 `read tool://` 发现、`write tool://` 或直接按名执行。
 
 工具支持个人/项目 skill 安装（目录或单技能 ZIP）、备份更新、普通 skill 启停和扫描设置、通用插件导入/启停/移除、独立 MCP 增量配置/移除/测试、个人工作流 Hooks 保存。新技能采用分阶段复制、验证后替换；拒绝路径越界、链接、多技能 ZIP 和过大输入，旧版备份位于扫描根之外。
 

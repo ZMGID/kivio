@@ -54,4 +54,4 @@
 
 ## 源码定位（维护时使用）
 
-仓库相对位置：`src-tauri/src/app_data.rs`；`settings.rs::{ChatToolsConfig,ChatMcpServer,ProviderApiFormat,persist_settings,load_settings}`；`commands.rs::{save_settings,apply_settings}`；`chat/agent/prepare.rs::build_chat_system_prompt_with_segments`；`agents/mod.rs`。这些文件不会随普通 skill 单独分发，不能要求终端用户必须拥有源码。
+仓库相对位置：`src-tauri/src/app_data.rs`；`settings.rs::{ChatToolsConfig,ChatMcpServer,ProviderApiFormat,persist_settings,load_settings}`；`commands.rs::{save_settings,apply_settings}`；`chat/agent_preparation.rs::build_chat_prompt`；`agents/mod.rs`。这些文件不会随普通 skill 单独分发，不能要求终端用户必须拥有源码。

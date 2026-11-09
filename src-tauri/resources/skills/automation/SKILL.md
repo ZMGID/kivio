@@ -16,7 +16,7 @@ Kivio automations are directed graphs: one trigger, then actions and logic, stor
 
 **Do not:** glob the repo, invent node type names, or `dry_run` to discover the schema. `dry_run` is only for a finished candidate. This skill is the schema — `automation action=upsert`'s tool description is short on purpose. Validation errors also return `allowedNodeTypes` + `schemaHint`.
 
-Chat exposes one native `automation` tool with seven actions. After creating a graph, tell the user to open `#chat/automations/{id}`.
+Chat exposes one native `automation` tool with seven actions. It is an on-demand tool: when it is not in your tool list, read `tool://automation` for its schema and run it with `write` to `tool://automation` (`content` = JSON arguments, e.g. `{"action":"list"}`), or call `automation` directly by name. After creating a graph, tell the user to open `#chat/automations/{id}`.
 
 ## Tools
 

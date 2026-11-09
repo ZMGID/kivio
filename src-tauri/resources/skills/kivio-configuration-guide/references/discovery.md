@@ -41,4 +41,4 @@ arguments: [focus]
 
 运行时 `skill` 工具形状为 `{"name":"目录中实际显示的名称"}`。它返回正文、实际 Skill directory 和资源路径；后续 `read`/`bash` 必须以该目录解析相对路径。`skill` 只加载，不负责安装或运行所有脚本。
 
-源码：`src-tauri/src/skills/{discover,parse,types,runtime,catalog,mod}.rs`；`src-tauri/src/settings.rs::skill_global_unavailable_error`；`src-tauri/src/chat/agent/prepare.rs::skill_allowed_for_conversation`。
+源码：`src-tauri/src/skills/{discover,parse,types,runtime,catalog,mod}.rs`；`src-tauri/src/settings.rs::skill_global_unavailable_error`；`src-tauri/src/chat/agent_preparation.rs::skill_allowed_for_conversation`。

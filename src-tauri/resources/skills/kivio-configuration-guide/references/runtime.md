@@ -6,7 +6,7 @@
 
 | 层 | 诊断入口 | 常见误判 |
 | --- | --- | --- |
-| Kivio Agent | 全局工具设置、助手快照白名单、实际模型工具 schema | skill 写了工具名不代表工具已开启 |
+| Kivio Agent | 全局工具设置、助手快照白名单、实际模型工具 schema 及按需工具目录（`read tool://`） | skill 写了工具名不代表工具已开启；不在工具列表里的低频工具可能在按需目录中 |
 | Kivio Chat | 独立 Chat 提示词/搜索/抓取/知识库/只读 MCP 开关 | 该运行时不加载 skill，不提供本机安装操作 |
 | 外部 CLI 代理 | 本机可执行文件探测、对应 CLI 配置/供应商、会话绑定 | Kivio MCP/插件启用不代表 CLI 的原生配置变更 |
 | 项目/会话 | 主工作目录、附加目录、实际助手/模型/运行时 | 全局默认值不等于现有会话快照 |
@@ -31,4 +31,4 @@
 
 供应商/系统提示词/设置路径需要细查时，读 [配置地图](configuration-map.md)。当前操作工具只管理扩展，不提供修改 CLI 登录、全量供应商或热键的接口；对应操作走已存在的设置入口。
 
-源码：`src-tauri/src/external_agents/{registry,detection,overrides,provider_profile,skill_stage}.rs`；`chat/commands/tooling.rs`；`chat/agent/prepare.rs`；`docs/adr/0001-imported-cli-conversations-stay-on-their-cli.md` 与 `0002-imported-history-is-a-snapshot.md`。
+源码：`src-tauri/src/external_agents/{registry,detection,overrides,provider_profile,skill_stage}.rs`；`chat/commands/tooling.rs`；`chat/agent_preparation.rs`；`chat/tool_on_demand.rs`；`docs/adr/0001-imported-cli-conversations-stay-on-their-cli.md` 与 `0002-imported-history-is-a-snapshot.md`。

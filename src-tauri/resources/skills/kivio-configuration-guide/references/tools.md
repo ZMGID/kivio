@@ -2,6 +2,8 @@
 
 这些工具随本套技能一同实现；旧版安装或外部 CLI 的工具列表可能没有。实际没有时不能用相同名字猜 IPC、CLI 或网络接口。
 
+内置运行时默认按需加载这两个工具：它们不在工具列表里，而在系统提示的按需工具目录中。用 `read tool://kivio_inspect` 查看参数，用 `write tool://kivio_inspect`（`content` 为 JSON 参数）执行，也可以直接按名调用；审批和会话授权与直接调用相同。目录里没有时说明本轮不可用。
+
 ## 读取
 
 `kivio_inspect` 的 `topic` 为 `status`（默认）、`skills`、`plugins`、`mcp`、`hooks`。只读内存/文件/注册信息，不启动依赖、不联网测试。摘要不返回 API keys、完整 MCP command/args/env/header/auth 或 Hook 脚本。

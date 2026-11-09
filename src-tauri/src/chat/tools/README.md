@@ -30,6 +30,13 @@
 
 原生工具的超时与并行属性归 `NativeToolEntry`。`ToolTimeout::Managed` 表示由工具管理等待时间，其他策略使用默认、最小或参数决定的时限。并行仍需通过原有授权检查，写操作保持串行。子代理仍等待已经开始的工具完成清理，才释放运行资源。
 
+`NativeToolEntry` 同时持有两项可见性元数据，均为唯一来源：
+
+- `read_only_actions`：`automation`、`schedule` 这类合并工具按 `action` 区分只读与写入。规划、Chat 与只读子代理保留这类工具，但执行时拒绝写入 action；审批同样按 action 判断。合并工具不并行。
+- `load_mode`：常驻工具进入模型工具列表；按需工具在本轮全部过滤完成后从列表移出（`chat/tool_on_demand.rs`），模型通过 `read tool://`、`read tool://<name>` 和 `write tool://<name>` 发现与执行，直接按名调用仍可执行。`write tool://X` 在 `ApplicationToolExecutor::resolve_tool_call` 中先解析成 X，之后的记录、审批、校验、Hook 与超时都按 X 处理。本轮没有 `read`/`write` 时按需工具保持列出。设置 `chatTools.toolsOnDemand` 关闭后恢复全量列表。决策见 [ADR-0008](../../../../docs/adr/0008-low-frequency-tools-load-on-demand.md)。
+
+旧工具名（如 `automation_list`、`read_file`）经 `mcp/types.rs` 的 `LEGACY_TOOL_ALIASES` 路由到现名，合并工具同时补上对应 `action`。各模式实际下发的工具与估算成本由 `chat/commands/tool_baseline_tests.rs` 锁定。
+
 ## 验证
 
 `tools/tests.rs` 验证静态参数、类型化错误和输出编码失败。`schema.rs` 验证嵌套引用、动态约束、兼容性转换及外部引用拒绝。`agent/tool_contract_tests.rs` 通过真实循环检查显式注册、静态与动态工具往返及失败状态。原生写入测试检查实际文件和结构化回执。

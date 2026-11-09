@@ -1,6 +1,6 @@
 # 自动化 v1 PRD：对齐 n8n 的简化编排
 
-> 2026-11-09 工具收敛：模型侧现用 `automation` + `action=list|get|upsert|set_enabled|run|runs|delete`，定时任务用 `schedule` + `action=create|list|update|delete`。下文保留历史工具名；旧调用仍按别名路由，运行进度类型 `automation_run` 不变。工作流代理同时剥离 `automation` 与旧 `automation_*`。
+> 2026-11-09 工具收敛：模型侧现用 `automation` + `action=list|get|upsert|set_enabled|run|runs|delete`，定时任务用 `schedule` + `action=create|list|update|delete`。下文保留历史工具名；旧调用仍按别名路由，运行进度类型 `automation_run` 不变。工作流代理同时剥离 `automation` 与旧 `automation_*`。两者默认为按需工具，不进模型工具列表，经 `read tool://` / `write tool://<name>` 使用，见 [ADR-0008](../adr/0008-low-frequency-tools-load-on-demand.md)。
 
 
 **Date:** 2026-08-30
