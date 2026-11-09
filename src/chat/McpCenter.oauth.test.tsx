@@ -1,20 +1,22 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import userEvent from '@testing-library/user-event'
-import type { OAuthDevicePrompt, Settings } from '../api/tauri'
+import type { McpServerStatePayload, McpServerStatus, OAuthDevicePrompt, Settings } from '../api/tauri'
 import { LangContext } from '../components/i18n'
 
 const mocks = vi.hoisted(() => ({
   oauth: vi.fn(),
   test: vi.fn(),
+  status: vi.fn(),
+  listen: vi.fn(),
   settings: {} as Settings,
 }))
 
 vi.mock('../api/tauri', () => ({ api: {
   connectorOauthConnect: mocks.oauth,
   chatMcpTestServer: mocks.test,
-  onMcpServerState: async () => () => {},
-  chatMcpServerStatus: async () => ({ state: { kind: 'disconnected' } }),
+  onMcpServerState: mocks.listen,
+  chatMcpServerStatus: mocks.status,
   chatSubagentRoles: async () => [],
 } }))
 vi.mock('../api/settingsCache', () => ({
@@ -32,12 +34,48 @@ import { McpCenter } from './McpCenter'
 
 beforeEach(() => {
   vi.resetAllMocks()
+  mocks.listen.mockResolvedValue(() => {})
+  mocks.status.mockResolvedValue({ serverId: 'github', state: { kind: 'disconnected' } })
   mocks.settings = { chatTools: { servers: [{
     id: 'github', name: 'github', enabled: true, transport: 'streamable_http',
     url: 'https://api.githubcopilot.com/mcp', command: '', args: [], env: {},
     headers: { 'X-Custom': 'keep' }, enabledTools: [],
   }] } } as unknown as Settings
   mocks.test.mockResolvedValue({ success: true, tools: [] })
+})
+
+it('shows the sanitized server icon from a connected snapshot', async () => {
+  const src = 'data:image/png;base64,aWNvbg=='
+  mocks.status.mockResolvedValue({ serverId: 'github', state: { kind: 'connected' }, icons: [{ src }] })
+  const { container } = render(<LangContext.Provider value="zh"><McpCenter /></LangContext.Provider>)
+  await waitFor(() => expect(container.querySelector('img')).toHaveAttribute('src', src))
+})
+
+it('ignores an icon snapshot that finishes after a disconnect event', async () => {
+  let finish!: (status: McpServerStatus) => void
+  let listener: ((payload: McpServerStatePayload) => void) | undefined
+  mocks.status.mockImplementationOnce(() => new Promise<McpServerStatus>(resolve => { finish = resolve }))
+  mocks.listen.mockImplementation((callback: (payload: McpServerStatePayload) => void) => {
+    listener = callback
+    return Promise.resolve(() => {})
+  })
+  const { container } = render(<LangContext.Provider value="zh"><McpCenter /></LangContext.Provider>)
+  await screen.findByRole('button', { name: /github/ })
+  await act(async () => {
+    listener?.({ serverId: 'github', state: { kind: 'disconnected' } })
+    finish({ serverId: 'github', state: { kind: 'connected' }, handshakeCount: 1, stderrTail: '',
+      icons: [{ src: 'data:image/png;base64,bGF0ZQ==' }] })
+  })
+  expect(container.querySelector('img')).toBeNull()
+})
+
+it('shows icon metadata from the one-shot connection test', async () => {
+  const src = 'data:image/png;base64,dGVzdA=='
+  mocks.test.mockResolvedValueOnce({ success: true, tools: [], icons: [{ src }] })
+  const { container } = render(<LangContext.Provider value="zh"><McpCenter /></LangContext.Provider>)
+  fireEvent.click(await screen.findByRole('button', { name: /github/ }))
+  fireEvent.click(screen.getByRole('button', { name: '测试连接' }))
+  await waitFor(() => expect(container.querySelector('img')).toHaveAttribute('src', src))
 })
 
 it('offers app configuration after missing-DCR failure and uses it for browser authorization', async () => {

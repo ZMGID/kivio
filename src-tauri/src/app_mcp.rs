@@ -3,7 +3,10 @@ use std::{
     future::Future,
     io,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     task::{Context, Poll},
     time::Duration,
 };
@@ -15,11 +18,14 @@ use axum::{
     response::{IntoResponse, Response},
     Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use rand::RngCore;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
@@ -30,7 +36,10 @@ use tokio::{
 
 use crate::html_render;
 
-pub(crate) const CHAT_MCP_SERVER_NAME: &str = "kivio";
+#[cfg(test)]
+mod voice_tests;
+
+pub(crate) const SERVER_NAME: &str = "Kivio-server";
 pub(crate) const MAX_BODY: usize = 256 * 1024;
 pub(crate) const MAX_CALLS: usize = 8;
 const MAX_CHAT_BODY: usize = 4 * 1024 * 1024;
@@ -42,6 +51,68 @@ const BODY_TIMEOUT: Duration = Duration::from_secs(10);
 const TOOL_TIMEOUT: Duration = Duration::from_secs(620);
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(650);
 const VERSIONS: &[&str] = &["2025-06-18", "2025-11-25"];
+
+fn server_info(version: &str) -> Value {
+    let mut info = json!({"name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION")});
+    if version == "2025-11-25" {
+        static ICON: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            format!(
+                "data:image/png;base64,{}",
+                STANDARD.encode(include_bytes!("../../public/kivio-server.png"))
+            )
+        });
+        info["icons"] = json!([{"src": *ICON, "mimeType": "image/png", "sizes": ["1254x1254"]}]);
+    }
+    info
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ToolScope {
+    Chat,
+    Voice,
+}
+
+impl ToolScope {
+    fn tools(self) -> Vec<Value> {
+        use crate::mcp::types;
+
+        match self {
+            Self::Chat => html_render::tool_definitions(),
+            Self::Voice => [
+                types::native_kivio_list_agents_tool(),
+                types::native_kivio_list_projects_tool(),
+                types::native_kivio_list_conversations_tool(),
+                types::native_kivio_read_conversation_tool(),
+                types::native_kivio_create_conversation_tool(),
+                types::native_kivio_send_message_tool(),
+                types::native_kivio_interrupt_tool(),
+            ]
+            .into_iter()
+            .map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "inputSchema": tool.input_schema,
+                })
+            })
+            .collect(),
+        }
+    }
+
+    fn body_limit(self) -> usize {
+        match self {
+            Self::Chat => MAX_CHAT_BODY,
+            Self::Voice => MAX_BODY,
+        }
+    }
+
+    fn timeout_message(self) -> &'static str {
+        match self {
+            Self::Chat => CHAT_TIMEOUT_MESSAGE,
+            Self::Voice => "Voice tool timed out; its outcome may be unknown",
+        }
+    }
+}
 
 pub(crate) struct ToolOutput {
     pub text: String,
@@ -69,6 +140,8 @@ impl From<html_render::HtmlToolResult> for ToolOutput {
 }
 
 pub(crate) trait Backend: Clone + Send + Sync + 'static {
+    fn scope(&self) -> ToolScope;
+
     fn call(
         &self,
         name: &str,
@@ -92,6 +165,8 @@ struct Control {
 
 struct Session<B> {
     backend: B,
+    scope: ToolScope,
+    tools: Vec<Value>,
     control: Mutex<Control>,
     shutdown: watch::Sender<bool>,
 }
@@ -99,11 +174,6 @@ struct Session<B> {
 struct ServerState<B> {
     host: String,
     origin: String,
-    name: &'static str,
-    label: &'static str,
-    timeout_message: &'static str,
-    body_limit: usize,
-    tools: Vec<Value>,
     sessions: Mutex<HashMap<String, Arc<Session<B>>>>,
     call_slots: Arc<Semaphore>,
     shutdown: watch::Sender<bool>,
@@ -125,11 +195,7 @@ pub(crate) struct Server<B> {
     owner: Arc<ServerOwner<B>>,
 }
 
-pub(crate) struct McpCredential {
-    pub url: String,
-    pub authorization: String,
-    _lease: CredentialLease<ChatBackend>,
-}
+pub(crate) type McpCredential = ServerCredential<AppBackend>;
 
 pub(crate) struct ServerCredential<B: Backend> {
     pub url: String,
@@ -140,16 +206,6 @@ pub(crate) struct ServerCredential<B: Backend> {
 struct CredentialLease<B: Backend> {
     server: Arc<ServerOwner<B>>,
     session: Arc<Session<B>>,
-}
-
-impl From<ServerCredential<ChatBackend>> for McpCredential {
-    fn from(credential: ServerCredential<ChatBackend>) -> Self {
-        Self {
-            url: credential.url,
-            authorization: credential.authorization,
-            _lease: credential._lease,
-        }
-    }
 }
 
 impl<B: Backend> Drop for CredentialLease<B> {
@@ -180,21 +236,24 @@ impl<B: Backend> Server<B> {
             .sessions
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if *self.owner.state.shutdown.borrow() {
+            return Err(format!("{SERVER_NAME} is shutting down"));
+        }
         loop {
             let mut secret = [0u8; 32];
-            rand::rngs::OsRng.try_fill_bytes(&mut secret).map_err(|_| {
-                format!(
-                    "Failed to generate {} MCP credential",
-                    self.owner.state.label
-                )
-            })?;
+            rand::rngs::OsRng
+                .try_fill_bytes(&mut secret)
+                .map_err(|_| format!("Failed to generate {SERVER_NAME} credential"))?;
             let authorization = format!("Bearer {}", URL_SAFE_NO_PAD.encode(secret));
             if sessions.contains_key(&authorization) {
                 continue;
             }
             let (shutdown, _) = watch::channel(false);
+            let scope = backend.scope();
             let session = Arc::new(Session {
                 backend,
+                scope,
+                tools: scope.tools(),
                 control: Mutex::new(Control {
                     negotiated: None,
                     initialized: false,
@@ -213,32 +272,37 @@ impl<B: Backend> Server<B> {
             });
         }
     }
+
+    fn shutdown(&self) {
+        let mut sessions = self
+            .owner
+            .state
+            .sessions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        self.owner.state.shutdown.send_replace(true);
+        self.owner.task.abort();
+        for (_, session) in sessions.drain() {
+            let _control = session.control.lock().unwrap_or_else(|e| e.into_inner());
+            session.shutdown.send_replace(true);
+            session.backend.revoke();
+        }
+    }
 }
 
-pub(crate) async fn start_server<B: Backend>(
-    tools: Vec<Value>,
-    name: &'static str,
-    body_limit: usize,
-    label: &'static str,
-    timeout_message: &'static str,
-) -> Result<Server<B>, String> {
+async fn start_server<B: Backend>() -> Result<Server<B>, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(|error| format!("Failed to bind {label} MCP listener: {error}"))?;
+        .map_err(|error| format!("Failed to bind {SERVER_NAME} listener: {error}"))?;
     let address = listener
         .local_addr()
-        .map_err(|error| format!("Failed to inspect {label} MCP listener: {error}"))?;
+        .map_err(|error| format!("Failed to inspect {SERVER_NAME} listener: {error}"))?;
     let host = address.to_string();
     let origin = format!("http://{host}");
     let (shutdown, _) = watch::channel(false);
     let state = Arc::new(ServerState {
         host,
         origin,
-        name,
-        label,
-        timeout_message,
-        body_limit,
-        tools,
         sessions: Mutex::new(HashMap::new()),
         call_slots: Arc::new(Semaphore::new(MAX_CALLS)),
         shutdown: shutdown.clone(),
@@ -260,23 +324,30 @@ pub(crate) async fn start_server<B: Backend>(
 }
 
 #[derive(Clone)]
-pub(crate) enum ChatBackend {
-    App {
+pub(crate) enum AppBackend {
+    Chat {
         app: AppHandle,
         conversation_id: String,
     },
+    Voice {
+        app: AppHandle,
+        session_id: String,
+    },
     #[cfg(test)]
-    Test,
+    Test {
+        scope: ToolScope,
+    },
     #[cfg(test)]
     TestRender {
         attachments_dir: std::path::PathBuf,
         conversation_id: String,
     },
 }
-impl ChatBackend {
+impl AppBackend {
     fn conversation_id(&self) -> Option<&str> {
         match self {
-            Self::App {
+            Self::Voice { .. } => None,
+            Self::Chat {
                 conversation_id, ..
             } => Some(conversation_id),
             #[cfg(test)]
@@ -284,22 +355,38 @@ impl ChatBackend {
                 conversation_id, ..
             } => Some(conversation_id),
             #[cfg(test)]
-            Self::Test => None,
+            Self::Test { .. } => None,
         }
     }
 }
 
-impl Backend for ChatBackend {
+impl Backend for AppBackend {
+    fn scope(&self) -> ToolScope {
+        match self {
+            Self::Voice { .. } => ToolScope::Voice,
+            Self::Chat { .. } => ToolScope::Chat,
+            #[cfg(test)]
+            Self::Test { scope } => *scope,
+            #[cfg(test)]
+            Self::TestRender { .. } => ToolScope::Chat,
+        }
+    }
+
     async fn call(&self, name: &str, arguments: &Value) -> Result<ToolOutput, String> {
         match self {
-            Self::App {
+            Self::Voice { app, .. } => {
+                crate::chat::voice_orchestrator::call_tool(app, name, arguments)
+                    .await
+                    .map(ToolOutput::from)
+            }
+            Self::Chat {
                 app,
                 conversation_id,
             } => html_render::call_tool(app, conversation_id, name, arguments)
                 .await
                 .map(Into::into),
             #[cfg(test)]
-            Self::Test => Err("Test credential has no tool backend".to_string()),
+            Self::Test { .. } => Err("Test credential has no tool backend".to_string()),
             #[cfg(test)]
             Self::TestRender {
                 attachments_dir, ..
@@ -324,6 +411,19 @@ impl Backend for ChatBackend {
     fn revoke(&self) {
         if let Some(conversation_id) = self.conversation_id() {
             html_render::clear_pending_renders(conversation_id);
+        }
+    }
+
+    fn working(&self, count: usize) {
+        if let Self::Voice { app, session_id } = self {
+            let _ = app.emit(
+                "voice-codex-event",
+                json!({
+                    "sessionId": session_id,
+                    "type": "working",
+                    "count": count,
+                }),
+            );
         }
     }
 }
@@ -360,35 +460,60 @@ fn complete_tool_call<B: Backend>(
     Some(session.backend.complete(name, output))
 }
 
-static CHAT_SERVER: tokio::sync::OnceCell<Server<ChatBackend>> = tokio::sync::OnceCell::const_new();
+#[derive(Default)]
+pub(crate) struct KivioServer {
+    server: tokio::sync::OnceCell<Server<AppBackend>>,
+    stopped: AtomicBool,
+}
+
+impl KivioServer {
+    async fn issue(&self, backend: AppBackend) -> Result<McpCredential, String> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(format!("{SERVER_NAME} is shutting down"));
+        }
+        let server = self.server.get_or_try_init(start_server).await?;
+        if self.stopped.load(Ordering::Acquire) {
+            server.shutdown();
+            return Err(format!("{SERVER_NAME} is shutting down"));
+        }
+        server.issue(backend)
+    }
+
+    pub(crate) fn shutdown(&self) {
+        self.stopped.store(true, Ordering::Release);
+        if let Some(server) = self.server.get() {
+            server.shutdown();
+        }
+    }
+}
 
 pub(crate) async fn issue_chat_credential(
     app: &AppHandle,
     conversation_id: &str,
 ) -> Result<McpCredential, String> {
-    let server = CHAT_SERVER
-        .get_or_try_init(|| async {
-            start_server(
-                html_render::tool_definitions(),
-                CHAT_MCP_SERVER_NAME,
-                MAX_CHAT_BODY,
-                "chat",
-                CHAT_TIMEOUT_MESSAGE,
-            )
-            .await
-        })
-        .await?;
-    server
-        .issue(ChatBackend::App {
+    app.state::<KivioServer>()
+        .issue(AppBackend::Chat {
             app: app.clone(),
             conversation_id: conversation_id.to_string(),
         })
-        .map(McpCredential::from)
+        .await
+}
+
+pub(crate) async fn issue_voice_credential(
+    app: &AppHandle,
+    session_id: &str,
+) -> Result<McpCredential, String> {
+    app.state::<KivioServer>()
+        .issue(AppBackend::Voice {
+            app: app.clone(),
+            session_id: session_id.to_string(),
+        })
+        .await
 }
 
 #[cfg(test)]
 pub(crate) struct TestCredentialProbe {
-    server: Arc<ServerOwner<ChatBackend>>,
+    server: Arc<ServerOwner<AppBackend>>,
     authorization: String,
 }
 
@@ -407,15 +532,10 @@ impl TestCredentialProbe {
 #[cfg(test)]
 pub(crate) async fn issue_test_chat_credential(
 ) -> Result<(McpCredential, TestCredentialProbe), String> {
-    let server = start_server(
-        html_render::tool_definitions(),
-        CHAT_MCP_SERVER_NAME,
-        MAX_CHAT_BODY,
-        "chat",
-        CHAT_TIMEOUT_MESSAGE,
-    )
-    .await?;
-    let credential: McpCredential = server.issue(ChatBackend::Test)?.into();
+    let server = start_server().await?;
+    let credential = server.issue(AppBackend::Test {
+        scope: ToolScope::Chat,
+    })?;
     let probe = TestCredentialProbe {
         server: server.owner.clone(),
         authorization: credential.authorization.clone(),
@@ -721,7 +841,7 @@ async fn handle_request<B: Backend>(
         biased;
         _ = stopped(state.shutdown.subscribe()) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
         _ = stopped(session.shutdown.subscribe()) => return StatusCode::UNAUTHORIZED.into_response(),
-        result = tokio::time::timeout(BODY_TIMEOUT, to_bytes(request.into_body(), state.body_limit)) => match result {
+        result = tokio::time::timeout(BODY_TIMEOUT, to_bytes(request.into_body(), session.scope.body_limit())) => match result {
             Ok(Ok(bytes)) => bytes,
             Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
             Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
@@ -835,7 +955,7 @@ async fn handle_request<B: Backend>(
                 json!({
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
-                    "serverInfo": {"name": state.name, "version": env!("CARGO_PKG_VERSION")},
+                    "serverInfo": server_info(version),
                 }),
             )
         }
@@ -853,7 +973,7 @@ async fn handle_request<B: Backend>(
                 if params.and_then(|params| params.get("cursor")).is_some() {
                     return rpc_error(StatusCode::OK, id, -32602, "Invalid cursor");
                 }
-                return rpc_result(id, json!({"tools": state.tools}));
+                return rpc_result(id, json!({"tools": session.tools}));
             }
             let Some(name) = params
                 .and_then(|params| params.get("name"))
@@ -861,7 +981,7 @@ async fn handle_request<B: Backend>(
             else {
                 return rpc_error(StatusCode::OK, id, -32602, "Invalid tool name");
             };
-            if !state
+            if !session
                 .tools
                 .iter()
                 .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
@@ -906,7 +1026,7 @@ async fn handle_request<B: Backend>(
                 _ = cancelled => return StatusCode::ACCEPTED.into_response(),
                 result = tokio::time::timeout(TOOL_TIMEOUT, session.backend.call(name, arguments)) => match result {
                     Ok(result) => result,
-                    Err(_) => Err(state.timeout_message.to_string()),
+                    Err(_) => Err(session.scope.timeout_message().to_string()),
                 },
             };
             let result = match result {
@@ -958,13 +1078,35 @@ mod tests {
     use super::*;
     use tokio::sync::Notify;
 
+    #[test]
+    fn server_icon_is_transparent_png_and_only_advertised_on_supported_versions() {
+        assert!(server_info("2025-06-18").get("icons").is_none());
+        let info = server_info("2025-11-25");
+        let src = info["icons"][0]["src"].as_str().unwrap();
+        let bytes = STANDARD
+            .decode(src.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        let image = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(
+            info["icons"][0]["sizes"][0],
+            format!("{}x{}", image.width(), image.height())
+        );
+        assert_eq!(image.get_pixel(0, 0)[3], 0);
+        assert!(image.pixels().any(|pixel| pixel[3] == 255));
+    }
+
     #[derive(Clone)]
     struct ScopedBackend {
         conversation: &'static str,
+        scope: ToolScope,
         started: Arc<Notify>,
     }
 
     impl Backend for ScopedBackend {
+        fn scope(&self) -> ToolScope {
+            self.scope
+        }
+
         async fn call(&self, name: &str, arguments: &Value) -> Result<ToolOutput, String> {
             if arguments.get("wait") == Some(&json!(true)) {
                 self.started.notify_one();
@@ -995,6 +1137,7 @@ mod tests {
     fn backend(conversation: &'static str) -> ScopedBackend {
         ScopedBackend {
             conversation,
+            scope: ToolScope::Chat,
             started: Arc::new(Notify::new()),
         }
     }
@@ -1028,7 +1171,7 @@ mod tests {
         .await
         .unwrap();
         let body: Value = response.json().await.unwrap();
-        assert_eq!(body["result"]["serverInfo"]["name"], CHAT_MCP_SERVER_NAME);
+        assert_eq!(body["result"]["serverInfo"]["name"], SERVER_NAME);
         let response = post(
             client,
             credential,
@@ -1043,15 +1186,251 @@ mod tests {
     }
 
     async fn server() -> Server<ScopedBackend> {
-        start_server(
-            html_render::tool_definitions(),
-            CHAT_MCP_SERVER_NAME,
-            MAX_CHAT_BODY,
-            "chat",
-            CHAT_TIMEOUT_MESSAGE,
+        start_server().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn shared_service_isolates_tools_and_limits_and_keeps_chat_alive_after_hangup() {
+        let service = KivioServer::default();
+        let temp = tempfile::tempdir().unwrap();
+        let conversation = format!("mcp-shared-{}", uuid::Uuid::new_v4());
+        let (chat, voice) = tokio::join!(
+            service.issue(AppBackend::TestRender {
+                attachments_dir: temp.path().to_path_buf(),
+                conversation_id: conversation.clone(),
+            }),
+            service.issue(AppBackend::Test {
+                scope: ToolScope::Voice
+            }),
+        );
+        let chat = chat.unwrap();
+        let voice = voice.unwrap();
+        assert_eq!(chat.url, voice.url);
+        assert_ne!(chat.authorization, voice.authorization);
+        let client = client();
+        initialize(&client, &chat).await;
+        initialize(&client, &voice).await;
+        for (credential, scope, forbidden) in [
+            (&chat, ToolScope::Chat, "kivio_send_message"),
+            (&voice, ToolScope::Voice, "html_render"),
+        ] {
+            let listed: Value = post(
+                &client,
+                credential,
+                json!({"jsonrpc":"2.0", "id":2, "method":"tools/list"}),
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+            assert_eq!(listed["result"]["tools"], json!(scope.tools()));
+            let denied: Value = post(
+                &client,
+                credential,
+                json!({
+                    "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                    "params":{"name":forbidden, "arguments":{}}
+                }),
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+            assert_eq!(denied["error"]["code"], -32602);
+        }
+        // The same valid body exceeds only the voice credential's limit.
+        let large_ping = json!({"jsonrpc":"2.0", "id":4, "method":"ping",
+            "params":{"padding":" ".repeat(MAX_BODY)}});
+        assert_eq!(
+            post(&client, &voice, large_ping.clone())
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        assert_eq!(
+            post(&client, &chat, large_ping)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+
+        let revoked_request = post(
+            &client,
+            &voice,
+            json!({"jsonrpc":"2.0", "id":5, "method":"ping"}),
+        );
+        drop(voice);
+        assert_eq!(
+            revoked_request.send().await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let rendered: Value = post(
+            &client,
+            &chat,
+            json!({
+                "jsonrpc":"2.0", "id":6, "method":"tools/call",
+                "params":{"name":"html_render", "arguments":{
+                    "html":"<p>chat survives hangup</p>", "title":"After hangup", "height":480
+                }}
+            }),
         )
+        .send()
         .await
         .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(rendered["result"]["isError"], false);
+        let id = rendered["result"]["structuredContent"]["attachmentId"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join(format!("{id}.html"))).unwrap(),
+            "<p>chat survives hangup</p>"
+        );
+        service.shutdown();
+        assert!(html_render::take_pending_render(&conversation, id).is_none());
+        assert!(service
+            .issue(AppBackend::Test {
+                scope: ToolScope::Voice
+            })
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn hangup_cancels_only_voice_requests_and_reconnection_gets_new_credentials() {
+        let server = server().await;
+        let voice_backend = ScopedBackend {
+            scope: ToolScope::Voice,
+            ..backend("voice")
+        };
+        let chat_backend = backend("chat");
+        let voice = server.issue(voice_backend.clone()).unwrap();
+        let chat = server.issue(chat_backend.clone()).unwrap();
+        let client = client();
+        initialize(&client, &voice).await;
+        initialize(&client, &chat).await;
+        let mut tasks = Vec::new();
+        for (credential, backend, tool) in [
+            (&voice, &voice_backend, "kivio_list_agents"),
+            (&chat, &chat_backend, "html_preview"),
+        ] {
+            let request = post(
+                &client,
+                credential,
+                json!({
+                    "jsonrpc":"2.0", "id":42, "method":"tools/call",
+                    "params":{"name":tool, "arguments":{"wait":true}}
+                }),
+            );
+            tasks.push(tokio::spawn(async move { request.send().await }));
+            tokio::time::timeout(Duration::from_secs(3), backend.started.notified())
+                .await
+                .unwrap();
+        }
+        let old_token = voice.authorization.clone();
+        drop(voice);
+        let voice_task = tasks.remove(0);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), voice_task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(!tasks[0].is_finished());
+        let reconnected = server.issue(voice_backend).unwrap();
+        assert_eq!(reconnected.url, chat.url);
+        assert_ne!(reconnected.authorization, old_token);
+        initialize(&client, &reconnected).await;
+        let result: Value = post(
+            &client,
+            &reconnected,
+            json!({
+                "jsonrpc":"2.0", "id":42, "method":"tools/call",
+                "params":{"name":"kivio_list_agents", "arguments":{}}
+            }),
+        )
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(result["result"]["content"][0]["text"], "voice");
+        drop(chat);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), tasks.remove(0))
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_revokes_all_scopes_and_closes_idle_connections() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let server = server().await;
+        let chat = server.issue(backend("chat")).unwrap();
+        let voice = server
+            .issue(ScopedBackend {
+                scope: ToolScope::Voice,
+                ..backend("voice")
+            })
+            .unwrap();
+        let mut socket = TcpStream::connect(
+            chat.url
+                .trim_start_matches("http://")
+                .trim_end_matches("/mcp"),
+        )
+        .await
+        .unwrap();
+        socket
+            .write_all(b"POST /mcp HTTP/1.1\r\nHost: ")
+            .await
+            .unwrap();
+        server.shutdown();
+        for credential in [&chat, &voice] {
+            assert!(*credential._lease.session.shutdown.borrow());
+        }
+        assert!(server.issue(backend("late")).is_err());
+        let mut buffer = [0u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(3), socket.read(&mut buffer))
+            .await
+            .unwrap();
+        assert!(matches!(read, Ok(0) | Err(_)));
+        assert!(TcpStream::connect(
+            chat.url
+                .trim_start_matches("http://")
+                .trim_end_matches("/mcp")
+        )
+        .await
+        .is_err());
+
+        let not_started = KivioServer::default();
+        not_started.shutdown();
+        assert!(not_started
+            .issue(AppBackend::Test {
+                scope: ToolScope::Chat
+            })
+            .await
+            .is_err());
+        assert!(not_started.server.get().is_none());
     }
 
     #[tokio::test]
@@ -1063,37 +1442,25 @@ mod tests {
         std::fs::create_dir_all(&second_dir).unwrap();
         let first_conversation = format!("mcp-http-first-{}", uuid::Uuid::new_v4());
         let second_conversation = format!("mcp-http-second-{}", uuid::Uuid::new_v4());
-        let server = start_server::<ChatBackend>(
-            html_render::tool_definitions(),
-            CHAT_MCP_SERVER_NAME,
-            MAX_CHAT_BODY,
-            "chat",
-            CHAT_TIMEOUT_MESSAGE,
-        )
-        .await
-        .unwrap();
+        let server = start_server().await.unwrap();
         let first = server
-            .issue(ChatBackend::TestRender {
+            .issue(AppBackend::TestRender {
                 attachments_dir: first_dir.clone(),
                 conversation_id: first_conversation.clone(),
             })
             .unwrap();
         let second = server
-            .issue(ChatBackend::TestRender {
+            .issue(AppBackend::TestRender {
                 attachments_dir: second_dir.clone(),
                 conversation_id: second_conversation.clone(),
             })
             .unwrap();
-        let other_server = start_server::<ChatBackend>(
-            html_render::tool_definitions(),
-            CHAT_MCP_SERVER_NAME,
-            MAX_CHAT_BODY,
-            "chat",
-            CHAT_TIMEOUT_MESSAGE,
-        )
-        .await
-        .unwrap();
-        let other_token = other_server.issue(ChatBackend::Test).unwrap();
+        let other_server = start_server().await.unwrap();
+        let other_token = other_server
+            .issue(AppBackend::Test {
+                scope: ToolScope::Chat,
+            })
+            .unwrap();
         let client = client();
         initialize(&client, &first).await;
         initialize(&client, &second).await;
@@ -1556,22 +1923,13 @@ mod tests {
     async fn revoked_credential_cannot_record_a_late_render() {
         let temp = tempfile::tempdir().unwrap();
         let conversation = format!("mcp-late-{}", uuid::Uuid::new_v4());
-        let server = start_server::<ChatBackend>(
-            html_render::tool_definitions(),
-            CHAT_MCP_SERVER_NAME,
-            MAX_CHAT_BODY,
-            "chat",
-            CHAT_TIMEOUT_MESSAGE,
-        )
-        .await
-        .unwrap();
+        let server = start_server().await.unwrap();
         let old: McpCredential = server
-            .issue(ChatBackend::TestRender {
+            .issue(AppBackend::TestRender {
                 attachments_dir: temp.path().to_path_buf(),
                 conversation_id: conversation.clone(),
             })
-            .unwrap()
-            .into();
+            .unwrap();
         let old_session = old._lease.session.clone();
         let (ready, published) = oneshot::channel();
         let (resume, release) = oneshot::channel();
@@ -1598,7 +1956,7 @@ mod tests {
         drop(old);
 
         let current = server
-            .issue(ChatBackend::TestRender {
+            .issue(AppBackend::TestRender {
                 attachments_dir: temp.path().to_path_buf(),
                 conversation_id: conversation.clone(),
             })

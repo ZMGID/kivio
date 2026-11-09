@@ -5,6 +5,7 @@ import { ErrorNotice } from '../components/AppNotice'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from 'react'
 import { ChevronDown, FolderOpen, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { McpIcon } from '../settings/public/icons'
+import { McpServerIcon } from './McpServerIcon'
 import { useLang, useT } from '../components/i18n'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
@@ -14,6 +15,8 @@ import {
   type ChatToolsConfig,
   type CliImportScan,
   type McpServerState,
+  type McpServerStatePayload,
+  type McpServerIcon as McpIconImage,
   type McpOAuthClient,
   type Settings,
 } from '../api/tauri'
@@ -45,7 +48,7 @@ import {
   type McpInstalledKind,
 } from './mcpInstalledList'
 
-type TestFeedback = { ok: boolean; message: string }
+type TestFeedback = { ok: boolean; message: string; icons?: McpIconImage[] }
 type OAuthClientDraft = { clientId: string; clientSecret?: string; scopesText?: string }
 
 function StatusDot({ state }: { state?: McpServerState }) {
@@ -73,7 +76,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
   const lang = useLang()
   const { connect: connectOAuth, prompt: devicePrompt, cancel: cancelOAuth } = useConnectorOAuth()
   const [settings, setSettings] = useState<Settings | null>(null)
-  const [states, setStates] = useState<Record<string, McpServerState>>({})
+  const [states, setStates] = useState<Record<string, McpServerStatePayload>>({})
   const [view, setView] = useState<'installed' | 'store' | 'import' | 'advanced'>('installed')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -195,22 +198,36 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
   // 连接状态：订阅推送 + 已启用服务器初次快照
   useEffect(() => {
     let unlisten: (() => void) | undefined
+    let active = true
+    const revisions = new Map<string, number>()
+    const refresh = async (serverId: string) => {
+      const revision = (revisions.get(serverId) ?? 0) + 1
+      revisions.set(serverId, revision)
+      try {
+        const status = await api.chatMcpServerStatus(serverId)
+        if (active && revisions.get(serverId) === revision) {
+          setStates(prev => ({ ...prev, [serverId]: { ...status, serverId } }))
+        }
+      } catch { /* Keep the last connection event when the snapshot is unavailable. */ }
+    }
     void api.onMcpServerState((payload) => {
-      setStates((prev) => ({ ...prev, [payload.serverId]: payload.state }))
+      if (!active) return
+      revisions.set(payload.serverId, (revisions.get(payload.serverId) ?? 0) + 1)
+      setStates((prev) => ({ ...prev, [payload.serverId]: payload }))
+      setTestFeedback(prev => {
+        const feedback = prev[payload.serverId]
+        return feedback?.icons ? { ...prev, [payload.serverId]: { ...feedback, icons: undefined } } : prev
+      })
+      if (payload.state.kind === 'connected') void refresh(payload.serverId)
     }).then((fn) => {
-      unlisten = fn
+      if (active) unlisten = fn
+      else fn()
     })
-    return () => unlisten?.()
-  }, [])
-
-  useEffect(() => {
     installedEntries.forEach(({ server }) => {
       if (!server.enabled) return
-      void api
-        .chatMcpServerStatus(server.id)
-        .then((status) => setStates((prev) => ({ ...prev, [server.id]: status.state })))
-        .catch(() => {})
+      void refresh(server.id)
     })
+    return () => { active = false; unlisten?.() }
   }, [installedEntries])
 
   // 非服务器 chatTools 字段（内置工具 / 运行参数）：本地立即生效 + 持久化，保住后端刷新的 servers。
@@ -269,6 +286,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
   }, [])
 
   const updateServer = useCallback((id: string, updates: Partial<ChatMcpServer>) => {
+    setTestFeedback(prev => { const next = { ...prev }; delete next[id]; return next })
     void mutateServers((list) => list.map((s) => {
       if (s.id !== id) return s
       if (updates.url !== undefined && updates.url !== s.url) {
@@ -357,10 +375,13 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
     })
     try {
       const result = await api.chatMcpTestServer(server, chatTools.toolTimeoutMs)
+      const current = settingsRef.current?.chatTools.servers.find(item => item.id === server.id)
+      if (!current || current.url !== server.url || current.command !== server.command
+        || current.transport !== server.transport || current.args.join('\0') !== server.args.join('\0')) return
       setTestFeedback((prev) => ({
         ...prev,
         [server.id]: result.success
-          ? { ok: true, message: t.chatMcpTestConnected.replace('{n}', String(result.tools.length)) }
+          ? { ok: true, message: t.chatMcpTestConnected.replace('{n}', String(result.tools.length)), icons: result.icons }
           : { ok: false, message: result.error || t.chatMcpTestFailed },
       }))
     } catch (err) {
@@ -475,6 +496,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
             data-tauri-drag-region="false"
           >
             <ChevronDown size={15} className={`shrink-0 text-neutral-400 transition-transform ease-kv-standard ${expanded ? 'rotate-180' : ''}`} />
+            <McpServerIcon icons={feedback?.icons ?? states[server.id]?.icons} />
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="truncate text-[13.5px] font-medium">{server.name}</span>
@@ -484,7 +506,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
                 )}
               </div>
               <div className="mt-0.5 flex items-center gap-3">
-                {server.enabled ? <StatusDot state={states[server.id]} /> : <span className="text-[11.5px] text-neutral-400">{t.chatMcpDisabled}</span>}
+                {server.enabled ? <StatusDot state={states[server.id]?.state} /> : <span className="text-[11.5px] text-neutral-400">{t.chatMcpDisabled}</span>}
                 <span className="truncate font-mono text-[10.5px] text-neutral-400">{isHttp ? server.url : [server.command, ...server.args].filter(Boolean).join(' ')}</span>
               </div>
             </div>

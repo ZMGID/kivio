@@ -77,7 +77,7 @@ describe('artifact presentation protocol', () => {
 
   it('recognizes completed HTML results from external tools without promoting preview calls', () => {
     const call: ToolCallRecord = {
-      id: 'render', source: 'external_cli', name: 'mcp__kivio__html_render', status: 'completed',
+      id: 'render', source: 'external_cli', name: 'mcp__Kivio-server__html_render', status: 'completed',
       structured_content: { type: 'html_render', attachmentId: 'htmlrender-12345678-1234-1234-1234-123456789abc', title: ' Chart ', height: 480 },
     }
     expect(isPresentationToolCall(call)).toBe(true)

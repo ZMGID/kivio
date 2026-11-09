@@ -3538,7 +3538,7 @@ mod tests {
                 env: vec![],
             },
             AcpMcpServer::Http {
-                name: "kivio".into(),
+                name: crate::app_mcp::SERVER_NAME.into(),
                 url: "http://127.0.0.1:1234/mcp".into(),
                 headers: vec![("Authorization".into(), "Bearer secret".into())],
             },
@@ -3570,7 +3570,7 @@ mod tests {
                 assert_eq!(
                     new["mcpServers"][1],
                     json!({
-                        "type": "http", "name": "kivio", "url": "http://127.0.0.1:1234/mcp",
+                        "type": "http", "name": "Kivio-server", "url": "http://127.0.0.1:1234/mcp",
                         "headers": [{"name": "Authorization", "value": "Bearer secret"}]
                     })
                 );

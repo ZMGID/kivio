@@ -105,7 +105,7 @@ pub(crate) fn append_chat_mcp_args(
 ) -> Result<tempfile::NamedTempFile, String> {
     let config = serde_json::json!({
         "mcpServers": {
-            (crate::app_mcp::CHAT_MCP_SERVER_NAME): {
+            (crate::app_mcp::SERVER_NAME): {
                 "type": "http",
                 "url": url,
                 "headers": { "Authorization": authorization }
@@ -131,7 +131,10 @@ pub(crate) fn append_chat_mcp_args(
         "--mcp-config".to_string(),
         path.to_string(),
         "--allowedTools".to_string(),
-        "mcp__kivio__html_render mcp__kivio__html_preview".to_string(),
+        format!(
+            "mcp__{0}__html_render mcp__{0}__html_preview",
+            crate::app_mcp::SERVER_NAME
+        ),
     ]);
     Ok(file)
 }
@@ -542,7 +545,7 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({
-                "mcpServers": {"kivio": {
+                "mcpServers": {"Kivio-server": {
                     "type": "http", "url": "http://127.0.0.1:1234/mcp",
                     "headers": {"Authorization": "Bearer secret"}
                 }}
@@ -551,7 +554,10 @@ mod tests {
         let allowed = args.iter().position(|arg| arg == "--allowedTools").unwrap();
         assert_eq!(
             args[allowed + 1].split_whitespace().collect::<Vec<_>>(),
-            ["mcp__kivio__html_render", "mcp__kivio__html_preview"]
+            [
+                "mcp__Kivio-server__html_render",
+                "mcp__Kivio-server__html_preview"
+            ]
         );
         assert!(!args.iter().any(|arg| arg == "--strict-mcp-config"));
         #[cfg(unix)]

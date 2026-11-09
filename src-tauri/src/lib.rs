@@ -402,6 +402,7 @@ pub fn run() {
             app.manage(chat::media_station::MediaStation::default());
             app.manage(connectors::OAuthFlows::default());
             app.manage(voice_codex::VoiceCodexService::default());
+            app.manage(app_mcp::KivioServer::default());
 
             // 崩溃残留的中断草稿日志:按每个 message_id 的最后一行合并回会话文件后删除。
             // setup 返回前完成草稿恢复，确保 UI run 不与日志恢复/删除并发。
@@ -985,6 +986,7 @@ pub fn run() {
                     if closed.is_err() {
                         eprintln!("External CLI sessions did not close in time on exit.");
                     }
+                    app_handle.state::<app_mcp::KivioServer>().shutdown();
                     // 杀掉所有跟踪中的后台 run_command 进程组（跨 turn 存活，只在这里或
                     // 显式 kill_background 才清理），删除其 per-job 日志，避免孤儿进程/文件。
                     let killed = state.background_commands_handle().kill_all();

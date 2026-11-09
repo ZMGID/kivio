@@ -26,12 +26,21 @@ pub(crate) fn client_config(server: &ChatMcpServer) -> McpClientConfig {
     }
 }
 
-pub async fn list_tools_once(
+pub async fn inspect_server_once(
     server: &ChatMcpServer,
     http: &reqwest::Client,
-) -> Result<Vec<super::types::McpTool>, String> {
+) -> Result<
+    (
+        Vec<super::types::McpTool>,
+        Option<kivio_agent_sdk::mcp::McpServerInfo>,
+    ),
+    String,
+> {
     let client = McpClient::connect(client_config(server), http.clone()).await?;
-    let result = client.list_tools().await;
+    let result = client
+        .list_tools()
+        .await
+        .map(|tools| (tools, client.server_info()));
     let closed = client.close().await;
     match result {
         Ok(tools) => closed.map(|()| tools),

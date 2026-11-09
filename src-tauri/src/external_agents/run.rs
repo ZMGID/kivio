@@ -3868,7 +3868,7 @@ async fn connect_persistent_session(
                     let mcp_servers: Vec<AcpMcpServer> = chat_credential
                         .as_ref()
                         .map(|credential| AcpMcpServer::Http {
-                            name: crate::app_mcp::CHAT_MCP_SERVER_NAME.to_string(),
+                            name: crate::app_mcp::SERVER_NAME.to_string(),
                             url: credential.url.clone(),
                             headers: vec![(
                                 "Authorization".to_string(),
@@ -4647,25 +4647,33 @@ fn update_existing_acp_tool(
 }
 
 fn is_qualified_html_render_name(tool_name: &str) -> bool {
+    let server = crate::app_mcp::SERVER_NAME;
+    // Keep old names readable in persisted CLI history.
     [
-        "mcp__kivio__html_render",
-        "kivio.html_render",
-        "kivio/html_render",
-        "kivio__html_render",
+        format!("mcp__{server}__html_render"),
+        format!("{server}.html_render"),
+        format!("{server}/html_render"),
+        format!("{server}__html_render"),
+        "mcp__kivio__html_render".to_string(),
+        "kivio.html_render".to_string(),
+        "kivio/html_render".to_string(),
+        "kivio__html_render".to_string(),
     ]
     .iter()
     .any(|name| {
-        tool_name.match_indices(*name).any(|(start, matched)| {
-            let is_name_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
-            !tool_name[..start]
-                .chars()
-                .next_back()
-                .is_some_and(is_name_char)
-                && !tool_name[start + matched.len()..]
+        tool_name
+            .match_indices(name.as_str())
+            .any(|(start, matched)| {
+                let is_name_char = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+                !tool_name[..start]
                     .chars()
-                    .next()
+                    .next_back()
                     .is_some_and(is_name_char)
-        })
+                    && !tool_name[start + matched.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(is_name_char)
+            })
     })
 }
 
@@ -5149,6 +5157,10 @@ mod tests {
     fn external_render_results_replace_input_for_all_supported_names() {
         let conversation = format!("conv_{}", Uuid::new_v4());
         for name in [
+            "mcp__Kivio-server__html_render",
+            "Kivio-server.html_render",
+            "Kivio-server/html_render",
+            "Kivio-server__html_render",
             "mcp__kivio__html_render",
             "kivio.html_render",
             "kivio/html_render",
@@ -5162,7 +5174,11 @@ mod tests {
             assert_eq!(record.structured_content, Some(reference), "{name}");
             assert_eq!(record.status, ToolCallStatus::Success);
         }
-        for name in ["Call html_render", "Calling kivio.html_render (MCP)"] {
+        for name in [
+            "Call html_render",
+            "Calling kivio.html_render (MCP)",
+            "Calling Kivio-server.html_render (MCP)",
+        ] {
             let reference = queue_render(&conversation);
             let mut record = render_test_record(
                 name,
@@ -5201,6 +5217,9 @@ mod tests {
     fn external_render_errors_and_other_tools_do_not_consume_pending_renders() {
         let conversation = format!("conv_{}", Uuid::new_v4());
         for (name, is_error) in [
+            ("mcp__Kivio-server__html_render", true),
+            ("other-Kivio-server.html_render", false),
+            ("Kivio-server.html_renderer", false),
             ("mcp__kivio__html_render", true),
             ("mcp__other__html_render", false),
             ("otherkivio.html_render", false),

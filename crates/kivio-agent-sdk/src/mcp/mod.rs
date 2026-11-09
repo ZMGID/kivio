@@ -36,6 +36,7 @@ pub use registry::{
     compact_mcp_tool_id, mcp_tool_definition, sanitize_openai_tool_name, wire_mcp_tool_id,
 };
 pub use result::parse_tool_result;
+pub use rmcp::model::Implementation as McpServerInfo;
 pub use types::{McpTool, McpToolCallResult};
 
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -173,6 +174,11 @@ impl McpClient {
 
     pub fn child_pid(&self) -> Option<u32> {
         self.child_pid
+    }
+
+    /// Server identity from the negotiated connection, without another request.
+    pub fn server_info(&self) -> Option<McpServerInfo> {
+        self.peer.peer_info()?.server_info.clone()
     }
 
     pub async fn stderr_tail(&self) -> String {

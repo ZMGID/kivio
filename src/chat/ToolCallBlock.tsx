@@ -1485,8 +1485,9 @@ function getToolName(t: I18n, toolCall: ToolCallRecord): string {
   const displayName = toolRecordRawName(toolCall) || 'Tool'
 
   if (raw === 'skill' || raw === 'skill_activate') return 'Activate skill'
-  if (raw === 'html_render' || raw === 'mcp__kivio__html_render' || raw === 'kivio.html_render' || raw === 'kivio/html_render') return 'Render HTML'
-  if (raw === 'html_preview' || raw === 'mcp__kivio__html_preview' || raw === 'kivio.html_preview' || raw === 'kivio/html_preview') return 'Preview HTML'
+  const htmlTool = raw.replace(/^(?:mcp__)?(?:kivio-server|kivio)(?:__|[./])/, '')
+  if (htmlTool === 'html_render') return 'Render HTML'
+  if (htmlTool === 'html_preview') return 'Preview HTML'
   // 全英文、原形动词（不加 -ed）：直接用工具本名的动词形式，如 Read / Run / Grep / Glob。
   // 目标（文件名 + 行号 / 命令 / pattern）由 getToolTarget 追加。
   switch (raw) {

@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 use crate::settings::{ChatMcpServer, Settings};
 
 use super::conn;
+use super::icons::{load_icons, McpIconImage};
 use super::types::{McpTool, McpToolCallResult};
 use super::McpRuntimeState;
 use crate::chat::agent::control::AgentRunHandle;
@@ -75,6 +76,7 @@ pub struct McpSession {
     pub consecutive_connect_failures: u32,
     pub discovery_retry_after: Option<Instant>,
     pub client: Option<Arc<McpClient>>,
+    icons: Arc<tokio::sync::OnceCell<Vec<McpIconImage>>>,
     server_config: Option<ChatMcpServer>,
     ping_unsupported: bool,
 }
@@ -89,6 +91,7 @@ impl McpSession {
             consecutive_connect_failures: 0,
             discovery_retry_after: None,
             client: None,
+            icons: Arc::new(tokio::sync::OnceCell::new()),
             server_config: None,
             ping_unsupported: false,
         }
@@ -428,6 +431,7 @@ impl<'a> McpManager<'a> {
         session.client = Some(Arc::new(
             McpClient::connect(conn::client_config(server), self.http.clone()).await?,
         ));
+        session.icons = Arc::new(tokio::sync::OnceCell::new());
         session.ping_unsupported = false;
         Ok(())
     }
@@ -671,23 +675,52 @@ impl<'a> McpManager<'a> {
     /// 读取某个 server 的状态快照（给状态命令）。无会话 ⇒ Disconnected。
     pub async fn mcp_server_state(&self, server_id: &str) -> McpServerStatusSnapshot {
         let session = self.runtime.session(server_id).await;
-        match session {
+        let (mut snapshot, metadata) = match session {
             Some(session) => {
                 let guard = session.lock().await;
+                let metadata = guard
+                    .client
+                    .as_ref()
+                    .and_then(|client| client.server_info())
+                    .map(|info| {
+                        let origin = guard
+                            .server_config
+                            .as_ref()
+                            .filter(|server| server.transport == "streamable_http")
+                            .map(|server| server.url.clone())
+                            .or(info.website_url);
+                        (info.icons.unwrap_or_default(), origin, guard.icons.clone())
+                    });
+                (
+                    McpServerStatusSnapshot {
+                        server_id: server_id.to_string(),
+                        state: guard.state.clone(),
+                        handshake_count: guard.handshake_count,
+                        stderr_tail: guard.stderr_tail_text().await,
+                        icons: Vec::new(),
+                    },
+                    metadata,
+                )
+            }
+            None => (
                 McpServerStatusSnapshot {
                     server_id: server_id.to_string(),
-                    state: guard.state.clone(),
-                    handshake_count: guard.handshake_count,
-                    stderr_tail: guard.stderr_tail_text().await,
-                }
-            }
-            None => McpServerStatusSnapshot {
-                server_id: server_id.to_string(),
-                state: McpServerState::Disconnected,
-                handshake_count: 0,
-                stderr_tail: String::new(),
-            },
+                    state: McpServerState::Disconnected,
+                    handshake_count: 0,
+                    stderr_tail: String::new(),
+                    icons: Vec::new(),
+                },
+                None,
+            ),
+        };
+        // Icon I/O belongs to the UI snapshot, after releasing the transport's session lock.
+        if let Some((icons, origin, cache)) = metadata {
+            snapshot.icons = cache
+                .get_or_init(|| load_icons(&icons, origin.as_deref()))
+                .await
+                .clone();
         }
+        snapshot
     }
 
     /// 主动丢弃某个 server 的会话（重连按钮用），下次调用透明重连。
@@ -873,6 +906,7 @@ pub struct McpServerStatusSnapshot {
     pub state: McpServerState,
     pub handshake_count: u64,
     pub stderr_tail: String,
+    pub icons: Vec<McpIconImage>,
 }
 
 fn discovery_retry_backoff(consecutive_failures: u32) -> Duration {
@@ -1411,7 +1445,7 @@ mod tests {
         let state = test_app_state();
         let server = http_server(url);
 
-        let tools = conn::list_tools_once(&server, &state.http)
+        let (tools, _) = conn::inspect_server_once(&server, &state.http)
             .await
             .expect("one-shot list should work");
         assert_eq!(

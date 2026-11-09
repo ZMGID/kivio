@@ -16,9 +16,9 @@ const message: ChatMessage = {
   id: 'html-delivery', role: 'assistant', timestamp: 1, content: 'Final answer', stream_outcome: 'completed',
   tool_calls: [
     { id: 'read', name: 'read_file', source: 'native', status: 'completed' },
-    { id: 'render', name: 'mcp__kivio__html_render', source: 'external_cli', status: 'completed',
+    { id: 'render', name: 'mcp__Kivio-server__html_render', source: 'external_cli', status: 'completed',
       structured_content: { type: 'html_render', attachmentId, title: 'Interactive chart', height: 480 } },
-    { id: 'preview', name: 'mcp__kivio__html_preview', source: 'external_cli', status: 'completed' },
+    { id: 'preview', name: 'mcp__Kivio-server__html_preview', source: 'external_cli', status: 'completed' },
   ],
   segments: [
     { id: 'read-segment', kind: 'tool', phase: 'tool_loop', order: 0, tool_call_id: 'read' },

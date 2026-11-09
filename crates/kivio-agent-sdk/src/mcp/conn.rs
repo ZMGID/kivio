@@ -24,11 +24,9 @@ use tokio::process::{ChildStderr, Command};
 
 use super::{McpClientConfig, McpTransport};
 
-/// legacy 握手（`initialize`）里宣称的协议版本。
-///
-/// **刻意仍是 2025-06-18**：所有现存服务器走的都是这条路，保持它就等于「对既有用户
-/// wire 上零变化」。规范的新特性由下面的 discover 路径承接，不靠改这一行。
-const LEGACY_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2025_06_18;
+/// Prefer the last initialize-based revision so servers can advertise icons.
+/// Older servers may negotiate an earlier supported revision.
+const LEGACY_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2025_11_25;
 
 /// 新协议（2026-07-28+）的生命周期：`server/discover`，没有 `initialize` 握手。
 ///
@@ -124,23 +122,9 @@ impl ClientHandler for KivioClientHandler {
     }
 }
 
-/// 建连并握手。`http` 只有 streamable_http 传输会用到。
-///
-/// **先走 `initialize`（与改动前逐字节一致）**，只有对端以 `-32601`「没这个方法」拒掉它时
-/// 才换 `server/discover` 再试一次。
-///
-/// 为什么是这个顺序而不是反过来：规范 2026-07-28 删掉了 `initialize`，所以未来的服务器
-/// 需要 discover —— 但**今天所有能连上的服务器都走 `initialize`**。先探 discover 的话，
-/// 每一台现存服务器都要为一个还不存在的未来白付一次握手；更糟的是，对未知方法回「成功但空
-/// result」而不是 `-32601` 的手写服务器（我们自己的假测试服务器就是这样）压根不会触发
-/// rmcp 的回落，只能靠外层重试救回来 —— stdio 还得多起一个子进程。
-///
-/// 反过来之后：现存服务器零额外开销、wire 上零变化；只有新协议独占的服务器多付一次握手，
-/// 而它们今天一台都没有。
-///
-/// 重建传输而不是复用：`serve_*` 按值吃掉 transport，而且第一次已经往连接上写过一条
-/// `initialize` —— 同一条连接上再握手会把两次会话的报文搅在一起。stdio 因此换一个子进程
-/// （旧的随 `kill_on_drop` 走）。
+/// Initialize first; use server/discover only when initialize is unsupported.
+/// Authentication failures, timeouts, and invalid requests never trigger a second transport.
+/// A retry owns a fresh transport because the failed handshake consumed the first one.
 pub async fn connect(server: &McpClientConfig, http: &reqwest::Client) -> Result<Conn, String> {
     let first = match connect_with(server, http, ClientLifecycleMode::Initialize).await {
         Ok(conn) => return Ok(conn),
@@ -715,13 +699,11 @@ mod tests {
         ));
     }
 
-    /// legacy 路径宣称的版本不能被顺手改掉：所有现存服务器走的都是这条路，
-    /// 改它等于对既有用户变更 wire 行为。
     #[test]
-    fn legacy_handshake_still_advertises_2025_06_18() {
-        assert_eq!(LEGACY_PROTOCOL_VERSION, ProtocolVersion::V_2025_06_18);
+    fn initialize_advertises_the_revision_with_icon_metadata() {
+        assert_eq!(LEGACY_PROTOCOL_VERSION, ProtocolVersion::V_2025_11_25);
         let info = KivioClientHandler::default().get_info();
-        assert_eq!(info.protocol_version, ProtocolVersion::V_2025_06_18);
+        assert_eq!(info.protocol_version, ProtocolVersion::V_2025_11_25);
     }
 
     /// discover 只请求真正带 `server/discover` 的版本，且新的在前。

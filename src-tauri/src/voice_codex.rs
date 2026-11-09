@@ -1,5 +1,3 @@
-#[path = "voice_codex_mcp.rs"]
-mod mcp;
 #[path = "voice_codex_native.rs"]
 mod native;
 
@@ -478,7 +476,7 @@ async fn run_session(
 struct Runtime {
     rpc: Option<Rpc>,
     host: Option<native::NativeHost>,
-    mcp: Option<mcp::VoiceMcp>,
+    mcp: Option<crate::app_mcp::McpCredential>,
     cwd: Option<tempfile::TempDir>,
     thread: Option<String>,
     server_started: bool,
@@ -559,7 +557,7 @@ impl Runtime {
                 "unavailable: this Codex app-server does not expose subscription voices".into(),
             );
         }
-        let server = mcp::start(app.clone(), session.to_string()).await?;
+        let server = crate::app_mcp::issue_voice_credential(app, session).await?;
         let thread_params = thread_params(
             &cwd_string,
             &config["config"],
@@ -782,13 +780,16 @@ fn thread_params(
             {
                 return Err("Cannot safely disable a configured Codex MCP server".into());
             }
-            map.insert(format!("mcp_servers.{name}.enabled"), json!(false));
+            if name != crate::app_mcp::SERVER_NAME {
+                map.insert(format!("mcp_servers.{name}.enabled"), json!(false));
+            }
         }
     }
-    let name = format!("kivio_voice_{}", uuid::Uuid::new_v4().simple());
+    let name = crate::app_mcp::SERVER_NAME;
     map.insert(
         format!("mcp_servers.{name}"),
         json!({
+            "enabled":true,
             "url":url,"http_headers":{"Authorization":authorization},
             "default_tools_approval_mode":"approve","tool_timeout_sec":630
         }),
@@ -1255,7 +1256,7 @@ mod tests {
     fn voice_thread_disables_user_servers_and_direct_tools() {
         let params = thread_params(
             "/tmp",
-            &json!({"mcp_servers":{"personal":{"command":"sh"}}}),
+            &json!({"mcp_servers":{"personal":{"command":"sh"}, "Kivio-server":{"enabled":false}}}),
             "http://127.0.0.1:1/mcp",
             "Bearer secret",
         )
@@ -1264,6 +1265,21 @@ mod tests {
         assert_eq!(params["ephemeral"], true);
         assert_eq!(params["config"]["mcp_servers.personal.enabled"], false);
         assert_eq!(params["config"]["features.shell_tool"], false);
+        assert_eq!(
+            params["config"]["mcp_servers.Kivio-server"]["enabled"],
+            true
+        );
+        assert_eq!(
+            params["config"]["mcp_servers.Kivio-server"]["url"],
+            "http://127.0.0.1:1/mcp"
+        );
+        assert_eq!(
+            params["config"]["mcp_servers.Kivio-server"]["http_headers"]["Authorization"],
+            "Bearer secret"
+        );
+        assert!(params["config"]
+            .get("mcp_servers.Kivio-server.enabled")
+            .is_none());
         assert!(thread_params("/tmp", &json!({"mcp_servers":{"a.b":{}}}), "url", "token").is_err());
     }
 

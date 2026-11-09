@@ -156,8 +156,7 @@ fn codex_thread_config(mcp: Option<(&str, &str)>) -> Value {
     let mut config =
         json!({ "tools.update_plan.enabled": true, "mcp_optional_startup_grace_ms": 10_000 });
     if let Some((url, authorization)) = mcp {
-        config[format!("mcp_servers.{}", crate::app_mcp::CHAT_MCP_SERVER_NAME)] =
-            json!({ "url": url, "http_headers": { "Authorization": authorization } });
+        config[format!("mcp_servers.{}", crate::app_mcp::SERVER_NAME)] = json!({ "enabled": true, "url": url, "http_headers": { "Authorization": authorization } });
     }
     config
 }
@@ -5440,8 +5439,9 @@ mod tests {
         assert!(params.get("threadId").is_none());
         assert_eq!(params["config"]["tools.update_plan.enabled"], json!(true));
         assert_eq!(
-            params["config"]["mcp_servers.kivio"],
+            params["config"]["mcp_servers.Kivio-server"],
             json!({
+                "enabled": true,
                 "url": "http://127.0.0.1:1234/mcp",
                 "http_headers": {"Authorization": "Bearer secret"}
             })
@@ -5460,8 +5460,9 @@ mod tests {
         );
         assert_eq!(method, "thread/resume");
         assert_eq!(
-            params["config"]["mcp_servers.kivio"],
+            params["config"]["mcp_servers.Kivio-server"],
             json!({
+                "enabled": true,
                 "url": "http://127.0.0.1:1234/mcp",
                 "http_headers": {"Authorization": "Bearer secret"}
             })
@@ -5478,7 +5479,9 @@ mod tests {
 
     #[test]
     fn codex_thread_config_omits_chat_server_without_credential() {
-        assert!(codex_thread_config(None).get("mcp_servers.kivio").is_none());
+        assert!(codex_thread_config(None)
+            .get("mcp_servers.Kivio-server")
+            .is_none());
     }
 
     #[test]

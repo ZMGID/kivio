@@ -1,4 +1,5 @@
 pub mod conn;
+mod icons;
 pub mod manager;
 pub mod native_registry;
 pub mod registry;

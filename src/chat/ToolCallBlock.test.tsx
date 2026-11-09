@@ -50,8 +50,16 @@ describe('HTML tool labels', () => {
   it.each([
     ['html_render', 'Render HTML'],
     ['mcp__kivio__html_render', 'Render HTML'],
+    ['mcp__Kivio-server__html_render', 'Render HTML'],
+    ['Kivio-server.html_render', 'Render HTML'],
+    ['Kivio-server/html_render', 'Render HTML'],
+    ['Kivio-server__html_render', 'Render HTML'],
     ['html_preview', 'Preview HTML'],
     ['mcp__kivio__html_preview', 'Preview HTML'],
+    ['mcp__Kivio-server__html_preview', 'Preview HTML'],
+    ['Kivio-server.html_preview', 'Preview HTML'],
+    ['Kivio-server/html_preview', 'Preview HTML'],
+    ['Kivio-server__html_preview', 'Preview HTML'],
   ])('shows a friendly name for %s', (name, label) => {
     render(<ToolCallBlock toolCall={buildToolCall({ name, toolName: name, status: 'completed' })} />)
     expect(screen.getByText(label)).toBeInTheDocument()

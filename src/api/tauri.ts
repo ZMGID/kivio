@@ -481,12 +481,19 @@ export type McpServerState =
   | { kind: 'error'; message: string }
   | { kind: 'disconnected' }
 
+/** 后端校验并转换为 PNG 的 MCP 服务图标。 */
+export type McpServerIcon = {
+  src: string
+  theme?: 'light' | 'dark' | null
+}
+
 /** chat_mcp_server_status 命令返回的状态快照。 */
 export type McpServerStatus = {
   serverId: string
   state: McpServerState
   handshakeCount: number
   stderrTail: string
+  icons?: McpServerIcon[]
 }
 
 /** mcp-server-state 事件载荷。serverName 在 reload/reap 路径可能缺省。 */
@@ -494,6 +501,7 @@ export type McpServerStatePayload = {
   serverId: string
   serverName?: string | null
   state: McpServerState
+  icons?: McpServerIcon[]
 }
 
 export type ChatNativeToolsConfig = {
@@ -2418,7 +2426,7 @@ export const api = {
   computerControlUpdate: (tool: 'cua' | 'playwright') =>
     invoke<SkillMeta>('computer_control_update', { tool }),
   chatMcpTestServer: (server: ChatMcpServer, timeoutMs?: number) =>
-    invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null }>(
+    invoke<{ success: boolean; tools: ChatToolDefinition[]; error?: string | null; icons?: McpServerIcon[] }>(
       'chat_mcp_test_server',
       { server, timeoutMs },
     ),

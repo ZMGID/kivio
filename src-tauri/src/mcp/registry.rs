@@ -85,6 +85,7 @@ pub struct McpTestResult {
     pub success: bool,
     pub tools: Vec<ChatToolDefinition>,
     pub error: Option<String>,
+    pub icons: Vec<super::icons::McpIconImage>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -407,15 +408,17 @@ pub async fn chat_mcp_test_server(
     // tauri command 必须返回 Result 才能用 State<'_, _>；前端仍读 McpTestResult（永不 Err）。
     Ok(
         match list_server_tools(&state.http, &server, timeout_ms.unwrap_or(60_000)).await {
-            Ok(tools) => McpTestResult {
+            Ok((tools, icons)) => McpTestResult {
                 success: true,
                 tools,
                 error: None,
+                icons,
             },
             Err(err) => McpTestResult {
                 success: false,
                 tools: Vec::new(),
                 error: Some(err),
+                icons: Vec::new(),
             },
         },
     )
@@ -891,14 +894,24 @@ async fn list_server_tools(
     http: &reqwest::Client,
     server: &ChatMcpServer,
     timeout_ms: u64,
-) -> Result<Vec<ChatToolDefinition>, String> {
-    let tools = tokio::time::timeout(
+) -> Result<(Vec<ChatToolDefinition>, Vec<super::icons::McpIconImage>), String> {
+    let (tools, info) = tokio::time::timeout(
         Duration::from_millis(timeout_ms.max(1_000)),
-        super::conn::list_tools_once(server, http),
+        super::conn::inspect_server_once(server, http),
     )
     .await
     .map_err(|_| format!("MCP connection to {} timed out", server.name))??;
-    Ok(tools_from_mcp(server, tools))
+    let icons = if let Some(info) = info {
+        let origin = if server.transport == "streamable_http" {
+            Some(server.url.as_str())
+        } else {
+            info.website_url.as_deref()
+        };
+        super::icons::load_icons(info.icons.as_deref().unwrap_or_default(), origin).await
+    } else {
+        Vec::new()
+    };
+    Ok((tools_from_mcp(server, tools), icons))
 }
 
 fn normalize_imported_transport(server: &CursorMcpServer) -> String {
