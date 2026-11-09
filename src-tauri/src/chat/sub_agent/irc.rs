@@ -1,6 +1,6 @@
 use crate::chat::agent::history::RuntimeMessage;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -650,13 +650,11 @@ pub async fn collect_for_main(
     root: &str,
     _run: &str,
     history: &[RuntimeMessage],
-) -> Result<Vec<RuntimeMessage>, String> {
+    admission: &mut kivio_agent_sdk::agent::InjectionAdmission,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mut claim = state.sub_agents.irc.claim(root, MAIN_AGENT_ID, |_| true);
-    for message in claim.messages() {
-        super::view::persist_incoming(app, &message.view(false)).await?;
-    }
-    let inputs = claim
+    let inputs: Vec<RuntimeMessage> = claim
         .messages()
         .iter()
         .filter(|message| {
@@ -679,8 +677,13 @@ pub async fn collect_for_main(
         })
         .filter_map(|message| RuntimeMessage::from_legacy(message.model_input()))
         .collect();
+    let prepared = kivio_agent_sdk::agent::PreparedInjection::new(
+        inputs.into_iter().map(super::session_input).collect(),
+    ).map_err(|error| error.to_string())?;
+    super::view::persist_incoming_batch(app, &claim.messages().iter().map(|message| message.view(false)).collect::<Vec<_>>()).await?;
     claim.commit();
-    Ok(inputs)
+    admission.committed(prepared);
+    Ok(())
 }
 
 pub(crate) async fn persist_message(app: &AppHandle, message: &Message) -> Result<(), String> {
@@ -730,35 +733,25 @@ pub(crate) async fn wait_for_interrupting(
 
 pub(crate) fn schedule_wake(app: &AppHandle, record: &AgentRecord) {
     let state = app.state::<AppState>();
-    if !state.sub_agents.irc.has_pending(&record.root, &record.id) {
+    if state.sub_agents.user_interrupted(&record.root) ||
+        (!state.sub_agents.irc.has_pending(&record.root, &record.id)
+        && !state.runtime_injections.has_waking_input(&record.child_conversation_id)) {
         return;
     }
-    let Some(current) = state.sub_agents.registry.get(&record.root, &record.id) else {
+    let Some((current, slot)) = reserve_wake(&state.sub_agents, record) else {
         return;
     };
-    if current.status != AgentStatus::Idle || current.generation != record.generation {
-        return;
-    }
-    let Ok(slot) = state.sub_agents.sessions.slot(&current) else {
-        return;
-    };
-    {
-        let mut control = slot
-            .control
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if control.generation != current.generation
-            || control.killed
-            || control.wake_reserved
-            || control.active_run.is_some()
-        {
-            return;
-        }
-        control.wake_reserved = true;
-    }
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = wake(&app, current.clone()).await;
+        let result = async {
+            if app.state::<AppState>().sub_agents.user_interrupted(&current.root)
+                || with_current_wake(&slot, current.generation, |_| ()).is_none()
+            {
+                return Ok(WakeOutcome::Deferred);
+            }
+            let record = lifecycle::ensure_live_for_wake(&app, &current).await?;
+            wake(&app, record).await
+        }.await;
         let state = app.state::<AppState>();
         let Some(result) = with_current_wake(&slot, current.generation, |control| {
             control.wake_reserved = false;
@@ -800,9 +793,38 @@ pub(crate) fn schedule_wake(app: &AppHandle, record: &AgentRecord) {
                     .await;
                 }
             }
-            Ok(()) => schedule_wake(&app, &current),
+            Ok(WakeOutcome::Handled) => schedule_wake(&app, &current),
+            Ok(WakeOutcome::Deferred) if state.sub_agents.irc.has_pending(&current.root, &current.id) => {
+                schedule_wake(&app, &current);
+            }
+            Ok(WakeOutcome::Deferred) => {},
         }
     });
+}
+
+fn reserve_wake(
+    manager: &super::SubAgentManager,
+    record: &AgentRecord,
+) -> Option<(AgentRecord, Arc<Slot>)> {
+    let current = manager.registry.get(&record.root, &record.id)?;
+    if !matches!(current.status, AgentStatus::Idle | AgentStatus::Parked)
+        || current.generation != record.generation
+    {
+        return None;
+    }
+    let slot = manager.sessions.slot(&current).ok()?;
+    {
+        let mut control = slot.control.lock().unwrap_or_else(|error| error.into_inner());
+        if control.generation != current.generation
+            || control.killed
+            || control.wake_reserved
+            || control.active_run.is_some()
+        {
+            return None;
+        }
+        control.wake_reserved = true;
+    }
+    Some((current, slot))
 }
 
 fn with_current_wake<T>(
@@ -818,7 +840,12 @@ fn with_current_wake<T>(
         .then(|| apply(&mut control))
 }
 
-async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
+enum WakeOutcome {
+    Handled,
+    Deferred,
+}
+
+async fn wake(app: &AppHandle, record: AgentRecord) -> Result<WakeOutcome, String> {
     let state = app.state::<AppState>();
     let slot = state.sub_agents.sessions.slot(&record)?;
     let mut guard = slot.worker.lock().await;
@@ -828,10 +855,11 @@ async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
             .irc
             .claim(&record.root, &record.id, |_| true)
     }) else {
-        return Ok(());
+        return Ok(WakeOutcome::Deferred);
     };
-    if claim.messages().is_empty() {
-        return Ok(());
+    if state.sub_agents.user_interrupted(&record.root)
+        || (claim.messages().is_empty() && !state.runtime_injections.has_waking_input(&record.child_conversation_id)) {
+        return Ok(WakeOutcome::Deferred);
     }
     let worker = guard.as_mut().ok_or("Subagent session is unavailable")?;
     let mut saved = worker
@@ -850,7 +878,7 @@ async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
     super::session::append_context(&record.session_file, &worker.history).await?;
     if saved.plan_state.mode == crate::chat::types::AgentPlanMode::Plan {
         claim.commit();
-        return Ok(());
+        return Ok(WakeOutcome::Deferred);
     }
     let waking = claim.messages().to_vec();
     let owner_job = waking.iter().any(|message| {
@@ -877,7 +905,7 @@ async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
             );
         job
     }) else {
-        return Ok(());
+        return Ok(WakeOutcome::Deferred);
     };
     drop(guard);
     let Some(permit) = state
@@ -891,7 +919,7 @@ async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
             .jobs
             .settle(&job, Err("IRC follow-up cancelled before execution".into()));
         finish_turn(app, &record, "", Some("cancelled before execution"), true).await;
-        return Ok(());
+        return Ok(WakeOutcome::Deferred);
     };
     executor::run(
         app.clone(),
@@ -918,7 +946,7 @@ async fn wake(app: &AppHandle, record: AgentRecord) -> Result<(), String> {
         },
     )
     .await;
-    Ok(())
+    Ok(WakeOutcome::Handled)
 }
 
 pub(crate) async fn finish_turn(
@@ -1167,6 +1195,37 @@ mod tests {
         let mut claim = with_current_wake(&slot, 2, |_| bus.claim("r", "B", |_| true)).unwrap();
         assert_eq!(claim.messages().len(), 1);
         claim.commit();
+    }
+
+    #[test]
+    fn idle_and_parked_notifications_share_one_wake_reservation() {
+        for status in [AgentStatus::Idle, AgentStatus::Parked, AgentStatus::Running, AgentStatus::Aborted] {
+            let manager = super::super::SubAgentManager::default();
+            let record = manager.registry.register(serde_json::from_value(json!({
+                "id":"Child", "root":"root", "parentId":"Main", "generation":0,
+                "displayName":"Child", "agentType":"task", "status":status,
+                "depth":1, "childConversationId":"child", "runId":null,
+                "sessionFile":"child.jsonl", "outputFile":"child.md",
+                "lastActivity":0, "activity":null, "published":true
+            })).unwrap());
+            if matches!(status, AgentStatus::Running | AgentStatus::Aborted) {
+                assert!(reserve_wake(&manager, &record).is_none());
+                continue;
+            }
+            let (_, slot) = reserve_wake(&manager, &record).unwrap();
+            assert!(reserve_wake(&manager, &record).is_none());
+            with_current_wake(&slot, record.generation, |control| {
+                control.wake_reserved = false;
+                control.active_run = Some("user-run".into());
+            }).unwrap();
+            assert!(reserve_wake(&manager, &record).is_none());
+            {
+                let mut control = slot.control.lock().unwrap();
+                control.active_run = None;
+                control.killed = true;
+            }
+            assert!(reserve_wake(&manager, &record).is_none());
+        }
     }
 
     #[test]

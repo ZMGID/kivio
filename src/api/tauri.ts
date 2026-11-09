@@ -685,6 +685,7 @@ export type ChatHookPayload = {
 }
 
 export type ChatToolsConfig = {
+  lspServers?: { command: string; args: string[]; languageId: string; extensions: string[] }[]
   enabled: boolean
   servers: ChatMcpServer[]
   /** 对话生命周期 Hooks。空数组 = 无 Hook = agent loop 零开销。 */

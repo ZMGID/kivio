@@ -57,7 +57,7 @@ pub trait AgentHost: Send + Sync {
     ) -> AgentHostFuture<'a, Result<bool, String>> {
         Box::pin(async { Ok(false) })
     }
-    /// Persist the full session facts, including inactive branches, and receive new messages.
+    /// Persist the full session facts, including inactive branches, without collecting new inputs.
     /// Before compaction this sees the original facts; an error prevents replacement.
     fn checkpoint_runtime<'a>(
         &'a self,
@@ -65,8 +65,8 @@ pub trait AgentHost: Send + Sync {
         _run_id: &'a str,
         _history: &'a super::session_history::SessionHistory,
         _finishing: bool,
-    ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
-        Box::pin(async { Ok(Vec::new()) })
+    ) -> AgentHostFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
     }
 
     /// Persist a best-effort draft after a completed tool round. `api_messages`

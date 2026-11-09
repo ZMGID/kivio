@@ -184,7 +184,8 @@ pub async fn collect_for_main(
     root: &str,
     _run_id: &str,
     history: &[RuntimeMessage],
-) -> Result<Vec<RuntimeMessage>, String> {
+    admission: &mut kivio_agent_sdk::agent::InjectionAdmission,
+) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mut claim = DeliveryClaim {
         jobs: &state.sub_agents.jobs,
@@ -193,9 +194,12 @@ pub async fn collect_for_main(
     };
     if claim.taken.is_empty() {
         claim.committed = true;
-        return Ok(Vec::new());
+        return Ok(());
     }
     let reports = reports_for(&claim.taken);
+    let prepared = kivio_agent_sdk::agent::PreparedInjection::new(
+        report_inputs(reports.clone(), history).into_iter().map(super::session_input).collect(),
+    ).map_err(|error| error.to_string())?;
     crate::chat::repository::repository(app)
         .mutate(app, root, |parent| {
             insert_reports(&mut parent.messages, &reports)
@@ -203,7 +207,8 @@ pub async fn collect_for_main(
         .await
         .map_err(crate::chat::repository::repository_error)?;
     claim.committed = true;
-    Ok(report_inputs(reports, history))
+    admission.committed(prepared);
+    Ok(())
 }
 
 /// Children consume their own jobs directly; their host owns its transcript.
@@ -256,7 +261,7 @@ impl FlushQueue {
 static IDLE_FLUSHES: LazyLock<Mutex<FlushQueue>> =
     LazyLock::new(|| Mutex::new(FlushQueue::default()));
 
-fn schedule_idle_flush(app: &AppHandle, root: &str) {
+pub(crate) fn schedule_idle_flush(app: &AppHandle, root: &str) {
     if !IDLE_FLUSHES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -279,6 +284,7 @@ fn schedule_idle_flush(app: &AppHandle, root: &str) {
                     .undelivered(&root, MAIN_AGENT_ID)
                     .is_empty()
                     || state.sub_agents.irc.has_pending_main(&root)
+                    || state.runtime_injections.has_waking_input(&root)
             },
         )
         .await;
@@ -317,6 +323,7 @@ where
 
 /// Install once, after the application state and repository are registered.
 pub fn install(app: &AppHandle) {
+    crate::chat::runtime_injections::install(app);
     let handle = app.clone();
     app.state::<AppState>()
         .sub_agents
@@ -335,6 +342,7 @@ pub fn on_main_run_ended(app: &AppHandle, root: &str) {
     if !jobs.running(root, MAIN_AGENT_ID).is_empty()
         || !jobs.undelivered(root, MAIN_AGENT_ID).is_empty()
         || state.sub_agents.irc.has_pending_main(root)
+        || state.runtime_injections.has_waking_input(root)
     {
         schedule_idle_flush(app, root);
     }

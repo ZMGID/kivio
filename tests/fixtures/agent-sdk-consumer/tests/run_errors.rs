@@ -1,7 +1,6 @@
 use kivio_agent_sdk::{
     agent::{
         events::{AgentEvent, AgentEventKind, AgentEventSink, AgentRunOutcome, EventDelivery},
-        host::SessionInput,
         provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
         run_agent_loop,
         session::NoSessionPolicy,
@@ -120,7 +119,7 @@ impl AgentHost for SaveFailure {
         _: &'a str,
         _: &'a kivio_agent_sdk::agent::SessionHistory,
         _: bool,
-    ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
+    ) -> AgentHostFuture<'a, Result<(), String>> {
         Box::pin(async { Err("disk full".into()) })
     }
 }
@@ -133,12 +132,12 @@ impl AgentHost for BoundaryFailure {
         _: &'a str,
         _: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
-    ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
+    ) -> AgentHostFuture<'a, Result<(), String>> {
         Box::pin(async move {
             if self.0 && finishing {
                 Err("final save failed".into())
             } else {
-                Ok(vec![])
+                Ok(())
             }
         })
     }

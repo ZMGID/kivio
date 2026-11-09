@@ -58,6 +58,23 @@ pub async fn ensure_live(
     id: &str,
     expected_generation: u64,
 ) -> Result<AgentRecord, String> {
+    ensure_live_inner(app, root, id, expected_generation, true).await
+}
+
+pub(crate) async fn ensure_live_for_wake(
+    app: &AppHandle,
+    record: &AgentRecord,
+) -> Result<AgentRecord, String> {
+    ensure_live_inner(app, &record.root, &record.id, record.generation, false).await
+}
+
+async fn ensure_live_inner(
+    app: &AppHandle,
+    root: &str,
+    id: &str,
+    expected_generation: u64,
+    reopen_aborted: bool,
+) -> Result<AgentRecord, String> {
     let state = app.state::<AppState>();
     let manager = &state.sub_agents;
     let mut record = expected(manager, root, id, expected_generation)?;
@@ -91,6 +108,9 @@ pub async fn ensure_live(
         .ensure_subagent_role_enabled(&record.agent_type)?;
     let mut guard = slot.worker.lock().await;
     record = expected(manager, root, id, expected_generation)?;
+    if !reopen_aborted && record.status == AgentStatus::Aborted {
+        return Err("Killed subagents cannot be woken automatically".into());
+    }
     require_accepted(manager, &record)?;
     if record.status == AgentStatus::Running {
         return Ok(record);
@@ -273,6 +293,8 @@ pub async fn kill(
     state
         .background_commands_handle()
         .kill_for_conversation(&record.child_conversation_id);
+    let _ = state.runtime_injections.forget(&record.child_conversation_id);
+    state.lsp.close_owner(&record.child_conversation_id);
     manager.jobs.cancel_agent(root, id);
     manager.irc.agent_stopped(root, id);
     let persisted = tokio::fs::write(tombstone(&record), format!("{}\n", record.generation))

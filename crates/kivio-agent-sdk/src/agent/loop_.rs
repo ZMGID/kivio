@@ -90,15 +90,6 @@ impl RunState {
         apply_inputs(&mut self.history, &mut self.generated_api_messages, inputs);
     }
 
-    fn apply_batches(&mut self, mut batches: Vec<super::InjectionBatch>) {
-        for batch in &mut batches {
-            self.apply_inputs(batch.take_inputs());
-        }
-        for batch in batches {
-            batch.applied();
-        }
-    }
-
     pub(crate) fn snapshot(&self) -> super::session::RunSnapshot<'_> {
         super::session::RunSnapshot {
             history: self.history.context(),
@@ -300,6 +291,7 @@ pub async fn run_agent_loop(
     control
         .begin_core()
         .map_err(|error| AgentRunError::Admission(AgentAdmissionError::Control(error)))?;
+    injections.errors.clear();
     let host = super::context::AgentContext::new(operations, sink, control);
     host.events.emit(AgentEventKind::RunStarted);
     let mut guard = RunGuard {
@@ -484,6 +476,124 @@ fn check_model_budget(env: &LoopEnv<'_>, state: &RunState) -> Result<(), AgentFa
     Ok(())
 }
 
+async fn admit_injections(
+    env: &LoopEnv<'_>,
+    state: &mut RunState,
+    injections: &mut InjectionSources,
+    boundary: InjectionBoundary,
+    answer: &mut Option<Answer>,
+) -> Result<(), AgentFailure> {
+    use super::injection::{
+        validate_inputs, DropReason, InjectionAdmission, InjectionError, InjectionOutcome,
+    };
+    let mut messages = 0usize;
+    let mut bytes = 0usize;
+    for source in &mut injections.sources {
+        if !env.host.control.active() {
+            break;
+        }
+        let mut admission = InjectionAdmission::default();
+        let mut history = state.history.clone();
+        if let Some(answer) = answer.as_ref() {
+            history.push(answer.message());
+        }
+        let context = InjectionContext {
+            boundary,
+            identity: env.host.control.identity(),
+            invocation_id: env.host.control.invocation_id(),
+            run: super::session::RunSnapshot {
+                history: history.context(),
+                tools: &state.tools,
+                tool_records: &state.tool_records,
+            },
+            history: &history,
+        };
+        // Do not drop a producer's durable save when Stop arrives.
+        let result =
+            std::panic::AssertUnwindSafe(async { source.collect(context, &mut admission).await })
+                .catch_unwind()
+                .await
+                .unwrap_or(Err(InjectionError::Panicked));
+        if !admission.committed.is_empty() {
+            if let Some(answer) = answer.take() {
+                answer.absorb(state);
+            }
+            state.apply_inputs(std::mem::take(&mut admission.committed));
+        }
+        if let Err(error) = result {
+            for batch in &mut admission.pending {
+                batch.settle(InjectionOutcome::Failed(error.clone()));
+            }
+            if let InjectionError::Persistence(message) = error {
+                return Err(AgentFailure::host("injection.collect")(message));
+            }
+            injections.errors.push(error);
+            continue;
+        }
+        for mut batch in admission.pending {
+            if !env.host.control.active() {
+                batch.settle(InjectionOutcome::Dropped(DropReason::RunStopped));
+                continue;
+            }
+            if boundary == InjectionBoundary::BeforeFinish
+                && batch.lazy.is_none()
+                && (steering_pending(env, state) || follow_up_pending(env, state))
+            {
+                continue;
+            }
+            let mut history = state.history.clone();
+            if let Some(answer) = answer.as_ref() {
+                history.push(answer.message());
+            }
+            let context = InjectionContext {
+                boundary,
+                identity: env.host.control.identity(),
+                invocation_id: env.host.control.invocation_id(),
+                run: super::session::RunSnapshot {
+                    history: history.context(),
+                    tools: &state.tools,
+                    tool_records: &state.tool_records,
+                },
+                history: &history,
+            };
+            let inputs = match batch.build(context).and_then(|inputs| {
+                let size = validate_inputs(&inputs)?;
+                if messages.saturating_add(inputs.len()) > injections.max_messages
+                    || bytes.saturating_add(size) > injections.max_bytes
+                {
+                    return Err(InjectionError::LimitExceeded);
+                }
+                Ok((inputs, size))
+            }) {
+                Ok(inputs) => inputs,
+                Err(error) => {
+                    batch.settle(InjectionOutcome::Failed(error.clone()));
+                    injections.errors.push(error);
+                    continue;
+                }
+            };
+            if !inputs.0.is_empty() {
+                check_model_budget(env, state)?;
+            }
+            if !env.host.control.active() {
+                batch.settle(InjectionOutcome::Dropped(DropReason::RunStopped));
+                continue;
+            }
+            let count = inputs.0.len();
+            if batch.apply(inputs.0, &mut |inputs| {
+                if let Some(answer) = answer.take() {
+                    answer.absorb(state);
+                }
+                state.apply_inputs(inputs);
+            }) {
+                messages += count;
+                bytes += inputs.1;
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn admit_step(
     env: &LoopEnv<'_>,
     state: &mut RunState,
@@ -495,8 +605,7 @@ async fn admit_step(
     if !env.host.control.active() {
         return Ok(());
     }
-    let incoming = env
-        .host
+    env.host
         .checkpoint_runtime(
             &env.config.conversation_id,
             &env.config.run_id,
@@ -505,21 +614,14 @@ async fn admit_step(
         )
         .await
         .map_err(AgentFailure::host("checkpoint_runtime"))?;
-    state.apply_inputs(incoming);
-    if env.host.control.active() {
-        let batches = injections
-            .collect(InjectionContext {
-                boundary: InjectionBoundary::BeforeStep,
-                identity: env.host.control.identity(),
-                invocation_id: env.host.control.invocation_id(),
-                run: state.snapshot(),
-            })
-            .map_err(AgentFailure::hook("injection.collect"))?;
-        if env.host.control.active() && !batches.is_empty() {
-            check_model_budget(env, state)?;
-            state.apply_batches(batches);
-        }
-    }
+    admit_injections(
+        env,
+        state,
+        injections,
+        InjectionBoundary::BeforeStep,
+        &mut None,
+    )
+    .await?;
     Ok(())
 }
 
@@ -562,7 +664,7 @@ async fn answer_boundary(
         Ok(super::session::TurnDecision::Stop) => return Ok(AnswerBoundary::Finish(answer)),
         Ok(super::session::TurnDecision::Default) => {}
     }
-    let incoming = match env
+    if let Err(message) = env
         .host
         .checkpoint_runtime(
             &env.config.conversation_id,
@@ -572,30 +674,11 @@ async fn answer_boundary(
         )
         .await
     {
-        Ok(incoming) => incoming,
-        Err(message) => {
-            answer.absorb(state);
-            return Err(AgentFailure::host("checkpoint_runtime")(message));
-        }
-    };
-    if !env.host.control.active() {
-        let mut result = answer.cancel(state)?;
-        if result.generated_history.is_empty()
-            && incoming
-                .iter()
-                .any(|input| input.persistence == super::host::InputPersistence::Append)
-        {
-            result
-                .generated_history
-                .extend(result.final_message.clone().map(RuntimeMessage::model));
-        }
-        apply_inputs(&mut state.history, &mut result.generated_history, incoming);
-        return Ok(AnswerBoundary::Cancelled(result));
-    }
-    if !incoming.is_empty() {
         answer.absorb(state);
-        state.apply_inputs(incoming);
-        return Ok(AnswerBoundary::Continue);
+        return Err(AgentFailure::host("checkpoint_runtime")(message));
+    }
+    if !env.host.control.active() {
+        return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
     }
     if steering_pending(env, state) {
         answer.absorb(state);
@@ -640,44 +723,40 @@ async fn answer_boundary(
         inject_follow_up_messages(env, state, round, session).await?;
         return Ok(AnswerBoundary::Continue);
     }
-    let batches = match injections.collect(InjectionContext {
-        boundary: InjectionBoundary::BeforeFinish,
-        identity: env.host.control.identity(),
-        invocation_id: env.host.control.invocation_id(),
-        run: super::session::RunSnapshot {
-            history: &history,
-            tools: &state.tools,
-            tool_records: &state.tool_records,
-        },
-    }) {
-        Ok(batches) => batches,
-        Err(message) => {
+    let mut answer = Some(answer);
+    if let Err(error) = admit_injections(
+        env,
+        state,
+        injections,
+        InjectionBoundary::BeforeFinish,
+        &mut answer,
+    )
+    .await
+    {
+        if let Some(answer) = answer {
             answer.absorb(state);
-            return Err(AgentFailure::hook("injection.collect")(message));
         }
-    };
+        return Err(error);
+    }
     if !env.host.control.active() {
-        return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
+        return Ok(AnswerBoundary::Cancelled(match answer {
+            Some(answer) => answer.cancel(state)?,
+            None => cancelled_run_result_from_state(state),
+        }));
     }
-    if steering_pending(env, state) {
-        answer.absorb(state);
-        return Ok(AnswerBoundary::Continue);
-    }
-    if follow_up_pending(env, state) {
-        answer.absorb(state);
-        inject_follow_up_messages(env, state, round, session).await?;
-        return Ok(AnswerBoundary::Continue);
-    }
-    if !batches.is_empty() {
-        if let Err(error) = check_model_budget(env, state) {
+    if steering_pending(env, state) || follow_up_pending(env, state) {
+        if let Some(answer) = answer {
             answer.absorb(state);
-            return Err(error);
         }
-        answer.absorb(state);
-        state.apply_batches(batches);
+        if !steering_pending(env, state) {
+            inject_follow_up_messages(env, state, round, session).await?;
+        }
         return Ok(AnswerBoundary::Continue);
     }
-    Ok(AnswerBoundary::Finish(answer))
+    Ok(match answer {
+        Some(answer) => AnswerBoundary::Finish(answer),
+        None => AnswerBoundary::Continue,
+    })
 }
 
 async fn run_agent_loop_inner(
@@ -856,16 +935,14 @@ async fn run_agent_loop_inner(
                     &state.history,
                 )
                 .await;
-                let incoming = host
-                    .checkpoint_runtime(
-                        &config.conversation_id,
-                        &config.run_id,
-                        &state.history,
-                        false,
-                    )
-                    .await
-                    .map_err(AgentFailure::host("checkpoint_runtime"))?;
-                state.apply_inputs(incoming);
+                host.checkpoint_runtime(
+                    &config.conversation_id,
+                    &config.run_id,
+                    &state.history,
+                    false,
+                )
+                .await
+                .map_err(AgentFailure::host("checkpoint_runtime"))?;
             }
         } else {
             None
@@ -877,16 +954,14 @@ async fn run_agent_loop_inner(
             let result = cancelled_run_result_from_state(&mut state);
             return Ok(result);
         }
-        let incoming = host
-            .checkpoint_runtime(
-                &config.conversation_id,
-                &config.run_id,
-                &state.history,
-                true,
-            )
-            .await
-            .map_err(AgentFailure::host("checkpoint_runtime"))?;
-        state.apply_inputs(incoming);
+        host.checkpoint_runtime(
+            &config.conversation_id,
+            &config.run_id,
+            &state.history,
+            true,
+        )
+        .await
+        .map_err(AgentFailure::host("checkpoint_runtime"))?;
 
         if let Some(prompt) = state.fallback_prompt.take() {
             state.history.set_system_prompt(&prompt.system);

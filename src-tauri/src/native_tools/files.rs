@@ -83,7 +83,7 @@ impl StaticTool for WriteFile {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FileMutationResult {
     pub ok: bool,
     pub operation: String,
@@ -113,7 +113,7 @@ pub struct ReadFileResult {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FileMutationFile {
     pub path: String,
     pub operation: String,
@@ -472,11 +472,26 @@ pub fn write_file(
     } else {
         None
     };
-    atomic_write_text(&full, content, before.as_deref())
+    let changed = atomic_write_text(&full, content, before.as_deref())
         .map_err(|err| format!("Write file failed: {err}"))?;
-    let operation = if existed { "overwrite" } else { "create" };
+    let operation = if !changed {
+        "noop"
+    } else if existed {
+        "overwrite"
+    } else {
+        "create"
+    };
     let diff_omitted = existed && before.is_none();
-    let file = if diff_omitted {
+    let file = if !changed {
+        FileMutationFile {
+            path: workspace_display_path(workspace, &full),
+            operation: operation.to_string(),
+            bytes_written: 0,
+            additions: 0,
+            removals: 0,
+            diff: String::new(),
+        }
+    } else if diff_omitted {
         FileMutationFile {
             path: workspace_display_path(workspace, &full),
             operation: operation.to_string(),
@@ -489,6 +504,7 @@ pub fn write_file(
         planned_file_result(workspace, full, operation, before.as_deref(), Some(content))?
     };
     let mut result = file_mutation_result(operation, vec![file]);
+    result.target_touched = changed;
     if diff_omitted {
         result
             .warnings
@@ -877,7 +893,7 @@ fn atomic_write_text(
     target: &Path,
     content: &str,
     existing_text: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut text = content.to_string();
     if let Some(existing) = existing_text {
         if existing.contains("\r\n") {
@@ -887,7 +903,11 @@ fn atomic_write_text(
             text = format!("{UTF8_BOM}{text}");
         }
     }
-    atomic_write_bytes(target, text.as_bytes(), existing_text)
+    if existing_text == Some(text.as_str()) {
+        return Ok(false);
+    }
+    atomic_write_bytes(target, text.as_bytes(), existing_text)?;
+    Ok(true)
 }
 
 fn normalize_line_endings(content: &str, target: &str) -> String {
@@ -2962,6 +2982,26 @@ mod tests {
         assert!(result.diff.contains("+alpha"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn identical_write_reports_no_mutation_after_preserving_bom_and_line_endings() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = NativeToolWorkspace::conversation(root.path().to_path_buf());
+        let file = root.path().join("same.txt");
+        let before = "\u{feff}alpha\r\nbeta\r\n";
+        fs::write(&file, before).unwrap();
+        let result = crate::chat::tools::call_typed(
+            &WriteFile { workspace },
+            json!({"path":"same.txt","content":"alpha\nbeta\n"}),
+        ).await.unwrap();
+        assert!(!result.is_error);
+        let mutation = result.structured_content.unwrap();
+        assert_eq!(mutation["operation"], "noop");
+        assert_eq!(mutation["target_touched"], false);
+        assert_eq!(mutation["bytes_written"], 0);
+        assert_eq!(mutation["diff"], "");
+        assert_eq!(fs::read_to_string(file).unwrap(), before);
     }
 
     #[test]

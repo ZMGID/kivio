@@ -1,3 +1,7 @@
+use kivio_agent_sdk::agent::{
+    InjectionAdmission, InjectionContext, InjectionError, InjectionFuture, InjectionSource,
+    PreparedInjection,
+};
 use kivio_agent_sdk::{
     agent::{
         content::ContentKind,
@@ -204,23 +208,27 @@ impl SessionPolicy for Reminders {
 }
 
 struct FinishReminder(bool);
-impl kivio_agent_sdk::agent::InjectionSource for FinishReminder {
-    fn collect(
-        &mut self,
-        context: kivio_agent_sdk::agent::InjectionContext<'_>,
-    ) -> Result<kivio_agent_sdk::agent::InjectionBatch, String> {
-        use kivio_agent_sdk::agent::{InjectionBatch, InjectionBoundary};
-        if context.boundary != InjectionBoundary::BeforeFinish || self.0 {
-            return Ok(InjectionBatch::default());
-        }
-        assert_eq!(
-            context.run.history.last().unwrap().text_content().trim(),
-            "first"
-        );
-        self.0 = true;
-        Ok(InjectionBatch::new(vec![SessionInput::append(
-            RuntimeMessage::text(ModelRole::User, "finish reminder"),
-        )]))
+impl InjectionSource for FinishReminder {
+    fn collect<'a>(
+        &'a mut self,
+        context: InjectionContext<'a>,
+        admission: &'a mut InjectionAdmission,
+    ) -> InjectionFuture<'a, Result<(), InjectionError>> {
+        Box::pin(async move {
+            use kivio_agent_sdk::agent::{InjectionBatch, InjectionBoundary};
+            if context.boundary != InjectionBoundary::BeforeFinish || self.0 {
+                return Ok(());
+            }
+            assert_eq!(
+                context.run.history.last().unwrap().text_content().trim(),
+                "first"
+            );
+            self.0 = true;
+            admission.pending(InjectionBatch::new(vec![SessionInput::append(
+                RuntimeMessage::text(ModelRole::User, "finish reminder"),
+            )]));
+            Ok(())
+        })
     }
 }
 
@@ -257,41 +265,45 @@ async fn plain_policy_reminders_continue_at_answer_boundaries() {
     );
 }
 
+#[derive(Clone)]
 struct Deliveries {
-    finishes: AtomicUsize,
-    waited: AtomicBool,
-    child_delivered: AtomicBool,
+    finishes: std::sync::Arc<AtomicUsize>,
+    waited: std::sync::Arc<AtomicBool>,
+    child_delivered: std::sync::Arc<AtomicBool>,
 }
-impl AgentHost for Deliveries {
-    fn checkpoint_runtime<'a>(
-        &'a self,
-        _: &'a str,
-        _: &'a str,
-        _: &'a kivio_agent_sdk::agent::SessionHistory,
-        finishing: bool,
-    ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
+impl InjectionSource for Deliveries {
+    fn collect<'a>(
+        &'a mut self,
+        context: InjectionContext<'a>,
+        admission: &'a mut InjectionAdmission,
+    ) -> InjectionFuture<'a, Result<(), InjectionError>> {
         Box::pin(async move {
-            if finishing && self.finishes.fetch_add(1, Ordering::SeqCst) == 1 {
-                return Ok(vec![
+            let finishing =
+                context.boundary == kivio_agent_sdk::agent::InjectionBoundary::BeforeFinish;
+            if finishing && self.finishes.fetch_add(1, Ordering::SeqCst) == 0 {
+                admission.committed(PreparedInjection::new(vec![
                     SessionInput::append(RuntimeMessage::text(ModelRole::User, "append")),
                     SessionInput {
                         message: RuntimeMessage::text(ModelRole::User, "persisted"),
                         persistence: InputPersistence::AlreadyPersisted,
                     },
-                ]);
+                ])?);
+                return Ok(());
             }
             if !finishing
                 && self.waited.load(Ordering::SeqCst)
                 && !self.child_delivered.swap(true, Ordering::SeqCst)
             {
-                return Ok(vec![SessionInput::append(RuntimeMessage::text(
-                    ModelRole::User,
-                    "child result",
-                ))]);
+                admission.committed(PreparedInjection::new(vec![SessionInput::append(
+                    RuntimeMessage::text(ModelRole::User, "child result"),
+                )])?);
+                return Ok(());
             }
-            Ok(vec![])
+            Ok(())
         })
     }
+}
+impl AgentHost for Deliveries {
     fn wait_for_child_results<'a>(
         &'a self,
         _: &'a str,
@@ -309,16 +321,16 @@ async fn plain_host_delivery_and_child_wait_preserve_persistence_ownership() {
     let mut cfg = config(&model, initial_history());
     cfg.tools.clear();
     let host = Deliveries {
-        finishes: AtomicUsize::new(0),
-        waited: AtomicBool::new(false),
-        child_delivered: AtomicBool::new(false),
+        finishes: std::sync::Arc::new(AtomicUsize::new(0)),
+        waited: std::sync::Arc::new(AtomicBool::new(false)),
+        child_delivered: std::sync::Arc::new(AtomicBool::new(false)),
     };
     let result = run_agent_loop(
         cfg,
         &host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
-        &mut kivio_agent_sdk::agent::InjectionSources::new(),
+        &mut kivio_agent_sdk::agent::InjectionSources::new().with(host.clone()),
         &Events::default(),
         handle(&control),
     )
@@ -326,9 +338,9 @@ async fn plain_host_delivery_and_child_wait_preserve_persistence_ownership() {
     .unwrap();
     let calls = model.calls.lock().unwrap();
     assert_eq!(calls.len(), 3);
-    assert_eq!(calls[1].history.last().unwrap().text_content(), "persisted");
+    assert_eq!(calls[2].history.last().unwrap().text_content(), "persisted");
     assert_eq!(
-        calls[2].history.last().unwrap().text_content(),
+        calls[1].history.last().unwrap().text_content(),
         "child result"
     );
     for text in ["append", "persisted", "child result"] {
@@ -507,27 +519,29 @@ async fn cancellation_during_child_wait_keeps_completed_answer_once() {
     );
 }
 
+#[derive(Clone)]
 struct CancelCheckpoint {
     control: AgentRunHandle,
-    finishes: AtomicUsize,
+    finishes: std::sync::Arc<AtomicUsize>,
 }
-impl AgentHost for CancelCheckpoint {
-    fn checkpoint_runtime<'a>(
-        &'a self,
-        _: &'a str,
-        _: &'a str,
-        _: &'a kivio_agent_sdk::agent::SessionHistory,
-        finishing: bool,
-    ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
+impl AgentHost for CancelCheckpoint {}
+impl InjectionSource for CancelCheckpoint {
+    fn collect<'a>(
+        &'a mut self,
+        context: InjectionContext<'a>,
+        admission: &'a mut InjectionAdmission,
+    ) -> InjectionFuture<'a, Result<(), InjectionError>> {
         Box::pin(async move {
-            if finishing && self.finishes.fetch_add(1, Ordering::SeqCst) == 1 {
+            if context.boundary == kivio_agent_sdk::agent::InjectionBoundary::BeforeFinish
+                && self.finishes.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                let prepared = PreparedInjection::new(vec![SessionInput::append(
+                    RuntimeMessage::text(ModelRole::User, "delivered at stop"),
+                )])?;
                 self.control.stop();
-                return Ok(vec![SessionInput::append(RuntimeMessage::text(
-                    ModelRole::User,
-                    "delivered at stop",
-                ))]);
+                admission.committed(prepared);
             }
-            Ok(vec![])
+            Ok(())
         })
     }
 }
@@ -544,19 +558,19 @@ async fn cancellation_at_finishing_checkpoint_retains_answer_then_delivered_inpu
         let model = Model::new(vec![answer]);
         let control = std::sync::Arc::new(Control::default());
         let run = handle(&control);
-        run.follow_up(SteeringMessage::new("queued".into(), "do not consume").unwrap());
+
         let mut cfg = config(&model, initial_history());
         cfg.tools.clear();
         let host = CancelCheckpoint {
             control: run.clone(),
-            finishes: AtomicUsize::new(0),
+            finishes: std::sync::Arc::new(AtomicUsize::new(0)),
         };
         let result = run_agent_loop(
             cfg,
             &host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
-            &mut kivio_agent_sdk::agent::InjectionSources::new(),
+            &mut kivio_agent_sdk::agent::InjectionSources::new().with(host.clone()),
             &Events::default(),
             run,
         )

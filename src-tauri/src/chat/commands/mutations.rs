@@ -535,6 +535,7 @@ pub(crate) async fn chat_regenerate_message(
             Err(err) => return Err(crate::chat::repository::repository_error(err)),
         }
     };
+    state.invalidate_chat_context_notifications(&conversation_id);
     if !state
         .sub_agents
         .resume_user_turn(&conversation_id, interruption_epoch)
@@ -846,6 +847,7 @@ pub(crate) async fn chat_rewind_to_message(
         }
     };
 
+    state.invalidate_chat_context_notifications(&conversation_id);
     // rewind 一次砍掉一整段历史，是孤儿附件最容易堆积的地方。GC 托管的文件
     // 没人引用就回收；用户上传的 `att_*` 一律保留（原文回输入框但附件不回，
     // 删掉就找不回来了）。传 id 不传对象：GC 自己从磁盘重读完整转录算引用集合。

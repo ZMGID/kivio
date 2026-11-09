@@ -989,6 +989,7 @@ pub fn run() {
                     app_handle.state::<app_mcp::KivioServer>().shutdown();
                     // 杀掉所有跟踪中的后台 run_command 进程组（跨 turn 存活，只在这里或
                     // 显式 kill_background 才清理），删除其 per-job 日志，避免孤儿进程/文件。
+                    tauri::async_runtime::block_on(state.lsp.shutdown());
                     let killed = state.background_commands_handle().kill_all();
                     if killed > 0 {
                         eprintln!("Killed {killed} background command process group(s) on exit.");

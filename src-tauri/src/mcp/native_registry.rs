@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 
 use serde_json::Value;
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::chat::tools::{call_typed, ArgumentPolicy, ToolTimeout};
 use crate::native_tools::{
@@ -860,6 +860,11 @@ fn call_write(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         )
         .await
         .map_err(|error| error.to_string())?;
+        if let Some(structured) = &output.structured_content {
+            let mutation: FileMutationResult = serde_json::from_value(structured.clone())
+                .map_err(|error| format!("Decode write result failed: {error}"))?;
+            notify_lsp_for_mutation(&ctx, &mutation).await;
+        }
         Ok(McpToolCallResult {
             content: output.content,
             is_error: output.is_error,
@@ -869,6 +874,38 @@ fn call_write(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             follow_up_user_messages: Vec::new(),
         })
     })
+}
+
+pub(super) async fn notify_lsp_for_mutation(ctx: &NativeCallCtx<'_>, mutation: &FileMutationResult) {
+    if !mutation.ok || !mutation.target_touched {
+        return;
+    }
+    let Some(native) = ctx.native_ctx else { return; };
+    let Some(root) = ctx.workspace.project.as_ref().and_then(|project| project.root_path.as_deref()).or_else(|| ctx.workspace.conversation_directory()) else { return; };
+    let owner = crate::chat::sub_agent::services::owner_for_run(&ctx.state.sub_agents, &native.conversation_id, &native.run_id);
+    ctx.state.lsp.retain_configurations(&owner, &ctx.settings.chat_tools.lsp_servers);
+    let app = ctx.app.clone();
+    let emit: crate::native_tools::lsp::DiagnosticsCallback = std::sync::Arc::new(move |event| {
+        app.state::<AppState>().runtime_injections.diagnostics(event);
+    });
+    for file in &mutation.files {
+        if file.operation == "noop" { continue; }
+        let path = match crate::native_tools::resolve_tool_write_path(ctx.workspace, &file.path) {
+            Ok(path) => path,
+            Err(error) => { eprintln!("LSP mutation path unavailable: {error}"); continue; }
+        };
+        if file.operation == "delete" {
+            if let Err(error) = ctx.state.lsp.file_removed(&owner, root, &path).await {
+                eprintln!("LSP removal unavailable: {error}");
+            }
+            continue;
+        }
+        for config in &ctx.settings.chat_tools.lsp_servers {
+            if let Err(error) = ctx.state.lsp.file_changed(&owner, root, &path, config, emit.clone()).await {
+                eprintln!("LSP diagnostics unavailable: {error}");
+            }
+        }
+    }
 }
 
 fn call_read_file(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {

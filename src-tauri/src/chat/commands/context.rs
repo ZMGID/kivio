@@ -270,6 +270,9 @@ async fn finalize_local_context_change(
             Err(err) => return Err(crate::chat::repository::repository_error(err)),
         }
     };
+    if generation.is_none() {
+        state.invalidate_chat_context_notifications(conversation_id);
+    }
     emit_chat_context_state(app, &conversation.id, conversation.revision, &context_state);
     strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({

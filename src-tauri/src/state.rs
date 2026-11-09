@@ -77,6 +77,8 @@ pub struct AppState {
     pub rapidocr: std::sync::Arc<RapidOcrClient>,
     /// OMP 子 agent 注册表、作业和并发准入状态。
     pub sub_agents: crate::chat::sub_agent::SubAgentManager,
+    pub(crate) runtime_injections: crate::chat::runtime_injections::RuntimeInjections,
+    pub(crate) lsp: crate::native_tools::lsp::LspService,
     /// 后台 run_command 进程注册表：job_id → 跟踪中的后台命令。
     /// 与后台 subagent 不同：这些命令**跨 turn 存活**，只由显式 `kill_background`
     /// 或 app 退出 sweep 清理（对齐 Claude Code background bash，dev-server 友好），
@@ -225,6 +227,8 @@ impl AppState {
             offline_models,
             rapidocr,
             sub_agents: crate::chat::sub_agent::SubAgentManager::default(),
+            runtime_injections: Default::default(),
+            lsp: Default::default(),
             background_commands: Arc::new(
                 crate::native_tools::background_registry::BackgroundCommandRegistry::default(),
             ),
@@ -357,8 +361,17 @@ impl AppState {
     /// 对话被删除时清理其按 conversation_id 累积的运行态痕迹：活跃 generation 集合、
     /// 会话级工具同意标记、按工具名的「总是允许」集合。
     pub fn forget_chat_conversation_runtime(&self, conversation_id: &str) {
+        for owner in self.runtime_injections.forget(conversation_id) {
+            self.lsp.close_owner(&owner);
+        }
+        self.lsp.close_owner(conversation_id);
         self.chat_runtime.forget_conversation(conversation_id);
         self.chat_interactions.forget_conversation(conversation_id);
+    }
+
+    pub(crate) fn invalidate_chat_context_notifications(&self, conversation_id: &str) {
+        self.runtime_injections.clear_context(conversation_id);
+        self.lsp.close_owner(conversation_id);
     }
 
     fn mcp_manager(&self) -> crate::mcp::McpManager<'_> {
@@ -367,6 +380,13 @@ impl AppState {
             crate::mcp::McpManagerConfig::from_settings(&settings)
         };
         crate::mcp::McpManager::new(&self.mcp_runtime, &self.http, config, self)
+    }
+
+    pub(crate) async fn mcp_resource_connection(
+        &self, sink: crate::mcp::manager::McpEventSink<'_>,
+        server: &crate::settings::ChatMcpServer, allowed_server_ids: &[String],
+    ) -> Result<crate::mcp::resources::McpResourceConnection, String> {
+        self.mcp_manager().mcp_resource_connection(sink, server, allowed_server_ids).await
     }
 
     pub fn mcp_idle_timeout(&self) -> Duration {

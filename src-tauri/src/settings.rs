@@ -1548,6 +1548,7 @@ impl TaskCompactionThreshold {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ChatToolsConfig {
+    pub lsp_servers: Vec<crate::native_tools::lsp::LspServerConfig>,
     pub enabled: bool,
     pub servers: Vec<ChatMcpServer>,
     pub skill_scan_paths: Vec<String>,
@@ -1663,6 +1664,7 @@ impl Default for ChatToolsConfig {
         Self {
             enabled: false,
             servers: Vec::new(),
+            lsp_servers: Vec::new(),
             skill_scan_paths: Vec::new(),
             skill_auto_match: default_skill_auto_match(),
             skill_fallback_mode: default_skill_fallback_mode(),

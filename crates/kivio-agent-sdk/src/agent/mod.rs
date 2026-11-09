@@ -11,9 +11,12 @@ pub mod history;
 pub mod host;
 pub mod injection;
 pub use injection::{
-    InjectionBatch, InjectionBoundary, InjectionContext, InjectionSettlement, InjectionSource,
-    InjectionSources,
+    DropReason, InjectionAdmission, InjectionBatch, InjectionBoundary, InjectionContext,
+    InjectionError, InjectionFuture, InjectionOutcome, InjectionSettlement, InjectionSource,
+    InjectionSources, PreparedInjection,
 };
+mod injection_queue;
+pub use injection_queue::{InjectionKind, InjectionQueue, InjectionReceipt, InjectionSender, WakePolicy};
 pub mod loop_;
 pub(crate) mod planning;
 pub mod provider_runtime;

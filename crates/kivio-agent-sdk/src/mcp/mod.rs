@@ -27,6 +27,7 @@ use tokio::{
 
 mod conn;
 mod registry;
+mod resources;
 mod result;
 mod types;
 pub use conn::{
@@ -36,6 +37,9 @@ pub use registry::{
     compact_mcp_tool_id, mcp_tool_definition, sanitize_openai_tool_name, wire_mcp_tool_id,
 };
 pub use result::parse_tool_result;
+pub use resources::{
+    McpResource, McpResourceContents, McpResourceUpdate, McpResourceUpdateError, McpResourceUpdates,
+};
 pub use rmcp::model::Implementation as McpServerInfo;
 pub use types::{McpTool, McpToolCallResult};
 
@@ -90,8 +94,8 @@ struct ToolCache {
 pub struct McpClient {
     service: Mutex<Option<conn::McpService>>,
     peer: Peer<RoleClient>,
-    lifecycle: StdMutex<Lifecycle>,
-    closing: Notify,
+    lifecycle: Arc<StdMutex<Lifecycle>>,
+    closing: Arc<Notify>,
     drained: Notify,
     revision: Arc<std::sync::atomic::AtomicU64>,
     cache: StdMutex<Option<ToolCache>>,
@@ -100,6 +104,9 @@ pub struct McpClient {
     stderr: Arc<Mutex<VecDeque<String>>>,
     stderr_task: StdMutex<Option<tokio::task::JoinHandle<()>>>,
     secrets: Vec<String>,
+    resource_updates: resources::ResourceUpdateSender,
+    resource_subscriptions: Mutex<HashMap<String, Option<tokio::task::JoinHandle<()>>>>,
+    connection_id: u64,
 }
 
 impl fmt::Debug for McpClient {
@@ -141,8 +148,8 @@ impl McpClient {
         let client = Self {
             peer: connected.service.peer().clone(),
             service: Mutex::new(Some(connected.service)),
-            lifecycle: StdMutex::new(Lifecycle::default()),
-            closing: Notify::new(),
+            lifecycle: Arc::new(StdMutex::new(Lifecycle::default())),
+            closing: Arc::new(Notify::new()),
             drained: Notify::new(),
             revision: connected.tools_revision,
             cache: StdMutex::new(None),
@@ -151,6 +158,9 @@ impl McpClient {
             stderr,
             stderr_task: StdMutex::new(stderr_task),
             secrets,
+            resource_updates: connected.resource_updates,
+            resource_subscriptions: Mutex::new(HashMap::new()),
+            connection_id: resources::next_connection_id(),
         };
         if let Err(error) = client.list_tools().await {
             let _ = client.close().await;
@@ -214,6 +224,13 @@ impl McpClient {
             return Ok(tools);
         }
         let revision = self.tools_revision();
+        if self.peer.peer_info().is_some_and(|info| info.capabilities.tools.is_none()) {
+            *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(ToolCache {
+                revision,
+                tools: Vec::new(),
+            });
+            return Ok(Vec::new());
+        }
         let deadline = tokio::time::Instant::now() + LIST_TOOLS_TIMEOUT;
         let mut cursor = None;
         let mut cursors = HashSet::new();
@@ -362,6 +379,11 @@ impl McpClient {
                 .closed = true;
             self.closing.notify_waiters();
         }
+        let subscriptions = std::mem::take(&mut *self.resource_subscriptions.lock().await);
+        for task in subscriptions.into_values().flatten() {
+            task.abort();
+            let _ = task.await;
+        }
         let mut service = self.service.lock().await;
         loop {
             let drained = self.drained.notified();
@@ -406,6 +428,9 @@ impl McpClient {
 
 impl Drop for McpClient {
     fn drop(&mut self) {
+        for task in self.resource_subscriptions.get_mut().values().flatten() {
+            task.abort();
+        }
         if let Some(task) = self
             .stderr_task
             .get_mut()

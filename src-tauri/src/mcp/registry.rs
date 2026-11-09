@@ -1235,6 +1235,11 @@ async fn call_native_tool(
     }
     if tool.name == "read" {
         if let Some(path) = arguments.get("path").and_then(Value::as_str) {
+            if path.starts_with("mcp://") {
+                let ctx = native_ctx.as_ref().ok_or("read mcp:// requires an agent context")?;
+                let content = crate::chat::runtime_injections::mcp::read(app, ctx, path).await?;
+                return read_file_tool_result(crate::native_tools::read_text_content(path, content, &arguments)?);
+            }
             if path.starts_with("proc://") {
                 let ctx = native_ctx
                     .as_ref()
@@ -1280,6 +1285,14 @@ async fn call_native_tool(
         }
         NativeToolCall::BlockingMutation(call) => {
             let result = run_blocking_file_mutation(&workspace, &arguments, *call).await?;
+            super::native_registry::notify_lsp_for_mutation(&NativeCallCtx {
+                app,
+                state,
+                settings: &settings,
+                workspace: &workspace,
+                arguments: &arguments,
+                native_ctx: native_ctx.as_ref(),
+            }, &result).await;
             file_mutation_tool_result(result)
         }
         NativeToolCall::Async(call) => {

@@ -2,7 +2,8 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 use crate::chat::agent::history::RuntimeMessage;
-use crate::chat::agent::host::{InputPersistence, SessionInput};
+#[cfg(test)]
+use crate::chat::agent::host::InputPersistence;
 use crate::chat::CompactionBoundaryRecord;
 use crate::mcp::{self, ChatToolDefinition};
 use crate::skills;
@@ -12,22 +13,8 @@ use super::context::{emit_chat_compaction_state, emit_chat_context_usage_live};
 use super::interaction::{request_session_consent, request_tool_approval, request_user_response};
 use super::messages::persist_partial_assistant_snapshot;
 
-fn session_input(message: RuntimeMessage) -> SessionInput {
-    let persistence = if message
-        .source
-        .get("subagent_parent_persisted")
-        .and_then(serde_json::Value::as_bool)
-        == Some(true)
-    {
-        InputPersistence::AlreadyPersisted
-    } else {
-        InputPersistence::Append
-    };
-    SessionInput {
-        message,
-        persistence,
-    }
-}
+#[cfg(test)]
+use crate::chat::sub_agent::session_input;
 
 fn checkpoint_facts(history: &kivio_agent_sdk::agent::SessionHistory) -> Vec<RuntimeMessage> {
     history
@@ -278,27 +265,6 @@ impl crate::chat::agent::AgentHost for ChatAgentHost {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
 
-    fn checkpoint_runtime<'b>(
-        &'b self,
-        conversation_id: &'b str,
-        run_id: &'b str,
-        history: &'b kivio_agent_sdk::agent::SessionHistory,
-        _finishing: bool,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<SessionInput>, String>> {
-        Box::pin(async move {
-            Ok(crate::chat::sub_agent::collect_for_main(
-                &self.app,
-                conversation_id,
-                run_id,
-                &checkpoint_facts(history),
-            )
-            .await?
-            .into_iter()
-            .map(session_input)
-            .collect())
-        })
-    }
-
     fn persist_partial_assistant<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -343,6 +309,19 @@ impl crate::chat::agent::AgentHost for ChatAgentHost {
 }
 
 impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost {
+    fn collect_runtime_inputs<'a>(
+        &'a self,
+        context: kivio_agent_sdk::agent::InjectionContext<'a>,
+        admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+        Box::pin(async move {
+            crate::chat::sub_agent::collect_for_main(
+                &self.app, context.identity.conversation_id, context.identity.run_id,
+                &checkpoint_facts(context.history), admission,
+            ).await.map_err(kivio_agent_sdk::agent::InjectionError::Persistence)
+        })
+    }
+
     fn auto_compact_failures(&self, conversation_id: &str) -> u32 {
         self.app
             .state::<AppState>()
@@ -484,27 +463,6 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost {
         crate::chat::sub_agent::delivery::on_main_run_ended(&self.app, conversation_id);
     }
 
-    fn checkpoint_runtime<'b>(
-        &'b self,
-        conversation_id: &'b str,
-        run_id: &'b str,
-        history: &'b kivio_agent_sdk::agent::SessionHistory,
-        _finishing: bool,
-    ) -> crate::chat::agent::AgentHostFuture<'b, Result<Vec<SessionInput>, String>> {
-        Box::pin(async move {
-            Ok(crate::chat::sub_agent::collect_for_main(
-                &self.app,
-                conversation_id,
-                run_id,
-                &checkpoint_facts(history),
-            )
-            .await?
-            .into_iter()
-            .map(session_input)
-            .collect())
-        })
-    }
-
     /// 与 GUI host 同一份草稿落盘(append-only 草稿日志)。probe 的定位是「和 chat 窗口
     /// 完全相同的生成路径」,持久化侧路径也该一致,probe:e2e 才能覆盖草稿日志的生命周期。
     fn persist_partial_assistant<'a>(
@@ -555,6 +513,19 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost {
 }
 
 impl crate::chat::tool_runtime::ApplicationHost for ProbeAgentHost {
+    fn collect_runtime_inputs<'a>(
+        &'a self,
+        context: kivio_agent_sdk::agent::InjectionContext<'a>,
+        admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+        Box::pin(async move {
+            crate::chat::sub_agent::collect_for_main(
+                &self.app, context.identity.conversation_id, context.identity.run_id,
+                &checkpoint_facts(context.history), admission,
+            ).await.map_err(kivio_agent_sdk::agent::InjectionError::Persistence)
+        })
+    }
+
     fn start_speculation(
         &self,
         settings: &crate::settings::Settings,

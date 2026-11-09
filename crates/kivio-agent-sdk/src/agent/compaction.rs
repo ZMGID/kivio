@@ -68,7 +68,7 @@ pub(crate) async fn compact_send_view(
                 session.context_rejected("failed", env.host);
                 return Err(AgentFailure::hook("prepare_context")(error));
             }
-            let incoming = match env
+            match env
                 .host
                 .checkpoint_runtime(
                     &env.config.conversation_id,
@@ -78,7 +78,7 @@ pub(crate) async fn compact_send_view(
                 )
                 .await
             {
-                Ok(incoming) => incoming,
+                Ok(()) => (),
                 Err(error) => {
                     session.context_rejected("failed", env.host);
                     return Err(AgentFailure::host("checkpoint_runtime")(error));
@@ -86,30 +86,12 @@ pub(crate) async fn compact_send_view(
             };
             if !env.host.control.active() {
                 session.context_rejected("interrupted", env.host);
-                state
-                    .history
-                    .extend(incoming.iter().map(|input| input.message.clone()));
-                state.generated_api_messages.extend(
-                    incoming
-                        .into_iter()
-                        .filter(|input| input.persistence == super::host::InputPersistence::Append)
-                        .map(|input| input.message),
-                );
                 return Ok(state.history.context().to_vec());
             }
-            state.generated_api_messages.extend(
-                incoming
-                    .iter()
-                    .filter(|input| input.persistence == super::host::InputPersistence::Append)
-                    .map(|input| input.message.clone()),
-            );
             state
                 .history
                 .compact(plan)
                 .map_err(AgentFailure::hook("prepare_context"))?;
-            state
-                .history
-                .extend(incoming.into_iter().map(|input| input.message));
             state.compacted = true;
             state.last_step_usage = None;
             state.initial_anchor_valid = false;

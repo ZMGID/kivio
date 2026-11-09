@@ -1,3 +1,4 @@
+pub(crate) mod lsp;
 pub(crate) mod background_registry;
 mod fetch;
 mod files;

@@ -2,8 +2,9 @@ use kivio_agent_sdk::{
     agent::{
         host::SessionInput,
         provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
-        AgentSession, AgentSessionConfig, InjectionBatch, InjectionBoundary, InjectionContext,
-        InjectionSource, InjectionSources, RuntimeMessage,
+        AgentSession, AgentSessionConfig, InjectionAdmission, InjectionBatch, InjectionBoundary,
+        InjectionContext, InjectionError, InjectionFuture, InjectionSource, InjectionSources,
+        RuntimeMessage,
     },
     model::{GenerateOutput, ModelError, ModelRole},
 };
@@ -15,19 +16,26 @@ use std::{
 
 struct ReviewDraft;
 impl InjectionSource for ReviewDraft {
-    fn collect(&mut self, context: InjectionContext<'_>) -> Result<InjectionBatch, String> {
-        if context.boundary != InjectionBoundary::BeforeFinish
-            || !context
-                .run
-                .history
-                .last()
-                .is_some_and(|message| message.text_content() == "draft")
-        {
-            return Ok(InjectionBatch::default());
-        }
-        Ok(InjectionBatch::new(vec![SessionInput::append(
-            RuntimeMessage::text(ModelRole::User, "Review the draft before finishing."),
-        )]))
+    fn collect<'a>(
+        &'a mut self,
+        context: InjectionContext<'a>,
+        admission: &'a mut InjectionAdmission,
+    ) -> InjectionFuture<'a, Result<(), InjectionError>> {
+        Box::pin(async move {
+            if context.boundary != InjectionBoundary::BeforeFinish
+                || !context
+                    .run
+                    .history
+                    .last()
+                    .is_some_and(|message| message.text_content() == "draft")
+            {
+                return Ok(());
+            }
+            admission.pending(InjectionBatch::new(vec![SessionInput::append(
+                RuntimeMessage::text(ModelRole::User, "Review the draft before finishing."),
+            )]));
+            Ok(())
+        })
     }
 }
 

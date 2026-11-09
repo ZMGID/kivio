@@ -1,3 +1,5 @@
+pub(crate) mod runtime_injections;
+pub(crate) mod context_notes;
 pub(crate) mod agent_presentation;
 // Chat 模块：AI 客户端核心功能
 pub mod agent;

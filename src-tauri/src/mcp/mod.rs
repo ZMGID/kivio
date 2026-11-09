@@ -1,3 +1,4 @@
+pub(crate) mod resources;
 pub mod conn;
 mod icons;
 pub mod manager;

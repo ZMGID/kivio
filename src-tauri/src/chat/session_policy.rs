@@ -488,9 +488,7 @@ pub(crate) async fn run_session(
         dispatcher,
     });
     let mut policy = AppSessionPolicy::new(&config, host.as_ref());
-    let mut injections = kivio_agent_sdk::agent::InjectionSources::new().with(
-        crate::chat::todo::TodoInjectionSource::new(config.todo_state.clone()),
-    );
+    let mut injections = crate::chat::runtime_injections::sources(&config, host.clone());
     let result = match crate::chat::agent::run_agent_loop(
         core,
         host.as_ref(),

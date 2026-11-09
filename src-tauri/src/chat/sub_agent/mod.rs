@@ -42,15 +42,35 @@ pub fn is_sub_agent_tool_name(name: &str) -> bool {
     matches!(name, TASK_TOOL_NAME | WAIT_TOOL_NAME)
 }
 
+use crate::chat::agent::history::RuntimeMessage;
+use crate::chat::agent::host::{InputPersistence, SessionInput};
+
+pub(crate) fn session_input(message: RuntimeMessage) -> SessionInput {
+    let persistence = if message
+        .source
+        .get("subagent_parent_persisted")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        InputPersistence::AlreadyPersisted
+    } else {
+        InputPersistence::Append
+    };
+    SessionInput {
+        message,
+        persistence,
+    }
+}
+
 pub async fn collect_for_main(
     app: &tauri::AppHandle,
     root: &str,
     run: &str,
-    history: &[crate::chat::agent::history::RuntimeMessage],
-) -> Result<Vec<crate::chat::agent::history::RuntimeMessage>, String> {
-    let mut incoming = delivery::collect_for_main(app, root, run, history).await?;
-    incoming.extend(irc::collect_for_main(app, root, run, history).await?);
-    Ok(incoming)
+    history: &[RuntimeMessage],
+    admission: &mut kivio_agent_sdk::agent::InjectionAdmission,
+) -> Result<(), String> {
+    delivery::collect_for_main(app, root, run, history, admission).await?;
+    irc::collect_for_main(app, root, run, history, admission).await
 }
 
 /// Context handed to `task` / `wait` handlers, dispatched before workspace resolution.

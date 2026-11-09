@@ -58,8 +58,8 @@ impl TodoInjectionSource {
     }
 }
 
-impl kivio_agent_sdk::agent::InjectionSource for TodoInjectionSource {
-    fn collect(
+impl TodoInjectionSource {
+    fn collect_batch(
         &mut self,
         context: kivio_agent_sdk::agent::InjectionContext<'_>,
     ) -> Result<kivio_agent_sdk::agent::InjectionBatch, String> {
@@ -98,6 +98,17 @@ impl kivio_agent_sdk::agent::InjectionSource for TodoInjectionSource {
             })
         } else {
             batch
+        })
+    }
+}
+
+impl kivio_agent_sdk::agent::InjectionSource for TodoInjectionSource {
+    fn collect<'a>(&'a mut self, context: kivio_agent_sdk::agent::InjectionContext<'a>,
+        admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+        Box::pin(async move {
+            admission.pending(self.collect_batch(context).map_err(kivio_agent_sdk::agent::InjectionError::Source)?);
+            Ok(())
         })
     }
 }
@@ -675,11 +686,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn injection_releases_failed_final_check_and_resets_for_each_run() {
+    async fn injection_isolates_other_source_failure_and_resets_for_each_run() {
         use kivio_agent_sdk::{
             agent::{
                 provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
-                AgentSession, AgentSessionConfig, InjectionBatch, InjectionBoundary,
+                AgentSession, AgentSessionConfig, InjectionBoundary,
                 InjectionContext, InjectionSource, InjectionSources,
             },
             model::{GenerateOutput, ModelError, ModelTool, PendingToolCall},
@@ -734,19 +745,22 @@ mod tests {
         }
         struct SharedTodo(Arc<Mutex<TodoInjectionSource>>);
         impl InjectionSource for SharedTodo {
-            fn collect(&mut self, context: InjectionContext<'_>) -> Result<InjectionBatch, String> {
-                self.0.lock().unwrap().collect(context)
+            fn collect<'a>(&'a mut self, context: InjectionContext<'a>, admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission)
+                -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+                let result = self.0.lock().unwrap().collect_batch(context).map_err(kivio_agent_sdk::agent::InjectionError::Source);
+                Box::pin(async move { admission.pending(result?); Ok(()) })
             }
         }
         struct FailOnce(bool);
         impl InjectionSource for FailOnce {
-            fn collect(&mut self, context: InjectionContext<'_>) -> Result<InjectionBatch, String> {
-                if context.boundary == InjectionBoundary::BeforeFinish && !self.0 {
-                    self.0 = true;
-                    Err("later source failed".into())
-                } else {
-                    Ok(InjectionBatch::default())
-                }
+            fn collect<'a>(&'a mut self, context: InjectionContext<'a>, _: &'a mut kivio_agent_sdk::agent::InjectionAdmission)
+                -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+                Box::pin(async move {
+                    if context.boundary == InjectionBoundary::BeforeFinish && !self.0 {
+                        self.0 = true;
+                        Err(kivio_agent_sdk::agent::InjectionError::Source("later source failed".into()))
+                    } else { Ok(()) }
+                })
             }
         }
         let work = || {
@@ -764,6 +778,7 @@ mod tests {
         let answer = || GenerateOutput::text("answer".into(), None);
         let model = Arc::new(Model(Mutex::new(std::collections::VecDeque::from([
             work(),
+            answer(),
             answer(),
             work(),
             answer(),
@@ -792,8 +807,8 @@ mod tests {
             .register_static(definition, Work, Arc::new(Allow))
             .unwrap();
         let session = AgentSession::new(config);
-        assert!(session.prompt("first run").await.is_err());
-        assert!(!todo
+        session.prompt("first run").await.unwrap();
+        assert!(todo
             .lock()
             .unwrap()
             .final_check_sent
@@ -812,7 +827,7 @@ mod tests {
                 .iter()
                 .filter(|message| message.text_content().contains("about to end your turn"))
                 .count(),
-            2
+            3
         );
     }
 

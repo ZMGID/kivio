@@ -4,6 +4,7 @@ use super::{kill_process_group, BackgroundCommand, BackgroundCommandStatus as St
 use std::{collections::HashMap, path::PathBuf, sync::Mutex, time::SystemTime};
 #[derive(Clone, Debug)]
 pub(crate) struct BackgroundCommandSnapshot {
+    pub conversation_id: Option<String>,
     pub job_id: String,
     pub pid: Option<u32>,
     pub command: String,
@@ -15,6 +16,7 @@ pub(crate) struct BackgroundCommandSnapshot {
 impl From<&BackgroundCommand> for BackgroundCommandSnapshot {
     fn from(job: &BackgroundCommand) -> Self {
         Self {
+            conversation_id: job.conversation_id.clone(),
             job_id: job.job_id.clone(),
             pid: job.pid,
             command: job.command.clone(),
@@ -28,12 +30,14 @@ impl From<&BackgroundCommand> for BackgroundCommandSnapshot {
 pub(crate) struct BackgroundCommandRegistry {
     jobs: Mutex<HashMap<String, BackgroundCommand>>,
     changed: tokio::sync::watch::Sender<u64>,
+    completion: Mutex<Option<std::sync::Arc<dyn Fn(BackgroundCommandSnapshot) + Send + Sync>>>,
 }
 impl Default for BackgroundCommandRegistry {
     fn default() -> Self {
         Self {
             jobs: Mutex::default(),
             changed: tokio::sync::watch::channel(0).0,
+            completion: Mutex::default(),
         }
     }
 }
@@ -43,6 +47,14 @@ fn visible(job: &BackgroundCommand, caller: Option<&str>, include_unowned: bool)
         || (include_unowned && job.conversation_id.is_none())
 }
 impl BackgroundCommandRegistry {
+    pub(crate) fn set_completion_hook(&self, hook: std::sync::Arc<dyn Fn(BackgroundCommandSnapshot) + Send + Sync>) {
+        *self.completion.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
+    }
+
+    fn completed(&self, job: BackgroundCommandSnapshot) {
+        let hook = self.completion.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(hook) = hook { hook(job); }
+    }
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.changed.subscribe()
     }
@@ -114,13 +126,13 @@ impl BackgroundCommandRegistry {
     }
     pub(crate) fn complete(&self, id: &str, status: Status) {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(job) = jobs.get_mut(id) {
-            if !matches!(job.status, Status::Killed) {
-                job.status = status;
-            }
-        }
+        let completed = jobs.get_mut(id).filter(|job| matches!(job.status, Status::Running)).map(|job| {
+            job.status = status;
+            BackgroundCommandSnapshot::from(&*job)
+        });
         drop(jobs);
         self.notify();
+        if let Some(job) = completed { self.completed(job); }
     }
     pub(crate) fn kill(&self, id: &str, caller: Option<&str>) -> Result<bool, String> {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -134,8 +146,10 @@ impl BackgroundCommandRegistry {
         job.status = Status::Killed;
         let signal = job.kill_tx.take();
         let pid = job.pid;
+        let completed = BackgroundCommandSnapshot::from(&*job);
         drop(jobs);
         self.notify();
+        self.completed(completed);
         if let Some(signal) = signal {
             let _ = signal.send(());
         } else if let Some(pid) = pid {

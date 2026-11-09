@@ -22,7 +22,7 @@ use rmcp::{
 };
 use tokio::process::{ChildStderr, Command};
 
-use super::{McpClientConfig, McpTransport};
+use super::{resources::ResourceUpdateSender, McpClientConfig, McpResourceUpdate, McpTransport};
 
 /// Prefer the last initialize-based revision so servers can advertise icons.
 /// Older servers may negotiate an earlier supported revision.
@@ -84,6 +84,7 @@ pub struct Conn {
     /// 服务器每发一次 `notifications/tools/list_changed` 就 +1，上层据此决定
     /// 要不要重新 `tools/list`。
     pub tools_revision: Arc<AtomicU64>,
+    pub resource_updates: ResourceUpdateSender,
     /// stdio 才有；上层用它起 stderr 尾巴任务（连接失败时把最后几行贴进错误信息）。
     pub stderr: Option<ChildStderr>,
     /// stdio 子进程 pid。`RunningService` 之后就拿不到子进程句柄了，而测试要用它
@@ -91,11 +92,19 @@ pub struct Conn {
     pub child_pid: Option<u32>,
 }
 
-/// 我们的 `ClientHandler`：除了上报 client info，唯一职责就是把
-/// `tools/list_changed` 记成一次 revision 自增。
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct KivioClientHandler {
     tools_revision: Arc<AtomicU64>,
+    resource_updates: ResourceUpdateSender,
+}
+
+impl Default for KivioClientHandler {
+    fn default() -> Self {
+        Self {
+            tools_revision: Arc::default(),
+            resource_updates: tokio::sync::broadcast::channel(128).0,
+        }
+    }
 }
 
 impl KivioClientHandler {
@@ -118,6 +127,17 @@ impl ClientHandler for KivioClientHandler {
         _context: NotificationContext<RoleClient>,
     ) -> impl Future<Output = ()> + Send + '_ {
         self.tools_revision.fetch_add(1, Ordering::Relaxed);
+        std::future::ready(())
+    }
+
+    fn on_resource_updated(
+        &self,
+        params: rmcp::model::ResourceUpdatedNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) -> impl Future<Output = ()> + Send + '_ {
+        if super::resources::validate_uri(&params.uri).is_ok() {
+            let _ = self.resource_updates.send(Ok(McpResourceUpdate { uri: params.uri }));
+        }
         std::future::ready(())
     }
 }
@@ -147,6 +167,7 @@ async fn connect_with(
 ) -> Result<Conn, String> {
     let handler = KivioClientHandler::default();
     let tools_revision = handler.revision_handle();
+    let resource_updates = handler.resource_updates.clone();
 
     match &server.transport {
         McpTransport::StreamableHttp { .. } => {
@@ -155,6 +176,7 @@ async fn connect_with(
             Ok(Conn {
                 service,
                 tools_revision,
+                resource_updates,
                 stderr: None,
                 child_pid: None,
             })
@@ -183,6 +205,7 @@ async fn connect_with(
             Ok(Conn {
                 service,
                 tools_revision,
+                resource_updates,
                 stderr,
                 child_pid,
             })

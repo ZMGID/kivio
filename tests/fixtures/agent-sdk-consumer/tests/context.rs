@@ -15,7 +15,6 @@ use std::{
 use kivio_agent_sdk::{
     agent::{
         control::{AgentRunHandle, InputAdmission, StopAdmission},
-        host::{InputPersistence, SessionInput},
         provider_runtime::{
             ModelCall, ModelDelivery, ModelOutputSink, ModelRuntime, ProviderFuture,
         },
@@ -739,7 +738,6 @@ enum CheckpointAction {
     Succeed,
     Fail,
     Wait,
-    Oversized,
 }
 
 struct CheckpointHost {
@@ -758,7 +756,7 @@ impl AgentHost for CheckpointHost {
         _: &'a str,
         history: &'a kivio_agent_sdk::agent::SessionHistory,
         finishing: bool,
-    ) -> AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
+    ) -> AgentHostFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let summary_started = self
                 .model
@@ -768,7 +766,7 @@ impl AgentHost for CheckpointHost {
                 .iter()
                 .any(|call| call.delivery == ModelDelivery::Collected);
             if finishing || !summary_started || self.seen.fetch_add(1, Ordering::SeqCst) != 0 {
-                return Ok(vec![]);
+                return Ok(());
             }
             *self.checkpoint.lock().unwrap() = history.clone();
             match self.action {
@@ -778,58 +776,14 @@ impl AgentHost for CheckpointHost {
                     self.release.notified().await;
                 }
                 CheckpointAction::Succeed => {}
-                CheckpointAction::Oversized => {
-                    return Ok(vec![SessionInput::append(RuntimeMessage::from(
-                        "incoming ".repeat(40_000),
-                    ))]);
-                }
             }
-            Ok(vec![
-                SessionInput::append(RuntimeMessage::from("new checkpoint input")),
-                SessionInput {
-                    message: RuntimeMessage::from("already persisted input"),
-                    persistence: InputPersistence::AlreadyPersisted,
-                },
-            ])
+            Ok(())
         })
     }
 }
 
 #[tokio::test]
-async fn oversized_checkpoint_input_is_preserved_without_sending_an_overflowing_request() {
-    let model = Model::new(vec![Summary::Output(text("valid summary"))], vec![]);
-    let host = Arc::new(CheckpointHost {
-        model: model.clone(),
-        action: CheckpointAction::Oversized,
-        seen: AtomicUsize::new(0),
-        entered: Notify::new(),
-        release: Notify::new(),
-        checkpoint: Mutex::new(SessionHistory::default()),
-    });
-    let mut config =
-        AgentSessionConfig::new(model.clone(), "test-model").with_policy(policy(model.clone()));
-    config.history = history().into();
-    config.host = host;
-    let session = AgentSession::new(config);
-    let original = session.entries();
-    let result = bounded(session.prompt("continue")).await.unwrap();
-    assert!(matches!(result.status, AgentRunStatus::CompactionBlocked));
-    assert_original_entries(&session.entries(), &original);
-    assert_eq!(count_compactions(&session.entries()), 1);
-    assert!(session
-        .context()
-        .iter()
-        .any(|message| message.text_content() == "incoming ".repeat(40_000)));
-    assert!(model
-        .calls
-        .lock()
-        .unwrap()
-        .iter()
-        .all(|call| call.delivery == ModelDelivery::Collected));
-}
-
-#[tokio::test]
-async fn checkpoints_preserve_original_facts_and_deliver_each_input_once() {
+async fn checkpoints_preserve_original_facts_on_save_failure_and_stop() {
     for action in [
         CheckpointAction::Succeed,
         CheckpointAction::Fail,
@@ -870,17 +824,6 @@ async fn checkpoints_preserve_original_facts_and_deliver_each_input_once() {
             if cancelled {
                 assert!(matches!(result.status, AgentRunStatus::Cancelled));
             }
-            let generated = texts(&result.generated_history);
-            assert_eq!(
-                generated
-                    .iter()
-                    .filter(|text| *text == "new checkpoint input")
-                    .count(),
-                1
-            );
-            assert!(!generated
-                .iter()
-                .any(|text| text == "already persisted input"));
         }
         assert_original_entries(host.checkpoint.lock().unwrap().entries(), &original);
         assert_eq!(
@@ -901,43 +844,11 @@ async fn checkpoints_preserve_original_facts_and_deliver_each_input_once() {
             assert_eq!(&session.context()[..old_context.len()], old_context);
         }
         assert_pair(&session.context());
-        if !failed {
-            assert_eq!(
-                context
-                    .iter()
-                    .filter(|text| *text == "new checkpoint input")
-                    .count(),
-                1
-            );
-            assert_eq!(
-                context
-                    .iter()
-                    .filter(|text| *text == "already persisted input")
-                    .count(),
-                1
-            );
-        }
         let calls = model.calls.lock().unwrap();
         if !failed && !cancelled {
-            let wire = texts(
-                &calls
-                    .iter()
-                    .find(|call| call.delivery == ModelDelivery::Streamed)
-                    .unwrap()
-                    .history,
-            );
-            assert_eq!(
-                wire.iter()
-                    .filter(|text| *text == "new checkpoint input")
-                    .count(),
-                1
-            );
-            assert_eq!(
-                wire.iter()
-                    .filter(|text| *text == "already persisted input")
-                    .count(),
-                1
-            );
+            assert!(calls
+                .iter()
+                .any(|call| call.delivery == ModelDelivery::Streamed));
         } else {
             assert!(calls
                 .iter()

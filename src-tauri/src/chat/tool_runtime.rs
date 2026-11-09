@@ -51,6 +51,14 @@ pub struct ToolExecutionContext<'a> {
 }
 
 pub trait ApplicationHost: AgentHost {
+    fn collect_runtime_inputs<'a>(
+        &'a self,
+        _context: kivio_agent_sdk::agent::InjectionContext<'a>,
+        _admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn compaction_threshold(&self, _context_window: usize) -> Option<usize> {
         None
     }

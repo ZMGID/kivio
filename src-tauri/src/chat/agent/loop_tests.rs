@@ -5,7 +5,6 @@ use crate::chat::agent::events::{
     AgentEvent, AgentEventKind, AgentEventSink, AgentRunIdentity, EventDelivery,
 };
 use crate::chat::agent::history::{export_history, import_history, RuntimeMessage};
-use crate::chat::agent::host::{InputPersistence, SessionInput};
 use crate::chat::model::{FinishKind, MessagePart, ModelMessage};
 use crate::chat::recovery_policy::{
     empty_synthesis_fallback_response, synthesis_failed_fallback_response,
@@ -170,72 +169,14 @@ impl TestHost {
 }
 
 impl AgentHost for TestHost {
-    fn checkpoint_runtime<'a>(
-        &'a self,
-        _conversation: &'a str,
-        _run: &'a str,
-        history: &'a kivio_agent_sdk::agent::SessionHistory,
-        finishing: bool,
-    ) -> crate::chat::agent::host::AgentHostFuture<'a, Result<Vec<SessionInput>, String>> {
+    fn checkpoint_runtime<'a>(&'a self, _: &'a str, _: &'a str, history: &'a kivio_agent_sdk::agent::SessionHistory, _: bool)
+        -> crate::chat::agent::host::AgentHostFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            let session_inputs = |messages| {
-                import_history(messages)
-                    .into_iter()
-                    .map(|message| {
-                        let persistence = if message
-                            .source
-                            .get("subagent_parent_persisted")
-                            .and_then(Value::as_bool)
-                            == Some(true)
-                        {
-                            InputPersistence::AlreadyPersisted
-                        } else {
-                            InputPersistence::Append
-                        };
-                        SessionInput {
-                            message,
-                            persistence,
-                        }
-                    })
-                    .collect()
-            };
-            if self.capture_compaction
-                && self
-                    .compaction_phases
-                    .lock()
-                    .unwrap()
-                    .last()
-                    .is_some_and(|phase| phase == "started")
-            {
-                self.compaction_checkpoints
-                    .lock()
-                    .unwrap()
-                    .push(export_history(history.context()));
-                if self.fail_compaction_checkpoint {
-                    return Err("checkpoint persistence failed".into());
-                }
-                return Ok(session_inputs(
-                    self.compaction_incoming
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .into_iter()
-                        .collect(),
-                ));
+            if self.capture_compaction && self.compaction_phases.lock().unwrap().last().is_some_and(|phase| phase == "started") {
+                self.compaction_checkpoints.lock().unwrap().push(export_history(history.context()));
+                if self.fail_compaction_checkpoint { return Err("checkpoint persistence failed".into()); }
             }
-            if finishing {
-                if self.fail_finishing_checkpoint {
-                    return Err("final checkpoint persistence failed".into());
-                }
-                return Ok(session_inputs(
-                    self.finishing_inputs
-                        .lock()
-                        .unwrap()
-                        .pop_front()
-                        .unwrap_or_default(),
-                ));
-            }
-            Ok(Vec::new())
+            Ok(())
         })
     }
 
@@ -271,6 +212,23 @@ impl AgentHost for TestHost {
 }
 
 impl crate::chat::tool_runtime::ApplicationHost for TestHost {
+    fn collect_runtime_inputs<'a>(&'a self, context: kivio_agent_sdk::agent::InjectionContext<'a>, admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission)
+        -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+        Box::pin(async move {
+            use kivio_agent_sdk::agent::{InjectionBoundary, InjectionError, PreparedInjection};
+            let mut messages = Vec::new();
+            if self.capture_compaction && !self.compaction_checkpoints.lock().unwrap().is_empty() {
+                messages.extend(self.compaction_incoming.lock().unwrap().take());
+            }
+            if context.boundary == InjectionBoundary::BeforeFinish {
+                if self.fail_finishing_checkpoint { return Err(InjectionError::Persistence("final checkpoint persistence failed".into())); }
+                messages.extend(self.finishing_inputs.lock().unwrap().pop_front().unwrap_or_default());
+            }
+            admission.committed(PreparedInjection::new(import_history(messages).into_iter().map(crate::chat::sub_agent::session_input).collect())?);
+            Ok(())
+        })
+    }
+
     fn auto_compact_failures(&self, _conversation_id: &str) -> u32 {
         *self.auto_compact_failures.lock().unwrap()
     }
@@ -3297,7 +3255,7 @@ async fn run_loop_final_answer_with_pending_steering_continues() {
 }
 
 #[tokio::test]
-async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownership() {
+async fn run_loop_final_injections_continue_and_preserve_delivery_ownership() {
     let server = MockModelServer::start(vec![
         MockResponse::Sse(planning_tool_call_sse_events()),
         MockResponse::Sse(vec![
@@ -3306,9 +3264,10 @@ async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownershi
             "[DONE]".into(),
         ]),
         MockResponse::Sse(vec![
-            serde_json::json!({"choices":[{"delta":{"content":"final answer"}}]}).to_string(),
+            serde_json::json!({"choices":[{"delta":{"content":"another candidate"}}]}).to_string(),
             "[DONE]".into(),
         ]),
+        final_answer_sse("final answer"),
     ]);
     let ordinary = serde_json::json!({"role":"user", "content":"new checkpoint input"});
     let persisted = serde_json::json!({
@@ -3319,7 +3278,6 @@ async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownershi
         finishing_inputs: Mutex::new(
             vec![
                 vec![ordinary.clone(), persisted.clone()],
-                Vec::new(),
                 vec![tail.clone()],
             ]
             .into(),
@@ -3345,7 +3303,7 @@ async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownershi
     );
     assert_eq!(host.recorded_persists().len(), 1);
     let bodies = server.captured_bodies();
-    assert_eq!(bodies.len(), 3);
+    assert_eq!(bodies.len(), 4);
     let continued: Value = serde_json::from_str(&bodies[2]).unwrap();
     let messages = continued["messages"].as_array().unwrap();
     let contents: Vec<_> = messages
@@ -3364,8 +3322,10 @@ async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownershi
     }
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(!contents.contains(&"tail checkpoint input"));
+    assert!(bodies[3].contains("tail checkpoint input"));
     for content in [
         "intermediate answer",
+        "another candidate",
         "final answer",
         "new checkpoint input",
         "tail checkpoint input",
@@ -3393,7 +3353,7 @@ async fn run_loop_final_checkpoints_continue_once_and_preserve_delivery_ownershi
         .iter()
         .map(|delta| delta.delta.as_str())
         .collect();
-    assert_eq!(streamed, "intermediate answerfinal answer");
+    assert_eq!(streamed, "intermediate answeranother candidatefinal answer");
 }
 
 #[tokio::test]
@@ -3948,6 +3908,7 @@ async fn compaction_checkpoints_old_history_and_keeps_concurrent_input() {
             "[DONE]".into(),
         ])];
         if !fail {
+            responses.push(final_answer_sse("candidate"));
             responses.push(final_answer_sse("completed"));
         }
         let server = MockModelServer::start(responses);
@@ -3973,7 +3934,8 @@ async fn compaction_checkpoints_old_history_and_keeps_concurrent_input() {
             assert_eq!(server.captured_bodies().len(), 1);
         } else {
             let result = result.unwrap();
-            assert!(server.captured_bodies()[1].contains("arrived during compaction"));
+            assert!(!server.captured_bodies()[1].contains("arrived during compaction"));
+            assert!(server.captured_bodies()[2].contains("arrived during compaction"));
             assert!(result.api_messages.contains(&incoming));
             assert!(result.compacted_history.unwrap().contains(&incoming));
         }
