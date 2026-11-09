@@ -1121,3 +1121,202 @@ async fn receipt_waker_can_clear_the_kind_after_append_without_deadlock_or_retra
         .iter()
         .any(|message| message.text_content() == "sum 5"));
 }
+
+struct FinishQueue(InjectionQueue);
+impl InjectionSource for FinishQueue {
+    fn collect<'a>(
+        &'a mut self,
+        context: InjectionContext<'a>,
+        admission: &'a mut InjectionAdmission,
+    ) -> InjectionFuture<'a, Result<(), InjectionError>> {
+        Box::pin(async move {
+            if context.boundary == InjectionBoundary::BeforeFinish {
+                self.0.collect(context, admission).await?;
+            }
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn cleared_finish_notice_does_not_exhaust_model_budget() {
+    revoked_finish_notice(DropReason::Cleared).await;
+}
+
+#[tokio::test]
+async fn unregistered_finish_notice_does_not_exhaust_model_budget() {
+    revoked_finish_notice(DropReason::Unregistered).await;
+}
+
+async fn revoked_finish_notice(reason: DropReason) {
+    let model = Model::new(vec![output("answer")]);
+    let control = Arc::new(Control::default());
+    let queue = InjectionQueue::new();
+    let slot = Arc::new(Mutex::new(None::<InjectionSender<(usize, String)>>));
+    let action_slot = slot.clone();
+    let sender = queue
+        .register(TextKind {
+            version: Arc::new(AtomicUsize::new(1)),
+            action: Some(Box::new(move || {
+                let sender = action_slot.lock().unwrap().as_ref().unwrap().clone();
+                if reason == DropReason::Unregistered {
+                    sender.unregister();
+                } else {
+                    sender.clear();
+                }
+            })),
+        })
+        .unwrap();
+    *slot.lock().unwrap() = Some(sender.clone());
+    let receipt = sender
+        .enqueue((1, "revoked notice".into()), WakePolicy::AtBoundary)
+        .unwrap();
+    let mut cfg = config(&model, initial_history());
+    cfg.tools.clear();
+    cfg.limits.max_model_steps = std::num::NonZeroU32::new(1);
+    let result = run_agent_loop(
+        cfg,
+        &Host,
+        Arc::new(EchoTool::new(true)),
+        &mut NoSessionPolicy,
+        &mut InjectionSources::new().with(FinishQueue(queue)),
+        &Events::default(),
+        handle(&control),
+    )
+    .await;
+    slot.lock().unwrap().take();
+    assert_eq!(receipt.wait().await, InjectionOutcome::Dropped(reason));
+    let result = result.expect("revoked input must not fail a completed answer");
+    assert_eq!(result.content, "answer");
+    assert!(!result.history.context().iter().any(|m| m.text_content() == "revoked notice"));
+    assert_eq!(model.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn live_finish_notice_still_checks_budget_and_releases_receipt() {
+    use kivio_agent_sdk::agent::{error::RunLimit, AgentFailure, AgentRunError};
+    let model = Model::new(vec![output("answer")]);
+    let control = Arc::new(Control::default());
+    let queue = InjectionQueue::new();
+    let sender = queue.register(NumberKind).unwrap();
+    let receipt = sender.enqueue(5, WakePolicy::AtBoundary).unwrap();
+    let mut cfg = config(&model, initial_history());
+    cfg.tools.clear();
+    cfg.limits.max_model_steps = std::num::NonZeroU32::new(1);
+    let error = run_agent_loop(
+        cfg,
+        &Host,
+        Arc::new(EchoTool::new(true)),
+        &mut NoSessionPolicy,
+        &mut InjectionSources::new().with(FinishQueue(queue.clone())),
+        &Events::default(),
+        handle(&control),
+    )
+    .await
+    .unwrap_err();
+    let AgentRunError::Failed {
+        cause: AgentFailure::LimitExceeded { limit: RunLimit::ModelSteps }, partial,
+    } = error else { panic!("unexpected failure: {error:?}") };
+    assert_eq!(receipt.wait().await, InjectionOutcome::Dropped(DropReason::Released));
+    assert!(!queue.has_pending());
+    assert!(!partial.history.context().iter().any(|m| m.text_content() == "sum 5"));
+    assert_eq!(partial.history.context().iter().filter(|m| m.text_content() == "answer").count(), 1);
+    assert_eq!(model.calls.lock().unwrap().len(), 1);
+}
+
+struct SteerDuringSource {
+    run: kivio_agent_sdk::agent::control::AgentRunHandle,
+    stop: bool,
+    once: bool,
+}
+impl InjectionSource for SteerDuringSource {
+    fn collect<'a>(
+        &'a mut self,
+        context: InjectionContext<'a>,
+        _: &'a mut InjectionAdmission,
+    ) -> InjectionFuture<'a, Result<(), InjectionError>> {
+        Box::pin(async move {
+            if context.boundary == InjectionBoundary::BeforeStep && !self.once {
+                self.once = true;
+                tokio::task::yield_now().await;
+                self.run.steer(kivio_agent_sdk::agent::SteeringMessage::new(
+                    "late".into(), "late steering",
+                ).unwrap());
+                if self.stop {
+                    self.run.stop();
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn steering_during_before_step_precedes_next_model_call() {
+    let model = Model::new(vec![output("answer"), output("unnecessary second answer")]);
+    let control = Arc::new(Control::default());
+    let run = handle(&control);
+    let mut cfg = config(&model, initial_history());
+    cfg.tools.clear();
+    run_agent_loop(
+        cfg,
+        &Host,
+        Arc::new(EchoTool::new(true)),
+        &mut NoSessionPolicy,
+        &mut InjectionSources::new().with(SteerDuringSource { run: run.clone(), stop: false, once: false }),
+        &Events::default(),
+        run,
+    ).await.unwrap();
+    let calls = model.calls.lock().unwrap();
+    assert!(calls[0].history.iter().any(|m| m.text_content() == "late steering"));
+    assert_eq!(calls.len(), 1);
+}
+
+#[tokio::test]
+async fn steering_consumes_one_per_boundary_in_fifo_order_even_with_late_arrival() {
+    let model = Model::new(vec![output("first answer"), output("second answer"), output("third answer")]);
+    let control = Arc::new(Control::default());
+    let run = handle(&control);
+    for text in ["first steering", "second steering"] {
+        run.steer(kivio_agent_sdk::agent::SteeringMessage::new(text.into(), text).unwrap());
+    }
+    let mut cfg = config(&model, initial_history());
+    cfg.tools.clear();
+    run_agent_loop(
+        cfg,
+        &Host,
+        Arc::new(EchoTool::new(true)),
+        &mut NoSessionPolicy,
+        &mut InjectionSources::new().with(SteerDuringSource { run: run.clone(), stop: false, once: false }),
+        &Events::default(),
+        run,
+    ).await.unwrap();
+    let calls = model.calls.lock().unwrap();
+    assert_eq!(calls.len(), 3);
+    let expected = ["first steering", "second steering", "late steering"];
+    for (index, call) in calls.iter().enumerate() {
+        let steering = call.history.iter().map(RuntimeMessage::text_content)
+            .filter(|text| expected.contains(&text.as_str())).collect::<Vec<_>>();
+        assert_eq!(steering, expected[..=index]);
+    }
+}
+
+#[tokio::test]
+async fn stop_during_source_does_not_consume_late_steering() {
+    let model = Model::new(vec![]);
+    let control = Arc::new(Control::default());
+    let run = handle(&control);
+    let mut cfg = config(&model, initial_history());
+    cfg.tools.clear();
+    let result = run_agent_loop(
+        cfg,
+        &Host,
+        Arc::new(EchoTool::new(true)),
+        &mut NoSessionPolicy,
+        &mut InjectionSources::new().with(SteerDuringSource { run: run.clone(), stop: true, once: false }),
+        &Events::default(),
+        run,
+    ).await.unwrap();
+    assert!(!result.history.context().iter().any(|m| m.text_content() == "late steering"));
+    assert!(model.calls.lock().unwrap().is_empty());
+}
