@@ -7717,6 +7717,7 @@ async fn core_without_product_session_completes_a_model_tool_round_trip() {
         host.as_ref(),
         executor.clone(),
         &mut crate::chat::agent::session::NoSessionPolicy,
+        &mut Default::default(),
         host.as_ref(),
         AgentRunHandle::new(identity, host.clone()),
     )

@@ -104,6 +104,7 @@ async fn planning_keeps_all_options_and_the_callers_tool_choice() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )
@@ -138,6 +139,7 @@ async fn plain_answer_preserves_the_callers_tool_prohibition() {
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -167,6 +169,7 @@ async fn plain_auto_allows_native_search_without_function_calling_capability() {
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -217,6 +220,7 @@ async fn recovery_forces_no_tools_and_retains_options_after_completed_tool_work(
         &Host,
         executor.clone(),
         &mut Retry,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -272,6 +276,7 @@ async fn known_unsupported_requests_fail_before_entering_the_provider() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )
@@ -302,6 +307,7 @@ async fn known_unsupported_tools_use_the_existing_plain_fallback() {
         &Host,
         executor.clone(),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -328,6 +334,7 @@ async fn non_reasoning_models_accept_the_desktop_default_without_a_reasoning_par
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -358,6 +365,7 @@ async fn tool_prohibition_disables_native_search_even_when_capabilities_are_fals
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )

@@ -23,16 +23,18 @@ use crate::chat::types::{
 use crate::mcp::types::McpToolCallResult;
 use crate::mcp::ChatToolDefinition;
 
-pub struct RunPolicy {
+pub struct TodoInjectionSource {
     initial: AgentTodoState,
-    final_check_sent: bool,
+    invocation_id: Option<u64>,
+    final_check_sent: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl RunPolicy {
+impl TodoInjectionSource {
     pub fn new(initial: AgentTodoState) -> Self {
         Self {
             initial,
-            final_check_sent: false,
+            invocation_id: None,
+            final_check_sent: Default::default(),
         }
     }
 
@@ -56,31 +58,47 @@ impl RunPolicy {
     }
 }
 
-impl crate::chat::agent::session::SessionPolicy for RunPolicy {
-    fn before_step(
+impl kivio_agent_sdk::agent::InjectionSource for TodoInjectionSource {
+    fn collect(
         &mut self,
-        run: crate::chat::agent::session::RunSnapshot<'_>,
-    ) -> Vec<RuntimeMessage> {
+        context: kivio_agent_sdk::agent::InjectionContext<'_>,
+    ) -> Result<kivio_agent_sdk::agent::InjectionBatch, String> {
+        use kivio_agent_sdk::agent::host::SessionInput;
+        use kivio_agent_sdk::agent::{InjectionBatch, InjectionBoundary, InjectionSettlement};
+        use std::sync::atomic::Ordering;
+        if self.invocation_id != Some(context.invocation_id) {
+            self.invocation_id = Some(context.invocation_id);
+            self.final_check_sent = Default::default();
+        }
+        let run = context.run;
         if !Self::exposed(run) {
-            return Vec::new();
+            return Ok(InjectionBatch::default());
         }
-        reminder_for_next_step(run.history, &self.current(run))
-            .into_iter()
-            .collect()
-    }
-}
-
-impl RunPolicy {
-    pub(crate) fn final_reminder(
-        &mut self,
-        run: crate::chat::agent::session::RunSnapshot<'_>,
-    ) -> Option<RuntimeMessage> {
-        if self.final_check_sent || !Self::exposed(run) || run.tool_records.is_empty() {
-            return None;
-        }
-        let reminder = final_check_reminder(&self.current(run))?;
-        self.final_check_sent = true;
-        Some(reminder)
+        let reminder = match context.boundary {
+            InjectionBoundary::BeforeStep => {
+                reminder_for_next_step(run.history, &self.current(run))
+            }
+            InjectionBoundary::BeforeFinish => {
+                if self.final_check_sent.load(Ordering::Acquire) || run.tool_records.is_empty() {
+                    return Ok(InjectionBatch::default());
+                }
+                final_check_reminder(&self.current(run))
+            }
+        };
+        let Some(reminder) = reminder else {
+            return Ok(InjectionBatch::default());
+        };
+        let batch = InjectionBatch::new(vec![SessionInput::append(reminder)]);
+        Ok(if context.boundary == InjectionBoundary::BeforeFinish {
+            let sent = self.final_check_sent.clone();
+            batch.with_settlement(move |outcome| {
+                if outcome == InjectionSettlement::Applied {
+                    sent.store(true, Ordering::Release);
+                }
+            })
+        } else {
+            batch
+        })
     }
 }
 
@@ -654,6 +672,148 @@ mod tests {
         message.group_id = group.map(str::to_string);
         message.tool_calls = records;
         message
+    }
+
+    #[tokio::test]
+    async fn injection_releases_failed_final_check_and_resets_for_each_run() {
+        use kivio_agent_sdk::{
+            agent::{
+                provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
+                AgentSession, AgentSessionConfig, InjectionBatch, InjectionBoundary,
+                InjectionContext, InjectionSource, InjectionSources,
+            },
+            model::{GenerateOutput, ModelError, ModelTool, PendingToolCall},
+            tools::{
+                StaticTool, ToolAuthorization, ToolDefinition, ToolError, ToolFuture, ToolOutput,
+            },
+        };
+        use std::sync::{atomic::Ordering, Arc, Mutex};
+        struct Model(Mutex<std::collections::VecDeque<GenerateOutput>>);
+        impl ModelRuntime for Model {
+            fn generate<'a>(
+                &'a self,
+                call: ModelCall,
+                sink: &'a mut dyn ModelOutputSink,
+            ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
+                Box::pin(async move {
+                    sink.request_started(&call);
+                    Ok(self
+                        .0
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("unexpected model call"))
+                })
+            }
+        }
+        struct Work;
+        impl StaticTool for Work {
+            type Args = Value;
+            type Output = String;
+            type Error = &'static str;
+            type HostData = Vec<kivio_agent_sdk::model::ModelArtifact>;
+            fn execute<'a>(
+                &'a self,
+                _: Value,
+            ) -> ToolFuture<'a, Result<ToolOutput<Self::HostData, String>, Self::Error>>
+            {
+                Box::pin(async { Ok(ToolOutput::text("work completed")) })
+            }
+        }
+        struct Allow;
+        impl ToolAuthorization for Allow {
+            fn authorize<'a>(
+                &'a self,
+                _: &'a kivio_agent_sdk::agent::execute::ToolProgress,
+                _: &'a kivio_agent_sdk::agent::ToolExecutionContext,
+                _: &'a ToolDefinition,
+                _: &'a Value,
+            ) -> ToolFuture<'a, Result<(), ToolError>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        struct SharedTodo(Arc<Mutex<TodoInjectionSource>>);
+        impl InjectionSource for SharedTodo {
+            fn collect(&mut self, context: InjectionContext<'_>) -> Result<InjectionBatch, String> {
+                self.0.lock().unwrap().collect(context)
+            }
+        }
+        struct FailOnce(bool);
+        impl InjectionSource for FailOnce {
+            fn collect(&mut self, context: InjectionContext<'_>) -> Result<InjectionBatch, String> {
+                if context.boundary == InjectionBoundary::BeforeFinish && !self.0 {
+                    self.0 = true;
+                    Err("later source failed".into())
+                } else {
+                    Ok(InjectionBatch::default())
+                }
+            }
+        }
+        let work = || {
+            let mut output = GenerateOutput::text(String::new(), None);
+            output.tool_calls.push(PendingToolCall {
+                id: "work".into(),
+                function_name: TODO_WRITE_TOOL_NAME.into(),
+                arguments: json!({}),
+                arguments_raw: "{}".into(),
+                arguments_parse_error: None,
+                signature: None,
+            });
+            output
+        };
+        let answer = || GenerateOutput::text("answer".into(), None);
+        let model = Arc::new(Model(Mutex::new(std::collections::VecDeque::from([
+            work(),
+            answer(),
+            work(),
+            answer(),
+            answer(),
+            work(),
+            answer(),
+            answer(),
+        ]))));
+        let todo = Arc::new(Mutex::new(TodoInjectionSource::new(state(vec![item(
+            "Ship",
+            AgentTodoStatus::Pending,
+        )]))));
+        let mut config = AgentSessionConfig::new(model.clone(), "offline").with_injections(
+            InjectionSources::new()
+                .with(SharedTodo(todo.clone()))
+                .with(FailOnce(false)),
+        );
+        let mut definition = ToolDefinition::new(ModelTool {
+            name: TODO_WRITE_TOOL_NAME.into(),
+            description: "Record work".into(),
+            input_schema: json!({}),
+        });
+        definition.label.source = "native".into();
+        config
+            .tools
+            .register_static(definition, Work, Arc::new(Allow))
+            .unwrap();
+        let session = AgentSession::new(config);
+        assert!(session.prompt("first run").await.is_err());
+        assert!(!todo
+            .lock()
+            .unwrap()
+            .final_check_sent
+            .load(Ordering::Acquire));
+        session.prompt("second run").await.unwrap();
+        assert!(todo
+            .lock()
+            .unwrap()
+            .final_check_sent
+            .load(Ordering::Acquire));
+        session.prompt("third run").await.unwrap();
+        assert!(model.0.lock().unwrap().is_empty());
+        assert_eq!(
+            session
+                .context()
+                .iter()
+                .filter(|message| message.text_content().contains("about to end your turn"))
+                .count(),
+            2
+        );
     }
 
     #[test]

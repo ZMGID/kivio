@@ -157,6 +157,7 @@ async fn request_hooks_run_in_order_without_changing_canonical_history() {
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut policy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -206,6 +207,7 @@ async fn finish_turn_runs_once_after_tools_and_can_stop_without_another_request(
         &Host,
         executor.clone(),
         &mut policy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -234,6 +236,7 @@ async fn hook_failures_keep_their_source_and_completed_assistant_facts() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut policy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )
@@ -277,6 +280,7 @@ async fn changed_model_uses_its_explicit_capabilities_or_unknown() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut policy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )
@@ -321,6 +325,7 @@ async fn input_hook_failure_returns_every_taken_unconsumed_message_in_order() {
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut RejectInput,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         run,
     )
@@ -423,6 +428,7 @@ async fn timeout_cancels_awaiting_hooks_without_dispatching_late_requests_or_los
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut Blocking(hook),
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )
@@ -474,6 +480,7 @@ async fn cancelled_input_hooks_return_steering_and_follow_up_queues_in_order() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut Blocking("input"),
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             run,
         )
@@ -525,6 +532,7 @@ async fn hook_model_change_uses_effective_model_when_projecting_opaque_reasoning
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut policy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )

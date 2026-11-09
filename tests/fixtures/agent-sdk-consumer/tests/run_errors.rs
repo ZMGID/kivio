@@ -79,6 +79,7 @@ async fn model_failure_retains_completed_work_usage_and_provider_identity() {
         &Host,
         executor.clone(),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &events,
         handle(&control),
     )
@@ -163,6 +164,7 @@ async fn boundary_failure_retains_the_answer_that_already_completed() {
             &BoundaryFailure(fail_save),
             std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )
@@ -217,6 +219,7 @@ async fn draft_failure_keeps_previously_completed_tool_records() {
         &Host,
         executor.clone(),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -239,6 +242,7 @@ async fn host_failure_preserves_input_and_does_not_become_a_provider_error() {
         &SaveFailure,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &events,
         handle(&control),
     )
@@ -274,6 +278,7 @@ async fn identity_rejection_does_not_start_or_end_a_run() {
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &events,
         handle(&control),
     )
@@ -320,6 +325,7 @@ async fn http_retry_after_survives_the_run_error_boundary() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )

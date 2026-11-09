@@ -94,6 +94,7 @@ async fn registered_static_tool_completes_http_roundtrip_without_a_custom_execut
             &Host,
             std::sync::Arc::new(snapshot.clone()),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )

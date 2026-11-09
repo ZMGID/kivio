@@ -63,6 +63,7 @@ async fn production_http_tool_round_stream_and_history_continuation() {
             &Host,
             executor.clone(),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &events,
             run.clone(),
         ),
@@ -109,6 +110,7 @@ async fn production_http_tool_round_stream_and_history_continuation() {
             &Host,
             executor.clone(),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &next_events,
             handle(&next_control),
         ),
@@ -190,6 +192,7 @@ async fn inputs_are_consumed_once_at_tool_and_answer_boundaries() {
             &Host,
             executor.clone(),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &sink,
             run.clone(),
         ),
@@ -268,6 +271,7 @@ async fn tool_free_run_consumes_steer_and_follow_up_once() {
             &Host,
             executor.clone(),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &events,
             run,
         ),
@@ -389,6 +393,7 @@ async fn unsupported_tools_fallback_stream_has_an_open_message() {
             &Host,
             executor.clone(),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &sink,
             run,
         ),
@@ -439,11 +444,13 @@ async fn cancellation_drops_real_http_stream_and_emits_one_terminal() {
         if !use_tools {
             cfg.tools.clear();
         }
+        let mut injections = kivio_agent_sdk::agent::InjectionSources::new();
         let execution = run_agent_loop(
             cfg,
             &Host,
             executor.clone(),
             &mut policy,
+            &mut injections,
             &sink,
             run.clone(),
         );
@@ -491,6 +498,7 @@ async fn host_denial_unknown_tool_and_bad_arguments_have_no_side_effects() {
                 &Host,
                 executor.clone(),
                 &mut NoSessionPolicy,
+                &mut kivio_agent_sdk::agent::InjectionSources::new(),
                 &events,
                 handle(&control),
             ),
@@ -598,6 +606,7 @@ async fn finish_reason_commits_before_a_broken_tail_without_retry() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &events,
             handle(&control),
         ),
@@ -646,11 +655,13 @@ async fn cancelled_follow_up_stream_preserves_prior_answer_and_current_reasoning
         };
         let executor = std::sync::Arc::new(EchoTool::new(true));
         let mut policy = NoSessionPolicy;
+        let mut injections = kivio_agent_sdk::agent::InjectionSources::new();
         let execution = run_agent_loop(
             cfg,
             &Host,
             executor.clone(),
             &mut policy,
+            &mut injections,
             &sink,
             run.clone(),
         );

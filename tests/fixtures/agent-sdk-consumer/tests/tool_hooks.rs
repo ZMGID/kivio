@@ -600,6 +600,7 @@ async fn loop_hook_failure_returns_partial_paired_history_and_cancellation_never
             &Host,
             std::sync::Arc::new(registry.clone()),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &events,
             handle(&control),
         )
@@ -729,6 +730,7 @@ async fn hook_panics_keep_paired_partial_history_and_never_rerun_executed_tools(
                 &Host,
                 executor.clone(),
                 &mut NoSessionPolicy,
+                &mut kivio_agent_sdk::agent::InjectionSources::new(),
                 &Events::default(),
                 handle(&control),
             )

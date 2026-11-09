@@ -44,6 +44,7 @@ pub struct AgentSessionConfig {
     pub host: Arc<dyn AgentHost>,
     pub limits: RunLimits,
     policy: tokio::sync::Mutex<Box<dyn SessionPolicy>>,
+    injections: tokio::sync::Mutex<super::InjectionSources>,
 }
 
 impl AgentSessionConfig {
@@ -62,11 +63,17 @@ impl AgentSessionConfig {
             host: Arc::new(MemoryHost),
             limits: RunLimits::default(),
             policy: tokio::sync::Mutex::new(Box::new(NoSessionPolicy)),
+            injections: tokio::sync::Mutex::new(super::InjectionSources::new()),
         }
     }
 
     pub fn with_policy(mut self, policy: impl SessionPolicy + 'static) -> Self {
         self.policy = tokio::sync::Mutex::new(Box::new(policy));
+        self
+    }
+
+    pub fn with_injections(mut self, injections: super::InjectionSources) -> Self {
+        self.injections = tokio::sync::Mutex::new(injections);
         self
     }
 
@@ -683,11 +690,13 @@ async fn run_session(
         limits: cfg.limits.clone(),
     };
     let mut policy = cfg.policy.lock().await;
+    let mut injections = cfg.injections.lock().await;
     let mut result = match std::panic::AssertUnwindSafe(super::run_agent_loop(
         config,
         cfg.host.as_ref(),
         Arc::new(tools),
         policy.as_mut(),
+        &mut injections,
         inner.as_ref(),
         AgentRunHandle::new(identity, invocation.clone()),
     ))
@@ -743,6 +752,7 @@ async fn run_session(
         }
     }
     drop(policy);
+    drop(injections);
     let mut pending = Vec::new();
     let core_result = match &mut result {
         Ok(result) => Some(result),

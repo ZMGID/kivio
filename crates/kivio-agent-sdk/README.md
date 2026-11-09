@@ -10,6 +10,7 @@ Run these commands from the repository root with a current stable Rust toolchain
 
 ```powershell
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example session_offline
+cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example injections_offline
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- minimal
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- cancel
 cargo run --locked --manifest-path crates/kivio-agent-sdk/Cargo.toml --example agent -- inputs
@@ -222,3 +223,11 @@ cargo run --locked --manifest-path tests/fixtures/agent-sdk-consumer/Cargo.toml
 ```
 
 Windows is the locally verified SDK platform for this prerelease. CI configures stable Rust tests and packaged consumption on Windows, macOS and Linux; current-commit three-platform runs remain unverified. The v2 live Chat smoke test used `deepseek-v4.1-flash`, executed echo once and returned `Completed`. This does not verify live Responses, Anthropic or Gemini compatibility, or desktop UI behavior. See [the v2 acceptance record](../../docs/prd/kivio-agent-sdk-v2-plan.md) and [migration guide](docs/contracts.md#migrate-from-the-initial-sdk) for the actual scope.
+
+## Inject runtime context
+
+Configure ordered `InjectionSource` implementations with `AgentSessionConfig::with_injections(InjectionSources::new().with(source))`. Advanced hosts pass the collection directly to `run_agent_loop` after the policy argument. Sources collect at `BeforeStep` and `BeforeFinish`; the finish snapshot includes the candidate answer. A nonempty finish batch requests another step after pending user and host input has been handled.
+
+`InjectionBatch` owns `SessionInput` values and an optional once-only settlement callback. `Applied` means appended to runtime history, while `Released` means the reservation was not used. It does not promise model consumption or durable storage. Source callbacks are synchronous, bounded by admission limits, and share existing run cancellation and model limits. Todo rules and delivery queues stay with the application.
+
+Run [injections_offline](examples/injections_offline.rs) for a complete source and an owned session with a deterministic provider. The [runtime injection contract](docs/contracts.md#runtime-injections) covers ordering, validation, settlement and migration from `before_step` or `Continue(messages)`.

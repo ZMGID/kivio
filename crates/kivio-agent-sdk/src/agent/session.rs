@@ -66,7 +66,7 @@ pub enum TurnDecision {
     #[default]
     Default,
     Stop,
-    Continue(Vec<RuntimeMessage>),
+    Continue,
 }
 
 pub trait SessionPolicy: Send {
@@ -135,11 +135,6 @@ pub trait SessionPolicy: Send {
 
     fn context_rejected(&mut self, _phase: &str, _progress: &dyn PolicyProgress) {}
 
-    /// Appends canonical context after input admission, before preparing a request view.
-    fn before_step(&mut self, _run: RunSnapshot<'_>) -> Vec<RuntimeMessage> {
-        Vec::new()
-    }
-
     /// Edits the next request without changing canonical history.
     fn prepare_request<'a>(
         &'a mut self,
@@ -160,7 +155,7 @@ pub trait SessionPolicy: Send {
     }
 
     /// Runs once after each complete assistant/tool turn, including tool rounds.
-    /// Default follows normal scheduling; Continue appends messages and requests another turn.
+    /// Default follows normal scheduling; Continue requests another turn.
     fn finish_turn<'a>(
         &'a mut self,
         _run: RunSnapshot<'a>,

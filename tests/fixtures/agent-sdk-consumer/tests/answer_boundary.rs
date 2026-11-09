@@ -118,6 +118,7 @@ async fn in_flight_steering_preserves_identical_canonical_answers_and_segments_o
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &sink,
         run.clone(),
     )
@@ -183,7 +184,6 @@ async fn in_flight_steering_preserves_identical_canonical_answers_and_segments_o
 #[derive(Default)]
 struct Reminders {
     steps: usize,
-    finishes: usize,
 }
 impl SessionPolicy for Reminders {
     fn prepare_request<'a>(
@@ -201,22 +201,26 @@ impl SessionPolicy for Reminders {
             Ok(())
         })
     }
-    fn finish_turn<'a>(
-        &'a mut self,
-        _: RunSnapshot<'a>,
-        _: AgentRunHandle,
-    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
-        Box::pin(async move {
-            self.finishes += 1;
-            Ok(if self.finishes == 1 {
-                TurnDecision::Continue(vec![RuntimeMessage::text(
-                    ModelRole::User,
-                    "finish reminder",
-                )])
-            } else {
-                TurnDecision::Default
-            })
-        })
+}
+
+struct FinishReminder(bool);
+impl kivio_agent_sdk::agent::InjectionSource for FinishReminder {
+    fn collect(
+        &mut self,
+        context: kivio_agent_sdk::agent::InjectionContext<'_>,
+    ) -> Result<kivio_agent_sdk::agent::InjectionBatch, String> {
+        use kivio_agent_sdk::agent::{InjectionBatch, InjectionBoundary};
+        if context.boundary != InjectionBoundary::BeforeFinish || self.0 {
+            return Ok(InjectionBatch::default());
+        }
+        assert_eq!(
+            context.run.history.last().unwrap().text_content().trim(),
+            "first"
+        );
+        self.0 = true;
+        Ok(InjectionBatch::new(vec![SessionInput::append(
+            RuntimeMessage::text(ModelRole::User, "finish reminder"),
+        )]))
     }
 }
 
@@ -232,12 +236,13 @@ async fn plain_policy_reminders_continue_at_answer_boundaries() {
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut policy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new().with(FinishReminder(false)),
         &Events::default(),
         handle(&control),
     )
     .await
     .unwrap();
-    assert_eq!((policy.steps, policy.finishes), (2, 2));
+    assert_eq!(policy.steps, 2);
     assert_eq!(result.content, "last");
     let calls = model.calls.lock().unwrap();
     assert_eq!(calls[0].history.last().unwrap().text_content(), "step 1");
@@ -313,6 +318,7 @@ async fn plain_host_delivery_and_child_wait_preserve_persistence_ownership() {
         &host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -374,6 +380,7 @@ async fn cancellation_during_plain_input_admission_makes_no_request() {
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut CancelInput,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         run,
     )
@@ -418,6 +425,7 @@ async fn cancellation_in_finish_policy_retains_answer_and_cancelled_outcome() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut CancelFinish(run.clone()),
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             run,
         )
@@ -469,6 +477,7 @@ async fn cancellation_during_child_wait_keeps_completed_answer_once() {
         &CancelWait(run.clone()),
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &events,
         run,
     )
@@ -547,6 +556,7 @@ async fn cancellation_at_finishing_checkpoint_retains_answer_then_delivered_inpu
             &host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             run,
         )
@@ -588,6 +598,7 @@ async fn cancellation_in_follow_up_hook_does_not_reconstruct_prior_reasoning_as_
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut CancelInput,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         run,
     )
@@ -634,6 +645,7 @@ async fn queued_plain_inputs_keep_one_per_step_and_steer_precedes_follow_up() {
         &Host,
         std::sync::Arc::new(EchoTool::new(true)),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         run,
     )

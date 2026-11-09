@@ -10,7 +10,8 @@ use super::execute::ToolExecutor;
 use super::finalize::{
     cancelled_run_result_from_state, finalize_completed, finalize_planning_final, SegmentBuilder,
 };
-use super::host::AgentHost;
+use super::host::{AgentHost, InputPersistence, SessionInput};
+use super::injection::{InjectionBoundary, InjectionContext, InjectionSources};
 use super::planning::{planning_step, PlanningStepOutcome};
 use super::rounds::{run_tool_round, ToolRoundOutcome};
 use super::steering::{
@@ -71,7 +72,33 @@ pub(crate) struct RunState {
     pub(crate) generated_images: Vec<crate::model::GeneratedImageData>,
 }
 
+fn apply_inputs(
+    history: &mut super::SessionHistory,
+    generated: &mut Vec<RuntimeMessage>,
+    inputs: Vec<SessionInput>,
+) {
+    for input in inputs {
+        history.push(input.message.clone());
+        if input.persistence == InputPersistence::Append {
+            generated.push(input.message);
+        }
+    }
+}
+
 impl RunState {
+    fn apply_inputs(&mut self, inputs: Vec<SessionInput>) {
+        apply_inputs(&mut self.history, &mut self.generated_api_messages, inputs);
+    }
+
+    fn apply_batches(&mut self, mut batches: Vec<super::InjectionBatch>) {
+        for batch in &mut batches {
+            self.apply_inputs(batch.take_inputs());
+        }
+        for batch in batches {
+            batch.applied();
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> super::session::RunSnapshot<'_> {
         super::session::RunSnapshot {
             history: self.history.context(),
@@ -159,15 +186,8 @@ pub(crate) async fn prepare_model_request(
     session: &mut dyn super::session::SessionPolicy,
     call: &mut super::provider_runtime::ModelCall,
 ) -> Result<(), AgentFailure> {
-    if env.host.control.active()
-        && env
-            .deadline
-            .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
-    {
-        env.host.control.stop();
-        return Err(AgentFailure::LimitExceeded {
-            limit: super::error::RunLimit::Timeout,
-        });
+    if env.host.control.active() {
+        check_model_budget(env, state)?;
     }
     let cancelled = || {
         AgentFailure::model(
@@ -180,16 +200,6 @@ pub(crate) async fn prepare_model_request(
     };
     if !env.host.control.active() {
         return Err(cancelled());
-    }
-    if env
-        .config
-        .limits
-        .max_model_steps
-        .is_some_and(|max| state.model_steps >= max.get())
-    {
-        return Err(AgentFailure::LimitExceeded {
-            limit: super::error::RunLimit::ModelSteps,
-        });
     }
     tokio::select! {
         biased;
@@ -209,15 +219,7 @@ pub(crate) async fn prepare_model_request(
     if !env.host.control.active() {
         return Err(cancelled());
     }
-    if env
-        .deadline
-        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
-    {
-        env.host.control.stop();
-        return Err(AgentFailure::LimitExceeded {
-            limit: super::error::RunLimit::Timeout,
-        });
-    }
+    check_model_budget(env, state)?;
     call.history = history;
     env.config
         .validate_call(call)
@@ -280,6 +282,7 @@ pub async fn run_agent_loop(
     operations: &dyn AgentHost,
     executor: Arc<dyn ToolExecutor>,
     session: &mut dyn super::session::SessionPolicy,
+    injections: &mut InjectionSources,
     sink: &dyn super::events::AgentEventSink,
     control: super::control::AgentRunHandle,
 ) -> Result<AgentRunResult, AgentRunError> {
@@ -307,7 +310,7 @@ pub async fn run_agent_loop(
         .limits
         .timeout
         .and_then(|timeout| tokio::time::Instant::now().checked_add(timeout));
-    let running = run_agent_loop_inner(config, &host, executor, session, deadline);
+    let running = run_agent_loop_inner(config, &host, executor, session, injections, deadline);
     tokio::pin!(running);
     let result = if let Some(deadline) = deadline {
         tokio::select! {
@@ -458,11 +461,35 @@ enum AnswerBoundary {
     Cancelled(AgentRunResult),
 }
 
+fn check_model_budget(env: &LoopEnv<'_>, state: &RunState) -> Result<(), AgentFailure> {
+    if env
+        .deadline
+        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+    {
+        env.host.control.stop();
+        return Err(AgentFailure::LimitExceeded {
+            limit: super::error::RunLimit::Timeout,
+        });
+    }
+    if env
+        .config
+        .limits
+        .max_model_steps
+        .is_some_and(|max| state.model_steps >= max.get())
+    {
+        return Err(AgentFailure::LimitExceeded {
+            limit: super::error::RunLimit::ModelSteps,
+        });
+    }
+    Ok(())
+}
+
 async fn admit_step(
     env: &LoopEnv<'_>,
     state: &mut RunState,
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
+    injections: &mut InjectionSources,
 ) -> Result<(), AgentFailure> {
     inject_steering_messages(env, state, round, session).await?;
     if !env.host.control.active() {
@@ -478,20 +505,19 @@ async fn admit_step(
         )
         .await
         .map_err(AgentFailure::host("checkpoint_runtime"))?;
-    state
-        .history
-        .extend(incoming.iter().map(|input| input.message.clone()));
-    state.generated_api_messages.extend(
-        incoming
-            .into_iter()
-            .filter(|input| input.persistence == super::host::InputPersistence::Append)
-            .map(|input| input.message),
-    );
+    state.apply_inputs(incoming);
     if env.host.control.active() {
-        let inputs = session.before_step(state.snapshot());
-        if env.host.control.active() {
-            state.history.extend(inputs.iter().cloned());
-            state.generated_api_messages.extend(inputs);
+        let batches = injections
+            .collect(InjectionContext {
+                boundary: InjectionBoundary::BeforeStep,
+                identity: env.host.control.identity(),
+                invocation_id: env.host.control.invocation_id(),
+                run: state.snapshot(),
+            })
+            .map_err(AgentFailure::hook("injection.collect"))?;
+        if env.host.control.active() && !batches.is_empty() {
+            check_model_budget(env, state)?;
+            state.apply_batches(batches);
         }
     }
     Ok(())
@@ -502,6 +528,7 @@ async fn answer_boundary(
     state: &mut RunState,
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
+    injections: &mut InjectionSources,
     answer: Answer,
 ) -> Result<AnswerBoundary, AgentFailure> {
     if !env.host.control.active() {
@@ -528,10 +555,8 @@ async fn answer_boundary(
             answer.absorb(state);
             return Err(AgentFailure::hook("finish_turn")(message));
         }
-        Ok(super::session::TurnDecision::Continue(messages)) => {
+        Ok(super::session::TurnDecision::Continue) => {
             answer.absorb(state);
-            state.history.extend(messages.iter().cloned());
-            state.generated_api_messages.extend(messages);
             return Ok(AnswerBoundary::Continue);
         }
         Ok(super::session::TurnDecision::Stop) => return Ok(AnswerBoundary::Finish(answer)),
@@ -564,28 +589,12 @@ async fn answer_boundary(
                 .generated_history
                 .extend(result.final_message.clone().map(RuntimeMessage::model));
         }
-        state
-            .history
-            .extend(incoming.iter().map(|input| input.message.clone()));
-        result.generated_history.extend(
-            incoming
-                .into_iter()
-                .filter(|input| input.persistence == super::host::InputPersistence::Append)
-                .map(|input| input.message),
-        );
+        apply_inputs(&mut state.history, &mut result.generated_history, incoming);
         return Ok(AnswerBoundary::Cancelled(result));
     }
     if !incoming.is_empty() {
         answer.absorb(state);
-        state
-            .history
-            .extend(incoming.iter().map(|input| input.message.clone()));
-        state.generated_api_messages.extend(
-            incoming
-                .into_iter()
-                .filter(|input| input.persistence == super::host::InputPersistence::Append)
-                .map(|input| input.message),
-        );
+        state.apply_inputs(incoming);
         return Ok(AnswerBoundary::Continue);
     }
     if steering_pending(env, state) {
@@ -622,6 +631,52 @@ async fn answer_boundary(
         }
         return Ok(AnswerBoundary::Continue);
     }
+    if steering_pending(env, state) {
+        answer.absorb(state);
+        return Ok(AnswerBoundary::Continue);
+    }
+    if follow_up_pending(env, state) {
+        answer.absorb(state);
+        inject_follow_up_messages(env, state, round, session).await?;
+        return Ok(AnswerBoundary::Continue);
+    }
+    let batches = match injections.collect(InjectionContext {
+        boundary: InjectionBoundary::BeforeFinish,
+        identity: env.host.control.identity(),
+        invocation_id: env.host.control.invocation_id(),
+        run: super::session::RunSnapshot {
+            history: &history,
+            tools: &state.tools,
+            tool_records: &state.tool_records,
+        },
+    }) {
+        Ok(batches) => batches,
+        Err(message) => {
+            answer.absorb(state);
+            return Err(AgentFailure::hook("injection.collect")(message));
+        }
+    };
+    if !env.host.control.active() {
+        return Ok(AnswerBoundary::Cancelled(answer.cancel(state)?));
+    }
+    if steering_pending(env, state) {
+        answer.absorb(state);
+        return Ok(AnswerBoundary::Continue);
+    }
+    if follow_up_pending(env, state) {
+        answer.absorb(state);
+        inject_follow_up_messages(env, state, round, session).await?;
+        return Ok(AnswerBoundary::Continue);
+    }
+    if !batches.is_empty() {
+        if let Err(error) = check_model_budget(env, state) {
+            answer.absorb(state);
+            return Err(error);
+        }
+        answer.absorb(state);
+        state.apply_batches(batches);
+        return Ok(AnswerBoundary::Continue);
+    }
     Ok(AnswerBoundary::Finish(answer))
 }
 
@@ -630,6 +685,7 @@ async fn run_agent_loop_inner(
     host: &super::context::AgentContext<'_>,
     executor: Arc<dyn ToolExecutor>,
     session: &mut dyn super::session::SessionPolicy,
+    injections: &mut InjectionSources,
     deadline: Option<tokio::time::Instant>,
 ) -> Result<AgentRunResult, AgentRunError> {
     let mut state = RunState {
@@ -695,7 +751,7 @@ async fn run_agent_loop_inner(
                 // 由它的 Drop 补齐，所以下面任何一条 return / continue / `?` 都不会漏配对。
                 let mut turn = HookTurnGuard::new(&host.events, round);
 
-                admit_step(&env, &mut state, round, session).await?;
+                admit_step(&env, &mut state, round, session, injections).await?;
                 if !host.control.active() {
                     let result = cancelled_run_result_from_state(&mut state);
                     return Ok(result);
@@ -708,6 +764,7 @@ async fn run_agent_loop_inner(
                             &mut state,
                             round,
                             session,
+                            injections,
                             Answer::Planning(message),
                         )
                         .await?
@@ -736,6 +793,7 @@ async fn run_agent_loop_inner(
                             &mut state,
                             round,
                             session,
+                            injections,
                             Answer::Recovered(result),
                         )
                         .await?
@@ -771,10 +829,7 @@ async fn run_agent_loop_inner(
                 if host.control.active() {
                     match decision {
                         super::session::TurnDecision::Default => {}
-                        super::session::TurnDecision::Continue(messages) => {
-                            state.history.extend(messages.iter().cloned());
-                            state.generated_api_messages.extend(messages);
-                        }
+                        super::session::TurnDecision::Continue => {}
                         super::session::TurnDecision::Stop => {
                             let mut result = cancelled_run_result_from_state(&mut state);
                             result.status = super::types::AgentRunStatus::Completed;
@@ -810,15 +865,7 @@ async fn run_agent_loop_inner(
                     )
                     .await
                     .map_err(AgentFailure::host("checkpoint_runtime"))?;
-                state
-                    .history
-                    .extend(incoming.iter().map(|input| input.message.clone()));
-                state.generated_api_messages.extend(
-                    incoming
-                        .into_iter()
-                        .filter(|input| input.persistence == super::host::InputPersistence::Append)
-                        .map(|input| input.message),
-                );
+                state.apply_inputs(incoming);
             }
         } else {
             None
@@ -839,15 +886,7 @@ async fn run_agent_loop_inner(
             )
             .await
             .map_err(AgentFailure::host("checkpoint_runtime"))?;
-        state
-            .history
-            .extend(incoming.iter().map(|input| input.message.clone()));
-        state.generated_api_messages.extend(
-            incoming
-                .into_iter()
-                .filter(|input| input.persistence == super::host::InputPersistence::Append)
-                .map(|input| input.message),
-        );
+        state.apply_inputs(incoming);
 
         if let Some(prompt) = state.fallback_prompt.take() {
             state.history.set_system_prompt(&prompt.system);
@@ -870,7 +909,7 @@ async fn run_agent_loop_inner(
             }
             round = round.saturating_add(1);
             let _turn = HookTurnGuard::new(&host.events, round);
-            admit_step(&env, &mut state, round, session).await?;
+            admit_step(&env, &mut state, round, session, injections).await?;
             if !host.control.active() {
                 let result = cancelled_run_result_from_state(&mut state);
                 return Ok(result);
@@ -886,6 +925,7 @@ async fn run_agent_loop_inner(
                         &mut state,
                         round,
                         session,
+                        injections,
                         Answer::Recovered(result),
                     )
                     .await?
@@ -910,6 +950,7 @@ async fn run_agent_loop_inner(
                 &mut state,
                 round,
                 session,
+                injections,
                 Answer::Synthesis(completed),
             )
             .await?

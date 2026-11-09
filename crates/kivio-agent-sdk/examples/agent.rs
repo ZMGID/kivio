@@ -97,6 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &Host,
         executor.clone(),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &sink,
         run.clone(),
     )
@@ -144,6 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &Host,
             executor.clone(),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &print_event,
             handle(&next_control),
         )

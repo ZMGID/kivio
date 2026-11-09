@@ -218,6 +218,7 @@ async fn direct_executor_panics_are_contained_during_future_construction_and_pol
             &Host,
             executor.clone(),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         ))

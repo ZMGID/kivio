@@ -100,6 +100,7 @@ async fn model_step_limit_keeps_completed_tools_without_a_second_model_call() {
         &Host,
         executor.clone(),
         &mut NoSessionPolicy,
+        &mut kivio_agent_sdk::agent::InjectionSources::new(),
         &Events::default(),
         handle(&control),
     )
@@ -148,6 +149,7 @@ async fn collected_recovery_counts_against_the_same_step_limit() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut recovery,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )
@@ -223,6 +225,7 @@ async fn timeout_requests_stop_and_waits_for_managed_tool_cleanup() {
             &Host,
             executor.clone(),
             &mut NoSessionPolicy,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         ),
@@ -259,7 +262,7 @@ impl SessionPolicy for ContinueForever {
         _: RunSnapshot<'a>,
         _: kivio_agent_sdk::agent::control::AgentRunHandle,
     ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
-        Box::pin(async { Ok(TurnDecision::Continue(vec![])) })
+        Box::pin(async { Ok(TurnDecision::Continue) })
     }
 }
 #[tokio::test]
@@ -275,6 +278,7 @@ async fn timeout_bounds_always_ready_model_loops_and_zero_prevents_requests() {
             &Host,
             std::sync::Arc::new(EchoTool::new(true)),
             &mut ContinueForever,
+            &mut kivio_agent_sdk::agent::InjectionSources::new(),
             &Events::default(),
             handle(&control),
         )

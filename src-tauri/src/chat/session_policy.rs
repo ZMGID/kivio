@@ -134,7 +134,7 @@ use crate::chat::agent::{
     recovery::{FallbackReason, RecoveryDecision, RecoveryFailure, RecoverySnapshot},
     session::{
         ContextPreparation, ContextReason, ContextSnapshot, PolicyFuture, PolicyProgress,
-        PromptUpdate, RunSnapshot, SessionPolicy, ToolsRejected, TurnDecision,
+        PromptUpdate, RunSnapshot, SessionPolicy, ToolsRejected,
     },
 };
 
@@ -145,7 +145,6 @@ pub(crate) struct AppSessionPolicy<'a> {
     runtime_context: Option<String>,
     fallback_prompt: crate::chat::agent_preparation::PreparedChatPrompt,
     tried_skill_only_tools: bool,
-    todo: crate::chat::todo::RunPolicy,
     pub(crate) context: crate::chat::context_policy::ContextPolicy<'a>,
     pub(crate) recovery: crate::chat::recovery_policy::RecoveryPolicy,
 }
@@ -162,7 +161,6 @@ impl<'a> AppSessionPolicy<'a> {
             runtime_context: config.runtime_context.clone(),
             fallback_prompt: config.provider_tools_fallback_prompt.clone(),
             tried_skill_only_tools: false,
-            todo: crate::chat::todo::RunPolicy::new(config.todo_state.clone()),
             context: crate::chat::context_policy::ContextPolicy::new(config.state, config, host),
             recovery: crate::chat::recovery_policy::RecoveryPolicy::new(
                 &config.provider,
@@ -347,45 +345,12 @@ impl SessionPolicy for AppSessionPolicy<'_> {
         self.context.context_rejected(phase, progress);
     }
 
-    fn before_step(&mut self, run: RunSnapshot<'_>) -> Vec<RuntimeMessage> {
-        self.todo.before_step(run)
-    }
-
     fn transform_context<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],
         _control: AgentRunHandle,
     ) -> PolicyFuture<'a, Result<Vec<RuntimeMessage>, String>> {
         Box::pin(async move { self.context.transform_context(history) })
-    }
-
-    fn finish_turn<'a>(
-        &'a mut self,
-        run: RunSnapshot<'a>,
-        _control: AgentRunHandle,
-    ) -> PolicyFuture<'a, Result<TurnDecision, String>> {
-        Box::pin(async move {
-            let tool_turn = run
-                .history
-                .iter()
-                .rev()
-                .filter_map(RuntimeMessage::model_message)
-                .find(|message| message.role == crate::chat::model::ModelRole::Assistant)
-                .is_some_and(|message| {
-                    message.content.iter().any(|part| {
-                        matches!(part, crate::chat::model::MessagePart::ToolCall { .. })
-                    })
-                });
-            if tool_turn {
-                return Ok(TurnDecision::Default);
-            }
-            Ok(self
-                .todo
-                .final_reminder(run)
-                .map_or(TurnDecision::Default, |message| {
-                    TurnDecision::Continue(vec![message])
-                }))
-        })
     }
 }
 
@@ -523,11 +488,15 @@ pub(crate) async fn run_session(
         dispatcher,
     });
     let mut policy = AppSessionPolicy::new(&config, host.as_ref());
+    let mut injections = kivio_agent_sdk::agent::InjectionSources::new().with(
+        crate::chat::todo::TodoInjectionSource::new(config.todo_state.clone()),
+    );
     let result = match crate::chat::agent::run_agent_loop(
         core,
         host.as_ref(),
         executor,
         &mut policy,
+        &mut injections,
         sink,
         control,
     )
