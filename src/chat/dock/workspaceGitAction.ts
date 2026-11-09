@@ -2,7 +2,7 @@
 // 主按钮只给出当前最合理的一步；做不了时禁用并说明原因，而不是让用户点了再失败。
 import type { GitRepoState, GitStatusEntry } from '../../api/dockContracts'
 
-export type GitAction = 'commit' | 'commit_push' | 'push' | 'pull'
+export type GitAction = 'commit' | 'commit_push' | 'push' | 'pull' | 'publish'
 
 export type GitHint = 'busy' | 'detached' | 'noRemote' | 'diverged' | 'upToDate' | 'unavailable'
 
@@ -40,7 +40,8 @@ export function resolveGitQuickAction(state: GitRepoState | null, hasRemote: boo
     return { kind: 'run', action: behind || !hasRemote ? 'commit' : 'commit_push' }
   }
   if (!state.upstream) {
-    return hasRemote ? { kind: 'run', action: 'push' } : { kind: 'hint', action: 'push', hint: 'noRemote' }
+    // 参照 T3：没有远程时，干净的分支提供「发布仓库」。
+    return { kind: 'run', action: hasRemote ? 'push' : 'publish' }
   }
   // 参照 T3：只落后时拉取；既领先又落后时不替用户合并。
   if (behind && state.ahead > 0) return { kind: 'hint', action: 'pull', hint: 'diverged' }
@@ -51,7 +52,7 @@ export function resolveGitQuickAction(state: GitRepoState | null, hasRemote: boo
 
 export function resolveGitMenu(state: GitRepoState | null, hasRemote: boolean, busy: boolean): GitMenuState {
   if (busy || !state || state.status !== 'ready' || !hasBranch(state)) {
-    return { commit: false, commit_push: false, push: false, pull: false }
+    return { commit: false, commit_push: false, push: false, pull: false, publish: false }
   }
   const dirty = state.entries.length > 0
   const pushable = hasRemote && state.behind === 0
@@ -60,5 +61,6 @@ export function resolveGitMenu(state: GitRepoState | null, hasRemote: boolean, b
     commit_push: dirty && pushable,
     push: pushable && (state.ahead > 0 || !state.upstream),
     pull: Boolean(state.upstream) && state.behind > 0 && state.ahead === 0 && !dirty,
+    publish: !hasRemote,
   }
 }

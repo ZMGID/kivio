@@ -8,8 +8,9 @@ import { PermissionPicker } from './PermissionPicker'
 import { ExternalCliAccount } from './ExternalCliAccount'
 import { ThinkingLevelSelector } from './ThinkingLevelSelector'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
-import { WorkspaceActionsMenu, type WorkspaceHistoryBranches } from './dock/WorkspaceActionsMenu'
-import type { AgentRuntimeConfig, DetectedExternalAgent, ThinkingLevel } from './types'
+import { WorkspaceActionsMenu, type WorkspaceEnvironment, type WorkspaceHistoryBranches } from './dock/WorkspaceActionsMenu'
+import type { WorkspaceUsageSource } from './dock/WorkspaceUsageSection'
+import type { AgentRuntimeConfig, ConversationContextState, DetectedExternalAgent, ThinkingLevel } from './types'
 
 export interface ConversationTitlebarControlsProps {
   activeAgentRuntime: AgentRuntimeConfig
@@ -44,6 +45,9 @@ export interface ConversationTitlebarControlsProps {
   historyBranches?: WorkspaceHistoryBranches | null
   /** 空白新对话：工作区面板默认收起。 */
   workspaceBlank?: boolean
+  environment?: WorkspaceEnvironment | null
+  usage?: WorkspaceUsageSource | null
+  contextState?: ConversationContextState | null
 }
 
 /** 会话页顶栏控件。非 mac 渲染进全宽标题栏带，mac 仍留在主区 52px 顶栏。 */
@@ -75,6 +79,9 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   onOpenTasks,
   historyBranches,
   workspaceBlank,
+  environment,
+  usage,
+  contextState,
 }: ConversationTitlebarControlsProps) {
   return (
     <>
@@ -143,7 +150,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
           </div>
         )}
         {!usesChatRuntime && workdir && (
-          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} blank={workspaceBlank} />
+          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} blank={workspaceBlank} environment={environment} usage={usage} contextState={contextState} />
         )}
         {!usesChatRuntime && !dockOpen && (
           <div className="shrink-0" data-tauri-drag-region="false">

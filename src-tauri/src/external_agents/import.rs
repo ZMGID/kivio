@@ -1400,6 +1400,7 @@ async fn publish_import(
         builtin_history: None,
         external_history: None,
         external_cwd: None,
+        worktree: None,
         runtime_locked: false,
         id: conversation_id.clone(),
         revision: 0,

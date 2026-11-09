@@ -109,6 +109,12 @@ fn project_cli_root_for_conversation(
     project_id: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
     if let Ok(conversation) = load_conversation(app, conversation_id) {
+        // 选了独立 worktree 的对话，外部 CLI 也在 worktree 里运行。
+        if let Some(worktree) = conversation.worktree.as_ref() {
+            return cli_dir_if_exists(PathBuf::from(&worktree.path))
+                .map(Some)
+                .ok_or_else(|| format!("worktree 目录不存在：{}", worktree.path));
+        }
         if let Some(project) = resolve_conversation_project(app, &conversation)? {
             return project_cli_root(project).map(Some);
         }

@@ -178,18 +178,32 @@ fn run_git(workdir: &str, args: &[&str]) -> Result<Output, String> {
     #[cfg(test)]
     tests::record_git_command(args);
     let mut command = Command::new("git");
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        // 固定消息 locale：transient-lock 重试等逻辑匹配英文文本。
+        .env("LC_ALL", "C");
+    run_with_timeout(command, workdir, args, GIT_COMMAND_TIMEOUT_SECS, "git")
+}
+
+/// git 与 gh 共用：独立进程组、隐藏控制台、超时杀整组，stdout/stderr 并行读取。
+fn run_with_timeout(
+    mut command: Command,
+    workdir: &str,
+    args: &[&str],
+    timeout_secs: u64,
+    label: &str,
+) -> Result<Output, String> {
     configure_git_command(&mut command);
     command
         .args(args)
         .current_dir(workdir)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        // 固定消息 locale：transient-lock 重试等逻辑匹配英文文本。
-        .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|e| format!("git 执行失败：{e}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("{label} 执行失败：{e}"))?;
     // stdout/stderr 各起一个读取线程：大 diff 会写满 pipe buffer 阻塞子进程，
     // 若等 wait 之后再读会死锁。
     let mut stdout_pipe = child.stdout.take().expect("stdout piped");
@@ -206,14 +220,14 @@ fn run_git(workdir: &str, args: &[&str]) -> Result<Output, String> {
     });
     let pid = child.id();
     let Some(status) = child
-        .wait_timeout(Duration::from_secs(GIT_COMMAND_TIMEOUT_SECS))
-        .map_err(|e| format!("等待 git 命令失败：{e}"))?
+        .wait_timeout(Duration::from_secs(timeout_secs))
+        .map_err(|e| format!("等待 {label} 命令失败：{e}"))?
     else {
         kill_git_process_tree(pid, &mut child);
         let _ = stdout_reader.join();
         let _ = stderr_reader.join();
         return Err(format!(
-            "git 命令超时（{GIT_COMMAND_TIMEOUT_SECS} 秒）：git {}",
+            "{label} 命令超时（{timeout_secs} 秒）：{label} {}",
             args.join(" ")
         ));
     };
@@ -1035,12 +1049,20 @@ fn git_branches_sync(workdir: &str) -> Result<GitBranchesResponse, String> {
 fn resolve_default_branch(repo_root: &str, local: &std::collections::HashSet<&str>) -> String {
     let symbolic = run_git(
         repo_root,
-        &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
     )
     .ok()
     .filter(|output| output.status.success())
     .map(|output| trim_output(&output.stdout));
-    if let Some(branch) = symbolic.as_deref().and_then(|value| value.strip_prefix("origin/")) {
+    if let Some(branch) = symbolic
+        .as_deref()
+        .and_then(|value| value.strip_prefix("origin/"))
+    {
         return branch.to_string();
     }
     ["main", "master"]
@@ -1355,6 +1377,204 @@ fn git_pull_sync(workdir: &str) -> Result<GitOperationResponse, String> {
 }
 
 dock_git_mutation!(dock_git_pull, git_pull_sync, ());
+
+// ---- worktree ----
+
+/// 为对话新建独立 worktree：放在项目旁边的 `<仓库名>-worktrees/` 目录，
+/// 从 `base`（缺省为当前分支）拉出新分支 `kivio/<短 id>`。返回 (路径, 分支)。
+pub(crate) fn create_conversation_worktree(
+    workdir: &str,
+    conversation_id: &str,
+    base: Option<&str>,
+) -> Result<(String, String), String> {
+    let state = ensure_ready_state(workdir)?;
+    let repo = Path::new(&state.repo_root);
+    let name = repo
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "无法确定仓库目录名。".to_string())?;
+    let parent = repo
+        .parent()
+        .ok_or_else(|| "仓库位于磁盘根目录，无法在旁边创建 worktree。".to_string())?;
+    let token: String = conversation_id
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let token = &token[token.len().saturating_sub(8)..];
+    if token.is_empty() {
+        return Err("对话 id 无效。".to_string());
+    }
+    let branch = format!("kivio/{token}");
+    let path = parent
+        .join(format!("{name}-worktrees"))
+        .join(format!("kivio-{token}"));
+    if path.exists() {
+        return Err(format!("worktree 目录已存在：{}", path.display()));
+    }
+    let base = base
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            (!state.head.is_empty() && state.head != "(detached)").then(|| state.head.clone())
+        })
+        .unwrap_or_else(|| "HEAD".to_string());
+    if !ref_exists(&state.repo_root, &base) {
+        return Err(format!("找不到起点分支：{base}"));
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| format!("无法创建 worktree 目录：{e}"))?;
+    }
+    let path_text = path.to_string_lossy().to_string();
+    git_success(
+        &state.repo_root,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            branch.as_str(),
+            path_text.as_str(),
+            base.as_str(),
+        ],
+    )?;
+    Ok((path_text, branch))
+}
+
+// ---- 提交信息上下文 ----
+
+const COMMIT_CONTEXT_STAT_CHARS: usize = 8_000;
+const COMMIT_CONTEXT_PATCH_CHARS: usize = 40_000;
+
+/// 暂存区摘要与补丁（截断），供模型写提交信息。暂存区为空时返回 None。
+pub(crate) fn staged_change_context(workdir: &str) -> Result<Option<(String, String)>, String> {
+    let state = ensure_ready_state(workdir)?;
+    let repo = state.repo_root.as_str();
+    let stat = git_success(repo, &["diff", "--cached", "--stat", "--no-color"])?.stdout;
+    if stat.trim().is_empty() {
+        return Ok(None);
+    }
+    let patch = git_success(repo, &["diff", "--cached", "--no-color", "--no-ext-diff"])?.stdout;
+    let cut = |text: String, max: usize| -> String {
+        if text.len() <= max {
+            return text;
+        }
+        let mut end = max;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}\n…(truncated)", &text[..end])
+    };
+    Ok(Some((
+        cut(stat, COMMIT_CONTEXT_STAT_CHARS),
+        cut(patch, COMMIT_CONTEXT_PATCH_CHARS),
+    )))
+}
+
+// ---- 发布仓库（GitHub CLI） ----
+
+const GH_TIMEOUT_SECS: u64 = 120;
+
+fn run_gh(workdir: &str, args: &[&str]) -> Result<Output, String> {
+    let mut command = Command::new("gh");
+    command.env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1");
+    run_with_timeout(command, workdir, args, GH_TIMEOUT_SECS, "gh")
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitPublishReadiness {
+    /// gh 已安装且已登录。
+    pub ready: bool,
+    /// 已登录账号，用作仓库名前缀。
+    pub account: String,
+    /// 不可用原因（未安装 / 未登录）。
+    pub hint: String,
+}
+
+fn publish_readiness_sync(workdir: &str) -> GitPublishReadiness {
+    let not_ready = |hint: &str| GitPublishReadiness {
+        ready: false,
+        account: String::new(),
+        hint: hint.to_string(),
+    };
+    let Ok(output) = run_gh(workdir, &["api", "user", "--jq", ".login"]) else {
+        return not_ready("没有找到 GitHub CLI（gh），请先安装。");
+    };
+    if !output.status.success() {
+        return not_ready("GitHub CLI 未登录，请先在终端运行 gh auth login。");
+    }
+    GitPublishReadiness {
+        ready: true,
+        account: trim_output(&output.stdout),
+        hint: String::new(),
+    }
+}
+
+#[tauri::command]
+pub async fn dock_git_publish_readiness(workdir: String) -> Result<GitPublishReadiness, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(publish_readiness_sync(&workdir)))
+        .await
+        .map_err(|e| format!("dock_git_publish_readiness join: {e}"))?
+}
+
+fn validate_repository_name(name: &str) -> Result<String, String> {
+    let name = name.trim().trim_matches('/');
+    let valid = !name.is_empty()
+        && name.split('/').count() <= 2
+        && name.split('/').all(|part| {
+            !part.is_empty()
+                && !part.starts_with('-')
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        });
+    if valid {
+        Ok(name.to_string())
+    } else {
+        Err("仓库名只能包含字母、数字、-、_、.，格式为 名称 或 账号/名称。".to_string())
+    }
+}
+
+fn git_publish_sync(
+    workdir: &str,
+    repository: String,
+    private: bool,
+) -> Result<GitOperationResponse, String> {
+    let state = ensure_ready_state(workdir)?;
+    if !list_remotes(&state.repo_root)?.is_empty() {
+        return Err("仓库已有远程，无需发布。".to_string());
+    }
+    let repository = validate_repository_name(&repository)?;
+    let visibility = if private { "--private" } else { "--public" };
+    let result = run_gh(
+        &state.repo_root,
+        &[
+            "repo",
+            "create",
+            repository.as_str(),
+            visibility,
+            "--source",
+            ".",
+            "--remote",
+            "origin",
+            "--push",
+        ],
+    )
+    .and_then(|output| {
+        let stdout = trim_output(&output.stdout);
+        let stderr = trim_output(&output.stderr);
+        if output.status.success() {
+            Ok(GitOutput { stdout, stderr })
+        } else {
+            Err(if stderr.is_empty() { stdout } else { stderr })
+        }
+    });
+    operation_response(workdir, result, "仓库已发布。")
+}
+
+dock_git_mutation!(dock_git_publish, git_publish_sync, (repository: String, private: bool));
 
 fn git_create_branch_sync(
     workdir: &str,
@@ -1817,13 +2037,19 @@ mod tests {
             ],
         )
         .expect("commit");
-        assert!(git_branches_sync(&root).expect("branches").remotes.is_empty());
+        assert!(git_branches_sync(&root)
+            .expect("branches")
+            .remotes
+            .is_empty());
         let pushed = git_push_sync(&root).expect("push response");
         assert!(!pushed.ok);
         assert!(pushed.message.contains("没有配置远程"));
 
-        git_success(&root, &["remote", "add", "upstream", "https://example.invalid/r.git"])
-            .expect("add remote");
+        git_success(
+            &root,
+            &["remote", "add", "upstream", "https://example.invalid/r.git"],
+        )
+        .expect("add remote");
         assert_eq!(
             git_branches_sync(&root).expect("branches").remotes,
             vec!["upstream".to_string()]
@@ -1892,6 +2118,73 @@ mod tests {
 
         let pulled = git_pull_sync(&root).expect("pull");
         assert!(pulled.ok, "{}", pulled.message);
+    }
+
+    #[test]
+    fn conversation_worktree_is_created_beside_the_repository() {
+        let dir = temp_dir("worktree-repo");
+        let root = dir.to_str().unwrap().to_string();
+        git_init_sync(&root, Some("main".to_string())).expect("init ok");
+        fs::write(dir.join("a.txt"), "a\n").expect("write a");
+        git_success(&root, &["add", "-A", "--"]).expect("add");
+        git_success(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ],
+        )
+        .expect("commit");
+        let (path, branch) =
+            create_conversation_worktree(&root, "conv_ABCdef12345678", None).expect("worktree");
+        assert_eq!(branch, "kivio/12345678");
+        let path = Path::new(&path);
+        assert!(path.join("a.txt").is_file());
+        let expected_parent = dir.parent().unwrap().join(format!(
+            "{}-worktrees",
+            dir.file_name().unwrap().to_string_lossy()
+        ));
+        assert_eq!(
+            fs::canonicalize(path.parent().unwrap()).unwrap(),
+            fs::canonicalize(&expected_parent).unwrap()
+        );
+        assert_eq!(
+            git_status_sync(path.to_str().unwrap()).unwrap().head,
+            branch
+        );
+        // 同一对话不能重复建。
+        assert!(create_conversation_worktree(&root, "conv_ABCdef12345678", None).is_err());
+
+        fs::write(path.join("b.txt"), "b\n").expect("write b");
+        let worktree = path.to_str().unwrap();
+        git_success(worktree, &["add", "b.txt"]).expect("stage");
+        let (stat, patch) = staged_change_context(worktree)
+            .expect("context")
+            .expect("staged");
+        assert!(stat.contains("b.txt"));
+        assert!(patch.contains("+b"));
+        let _ = fs::remove_dir_all(expected_parent);
+    }
+
+    #[test]
+    fn repository_names_for_publishing_are_validated() {
+        assert_eq!(
+            validate_repository_name(" me/kivio "),
+            Ok("me/kivio".to_string())
+        );
+        assert_eq!(
+            validate_repository_name("kivio.app"),
+            Ok("kivio.app".to_string())
+        );
+        assert!(validate_repository_name("a/b/c").is_err());
+        assert!(validate_repository_name("-rf").is_err());
+        assert!(validate_repository_name("me/has space").is_err());
     }
 
     #[test]

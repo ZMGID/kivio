@@ -11,7 +11,8 @@ const mocks = vi.hoisted(() => ({
   tasks: [] as Array<{ status: string; startedAtMs: number }>,
   getBranches: vi.fn(),
   panelChoice: new Map<string, boolean>(),
-  hiddenItems: [] as string[],
+  itemOverrides: {} as Record<string, boolean>,
+  generateCommitMessage: vi.fn(),
   dockApi: {
     availableEditors: vi.fn(),
     gitBranches: vi.fn(),
@@ -22,6 +23,8 @@ const mocks = vi.hoisted(() => ({
     gitCommit: vi.fn(),
     gitPush: vi.fn(),
     gitInit: vi.fn(),
+    gitPublish: vi.fn(),
+    gitPublishReadiness: vi.fn(),
     openInEditor: vi.fn(),
     fsOpenPath: vi.fn(),
   },
@@ -38,14 +41,18 @@ vi.mock('../useBackgroundTasks', () => ({ useBackgroundTasks: () => mocks.tasks 
 vi.mock('../useSubagentRoster', () => ({ useSubagentRoster: () => ({ roster: null, refresh: vi.fn() }) }))
 vi.mock('../AgentAvatar', () => ({ AgentAvatar: () => null }))
 vi.mock('../AgentProgress', () => ({ AgentStatus: () => null }))
-vi.mock('../api', () => ({ chatApi: { getBranches: mocks.getBranches } }))
+vi.mock('../api', () => ({ chatApi: { getBranches: mocks.getBranches, generateCommitMessage: mocks.generateCommitMessage } }))
 vi.mock('../persistence', () => ({
   getRememberedEditor: () => null,
   rememberEditor: vi.fn(),
   getWorkspacePanelOpen: (id: string) => mocks.panelChoice.get(id) ?? null,
   rememberWorkspacePanelOpen: (id: string, open: boolean) => { mocks.panelChoice.set(id, open) },
-  getWorkspaceHiddenItems: () => mocks.hiddenItems,
-  rememberWorkspaceHiddenItems: (items: string[]) => { mocks.hiddenItems = items },
+  getWorkspaceItemOverrides: () => mocks.itemOverrides,
+  rememberWorkspaceItemOverrides: (next: Record<string, boolean>) => { mocks.itemOverrides = next },
+}))
+vi.mock('./WorkspaceUsageSection', () => ({
+  WorkspaceUsageSection: () => <div data-testid="usage-section" />,
+  WorkspaceContextSection: () => <div data-testid="context-section" />,
 }))
 
 const ready: GitRepoState = {
@@ -65,7 +72,9 @@ beforeEach(() => {
   mocks.badgeWorkdirs = []
   mocks.tasks = []
   mocks.panelChoice.clear()
-  mocks.hiddenItems = []
+  mocks.itemOverrides = {}
+  mocks.generateCommitMessage.mockRejectedValue(new Error('no model'))
+  mocks.dockApi.gitPublishReadiness.mockResolvedValue({ ready: true, account: 'me', hint: '' })
   mocks.getBranches.mockResolvedValue([])
   mocks.dockApi.gitStageAll.mockResolvedValue({ ok: true, state: ready, stdout: '', stderr: '', message: '' })
   mocks.dockApi.gitCommit.mockResolvedValue({ ok: true, state: { ...ready, entries: [] }, stdout: '', stderr: '', message: '' })
@@ -100,14 +109,21 @@ describe('WorkspaceActionsMenu', () => {
     expect(mocks.badgeWorkdirs.every((workdir) => workdir === '')).toBe(true)
   })
 
-  it('only offers commit when the repository has no remote', async () => {
+  it('offers publishing instead of push when the repository has no remote', async () => {
     const panel = openPanel()
     await waitFor(() => expect(within(panel).getByRole('button', { name: '提交' })).toBeEnabled())
     fireEvent.click(within(panel).getByRole('button', { name: 'Git 操作' }))
     const menu = screen.getByRole('menu')
     expect(within(menu).getByRole('menuitem', { name: '提交并推送' })).toBeDisabled()
     expect(within(menu).getByRole('menuitem', { name: '推送' })).toBeDisabled()
-    expect(within(menu).getByText('仓库没有配置远程，只能本地提交')).toBeInTheDocument()
+    fireEvent.click(within(menu).getByRole('menuitem', { name: '发布仓库' }))
+    const name = await within(panel).findByRole('textbox', { name: '仓库名（账号/名称）' })
+    expect(name).toHaveValue('me/repo')
+    mocks.dockApi.gitPublish.mockResolvedValue({ ok: true, state: { ...ready, upstream: 'origin/main' }, stdout: '', stderr: '', message: '' })
+    fireEvent.click(within(panel).getByRole('radio', { name: '公开' }))
+    fireEvent.click(within(panel).getByRole('button', { name: '发布' }))
+    await waitFor(() => expect(mocks.dockApi.gitPublish).toHaveBeenCalledWith('/repo', 'me/repo', false))
+    expect(screen.queryByRole('dialog', { name: '发布仓库' })).not.toBeInTheDocument()
   })
 
   it('opens the branch list from the branch name and reloads it after switching', async () => {
@@ -137,12 +153,41 @@ describe('WorkspaceActionsMenu', () => {
     await waitFor(() => expect(mocks.dockApi.gitCreateBranch).toHaveBeenCalledWith('/repo', 'new-thing'))
   })
 
-  it('hides items chosen from the right-click menu', () => {
+  it('hides items chosen from the right-click menu and can turn on usage and context', () => {
     const panel = openPanel()
+    expect(within(panel).queryByTestId('usage-section')).not.toBeInTheDocument()
     fireEvent.contextMenu(panel)
-    fireEvent.click(within(screen.getByRole('menu', { name: '选择显示的内容' })).getByRole('menuitemcheckbox', { name: '任务' }))
-    expect(mocks.hiddenItems).toEqual(['tasks'])
+    const menu = screen.getByRole('menu', { name: '选择显示的内容' })
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '任务' }))
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '上下文窗口' }))
+    expect(mocks.itemOverrides).toEqual({ tasks: false, context: true })
     expect(within(panel).queryByRole('button', { name: '任务' })).not.toBeInTheDocument()
+    expect(within(panel).getByTestId('context-section')).toBeInTheDocument()
+  })
+
+  it('copies a branch name on right-click', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const panel = openPanel()
+    fireEvent.click(await within(panel).findByRole('button', { name: 'main' }))
+    const dev = within(screen.getByRole('menu')).getByRole('menuitemradio', { name: /dev/ })
+    fireEvent.contextMenu(dev)
+    await waitFor(() => expect(dev).toHaveTextContent('已复制'))
+    expect(mocks.dockApi.gitSwitchBranch).not.toHaveBeenCalled()
+  })
+
+  it('switches the environment of a new chat and locks it once started', () => {
+    const onChange = vi.fn()
+    const view = render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen lang="zh"
+      environment={{ worktree: false, worktreeBranch: null, locked: false, onChange }} />)
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    fireEvent.click(screen.getByRole('button', { name: /本地/ }))
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: /新建 worktree/ }))
+    expect(onChange).toHaveBeenCalledWith(true)
+    view.rerender(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen lang="zh"
+      environment={{ worktree: true, worktreeBranch: 'kivio/abcd1234', locked: true, onChange }} />)
+    expect(screen.getByRole('button', { name: /新建 worktree/ })).toBeDisabled()
+    expect(screen.getByText('kivio/abcd1234')).toBeInTheDocument()
   })
 
   it('shows a loading placeholder until the remote list arrives', async () => {
@@ -155,12 +200,20 @@ describe('WorkspaceActionsMenu', () => {
     expect(within(panel).getByRole('button', { name: '提交并推送' })).toBeEnabled()
   })
 
-  it('commits in place without a dialog and shows the result on the button', async () => {
+  it('commits in place with a model-written message and falls back to file names', async () => {
+    mocks.generateCommitMessage.mockResolvedValueOnce('Fix the login redirect')
+    const panel = openPanel()
+    fireEvent.click(await within(panel).findByRole('button', { name: '提交' }))
+    await waitFor(() => expect(mocks.dockApi.gitCommit).toHaveBeenCalledWith('/repo', 'Fix the login redirect'))
+    expect(mocks.generateCommitMessage).toHaveBeenCalledWith('/repo', 'c1')
+    expect(screen.queryByRole('dialog', { name: '提交' })).not.toBeInTheDocument()
+    expect(await within(panel).findByRole('status')).toHaveTextContent('已提交')
+  })
+
+  it('falls back to a file-name message when the model is unavailable', async () => {
     const panel = openPanel()
     fireEvent.click(await within(panel).findByRole('button', { name: '提交' }))
     await waitFor(() => expect(mocks.dockApi.gitCommit).toHaveBeenCalledWith('/repo', 'Update a.txt'))
-    expect(screen.queryByRole('dialog', { name: '提交' })).not.toBeInTheDocument()
-    expect(await within(panel).findByRole('status')).toHaveTextContent('已提交')
   })
 
   it('switches history branches from an in-panel dropdown', async () => {

@@ -833,6 +833,7 @@ async fn load_or_create_external_conversation(
         builtin_history: None,
         external_history: None,
         external_cwd: None,
+        worktree: None,
         runtime_locked: false,
         id,
         revision: 0,

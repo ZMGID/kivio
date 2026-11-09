@@ -1025,6 +1025,8 @@ async fn fork_conversation_owned(
         builtin_history,
         external_history: None,
         external_cwd: None,
+        // 分叉继承源对话的 worktree，继续在同一个工作树里改。
+        worktree: source.worktree.clone(),
         runtime_locked: false,
         id: new_id,
         revision: 0,

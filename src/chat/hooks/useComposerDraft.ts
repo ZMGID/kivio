@@ -17,6 +17,8 @@ export interface ComposerDraft {
   webSearchMode: WebSearchMode | undefined
   replyModels: ModelRef[]
   agentRuntime: AgentRuntimeConfig
+  /** 新对话环境：true = 首次发送时为项目新建独立 worktree（参照 T3 的 Local / New worktree）。 */
+  worktree: boolean
 }
 
 type ComposerDraftInitial = Pick<
@@ -37,6 +39,7 @@ export function useComposerDraft(initial: ComposerDraftInitial) {
     additionalDirectories: [],
     webSearchMode: undefined,
     replyModels: [],
+    worktree: false,
   }))
 
   const update = useCallback(<K extends keyof ComposerDraft>(key: K, next: ComposerDraft[K]) => {
@@ -54,6 +57,7 @@ export function useComposerDraft(initial: ComposerDraftInitial) {
       knowledgeBaseIds: [],
       forceKnowledgeSearch: false,
       additionalDirectories: [],
+      worktree: false,
     }))
   }, [])
 
@@ -70,6 +74,7 @@ export function useComposerDraft(initial: ComposerDraftInitial) {
     setWebSearchMode: (next: WebSearchMode | undefined) => update('webSearchMode', next),
     setReplyModels: (next: ModelRef[]) => update('replyModels', next),
     setAgentRuntime: (next: AgentRuntimeConfig) => update('agentRuntime', next),
+    setWorktree: (next: boolean) => update('worktree', next),
   }), [resetConversationContext, setProviderModel, update])
 
   return { value, setters, ...setters }

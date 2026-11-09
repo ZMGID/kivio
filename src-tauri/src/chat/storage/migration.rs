@@ -249,6 +249,10 @@ pub fn resolve_conversation_working_directory(
     conversation: &Conversation,
     ordinary_working_root: &str,
 ) -> Result<PathBuf, String> {
+    // 选了独立 worktree 的对话始终在 worktree 里读写，不回到项目根。
+    if let Some(worktree) = conversation.worktree.as_ref() {
+        return Ok(PathBuf::from(&worktree.path));
+    }
     if let Some(project) = resolve_conversation_project(app, conversation)? {
         let root = project
             .root_path

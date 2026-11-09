@@ -1688,6 +1688,22 @@ export const chatApi = {
   },
 
   // 更新对话
+  async createConversationWorktree(conversationId: string, baseBranch?: string | null): Promise<Conversation> {
+    if (!isTauriRuntime()) throw new Error('Worktree requires the desktop app')
+    const result = await invoke<{ success: boolean; conversation: Conversation }>(
+      'chat_create_conversation_worktree',
+      { conversationId, baseBranch: baseBranch ?? null },
+    )
+    if (!result.success) throw new Error('Failed to create worktree')
+    return result.conversation
+  },
+
+  /** 用标题摘要模型按暂存区改动写提交信息；失败时调用方退回按文件名生成。 */
+  async generateCommitMessage(workdir: string, conversationId: string | null): Promise<string> {
+    if (!isTauriRuntime()) throw new Error('Commit messages require the desktop app')
+    return invoke<string>('chat_generate_commit_message', { workdir, conversationId })
+  },
+
   async updateConversation(
     conversationId: string,
     updates: {

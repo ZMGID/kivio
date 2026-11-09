@@ -525,6 +525,7 @@ mod tests {
             builtin_history: None,
             external_history: None,
             external_cwd: None,
+            worktree: None,
             runtime_locked: false,
             id: "c1".to_string(),
             revision: 0,

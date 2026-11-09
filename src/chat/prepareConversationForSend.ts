@@ -10,7 +10,7 @@ import type {
   WebSearchMode,
 } from './types'
 
-type Stage = 'create' | 'reservation' | 'runtime' | 'knowledgeBase' | 'forceKnowledgeSearch'
+type Stage = 'create' | 'reservation' | 'runtime' | 'worktree' | 'knowledgeBase' | 'forceKnowledgeSearch'
   | 'additionalDirectories' | 'thinkingLevel' | 'webSearchMode' | 'replyModels'
 
 export interface SendPreparationIntent {
@@ -31,6 +31,8 @@ export interface SendPreparationIntent {
     webSearchMode: WebSearchMode | null | undefined
     rememberedWebSearchMode: WebSearchMode | undefined
     replyModels: ModelRef[]
+    /** 首次发送前为项目对话新建独立 worktree。 */
+    worktree?: boolean
   }
   providerOAuthTypes: Record<string, string>
 }
@@ -40,6 +42,7 @@ export type SendPreparationResult =
   | { ok: false; stage: Stage; error: Error; conversation: Conversation | null; created: boolean }
 
 type Persistence = Pick<typeof chatApi, 'createConversation' | 'setAgentRuntime' | 'updateConversation'>
+  & Partial<Pick<typeof chatApi, 'createConversationWorktree'>>
 type OnProgress = (phase: 'created' | 'updated', conversation: Conversation) => boolean | void
 
 function asError(value: unknown): Error {
@@ -107,6 +110,16 @@ export async function prepareConversationForSend(
   const draft = intent.draft
   if (!conversationRuntimeLocked(conversation) && !agentRuntimesEqual(normalizeAgentRuntime(conversation), draft.agentRuntime)) {
     const error = await apply('runtime', () => persistence.setAgentRuntime(conversation!.id, draft.agentRuntime))
+    if (error) return error
+  }
+
+  // 环境在第一条消息前确定：失败时保留草稿，用户可以改回「本地」重试。
+  if (
+    draft.worktree && intent.projectId && persistence.createConversationWorktree
+    && !conversation.worktree && (conversation.messages?.length ?? 0) === 0
+  ) {
+    const createWorktree = persistence.createConversationWorktree
+    const error = await apply('worktree', () => createWorktree(conversation!.id))
     if (error) return error
   }
 

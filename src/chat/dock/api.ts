@@ -263,6 +263,18 @@ export const dockApi = {
     return normalizeGitMutationResult(await invoke('dock_git_pull', { workdir }))
   },
 
+  /** GitHub CLI 是否已安装并登录；ready 时 account 为登录账号。 */
+  async gitPublishReadiness(workdir: string): Promise<{ ready: boolean; account: string; hint: string }> {
+    if (!isTauriRuntime()) return { ready: false, account: '', hint: '' }
+    return invoke('dock_git_publish_readiness', { workdir })
+  },
+
+  /** 用 gh 新建远程仓库、设为 origin 并推送当前分支。 */
+  async gitPublish(workdir: string, repository: string, isPrivate: boolean): Promise<GitMutationResult> {
+    if (!isTauriRuntime()) return MOCK_MUTATION
+    return normalizeGitMutationResult(await invoke('dock_git_publish', { workdir, repository, private: isPrivate }))
+  },
+
   async gitSwitchBranch(workdir: string, branch: string): Promise<GitMutationResult> {
     if (!isTauriRuntime()) return MOCK_MUTATION
     return normalizeGitMutationResult(await invoke('dock_git_switch_branch', { workdir, branch }))

@@ -268,6 +268,7 @@ mod tests {
             builtin_history: None,
             external_history: None,
             external_cwd: None,
+            worktree: None,
             runtime_locked: false,
             id: "conv_test".to_string(),
             revision: 0,

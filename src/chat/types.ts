@@ -540,6 +540,11 @@ export interface CliImportResult {
 }
 
 export type { NativeProviderSummary, DetectedExternalAgent } from '../api/externalCliSettings'
+export interface ConversationWorktree {
+  path: string
+  branch: string
+}
+
 export interface Conversation {
   runtime_locked?: boolean
   id: string
@@ -593,6 +598,8 @@ export interface Conversation {
   forceKnowledgeSearch?: boolean
   additional_directories?: AdditionalDirectory[]
   additionalDirectories?: AdditionalDirectory[]
+  /** 新对话选择「新建 worktree」后 agent 读写的独立工作树。 */
+  worktree?: ConversationWorktree | null
   thinking_level?: ThinkingLevel | null
   thinkingLevel?: ThinkingLevel | null
   /** 会话级三态联网搜索（任务 07-23）。缺省/null = 跟随全局 nativeTools.webSearch。 */

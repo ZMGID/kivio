@@ -37,6 +37,41 @@ function intent(overrides: Record<string, unknown> = {}) {
 }
 
 describe('prepare conversation for send', () => {
+  it('creates the chosen worktree for a new project chat before the first message', async () => {
+    const created = conversation('new-wt')
+    const withWorktree = { ...created, worktree: { path: '/repo-worktrees/kivio-wt', branch: 'kivio/wt' } }
+    const createConversationWorktree = vi.fn().mockResolvedValue(withWorktree)
+    const persistence = {
+      createConversation: vi.fn().mockResolvedValue(created),
+      setAgentRuntime: vi.fn(), updateConversation: vi.fn(), createConversationWorktree,
+    }
+    const result = await prepareConversationForSend(intent({
+      projectId: 'p1', projectName: 'Repo',
+      draft: { ...intent().draft, knowledgeBaseIds: [], worktree: true },
+    }), persistence, vi.fn())
+    expect(createConversationWorktree).toHaveBeenCalledWith('new-wt')
+    expect(result).toEqual({ ok: true, conversation: withWorktree, created: true })
+  })
+
+  it('keeps the draft when worktree creation fails and skips it outside projects', async () => {
+    const created = conversation('new-wt-fail')
+    const createConversationWorktree = vi.fn().mockRejectedValue(new Error('branch exists'))
+    const persistence = {
+      createConversation: vi.fn().mockResolvedValue(created),
+      setAgentRuntime: vi.fn(), updateConversation: vi.fn(), createConversationWorktree,
+    }
+    const failed = await prepareConversationForSend(intent({
+      projectId: 'p1', draft: { ...intent().draft, knowledgeBaseIds: [], worktree: true },
+    }), persistence, vi.fn())
+    expect(failed).toMatchObject({ ok: false, stage: 'worktree', conversation: created, created: true })
+
+    createConversationWorktree.mockClear()
+    await prepareConversationForSend(intent({
+      draft: { ...intent().draft, knowledgeBaseIds: [], worktree: true },
+    }), persistence, vi.fn())
+    expect(createConversationWorktree).not.toHaveBeenCalled()
+  })
+
   it('retains an empty bound CLI conversation when draft defaults disagree', async () => {
     const bound: Conversation = {
       ...conversation('imported-empty'), provider_id: '', model: '', runtime_locked: true,

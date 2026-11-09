@@ -1,10 +1,11 @@
 // 工作区面板的分支选择器，参照 T3 Code 的 BranchPicker / BranchPickerRefItem：
 // 搜索框 + 本地与远程分支（当前、默认优先，其余按最近提交）+ 右侧弱化标签；
 // 搜索词不是已有分支时提供「创建分支」。远程分支检出为同名本地跟踪分支（后端负责）。
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Plus, Search } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import type { GitBranchesResult } from '../../api/dockContracts'
+import { copyToClipboard } from '../../utils/clipboard'
 import { orderBranchRefs, sanitizeBranchName } from './workspaceBranches'
 
 export type BranchPick = { kind: 'switch'; name: string } | { kind: 'create'; name: string }
@@ -19,6 +20,16 @@ export function WorkspaceBranchPicker({ data, lang, disabled, onPick }: {
 }) {
   const t = i18n[lang]
   const [query, setQuery] = useState('')
+  // 参照 T3：右键分支复制分支名；结果直接标在该行，不弹通知。
+  const [copied, setCopied] = useState<string | null>(null)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(null), 1500)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+  const copyName = (name: string) => {
+    void copyToClipboard(name).then((ok) => { if (ok) setCopied(name) })
+  }
   const refs = useMemo(() => (data ? orderBranchRefs(data) : []), [data])
   const needle = query.trim().toLowerCase()
   const filtered = needle ? refs.filter((ref) => ref.name.toLowerCase().includes(needle)) : refs
@@ -56,12 +67,19 @@ export function WorkspaceBranchPicker({ data, lang, disabled, onPick }: {
               role="menuitemradio"
               aria-checked={ref.current}
               disabled={ref.current || disabled}
-              title={ref.name}
+              title={`${ref.name}\n${t.workspaceCopyBranchHint}`}
               className={`${ITEM} ${ref.current ? 'font-medium disabled:opacity-100' : ''}`}
               onClick={() => onPick({ kind: 'switch', name: ref.name })}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                copyName(ref.name)
+              }}
             >
               <span className="min-w-0 flex-1 truncate">{ref.name}</span>
-              {ref.badge && <span className="shrink-0 text-[10.5px] text-neutral-400/80 dark:text-neutral-500">{badgeLabel[ref.badge]}</span>}
+              {copied === ref.name ? (
+                <span role="status" className="chat-motion-pop shrink-0 text-[10.5px] text-emerald-600 dark:text-emerald-400">{t.workspaceBranchCopied}</span>
+              ) : ref.badge && <span className="shrink-0 text-[10.5px] text-neutral-400/80 dark:text-neutral-500">{badgeLabel[ref.badge]}</span>}
             </button>
           ))}
           {canCreate && (

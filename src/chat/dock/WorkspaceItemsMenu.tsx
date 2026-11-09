@@ -7,10 +7,10 @@ import { i18n, type Lang } from '../../components/i18n'
 import { PANEL_SCOPE_ATTR } from './WorkspacePanelParts'
 import { WORKSPACE_ITEMS, type WorkspaceItemId } from './workspaceItems'
 
-export function WorkspaceItemsMenu({ at, lang, hidden, onToggle, onClose }: {
+export function WorkspaceItemsMenu({ at, lang, visible, onToggle, onClose }: {
   at: { x: number; y: number }
   lang: Lang
-  hidden: string[]
+  visible: Record<WorkspaceItemId, boolean>
   onToggle: (id: WorkspaceItemId) => void
   onClose: () => void
 }) {
@@ -19,6 +19,7 @@ export function WorkspaceItemsMenu({ at, lang, hidden, onToggle, onClose }: {
   const [pos, setPos] = useState(at)
   const labels: Record<WorkspaceItemId, string> = {
     project: t.workspaceItemProject,
+    environment: t.workspaceItemEnvironment,
     openIn: t.workspaceItemOpenIn,
     branch: t.workspaceItemBranch,
     gitActions: t.workspaceItemGitActions,
@@ -26,6 +27,8 @@ export function WorkspaceItemsMenu({ at, lang, hidden, onToggle, onClose }: {
     history: t.workspaceHistoryBranches,
     tasks: t.dockTabTasks,
     subagents: t.workspaceSubagents,
+    usage: t.workspaceItemUsage,
+    context: t.workspaceItemContext,
   }
 
   // 贴在点击位置，超出窗口时往回收。
@@ -68,18 +71,18 @@ export function WorkspaceItemsMenu({ at, lang, hidden, onToggle, onClose }: {
     >
       <div className="kv-menu-label px-2 pb-1 pt-0.5 text-[11px] text-neutral-400">{t.workspaceCustomize}</div>
       {WORKSPACE_ITEMS.map((id) => {
-        const visible = !hidden.includes(id)
+        const shown = visible[id]
         return (
           <button
             key={id}
             type="button"
             role="menuitemcheckbox"
-            aria-checked={visible}
+            aria-checked={shown}
             className="kv-menu-item"
             onClick={() => onToggle(id)}
           >
             <span className="flex size-3.5 shrink-0 items-center justify-center">
-              {visible && <Check size={13} strokeWidth={2} />}
+              {shown && <Check size={13} strokeWidth={2} />}
             </span>
             <span className="min-w-0 flex-1 truncate">{labels[id]}</span>
           </button>

@@ -22,10 +22,10 @@ describe('resolveGitQuickAction', () => {
     expect(resolveGitQuickAction({ ...dirty, behind: 2 }, true, false)).toEqual({ kind: 'run', action: 'commit' })
   })
 
-  it('pushes unpublished branches only when a remote exists', () => {
+  it('pushes unpublished branches and offers publishing without a remote', () => {
     const unpublished = { ...clean, upstream: null }
     expect(resolveGitQuickAction(unpublished, true, false)).toEqual({ kind: 'run', action: 'push' })
-    expect(resolveGitQuickAction(unpublished, false, false)).toEqual({ kind: 'hint', action: 'push', hint: 'noRemote' })
+    expect(resolveGitQuickAction(unpublished, false, false)).toEqual({ kind: 'run', action: 'publish' })
   })
 
   it('explains why nothing can run', () => {
@@ -53,12 +53,12 @@ describe('defaultCommitMessage', () => {
 })
 
 describe('resolveGitMenu', () => {
-  it('disables every remote action without a remote', () => {
-    expect(resolveGitMenu({ ...dirty, upstream: null }, false, false)).toEqual({ commit: true, commit_push: false, push: false, pull: false })
+  it('disables every remote action without a remote and offers publishing', () => {
+    expect(resolveGitMenu({ ...dirty, upstream: null }, false, false)).toEqual({ commit: true, commit_push: false, push: false, pull: false, publish: true })
   })
 
   it('blocks pushing while behind upstream', () => {
-    expect(resolveGitMenu({ ...dirty, ahead: 1, behind: 1 }, true, false)).toEqual({ commit: true, commit_push: false, push: false, pull: false })
+    expect(resolveGitMenu({ ...dirty, ahead: 1, behind: 1 }, true, false)).toEqual({ commit: true, commit_push: false, push: false, pull: false, publish: false })
   })
 
   it('offers pull only for a clean branch that is just behind', () => {
@@ -67,7 +67,7 @@ describe('resolveGitMenu', () => {
   })
 
   it('disables everything while busy or detached', () => {
-    const none = { commit: false, commit_push: false, push: false, pull: false }
+    const none = { commit: false, commit_push: false, push: false, pull: false, publish: false }
     expect(resolveGitMenu(dirty, true, true)).toEqual(none)
     expect(resolveGitMenu({ ...dirty, head: 'HEAD' }, true, false)).toEqual(none)
   })

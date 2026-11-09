@@ -445,6 +445,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       webSearchMode: draftWebSearchMode,
       replyModels: draftReplyModels,
       agentRuntime: draftAgentRuntime,
+      worktree: draftWorktree,
     },
     setProviderId: setDraftProviderId,
     setModel: setDraftModel,
@@ -1952,6 +1953,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           webSearchMode: draftWebSearchMode,
           rememberedWebSearchMode: loadLastWebSearchMode(),
           replyModels: options.embedded ? [] : draftReplyModels,
+          worktree: options.embedded ? false : draftWorktree,
         },
         providerOAuthTypes,
       },
@@ -1965,7 +1967,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [
     activeModel, activeProviderId, currentConversation, draftAgentRuntime,
     draftKnowledgeBaseIds, draftForceKnowledgeSearch, draftAdditionalDirectories,
-    draftThinkingLevel, draftReplyModels, draftWebSearchMode, providerOAuthTypes,
+    draftThinkingLevel, draftReplyModels, draftWebSearchMode, draftWorktree, providerOAuthTypes,
     effectiveSkillId, enabledSkills, usesChatRuntime, selectedProject?.id,
     selectedProject?.name, selectedSet?.id, sendDisabledReason, sendController,
   ])
@@ -2644,6 +2646,23 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         onSwitch: handleSwitchBranch,
       } : null}
       workspaceBlank={!currentConversation || currentConversationIsBlank}
+      environment={(() => {
+        const worktree = currentConversation?.worktree ?? null
+        const started = Boolean(currentConversation && !currentConversationIsBlank)
+        return {
+          worktree: worktree ? true : draftWorktree,
+          worktreeBranch: worktree?.branch ?? null,
+          // 已有 worktree 或已开始的对话不能再切换；绑定原目录的外部会话由后端拒绝。
+          locked: Boolean(worktree) || started,
+          onChange: composerDraftSetters.setWorktree,
+        }
+      })()}
+      usage={{
+        providerId: activeProviderId,
+        externalAgentId: usesExternalRuntime ? activeAgentRuntime.externalAgentId ?? null : null,
+        externalAccount: activeExternalAgent?.capabilities.account === 'native',
+      }}
+      contextState={contextState}
     />
   ), [
     activeAgentRuntime,
@@ -2670,6 +2689,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     conversationOccupied,
     conversationProject?.name,
     currentConversationIsBlank,
+    draftWorktree,
+    composerDraftSetters,
+    contextState,
     selectedProject?.name,
     popoutConversationIds,
     streamCoarse.streaming,

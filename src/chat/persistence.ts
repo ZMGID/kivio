@@ -332,17 +332,22 @@ export function rememberWorkspacePanelOpen(conversationId: string, open: boolean
 
 const CHAT_WORKSPACE_ITEMS_KEY = 'kivio-chat-workspace-items'
 
-export function getWorkspaceHiddenItems(): string[] {
+/** 用户改过的项：true 显示、false 隐藏；未出现的项按默认值。旧版存的隐藏数组按「隐藏」读入。 */
+export function getWorkspaceItemOverrides(): Record<string, boolean> {
   try {
-    const parsed = JSON.parse(getLocalStorageItem(CHAT_WORKSPACE_ITEMS_KEY) ?? '[]')
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+    const parsed: unknown = JSON.parse(getLocalStorageItem(CHAT_WORKSPACE_ITEMS_KEY) ?? '{}')
+    if (Array.isArray(parsed)) {
+      return Object.fromEntries(parsed.filter((item): item is string => typeof item === 'string').map((id) => [id, false]))
+    }
+    if (!parsed || typeof parsed !== 'object') return {}
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'))
   } catch {
-    return []
+    return {}
   }
 }
 
-export function rememberWorkspaceHiddenItems(items: string[]) {
-  setLocalStorageItem(CHAT_WORKSPACE_ITEMS_KEY, JSON.stringify(items))
+export function rememberWorkspaceItemOverrides(overrides: Record<string, boolean>) {
+  setLocalStorageItem(CHAT_WORKSPACE_ITEMS_KEY, JSON.stringify(overrides))
 }
 
 function normalizeChatWindowGeometry(

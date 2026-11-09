@@ -20,6 +20,8 @@ pub(crate) mod title;
 
 pub(crate) mod prompt_optimize;
 
+pub(crate) mod worktree;
+
 mod tooling;
 
 mod messages;

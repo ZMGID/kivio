@@ -665,6 +665,13 @@ impl ExternalHistoryTransition {
     }
 }
 
+/// 对话专属的 Git worktree：路径与创建时检出的分支。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConversationWorktree {
+    pub path: String,
+    pub branch: String,
+}
+
 /// 完整对话数据（存储在 conversations/{id}.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
@@ -674,6 +681,9 @@ pub struct Conversation {
     pub external_history: Option<ExternalHistoryTransition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_cwd: Option<String>,
+    /// 新对话选择「新建 worktree」后，agent 在这个独立工作树里读写。发出第一条消息前确定，之后不再改变。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<ConversationWorktree>,
     /// Derived at the storage boundary; never accepted from persisted JSON.
     #[serde(default, skip_deserializing)]
     pub runtime_locked: bool,
