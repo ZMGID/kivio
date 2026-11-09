@@ -231,10 +231,16 @@ async fn task_runs_without_parent_poll_and_bounded_progress_is_flushed_through_h
     let executor: Arc<dyn ToolExecutor> = probe.clone();
     let (context, tool, call) = inputs();
     let mut running = Box::pin(execute_tool_call(&agent, &executor, &context, &tool, call));
-    assert!(futures::poll!(tokio::task::unconstrained(running.as_mut())).is_pending());
-    tokio::time::timeout(Duration::from_secs(2), probe.entered.notified())
-        .await
-        .unwrap();
+    // Drive the parent only until the owned task starts; afterwards it is no longer polled.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::select! {
+            biased;
+            _ = probe.entered.notified() => {}
+            _ = running.as_mut() => panic!("tool finished before the parent stopped polling"),
+        }
+    })
+    .await
+    .unwrap();
     for _ in 0..4 {
         tokio::task::yield_now().await;
     }
