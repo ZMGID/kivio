@@ -287,7 +287,7 @@ export function rememberTreeExpanded(projectKey: string, paths: string[]) {
   setLocalStorageItem(CHAT_DOCK_TREE_EXPANDED_KEY, JSON.stringify(map))
 }
 
-// ---------- 工作区菜单：首选编辑器 ----------
+// ---------- 工作区菜单：首选打开方式（编辑器 id 或 file-manager） ----------
 
 const CHAT_PREFERRED_EDITOR_KEY = 'kivio-chat-preferred-editor'
 

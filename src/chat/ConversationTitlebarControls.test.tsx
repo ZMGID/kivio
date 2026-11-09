@@ -15,6 +15,9 @@ vi.mock('./ThinkingLevelSelector', () => ({
 vi.mock('./PermissionPicker', () => ({
   PermissionPicker: () => <div data-testid="permission" />,
 }))
+vi.mock('./dock/WorkspaceActionsMenu', () => ({
+  WorkspaceActionsMenu: () => <div data-testid="workspace-panel" />,
+}))
 const base = {
   conversationId: 'c1',
   runtimeLocked: false,
@@ -41,6 +44,22 @@ const base = {
 }
 
 describe('ConversationTitlebarControls', () => {
+  it('hides the workspace panel when switching to a conversation without a project, even with a working directory', () => {
+    const props = {
+      ...base,
+      activeAgentRuntime: { kind: 'builtin' },
+      usesExternalRuntime: false,
+      workdir: '/repo',
+    } satisfies Parameters<typeof ConversationTitlebarControls>[0]
+    const { queryByTestId, rerender } = render(
+      <ConversationTitlebarControls {...props} projectName="Repo" />,
+    )
+    expect(queryByTestId('workspace-panel')).not.toBeNull()
+
+    rerender(<ConversationTitlebarControls {...props} conversationId="no-project" projectName={null} />)
+    expect(queryByTestId('workspace-panel')).toBeNull()
+  })
+
   it('renders the external model picker for a CLI runtime', () => {
     const { getByTestId, queryByTestId } = render(
       <ConversationTitlebarControls

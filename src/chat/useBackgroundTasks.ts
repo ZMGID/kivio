@@ -12,6 +12,7 @@ type Entry = {
   dispose: () => void
 }
 const entries = new Map<string, Entry>()
+const pendingStops = new Map<string, Promise<void>>()
 
 function notify(entry: Entry) {
   for (const listener of entry.listeners) listener()
@@ -94,4 +95,18 @@ export function updateBackgroundTasks(id: string, update: (tasks: BackgroundTask
   entry.version += 1
   entry.tasks = update(entry.tasks)
   notify(entry)
+}
+
+export function stopBackgroundTask(conversationId: string, task: BackgroundTaskInfo): Promise<void> {
+  const key = JSON.stringify([conversationId, task.source, task.id])
+  const pending = pendingStops.get(key)
+  if (pending) return pending
+  const request = Promise.resolve().then(async () => {
+    if (task.source === 'builtin') await api.chatKillBackgroundCommand(task.id)
+    else await api.chatStopExternalBackgroundTask(task.conversationId ?? conversationId, task.id)
+    updateBackgroundTasks(conversationId, tasks => tasks.map(item => item.id === task.id && item.source === task.source
+      ? { ...item, status: 'stopped' } : item))
+  }).finally(() => { pendingStops.delete(key) })
+  pendingStops.set(key, request)
+  return request
 }

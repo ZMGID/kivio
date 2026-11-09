@@ -42,6 +42,67 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers() })
 
 describe('subagent tasks', () => {
+  it('keeps running agents visible and folds finished agents without showing dormancy labels', () => {
+    roster = { agents: [agent('Active', { status: 'running' }), agent('Finished', { status: 'parked' })], runningCount: 1 }
+    const view = render(<SubagentTaskList conversationId="root" roster={roster} />)
+    expect(screen.getByText('Active')).toBeVisible()
+    expect(screen.getByText('Finished')).not.toBeVisible()
+    expect(screen.queryByText('已休眠')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText(/已结束/))
+    expect(screen.getByText('Finished')).toBeVisible()
+    roster = { agents: [agent('Active', { status: 'idle' }), agent('Finished', { status: 'parked' })], runningCount: 0 }
+    view.rerender(<SubagentTaskList conversationId="root" roster={roster} />)
+    expect(screen.queryByText('运行中')).not.toBeInTheDocument()
+  })
+
+  it('automatically moves a finished agent into the folded group and shows it again when resumed', () => {
+    roster = { agents: [agent('Active', { status: 'running' })], runningCount: 1 }
+    const view = render(<SubagentTaskList conversationId="root" roster={roster} />)
+    expect(screen.getByText('Active')).toBeVisible()
+    roster = { agents: [agent('Active', { status: 'idle' })], runningCount: 0 }
+    view.rerender(<SubagentTaskList conversationId="root" roster={roster} />)
+    expect(screen.getByText('Active')).not.toBeVisible()
+    expect(screen.queryByText(/已休眠|可继续/)).not.toBeInTheDocument()
+    roster = { agents: [agent('Active', { status: 'running' })], runningCount: 1 }
+    view.rerender(<SubagentTaskList conversationId="root" roster={roster} />)
+    expect(screen.getByText('Active')).toBeVisible()
+  })
+
+  it('folds consecutive tool calls into Work while keeping replies visible', async () => {
+    render(<SubagentSidebar target={{ conversationId: 'root', agentId: 'worker' }} />)
+    await flush()
+    expect(screen.getByText('Retained history')).toBeVisible()
+    expect(screen.getByText('read')).not.toBeVisible()
+    const work = screen.getByText(/^Work/)
+    expect(work.closest('details')).not.toHaveAttribute('open')
+    fireEvent.click(work)
+    expect(screen.getByText('read')).toBeVisible()
+    fireEvent.click(work)
+    expect(screen.getByText('read')).not.toBeVisible()
+  })
+
+  it('groups consecutive tools and keeps the user choice while new tool records arrive', async () => {
+    const initial = page({ entries: [
+      { id: 'instruction', kind: 'message', role: 'user', content: 'Inspect the project', timestamp: null },
+      { id: 'line-1-tool-0', kind: 'message', role: 'tool', content: 'read\n{}', timestamp: null },
+      { id: 'line-2-tool-0', kind: 'message', role: 'tool', content: 'glob\n{}', timestamp: null },
+    ] })
+    vi.mocked(invoke).mockImplementation(async command => command === 'chat_subagent_snapshot' ? roster : initial)
+    render(<SubagentSidebar target={{ conversationId: 'root', agentId: 'worker' }} />)
+    await flush()
+    expect(screen.getAllByText(/^Work/)).toHaveLength(1)
+    expect(screen.getByText('glob')).not.toBeVisible()
+    fireEvent.click(screen.getByText(/^Work/))
+    vi.mocked(invoke).mockImplementation(async command => command === 'chat_subagent_snapshot' ? roster : page({ reset: false,
+      entries: [{ id: 'line-3-tool-0', kind: 'message', role: 'tool', content: 'grep\n{}', timestamp: null }] }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(screen.getAllByText(/^Work/)).toHaveLength(1)
+    expect(screen.getByText(/^Work/)).toHaveTextContent('3')
+    expect(screen.getByText('read')).toBeVisible()
+    expect(screen.getByText('glob')).toBeVisible()
+    expect(screen.getByText('grep')).toBeVisible()
+  })
+
   it('opens the selected activity in the sidebar and closes the activity dialog', async () => {
     const open = vi.fn()
     const unsubscribe = onDockSubagentRequest(open)

@@ -2,16 +2,23 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GitRepoState } from '../../api/dockContracts'
 import { WorkspaceActionsMenu } from './WorkspaceActionsMenu'
+import { getNotices } from '../../components/appNoticeStore'
+import type { SubagentRoster } from '../../api/subagents'
+import type { BackgroundTaskInfo } from '../../api/tauri'
 
 const mocks = vi.hoisted(() => ({
   badge: { state: null as GitRepoState | null, diffStat: null, loading: false },
   badgeWorkdirs: [] as string[],
   applyMutationState: vi.fn(),
   refresh: vi.fn().mockResolvedValue(undefined),
-  tasks: [] as Array<{ status: string; startedAtMs: number }>,
+  tasks: [] as BackgroundTaskInfo[],
+  stopBackgroundTask: vi.fn(),
   getBranches: vi.fn(),
   panelChoice: new Map<string, boolean>(),
   itemOverrides: {} as Record<string, boolean>,
+  rememberedEditor: null as string | null,
+  rememberEditor: vi.fn(),
+  roster: null as SubagentRoster | null,
   generateCommitMessage: vi.fn(),
   dockApi: {
     availableEditors: vi.fn(),
@@ -37,14 +44,14 @@ vi.mock('./useGitBadge', () => ({
     return { ...mocks.badge, applyMutationState: mocks.applyMutationState, refresh: mocks.refresh }
   },
 }))
-vi.mock('../useBackgroundTasks', () => ({ useBackgroundTasks: () => mocks.tasks }))
-vi.mock('../useSubagentRoster', () => ({ useSubagentRoster: () => ({ roster: null, refresh: vi.fn() }) }))
+vi.mock('../useBackgroundTasks', () => ({ useBackgroundTasks: () => mocks.tasks, stopBackgroundTask: mocks.stopBackgroundTask }))
+vi.mock('../useSubagentRoster', () => ({ useSubagentRoster: () => ({ roster: mocks.roster, refresh: vi.fn() }) }))
 vi.mock('../AgentAvatar', () => ({ AgentAvatar: () => null }))
 vi.mock('../AgentProgress', () => ({ AgentStatus: () => null }))
 vi.mock('../api', () => ({ chatApi: { getBranches: mocks.getBranches, generateCommitMessage: mocks.generateCommitMessage } }))
 vi.mock('../persistence', () => ({
-  getRememberedEditor: () => null,
-  rememberEditor: vi.fn(),
+  getRememberedEditor: () => mocks.rememberedEditor,
+  rememberEditor: mocks.rememberEditor,
   getWorkspacePanelOpen: (id: string) => mocks.panelChoice.get(id) ?? null,
   rememberWorkspacePanelOpen: (id: string, open: boolean) => { mocks.panelChoice.set(id, open) },
   getWorkspaceItemOverrides: () => mocks.itemOverrides,
@@ -61,8 +68,13 @@ const ready: GitRepoState = {
   entries: [{ path: 'a.txt', oldPath: null, indexStatus: ' ', worktreeStatus: 'M', kind: 'modified', staged: false, conflicted: false, untracked: false }],
 }
 
+const runningTask: BackgroundTaskInfo = {
+  id: 'build', source: 'builtin', kind: 'bash', title: 'npm run build', status: 'running',
+  summary: 'Building the frontend', elapsedSecs: 72, startedAtMs: 1,
+}
+
 function openPanel(props: Partial<Parameters<typeof WorkspaceActionsMenu>[0]> = {}) {
-  render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen lang="zh" {...props} />)
+  render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen inlineAllowed={false} lang="zh" {...props} />)
   fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
   return screen.getByRole('dialog', { name: '工作区' })
 }
@@ -71,8 +83,13 @@ beforeEach(() => {
   mocks.badge = { state: ready, diffStat: null, loading: false }
   mocks.badgeWorkdirs = []
   mocks.tasks = []
+  mocks.stopBackgroundTask.mockResolvedValue(undefined)
   mocks.panelChoice.clear()
   mocks.itemOverrides = {}
+  mocks.rememberedEditor = null
+  mocks.roster = null
+  mocks.dockApi.openInEditor.mockResolvedValue(undefined)
+  mocks.dockApi.fsOpenPath.mockResolvedValue({ path: '', kind: 'dir' })
   mocks.generateCommitMessage.mockRejectedValue(new Error('no model'))
   mocks.dockApi.gitPublishReadiness.mockResolvedValue({ ready: true, account: 'me', hint: '' })
   mocks.getBranches.mockResolvedValue([])
@@ -92,9 +109,99 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe('WorkspaceActionsMenu', () => {
+  it('keeps running subagents visible while folding finished ones', () => {
+    const baseAgent = { parentId: 'main', generation: 1, agentType: 'scout', depth: 1, lastActivity: 0,
+      activity: null, model: null, progress: null, revivable: true, reviveError: null }
+    mocks.roster = { agents: [
+      { ...baseAgent, id: 'active', displayName: 'Active', status: 'running' },
+      { ...baseAgent, id: 'finished', displayName: 'Finished', status: 'parked' },
+    ], runningCount: 1 }
+    const panel = openPanel()
+    expect(within(panel).getByText('Active')).toBeVisible()
+    expect(within(panel).getByText('Finished')).not.toBeVisible()
+    fireEvent.click(within(panel).getByText(/已结束/))
+    expect(within(panel).getByText('Finished')).toBeVisible()
+    expect(within(panel).queryByText('已休眠')).not.toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: '停止子代理 Active' })).toBeVisible()
+  })
+
+  it.each([
+    ['vscode', 'VS Code'], ['cursor', 'Cursor'], ['zed', 'Zed'], ['windsurf', 'Windsurf'],
+  ])('shows the %s logo in the menu and primary button and opens that editor', async (id, label) => {
+    mocks.dockApi.availableEditors.mockResolvedValue(['vscode', 'cursor', 'zed', 'windsurf'])
+    const panel = openPanel()
+    await within(panel).findByRole('button', { name: '用 VS Code 打开' })
+    fireEvent.click(within(panel).getByRole('button', { name: '选择打开方式' }))
+    const item = screen.getByRole('menuitemradio', { name: label })
+    expect(item.querySelector('.lucide-code-xml')).toBeNull()
+    expect(item.querySelector('svg, img, [style*="mask"]')).not.toBeNull()
+    fireEvent.click(item)
+    await waitFor(() => expect(mocks.dockApi.openInEditor).toHaveBeenCalledWith('/repo', id))
+    const primary = within(panel).getByRole('button', { name: `用 ${label} 打开` })
+    expect(primary.querySelector('.lucide-code-xml')).toBeNull()
+    expect(primary.querySelector('svg, img, [style*="mask"]')).not.toBeNull()
+  })
+
+  it('offers the detected editor and file manager even when only one editor is installed', async () => {
+    const panel = openPanel()
+    await within(panel).findByRole('button', { name: '用 VS Code 打开' })
+    fireEvent.click(within(panel).getByRole('button', { name: '选择打开方式' }))
+    const menu = screen.getByRole('menu')
+    expect(within(menu).getByRole('menuitemradio', { name: 'VS Code' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: '文件管理器' }))
+    await waitFor(() => expect(mocks.rememberEditor).toHaveBeenCalledWith('file-manager'))
+    expect(mocks.dockApi.fsOpenPath).toHaveBeenCalledWith('/repo', '', 'open')
+    fireEvent.click(within(panel).getByRole('button', { name: '用 文件管理器 打开' }))
+    await waitFor(() => expect(mocks.dockApi.fsOpenPath).toHaveBeenCalledTimes(2))
+    expect(mocks.dockApi.openInEditor).not.toHaveBeenCalled()
+  })
+
+  it.each(['missing', 'error'])('falls back to the file manager when editor detection is %s', async (scenario) => {
+    if (scenario === 'error') mocks.dockApi.availableEditors.mockRejectedValue(new Error('detection failed'))
+    else mocks.dockApi.availableEditors.mockResolvedValue([])
+    mocks.rememberedEditor = 'vscode'
+    const panel = openPanel()
+    fireEvent.click(await within(panel).findByRole('button', { name: '用 文件管理器 打开' }))
+    await waitFor(() => expect(mocks.dockApi.fsOpenPath).toHaveBeenCalledWith('/repo', '', 'open'))
+    expect(within(panel).queryByRole('button', { name: '用 VS Code 打开' })).not.toBeInTheDocument()
+    expect(mocks.dockApi.openInEditor).not.toHaveBeenCalled()
+  })
+
+  it('restores a file manager preference when editors are available', async () => {
+    mocks.rememberedEditor = 'file-manager'
+    const panel = openPanel()
+    fireEvent.click(within(panel).getByRole('button', { name: '选择打开方式' }))
+    const menu = screen.getByRole('menu')
+    await within(menu).findByRole('menuitemradio', { name: 'VS Code' })
+    expect(within(menu).getByRole('menuitemradio', { name: '文件管理器' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(panel).getByRole('button', { name: '用 文件管理器 打开' })).toBeInTheDocument()
+  })
+
+  it('updates the primary button after switching editors and preserves it on launch failure', async () => {
+    mocks.dockApi.availableEditors.mockResolvedValue(['vscode', 'cursor'])
+    mocks.rememberedEditor = 'cursor'
+    const panel = openPanel()
+    await within(panel).findByRole('button', { name: '用 Cursor 打开' })
+    fireEvent.click(within(panel).getByRole('button', { name: '选择打开方式' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'VS Code' }))
+    await waitFor(() => expect(mocks.rememberEditor).toHaveBeenCalledWith('vscode'))
+    expect(mocks.dockApi.openInEditor).toHaveBeenCalledWith('/repo', 'vscode')
+    expect(within(panel).getByRole('button', { name: '用 VS Code 打开' })).toBeInTheDocument()
+
+    mocks.dockApi.openInEditor.mockRejectedValue(new Error('Editor launch failed'))
+    mocks.rememberEditor.mockClear()
+    fireEvent.click(within(panel).getByRole('button', { name: '选择打开方式' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Cursor' }))
+    await waitFor(() => expect(getNotices().some((notice) => notice.message === 'Editor launch failed')).toBe(true))
+    expect(mocks.rememberEditor).not.toHaveBeenCalled()
+    expect(within(panel).getByRole('button', { name: '用 VS Code 打开' })).toBeInTheDocument()
+  })
+
   it('reads Git only while the panel is visible', () => {
     render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen lang="zh" />)
     expect(mocks.badgeWorkdirs.every((workdir) => workdir === '')).toBe(true)
@@ -230,9 +337,48 @@ describe('WorkspaceActionsMenu', () => {
   })
 
   it('shows running tasks with a count badge', () => {
-    mocks.tasks = [{ status: 'running', startedAtMs: 1 }]
+    mocks.tasks = [runningTask]
     const panel = openPanel()
     expect(within(panel).getByLabelText('1 个后台任务运行中')).toHaveTextContent('1')
+  })
+
+  it('shows task names and progress directly, folds finished tasks, and opens the task panel', () => {
+    mocks.tasks = [runningTask, { ...runningTask, id: 'done', title: 'Old build', summary: 'Previous build completed', status: 'completed', elapsedSecs: 999 }]
+    const onOpenTasks = vi.fn()
+    const panel = openPanel({ onOpenTasks })
+    expect(within(panel).getByText('后台任务')).toBeVisible()
+    expect(within(panel).getByText('npm run build')).toBeVisible()
+    expect(within(panel).getByText('Building the frontend')).toBeVisible()
+    expect(within(panel).getByText('1m12s')).toBeVisible()
+    expect(within(panel).getByText('Old build')).not.toBeVisible()
+    fireEvent.click(within(panel).getByText(/已结束/))
+    expect(within(panel).getByText('Old build')).toBeVisible()
+    expect(within(panel).queryByText('16m39s')).not.toBeInTheDocument()
+    fireEvent.click(within(panel).getByRole('button', { name: /npm run build.*Building the frontend/ }))
+    expect(onOpenTasks).toHaveBeenCalledOnce()
+  })
+
+  it('disables duplicate stop clicks and leaves the task visible after a stop failure', async () => {
+    mocks.tasks = [runningTask]
+    let rejectStop: (error: Error) => void = () => { throw new Error('Stop request not started') }
+    mocks.stopBackgroundTask.mockReturnValueOnce(new Promise<void>((_resolve, reject) => { rejectStop = reject }))
+    const panel = openPanel()
+    const stop = within(panel).getByRole('button', { name: '终止 npm run build' })
+    fireEvent.click(stop)
+    expect(stop).toBeDisabled()
+    expect(mocks.stopBackgroundTask).toHaveBeenCalledWith('c1', runningTask)
+    await act(async () => { rejectStop(new Error('Background stop failed')) })
+    expect(stop).toBeEnabled()
+    expect(within(panel).getByText(runningTask.title)).toBeVisible()
+    expect(getNotices().some(notice => notice.message === 'Background stop failed')).toBe(true)
+  })
+
+  it('honors the task visibility preference', () => {
+    mocks.tasks = [runningTask]
+    mocks.itemOverrides = { tasks: false }
+    const panel = openPanel()
+    expect(within(panel).queryByText(runningTask.title)).not.toBeInTheDocument()
+    expect(within(panel).queryByText('后台任务')).not.toBeInTheDocument()
   })
 
   it('stays collapsed for a blank conversation and remembers the choice per conversation', () => {
@@ -243,6 +389,100 @@ describe('WorkspaceActionsMenu', () => {
     expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
     expect(mocks.panelChoice.get('old')).toBe(false)
+  })
+
+  it('never restores an inline preference as an automatic popover on another conversation', () => {
+    mocks.panelChoice.set('saved-open', true)
+    const props = { workdir: '/repo', projectName: 'Repo', dockOpen: true, inlineAllowed: false, lang: 'zh' as const }
+    const view = render(<WorkspaceActionsMenu {...props} conversationId="first" />)
+    view.rerender(<WorkspaceActionsMenu {...props} conversationId="saved-open" />)
+    expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+    expect(mocks.badgeWorkdirs.every((workdir) => !workdir)).toBe(true)
+  })
+
+  it('keeps inline and popover choices separate through window resizing', () => {
+    mocks.panelChoice.set('c1', false)
+    const resize = (width: number) => act(() => {
+      vi.stubGlobal('innerWidth', width)
+      fireEvent(window, new Event('resize'))
+    })
+    resize(1200)
+    render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen={false} lang="zh" />)
+    resize(800)
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    expect(screen.getByRole('dialog', { name: '工作区' })).toBeInTheDocument()
+    resize(1200)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
+    expect(mocks.panelChoice.get('c1')).toBe(false)
+    resize(800)
+    expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+  })
+
+  it('restores an explicitly opened blank panel after narrowing and widening the window', () => {
+    render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="new" dockOpen={false} blank lang="zh" />)
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    expect(mocks.panelChoice.get('new')).toBe(true)
+    act(() => { vi.stubGlobal('innerWidth', 800); fireEvent(window, new Event('resize')) })
+    expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+    act(() => { vi.stubGlobal('innerWidth', 1200); fireEvent(window, new Event('resize')) })
+    expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
+  })
+
+  it('closes a transient popover when switching conversations or workdirs', () => {
+    const props = { workdir: '/repo', projectName: 'Repo', dockOpen: true, inlineAllowed: false, lang: 'zh' as const }
+    const view = render(<WorkspaceActionsMenu {...props} conversationId="first" />)
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    view.rerender(<WorkspaceActionsMenu {...props} conversationId="second" />)
+    expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    view.rerender(<WorkspaceActionsMenu {...props} workdir="/other" conversationId="second" />)
+    expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+  })
+
+  it('unmounts nested menus when leaving the conversation', async () => {
+    const props = { workdir: '/repo', projectName: 'Repo', dockOpen: false, inlineAllowed: false, lang: 'zh' as const }
+    const view = render(<WorkspaceActionsMenu {...props} conversationId="first" />)
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    await screen.findByRole('button', { name: '用 VS Code 打开' })
+    fireEvent.click(screen.getByRole('button', { name: '选择打开方式' }))
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    view.rerender(<WorkspaceActionsMenu {...props} conversationId="second" />)
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+  })
+
+  it('shows the default inline panel after the first message, but respects a manual collapse', () => {
+    const props = { workdir: '/repo', projectName: 'Repo', conversationId: 'new', dockOpen: false, lang: 'zh' as const }
+    const view = render(<WorkspaceActionsMenu {...props} blank />)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
+    view.rerender(<WorkspaceActionsMenu {...props} blank={false} />)
+    expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    view.unmount()
+    render(<WorkspaceActionsMenu {...props} blank={false} />)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
+  })
+
+  it('allows the inline panel beside the dock when the chat pane has enough room', () => {
+    const pane = document.createElement('div')
+    pane.className = 'chat-main-pane'
+    document.body.append(pane)
+    vi.spyOn(pane, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 52, 1200, 800))
+    try {
+      render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen lang="zh" />)
+      expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
+    } finally { pane.remove() }
+  })
+
+  it('does not automatically show the panel in a short window', () => {
+    vi.stubGlobal('innerHeight', 200)
+    render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen={false} lang="zh" />)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
+  })
+
+  it('hides the empty task section', () => {
+    const panel = openPanel()
+    expect(within(panel).queryByText('任务')).not.toBeInTheDocument()
   })
 
   it('anchors the popover to the trigger and plays the exit animation before unmounting', () => {

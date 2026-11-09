@@ -1,8 +1,8 @@
 import { StrictMode } from 'react'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type BackgroundTaskInfo } from '../api/tauri'
-import { useBackgroundTasks } from './useBackgroundTasks'
+import { stopBackgroundTask, useBackgroundTasks } from './useBackgroundTasks'
 import { BackgroundTasksPanel } from './dock/BackgroundTasksPanel'
 
 vi.mock('../api/tauri', () => ({ api: {
@@ -37,6 +37,46 @@ const running: BackgroundTaskInfo = {
 }
 
 describe('background task consumers', () => {
+  it('deduplicates stops across consumers and updates only the matching task source', async () => {
+    const external: BackgroundTaskInfo = { ...running, source: 'external', title: 'External build' }
+    vi.mocked(api.chatListBackgroundTasks).mockResolvedValue([running, external])
+    let confirmStop: () => void = () => { throw new Error('Stop request not started') }
+    vi.mocked(api.chatKillBackgroundCommand).mockReturnValueOnce(new Promise<void>(resolve => { confirmStop = resolve }))
+    const { result } = renderHook(() => useBackgroundTasks('conv_dedupe'))
+    await act(async () => { await Promise.resolve() })
+    const requests: Promise<void>[] = []
+    await act(async () => {
+      requests.push(stopBackgroundTask('conv_dedupe', running), stopBackgroundTask('conv_dedupe', running))
+      await Promise.resolve()
+    })
+    expect(api.chatKillBackgroundCommand).toHaveBeenCalledTimes(1)
+    expect(result.current.map(task => task.status)).toEqual(['running', 'running'])
+    await act(async () => { confirmStop(); await Promise.all(requests) })
+    expect(result.current.map(task => task.status)).toEqual(['stopped', 'running'])
+  })
+
+  it('keeps a failed stop running and allows a retry', async () => {
+    vi.mocked(api.chatListBackgroundTasks).mockResolvedValue([running])
+    vi.mocked(api.chatKillBackgroundCommand).mockRejectedValueOnce(new Error('Stop failed')).mockResolvedValueOnce(undefined)
+    const { result } = renderHook(() => useBackgroundTasks('conv_retry'))
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await expect(stopBackgroundTask('conv_retry', running)).rejects.toThrow('Stop failed') })
+    expect(result.current[0].status).toBe('running')
+    await act(async () => { await stopBackgroundTask('conv_retry', running) })
+    expect(result.current[0].status).toBe('stopped')
+  })
+
+  it('uses the current conversation for external tasks without a separate conversation id', async () => {
+    const external: BackgroundTaskInfo = { ...running, source: 'external' }
+    vi.mocked(api.chatListBackgroundTasks).mockResolvedValue([external])
+    vi.mocked(api.chatStopExternalBackgroundTask).mockResolvedValueOnce(undefined)
+    const { result } = renderHook(() => useBackgroundTasks('conv_external'))
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await stopBackgroundTask('conv_external', external) })
+    expect(api.chatStopExternalBackgroundTask).toHaveBeenCalledWith('conv_external', running.id)
+    expect(result.current[0].status).toBe('stopped')
+  })
+
   it('shares each request between subscribers and the open task panel', async () => {
     render(<>
       <TaskSubscriber conversationId="conv_shared" />

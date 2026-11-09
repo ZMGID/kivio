@@ -1,6 +1,7 @@
 import { subagentProgress } from '../api/subagents'
 
 export function AgentStatus({ state, zh }: { state: string; zh: boolean }) {
+  if (state === 'idle' || state === 'parked') return null
   const label = (() => {
     switch (state) {
       case 'running': return zh ? '运行中' : 'Running'
@@ -9,8 +10,6 @@ export function AgentStatus({ state, zh }: { state: string; zh: boolean }) {
       case 'error': return zh ? '失败' : 'Failed'
       case 'aborted':
       case 'cancelled': return zh ? '已中断' : 'Cancelled'
-      case 'idle': return zh ? '可继续' : 'Ready'
-      case 'parked': return zh ? '已休眠' : 'Parked'
       default: return zh ? '等待运行' : 'Queued'
     }
   })()

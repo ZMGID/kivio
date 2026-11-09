@@ -36,7 +36,7 @@ export interface ConversationTitlebarControlsProps {
   busy: boolean
   onOpenPopout: (conversationId: string) => void
   onToggleDock: () => void
-  /** 有工作目录的会话显示工作区面板（打开 / 分支 / 提交推送 / 变更 / 历史分支 / 任务）。 */
+  /** 关联项目且有工作目录的会话显示工作区面板。 */
   workdir: string
   /** 关联项目名；无项目对话不显示 Git。 */
   projectName: string | null
@@ -149,7 +149,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
             </IconButton>
           </div>
         )}
-        {!usesChatRuntime && workdir && (
+        {!usesChatRuntime && projectName && workdir && (
           <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} blank={workspaceBlank} environment={environment} usage={usage} contextState={contextState} />
         )}
         {!usesChatRuntime && !dockOpen && (

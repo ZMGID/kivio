@@ -24,7 +24,7 @@ type PopoutTitlebarProps = {
   onApprovalPolicyChange: (policy: string) => void | Promise<void>
   onSandboxChange: (value: string) => void | Promise<void>
   busy: boolean
-  /** 有工作目录时显示工作区面板；弹出窗口没有右栏，面板始终以浮层打开。 */
+  /** 关联项目且有工作目录时显示工作区面板；弹出窗口始终以浮层打开。 */
   workdir: string
   projectName: string | null
   lang: Lang
@@ -118,7 +118,7 @@ function TitlebarPills({
       >
         {title}
       </div>
-      {runtime.kind !== 'chat' && workdir && (
+      {runtime.kind !== 'chat' && projectName && workdir && (
         <WorkspaceActionsMenu
           workdir={workdir}
           projectName={projectName}

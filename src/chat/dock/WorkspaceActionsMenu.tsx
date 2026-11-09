@@ -1,15 +1,18 @@
 // 标题栏工作区面板，参照 T3 Code 的 ThreadDetailsPanel：
 // 段一 = 项目行 / Open in 拆分按钮；段二 = 分支 / Git 主操作拆分按钮 / Changes（仅项目对话）；
-// 段三 = 历史分支 / 任务；段四 = 子代理。
+// 段三 = 历史分支；段四 = 后台任务 / 子代理。
 // Git 数据来自 useGitBadge（只在面板可见时订阅），主操作规则见 workspaceGitAction。
 // 位置：浮层贴触发按钮右下展开；内联常驻时贴对话区右缘，并通过 --chat-details-inset 让出内容宽度。
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, ArrowDown, ArrowUp, Check, CloudDownload, CloudUpload, Code2, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitFork, Globe, Laptop, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu } from 'lucide-react'
+import CursorIcon from '@lobehub/icons/es/Cursor/components/Mono'
+import WindsurfIcon from '@lobehub/icons/es/Windsurf/components/Mono'
+import { Activity, ArrowDown, ArrowUp, Bot, Check, ChevronRight, CloudDownload, CloudUpload, Code2, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitFork, Globe, Laptop, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu, TerminalSquare } from 'lucide-react'
 import { IconButton } from '../../components/Button'
 import { notifyError } from '../../components/appNoticeStore'
 import { i18n, type Lang } from '../../components/i18n'
 import type { GitBranchesResult } from '../../api/dockContracts'
+import type { BackgroundTaskInfo } from '../../api/tauri'
 import { getRememberedEditor, getWorkspaceItemOverrides, getWorkspacePanelOpen, rememberEditor, rememberWorkspaceItemOverrides, rememberWorkspacePanelOpen } from '../persistence'
 import { chatApi, type ConversationBranch } from '../api'
 import type { ConversationContextState } from '../types'
@@ -20,10 +23,10 @@ import { requestDockSubagent } from './dockPreview'
 import { AgentAvatar } from '../AgentAvatar'
 import { AgentStatus } from '../AgentProgress'
 import { useSubagentRoster } from '../useSubagentRoster'
-import { subagentsApi } from '../../api/subagents'
+import { subagentsApi, type SubagentView } from '../../api/subagents'
 import { useGitBadge } from './useGitBadge'
-import { useBackgroundTasks } from '../useBackgroundTasks'
-import { partitionTasks } from '../backgroundTasks'
+import { stopBackgroundTask, useBackgroundTasks } from '../useBackgroundTasks'
+import { formatTaskElapsed, partitionTasks } from '../backgroundTasks'
 import { defaultCommitMessage, resolveGitMenu, resolveGitQuickAction, type GitAction, type GitHint } from './workspaceGitAction'
 import { WorkspaceBranchPicker, type BranchPick } from './WorkspaceBranchPicker'
 import { WorkspaceItemsMenu } from './WorkspaceItemsMenu'
@@ -65,6 +68,53 @@ type WorkspaceActionsMenuProps = {
 }
 
 const EDITOR_LABELS: Record<string, string> = { vscode: 'VS Code', cursor: 'Cursor', zed: 'Zed', windsurf: 'Windsurf' }
+
+function OpenTargetIcon({ id }: { id: string }) {
+  const className = 'size-4 shrink-0 text-neutral-700 dark:text-neutral-200'
+  switch (id) {
+    case 'vscode': return <img src="/editor-icons/vscode.png" alt="" width={16} height={16} className={className} draggable={false} />
+    case 'cursor': return <CursorIcon size={16} className={className} aria-hidden="true" />
+    case 'windsurf': return <WindsurfIcon size={16} className={className} aria-hidden="true" />
+    case 'zed': return <span aria-hidden="true" className={`${className} bg-current`} style={{ maskImage: 'url("/editor-icons/zed.svg")', maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center' }} />
+    case 'file-manager': return <FolderOpen className={PANEL_ICON} />
+    default: return <Code2 className={PANEL_ICON} />
+  }
+}
+
+function WorkspaceTaskRow({ task, conversationId, lang, onOpen }: {
+  task: BackgroundTaskInfo; conversationId: string; lang: Lang; onOpen?: () => void
+}) {
+  const t = i18n[lang]
+  const [stopping, setStopping] = useState(false)
+  const running = task.status === 'running'
+  const Icon = task.kind === 'local_agent' || task.kind === 'remote_agent' ? Bot : TerminalSquare
+  const status = task.status === 'completed' ? t.chatBgStatusCompleted
+    : task.status === 'failed' ? t.chatBgStatusFailed : t.chatBgStatusStopped
+  const stop = async () => {
+    setStopping(true)
+    try { await stopBackgroundTask(conversationId, task) }
+    catch (error) { notifyError(error instanceof Error ? error.message : String(error)) }
+    finally { setStopping(false) }
+  }
+  return <div className="group/task flex items-center">
+    <PanelRow icon={<Icon className={PANEL_ICON} />} title={[task.title, task.summary].filter(Boolean).join('\n')} onClick={onOpen}>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate leading-4">{task.title}</span>
+        {task.summary && <span className="truncate text-[11px] font-normal leading-4 text-neutral-400">{task.summary}</span>}
+      </span>
+      <span className={`shrink-0 text-[11px] font-normal tabular-nums ${task.status === 'failed' ? 'text-red-500' : 'text-neutral-400'}`}>
+        {running ? formatTaskElapsed(task.elapsedSecs) : status}
+      </span>
+    </PanelRow>
+    {running && <IconButton
+      label={t.chatKillNamed.replace('{name}', task.title)} size="sm" variant="ghost" disabled={stopping}
+      className="shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/task:opacity-100"
+      onClick={() => void stop()}
+    >
+      {stopping ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} strokeWidth={2} />}
+    </IconButton>}
+  </div>
+}
 const ITEM = 'kv-menu-row w-full text-neutral-800 transition-colors hover:bg-neutral-100 disabled:opacity-50'
 /** 动作结果在按钮原位停留的时长。 */
 const SUCCESS_VISIBLE_MS = 4000
@@ -74,11 +124,12 @@ const PANEL_GAP = 16
 const PANEL_EDGE = 8
 /** 内联展开后对话列至少保留的宽度，否则改为浮层。 */
 const MIN_CHAT_WIDTH = 600
+const MIN_INLINE_HEIGHT = 240
 
 /** 依据对话主区实际宽度（已扣除侧栏）判断能否内联常驻。 */
-function useInlineRoom(enabled: boolean, conversationId: string | null) {
+function useInlineRoom(enabled: boolean, dockOpen: boolean) {
   const [room, setRoom] = useState(false)
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!enabled) {
       setRoom(false)
       return
@@ -86,7 +137,7 @@ function useInlineRoom(enabled: boolean, conversationId: string | null) {
     const pane = document.querySelector<HTMLElement>('.chat-main-pane')
     const measure = () => {
       const width = pane?.getBoundingClientRect().width || window.innerWidth
-      setRoom(width - PANEL_WIDTH - PANEL_GAP >= MIN_CHAT_WIDTH)
+      setRoom((!dockOpen || Boolean(pane)) && width - PANEL_WIDTH - PANEL_GAP >= MIN_CHAT_WIDTH && window.innerHeight >= MIN_INLINE_HEIGHT)
     }
     measure()
     const observer = pane && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
@@ -96,11 +147,16 @@ function useInlineRoom(enabled: boolean, conversationId: string | null) {
       observer?.disconnect()
       window.removeEventListener('resize', measure)
     }
-  }, [enabled, conversationId])
-  return room
+  }, [enabled, dockOpen])
+  return enabled && room
 }
 
-export function WorkspaceActionsMenu({
+export function WorkspaceActionsMenu(props: WorkspaceActionsMenuProps) {
+  // 对话或工作目录切换时，卸载旧面板及其浮层、子菜单和订阅。
+  return <WorkspaceActionsPanel key={`${props.conversationId ?? 'draft'}:${props.workdir}`} {...props} />
+}
+
+function WorkspaceActionsPanel({
   workdir,
   projectName,
   conversationId,
@@ -116,22 +172,23 @@ export function WorkspaceActionsMenu({
   contextState,
 }: WorkspaceActionsMenuProps) {
   const t = i18n[lang]
-  const inline = useInlineRoom(inlineAllowed && !dockOpen, conversationId)
-  // 用户按对话的展开/收起选择；没选过时，空白新对话默认不展开（T3 也让空草稿保持安静）。
-  const [choice, setChoiceState] = useState<boolean | null>(() => conversationId ? getWorkspacePanelOpen(conversationId) : null)
-  useEffect(() => { setChoiceState(conversationId ? getWorkspacePanelOpen(conversationId) : null) }, [conversationId])
+  const inline = useInlineRoom(inlineAllowed, dockOpen)
+  const [inlineChoice, setInlineChoice] = useState(() => conversationId ? getWorkspacePanelOpen(conversationId) : null)
+  const [popoverOpen, setPopoverOpen] = useState(false)
   const setChoice = useCallback((next: boolean) => {
-    setChoiceState(next)
-    // 只记内联常驻的选择；浮层是临时的，不影响下次。
-    if (conversationId && inline) rememberWorkspacePanelOpen(conversationId, next)
+    if (inline) {
+      setInlineChoice(next)
+      if (conversationId) rememberWorkspacePanelOpen(conversationId, next)
+    } else setPopoverOpen(next)
   }, [conversationId, inline])
-  const open = inline ? (choice ?? !blank) : choice === true
+  const open = inline ? (inlineChoice ?? (Boolean(conversationId) && !blank)) : popoverOpen
   const presence = usePresence(open)
   const setOpen = (next: boolean) => { if (next || !inline) setChoice(next) }
   const showGit = Boolean(projectName)
   const { state, diffStat, loading: gitLoading, applyMutationState, refresh } = useGitBadge(open && showGit ? workdir : '', true)
   const tasks = useBackgroundTasks(conversationId)
-  const runningTasks = partitionTasks(tasks).running.length
+  const { running: activeTasks, finished: finishedTasks } = partitionTasks(tasks)
+  const runningTasks = activeTasks.length
   const [place, setPlace] = useState<{ top: number; right: number }>({ top: 0, right: 8 })
   const wrapRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
@@ -144,6 +201,7 @@ export function WorkspaceActionsMenu({
     return () => window.clearTimeout(timer)
   }, [done])
   const [editors, setEditors] = useState<string[] | null>(null)
+  const [selectedOpenTarget, setSelectedOpenTarget] = useState(getRememberedEditor)
   const [branchData, setBranchData] = useState<GitBranchesResult | null>(null)
   const [itemOverrides, setItemOverrides] = useState<Record<string, boolean>>(() => getWorkspaceItemOverrides())
   const [itemsMenu, setItemsMenu] = useState<{ x: number; y: number } | null>(null)
@@ -171,8 +229,8 @@ export function WorkspaceActionsMenu({
     return () => { cancelled = true }
   }, [open, conversationId, historyEnabled])
 
-  // 浮层在切到内联模式时作废，避免回到浮层模式后自己弹出来。
-  useEffect(() => { if (!inline) setChoiceState((prev) => (prev === true ? null : prev)) }, [inline])
+  // 浮层只临时打开，恢复内联布局后即关闭，不能覆盖常驻面板的收起选择。
+  useLayoutEffect(() => { if (inline) setPopoverOpen(false) }, [inline])
   // 浮层：顶边贴按钮下沿、右边与按钮右缘对齐；内联：贴对话区右缘，与标题栏下沿留同样间距。
   useLayoutEffect(() => {
     if (!presence.present) return
@@ -188,7 +246,7 @@ export function WorkspaceActionsMenu({
     return () => window.removeEventListener('resize', measure)
   }, [presence.present, inline])
   // 内联展开时把主区右侧让出来，对话列往左挤；浮层模式不让位。
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open || !inline) return
     const root = document.documentElement
     root.style.setProperty('--chat-details-inset', `${PANEL_WIDTH + PANEL_GAP}px`)
@@ -217,9 +275,9 @@ export function WorkspaceActionsMenu({
 
   // 打开浮层时把焦点移进面板，键盘可直接 Tab 操作；内联常驻不抢焦点。
   useEffect(() => {
-    if (!open || inline || choice !== true) return
+    if (!open || inline) return
     panelRef.current?.querySelector<HTMLElement>('button:not(:disabled)')?.focus({ preventScroll: true })
-  }, [open, inline, choice])
+  }, [open, inline])
 
   useEffect(() => {
     if (!open) return
@@ -248,9 +306,9 @@ export function WorkspaceActionsMenu({
 
   const name = projectName || workdir.split(/[\\/]/).filter(Boolean).pop() || workdir
   const editorList = editors ?? []
-  // PATH 探测为空时仍显示 VS Code 行：真的找不到时由后端报错提示。
-  const preferred = editorList.find((id) => id === getRememberedEditor()) ?? editorList[0] ?? 'vscode'
-  const editorName = (id: string) => EDITOR_LABELS[id] ?? id
+  const openTargets = [...editorList, 'file-manager']
+  const preferred = openTargets.find((id) => id === selectedOpenTarget) ?? editorList[0] ?? 'file-manager'
+  const targetName = (id: string) => id === 'file-manager' ? t.workspaceFileManager : EDITOR_LABELS[id] ?? id
   const remotesLoaded = branchData !== null
   const hasRemote = (branchData?.remotes.length ?? 0) > 0
   const quick = resolveGitQuickAction(isRepo ? state : null, hasRemote, Boolean(busy) || !remotesLoaded)
@@ -309,9 +367,13 @@ export function WorkspaceActionsMenu({
     }
   }
 
-  const openInEditor = (editor: string) => {
-    rememberEditor(editor)
-    void run(() => dockApi.openInEditor(workdir, editor))
+  const openInTarget = (target: string) => {
+    void run(async () => {
+      if (target === 'file-manager') await dockApi.fsOpenPath(workdir, '', 'open')
+      else await dockApi.openInEditor(workdir, target)
+      rememberEditor(target)
+      setSelectedOpenTarget(target)
+    })
   }
 
   const pickBranch = (pick: BranchPick) => {
@@ -405,10 +467,38 @@ export function WorkspaceActionsMenu({
       .finally(() => setHistorySwitching(false))
   }
   const activeHistory = historyList?.find((branch) => branch.active)
+  const runningAgents = roster?.agents.filter(agent => agent.status === 'running') ?? []
+  const finishedAgents = roster?.agents.filter(agent => agent.status !== 'running') ?? []
+  const agentRow = (agent: SubagentView) => (
+    <div key={agent.id} className="group/agent flex items-center">
+      <PanelRow
+        icon={<AgentAvatar agentId={agent.id} />}
+        title={agent.activity ?? undefined}
+        onClick={() => { setOpen(false); if (conversationId) requestDockSubagent({ conversationId, agentId: agent.id }) }}
+      >
+        <span className="min-w-0 flex-1 truncate">{agent.displayName || agent.id}</span>
+        <AgentStatus state={agent.status} zh={lang === 'zh'} />
+      </PanelRow>
+      {agent.status === 'running' && conversationId && (
+        <IconButton
+          label={t.workspaceStopSubagent.replace('{name}', agent.displayName || agent.id)}
+          size="sm"
+          variant="ghost"
+          className="shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/agent:opacity-100"
+          onClick={() => void run(async () => {
+            await subagentsApi.kill({ conversationId, agentId: agent.id, expectedGeneration: agent.generation })
+            refreshRoster()
+          })}
+        >
+          <Square size={12} strokeWidth={2} />
+        </IconButton>
+      )}
+    </div>
+  )
 
   const tasksLabel = runningTasks > 0 ? t.chatBgJobsRunning.replace('{n}', String(runningTasks)) : t.dockTabTasks
   const showHistoryRow = show.history && Boolean(historyBranches) && (historyList?.length ?? 0) > 1
-  const conversationSection = conversationId && (showHistoryRow || show.tasks) ? (
+  const conversationSection = conversationId && showHistoryRow ? (
     <PanelSection>
       {showHistoryRow && historyBranches && (
         <SplitRow
@@ -425,17 +515,6 @@ export function WorkspaceActionsMenu({
           ))}
         />
       )}
-      {show.tasks && <PanelRow
-        icon={<Activity className={`${PANEL_ICON} ${runningTasks > 0 ? '!text-emerald-500' : ''}`} />}
-        onClick={onOpenTasks ? () => { setOpen(false); onOpenTasks() } : undefined}
-      >
-        <span className="min-w-0 flex-1 truncate">{t.dockTabTasks}</span>
-        {runningTasks > 0 && (
-          <span key={runningTasks} title={tasksLabel} aria-label={tasksLabel} className="chat-motion-pop shrink-0 rounded-full bg-emerald-500/10 px-1.5 text-[11px] font-medium tabular-nums text-emerald-600 dark:text-emerald-400">
-            {runningTasks}
-          </span>
-        )}
-      </PanelRow>}
     </PanelSection>
   ) : null
 
@@ -517,16 +596,17 @@ export function WorkspaceActionsMenu({
               <span className="min-w-0 flex-1 truncate">{name}</span>
             </PanelRow>}
             {show.openIn && <SplitRow
-              icon={<Code2 className={PANEL_ICON} />}
-              label={t.workspaceOpenIn.replace('{editor}', editorName(preferred))}
-              onPrimary={() => openInEditor(preferred)}
-              menuLabel={t.workspaceChooseEditor}
-              menu={editorList.length > 1 ? (close) => editorList.map((id) => (
-                <button key={id} type="button" role="menuitemradio" aria-checked={id === preferred} className={ITEM} onClick={() => { close(); openInEditor(id) }}>
-                  <span className="min-w-0 flex-1 truncate">{editorName(id)}</span>
+              icon={<OpenTargetIcon id={preferred} />}
+              label={t.workspaceOpenIn.replace('{editor}', targetName(preferred))}
+              onPrimary={() => openInTarget(preferred)}
+              menuLabel={t.workspaceChooseOpenTarget}
+              menu={(close) => openTargets.map((id) => (
+                <button key={id} type="button" role="menuitemradio" aria-checked={id === preferred} className={ITEM} onClick={() => { close(); openInTarget(id) }}>
+                  <OpenTargetIcon id={id} />
+                  <span className="min-w-0 flex-1 truncate">{targetName(id)}</span>
                   {id === preferred && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />}
                 </button>
-              )) : null}
+              ))}
             />}
             {show.environment && environment && showGit && (
               <SplitRow
@@ -662,6 +742,28 @@ export function WorkspaceActionsMenu({
 
           {conversationSection}
 
+          {show.tasks && conversationId && tasks.length > 0 && <PanelSection>
+            <div className="flex items-center gap-2 px-2.5 pb-1 pt-1.5 text-[12px] font-medium text-neutral-400">
+              <span className="min-w-0 flex-1">{t.chatBgJobs}</span>
+              {runningTasks > 0 && <span aria-label={tasksLabel} className="shrink-0 text-emerald-600 dark:text-emerald-400">{runningTasks}</span>}
+              {onOpenTasks && <IconButton label={t.dockTabTasks} variant="ghost" size="sm" onClick={() => { setOpen(false); onOpenTasks() }}>
+                <Activity size={14} />
+              </IconButton>}
+            </div>
+            <div className="custom-scrollbar max-h-[13.5rem] overflow-y-auto">
+              {activeTasks.map(task => <WorkspaceTaskRow key={`${task.source}:${task.id}`} task={task} conversationId={conversationId} lang={lang}
+                onOpen={onOpenTasks ? () => { setOpen(false); onOpenTasks() } : undefined} />)}
+              {finishedTasks.length > 0 && <details className="group/finished-tasks">
+                <summary className={`${ITEM} list-none`}>
+                  <ChevronRight size={14} className="shrink-0 transition-transform group-open/finished-tasks:rotate-90" aria-hidden="true" />
+                  {t.chatBgFinished} · {finishedTasks.length}
+                </summary>
+                {finishedTasks.map(task => <WorkspaceTaskRow key={`${task.source}:${task.id}`} task={task} conversationId={conversationId} lang={lang}
+                  onOpen={onOpenTasks ? () => { setOpen(false); onOpenTasks() } : undefined} />)}
+              </details>}
+            </div>
+          </PanelSection>}
+
           {show.subagents && roster && roster.agents.length > 0 && (
             <PanelSection>
               <div className="flex items-center justify-between px-2.5 pb-1 pt-1.5 text-[12px] font-medium text-neutral-400">
@@ -674,32 +776,14 @@ export function WorkspaceActionsMenu({
                 )}
               </div>
               <div className="custom-scrollbar max-h-[13.5rem] overflow-y-auto">
-                {roster.agents.map((agent) => (
-                  <div key={agent.id} className="group/agent flex items-center">
-                    <PanelRow
-                      icon={<AgentAvatar agentId={agent.id} />}
-                      title={agent.activity ?? undefined}
-                      onClick={() => { setOpen(false); if (conversationId) requestDockSubagent({ conversationId, agentId: agent.id }) }}
-                    >
-                      <span className="min-w-0 flex-1 truncate">{agent.displayName || agent.id}</span>
-                      <AgentStatus state={agent.status} zh={lang === 'zh'} />
-                    </PanelRow>
-                    {agent.status === 'running' && conversationId && (
-                      <IconButton
-                        label={t.workspaceStopSubagent.replace('{name}', agent.displayName || agent.id)}
-                        size="sm"
-                        variant="ghost"
-                        className="shrink-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/agent:opacity-100"
-                        onClick={() => void run(async () => {
-                          await subagentsApi.kill({ conversationId, agentId: agent.id, expectedGeneration: agent.generation })
-                          refreshRoster()
-                        })}
-                      >
-                        <Square size={12} strokeWidth={2} />
-                      </IconButton>
-                    )}
-                  </div>
-                ))}
+                {runningAgents.map(agentRow)}
+                {finishedAgents.length > 0 && <details className="group/finished">
+                  <summary className={`${ITEM} list-none`}>
+                    <ChevronRight size={14} className="shrink-0 transition-transform group-open/finished:rotate-90" aria-hidden="true" />
+                    {t.chatBgFinished} · {finishedAgents.length}
+                  </summary>
+                  {finishedAgents.map(agentRow)}
+                </details>}
               </div>
             </PanelSection>
           )}

@@ -33,26 +33,29 @@ export function SubagentTaskList({ conversationId, roster }: { conversationId: s
   if (!roster.agents.length) return null
   const active = roster.agents.filter(agent => agent.status === 'running')
   const finished = roster.agents.filter(agent => agent.status !== 'running')
+  const agentRow = (agent: SubagentView) => <button key={agent.id} type="button" className="kv-agent-list-row" onClick={() => requestDockSubagent({ conversationId, agentId: agent.id })}>
+    <AgentAvatar agentId={agent.id} />
+    <span className="min-w-0 flex-1 truncate font-medium">{agent.displayName || agent.id}</span>
+    <AgentStatus state={displayStatus(agent)} zh={zh} />
+    <ChevronRight size={14} className="shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
+  </button>
   return <section className="kv-agent-task-list" aria-label={zh ? '子代理任务' : 'Subagent tasks'}>
     <header className="flex items-center gap-2 px-2 py-1.5">
       <Users size={15} aria-hidden="true" />
       <h3 className="min-w-0 flex-1 text-xs font-semibold">{zh ? '子代理' : 'Subagents'}</h3>
       <IconButton variant="ghost" aria-haspopup="dialog" label={zh ? '查看子代理活动' : 'View subagent activity'} onClick={() => setShowActivity(true)}><Activity size={15} /></IconButton>
     </header>
-    {([
-      [zh ? '进行中' : 'Active', active],
-      [zh ? '历史' : 'History', finished],
-    ] satisfies [string, SubagentView[]][]).map(([label, agents]) => agents.length > 0 && <section key={label} className="kv-agent-group">
-      <h4>{label}</h4>
-      {agents.map(agent =>
-        <button key={agent.id} type="button" className="kv-agent-list-row" onClick={() => requestDockSubagent({ conversationId, agentId: agent.id })}>
-          <AgentAvatar agentId={agent.id} />
-          <span className="min-w-0 flex-1 truncate font-medium">{agent.displayName || agent.id}</span>
-          <AgentStatus state={displayStatus(agent)} zh={zh} />
-          <ChevronRight size={14} className="shrink-0 text-[var(--text-muted)]" aria-hidden="true" />
-        </button>
-      )}
-    </section>)}
+    {active.length > 0 && <section className="kv-agent-group">
+      <h4>{zh ? '进行中' : 'Active'}</h4>
+      {active.map(agentRow)}
+    </section>}
+    {finished.length > 0 && <details className="kv-agent-group group/finished">
+      <summary className="kv-agent-list-row list-none">
+        <ChevronRight size={14} className="shrink-0 transition-transform group-open/finished:rotate-90" aria-hidden="true" />
+        {zh ? '已结束' : 'Finished'} · {finished.length}
+      </summary>
+      {finished.map(agentRow)}
+    </details>}
     {showActivity && <SubagentDialog title={zh ? '子代理活动' : 'Subagent activity'} onClose={() => setShowActivity(false)}>
       <SubagentActivityList conversationId={conversationId} roster={roster} onSelect={entry => {
         setShowActivity(false)
@@ -205,6 +208,12 @@ function AgentTranscript({ conversationId, agent, entryId }: {
   const selectedLabel = selected && transcriptLifecycleLabel(selected, zh)
   const conversation = entries.filter(entry => isConversationMessage(entry) || transcriptTool(entry)
     || (entry === selected && (entry.role === 'irc' || selectedLabel)))
+  const groups: [SubagentTranscriptEntry, ...SubagentTranscriptEntry[]][] = []
+  for (const entry of conversation) {
+    const previous = groups.at(-1)
+    if (transcriptTool(entry) && previous && transcriptTool(previous[0])) previous.push(entry)
+    else groups.push([entry])
+  }
   const anchorAvailable = selected !== undefined && conversation.includes(selected)
   const { id, generation } = agent
   useEffect(() => {
@@ -251,17 +260,26 @@ function AgentTranscript({ conversationId, agent, entryId }: {
     follow.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48
   }}>
     {assignment?.trim() && <div className="kv-agent-chat-user"><ChatMarkdown content={assignment} /></div>}
-    {conversation.map(entry => {
-      const tool = transcriptTool(entry)
-      return <article key={entry.id} ref={entry.id === entryId ? anchor : undefined}
-        tabIndex={entry.id === entryId ? -1 : undefined}
-        className={tool ? 'flex items-center gap-2 break-all text-xs text-[var(--text-muted)]'
-          : entry.role === 'user' ? 'kv-agent-chat-user' : 'min-w-0'}>
-        {tool ? <><Wrench size={13} className="shrink-0" aria-hidden="true" />{tool}</>
-          : entry === selected && selectedLabel ? <p className="text-xs text-[var(--text-muted)]">{selectedLabel}</p>
-            : entry.role === 'irc' ? <p className="whitespace-pre-wrap break-words text-sm">{entry.content}</p>
-              : <ChatMarkdown content={entry.role === 'user' ? entry.content.replace(/^Complete assignment thoroughly:\s+/, '') : entry.content} />}
-      </article>
+    {groups.map(group => {
+      const rows = group.map(entry => {
+        const tool = transcriptTool(entry)
+        return <article key={entry.id} ref={entry.id === entryId ? anchor : undefined}
+          tabIndex={entry.id === entryId ? -1 : undefined}
+          className={tool ? 'flex items-center gap-2 break-all text-xs text-[var(--text-muted)]'
+            : entry.role === 'user' ? 'kv-agent-chat-user' : 'min-w-0'}>
+          {tool ? <><Wrench size={13} className="shrink-0" aria-hidden="true" />{tool}</>
+            : entry === selected && selectedLabel ? <p className="text-xs text-[var(--text-muted)]">{selectedLabel}</p>
+              : entry.role === 'irc' ? <p className="whitespace-pre-wrap break-words text-sm">{entry.content}</p>
+                : <ChatMarkdown content={entry.role === 'user' ? entry.content.replace(/^Complete assignment thoroughly:\s+/, '') : entry.content} />}
+        </article>
+      })
+      return transcriptTool(group[0]) ? <details key={group[0].id} className="group/work" open={group.some(entry => entry.id === entryId)}>
+        <summary className="kv-agent-list-row list-none text-[var(--text-muted)]">
+          <ChevronRight size={14} className="shrink-0 transition-transform group-open/work:rotate-90" aria-hidden="true" />
+          Work · {group.length}
+        </summary>
+        <div className="space-y-3 px-2 py-2">{rows}</div>
+      </details> : rows
     })}
     {!error && (!loaded || (conversation.length === 0 && !assignment?.trim())) && <p role="status" className="text-sm text-[var(--text-muted)]">
       {!loaded ? zh ? '正在加载…' : 'Loading…'

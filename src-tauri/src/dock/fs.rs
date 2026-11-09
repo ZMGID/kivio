@@ -869,19 +869,87 @@ fn find_on_path(command: &str, paths: &std::ffi::OsStr) -> Option<PathBuf> {
     } else {
         &[""]
     };
-    std::env::split_paths(paths).find_map(|dir| {
-        suffixes
+    std::env::split_paths(paths)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .find_map(|dir| {
+            suffixes
+                .iter()
+                .map(|suffix| dir.join(format!("{command}{suffix}")))
+                .find(|candidate| candidate.is_file())
+        })
+}
+
+fn editor_install_roots() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("LOCALAPPDATA")
+            .map(|path| PathBuf::from(path).join("Programs"))
+            .into_iter()
+            .chain(
+                ["ProgramFiles", "ProgramFiles(x86)"]
+                    .into_iter()
+                    .filter_map(std::env::var_os)
+                    .map(PathBuf::from),
+            )
+            .collect()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(|path| PathBuf::from(path).join("Applications"))
+            .into_iter()
+            .chain([PathBuf::from("/Applications")])
+            .collect()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        Vec::new()
+    }
+}
+
+fn find_editor_launcher(
+    command: &str,
+    paths: &std::ffi::OsStr,
+    install_roots: &[PathBuf],
+) -> Option<PathBuf> {
+    find_on_path(command, paths).or_else(|| {
+        #[cfg(target_os = "windows")]
+        let candidates: &[&str] = match command {
+            "code" => &[
+                "Microsoft VS Code/bin/code.cmd",
+                "Microsoft VS Code/Code.exe",
+            ],
+            "cursor" => &["cursor/resources/app/bin/cursor.cmd", "cursor/Cursor.exe"],
+            "zed" => &["Zed/bin/zed.exe"],
+            "windsurf" => &["Windsurf/bin/windsurf.cmd", "Windsurf/Windsurf.exe"],
+            _ => &[],
+        };
+        #[cfg(target_os = "macos")]
+        let candidates: &[&str] = match command {
+            "code" => &["Visual Studio Code.app/Contents/Resources/app/bin/code"],
+            "cursor" => &["Cursor.app/Contents/Resources/app/bin/cursor"],
+            "zed" => &["Zed.app/Contents/MacOS/cli"],
+            "windsurf" => &["Windsurf.app/Contents/Resources/app/bin/windsurf"],
+            _ => &[],
+        };
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        let candidates: &[&str] = &[];
+        install_roots
             .iter()
-            .map(|suffix| dir.join(format!("{command}{suffix}")))
-            .find(|candidate| candidate.is_file())
+            .flat_map(|root| candidates.iter().map(move |path| root.join(path)))
+            .find(|path| path.is_file())
     })
 }
 
 fn editor_launcher(command: &str) -> Option<PathBuf> {
-    find_on_path(command, &std::env::var_os("PATH")?)
+    find_editor_launcher(
+        command,
+        &std::env::var_os("PATH").unwrap_or_default(),
+        &editor_install_roots(),
+    )
 }
 
-/// 当前机器 PATH 上能找到启动命令的编辑器 id。
+/// 在 PATH 或常规安装目录中找到启动器的编辑器 id；与打开命令共用查找规则。
 #[tauri::command]
 pub async fn dock_available_editors() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(|| {
@@ -904,8 +972,9 @@ pub async fn dock_open_in_editor(workdir: String, editor: String) -> Result<(), 
             return Err(format!("不支持的编辑器：{editor}"));
         };
         let wd = canonicalize_workdir(&workdir)?;
-        let launcher = editor_launcher(program)
-            .ok_or_else(|| format!("找不到 {editor}：需要 {program} 命令在 PATH 中。"))?;
+        let launcher = editor_launcher(program).ok_or_else(|| {
+            format!("找不到 {editor}：请安装编辑器或将 {program} 命令加入 PATH。")
+        })?;
         let mut command = Command::new(&launcher);
         #[cfg(target_os = "windows")]
         {
@@ -962,6 +1031,110 @@ mod tests {
         let paths = std::env::join_paths([&first, &second]).unwrap();
         assert_eq!(find_on_path("code", &paths), Some(expected));
         assert_eq!(find_on_path("zed", &paths), None);
+        fs::remove_dir_all(first).unwrap();
+        fs::remove_dir_all(second).unwrap();
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn editor_launcher_finds_all_supported_editors_without_path() {
+        let root = temp_workdir("editors-without-path");
+        #[cfg(target_os = "windows")]
+        let launchers = [
+            ("code", "Microsoft VS Code/bin/code.cmd"),
+            ("cursor", "cursor/resources/app/bin/cursor.cmd"),
+            ("zed", "Zed/bin/zed.exe"),
+            ("windsurf", "Windsurf/bin/windsurf.cmd"),
+        ];
+        #[cfg(target_os = "macos")]
+        let launchers = [
+            (
+                "code",
+                "Visual Studio Code.app/Contents/Resources/app/bin/code",
+            ),
+            ("cursor", "Cursor.app/Contents/Resources/app/bin/cursor"),
+            ("zed", "Zed.app/Contents/MacOS/cli"),
+            (
+                "windsurf",
+                "Windsurf.app/Contents/Resources/app/bin/windsurf",
+            ),
+        ];
+        for (command, rel) in launchers {
+            assert_eq!(
+                find_editor_launcher(
+                    command,
+                    std::ffi::OsStr::new(""),
+                    std::slice::from_ref(&root)
+                ),
+                None
+            );
+            let expected = root.join(rel);
+            fs::create_dir_all(expected.parent().unwrap()).unwrap();
+            fs::write(&expected, "launcher").unwrap();
+            assert_eq!(
+                find_editor_launcher(
+                    command,
+                    std::ffi::OsStr::new(""),
+                    std::slice::from_ref(&root)
+                ),
+                Some(expected)
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn editor_launcher_uses_native_executables_when_cli_is_missing() {
+        let root = temp_workdir("editors-native-exe");
+        for (command, rel) in [
+            ("code", "Microsoft VS Code/Code.exe"),
+            ("cursor", "cursor/Cursor.exe"),
+            ("windsurf", "Windsurf/Windsurf.exe"),
+        ] {
+            let expected = root.join(rel);
+            fs::create_dir_all(expected.parent().unwrap()).unwrap();
+            fs::write(&expected, "launcher").unwrap();
+            assert_eq!(
+                find_editor_launcher(
+                    command,
+                    std::ffi::OsStr::new(""),
+                    std::slice::from_ref(&root)
+                ),
+                Some(expected)
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    #[test]
+    fn editor_launcher_preserves_path_precedence_and_searches_system_installs() {
+        let user = temp_workdir("editors-user");
+        let system = temp_workdir("editors-system");
+        let path_dir = temp_workdir("editors-path");
+        #[cfg(target_os = "windows")]
+        let (rel, filename) = ("Zed/bin/zed.exe", "zed.exe");
+        #[cfg(target_os = "macos")]
+        let (rel, filename) = ("Zed.app/Contents/MacOS/cli", "zed");
+        let expected = system.join(rel);
+        fs::create_dir_all(expected.parent().unwrap()).unwrap();
+        fs::write(&expected, "launcher").unwrap();
+        let roots = [user.clone(), system.clone()];
+        assert_eq!(
+            find_editor_launcher("zed", std::ffi::OsStr::new(""), &roots),
+            Some(expected)
+        );
+        let path_launcher = path_dir.join(filename);
+        fs::write(&path_launcher, "launcher").unwrap();
+        let paths = std::env::join_paths([&path_dir]).unwrap();
+        assert_eq!(
+            find_editor_launcher("zed", &paths, &roots),
+            Some(path_launcher)
+        );
+        for dir in [user, system, path_dir] {
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 
     #[test]

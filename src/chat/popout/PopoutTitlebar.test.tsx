@@ -64,8 +64,8 @@ describe('PopoutTitlebar', () => {
     expect(container.querySelector('[data-testid="workspace-panel"]')).toBeNull()
   })
 
-  it('offers the workspace panel as a popover when the conversation has a working directory', () => {
-    const { getByTestId } = render(
+  it.each([null, 'Repo'])('only offers the workspace popover for a project conversation (project: %s)', (projectName) => {
+    const { queryByTestId } = render(
       <LangContext.Provider value="zh">
         <PopoutTitlebar
           conversation={{ id: 'c1', revision: 1, title: 't', provider_id: 'p', model: 'm', messages: [], created_at: 0, updated_at: 0 }}
@@ -80,11 +80,15 @@ describe('PopoutTitlebar', () => {
           onSandboxChange={() => {}}
           busy={false}
           workdir="/repo"
-          projectName="Repo"
+          projectName={projectName}
           lang="zh"
         />
       </LangContext.Provider>,
     )
-    expect(getByTestId('workspace-panel')).toHaveAttribute('data-inline', 'false')
+    if (projectName) {
+      expect(queryByTestId('workspace-panel')).toHaveAttribute('data-inline', 'false')
+    } else {
+      expect(queryByTestId('workspace-panel')).toBeNull()
+    }
   })
 })

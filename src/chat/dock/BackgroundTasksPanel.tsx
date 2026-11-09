@@ -1,20 +1,13 @@
 // Background tasks 面板：内置 run_command 后台作业 + 外部 CLI（claude）自报的后台任务。
 // Running（可停止）/ Finished（可清空）两段，2.5s 轮询；inactive 时停轮询（同兄弟面板惯例）。
-import { useRef } from 'react'
 import { Bot, Square, TerminalSquare } from 'lucide-react'
 import { api, type BackgroundTaskInfo } from '../../api/tauri'
 import { i18n, type Lang } from '../../components/i18n'
-import { partitionTasks } from '../backgroundTasks'
-import { updateBackgroundTasks, useBackgroundTasks } from '../useBackgroundTasks'
+import { notifyError } from '../../components/appNoticeStore'
+import { formatTaskElapsed, partitionTasks } from '../backgroundTasks'
+import { stopBackgroundTask, updateBackgroundTasks, useBackgroundTasks } from '../useBackgroundTasks'
 import { SubagentTaskList } from '../AgentHub'
 import { useSubagentRoster } from '../useSubagentRoster'
-
-function formatElapsed(secs: number): string {
-  if (secs < 60) return `${secs}s`
-  const m = Math.floor(secs / 60)
-  const s = secs % 60
-  return `${m}m${s.toString().padStart(2, '0')}s`
-}
 
 function TaskGlyph({ kind }: { kind: string }) {
   const isAgent = kind === 'local_agent' || kind === 'remote_agent'
@@ -33,26 +26,15 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
   const t = i18n[lang]
   const tasks = useBackgroundTasks(conversationId, active)
   const { roster } = useSubagentRoster(active ? conversationId : null)
-  const stopping = useRef<Set<string>>(new Set())
 
   const { running, finished } = partitionTasks(tasks)
 
   const stop = async (task: BackgroundTaskInfo) => {
-    if (!conversationId || stopping.current.has(task.id)) return
-    stopping.current.add(task.id)
+    if (!conversationId) return
     try {
-      if (task.source === 'builtin') {
-        await api.chatKillBackgroundCommand(task.id)
-      } else {
-        await api.chatStopExternalBackgroundTask(task.conversationId ?? '', task.id)
-      }
-      updateBackgroundTasks(conversationId, (prev) =>
-        prev.map((item) => (item.id === task.id ? { ...item, status: 'stopped' as const } : item)),
-      )
-    } catch {
-      // leave it; next poll reflects the real state
-    } finally {
-      stopping.current.delete(task.id)
+      await stopBackgroundTask(conversationId, task)
+    } catch (error) {
+      notifyError(error instanceof Error ? error.message : String(error))
     }
   }
 
@@ -104,7 +86,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
             </div>
             <div className="mt-0.5 truncate text-[11px] text-neutral-400" title={task.summary ?? undefined}>
               {task.pid != null ? `pid ${task.pid} · ` : ''}
-              {formatElapsed(task.elapsedSecs)}
+              {formatTaskElapsed(task.elapsedSecs)}
               {/* 运行中的 summary 是进度尾巴（子代理的 task_progress：tokens · tools · 最近工具） */}
               {task.summary ? ` · ${task.summary}` : ''}
             </div>

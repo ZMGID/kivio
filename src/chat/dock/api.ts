@@ -132,7 +132,7 @@ export const dockApi = {
     return invoke<DockFsOpenResult>('dock_fs_open_path', { workdir, path, mode })
   },
 
-  /** PATH 上可用的编辑器 id（vscode / cursor / zed / windsurf）。 */
+  /** PATH 或常规安装目录中可用的编辑器 id（vscode / cursor / zed / windsurf）。 */
   async availableEditors(): Promise<string[]> {
     if (!isTauriRuntime()) return []
     return invoke<string[]>('dock_available_editors')
