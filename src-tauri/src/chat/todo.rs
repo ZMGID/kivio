@@ -103,11 +103,19 @@ impl TodoInjectionSource {
 }
 
 impl kivio_agent_sdk::agent::InjectionSource for TodoInjectionSource {
-    fn collect<'a>(&'a mut self, context: kivio_agent_sdk::agent::InjectionContext<'a>,
+    fn collect<'a>(
+        &'a mut self,
+        context: kivio_agent_sdk::agent::InjectionContext<'a>,
         admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
-    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+    ) -> kivio_agent_sdk::agent::InjectionFuture<
+        'a,
+        Result<(), kivio_agent_sdk::agent::InjectionError>,
+    > {
         Box::pin(async move {
-            admission.pending(self.collect_batch(context).map_err(kivio_agent_sdk::agent::InjectionError::Source)?);
+            admission.pending(
+                self.collect_batch(context)
+                    .map_err(kivio_agent_sdk::agent::InjectionError::Source)?,
+            );
             Ok(())
         })
     }
@@ -680,8 +688,8 @@ mod tests {
         use kivio_agent_sdk::{
             agent::{
                 provider_runtime::{ModelCall, ModelOutputSink, ModelRuntime, ProviderFuture},
-                AgentSession, AgentSessionConfig, InjectionBoundary,
-                InjectionContext, InjectionSource, InjectionSources,
+                AgentSession, AgentSessionConfig, InjectionBoundary, InjectionContext,
+                InjectionSource, InjectionSources,
             },
             model::{GenerateOutput, ModelError, ModelTool, PendingToolCall},
             tools::{
@@ -735,21 +743,45 @@ mod tests {
         }
         struct SharedTodo(Arc<Mutex<TodoInjectionSource>>);
         impl InjectionSource for SharedTodo {
-            fn collect<'a>(&'a mut self, context: InjectionContext<'a>, admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission)
-                -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
-                let result = self.0.lock().unwrap().collect_batch(context).map_err(kivio_agent_sdk::agent::InjectionError::Source);
-                Box::pin(async move { admission.pending(result?); Ok(()) })
+            fn collect<'a>(
+                &'a mut self,
+                context: InjectionContext<'a>,
+                admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+            ) -> kivio_agent_sdk::agent::InjectionFuture<
+                'a,
+                Result<(), kivio_agent_sdk::agent::InjectionError>,
+            > {
+                let result = self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .collect_batch(context)
+                    .map_err(kivio_agent_sdk::agent::InjectionError::Source);
+                Box::pin(async move {
+                    admission.pending(result?);
+                    Ok(())
+                })
             }
         }
         struct FailOnce(bool);
         impl InjectionSource for FailOnce {
-            fn collect<'a>(&'a mut self, context: InjectionContext<'a>, _: &'a mut kivio_agent_sdk::agent::InjectionAdmission)
-                -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+            fn collect<'a>(
+                &'a mut self,
+                context: InjectionContext<'a>,
+                _: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+            ) -> kivio_agent_sdk::agent::InjectionFuture<
+                'a,
+                Result<(), kivio_agent_sdk::agent::InjectionError>,
+            > {
                 Box::pin(async move {
                     if context.boundary == InjectionBoundary::BeforeFinish && !self.0 {
                         self.0 = true;
-                        Err(kivio_agent_sdk::agent::InjectionError::Source("later source failed".into()))
-                    } else { Ok(()) }
+                        Err(kivio_agent_sdk::agent::InjectionError::Source(
+                            "later source failed".into(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
                 })
             }
         }

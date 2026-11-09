@@ -16,7 +16,9 @@ pub use injection::{
     InjectionSources, PreparedInjection,
 };
 mod injection_queue;
-pub use injection_queue::{InjectionKind, InjectionQueue, InjectionReceipt, InjectionSender, WakePolicy};
+pub use injection_queue::{
+    InjectionKind, InjectionQueue, InjectionReceipt, InjectionSender, WakePolicy,
+};
 pub mod loop_;
 pub(crate) mod planning;
 pub mod provider_runtime;

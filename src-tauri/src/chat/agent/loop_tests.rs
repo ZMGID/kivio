@@ -172,12 +172,29 @@ impl TestHost {
 }
 
 impl AgentHost for TestHost {
-    fn checkpoint_runtime<'a>(&'a self, _: &'a str, _: &'a str, history: &'a kivio_agent_sdk::agent::SessionHistory, _: bool)
-        -> crate::chat::agent::host::AgentHostFuture<'a, Result<(), String>> {
+    fn checkpoint_runtime<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
+        _: bool,
+    ) -> crate::chat::agent::host::AgentHostFuture<'a, Result<(), String>> {
         Box::pin(async move {
-            if self.capture_compaction && self.compaction_phases.lock().unwrap().last().is_some_and(|phase| phase == "started") {
-                self.compaction_checkpoints.lock().unwrap().push(export_history(history.context()));
-                if self.fail_compaction_checkpoint { return Err("checkpoint persistence failed".into()); }
+            if self.capture_compaction
+                && self
+                    .compaction_phases
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .is_some_and(|phase| phase == "started")
+            {
+                self.compaction_checkpoints
+                    .lock()
+                    .unwrap()
+                    .push(export_history(history.context()));
+                if self.fail_compaction_checkpoint {
+                    return Err("checkpoint persistence failed".into());
+                }
             }
             Ok(())
         })
@@ -215,8 +232,14 @@ impl AgentHost for TestHost {
 }
 
 impl crate::chat::tool_runtime::ApplicationHost for TestHost {
-    fn collect_runtime_inputs<'a>(&'a self, context: kivio_agent_sdk::agent::InjectionContext<'a>, admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission)
-        -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+    fn collect_runtime_inputs<'a>(
+        &'a self,
+        context: kivio_agent_sdk::agent::InjectionContext<'a>,
+        admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+    ) -> kivio_agent_sdk::agent::InjectionFuture<
+        'a,
+        Result<(), kivio_agent_sdk::agent::InjectionError>,
+    > {
         Box::pin(async move {
             use kivio_agent_sdk::agent::{InjectionBoundary, InjectionError, PreparedInjection};
             let mut messages = Vec::new();
@@ -224,10 +247,25 @@ impl crate::chat::tool_runtime::ApplicationHost for TestHost {
                 messages.extend(self.compaction_incoming.lock().unwrap().take());
             }
             if context.boundary == InjectionBoundary::BeforeFinish {
-                if self.fail_finishing_checkpoint { return Err(InjectionError::Persistence("final checkpoint persistence failed".into())); }
-                messages.extend(self.finishing_inputs.lock().unwrap().pop_front().unwrap_or_default());
+                if self.fail_finishing_checkpoint {
+                    return Err(InjectionError::Persistence(
+                        "final checkpoint persistence failed".into(),
+                    ));
+                }
+                messages.extend(
+                    self.finishing_inputs
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or_default(),
+                );
             }
-            admission.committed(PreparedInjection::new(import_history(messages).into_iter().map(crate::chat::sub_agent::session_input).collect())?);
+            admission.committed(PreparedInjection::new(
+                import_history(messages)
+                    .into_iter()
+                    .map(crate::chat::sub_agent::session_input)
+                    .collect(),
+            )?);
             Ok(())
         })
     }
@@ -3199,10 +3237,15 @@ async fn run_loop_final_answer_with_pending_steering_continues() {
     let server = MockModelServer::start(vec![
         MockResponse::ForRequest(Box::new(move |body| {
             assert!(!body.contains("README"));
-            host_during_request.steering.lock().unwrap().push_back(vec![
-                SteeringMessage::new("steer-late".into(), "顺便把 README 也更新")
-                    .expect("non-blank"),
-            ]);
+            host_during_request
+                .steering
+                .lock()
+                .unwrap()
+                .push_back(vec![SteeringMessage::new(
+                    "steer-late".into(),
+                    "顺便把 README 也更新",
+                )
+                .expect("non-blank")]);
             MockResponse::Sse(vec![
                 r#"{"choices":[{"delta":{"content":"先答一版。"}}]}"#.to_string(),
                 "[DONE]".to_string(),

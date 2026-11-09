@@ -44,26 +44,48 @@ impl AgentHost for JournalHost {
     fn requires_tool_completion(&self) -> bool {
         true
     }
-    fn checkpoint_runtime<'a>(&'a self, _: &'a str, _: &'a str, history: &'a kivio_agent_sdk::agent::SessionHistory, _: bool)
-        -> AgentHostFuture<'a, Result<(), String>> {
+    fn checkpoint_runtime<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
+        _: bool,
+    ) -> AgentHostFuture<'a, Result<(), String>> {
         Box::pin(async move {
             let records = self.progress.lock().unwrap().records.clone();
-            self.journal.lock().await.save_history(&self.path, history.context(), &records).await
+            self.journal
+                .lock()
+                .await
+                .save_history(&self.path, history.context(), &records)
+                .await
         })
     }
-
 }
 
 impl crate::chat::tool_runtime::ApplicationHost for JournalHost {
-    fn collect_runtime_inputs<'a>(&'a self, context: kivio_agent_sdk::agent::InjectionContext<'a>, admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission)
-        -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+    fn collect_runtime_inputs<'a>(
+        &'a self,
+        context: kivio_agent_sdk::agent::InjectionContext<'a>,
+        admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+    ) -> kivio_agent_sdk::agent::InjectionFuture<
+        'a,
+        Result<(), kivio_agent_sdk::agent::InjectionError>,
+    > {
         Box::pin(async move {
             let records = self.progress.lock().unwrap().records.clone();
             let incoming = std::mem::take(&mut *self.incoming.lock().unwrap());
-            let prepared = kivio_agent_sdk::agent::PreparedInjection::new(incoming.iter().cloned().map(SessionInput::append).collect())?;
+            let prepared = kivio_agent_sdk::agent::PreparedInjection::new(
+                incoming.iter().cloned().map(SessionInput::append).collect(),
+            )?;
             let mut saved = context.history.context().to_vec();
             saved.extend(incoming.iter().cloned());
-            if let Err(error) = self.journal.lock().await.save_history(&self.path, &saved, &records).await {
+            if let Err(error) = self
+                .journal
+                .lock()
+                .await
+                .save_history(&self.path, &saved, &records)
+                .await
+            {
                 *self.incoming.lock().unwrap() = incoming;
                 return Err(kivio_agent_sdk::agent::InjectionError::Persistence(error));
             }

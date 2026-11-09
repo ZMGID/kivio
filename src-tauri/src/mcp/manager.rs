@@ -15,8 +15,8 @@ use crate::settings::{ChatMcpServer, Settings};
 
 use super::conn;
 use super::icons::{load_icons, McpIconImage};
-use super::types::{McpTool, McpToolCallResult};
 use super::resources::McpResourceConnection;
+use super::types::{McpTool, McpToolCallResult};
 use super::McpRuntimeState;
 use crate::chat::agent::control::AgentRunHandle;
 use kivio_agent_sdk::mcp::McpClient;
@@ -450,11 +450,20 @@ impl<'a> McpManager<'a> {
         let server = self.overlay_oauth_from_settings(server);
         let session = self.mcp_get_or_connect(sink, &server).await?;
         let mut guard = session.lock().await;
-        self.runtime.require_current_session(&server.id, &session).await?;
-        let client = guard.client.clone().filter(|client| !client.is_closed())
+        self.runtime
+            .require_current_session(&server.id, &session)
+            .await?;
+        let client = guard
+            .client
+            .clone()
+            .filter(|client| !client.is_closed())
             .ok_or("MCP transport unavailable")?;
         guard.last_used = Instant::now();
-        Ok(McpResourceConnection::new(server.id, client, self.mcp_tool_timeout()))
+        Ok(McpResourceConnection::new(
+            server.id,
+            client,
+            self.mcp_tool_timeout(),
+        ))
     }
 
     /// 调用某个 MCP server 的工具：get-or-connect → 锁会话判活 → 释放锁再发请求；

@@ -860,23 +860,49 @@ fn call_write(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     })
 }
 
-pub(super) async fn notify_lsp_for_mutation(ctx: &NativeCallCtx<'_>, mutation: &FileMutationResult) {
+pub(super) async fn notify_lsp_for_mutation(
+    ctx: &NativeCallCtx<'_>,
+    mutation: &FileMutationResult,
+) {
     if !mutation.ok || !mutation.target_touched {
         return;
     }
-    let Some(native) = ctx.native_ctx else { return; };
-    let Some(root) = ctx.workspace.project.as_ref().and_then(|project| project.root_path.as_deref()).or_else(|| ctx.workspace.conversation_directory()) else { return; };
-    let owner = crate::chat::sub_agent::services::owner_for_run(&ctx.state.sub_agents, &native.conversation_id, &native.run_id);
-    ctx.state.lsp.retain_configurations(&owner, &ctx.settings.chat_tools.lsp_servers);
+    let Some(native) = ctx.native_ctx else {
+        return;
+    };
+    let Some(root) = ctx
+        .workspace
+        .project
+        .as_ref()
+        .and_then(|project| project.root_path.as_deref())
+        .or_else(|| ctx.workspace.conversation_directory())
+    else {
+        return;
+    };
+    let owner = crate::chat::sub_agent::services::owner_for_run(
+        &ctx.state.sub_agents,
+        &native.conversation_id,
+        &native.run_id,
+    );
+    ctx.state
+        .lsp
+        .retain_configurations(&owner, &ctx.settings.chat_tools.lsp_servers);
     let app = ctx.app.clone();
     let emit: crate::native_tools::lsp::DiagnosticsCallback = std::sync::Arc::new(move |event| {
-        app.state::<AppState>().runtime_injections.diagnostics(event);
+        app.state::<AppState>()
+            .runtime_injections
+            .diagnostics(event);
     });
     for file in &mutation.files {
-        if file.operation == "noop" { continue; }
+        if file.operation == "noop" {
+            continue;
+        }
         let path = match crate::native_tools::resolve_tool_write_path(ctx.workspace, &file.path) {
             Ok(path) => path,
-            Err(error) => { eprintln!("LSP mutation path unavailable: {error}"); continue; }
+            Err(error) => {
+                eprintln!("LSP mutation path unavailable: {error}");
+                continue;
+            }
         };
         if file.operation == "delete" {
             if let Err(error) = ctx.state.lsp.file_removed(&owner, root, &path).await {
@@ -885,7 +911,12 @@ pub(super) async fn notify_lsp_for_mutation(ctx: &NativeCallCtx<'_>, mutation: &
             continue;
         }
         for config in &ctx.settings.chat_tools.lsp_servers {
-            if let Err(error) = ctx.state.lsp.file_changed(&owner, root, &path, config, emit.clone()).await {
+            if let Err(error) = ctx
+                .state
+                .lsp
+                .file_changed(&owner, root, &path, config, emit.clone())
+                .await
+            {
                 eprintln!("LSP diagnostics unavailable: {error}");
             }
         }
@@ -1743,19 +1774,57 @@ mod tests {
     #[test]
     fn adr_0008_load_modes_are_explicit() {
         let essential = [
-            "web_search", "web_fetch", "read", "grep", "glob", "write", "edit", "bash",
-            "save_assistant", "kivio_list_agents", "kivio_list_projects", "kivio_list_conversations",
-            "kivio_read_conversation", "kivio_create_conversation", "kivio_send_message", "kivio_interrupt",
-            "present_artifacts", "save_plan", "todo_write", "get_goal", "initialize_goal_criteria",
-            "report_goal_progress", "goal_complete", "goal_blocked", "goal_wait", "ask_user", "task", "wait",
+            "web_search",
+            "web_fetch",
+            "read",
+            "grep",
+            "glob",
+            "write",
+            "edit",
+            "bash",
+            "save_assistant",
+            "kivio_list_agents",
+            "kivio_list_projects",
+            "kivio_list_conversations",
+            "kivio_read_conversation",
+            "kivio_create_conversation",
+            "kivio_send_message",
+            "kivio_interrupt",
+            "present_artifacts",
+            "save_plan",
+            "todo_write",
+            "get_goal",
+            "initialize_goal_criteria",
+            "report_goal_progress",
+            "goal_complete",
+            "goal_blocked",
+            "goal_wait",
+            "ask_user",
+            "task",
+            "wait",
         ];
         let on_demand = [
-            "knowledge_search", "automation", "advisor", "ls", "bash_output", "kill_background",
-            "html_render", "html_preview", "kivio_inspect", "kivio_configure", "memory_read",
-            "memory_modify", "memory_search", "schedule", "eval",
+            "knowledge_search",
+            "automation",
+            "advisor",
+            "ls",
+            "bash_output",
+            "kill_background",
+            "html_render",
+            "html_preview",
+            "kivio_inspect",
+            "kivio_configure",
+            "memory_read",
+            "memory_modify",
+            "memory_search",
+            "schedule",
+            "eval",
         ];
         assert_eq!(NATIVE_TOOLS.len(), essential.len() + on_demand.len());
-        for (mode, names) in [(ToolLoadMode::Essential, essential.as_slice()), (ToolLoadMode::OnDemand, on_demand.as_slice())] {
+        for (mode, names) in [
+            (ToolLoadMode::Essential, essential.as_slice()),
+            (ToolLoadMode::OnDemand, on_demand.as_slice()),
+        ] {
             for name in names {
                 assert_eq!(find_entry(name).unwrap().load_mode, mode, "{name}");
             }

@@ -2994,7 +2994,9 @@ mod tests {
         let result = crate::chat::tools::call_typed(
             &WriteFile { workspace },
             json!({"path":"same.txt","content":"alpha\nbeta\n"}),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         assert!(!result.is_error);
         let mutation = result.structured_content.unwrap();
         assert_eq!(mutation["operation"], "noop");

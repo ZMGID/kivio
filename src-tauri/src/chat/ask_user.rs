@@ -102,7 +102,9 @@ pub fn ask_user_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__ask_user".to_string(),
         name: ASK_USER_TOOL_NAME.to_string(),
-        description: "Ask blocking clarification with concrete options; structured answers resume this run.".to_string(),
+        description:
+            "Ask blocking clarification with concrete options; structured answers resume this run."
+                .to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),

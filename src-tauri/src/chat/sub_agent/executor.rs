@@ -715,8 +715,12 @@ impl Host {
             }
         }
         let prepared = kivio_agent_sdk::agent::PreparedInjection::new(
-            import_history(messages.clone()).into_iter().map(SessionInput::append).collect(),
-        ).map_err(|error| error.to_string())?;
+            import_history(messages.clone())
+                .into_iter()
+                .map(SessionInput::append)
+                .collect(),
+        )
+        .map_err(|error| error.to_string())?;
         let changed = serde_json::to_value(&next).map_err(|error| error.to_string())? != before;
         if changed || !messages.is_empty() {
             let mut journal = self.journal.lock().await;
@@ -998,8 +1002,11 @@ impl AgentHost for Host {
     }
 
     fn checkpoint_runtime<'a>(
-        &'a self, _conversation: &'a str, _run: &'a str,
-        history: &'a kivio_agent_sdk::agent::SessionHistory, _finishing: bool,
+        &'a self,
+        _conversation: &'a str,
+        _run: &'a str,
+        history: &'a kivio_agent_sdk::agent::SessionHistory,
+        _finishing: bool,
     ) -> AgentHostFuture<'a, Result<(), String>> {
         Box::pin(async move {
             self.lock().history = history.context().to_vec();
@@ -1018,79 +1025,92 @@ impl AgentHost for Host {
 }
 
 impl Host {
-    async fn collect_inputs(&self, history: &kivio_agent_sdk::agent::SessionHistory, finishing: bool,
-        admission: &mut kivio_agent_sdk::agent::InjectionAdmission) -> Result<(), String> {
-            self.lock().history = history.context().to_vec();
-            self.save_history(history.context()).await?;
-            let state = self.app.state::<AppState>();
-            let (mut claim, mut incoming) =
-                delivery::claim_inputs(&state.sub_agents.jobs, &self.record.root, &self.record.id);
-            let mut irc =
-                state
-                    .sub_agents
-                    .irc
-                    .claim(&self.record.root, &self.record.id, |message| {
-                        self.accept_irc
-                            && (!finishing
-                                || (!message.broadcast
-                                    && (message.from == "@user"
-                                        || message.from == self.record.parent_id
-                                        || state.sub_agents.registry.is_ancestor(
-                                            &self.record.root,
-                                            &self.record.id,
-                                            &message.from,
-                                        ))))
-                    });
-            let parent_steer = irc
-                .messages()
+    async fn collect_inputs(
+        &self,
+        history: &kivio_agent_sdk::agent::SessionHistory,
+        finishing: bool,
+        admission: &mut kivio_agent_sdk::agent::InjectionAdmission,
+    ) -> Result<(), String> {
+        self.lock().history = history.context().to_vec();
+        self.save_history(history.context()).await?;
+        let state = self.app.state::<AppState>();
+        let (mut claim, mut incoming) =
+            delivery::claim_inputs(&state.sub_agents.jobs, &self.record.root, &self.record.id);
+        let mut irc = state
+            .sub_agents
+            .irc
+            .claim(&self.record.root, &self.record.id, |message| {
+                self.accept_irc
+                    && (!finishing
+                        || (!message.broadcast
+                            && (message.from == "@user"
+                                || message.from == self.record.parent_id
+                                || state.sub_agents.registry.is_ancestor(
+                                    &self.record.root,
+                                    &self.record.id,
+                                    &message.from,
+                                ))))
+            });
+        let parent_steer = irc
+            .messages()
+            .iter()
+            .any(|message| !message.broadcast && message.from == self.record.parent_id);
+        incoming.extend(
+            irc.messages()
                 .iter()
-                .any(|message| !message.broadcast && message.from == self.record.parent_id);
-            incoming.extend(
-                irc.messages()
-                    .iter()
-                    .map(|message| message.worker_input(&self.record.parent_id)),
-            );
-            let incoming = import_history(incoming);
-            let prepared = kivio_agent_sdk::agent::PreparedInjection::new(
-                incoming.iter().cloned().map(SessionInput::append).collect(),
-            ).map_err(|error| error.to_string())?;
-            if !incoming.is_empty() {
-                let mut saved = history.context().to_vec();
-                saved.extend(incoming.iter().cloned());
-                self.save_history(&saved).await?;
-                self.lock().history = saved;
-            }
-            claim.commit();
-            irc.commit();
-            admission.committed(prepared);
-            if parent_steer && self.accept_irc && self.record.published {
-                state
-                    .sub_agents
-                    .jobs
-                    .promote_inline(&self.record.root, &self.job_id);
-            }
-            let mut current = history.context().to_vec();
-            current.extend(incoming.iter().cloned());
-            self.checkpoint_policies(&current, finishing, admission).await?;
-            if !admission.committed_inputs().is_empty() {
-                self.yields
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .require_updated_submission();
-            }
-            Ok(())
+                .map(|message| message.worker_input(&self.record.parent_id)),
+        );
+        let incoming = import_history(incoming);
+        let prepared = kivio_agent_sdk::agent::PreparedInjection::new(
+            incoming.iter().cloned().map(SessionInput::append).collect(),
+        )
+        .map_err(|error| error.to_string())?;
+        if !incoming.is_empty() {
+            let mut saved = history.context().to_vec();
+            saved.extend(incoming.iter().cloned());
+            self.save_history(&saved).await?;
+            self.lock().history = saved;
+        }
+        claim.commit();
+        irc.commit();
+        admission.committed(prepared);
+        if parent_steer && self.accept_irc && self.record.published {
+            state
+                .sub_agents
+                .jobs
+                .promote_inline(&self.record.root, &self.job_id);
+        }
+        let mut current = history.context().to_vec();
+        current.extend(incoming.iter().cloned());
+        self.checkpoint_policies(&current, finishing, admission)
+            .await?;
+        if !admission.committed_inputs().is_empty() {
+            self.yields
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .require_updated_submission();
+        }
+        Ok(())
     }
 }
 
 impl crate::chat::tool_runtime::ApplicationHost for Host {
     fn collect_runtime_inputs<'a>(
-        &'a self, context: kivio_agent_sdk::agent::InjectionContext<'a>,
+        &'a self,
+        context: kivio_agent_sdk::agent::InjectionContext<'a>,
         admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
-    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+    ) -> kivio_agent_sdk::agent::InjectionFuture<
+        'a,
+        Result<(), kivio_agent_sdk::agent::InjectionError>,
+    > {
         Box::pin(async move {
-            self.collect_inputs(context.history,
+            self.collect_inputs(
+                context.history,
                 context.boundary == kivio_agent_sdk::agent::InjectionBoundary::BeforeFinish,
-                admission).await.map_err(kivio_agent_sdk::agent::InjectionError::Persistence)
+                admission,
+            )
+            .await
+            .map_err(kivio_agent_sdk::agent::InjectionError::Persistence)
         })
     }
 
@@ -3396,10 +3416,22 @@ async fn execute(
                 host.wait_children(&config.conversation_id, generation)
                     .await?;
                 let mut admission = kivio_agent_sdk::agent::InjectionAdmission::default();
-                let collected = host.collect_inputs(
-                    &kivio_agent_sdk::agent::SessionHistory::from(import_history(history.clone())),
-                    false, &mut admission).await;
-                history.extend(export_history(&admission.committed_inputs().iter().map(|input| input.message.clone()).collect::<Vec<_>>()));
+                let collected = host
+                    .collect_inputs(
+                        &kivio_agent_sdk::agent::SessionHistory::from(import_history(
+                            history.clone(),
+                        )),
+                        false,
+                        &mut admission,
+                    )
+                    .await;
+                history.extend(export_history(
+                    &admission
+                        .committed_inputs()
+                        .iter()
+                        .map(|input| input.message.clone())
+                        .collect::<Vec<_>>(),
+                ));
                 collected?;
                 history.push(json!({"role": "user", "content": budget_reminder()}));
                 host.lock().history = import_history(history.clone());
@@ -3480,11 +3512,20 @@ async fn execute(
             host.wait_children(&config.conversation_id, generation)
                 .await?;
             let mut admission = kivio_agent_sdk::agent::InjectionAdmission::default();
-            let collected = host.collect_inputs(
-                &kivio_agent_sdk::agent::SessionHistory::from(import_history(history.clone())),
-                true, &mut admission).await;
+            let collected = host
+                .collect_inputs(
+                    &kivio_agent_sdk::agent::SessionHistory::from(import_history(history.clone())),
+                    true,
+                    &mut admission,
+                )
+                .await;
             let incoming = admission.committed_inputs();
-            history.extend(export_history(&incoming.iter().map(|input| input.message.clone()).collect::<Vec<_>>()));
+            history.extend(export_history(
+                &incoming
+                    .iter()
+                    .map(|input| input.message.clone())
+                    .collect::<Vec<_>>(),
+            ));
             collected?;
             if !incoming.is_empty() {
                 config.history = import_history(history).into();
@@ -5041,7 +5082,11 @@ mod tests {
     fn saved_read_only_contract_keeps_only_read_actions_of_merged_tools() {
         let directory = tempfile::tempdir().unwrap();
         let mut value = session::test_contract(directory.path());
-        value["tools"] = json!(["native__automation", "native__schedule", "native__write_file"]);
+        value["tools"] = json!([
+            "native__automation",
+            "native__schedule",
+            "native__write_file"
+        ]);
         value["readOnly"] = json!(true);
         let saved: session::SessionContract = serde_json::from_value(value).unwrap();
         let mut tools = vec![

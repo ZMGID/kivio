@@ -36,10 +36,10 @@ pub use conn::{
 pub use registry::{
     compact_mcp_tool_id, mcp_tool_definition, sanitize_openai_tool_name, wire_mcp_tool_id,
 };
-pub use result::parse_tool_result;
 pub use resources::{
     McpResource, McpResourceContents, McpResourceUpdate, McpResourceUpdateError, McpResourceUpdates,
 };
+pub use result::parse_tool_result;
 pub use rmcp::model::Implementation as McpServerInfo;
 pub use types::{McpTool, McpToolCallResult};
 
@@ -224,7 +224,11 @@ impl McpClient {
             return Ok(tools);
         }
         let revision = self.tools_revision();
-        if self.peer.peer_info().is_some_and(|info| info.capabilities.tools.is_none()) {
+        if self
+            .peer
+            .peer_info()
+            .is_some_and(|info| info.capabilities.tools.is_none())
+        {
             *self.cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(ToolCache {
                 revision,
                 tools: Vec::new(),

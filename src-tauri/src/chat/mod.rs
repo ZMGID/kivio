@@ -1,6 +1,6 @@
-pub(crate) mod runtime_injections;
-pub(crate) mod context_notes;
 pub(crate) mod agent_presentation;
+pub(crate) mod context_notes;
+pub(crate) mod runtime_injections;
 // Chat 模块：AI 客户端核心功能
 pub mod agent;
 pub(crate) mod artifacts;
@@ -87,8 +87,8 @@ pub(crate) mod context_measure;
 pub(crate) mod context_policy;
 pub(crate) mod recovery_policy;
 
-pub(crate) mod tool_runtime;
 pub(crate) mod tool_on_demand;
+pub(crate) mod tool_runtime;
 
 pub(crate) mod agent_preparation;
 pub(crate) mod file_ledger;

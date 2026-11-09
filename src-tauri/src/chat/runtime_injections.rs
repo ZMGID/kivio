@@ -451,7 +451,8 @@ pub(crate) mod tests {
         });
         let written = crate::native_tools::write_file(
             &workspace,
-            &serde_json::from_value(serde_json::json!({"path":"test.rs", "content":"first"})).unwrap(),
+            &serde_json::from_value(serde_json::json!({"path":"test.rs", "content":"first"}))
+                .unwrap(),
         )
         .unwrap();
         assert!(written.ok && written.target_touched);

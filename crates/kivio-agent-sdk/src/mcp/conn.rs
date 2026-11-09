@@ -136,7 +136,9 @@ impl ClientHandler for KivioClientHandler {
         _context: NotificationContext<RoleClient>,
     ) -> impl Future<Output = ()> + Send + '_ {
         if super::resources::validate_uri(&params.uri).is_ok() {
-            let _ = self.resource_updates.send(Ok(McpResourceUpdate { uri: params.uri }));
+            let _ = self
+                .resource_updates
+                .send(Ok(McpResourceUpdate { uri: params.uri }));
         }
         std::future::ready(())
     }

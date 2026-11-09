@@ -313,12 +313,20 @@ impl crate::chat::tool_runtime::ApplicationHost for ChatAgentHost {
         &'a self,
         context: kivio_agent_sdk::agent::InjectionContext<'a>,
         admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
-    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+    ) -> kivio_agent_sdk::agent::InjectionFuture<
+        'a,
+        Result<(), kivio_agent_sdk::agent::InjectionError>,
+    > {
         Box::pin(async move {
             crate::chat::sub_agent::collect_for_main(
-                &self.app, context.identity.conversation_id, context.identity.run_id,
-                &checkpoint_facts(context.history), admission,
-            ).await.map_err(kivio_agent_sdk::agent::InjectionError::Persistence)
+                &self.app,
+                context.identity.conversation_id,
+                context.identity.run_id,
+                &checkpoint_facts(context.history),
+                admission,
+            )
+            .await
+            .map_err(kivio_agent_sdk::agent::InjectionError::Persistence)
         })
     }
 
@@ -517,12 +525,20 @@ impl crate::chat::tool_runtime::ApplicationHost for ProbeAgentHost {
         &'a self,
         context: kivio_agent_sdk::agent::InjectionContext<'a>,
         admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
-    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+    ) -> kivio_agent_sdk::agent::InjectionFuture<
+        'a,
+        Result<(), kivio_agent_sdk::agent::InjectionError>,
+    > {
         Box::pin(async move {
             crate::chat::sub_agent::collect_for_main(
-                &self.app, context.identity.conversation_id, context.identity.run_id,
-                &checkpoint_facts(context.history), admission,
-            ).await.map_err(kivio_agent_sdk::agent::InjectionError::Persistence)
+                &self.app,
+                context.identity.conversation_id,
+                context.identity.run_id,
+                &checkpoint_facts(context.history),
+                admission,
+            )
+            .await
+            .map_err(kivio_agent_sdk::agent::InjectionError::Persistence)
         })
     }
 

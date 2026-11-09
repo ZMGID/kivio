@@ -129,12 +129,20 @@ pub struct SubagentIrcMessage {
     pub timestamp: i64,
 }
 
-pub async fn persist_incoming(app: &AppHandle, incoming: &SubagentIrcMessage) -> Result<(), String> {
+pub async fn persist_incoming(
+    app: &AppHandle,
+    incoming: &SubagentIrcMessage,
+) -> Result<(), String> {
     persist_incoming_batch(app, std::slice::from_ref(incoming)).await
 }
 
-pub(crate) async fn persist_incoming_batch(app: &AppHandle, incoming: &[SubagentIrcMessage]) -> Result<(), String> {
-    let Some(first) = incoming.first() else { return Ok(()); };
+pub(crate) async fn persist_incoming_batch(
+    app: &AppHandle,
+    incoming: &[SubagentIrcMessage],
+) -> Result<(), String> {
+    let Some(first) = incoming.first() else {
+        return Ok(());
+    };
     crate::chat::storage::validate_conversation_id(&first.conversation_id)?;
     let mut messages = Vec::with_capacity(incoming.len());
     for item in incoming {
@@ -144,18 +152,25 @@ pub(crate) async fn persist_incoming_batch(app: &AppHandle, incoming: &[Subagent
         let message: crate::chat::ChatMessage = serde_json::from_value(json!({
             "id": format!("subagent-irc-{}", item.id), "role": "assistant", "content": item.content,
             "timestamp": item.timestamp, "irc_message": item,
-        })).map_err(|error| error.to_string())?;
+        }))
+        .map_err(|error| error.to_string())?;
         messages.push(message);
     }
     crate::chat::repository::repository(app)
         .mutate(app, &first.conversation_id, |conversation| {
             for message in messages {
-                if !conversation.messages.iter().any(|item| item.id == message.id) {
+                if !conversation
+                    .messages
+                    .iter()
+                    .any(|item| item.id == message.id)
+                {
                     conversation.messages.push(message);
                 }
             }
             Ok(())
-        }).await.map_err(crate::chat::repository::repository_error)?;
+        })
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
     for item in incoming {
         if let Err(error) = app.emit("subagent-irc", item) {
             eprintln!("IRC event delivery failed: {error}");

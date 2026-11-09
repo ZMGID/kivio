@@ -293,7 +293,9 @@ pub async fn kill(
     state
         .background_commands_handle()
         .kill_for_conversation(&record.child_conversation_id);
-    let _ = state.runtime_injections.forget(&record.child_conversation_id);
+    let _ = state
+        .runtime_injections
+        .forget(&record.child_conversation_id);
     state.lsp.close_owner(&record.child_conversation_id);
     manager.jobs.cancel_agent(root, id);
     manager.irc.agent_stopped(root, id);

@@ -1,9 +1,9 @@
-pub(crate) mod resources;
 pub mod conn;
 mod icons;
 pub mod manager;
 pub mod native_registry;
 pub mod registry;
+pub(crate) mod resources;
 pub mod result;
 mod state;
 pub mod types;

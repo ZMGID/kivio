@@ -198,8 +198,12 @@ pub async fn collect_for_main(
     }
     let reports = reports_for(&claim.taken);
     let prepared = kivio_agent_sdk::agent::PreparedInjection::new(
-        report_inputs(reports.clone(), history).into_iter().map(super::session_input).collect(),
-    ).map_err(|error| error.to_string())?;
+        report_inputs(reports.clone(), history)
+            .into_iter()
+            .map(super::session_input)
+            .collect(),
+    )
+    .map_err(|error| error.to_string())?;
     crate::chat::repository::repository(app)
         .mutate(app, root, |parent| {
             insert_reports(&mut parent.messages, &reports)

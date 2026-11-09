@@ -396,10 +396,14 @@ impl AppState {
     }
 
     pub(crate) async fn mcp_resource_connection(
-        &self, sink: crate::mcp::manager::McpEventSink<'_>,
-        server: &crate::settings::ChatMcpServer, allowed_server_ids: &[String],
+        &self,
+        sink: crate::mcp::manager::McpEventSink<'_>,
+        server: &crate::settings::ChatMcpServer,
+        allowed_server_ids: &[String],
     ) -> Result<crate::mcp::resources::McpResourceConnection, String> {
-        self.mcp_manager().mcp_resource_connection(sink, server, allowed_server_ids).await
+        self.mcp_manager()
+            .mcp_resource_connection(sink, server, allowed_server_ids)
+            .await
     }
 
     pub fn mcp_idle_timeout(&self) -> Duration {

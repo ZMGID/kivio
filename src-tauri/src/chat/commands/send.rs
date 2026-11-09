@@ -187,7 +187,11 @@ pub(crate) async fn resume_subagents_when_idle(
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let _reservation = ChatSendReservation::acquire_when_idle(state.inner(), conversation_id).await;
-    let pending = !state.sub_agents.jobs.undelivered(conversation_id, crate::chat::sub_agent::MAIN_AGENT_ID).is_empty()
+    let pending = !state
+        .sub_agents
+        .jobs
+        .undelivered(conversation_id, crate::chat::sub_agent::MAIN_AGENT_ID)
+        .is_empty()
         || state.sub_agents.irc.has_pending_main(conversation_id)
         || state.runtime_injections.has_waking_input(conversation_id);
     if !pending || state.sub_agents.user_interrupted(conversation_id) {

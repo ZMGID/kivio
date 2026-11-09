@@ -93,7 +93,10 @@ fn sub_agent_tools(settings: &Settings, role: &str) -> Vec<ChatToolDefinition> {
 }
 
 fn names(tools: &[ChatToolDefinition]) -> Vec<String> {
-    tools.iter().map(ChatToolDefinition::openai_tool_name).collect()
+    tools
+        .iter()
+        .map(ChatToolDefinition::openai_tool_name)
+        .collect()
 }
 
 /// Same arithmetic as the context meter's "Tools" segment.
@@ -114,7 +117,12 @@ fn report(label: &str, tools: &[ChatToolDefinition]) {
     );
     let mut rows: Vec<_> = tools
         .iter()
-        .map(|tool| (tool_cost(std::slice::from_ref(tool)).0, tool.openai_tool_name()))
+        .map(|tool| {
+            (
+                tool_cost(std::slice::from_ref(tool)).0,
+                tool.openai_tool_name(),
+            )
+        })
         .collect();
     rows.sort_by(|a, b| b.0.cmp(&a.0));
     for (tokens, name) in rows {
@@ -147,8 +155,12 @@ const AGENT_TOOLS: &[&str] = &[
     "schedule",
 ];
 const GOAL_TOOLS: &[&str] = &[
-    "get_goal", "initialize_goal_criteria", "report_goal_progress", "goal_complete",
-    "goal_blocked", "goal_wait",
+    "get_goal",
+    "initialize_goal_criteria",
+    "report_goal_progress",
+    "goal_complete",
+    "goal_blocked",
+    "goal_wait",
 ];
 const PLAN_TOOLS: &[&str] = &[
     "web_fetch",

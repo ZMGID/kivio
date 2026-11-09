@@ -56,7 +56,10 @@ pub trait ApplicationHost: AgentHost {
         &'a self,
         _context: kivio_agent_sdk::agent::InjectionContext<'a>,
         _admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
-    ) -> kivio_agent_sdk::agent::InjectionFuture<'a, Result<(), kivio_agent_sdk::agent::InjectionError>> {
+    ) -> kivio_agent_sdk::agent::InjectionFuture<
+        'a,
+        Result<(), kivio_agent_sdk::agent::InjectionError>,
+    > {
         Box::pin(async { Ok(()) })
     }
 

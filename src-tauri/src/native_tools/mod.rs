@@ -1,7 +1,7 @@
-pub(crate) mod lsp;
 pub(crate) mod background_registry;
 mod fetch;
 mod files;
+pub(crate) mod lsp;
 mod read_summary;
 mod sandbox_exports;
 mod shell;
