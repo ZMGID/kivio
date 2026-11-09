@@ -154,6 +154,125 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn application_continuation_notes_use_the_selected_history_branch() {
+        use crate::chat::agent::loop_::tests::{
+            test_app_state, test_run_config, RecordingExecutor, TestHost,
+        };
+        use crate::chat::agent::{control::AgentRunHandle, events::AgentRunIdentity};
+        use kivio_agent_sdk::{
+            agent::{RuntimeMessage, SessionHistory},
+            model::ModelRole,
+        };
+
+        let state = test_app_state();
+        let model = crate::chat::runtime_injections::tests::CapturingModel::default();
+        let mut config = test_run_config(&state, "http://unused.invalid").into_application();
+        config.provider_runtime = Some(&model);
+        config
+            .tools
+            .push(crate::mcp::types::native_write_file_tool());
+        config.provider.model_overrides.insert(
+            config.model.clone(),
+            crate::settings::ModelInfo {
+                context_window: Some(32_768),
+                ..Default::default()
+            },
+        );
+        let budget =
+            kivio_agent_sdk::context::request_context_budget(32_768, config.max_output_tokens);
+        let schema_tokens: usize = config
+            .tools
+            .iter()
+            .map(|tool| {
+                crate::chat::agent_preparation::estimate_value_tokens(
+                    &tool.for_run(&config.settings).model.to_openai_tool(),
+                )
+            })
+            .sum();
+        let padding = "x".repeat((budget * 90 / 100 - schema_tokens - 100) * 4);
+        let mut history =
+            SessionHistory::from(vec![RuntimeMessage::system("continuation context")]);
+        let root = history.active_leaf().unwrap();
+        history.push(RuntimeMessage::text(
+            ModelRole::User,
+            format!("left branch\n{padding}"),
+        ));
+        let left = history.active_leaf().unwrap();
+        history.fork(root).unwrap();
+        history.push(RuntimeMessage::text(
+            ModelRole::User,
+            format!("right branch\n{padding}"),
+        ));
+        let right = history.active_leaf().unwrap();
+        let used = history
+            .context()
+            .iter()
+            .map(kivio_agent_sdk::context::estimate_runtime_message_tokens)
+            .sum::<usize>()
+            + schema_tokens;
+        assert!((budget * 85 / 100..budget).contains(&used));
+
+        let host = Arc::new(TestHost::default());
+        let executor = Arc::new(RecordingExecutor::default());
+        for leaf in [left, right, left] {
+            history.switch_branch(Some(leaf)).unwrap();
+            config.history = history.clone();
+            let control = AgentRunHandle::new(
+                AgentRunIdentity {
+                    conversation_id: &config.conversation_id,
+                    run_id: &config.run_id,
+                    message_id: &config.message_id,
+                    generation: config.generation,
+                },
+                host.clone(),
+            );
+            let result = crate::chat::session_policy::run_session(
+                Box::new(config.clone()),
+                host.clone(),
+                executor.clone(),
+                host.as_ref(),
+                control,
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.content, "done");
+        }
+        let requests = model.0.lock().unwrap();
+        assert_eq!(requests.len(), 3);
+        let paths: Vec<_> = requests
+            .iter()
+            .enumerate()
+            .map(|(index, request)| {
+                let (selected, inactive) = if index == 1 {
+                    ("right branch", "left branch")
+                } else {
+                    ("left branch", "right branch")
+                };
+                assert!(request.contains(selected));
+                assert!(!request.contains(inactive));
+                let (_, notice) = request
+                    .split_once("<context-notes-reminder window=\"0\">\n")
+                    .expect("the application must include its near-compaction reminder");
+                let notice: serde_json::Value =
+                    serde_json::from_str(notice.lines().next().unwrap()).unwrap();
+                notice["path"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        assert_ne!(
+            paths[0], paths[1],
+            "different selected branches must not share a continuation file"
+        );
+        assert_eq!(
+            paths[0], paths[2],
+            "the same selected branch must retain its continuation file"
+        );
+        assert!(
+            executor.events().is_empty(),
+            "the reminder must not write a file itself"
+        );
+    }
+
+    #[tokio::test]
     async fn context_pressure_reminds_once_through_the_actual_model_request() {
         let prompt = "continuation detail ".repeat(300);
         let mut tools = Vec::new();
