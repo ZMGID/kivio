@@ -66,3 +66,6 @@ mod tests;
 
 #[cfg(test)]
 mod sdk04_tests;
+
+#[cfg(test)]
+mod tool_baseline_tests;
