@@ -2,10 +2,6 @@ import { act, renderHook } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { useSettingsBackupController, type SettingsBackupPort } from './useSettingsBackupController'
 
-const fullPort = {
-  pendingRestore: async () => null, cancelRestore: async () => {}, importFull: async () => {}, confirmFullRestore: async () => true, restart: async () => {},
-}
-
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (reason: unknown) => void
@@ -17,7 +13,7 @@ describe('useSettingsBackupController', () => {
   it('coalesces repeated imports and never reports success before the import commits', async () => {
     const pending = deferred<void>()
     const imported = vi.fn(() => pending.promise)
-    const port: SettingsBackupPort = { ...fullPort,
+    const port: SettingsBackupPort = {
       pickImport: async () => 'backup.json', pickExport: async () => null,
       import: imported, export: async () => {},
     }
@@ -40,7 +36,7 @@ describe('useSettingsBackupController', () => {
     const imported = vi.fn()
       .mockRejectedValueOnce({ code: 'operationFailed', message: '不支持的配置备份格式或版本' })
       .mockResolvedValueOnce(undefined)
-    const port: SettingsBackupPort = { ...fullPort,
+    const port: SettingsBackupPort = {
       pickImport: async () => 'backup.json', pickExport: async () => null,
       import: imported, export: async () => {},
     }
@@ -54,7 +50,7 @@ describe('useSettingsBackupController', () => {
   it('requires an explicit trusted restore action to preserve executable configuration', async () => {
     const imported = vi.fn(async () => {})
     const exported = vi.fn(async () => {})
-    const port: SettingsBackupPort = { ...fullPort,
+    const port: SettingsBackupPort = {
       pickImport: async () => 'backup.json', pickExport: async () => 'share.json',
       import: imported, export: exported,
     }
@@ -65,128 +61,71 @@ describe('useSettingsBackupController', () => {
     expect(imported).toHaveBeenLastCalledWith('backup.json', true)
     expect(result.current.status?.msg).toContain('execution permissions')
     await act(async () => { await result.current.exportBackup() })
-    expect(exported).toHaveBeenLastCalledWith('share.json', 'configuration')
+    expect(exported).toHaveBeenLastCalledWith('share.json')
     expect(result.current.status?.kind).toBe('ok')
   })
-
-  it('prepares full restore only after confirmation and offers restart only after validation', async () => {
-    const pending = deferred<void>()
-    const imported = vi.fn(() => pending.promise)
-    const confirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
-    const port: SettingsBackupPort = { ...fullPort, pickImport: async () => 'full.kivio', pickExport: async () => null,
-      export: async () => {}, import: vi.fn(), importFull: imported, confirmFullRestore: confirm }
-    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
-    await act(async () => { await result.current.importBackup() })
-    expect(imported).not.toHaveBeenCalled()
-    let operation!: Promise<void>
-    await act(async () => { operation = result.current.importBackup(); await Promise.resolve() })
-    expect(result.current.restartRequired).toBe(false)
-    expect(result.current.busy).toBe(true)
-    pending.resolve()
-    await act(async () => { await operation })
-    expect(result.current.restartRequired).toBe(true)
-    expect(port.import).not.toHaveBeenCalled()
-    expect(imported).toHaveBeenCalledWith('full.kivio', false)
-  })
-
-  it('recovers a pending restore after reopening settings and cancels it without restarting', async () => {
-    let staged: { error: string | null } | null = { error: 'Access denied' }
-    const restart = vi.fn(async () => {})
-    const port: SettingsBackupPort = { ...fullPort, restart, pendingRestore: async () => staged,
-      cancelRestore: async () => { staged = null },
-      pickImport: async () => null, pickExport: async () => null, import: async () => {}, export: async () => {} }
-    const { result } = renderHook(() => useSettingsBackupController(port, 'zh'))
-    await act(async () => { await Promise.resolve() })
-    expect(result.current.restartRequired).toBe(true)
-    expect(result.current.restoreError).toBe('Access denied')
-    await act(async () => { await result.current.cancelRestore() })
-    expect(result.current.restartRequired).toBe(false)
-    expect(result.current.restoreError).toBeNull()
-    expect(restart).not.toHaveBeenCalled()
-  })
-
 })
 
 describe('manual WebDAV backup lifecycle', () => {
   function remotePort(): SettingsBackupPort {
-    return { ...fullPort, pickImport: async () => null, pickExport: async () => null,
+    return { pickImport: async () => null, pickExport: async () => null,
       import: vi.fn(async () => {}), export: vi.fn(async () => {}),
       webdav: {
         load: async () => ({ url: 'https://dav.test', username: 'user', directory: 'Kivio', hasPassword: true }),
         save: async () => ({ url: 'https://dav.test', username: 'user', directory: 'Kivio', hasPassword: true }),
-        test: async () => {}, list: async () => [], upload: vi.fn(async () => [] as string[]),
-        download: vi.fn(async () => ({ id: 'download', path: '/private/backup.kivio' })),
+        test: async () => {}, list: async () => [], upload: vi.fn(async () => {}),
+        download: vi.fn(async () => ({ id: 'download', path: '/private/backup.json' })),
         release: vi.fn(async () => {}), delete: vi.fn(async () => {}),
         confirmRestore: async () => true, confirmDelete: async () => true,
       },
     }
   }
-  const backup = { name: 'kivio-full-test.kivio', kind: 'full' as const, size: 10, modified: '' }
+  const backup = { name: 'kivio-configuration-test.json', size: 10, modified: '' }
 
-  it('requires confirmation before downloading and cleans temporary data after rejected archive validation', async () => {
+  it('requires confirmation before downloading and cleans temporary data after rejected configuration validation', async () => {
     const port = remotePort()
     port.webdav!.confirmRestore = async () => false
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
     await act(async () => { await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
     expect(port.webdav!.download).not.toHaveBeenCalled()
     port.webdav!.confirmRestore = async () => true
-    port.importFull = async () => { throw new Error('Invalid checksum') }
+    port.import = async () => { throw new Error('Unsupported configuration format') }
     await act(async () => { await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
     expect(port.webdav!.release).toHaveBeenCalledWith('download')
-    expect(result.current.restartRequired).toBe(false)
-    expect(result.current.status).toMatchObject({ kind: 'err', msg: expect.stringContaining('Invalid checksum') })
-    port.importFull = async () => {}
+    expect(result.current.status).toMatchObject({ kind: 'err', msg: expect.stringContaining('Unsupported configuration format') })
+    port.import = async () => {}
     await act(async () => { await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
-    expect(result.current.restartRequired).toBe(true)
+    expect(result.current.status?.msg).toContain('Configuration restored')
   })
 
-  it.each(['configuration', 'full', 'invalid'] as const)('preserves the %s restore outcome when temporary cleanup fails', async (outcome) => {
+  it.each(['configuration', 'invalid'] as const)('preserves the %s restore outcome when temporary cleanup fails', async (outcome) => {
     const port = remotePort()
     port.webdav!.release = vi.fn(async () => { throw new Error('Cleanup unavailable') })
-    if (outcome === 'invalid') port.importFull = async () => { throw new Error('Invalid checksum') }
-    const selected = { ...backup, kind: outcome === 'configuration' ? 'configuration' as const : 'full' as const }
+    if (outcome === 'invalid') port.import = async () => { throw new Error('Unsupported configuration format') }
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
     let restored = false
-    await act(async () => { restored = await result.current.runWebDav({ type: 'restore', backup: selected, trusted: false }) })
+    await act(async () => { restored = await result.current.runWebDav({ type: 'restore', backup, trusted: false }) })
     expect(restored).toBe(outcome !== 'invalid')
-    expect(result.current.restartRequired).toBe(outcome === 'full')
     expect(result.current.status?.kind).toBe(outcome === 'invalid' ? 'err' : 'ok')
-    expect(result.current.status?.msg).toContain(outcome === 'invalid' ? 'Invalid checksum' : outcome === 'full' ? 'Restart to restore' : 'Configuration restored')
+    expect(result.current.status?.msg).toContain(outcome === 'invalid' ? 'Unsupported configuration format' : 'Configuration restored')
     expect(result.current.status?.msg).toContain('Temporary backup cleanup failed')
   })
 
-  it.each(['local', 'remote', 'refresh-failure'] as const)('shows skipped paths after %s backup completion', async (mode) => {
-    const paths = ['E:\\Work\\.claude\\skills\\find-skills', '/workspace/broken']
-    const port = remotePort()
-    port.pickExport = async () => 'backup.kivio'
-    port.export = async () => paths
-    port.webdav!.upload = async () => paths
-    if (mode === 'refresh-failure') port.webdav!.list = async () => { throw new Error('Offline') }
-    const { result } = renderHook(() => useSettingsBackupController(port, 'zh'))
-    await act(async () => {
-      if (mode === 'local') await result.current.exportFullBackup()
-      else await result.current.runWebDav({ type: 'upload', kind: 'full' })
-    })
-    expect(result.current.status?.msg).toContain('已跳过 2 个无法备份的路径')
-    for (const path of paths) expect(result.current.status?.msg).toContain(path)
-    expect(result.current.status?.kind).toBe(mode === 'refresh-failure' ? 'err' : 'ok')
-  })
-
   it('blocks overlapping local export and duplicate upload until remote upload completes', async () => {
-    const pending = deferred<string[]>()
+    const pending = deferred<void>()
     const port = remotePort()
     port.webdav!.upload = vi.fn(() => pending.promise)
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
     let upload!: Promise<boolean>
-    act(() => { upload = result.current.runWebDav({ type: 'upload', kind: 'full' }) })
+    act(() => { upload = result.current.runWebDav({ type: 'upload' }) })
     await act(async () => {
       await result.current.exportBackup()
-      await result.current.runWebDav({ type: 'upload', kind: 'full' })
+      await result.current.runWebDav({ type: 'upload' })
     })
     expect(port.export).not.toHaveBeenCalled()
     expect(port.webdav!.upload).toHaveBeenCalledOnce()
     expect(result.current.busy).toBe(true)
-    pending.resolve([])
+    pending.resolve()
     await act(async () => { await upload })
     expect(result.current.status?.kind).toBe('ok')
     expect(result.current.busy).toBe(false)
@@ -196,7 +135,7 @@ describe('manual WebDAV backup lifecycle', () => {
     const port = remotePort()
     port.webdav!.list = async () => { throw new Error('Offline') }
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
-    await act(async () => { await result.current.runWebDav({ type: 'upload', kind: 'configuration' }) })
+    await act(async () => { await result.current.runWebDav({ type: 'upload' }) })
     expect(result.current.status?.msg).toContain('Operation completed, but the list could not refresh')
     expect(result.current.webdavFiles).toBeNull()
     expect(port.webdav!.upload).toHaveBeenCalledOnce()

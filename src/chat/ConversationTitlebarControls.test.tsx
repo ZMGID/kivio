@@ -1,6 +1,9 @@
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ConversationTitlebarControls } from './ConversationTitlebarControls'
+import { chatApi } from './api'
+
+vi.mock('./api', () => ({ chatApi: { getBranches: vi.fn() } }))
 
 vi.mock('./RuntimePicker', () => ({
   RuntimePicker: () => <div data-testid="runtime-picker" />,
@@ -44,6 +47,22 @@ const base = {
 }
 
 describe('ConversationTitlebarControls', () => {
+  it.each([false, true])('keeps history navigation available without project Git controls (Chat runtime: %s)', async (usesChatRuntime) => {
+    vi.mocked(chatApi.getBranches).mockResolvedValue([
+      { id: 'b1', label: 'Original', active: true },
+      { id: 'b2', label: 'Earlier answer', active: false },
+    ])
+    const onSwitch = vi.fn().mockResolvedValue(true)
+    const { queryByTestId } = render(<ConversationTitlebarControls {...base}
+      activeAgentRuntime={{ kind: usesChatRuntime ? 'chat' : 'builtin' }}
+      usesExternalRuntime={false} usesChatRuntime={usesChatRuntime}
+      historyBranches={{ disabled: false, onSwitch }} />)
+    fireEvent.click(await screen.findByRole('button', { name: '历史分支' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Earlier answer' }))
+    expect(onSwitch).toHaveBeenCalledWith('b2')
+    expect(queryByTestId('workspace-panel')).toBeNull()
+  })
+
   it('hides the workspace panel when switching to a conversation without a project, even with a working directory', () => {
     const props = {
       ...base,

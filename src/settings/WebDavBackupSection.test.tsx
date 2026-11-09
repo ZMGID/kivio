@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { BackupSection } from './BackupSection'
 import { WebDavBackupSection } from './WebDavBackupSection'
 import { useSettingsBackupController, type SettingsBackupPort } from './useSettingsBackupController'
 
@@ -12,15 +13,29 @@ beforeAll(() => {
 // Protects user-entered credentials and destination selection across a failed save.
 // The transport stub rejects persistence; the real controller and form own the behavior.
 describe('WebDAV configuration form', () => {
+  it('offers only configuration export and no restart or backup type selection', async () => {
+    const port: SettingsBackupPort = {
+      pickImport: async () => null, pickExport: async () => null, import: async () => {}, export: async () => {},
+    }
+    function Fixture() {
+      const controller = useSettingsBackupController(port, 'en')
+      return <BackupSection controller={controller} lang="en" />
+    }
+    render(<Fixture />)
+    expect(screen.getByRole('button', { name: 'Export configuration' })).toBeEnabled()
+    expect(screen.queryByText(/Full backup|Full restore|Restart/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Export everything' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Remote backup type')).not.toBeInTheDocument()
+  })
+
   it('retains the password on save failure and prevents transfers to an unsaved destination', async () => {
     const user = userEvent.setup()
     const config = { url: 'https://old.example.com', username: 'user', directory: 'Kivio', hasPassword: true }
     const save = vi.fn().mockRejectedValueOnce(new Error('Disk full')).mockImplementationOnce(async (input) => ({ ...config, url: input.url }))
     const port: SettingsBackupPort = {
       pickImport: async () => null, pickExport: async () => null, import: async () => {}, export: async () => {},
-      importFull: async () => {}, confirmFullRestore: async () => false, pendingRestore: async () => null, cancelRestore: async () => {}, restart: async () => {},
       webdav: {
-        load: async () => config, save, test: async () => {}, list: async () => [], upload: async () => [],
+        load: async () => config, save, test: async () => {}, list: async () => [], upload: async () => {},
         download: async () => ({ id: '', path: '' }), release: async () => {}, delete: async () => {},
         confirmRestore: async () => false, confirmDelete: async () => false,
       },
@@ -31,6 +46,7 @@ describe('WebDAV configuration form', () => {
     }
     render(<Fixture />)
     await user.click(await screen.findByRole('button', { name: 'Manage connection' }))
+    expect(screen.queryByLabelText('Remote backup type')).not.toBeInTheDocument()
     const password = await screen.findByLabelText('WebDAV password')
     const url = screen.getByLabelText('WebDAV server URL')
     expect(password).toHaveValue('')

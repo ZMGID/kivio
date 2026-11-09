@@ -71,6 +71,7 @@ describe('useComposerDraft', () => {
       webSearchMode: 'builtin',
       replyModels: [{ provider_id: 'provider-b', model: 'model-b' }],
       agentRuntime: EXTERNAL,
+      worktree: false,
     })
   })
 

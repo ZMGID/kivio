@@ -2392,6 +2392,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     conversationId: currentConversation?.id ?? null,
     projectId: selectedProject?.id ?? null,
     agentRuntimeKind: activeAgentRuntime.kind,
+    worktreePath: currentConversation?.worktree?.path,
   })
   const {
     open: dockOpen,
@@ -2642,6 +2643,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       onOpenGitPanel={handleOpenDockGit}
       onOpenTasks={handleOpenDockTasks}
       historyBranches={currentConversation && !usesExternalRuntime ? {
+        revision: currentConversation.revision,
         disabled: isCurrentConversationBusy() || streamCoarse.streaming || streamCoarse.streamFrozen || streamCoarse.cancelling || conversationOccupied,
         onSwitch: handleSwitchBranch,
       } : null}

@@ -1,6 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ReadingDocument } from '../api/reading'
+import { migrateComposerDraft } from '../../sdk/chat'
+vi.mock('../../sdk/chat', () => ({ migrateComposerDraft: vi.fn() }))
 const storage = vi.hoisted(() => ({
   list: vi.fn(),
   save: vi.fn(),
@@ -273,6 +275,7 @@ it('retains a missing-chat repair for retry without dropping notes or valid link
   const library = await import('./readingLibrary')
   await library.loadReadingLibrary()
   await expect(library.removeMissingReadingConversations('paper', ['deleted'])).rejects.toThrow('disk full')
+  expect(migrateComposerDraft).toHaveBeenCalledWith('deleted', 'reading-paper')
   const view = renderHook(library.useReadingLibrary)
   expect(view.result.current.documents[0].activeConversationId).toBeNull()
   expect(view.result.current.saveStatus).toBe('保存失败，尚未保存')

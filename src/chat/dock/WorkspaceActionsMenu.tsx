@@ -7,14 +7,15 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom'
 import CursorIcon from '@lobehub/icons/es/Cursor/components/Mono'
 import WindsurfIcon from '@lobehub/icons/es/Windsurf/components/Mono'
-import { Activity, ArrowDown, ArrowUp, Bot, Check, ChevronRight, CloudDownload, CloudUpload, Code2, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, GitFork, Globe, Laptop, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu, TerminalSquare } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, Bot, Check, ChevronRight, CloudDownload, CloudUpload, Code2, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, Globe, Laptop, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu, TerminalSquare } from 'lucide-react'
 import { IconButton } from '../../components/Button'
 import { notifyError } from '../../components/appNoticeStore'
 import { i18n, type Lang } from '../../components/i18n'
 import type { GitBranchesResult } from '../../api/dockContracts'
 import type { BackgroundTaskInfo } from '../../api/tauri'
 import { getRememberedEditor, getWorkspaceItemOverrides, getWorkspacePanelOpen, rememberEditor, rememberWorkspaceItemOverrides, rememberWorkspacePanelOpen } from '../persistence'
-import { chatApi, type ConversationBranch } from '../api'
+import { chatApi } from '../api'
+import { ConversationHistoryBranches, type HistoryBranchActions } from '../ConversationHistoryBranches'
 import type { ConversationContextState } from '../types'
 import { dockApi } from './api'
 import { PANEL_ICON, PANEL_SCOPE_ATTR, PanelRow, PanelSection, PanelSkeletonRows, SplitRow } from './WorkspacePanelParts'
@@ -33,11 +34,6 @@ import { WorkspaceItemsMenu } from './WorkspaceItemsMenu'
 import { WORKSPACE_ITEMS, resolveWorkspaceItems, toggleWorkspaceItem, type WorkspaceItemId } from './workspaceItems'
 import { WorkspaceContextSection, WorkspaceUsageSection, type WorkspaceUsageSource } from './WorkspaceUsageSection'
 import { WorkspacePublishForm } from './WorkspacePublishForm'
-
-export type WorkspaceHistoryBranches = {
-  disabled: boolean
-  onSwitch: (branchId: string) => Promise<boolean>
-}
 
 /** 对话环境（参照 T3 的 Local / New worktree）：只有还没开始的项目对话能选，开始后锁定。 */
 export type WorkspaceEnvironment = {
@@ -59,7 +55,7 @@ type WorkspaceActionsMenuProps = {
   inlineAllowed?: boolean
   onOpenGitPanel?: () => void
   onOpenTasks?: () => void
-  historyBranches?: WorkspaceHistoryBranches | null
+  historyBranches?: HistoryBranchActions | null
   /** 空白新对话：内联常驻默认不展开，用户点开后才显示。 */
   blank?: boolean
   environment?: WorkspaceEnvironment | null
@@ -215,19 +211,7 @@ function WorkspaceActionsPanel({
       return next
     })
   }
-  const [historyList, setHistoryList] = useState<ConversationBranch[] | null>(null)
-  const [historySwitching, setHistorySwitching] = useState(false)
   const { roster, refresh: refreshRoster } = useSubagentRoster(open ? conversationId : null)
-
-  const historyEnabled = Boolean(historyBranches)
-  // 历史分支随面板打开读取，作为下拉直接切换，不再弹对话框。
-  useEffect(() => {
-    setHistoryList(null)
-    if (!open || !conversationId || !historyEnabled) return
-    let cancelled = false
-    chatApi.getBranches(conversationId).then((list) => { if (!cancelled) setHistoryList(list) }).catch(() => { if (!cancelled) setHistoryList([]) })
-    return () => { cancelled = true }
-  }, [open, conversationId, historyEnabled])
 
   // 浮层只临时打开，恢复内联布局后即关闭，不能覆盖常驻面板的收起选择。
   useLayoutEffect(() => { if (inline) setPopoverOpen(false) }, [inline])
@@ -457,16 +441,6 @@ function WorkspaceActionsPanel({
     setBusy(null)
   }
 
-  const switchHistory = (branch: ConversationBranch) => {
-    if (!historyBranches || branch.active || historySwitching) return
-    setHistorySwitching(true)
-    void historyBranches.onSwitch(branch.id).then((applied) => {
-      if (!applied || !conversationId) return
-      return chatApi.getBranches(conversationId).then(setHistoryList)
-    }).catch((err) => notifyError(err instanceof Error ? err.message : String(err)))
-      .finally(() => setHistorySwitching(false))
-  }
-  const activeHistory = historyList?.find((branch) => branch.active)
   const runningAgents = roster?.agents.filter(agent => agent.status === 'running') ?? []
   const finishedAgents = roster?.agents.filter(agent => agent.status !== 'running') ?? []
   const agentRow = (agent: SubagentView) => (
@@ -497,26 +471,6 @@ function WorkspaceActionsPanel({
   )
 
   const tasksLabel = runningTasks > 0 ? t.chatBgJobsRunning.replace('{n}', String(runningTasks)) : t.dockTabTasks
-  const showHistoryRow = show.history && Boolean(historyBranches) && (historyList?.length ?? 0) > 1
-  const conversationSection = conversationId && showHistoryRow ? (
-    <PanelSection>
-      {showHistoryRow && historyBranches && (
-        <SplitRow
-          icon={historySwitching ? <Loader2 className={`${PANEL_ICON} animate-spin`} /> : <GitFork className={PANEL_ICON} />}
-          label={activeHistory?.label ?? t.workspaceHistoryBranches}
-          meta={t.workspaceHistoryCount.replace('{n}', String(historyList?.length ?? 0))}
-          disabled={historyBranches.disabled || historySwitching}
-          menuLabel={t.workspaceHistoryBranches}
-          menu={(close) => (historyList ?? []).map((branch) => (
-            <button key={branch.id} type="button" role="menuitemradio" aria-checked={branch.active} disabled={branch.active || historyBranches.disabled} className={`${ITEM} ${branch.active ? 'font-medium disabled:opacity-100' : ''}`} onClick={() => { close(); switchHistory(branch) }}>
-              <span className="min-w-0 flex-1 truncate">{branch.label}</span>
-              {branch.active && <Check size={13} strokeWidth={2} className="shrink-0 text-neutral-500" />}
-            </button>
-          ))}
-        />
-      )}
-    </PanelSection>
-  ) : null
 
   return (
     <div ref={wrapRef} className="relative shrink-0" data-tauri-drag-region="false">
@@ -740,7 +694,9 @@ function WorkspaceActionsPanel({
             </PanelSection>
           ) : null)}
 
-          {conversationSection}
+          {conversationId && historyBranches && show.history && <ConversationHistoryBranches
+            conversationId={conversationId} lang={lang} active={open} presentation="panel" {...historyBranches}
+          />}
 
           {show.tasks && conversationId && tasks.length > 0 && <PanelSection>
             <div className="flex items-center gap-2 px-2.5 pb-1 pt-1.5 text-[12px] font-medium text-neutral-400">

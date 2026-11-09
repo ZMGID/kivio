@@ -8,6 +8,7 @@ import { ThinkingLevelSelector } from '../ThinkingLevelSelector'
 import { conversationTitleSource, displayConversationTitle } from '../conversationTitle'
 import { chatTitlebarMacInsetClass, chatTitlebarRowClass, usesNativeTitlebar } from '../platform'
 import { WorkspaceActionsMenu } from '../dock/WorkspaceActionsMenu'
+import { ConversationHistoryBranches, type HistoryBranchActions } from '../ConversationHistoryBranches'
 import type { Lang } from '../../components/i18n'
 import type { AgentRuntimeConfig, Conversation, DetectedExternalAgent, ThinkingLevel } from '../types'
 
@@ -27,6 +28,7 @@ type PopoutTitlebarProps = {
   /** 关联项目且有工作目录时显示工作区面板；弹出窗口始终以浮层打开。 */
   workdir: string
   projectName: string | null
+  historyBranches?: HistoryBranchActions | null
   lang: Lang
 }
 
@@ -45,6 +47,7 @@ function TitlebarPills({
   busy,
   workdir,
   projectName,
+  historyBranches,
   lang,
 }: PopoutTitlebarProps) {
   const firstUser = conversation?.messages?.find((message) => message.role === 'user')
@@ -56,6 +59,7 @@ function TitlebarPills({
   const providerId = conversation?.provider_id ?? ''
   const model = conversation?.model ?? ''
   const locked = conversationRuntimeLocked(conversation)
+  const showWorkspace = runtime.kind !== 'chat' && Boolean(projectName && workdir)
 
   return (
     <>
@@ -118,7 +122,10 @@ function TitlebarPills({
       >
         {title}
       </div>
-      {runtime.kind !== 'chat' && projectName && workdir && (
+      {!showWorkspace && conversation && historyBranches && (
+        <ConversationHistoryBranches conversationId={conversation.id} lang={lang} {...historyBranches} />
+      )}
+      {showWorkspace && (
         <WorkspaceActionsMenu
           workdir={workdir}
           projectName={projectName}
@@ -126,6 +133,7 @@ function TitlebarPills({
           dockOpen={false}
           lang={lang}
           inlineAllowed={false}
+          historyBranches={historyBranches}
         />
       )}
     </>

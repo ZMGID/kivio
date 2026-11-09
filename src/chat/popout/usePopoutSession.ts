@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '../../api/tauri'
+import { notifyError } from '../../components/appNoticeStore'
 import { withExternalModel } from '../externalModelEffort'
 import { syncChatProtocol } from '../../api/chatProtocol'
 import { getSettingsCached, updateSettingsCached } from '../../api/settingsCache'
@@ -483,10 +484,26 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   }, [acceptPersistedConversation, conversationId])
 
   const displayMessages = executionOwner.overlayMessages(conversation?.id, conversation?.messages ?? [])
+  const handleSwitchBranch = useCallback(async (branchId: string): Promise<boolean> => {
+    if (usesExternalRuntime || streamCoarse.streaming || streamCoarse.streamFrozen || streamCoarse.cancelling
+      || executionOwner.snapshot(conversationId).inFlight) return false
+    try {
+      const updated = await chatApi.switchBranch(conversationId, branchId)
+      if (!viewActiveRef.current || conversationIdRef.current !== conversationId) return false
+      acceptPersistedConversation(updated)
+      setStreamCoarse({ streamError: '' })
+      return true
+    } catch (error) {
+      notifyError(error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }, [acceptPersistedConversation, conversationId, executionOwner, streamCoarse.cancelling,
+    streamCoarse.streamFrozen, streamCoarse.streaming, usesExternalRuntime])
   const workdir = usePopoutWorkdir(
     conversationId,
     conversation?.project_id ?? conversation?.projectId ?? null,
     `${runtime.kind}:${runtime.externalAgentId ?? ''}`,
+    conversation?.worktree?.path,
   )
 
   const inputBarProps = usePopoutComposer({
@@ -554,6 +571,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     handleExternalModelChange,
     handleApprovalPolicyChange,
     handleSandboxChange,
+    handleSwitchBranch,
     editGoal: (objective: string) => runGoalMutation((id) => chatApi.editGoal(id, objective), true),
     pauseGoal: () => runGoalMutation(chatApi.pauseGoal),
     resumeGoal: () => runGoalMutation(chatApi.resumeGoal, true),

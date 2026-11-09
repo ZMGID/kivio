@@ -170,10 +170,26 @@ impl<'a> ContextPolicy<'a> {
     }
 
     fn project(&self, history: &[RuntimeMessage]) -> Result<Vec<RuntimeMessage>, String> {
-        match &self.projection {
-            Some(projection) => projection.project(&self.conversation_id, history),
-            None => Ok(history.to_vec()),
+        let mut messages = match &self.projection {
+            Some(projection) => projection.project(&self.conversation_id, history)?,
+            None => history.to_vec(),
+        };
+        if crate::chat::model_metadata::model_supports_vision(Some(&self.provider), &self.model)
+            == Some(false)
+        {
+            for message in &mut messages {
+                if let Some(model) = message.model_message_mut() {
+                    model.content.retain(|part| {
+                        !matches!(
+                            part,
+                            crate::chat::model::MessagePart::Image { .. }
+                                | crate::chat::model::MessagePart::ImageUrl { .. }
+                        )
+                    });
+                }
+            }
         }
+        Ok(messages)
     }
 
     pub(crate) async fn prepare_context(
@@ -717,6 +733,59 @@ mod tests {
         assert!(!export_history(&facts)[0]
             .to_string()
             .contains("The car is blue"));
+    }
+
+    #[test]
+    fn text_only_projection_omits_historical_images_without_changing_facts() {
+        let app = test_app_state();
+        let mut config = test_run_config(&app, "http://unused.invalid");
+        let host = TestHost::default();
+        let mut facts = import_history(vec![
+            json!({"role":"user", "content":[{"type":"text", "text":"look"}, {"type":"image_url", "image_url":{"url":"https://example.org/a.png"}}], "_ui_message_id":"u1"}),
+            json!({"role":"assistant", "content":"Auxiliary vision observed a blue car"}),
+            json!({"role":"user", "content":"Explain more", "_ui_message_id":"u2"}),
+        ]);
+        facts.push(RuntimeMessage::model(ModelMessage {
+            role: ModelRole::Tool,
+            content: vec![
+                MessagePart::ToolResult {
+                    tool_call_id: "read".into(),
+                    content: "saved tool observation".into(),
+                    is_error: false,
+                    artifacts: Vec::new(),
+                },
+                MessagePart::Image {
+                    mime_type: "image/png".into(),
+                    data: "AAAA".into(),
+                    path: None,
+                    detail: None,
+                },
+            ],
+        }));
+        let canonical = facts.clone();
+        let model = config.model.clone();
+        for vision in [Some(false), Some(true), None] {
+            config.provider.model_overrides.insert(
+                model.clone(),
+                crate::settings::ModelInfo {
+                    capabilities: Some(crate::settings::ModelCapabilities {
+                        vision,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+            let policy = ContextPolicy::new(&app, &config, &host);
+            let projected = policy.transform_context(&facts).unwrap();
+            let mut expected = facts.clone();
+            if vision == Some(false) {
+                expected[0].model_message_mut().unwrap().content.truncate(1);
+                expected[3].model_message_mut().unwrap().content.truncate(1);
+            }
+            assert_eq!(projected, expected, "vision {vision:?}");
+            assert_eq!(policy.transform_context(&facts).unwrap(), expected);
+            assert_eq!(facts, canonical);
+        }
     }
 
     #[test]

@@ -27,6 +27,7 @@ export interface UseRightDockOptions {
   projectId: string | null
   /** 外部 agent 与内置 runtime 的实际写入目录不同，runtime 切换必须重解析 workdir。 */
   agentRuntimeKind: AgentRuntimeConfig['kind']
+  worktreePath?: string | null
 }
 
 /**
@@ -38,12 +39,14 @@ export function useRightDock({
   conversationId,
   projectId,
   agentRuntimeKind,
+  worktreePath,
 }: UseRightDockOptions) {
   const [open, setOpen] = useState(() => getRememberedDockOpen())
   const [width, setWidthState] = useState(() => getRememberedDockWidth())
   const [tab, setTabState] = useState<DockTab>(() => getRememberedDockTab())
   const [openTabRequest, setOpenTabRequest] = useState<DockOpenTabRequest | null>(null)
-  const [workdir, setWorkdir] = useState('')
+  const [resolvedWorkdir, setWorkdir] = useState('')
+  const workdir = worktreePath || resolvedWorkdir
   const [workingRoot, setWorkingRoot] = useState(() =>
     peekSettings()?.chatTools.nativeTools.workingDirectory,
   )
@@ -56,6 +59,7 @@ export function useRightDock({
 
   // 工作目录跟随当前会话 / 选中项目 / agent runtime 变化，由后端 dock_resolve_cwd 解析。
   useEffect(() => {
+    if (worktreePath) return
     let cancelled = false
     dockApi
       .resolveCwd(conversationId, projectId)
@@ -68,7 +72,7 @@ export function useRightDock({
     return () => {
       cancelled = true
     }
-  }, [conversationId, projectId, agentRuntimeKind, workingRoot])
+  }, [conversationId, projectId, agentRuntimeKind, workingRoot, worktreePath])
 
   // 文件树展开状态按 workdir 持久化，workdir 切换时重新载入。
   useEffect(() => {

@@ -46,6 +46,20 @@ beforeEach(() => {
 })
 
 describe('useRightDock: workdir', () => {
+  it('uses a new worktree immediately for the same conversation and ignores an older directory lookup', async () => {
+    let finishOld: (cwd: string) => void = () => {}
+    mockResolveCwd.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve }))
+    const { result, rerender } = setup({ projectId: 'p1' })
+    const updated = {
+      conversationId: 'c1', projectId: 'p1', agentRuntimeKind: 'builtin' as const,
+      worktreePath: '/repo-worktrees/c1',
+    }
+    rerender(updated)
+    expect(result.current.workdir).toBe('/repo-worktrees/c1')
+    await act(async () => { finishOld('/repo') })
+    expect(result.current.workdir).toBe('/repo-worktrees/c1')
+  })
+
   it('uses the default workdir when opening a new non-project chat', async () => {
     const { result, rerender } = setup()
     await act(async () => {})

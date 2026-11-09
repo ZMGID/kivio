@@ -155,6 +155,11 @@ function ChatPopoutBody({
       busy={Boolean(session.inputBarProps.disabled)}
       workdir={session.workdir}
       projectName={session.inputBarProps.conversationProject?.name || null}
+      historyBranches={session.conversation && !session.usesExternalRuntime ? {
+        revision: session.conversation.revision,
+        disabled: Boolean(session.inputBarProps.disabled),
+        onSwitch: session.handleSwitchBranch,
+      } : null}
       lang={lang}
     />
   )

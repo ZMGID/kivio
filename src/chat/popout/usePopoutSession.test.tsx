@@ -51,6 +51,7 @@ vi.mock('../api', () => ({
     getConversation: vi.fn(),
     sendMessage: vi.fn(),
     cancelStream: vi.fn(),
+    switchBranch: vi.fn(),
     detectExternalAgents: vi.fn().mockResolvedValue([]),
   },
   agentRuntimesEqual: () => true,
@@ -116,6 +117,24 @@ const subagentProgress = (overrides: Partial<ChatSubagentPayload> = {}): ChatSub
 })
 
 describe('usePopoutSession run settle', () => {
+  it('switches history while idle and ignores a switch result after navigating away', async () => {
+    mockGetConversation.mockResolvedValueOnce(userOnly)
+    const rendered = renderHook(({ id }) => usePopoutSession(id, 'zh'), { initialProps: { id: CONVERSATION_ID } })
+    await flush()
+    vi.mocked(chatApi.switchBranch).mockResolvedValueOnce({ ...withTwin, revision: 2 })
+    await act(async () => { expect(await rendered.result.current.handleSwitchBranch('earlier')).toBe(true) })
+    expect(rendered.result.current.conversation?.messages).toHaveLength(2)
+    let finish: (conversation: Conversation) => void = () => {}
+    vi.mocked(chatApi.switchBranch).mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    let switching: Promise<boolean> = Promise.resolve(true)
+    await act(async () => { switching = rendered.result.current.handleSwitchBranch('other') })
+    mockGetConversation.mockResolvedValueOnce({ ...userOnly, id: 'next' })
+    rendered.rerender({ id: 'next' })
+    await flush()
+    await act(async () => { finish({ ...withTwin, revision: 3 }); expect(await switching).toBe(false) })
+    expect(rendered.result.current.conversation?.id).toBe('next')
+  })
+
   it('reloads durable agent messages and keeps observations out of persisted conversation state', async () => {
     mockGetConversation.mockResolvedValueOnce(userOnly)
     const rendered = renderHook(({ id }) => usePopoutSession(id, 'zh'), { initialProps: { id: CONVERSATION_ID } })

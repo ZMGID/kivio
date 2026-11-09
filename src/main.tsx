@@ -6,7 +6,6 @@ import 'streamdown/styles.css'
 import { isTauriRuntime } from './api/tauri'
 import { startBackendSettingsSync } from './api/settingsCache'
 import { startModelDatabaseSync } from './data/modelDatabaseSync'
-import { restoreBackupInterface } from './api/backupInterface'
 
 if (isTauriRuntime()) {
   const backendSettingsSync = startBackendSettingsSync().catch((error) => {
@@ -30,7 +29,7 @@ function mountApp() {
 }
 
 if (isTauriRuntime()) {
-  void restoreBackupInterface().then(() => startModelDatabaseSync()).then((stop) => {
+  void startModelDatabaseSync().then((stop) => {
     if (import.meta.hot) import.meta.hot.dispose(stop)
     mountApp()
   }).catch((error) => {

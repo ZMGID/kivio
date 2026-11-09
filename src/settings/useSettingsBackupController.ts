@@ -2,38 +2,27 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { WebDavConfig, WebDavConfigInput, WebDavBackup, WebDavDownload } from '../generated/webdav'
 import type { Lang } from '../components/i18n'
 
-export type BackupKind = 'configuration' | 'full'
 export interface WebDavBackupPort {
   load(): Promise<WebDavConfig>
   save(input: WebDavConfigInput): Promise<WebDavConfig>
   test(input: WebDavConfigInput): Promise<void>
   list(): Promise<WebDavBackup[]>
-  upload(kind: BackupKind): Promise<string[]>
+  upload(): Promise<void>
   download(name: string): Promise<WebDavDownload>
   release(id: string): Promise<void>
   delete(name: string): Promise<void>
-  confirmRestore(kind: BackupKind): Promise<boolean>
+  confirmRestore(): Promise<boolean>
   confirmDelete(name: string): Promise<boolean>
 }
 type WebDavAction = { type: 'load' | 'list' } | { type: 'save' | 'test'; input: WebDavConfigInput }
-  | { type: 'upload'; kind: BackupKind } | { type: 'restore'; backup: WebDavBackup; trusted: boolean }
+  | { type: 'upload' } | { type: 'restore'; backup: WebDavBackup; trusted: boolean }
   | { type: 'delete'; name: string }
 export interface SettingsBackupPort {
   webdav?: WebDavBackupPort
   pickImport(): Promise<string | null>
-  pickExport(kind: BackupKind): Promise<string | null>
+  pickExport(): Promise<string | null>
   import(path: string, trusted?: boolean): Promise<unknown>
-  export(path: string, kind: BackupKind): Promise<string[] | void>
-  importFull(path: string, trusted: boolean): Promise<void>
-  confirmFullRestore(): Promise<boolean>
-  restart(): Promise<void>
-  /** null when nothing is staged; `error` is the last failed startup swap. */
-  pendingRestore(): Promise<{ error: string | null } | null>
-  cancelRestore(): Promise<void>
-}
-function skippedPathsMessage(paths: string[] | void, zh: boolean): string {
-  if (!paths?.length) return ''
-  return `\n${zh ? `已跳过 ${paths.length} 个无法备份的路径（链接异常或目录不存在）：` : `Skipped ${paths.length} paths that could not be backed up (broken links or missing folders):`}\n${paths.join('\n')}`
+  export(path: string): Promise<void>
 }
 /** Tauri rejects with strings, Errors or structured `{ code, message }` payloads (settings commands). */
 function errorText(error: unknown): string {
@@ -54,14 +43,11 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
   const live = useRef(true)
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<Status>(null)
-  const [restartRequired, setRestartRequired] = useState(false)
-  const [restoreError, setRestoreError] = useState<string | null>(null)
   const [webdavConfig, setWebdavConfig] = useState<WebDavConfig | null>(null)
   const [webdavFiles, setWebdavFiles] = useState<WebDavBackup[] | null>(null)
   const [webdavPhase, setWebdavPhase] = useState('')
   const [statusSource, setStatusSource] = useState<'local' | 'webdav'>('local')
 
-  // Shares the local backup gate: leaving the settings page does not cancel a committed restore.
   const runWebDav = useCallback(async (action: WebDavAction): Promise<boolean> => {
     const remote = portRef.current.webdav
     if (!remote || inFlight.current) return false
@@ -71,16 +57,8 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     setStatus(null)
     const zh = langRef.current === 'zh'
     let cleanupWarning = ''
-    let skippedWarning = ''
     const phase = (text: string) => { if (live.current) setWebdavPhase(text) }
     try {
-      if (await portRef.current.pendingRestore()) {
-        if (live.current) {
-          setRestartRequired(true)
-          setStatus({ kind: 'ok', msg: zh ? '已有待恢复备份，请重启完成恢复或取消恢复。' : 'A restore is pending. Restart to finish it, or cancel it.' })
-        }
-        return false
-      }
       if (action.type === 'load') {
         const config = await remote.load()
         if (live.current) setWebdavConfig(config)
@@ -93,15 +71,12 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         phase(zh ? '正在测试读取、写入和删除权限…' : 'Testing read, write and delete access…')
         await remote.test(action.input)
       } else if (action.type === 'restore') {
-        if (!await remote.confirmRestore(action.backup.kind)) return false
+        if (!await remote.confirmRestore()) return false
         phase(zh ? '正在下载备份…' : 'Downloading backup…')
         const download = await remote.download(action.backup.name)
         try {
           phase(zh ? '正在校验并恢复备份…' : 'Validating and restoring backup…')
-          if (action.backup.kind === 'full') {
-            await portRef.current.importFull(download.path, action.trusted)
-            if (live.current) setRestartRequired(true)
-          } else await portRef.current.import(download.path, action.trusted)
+          await portRef.current.import(download.path, action.trusted)
         } finally {
           try { await remote.release(download.id) }
           catch (error) {
@@ -111,7 +86,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
       } else {
         if (action.type === 'upload') {
           phase(zh ? '正在生成并上传备份，请稍候…' : 'Creating and uploading backup…')
-          skippedWarning = skippedPathsMessage(await remote.upload(action.kind), zh)
+          await remote.upload()
         } else if (action.type === 'delete') {
           if (!await remote.confirmDelete(action.name)) return false
           await remote.delete(action.name)
@@ -129,17 +104,15 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         }
       }
       if (live.current) setStatus({ kind: 'ok', msg: (action.type === 'restore'
-        ? action.backup.kind === 'full'
-          ? (zh ? '备份已校验，重启后完成恢复。当前数据会保留副本。' : 'Backup validated. Restart to restore; previous data will be retained.')
-          : (zh ? '配置已恢复。' : 'Configuration restored.')
+        ? (zh ? '配置已恢复。' : 'Configuration restored.')
         : action.type === 'test' ? (zh ? '连接测试成功。' : 'Connection test succeeded.')
         : action.type === 'save' ? (zh ? 'WebDAV 配置已保存。' : 'WebDAV configuration saved.')
         : action.type === 'upload' ? (zh ? '备份已上传。' : 'Backup uploaded.')
         : action.type === 'delete' ? (zh ? '远程备份已删除。' : 'Remote backup deleted.')
-        : (zh ? '备份列表已更新。' : 'Backup list updated.')) + cleanupWarning + skippedWarning })
+        : (zh ? '备份列表已更新。' : 'Backup list updated.')) + cleanupWarning })
       return true
     } catch (error) {
-      if (live.current) setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${errorText(error)}${cleanupWarning}${skippedWarning}` })
+      if (live.current) setStatus({ kind: 'err', msg: `${zh ? '操作失败：' : 'Operation failed: '}${errorText(error)}${cleanupWarning}` })
       return false
     } finally {
       inFlight.current = false
@@ -147,7 +120,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     }
   }, [])
 
-  const run = useCallback(async (action: 'import' | 'restore' | BackupKind | 'restart' | 'cancel'): Promise<void> => {
+  const run = useCallback(async (action: 'import' | 'restore' | 'export'): Promise<void> => {
     if (inFlight.current) return
     inFlight.current = true
     setBusy(true)
@@ -155,47 +128,19 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     setStatus(null)
     const zh = langRef.current === 'zh'
     try {
-      if (action === 'restart') { await portRef.current.restart(); return }
-      if (action === 'cancel') {
-        await portRef.current.cancelRestore()
-        if (live.current) {
-          setRestartRequired(false)
-          setRestoreError(null)
-          setStatus({ kind: 'ok', msg: zh ? '已取消待恢复备份，当前数据未改变。' : 'Pending restore cancelled. Current data is unchanged.' })
-        }
-        return
-      }
-      if (await portRef.current.pendingRestore()) {
-        if (live.current) {
-          setRestartRequired(true)
-          setStatus({ kind: 'ok', msg: zh ? '已有待恢复备份，请重启完成恢复或取消恢复。' : 'A restore is pending. Restart to finish it, or cancel it.' })
-        }
-        return
-      }
       const importing = action === 'import' || action === 'restore'
-      const path = importing ? await portRef.current.pickImport() : await portRef.current.pickExport(action)
+      const path = importing ? await portRef.current.pickImport() : await portRef.current.pickExport()
       if (!path) return
-      let fullRestore = false
-      let skippedWarning = ''
       if (importing) {
-        fullRestore = /\.(kivio|zip)$/i.test(path)
-        if (fullRestore) {
-          if (!await portRef.current.confirmFullRestore()) return
-          await portRef.current.importFull(path, action === 'restore')
-        } else if (action === 'restore') await portRef.current.import(path, true)
+        if (action === 'restore') await portRef.current.import(path, true)
         else await portRef.current.import(path)
-      } else skippedWarning = skippedPathsMessage(await portRef.current.export(path, action), zh)
+      } else await portRef.current.export(path)
       if (!live.current) return
-      if (fullRestore) setRestartRequired(true)
-      setStatus({ kind: 'ok', msg: (fullRestore
-        ? (zh ? '备份已校验。重启后完成恢复；恢复前的数据会保留一份副本。' : 'Backup validated. Restart to restore. A copy of your previous data will be kept.')
-        : importing
-          ? action === 'restore'
-            ? (zh ? '配置已恢复，包括原有执行权限。' : 'Configuration restored, including execution permissions.')
-            : (zh ? '配置已导入。MCP 和 hooks 已禁用，外部 CLI 保留本机配置。' : 'Configuration imported. MCP and hooks are disabled; local CLI configuration is retained.')
-          : action === 'full'
-            ? (zh ? '完全备份已导出。' : 'Full backup exported.')
-            : (zh ? '配置已导出。' : 'Configuration exported.')) + skippedWarning,
+      setStatus({ kind: 'ok', msg: importing
+        ? action === 'restore'
+          ? (zh ? '配置已恢复，包括原有执行权限。' : 'Configuration restored, including execution permissions.')
+          : (zh ? '配置已导入。MCP 和 hooks 已禁用，外部 CLI 保留本机配置。' : 'Configuration imported. MCP and hooks are disabled; local CLI configuration is retained.')
+        : (zh ? '配置已导出。' : 'Configuration exported.'),
       })
     } catch (error) {
       if (!live.current) return
@@ -207,19 +152,10 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
   }, [])
   useEffect(() => {
     live.current = true
-    let current = true
-    void portRef.current.pendingRestore().then((pending) => {
-      if (current && pending) { setRestartRequired(true); setRestoreError(pending.error) }
-    }).catch((error) => {
-      if (current) setStatus({ kind: 'err', msg: errorText(error) })
-    })
-    return () => { current = false; live.current = false }
+    return () => { live.current = false }
   }, [])
   const importBackup = useCallback(() => run('import'), [run])
   const restoreBackup = useCallback(() => run('restore'), [run])
-  const exportBackup = useCallback(() => run('configuration'), [run])
-  const exportFullBackup = useCallback(() => run('full'), [run])
-  const restart = useCallback(() => run('restart'), [run])
-  const cancelRestore = useCallback(() => run('cancel'), [run])
-  return { busy, status, statusSource, restartRequired, restoreError, webdavConfig, webdavFiles, webdavPhase, runWebDav, importBackup, restoreBackup, exportBackup, exportFullBackup, restart, cancelRestore }
+  const exportBackup = useCallback(() => run('export'), [run])
+  return { busy, status, statusSource, webdavConfig, webdavFiles, webdavPhase, runWebDav, importBackup, restoreBackup, exportBackup }
 }

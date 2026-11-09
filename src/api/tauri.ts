@@ -24,7 +24,7 @@ import type { GoalState } from './goalContracts'
 import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from './dockContracts'
 import type { ThemeDefinition } from '../theme/types'
 
-import type { WebDavConfig, WebDavConfigInput, WebDavBackup, WebDavBackupKind, WebDavDownload } from '../generated/webdav'
+import type { WebDavConfig, WebDavConfigInput, WebDavBackup, WebDavDownload } from '../generated/webdav'
 
 // ========== 类型定义 ==========
 
@@ -1911,16 +1911,10 @@ export const api = {
   webdavSave: (input: WebDavConfigInput) => invoke<WebDavConfig>('webdav_save', { input }),
   webdavTest: (input: WebDavConfigInput) => invoke<void>('webdav_test', { input }),
   webdavList: () => invoke<WebDavBackup[]>('webdav_list'),
-  webdavUpload: (kind: WebDavBackupKind, interfaceState: Record<string, string>) => invoke<string[]>('webdav_upload', { kind, interface: interfaceState }),
+  webdavUpload: () => invoke<void>('webdav_upload'),
   webdavDownload: (name: string) => invoke<WebDavDownload>('webdav_download', { name }),
   webdavRelease: (id: string) => invoke<void>('webdav_release', { id }),
   webdavDelete: (name: string) => invoke<void>('webdav_delete', { name }),
-  exportFullBackup: (path: string, interfaceState: Record<string, string>) => invoke<string[]>('export_full_backup', { path, interface: interfaceState }),
-  importFullBackup: (path: string, trusted: boolean) => invoke<void>('import_full_backup', { path, trusted }),
-  backupInterface: () => invoke<{ id: string; values: Record<string, string> } | null>('backup_interface'),
-  backupRestorePending: () => invoke<{ error: string | null } | null>('backup_restore_pending'),
-  cancelRestore: () => invoke<void>('cancel_restore'),
-  restartAfterRestore: () => invoke<void>('restart_after_restore'),
   exportSettings: (path: string, share?: boolean) => invoke<void>('export_settings', { path, share }),
   importSettings: async (path: string, expectedVersion: SettingsVersion, trusted?: boolean) =>
     normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion, trusted })),

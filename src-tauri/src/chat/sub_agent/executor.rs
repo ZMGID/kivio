@@ -4189,10 +4189,14 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
         Ok(summary)
     };
     let mut placement = None;
-    state
-        .sub_agents
-        .jobs
-        .settle_before_notification(&host.job_id, job_result, || {
+    settle_turn(
+        &state.sub_agents.registry,
+        &state.sub_agents.jobs,
+        &host.record,
+        &host.job_id,
+        output_available.then_some(turn_output.as_path()),
+        job_result,
+        || {
             let status = host.lock().status.into();
             let event = host.subagent_event(status, None, None, Vec::new());
             placement = crate::chat::protocol::capture_subagent_activity(
@@ -4202,7 +4206,8 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
                 &event,
                 activity_status,
             );
-        });
+        },
+    );
     if !aborted
         && state
             .sub_agents
@@ -4278,9 +4283,6 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
                 record.status = registry::AgentStatus::Idle;
                 record.run_id = None;
                 record.activity = None;
-                if output_available {
-                    record.output_file = turn_output;
-                }
             },
         );
     }
@@ -4289,9 +4291,181 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
     super::irc::schedule_wake(&app, &host.record);
 }
 
+fn settle_turn(
+    registry: &registry::AgentRegistry,
+    jobs: &super::jobs::JobManager,
+    record: &registry::AgentRecord,
+    job_id: &str,
+    output_file: Option<&std::path::Path>,
+    result: Result<String, String>,
+    before_notify: impl FnOnce(),
+) {
+    let result = if let Some(output_file) = output_file {
+        let published = record.run_id.as_deref().and_then(|run| {
+            registry.update_checked(
+                &record.root,
+                &record.id,
+                record.generation,
+                Some(run),
+                |current| current.output_file = output_file.to_path_buf(),
+            )
+        });
+        if published.is_some() {
+            result
+        } else {
+            Err("Subagent turn is no longer active; its result was not published".into())
+        }
+    } else {
+        result
+    };
+    jobs.settle_before_notification(job_id, result, before_notify);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn settled_follow_up_output_is_readable_before_terminal_notifications() {
+        let dir =
+            std::env::temp_dir().join(format!("kivio-output-publication-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let previous = dir.join("A.md");
+        let latest = dir.join("A.follow-up.md");
+        std::fs::write(&previous, "previous response").unwrap();
+        std::fs::write(&latest, "latest follow-up response").unwrap();
+        let registry = registry::AgentRegistry::default();
+        let record = registry.register(registry::AgentRecord {
+            id: "A".into(),
+            root: "conv_publication".into(),
+            parent_id: super::super::MAIN_AGENT_ID.into(),
+            generation: 0,
+            display_name: "A".into(),
+            agent_type: "task".into(),
+            status: registry::AgentStatus::Running,
+            depth: 1,
+            child_conversation_id: "child".into(),
+            run_id: Some("follow-up".into()),
+            session_file: dir.join("A.jsonl"),
+            output_file: previous.clone(),
+            last_activity: 0,
+            activity: None,
+            published: true,
+        });
+        let jobs = super::super::jobs::JobManager::default();
+        let (job, _) = jobs.register(
+            "conv_publication",
+            super::super::MAIN_AGENT_ID,
+            "A",
+            "follow-up",
+        );
+        settle_turn(
+            &registry,
+            &jobs,
+            &record,
+            &job,
+            Some(&latest),
+            Ok("done".into()),
+            || {
+                assert_eq!(
+                    jobs.get(&job).unwrap().status,
+                    super::super::jobs::JobStatus::Completed
+                );
+            },
+        );
+        assert_eq!(
+            super::super::urls::read_in(&dir, &registry, &jobs, "conv_publication", "agent://A")
+                .await
+                .unwrap(),
+            "latest follow-up response"
+        );
+        assert_eq!(
+            registry.get("conv_publication", "A").unwrap().status,
+            registry::AgentStatus::Running
+        );
+        assert_eq!(
+            registry
+                .get("conv_publication", "A")
+                .unwrap()
+                .run_id
+                .as_deref(),
+            Some("follow-up")
+        );
+
+        for (generation, run, output) in [
+            (
+                record.generation - 1,
+                Some("follow-up"),
+                Some(previous.as_path()),
+            ),
+            (
+                record.generation,
+                Some("older-run"),
+                Some(previous.as_path()),
+            ),
+            (record.generation, None, Some(previous.as_path())),
+            (record.generation, Some("follow-up"), None),
+        ] {
+            let mut stale = record.clone();
+            stale.generation = generation;
+            stale.run_id = run.map(str::to_string);
+            let (job, _) = jobs.register(
+                "conv_publication",
+                super::super::MAIN_AGENT_ID,
+                "A",
+                "stale or failed output",
+            );
+            settle_turn(
+                &registry,
+                &jobs,
+                &stale,
+                &job,
+                output,
+                Ok("stale completion".into()),
+                || {},
+            );
+            assert_eq!(
+                registry.get("conv_publication", "A").unwrap().output_file,
+                latest
+            );
+            assert_eq!(
+                jobs.get(&job).unwrap().status,
+                if output.is_some() {
+                    super::super::jobs::JobStatus::Failed
+                } else {
+                    super::super::jobs::JobStatus::Completed
+                }
+            );
+        }
+        registry.update("conv_publication", "A", |current| {
+            current.status = registry::AgentStatus::Aborted;
+            current.run_id = None;
+        });
+        let (job, _) = jobs.register(
+            "conv_publication",
+            super::super::MAIN_AGENT_ID,
+            "A",
+            "interrupted",
+        );
+        settle_turn(
+            &registry,
+            &jobs,
+            &record,
+            &job,
+            Some(&previous),
+            Ok("stale completion".into()),
+            || {},
+        );
+        assert_eq!(
+            jobs.get(&job).unwrap().status,
+            super::super::jobs::JobStatus::Failed
+        );
+        assert_eq!(
+            registry.get("conv_publication", "A").unwrap().output_file,
+            latest
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn yield_error_is_terminal_without_success_data_or_schema_validation() {

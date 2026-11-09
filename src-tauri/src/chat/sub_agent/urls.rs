@@ -195,7 +195,7 @@ async fn not_found(
     Ok(format!("Not found: {id}\n{hint}"))
 }
 
-async fn read_in(
+pub(super) async fn read_in(
     dir: &Path,
     registry: &AgentRegistry,
     jobs: &JobManager,

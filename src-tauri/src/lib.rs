@@ -574,12 +574,6 @@ pub fn run() {
             backup::webdav::webdav_download,
             backup::webdav::webdav_release,
             backup::webdav::webdav_delete,
-            backup::export_full_backup,
-            backup::import_full_backup,
-            backup::backup_interface,
-            backup::backup_restore_pending,
-            backup::cancel_restore,
-            backup::restart_after_restore,
             commands::export_settings,
             commands::import_settings,
             commands::open_settings_window,
@@ -930,7 +924,6 @@ pub fn run() {
                     let voice: State<voice_codex::VoiceCodexService> = app_handle.state();
                     if tauri::async_runtime::block_on(voice.shutdown()).is_err() {
                         eprintln!("Voice cleanup has not completed; keeping the application alive.");
-                        backup::RESTART_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
                         api.prevent_exit();
                         return;
                     }
@@ -1008,10 +1001,6 @@ pub fn run() {
             // 和子进程清理未完成时都会 prevent_exit，那种路径进程还活着。
             tauri::RunEvent::Exit => {
                 desktop_pet::shutdown(app_handle);
-                // Plugins (single-instance lock) have already handled Exit; relaunch applies the restore.
-                if backup::RESTART_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst) {
-                    app_handle.restart();
-                }
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen {

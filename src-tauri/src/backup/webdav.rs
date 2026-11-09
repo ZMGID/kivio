@@ -1,4 +1,4 @@
-//! Manual remote backups. Credentials and transfer files never enter a backup.
+//! Manual configuration backups. WebDAV credentials and transfer files are excluded.
 use crate::state::AppState;
 use reqwest::{Client, Method, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,7 @@ use tokio::io::AsyncWriteExt;
 use ts_rs::TS;
 
 static TRANSFER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-const MAX_ARCHIVE: u64 = 129 * 1024 * 1024 * 1024;
+const MAX_CONFIGURATION: u64 = 64 * 1024 * 1024;
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,31 +40,10 @@ pub struct WebDavConfigInput {
     /// None keeps the saved password; an empty string explicitly clears it.
     pub password: Option<String>,
 }
-#[derive(Clone, Copy, Serialize, Deserialize, TS)]
-#[serde(rename_all = "lowercase")]
-pub enum WebDavBackupKind {
-    Configuration,
-    Full,
-}
-impl WebDavBackupKind {
-    fn extension(self) -> &'static str {
-        match self {
-            Self::Configuration => "json",
-            Self::Full => "kivio",
-        }
-    }
-    fn label(self) -> &'static str {
-        match self {
-            Self::Configuration => "configuration",
-            Self::Full => "full",
-        }
-    }
-}
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WebDavBackup {
     pub name: String,
-    pub kind: WebDavBackupKind,
     pub size: u64,
     pub modified: String,
 }
@@ -82,7 +61,6 @@ fn network_error(e: reqwest::Error) -> String {
 }
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let root = app.path().app_data_dir().map_err(err)?;
-    // A sibling survives full restore and is outside the archived app-data tree.
     let name = root
         .file_name()
         .ok_or("Invalid app data directory")?
@@ -166,7 +144,6 @@ impl Dav {
             }
             segments.push("");
         }
-        // No total deadline: large full backups legitimately exceed an hour; stalls hit read_timeout.
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(15))
@@ -284,7 +261,7 @@ impl Dav {
         let result = async {
             let file = tokio::fs::File::open(path).await.map_err(err)?;
             let size = file.metadata().await.map_err(err)?.len();
-            if size > MAX_ARCHIVE {
+            if size > MAX_CONFIGURATION {
                 return Err("Backup exceeds size limit".into());
             }
             let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
@@ -307,11 +284,8 @@ impl Dav {
         result
     }
     async fn download(&self, name: &str, path: &Path) -> Result<(), String> {
-        let kind = backup_kind(name).ok_or("Invalid Kivio backup name")?;
-        let limit = match kind {
-            WebDavBackupKind::Full => MAX_ARCHIVE,
-            WebDavBackupKind::Configuration => 64 * 1024 * 1024,
-        };
+        validate_backup_name(name)?;
+        let limit = MAX_CONFIGURATION;
         let mut response = checked(
             self.request("GET", self.file(name)?)
                 .send()
@@ -361,19 +335,16 @@ async fn bounded_bytes(mut response: Response, limit: usize) -> Result<Vec<u8>, 
     }
     Ok(bytes)
 }
-fn backup_kind(name: &str) -> Option<WebDavBackupKind> {
-    if !name
-        .bytes()
-        .all(|c| c.is_ascii_alphanumeric() || b"-._".contains(&c))
+fn validate_backup_name(name: &str) -> Result<(), String> {
+    if name.starts_with("kivio-configuration-")
+        && name.ends_with(".json")
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"-._".contains(&c))
     {
-        return None;
-    }
-    if name.starts_with("kivio-full-") && name.ends_with(".kivio") {
-        Some(WebDavBackupKind::Full)
-    } else if name.starts_with("kivio-configuration-") && name.ends_with(".json") {
-        Some(WebDavBackupKind::Configuration)
+        Ok(())
     } else {
-        None
+        Err("Invalid Kivio configuration backup name".into())
     }
 }
 #[derive(Deserialize)]
@@ -442,9 +413,9 @@ fn parse_listing(bytes: &[u8], directory: &Url) -> Result<Vec<WebDavBackup>, Str
         else {
             continue;
         };
-        let Some(kind) = backup_kind(&name) else {
+        if validate_backup_name(&name).is_err() {
             continue;
-        };
+        }
         if url != directory.join(&name).map_err(err)? {
             continue;
         }
@@ -463,7 +434,6 @@ fn parse_listing(bytes: &[u8], directory: &Url) -> Result<Vec<WebDavBackup>, Str
                     name.clone(),
                     WebDavBackup {
                         name: name.clone(),
-                        kind,
                         size,
                         modified: props.prop.getlastmodified,
                     },
@@ -549,36 +519,21 @@ pub(crate) async fn webdav_list(app: AppHandle) -> Result<Vec<WebDavBackup>, Str
 pub(crate) async fn webdav_upload(
     app: AppHandle,
     state: State<'_, AppState>,
-    kind: WebDavBackupKind,
-    interface: BTreeMap<String, String>,
-) -> Result<Vec<String>, String> {
+) -> Result<(), String> {
     let _guard = TRANSFER
         .try_lock()
         .map_err(|_| "WebDAV operation in progress")?;
-    if super::backup_restore_pending(app.clone())?.is_some() {
-        return Err("请先重启完成恢复 / Restart to finish pending restore".into());
-    }
     let dav = Dav::new(&load(&config_path(&app)?)?)?;
     let temporary = tempfile::tempdir().map_err(err)?;
     let name = format!(
-        "kivio-{}-{}-{}.{}",
-        kind.label(),
+        "kivio-configuration-{}-{}.json",
         chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
         uuid::Uuid::new_v4(),
-        kind.extension()
     );
     let path = temporary.path().join(&name);
-    let skipped = match kind {
-        WebDavBackupKind::Full => {
-            super::export_full_backup(app, state, path.to_string_lossy().into(), interface).await?
-        }
-        WebDavBackupKind::Configuration => {
-            crate::commands::export_settings(app, state, path.to_string_lossy().into(), None)?;
-            Vec::new()
-        }
-    };
+    crate::commands::export_settings(app, state, path.to_string_lossy().into(), None)?;
     dav.upload(&path, &name).await?;
-    Ok(skipped)
+    Ok(())
 }
 #[tauri::command]
 pub(crate) async fn webdav_download(
@@ -589,7 +544,7 @@ pub(crate) async fn webdav_download(
         .try_lock()
         .map_err(|_| "WebDAV operation in progress")?;
     let temporary = tempfile::tempdir().map_err(err)?;
-    backup_kind(&name).ok_or("Invalid Kivio backup name")?;
+    validate_backup_name(&name)?;
     let path = temporary.path().join(&name);
     Dav::new(&load(&config_path(&app)?)?)?
         .download(&name, &path)
@@ -614,7 +569,7 @@ pub(crate) async fn webdav_delete(app: AppHandle, name: String) -> Result<(), St
     let _guard = TRANSFER
         .try_lock()
         .map_err(|_| "WebDAV operation in progress")?;
-    backup_kind(&name).ok_or("Invalid Kivio backup name")?;
+    validate_backup_name(&name)?;
     Dav::new(&load(&config_path(&app)?)?)?.delete(&name).await
 }
 
@@ -753,19 +708,19 @@ mod tests {
             ("MKCOL", "/Kivio/", 201, "".into()),
             (
                 "PUT",
-                "/Kivio/kivio-full-test.kivio.partial",
+                "/Kivio/kivio-configuration-test.json.partial",
                 201,
                 "".into(),
             ),
             (
                 "MOVE",
-                "/Kivio/kivio-full-test.kivio.partial",
+                "/Kivio/kivio-configuration-test.json.partial",
                 507,
                 "".into(),
             ),
             (
                 "DELETE",
-                "/Kivio/kivio-full-test.kivio.partial",
+                "/Kivio/kivio-configuration-test.json.partial",
                 204,
                 "".into(),
             ),
@@ -775,7 +730,7 @@ mod tests {
         std::fs::write(&source, b"backup").unwrap();
         let error = Dav::new(&config(url))
             .unwrap()
-            .upload(&source, "kivio-full-test.kivio")
+            .upload(&source, "kivio-configuration-test.json")
             .await
             .unwrap_err();
         assert!(error.contains("507"));
@@ -791,16 +746,25 @@ mod tests {
         let xml = format!(
             "<multistatus xmlns=\"DAV:\">{}{}</multistatus>",
             [
-                "https://evil.test/Kivio/kivio-full-a.kivio",
-                "/other/kivio-full-b.kivio",
-                "/Kivio/kivio-full-c.kivio.partial"
+                "https://evil.test/Kivio/kivio-configuration-a.json",
+                "/other/kivio-configuration-b.json",
+                "/Kivio/kivio-configuration-c.json.partial",
+                "/Kivio/kivio-full-old.kivio"
             ]
             .map(|href| response(href, "200 OK", ""))
             .join(""),
             [
-                response("/Kivio/kivio-full-dir.kivio", "200 OK", "<collection/>"),
-                response("/Kivio/kivio-full-missing.kivio", "404 Not Found", ""),
-                response("/Kivio/kivio-full-good.kivio", "200 OK", "")
+                response(
+                    "/Kivio/kivio-configuration-dir.json",
+                    "200 OK",
+                    "<collection/>"
+                ),
+                response(
+                    "/Kivio/kivio-configuration-missing.json",
+                    "404 Not Found",
+                    ""
+                ),
+                response("/Kivio/kivio-configuration-good.json", "200 OK", "")
             ]
             .join("")
         );
@@ -810,8 +774,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].name, "kivio-full-good.kivio");
-        assert!(backup_kind("../../kivio-full-good.kivio").is_none());
+        assert_eq!(files[0].name, "kivio-configuration-good.json");
+        assert!(validate_backup_name("../../kivio-configuration-good.json").is_err());
+        assert!(validate_backup_name("kivio-full-old.kivio").is_err());
         assert!(parse_listing(
             b"<html>login</html>",
             &Url::parse("https://dav.test/Kivio/").unwrap()
@@ -822,7 +787,7 @@ mod tests {
     fn listing_accepts_empty_unsupported_properties_on_collections() {
         let xml = br#"<d:multistatus xmlns:d="DAV:">
           <d:response><d:href>/Kivio/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat><d:propstat><d:prop><d:getcontentlength/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response>
-          <d:response><d:href>/Kivio/kivio-full-ok.kivio</d:href><d:propstat><d:prop><d:getcontentlength>42</d:getcontentlength><d:getlastmodified>Fri, 16 Oct 2026 12:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
+          <d:response><d:href>/Kivio/kivio-configuration-ok.json</d:href><d:propstat><d:prop><d:getcontentlength>42</d:getcontentlength><d:getlastmodified>Fri, 16 Oct 2026 12:00:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>
         </d:multistatus>"#;
         let files = parse_listing(xml, &Url::parse("https://dav.test/Kivio/").unwrap()).unwrap();
         assert_eq!(files.len(), 1);

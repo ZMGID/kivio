@@ -8,7 +8,7 @@ import globals from 'globals'
 export default [
   {
     // Preserve the legacy config's ignores, including ESLint 8's dotfile default.
-    ignores: ['**/dist/**', '**/output/**', '**/test-ZMGID/**', '**/.*'],
+    ignores: ['**/dist/**', '**/output/**', '**/test-ZMGID/**', 'task-GPUI/**', '**/.*'],
   },
   {
     files: ['**/*.{ts,tsx}'],

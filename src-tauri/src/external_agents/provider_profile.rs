@@ -518,6 +518,63 @@ fn profile_paths(
     Ok((paths, links))
 }
 
+const NATIVE_HOME_ENV_KEYS: &[&str] = &[
+    "HOME",
+    "USERPROFILE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "PI_CODING_AGENT_DIR",
+    "GROK_HOME",
+    "KIMI_CODE_HOME",
+    "DSH_HOME",
+];
+
+fn previous_profile_paths(
+    def: &RuntimeAgentDef,
+    config: &ExternalCliAgentConfig,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    if cfg!(windows)
+        && matches!(
+            def.provider_profile,
+            ProviderProfileStrategy::OpenCode
+                | ProviderProfileStrategy::Pi
+                | ProviderProfileStrategy::Grok
+                | ProviderProfileStrategy::Kimi
+                | ProviderProfileStrategy::Dsh
+        )
+    {
+        let env = super::overrides::env_for_config(def.id, Some(config));
+        if NATIVE_HOME_ENV_KEYS.iter().any(|key| {
+            env.keys()
+                .filter(|name| name.eq_ignore_ascii_case(key))
+                .count()
+                > 1
+        }) {
+            return Default::default();
+        }
+    }
+    let Ok((paths, links)) = profile_paths(def, config) else {
+        return Default::default();
+    };
+    if paths.iter().any(|path| !path.is_absolute()) {
+        return Default::default();
+    }
+    let state = match def.provider_profile {
+        ProviderProfileStrategy::OpenCode | ProviderProfileStrategy::Pi => {
+            effective_native_paths(def, config).map(|paths| paths.state)
+        }
+        ProviderProfileStrategy::Grok | ProviderProfileStrategy::Kimi => {
+            effective_toml_paths(def, config).map(|(_, state)| state)
+        }
+        _ => return (paths, links),
+    };
+    if state.is_some_and(|path| path.is_file()) {
+        (paths, links)
+    } else {
+        Default::default()
+    }
+}
+
 pub(crate) fn config_resource_keys(
     def: &RuntimeAgentDef,
     config: &ExternalCliAgentConfig,
@@ -526,6 +583,7 @@ pub(crate) fn config_resource_keys(
         .map(|(paths, _)| {
             paths
                 .into_iter()
+                .filter(|path| path.is_absolute())
                 .map(|path| format!("profile:{}", super::session::live::resource_path(&path)))
                 .collect()
         })
@@ -545,16 +603,23 @@ pub(crate) fn settings_resource_keys(
                     .into_iter()
                     .map(|path| format!("profile:{}", super::session::live::resource_path(&path))),
             );
-            for settings in [previous, next] {
-                keys.extend(config_resource_keys(
+            keys.extend(
+                previous_profile_paths(
                     def,
-                    settings
+                    previous
                         .chat
                         .external_cli_agents
                         .get(&agent)
                         .unwrap_or(&empty),
-                ));
-            }
+                )
+                .0
+                .into_iter()
+                .map(|path| format!("profile:{}", super::session::live::resource_path(&path))),
+            );
+            keys.extend(config_resource_keys(
+                def,
+                next.chat.external_cli_agents.get(&agent).unwrap_or(&empty),
+            ));
         }
     }
     keys
@@ -644,48 +709,45 @@ fn apply_settings_profiles(
                 }
             }
         }
-        for config in [before, after] {
-            if cfg!(windows)
-                && matches!(
-                    def.provider_profile,
-                    ProviderProfileStrategy::OpenCode
-                        | ProviderProfileStrategy::Pi
-                        | ProviderProfileStrategy::Grok
-                        | ProviderProfileStrategy::Kimi
-                        | ProviderProfileStrategy::Dsh
-                )
-            {
-                let names: std::collections::HashSet<_> =
-                    config.env.iter().map(|pair| &pair.key).collect();
-                for key in [
-                    "HOME",
-                    "USERPROFILE",
-                    "XDG_CONFIG_HOME",
-                    "XDG_DATA_HOME",
-                    "PI_CODING_AGENT_DIR",
-                    "GROK_HOME",
-                    "KIMI_CODE_HOME",
-                    "DSH_HOME",
-                ] {
-                    if names
-                        .iter()
-                        .filter(|name| name.eq_ignore_ascii_case(key))
-                        .count()
-                        > 1
-                    {
-                        return Err(format!(
-                            "Windows 环境变量 {key} 使用了多种大小写，请统一变量名后重试"
-                        ));
-                    }
+        if cfg!(windows)
+            && matches!(
+                def.provider_profile,
+                ProviderProfileStrategy::OpenCode
+                    | ProviderProfileStrategy::Pi
+                    | ProviderProfileStrategy::Grok
+                    | ProviderProfileStrategy::Kimi
+                    | ProviderProfileStrategy::Dsh
+            )
+        {
+            let env = super::overrides::env_for_config(def.id, Some(after));
+            let names: std::collections::HashSet<_> = after
+                .env
+                .iter()
+                .map(|pair| pair.key.as_str())
+                .chain(env.keys().map(String::as_str))
+                .collect();
+            for key in NATIVE_HOME_ENV_KEYS {
+                if names
+                    .iter()
+                    .filter(|name| name.eq_ignore_ascii_case(key))
+                    .count()
+                    > 1
+                {
+                    return Err(format!(
+                        "Windows 环境变量 {key} 使用了多种大小写，请统一变量名后重试"
+                    ));
                 }
             }
-            let (files, session_links) = profile_paths(def, config)?;
-            if files.iter().any(|path| !path.is_absolute()) {
-                return Err("原生 CLI 配置目录必须使用绝对路径".into());
-            }
-            paths.extend(files);
-            links.extend(session_links);
         }
+        let (files, session_links) = profile_paths(def, after)?;
+        if files.iter().any(|path| !path.is_absolute()) {
+            return Err("原生 CLI 配置目录必须使用绝对路径".into());
+        }
+        paths.extend(files);
+        links.extend(session_links);
+        let (files, session_links) = previous_profile_paths(def, before);
+        paths.extend(files);
+        links.extend(session_links);
     }
     let undo = ProfileUndo::capture(paths, links, lock)?;
     let result = (|| {
@@ -693,7 +755,9 @@ fn apply_settings_profiles(
             let def = get_agent_def(id).ok_or("未知外部 Agent")?;
             let before = previous.chat.external_cli_agents.get(id).unwrap_or(&empty);
             let after = next.chat.external_cli_agents.get(id).unwrap_or(&empty);
-            if profile_paths(def, before)?.0 != profile_paths(def, after)?.0
+            let old_paths = previous_profile_paths(def, before).0;
+            if !old_paths.is_empty()
+                && old_paths != profile_paths(def, after)?.0
                 && matches!(
                     def.provider_profile,
                     ProviderProfileStrategy::OpenCode
@@ -739,7 +803,8 @@ fn apply_settings_profiles(
                         remove_profile_file(&home.join("auth.json"))?;
                     }
                     ProviderProfileStrategy::Dsh
-                        if !provider.native_provider_id.trim().is_empty() =>
+                        if !old_paths.is_empty()
+                            && !provider.native_provider_id.trim().is_empty() =>
                     {
                         super::dsh_plugins::delete_native_provider_at(
                             &effective_dsh_path(before).ok_or("无法定位 dsh 配置")?,
@@ -3347,6 +3412,215 @@ mod tests {
         );
         assert_eq!(std::fs::read(backup).unwrap(), b"legacy sentinel");
         assert!(!root.path().join("native").exists());
+    }
+
+    #[test]
+    fn correcting_relative_native_homes_preserves_unknown_files() {
+        for (agent, key, file) in [
+            ("grok", "GROK_HOME", "config.toml"),
+            ("kimi", "KIMI_CODE_HOME", "config.toml"),
+            ("pi", "PI_CODING_AGENT_DIR", "models.json"),
+            ("opencode", "XDG_CONFIG_HOME", "opencode/opencode.json"),
+            ("dsh", "DSH_HOME", "settings.yaml"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let _root = isolated_profiles(root.path());
+            let unknown = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+            let sentinel = unknown.path().join(file);
+            std::fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+            std::fs::write(&sentinel, b"unknown native credentials").unwrap();
+            let mut before = crate::settings::Settings::default();
+            before.chat.external_cli_agents.insert(
+                agent.into(),
+                ExternalCliAgentConfig {
+                    env: vec![crate::settings::CliEnvVar {
+                        key: key.into(),
+                        value: unknown.path().file_name().unwrap().to_str().unwrap().into(),
+                    }],
+                    providers: if agent == "dsh" {
+                        vec![ExternalCliProvider {
+                            id: "removed".into(),
+                            native_provider_id: "native-removed".into(),
+                            ..Default::default()
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    ..Default::default()
+                },
+            );
+            let mut after = before.clone();
+            let config = after.chat.external_cli_agents.get_mut(agent).unwrap();
+            config.env[0].value = root.path().join("corrected").to_string_lossy().into_owned();
+            config.providers.clear();
+            let keys = settings_resource_keys(&before, &after);
+            assert!(!keys.contains(&format!(
+                "profile:{}",
+                super::super::session::live::resource_path(&sentinel)
+            )));
+            persist_with_profiles(&before, &after, || Ok(())).unwrap();
+            assert_eq!(
+                std::fs::read(&sentinel).unwrap(),
+                b"unknown native credentials"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn correcting_home_aliases_restores_only_the_bound_target_and_rolls_back() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let old = root.path().join("old");
+        let unknown = root.path().join("unknown");
+        let new = root.path().join("corrected");
+        for path in [&old, &unknown, &new] {
+            std::fs::create_dir_all(path).unwrap();
+            std::fs::write(path.join("config.toml"), "[ui]\ncolor = 'native'\n").unwrap();
+        }
+        let mut before = crate::settings::Settings::default();
+        before.chat.external_cli_agents.insert(
+            "grok".into(),
+            ExternalCliAgentConfig {
+                providers: vec![grok_provider(
+                    "relay",
+                    "Relay",
+                    "[models]\ndefault = 'relay'\n",
+                )],
+                current_provider: "relay".into(),
+                env: vec![crate::settings::CliEnvVar {
+                    key: "grok_home".into(),
+                    value: old.to_string_lossy().into_owned(),
+                }],
+                ..Default::default()
+            },
+        );
+        let mut empty = before.clone();
+        empty
+            .chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .current_provider
+            .clear();
+        persist_with_profiles(&empty, &before, || Ok(())).unwrap();
+        let managed = std::fs::read(old.join("config.toml")).unwrap();
+        before
+            .chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .env
+            .insert(
+                0,
+                crate::settings::CliEnvVar {
+                    key: "GROK_HOME".into(),
+                    value: unknown.to_string_lossy().into_owned(),
+                },
+            );
+        let mut after = before.clone();
+        let config = after.chat.external_cli_agents.get_mut("grok").unwrap();
+        config.env = vec![crate::settings::CliEnvVar {
+            key: "GROK_HOME".into(),
+            value: new.to_string_lossy().into_owned(),
+        }];
+        let keys = settings_resource_keys(&before, &after);
+        assert!(keys.contains(&format!(
+            "profile:{}",
+            super::super::session::live::resource_path(&old.join("config.toml"))
+        )));
+        assert_eq!(
+            persist_with_profiles(&before, &after, || Err("settings save failed".into()))
+                .unwrap_err(),
+            "settings save failed"
+        );
+        assert_eq!(std::fs::read(old.join("config.toml")).unwrap(), managed);
+        assert_eq!(
+            std::fs::read_to_string(new.join("config.toml")).unwrap(),
+            "[ui]\ncolor = 'native'\n"
+        );
+        persist_with_profiles(&before, &after, || Ok(())).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(old.join("config.toml")).unwrap(),
+            "[ui]\ncolor = 'native'\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(unknown.join("config.toml")).unwrap(),
+            "[ui]\ncolor = 'native'\n"
+        );
+        assert!(std::fs::read_to_string(new.join("config.toml"))
+            .unwrap()
+            .contains("relay"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn ambiguous_provider_home_aliases_require_correction_without_restoring_old_files() {
+        let root = tempfile::tempdir().unwrap();
+        let _root = isolated_profiles(root.path());
+        let def = get_agent_def("grok").unwrap();
+        let mut provider = grok_provider("relay", "Relay", "[models]\ndefault = 'relay'\n");
+        let mut sentinels = Vec::new();
+        for (key, dir) in [("GROK_HOME", "first"), ("grok_home", "second")] {
+            let pair = crate::settings::CliEnvVar {
+                key: key.into(),
+                value: root.path().join(dir).to_string_lossy().into_owned(),
+            };
+            let config = ExternalCliAgentConfig {
+                env: vec![pair.clone()],
+                ..Default::default()
+            };
+            let (path, state) = effective_toml_paths(def, &config).unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"unknown native credentials").unwrap();
+            std::fs::write(
+                &state,
+                br#"{"managed":true,"previousConfig":"private backup"}"#,
+            )
+            .unwrap();
+            sentinels.push((path, state));
+            provider.env.push(pair);
+        }
+        let mut before = crate::settings::Settings::default();
+        before.chat.external_cli_agents.insert(
+            "grok".into(),
+            ExternalCliAgentConfig {
+                providers: vec![provider],
+                current_provider: "relay".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            persist_with_profiles(&crate::settings::Settings::default(), &before, || {
+                Err("ambiguous proposed home cannot persist".into())
+            })
+            .unwrap_err()
+            .contains("多种大小写")
+        );
+        let mut after = before.clone();
+        after
+            .chat
+            .external_cli_agents
+            .get_mut("grok")
+            .unwrap()
+            .env
+            .push(crate::settings::CliEnvVar {
+                key: "GROK_HOME".into(),
+                value: root.path().join("corrected").to_string_lossy().into_owned(),
+            });
+        let keys = settings_resource_keys(&before, &after);
+        persist_with_profiles(&before, &after, || Ok(())).unwrap();
+        for (path, state) in sentinels {
+            assert!(!keys.contains(&format!(
+                "profile:{}",
+                super::super::session::live::resource_path(&path)
+            )));
+            assert_eq!(std::fs::read(path).unwrap(), b"unknown native credentials");
+            assert_eq!(
+                std::fs::read(state).unwrap(),
+                br#"{"managed":true,"previousConfig":"private backup"}"#
+            );
+        }
     }
     #[test]
     fn profile_undo_excludes_native_and_pi_side_writers_until_rollback_finishes() {

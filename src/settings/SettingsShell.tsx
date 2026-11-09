@@ -58,7 +58,6 @@ import { useSettingsMemoryEditor } from './useSettingsMemoryEditor'
 import { useProviderCatalogController } from './useProviderCatalogController'
 import { useSettingsBackupController } from './useSettingsBackupController'
 import { BackupSection } from './BackupSection'
-import { captureBackupInterface } from '../api/backupInterface'
 import { useSettingsHotkeyRecorder, type HotkeyScopeKey } from './useSettingsHotkeyRecorder'
 import { useProviderModalController } from './useProviderModalController'
 import { useSettingsOnboardingController } from './useSettingsOnboardingController'
@@ -223,42 +222,31 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       save: api.webdavSave,
       test: api.webdavTest,
       list: api.webdavList,
-      upload: async (kind) => {
+      upload: async () => {
         if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
-        return api.webdavUpload(kind, captureBackupInterface())
+        return api.webdavUpload()
       },
       download: api.webdavDownload,
       release: api.webdavRelease,
       delete: api.webdavDelete,
-      confirmRestore: (kind) => confirm(kind === 'full'
-        ? (lang === 'zh' ? '此备份将在重启后替换当前 Kivio 数据，并保留恢复前的副本。请先停止正在运行的任务。继续？' : 'This backup replaces your Kivio data after restart and retains a recovery copy. Stop active tasks first. Continue?')
-        : (lang === 'zh' ? '将覆盖当前设置，并导入备份中的助手和集。继续？' : 'This replaces current settings and imports assistants and sets. Continue?'),
-      { title: lang === 'zh' ? '恢复远程备份' : 'Restore remote backup', kind: 'warning' }),
+      confirmRestore: () => confirm(lang === 'zh' ? '将覆盖当前设置，并导入备份中的助手和集。继续？' : 'This replaces current settings and imports assistants and sets. Continue?',
+        { title: lang === 'zh' ? '恢复远程配置' : 'Restore remote configuration', kind: 'warning' }),
       confirmDelete: (name) => confirm(lang === 'zh' ? `删除远程备份 ${name}？此操作无法撤销。` : `Delete remote backup ${name}? This cannot be undone.`,
         { title: lang === 'zh' ? '删除备份' : 'Delete backup', kind: 'warning' }),
     },
     pickImport: async () => {
-      const selected = await open({ multiple: false, filters: [{ name: 'Kivio backup', extensions: ['json', 'kivio', 'zip'] }] })
+      const selected = await open({ multiple: false, filters: [{ name: 'Kivio backup', extensions: ['json'] }] })
       return typeof selected === 'string' ? selected : null
     },
-    pickExport: (kind) => save({
-      defaultPath: kind === 'full' ? 'kivio-full-backup.kivio' : 'kivio-configuration.json',
-      filters: [{ name: 'Kivio backup', extensions: kind === 'full' ? ['kivio'] : ['json'] }],
+    pickExport: () => save({
+      defaultPath: 'kivio-configuration.json',
+      filters: [{ name: 'Kivio configuration', extensions: ['json'] }],
     }),
     import: (path, trusted) => editorController.import(path, trusted),
-    export: async (path, kind) => {
+    export: async (path) => {
       if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
-      if (kind === 'full') return api.exportFullBackup(path, captureBackupInterface())
-      else await api.exportSettings(path)
+      await api.exportSettings(path)
     },
-    importFull: (path, trusted) => api.importFullBackup(path, trusted),
-    confirmFullRestore: () => confirm(lang === 'zh'
-      ? '重启后将用备份替换当前 Kivio 数据，恢复前的数据会保留副本。请先停止正在运行的任务。继续准备恢复？'
-      : 'After restarting, this backup will replace your Kivio data. A copy of your previous data will be kept. Stop active tasks first. Prepare restore?',
-    { title: lang === 'zh' ? '恢复完全备份' : 'Restore full backup', kind: 'warning' }),
-    restart: () => api.restartAfterRestore(),
-    pendingRestore: () => api.backupRestorePending(),
-    cancelRestore: () => api.cancelRestore(),
   }, lang)
   const onboarding = useSettingsOnboardingController({
     flush: () => editorController.flush(),

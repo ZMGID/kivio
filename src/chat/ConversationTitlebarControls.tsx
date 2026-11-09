@@ -8,7 +8,8 @@ import { PermissionPicker } from './PermissionPicker'
 import { ExternalCliAccount } from './ExternalCliAccount'
 import { ThinkingLevelSelector } from './ThinkingLevelSelector'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
-import { WorkspaceActionsMenu, type WorkspaceEnvironment, type WorkspaceHistoryBranches } from './dock/WorkspaceActionsMenu'
+import { WorkspaceActionsMenu, type WorkspaceEnvironment } from './dock/WorkspaceActionsMenu'
+import { ConversationHistoryBranches, type HistoryBranchActions } from './ConversationHistoryBranches'
 import type { WorkspaceUsageSource } from './dock/WorkspaceUsageSection'
 import type { AgentRuntimeConfig, ConversationContextState, DetectedExternalAgent, ThinkingLevel } from './types'
 
@@ -42,7 +43,7 @@ export interface ConversationTitlebarControlsProps {
   projectName: string | null
   onOpenGitPanel: () => void
   onOpenTasks: () => void
-  historyBranches?: WorkspaceHistoryBranches | null
+  historyBranches?: HistoryBranchActions | null
   /** 空白新对话：工作区面板默认收起。 */
   workspaceBlank?: boolean
   environment?: WorkspaceEnvironment | null
@@ -83,6 +84,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   usage,
   contextState,
 }: ConversationTitlebarControlsProps) {
+  const showWorkspace = !usesChatRuntime && Boolean(projectName && workdir)
   return (
     <>
       <div className="flex min-w-0 items-center gap-1">
@@ -149,7 +151,10 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
             </IconButton>
           </div>
         )}
-        {!usesChatRuntime && projectName && workdir && (
+        {!showWorkspace && conversationId && historyBranches && (
+          <ConversationHistoryBranches conversationId={conversationId} lang={uiLang} {...historyBranches} />
+        )}
+        {showWorkspace && (
           <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} blank={workspaceBlank} environment={environment} usage={usage} contextState={contextState} />
         )}
         {!usesChatRuntime && !dockOpen && (

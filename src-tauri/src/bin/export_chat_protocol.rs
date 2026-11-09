@@ -319,7 +319,6 @@ fn main() {
     let webdav = [
         WebDavConfig::decl(&config),
         WebDavConfigInput::decl(&config),
-        WebDavBackupKind::decl(&config),
         WebDavBackup::decl(&config),
         WebDavDownload::decl(&config),
     ]
