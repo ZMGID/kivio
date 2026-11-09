@@ -25,6 +25,7 @@
     "architecture:check": "node --test scripts/check-architecture.test.mjs && node scripts/check-architecture.mjs",
     "typecheck": "npm run protocol:check && tsc --noEmit",
     "test": "vitest run",
+    "test:dsh-bridge": "node --test scripts/dsh-bridge.test.mjs",
     "test:replace-visual": "node scripts/generate-replace-visual-fixtures.mjs --check && vitest run src/lens/replaceVisualBenchmark.test.ts",
     "fixtures:replace-visual": "node scripts/generate-replace-visual-fixtures.mjs",
     "test:watch": "vitest",

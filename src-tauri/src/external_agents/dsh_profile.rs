@@ -1,44 +1,5 @@
-//! Kivio 专用 dsh profile 的生成与维护。
-//!
-//! dsh 没有「一条命令直接出流式 JSON」的模式，它**只能 boot profile**（`dsh --profile <name>`）。
-//! 一个 profile 是 `$DSH_HOME/profiles/<name>/` 下的目录：`package.json`（依赖 + `dsh.profile.bundles`
-//! 层列表）+ 用户自己的 `cordis.patch.yml`。
-//!
-//! # 三条边界
-//!
-//! 1. **复用用户的 `$DSH_HOME`**（默认 `~/.dsh`），因为 `settings.yaml` 里的供应商配置与
-//!    `.credentials.yaml` / `.env` 里的 key 都在那儿 —— 换一个私有 home 就等于要求用户再配一遍。
-//! 2. **只写 `profiles/kivio/`**。用户自己的 `profiles/web`、`profiles/tui` 与家目录那份
-//!    `cordis.patch.yml` 一律不碰（同 Kivio 不改写 `~/.claude` / `~/.codex` 的凭证与路由）。
-//! 3. **依赖安装走官方 `dsh plugin --profile` 通道**，不自己写 `package.json` + `pnpm install`。
-//!    那条命令做三件我们自己做会漏的事：按模板初始化 profile（`dsh.profile.bundles` 要写
-//!    `@deepseek-ai/dsh-base`，**少了它 profile 起来没有 agent**）、转发 pnpm、按安装结果回填
-//!    bundle 层列表。本机实测漏掉 bundles 那次的表现是进程能起、`initialize` 能回，
-//!    但一 prompt 就没有任何 agent 接。安装前会写 `profiles/kivio/.npmrc` 钉死
-//!    `registry.npmjs.org`，避免用户家目录镜像缺 `@deepseek-ai/*`。
-//!
-//! # patch 里放什么
-//!
-//! 包含 Kivio profile 的装配与进程级配置：
-//! - `kivio-dsh-bridge.mjs` 一条 insert（在官方 server 上补 `resume` / `cancel` / `command` /
-//!   `commands` / `stop-job` / `steer` RPC；follow-up 走官方 `session/prompt`）
-//! - `hmr` 关掉：那是给开发热重载用的，常驻会话里只会带来意外重连
-//! - `session-title-llm` 关掉：Kivio 自己起标题，留着等于每轮多付一次模型调用
-//!   （实测确认它会发 `session/title-llm-request`）
-//! - `llm-deepseek.reasoningEffort`：官方 DeepSeek 路由的档位（只认 `off|low|high|max`）。
-//!   第三方 `llm-pi-ai` 路由另写 `providers.<route>.reasoning`（pi-ai 档位表）。
-//!   都不是启动 flag，也不在 `initialize` 参数里，所以换档位必须重写这个文件并换进程。
-//! - `agent-presets`：官方四档（standard / code / minimal / cordis）加上
-//!   `$DSH_HOME/.agent-presets` 里用户自己写的 preset。与官方 web 一样关掉 host
-//!   平面工具，改由所选 preset 组装；`dsh --profile` 会把随包的 `config/agent-presets`
-//!   补进 `roots`，`includeUserRoot: true` 再挂上用户目录。
-//! - `storage` / `workspace`：与官方 web 共用 `$DSH_HOME/storages`。Kivio 创建的原生会话
-//!   必须挂进 Host Workspace，否则 dsh web 把它们全部丢进「其他项目」。
-//! - 当前 Kivio 供应商的 `llm-pi-ai.providers.<route>`：只挂在 `profiles/kivio`，Key 仅以
-//!   `apiKeyEnv` 引用并由 Kivio 注入进程，不写入 YAML。
-//!
-//! **当前选择的模型不写进 patch**。provider 的模型目录在 patch 中，但每轮实际 route/model
-//! 仍由 `initialize` RPC 决定（见 `session::dsh_jsonrpc`）。
+//! Kivio owns only `profiles/kivio`; native credentials and sessions stay in DSH_HOME.
+//! The profile composes version-matched official preset declarations and the stdio bridge.
 
 use crate::external_agents::spawn::CliProcessOutput;
 use std::path::{Path, PathBuf};
@@ -57,16 +18,14 @@ const BRIDGE_SOURCE: &str = include_str!("../../resources/dsh/kivio-dsh-bridge.m
 
 /// Bridge 复用官方 server/transport；dsh core API 由运行中的 profile 提供，避免安装第二份 core。
 ///
-/// 这些 SDK 包的 npm `latest` 长期停在 0.0.1，而 dsh core 的生产 tag 已进入 0.1.x。
-/// 安装时必须追加当前 core 的精确版本，不能裸装包名。
+/// SDK 与声明式 preset 必须安装当前 core 的精确版本。
 const REQUIRED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-sdk-jsonrpc-server",
     "@deepseek-ai/dsh-sdk-protocol",
+    "@deepseek-ai/dsh-web-app",
 ];
 
-/// 不要把 `@deepseek-ai/dsh-agent-presets` 装进 kivio profile。
-/// `dsh plugin add` 不带版本会落到 `0.0.1-rc.1`，和本机 dsh 带的 `0.1.0-rc.6` 抢解析，
-/// 然后缺 `@deepseek-ai/dsh-paths`。patch 里只写插件名，让官方 module fallback 用随包那份。
+/// Remove the retired directory-discovery plugin from existing profiles.
 const PROFILE_PRESET_PACKAGE: &str = "@deepseek-ai/dsh-agent-presets";
 
 /// pnpm 在 profile 目录里读这份，盖过用户家目录 `.npmrc` 的淘宝镜像。
@@ -89,12 +48,9 @@ const HOST_PLANE_TOOL_IDS: &[&str] = &[
     "command-compact",
     "tool-result-pruner",
     "tool-subagent-control",
-    "tool-subagent-list-agents",
     "tool-subagent",
     "tool-subagent-fork",
-    "workflow-worker-thread",
     "tool-workflow",
-    "tool-ralph",
     "agent-instructions",
     "tool-todo",
     "tool-web",
@@ -117,7 +73,7 @@ pub fn profile_dir() -> Option<PathBuf> {
 const USER_PRESET_DIR: &str = ".agent-presets";
 const COMPOSITION_FILE: &str = "agent.cordis.yml";
 const METADATA_FILE: &str = "preset.yml";
-const BUILTIN_PRESET_IDS: &[&str] = &["standard", "code", "minimal", "cordis"];
+const BUILTIN_PRESET_IDS: &[&str] = &["standard", "ptc", "minimal", "cordis"];
 
 /// 底栏胶囊里一条用户 preset（官方四档由前端写死，不走这条）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,7 +85,7 @@ pub struct DshAgentPresetOption {
     pub description: Option<String>,
 }
 
-/// `$DSH_HOME/.agent-presets`。官方 web 的「创造模式」把自定义 preset 写在这里。
+/// 兼容旧版官方 web 存在 `$DSH_HOME/.agent-presets` 的自定义 preset。
 pub fn user_preset_root() -> Option<PathBuf> {
     dsh_home().map(|home| home.join(USER_PRESET_DIR))
 }
@@ -182,6 +138,7 @@ fn resolve_agent_preset(value: Option<&str>, user_root: Option<&Path>) -> String
     let Some(id) = value.map(str::trim).filter(|text| !text.is_empty()) else {
         return "standard".to_string();
     };
+    let id = if id == "code" { "ptc" } else { id };
     if is_builtin_preset_id(id) {
         return id.to_string();
     }
@@ -194,7 +151,7 @@ fn resolve_agent_preset(value: Option<&str>, user_root: Option<&Path>) -> String
 }
 
 fn is_builtin_preset_id(id: &str) -> bool {
-    BUILTIN_PRESET_IDS.contains(&id)
+    id == "code" || BUILTIN_PRESET_IDS.contains(&id)
 }
 
 /// 官方 `copy()` 校验：`[a-z0-9][a-z0-9-]*`。顺带封顶长度，挡住 YAML 注入。
@@ -245,63 +202,71 @@ pub fn chat_dsh_list_agent_presets() -> Vec<DshAgentPresetOption> {
 /// 自己的默认（实测 `defaultEffort: high`）。写一个 `default` 字面量会被 schema 拒（合法值
 /// 只有 `off|low|high|max`），整棵树起不来。
 fn render_patch(reasoning: Option<&str>, preset: Option<&str>) -> String {
-    let mut out = String::from(
-        "# 由 Kivio 生成并维护，请勿手改（每次启动 dsh 会话时按当前设置重写）。\n\
-         #\n\
-         # 用户自己的 profile（web / tui）与 $DSH_HOME/cordis.patch.yml 不受影响。\n\
-         \n\
-         # 开发用热重载：常驻会话里只会带来意外重连。\n\
-         - id: hmr\n\
-         \x20 disabled: true\n\
-         \n\
-         # 标题由 Kivio 自己起；留着等于每轮多付一次模型调用。\n\
-         - id: session-title-llm\n\
-         \x20 disabled: true\n",
-    );
+    let mut out = String::from("# Kivio-managed profile.\n- id: hmr\n  disabled: true\n- id: session-title-llm\n  disabled: true\n");
     if let Some(effort) = normalize_reasoning_effort(reasoning) {
-        out.push_str(
-            "\n# 推理档位唯一入口（不是启动 flag，也不在 initialize 参数里）。\n\
-             - id: llm-deepseek\n\
-             \x20 config:\n\
-             \x20   reasoningEffort: ",
-        );
-        out.push_str(effort);
+        out.push_str(&format!(
+            "- id: llm-deepseek\n  config:\n    reasoningEffort: {effort}\n"
+        ));
+    }
+    for id in HOST_PLANE_TOOL_IDS {
+        out.push_str(&format!("- id: {id}\n  disabled: true\n"));
+    }
+    out.push_str(&format!(
+        r#"- insert:
+    - id: agent-preset-registry
+      name: '@deepseek-ai/dsh-agent-preset-registry'
+      config:
+        default: {}
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
+    - id: workspace
+      name: '@deepseek-ai/dsh-workspace'
+    - id: schedule
+      name: '@deepseek-ai/dsh-schedule'
+    - id: cordis-host-runner
+      name: '@deepseek-ai/dsh-cordis-host-runner'
+    - id: cordis-inspect-providers
+      name: '@deepseek-ai/dsh-tool-cordis/host'
+    - id: kivio-dsh-jsonrpc-bridge
+      name: './kivio-dsh-bridge.mjs'
+"#,
+        normalize_agent_preset(preset)
+    ));
+    out
+}
+
+fn append_preset_declarations(
+    out: &mut String,
+    profile: &Path,
+    user_root: &Path,
+) -> Result<(), String> {
+    let package = package_dir(profile, "@deepseek-ai/dsh-web-app").expect("scoped package");
+    for id in BUILTIN_PRESET_IDS {
+        let path = package.join("presets").join(format!("{id}.patch.yml"));
+        let declaration = std::fs::read_to_string(&path)
+            .map_err(|e| format!("读取 dsh preset {id} 失败：{e}"))?;
+        out.push('\n');
+        out.push_str(&declaration);
         out.push('\n');
     }
-    out.push_str("\n# 与官方 web 相同：host 平面工具关掉，改由下面的 agent preset 按会话组装。\n");
-    for id in HOST_PLANE_TOOL_IDS {
-        out.push_str("- id: ");
-        out.push_str(id);
-        out.push_str("\n  disabled: true\n");
+    for preset in list_user_agent_presets_in(user_root) {
+        let path = user_root.join(&preset.id).join(COMPOSITION_FILE);
+        let url = url::Url::from_file_path(&path)
+            .map_err(|_| format!("dsh preset 路径必须为绝对路径：{}", path.display()))?;
+        let declaration = serde_json::json!({ "insert": [{
+            "id": format!("kivio-preset-{}", preset.id),
+            "name": "@deepseek-ai/dsh-agent-preset",
+            "config": {
+                "id": preset.id, "name": preset.label,
+                "plugins": [{ "id": "composition", "name": "@deepseek-ai/cordis-plugin-include",
+                    "config": { "path": url.as_str() } }]
+            }
+        }] });
+        out.push_str("\n- ");
+        out.push_str(&declaration.to_string());
+        out.push('\n');
     }
-    out.push_str(
-        "\n# Agent 模式：随包四档 + $DSH_HOME/.agent-presets 用户 preset。\n\
-         # 随包 roots 由 `dsh --profile` 的 composeProfile 注入；includeUserRoot\n\
-         # 让官方 web 写的自定义 preset 在 kivio profile 里也能挂上。\n\
-         - insert:\n\
-         \x20   - id: agent-presets\n\
-         \x20     name: '@deepseek-ai/dsh-agent-presets'\n\
-         \x20     config:\n\
-         \x20       includeUserRoot: true\n\
-         \x20       default: ",
-    );
-    out.push_str(&normalize_agent_preset(preset));
-    out.push_str(
-        "\n\n# dsh-base 0.1.5+ 已自带 storage/storage-json/storage-domain；这里只补 preset 所需的\n\
-         # Host 服务与 Workspace。\n\
-         # 重复 insert storage 会让新版 loader 以 duplicate loader entry id 直接退出。\n\
-         - insert:\n\
-         \x20   - id: subagent-model-selection-settings\n\
-         \x20     name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'\n\
-         \x20   - id: workspace\n\
-         \x20     name: '@deepseek-ai/dsh-workspace'\n\
-         \n\
-         # Kivio bridge：保留官方事件流，并补齐跨进程 resume 与协议级 cancel。\n\
-         - insert:\n\
-         \x20   - id: kivio-dsh-jsonrpc-bridge\n\
-         \x20     name: './kivio-dsh-bridge.mjs'\n",
-    );
-    out
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -496,7 +461,7 @@ fn installed_package_version(dir: &Path, package: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// 两个 bridge SDK 都必须与正在运行的 dsh core 精确同版。
+/// SDK and official preset declarations must match the installed core.
 fn packages_match_core(dir: &Path, core_version: &str) -> bool {
     REQUIRED_PACKAGES
         .iter()
@@ -559,7 +524,8 @@ pub async fn ensure_profile_ready(
     std::fs::write(dir.join(BRIDGE_FILENAME), BRIDGE_SOURCE)
         .map_err(|e| format!("写入 Kivio dsh bridge 失败：{e}"))?;
     let config = crate::external_agents::overrides::agent_config("dsh").unwrap_or_default();
-    let patch = render_patch_with_providers(reasoning, preset, &config.providers)?;
+    let mut patch = render_patch_with_providers(reasoning, preset, &config.providers)?;
+    append_preset_declarations(&mut patch, &dir, &home.join(USER_PRESET_DIR))?;
     std::fs::write(dir.join("cordis.patch.yml"), patch)
         .map_err(|e| format!("写入 dsh profile 配置失败：{e}"))
 }
@@ -584,7 +550,32 @@ fn normalize_profile_manifest(dir: &Path) -> Result<(), String> {
         .get_mut("dependencies")
         .and_then(Value::as_object_mut)
         .is_some_and(|deps| deps.remove(PROFILE_PRESET_PACKAGE).is_some());
-    if version_changed || removed_preset {
+    let mut profile = &mut value;
+    for key in ["dsh", "profile"] {
+        profile = profile
+            .as_object_mut()
+            .ok_or_else(|| "dsh profile 元数据必须是 JSON 对象".to_string())?
+            .entry(key)
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    let bundles = profile
+        .as_object_mut()
+        .ok_or_else(|| "dsh profile 元数据必须是 JSON 对象".to_string())?
+        .entry("bundles")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| "dsh profile bundles 必须是数组".to_string())?;
+    let previous_bundles = bundles.clone();
+    // web-app supplies preset assets; its browser application must not boot here.
+    bundles.retain(|bundle| bundle.as_str() != Some("@deepseek-ai/dsh-web-app"));
+    if !bundles
+        .iter()
+        .any(|bundle| bundle.as_str() == Some("@deepseek-ai/dsh-base"))
+    {
+        bundles.insert(0, serde_json::json!("@deepseek-ai/dsh-base"));
+    }
+    let bundles_changed = *bundles != previous_bundles;
+    if version_changed || removed_preset || bundles_changed {
         let next = serde_json::to_string_pretty(&value)
             .map_err(|e| format!("序列化 dsh profile package.json 失败：{e}"))?;
         std::fs::write(&package_json, format!("{next}\n"))
@@ -642,6 +633,8 @@ async fn install_packages(bin: &Path, core_version: &str, home: &Path) -> Result
         .arg(KIVIO_PROFILE)
         .arg("add")
         .args(&package_specs)
+        // Official preset dependency; keep other dependency builds unapproved.
+        .arg("--allow-build=koffi@3.1.1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -752,7 +745,7 @@ mod tests {
         assert!(yml.contains("- insert:"));
         assert!(yml.contains("name: './kivio-dsh-bridge.mjs'"));
         assert!(yml.contains("id: kivio-dsh-jsonrpc-bridge"));
-        assert!(yml.contains("name: '@deepseek-ai/dsh-agent-presets'"));
+        assert!(yml.contains("name: '@deepseek-ai/dsh-agent-preset-registry'"));
         assert!(yml.contains("default: standard"));
         assert!(yml.contains("name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'"));
         assert!(yml.contains("name: '@deepseek-ai/dsh-workspace'"));
@@ -766,6 +759,7 @@ mod tests {
             vec![
                 "@deepseek-ai/dsh-sdk-jsonrpc-server@0.1.5-rc.2",
                 "@deepseek-ai/dsh-sdk-protocol@0.1.5-rc.2",
+                "@deepseek-ai/dsh-web-app@0.1.5-rc.2",
             ]
         );
     }
@@ -799,6 +793,40 @@ mod tests {
     }
 
     #[test]
+    fn profile_composes_shipped_and_custom_presets_without_evaluating_expressions() {
+        let dir = tempfile::tempdir().unwrap();
+        let presets = package_dir(dir.path(), "@deepseek-ai/dsh-web-app")
+            .unwrap()
+            .join("presets");
+        std::fs::create_dir_all(&presets).unwrap();
+        for id in BUILTIN_PRESET_IDS {
+            std::fs::write(presets.join(format!("{id}.patch.yml")), format!("- insert:\n    - id: preset-{id}\n      disabled: !!js process.platform === 'win32'\n")).unwrap();
+        }
+        let users = dir.path().join("user presets");
+        write_user_preset(&users, "my-reviewer", Some("name: Reviewer"), true);
+        let mut patch = render_patch(None, Some("code"));
+        append_preset_declarations(&mut patch, dir.path(), &users).unwrap();
+        assert!(patch.contains("default: ptc"));
+        assert!(patch.contains("!!js process.platform === 'win32'"));
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&patch).unwrap();
+        let rows = parsed.as_sequence().unwrap();
+        let custom = rows.last().unwrap();
+        assert_eq!(
+            custom["insert"][0]["config"]["id"].as_str(),
+            Some("my-reviewer")
+        );
+        let path = custom["insert"][0]["config"]["plugins"][0]["config"]["path"]
+            .as_str()
+            .unwrap();
+        assert_eq!(
+            url::Url::parse(path).unwrap().to_file_path().unwrap(),
+            users.join("my-reviewer").join(COMPOSITION_FILE)
+        );
+        std::fs::remove_file(presets.join("ptc.patch.yml")).unwrap();
+        assert!(append_preset_declarations(&mut String::new(), dir.path(), &users).is_err());
+    }
+
+    #[test]
     fn bridge_source_owns_resume_cancel_and_parent_cleanup() {
         assert!(BRIDGE_SOURCE.contains("ctx.agents.resume"));
         assert!(BRIDGE_SOURCE.contains("agent.cancel({ kind: 'user' })"));
@@ -817,7 +845,7 @@ mod tests {
                 .contains("withExclusiveAgentCall"),
             "session/cancel must join the prompt/steer exclusive queue",
         );
-        assert!(BRIDGE_SOURCE.contains("agent.followup = agent.steer.bind(agent)"));
+        assert!(BRIDGE_SOURCE.contains("agent.steer(message)"));
         assert!(BRIDGE_SOURCE.contains("'userQuestions'"));
         assert!(BRIDGE_SOURCE.contains("'attachments'"));
         assert!(BRIDGE_SOURCE.contains("'jobs'"));
@@ -990,7 +1018,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("package.json"),
-            r#"{"name":"dsh-profile-kivio","private":true,"dependencies":{"@deepseek-ai/dsh-sdk-protocol":"0.1.5-rc.2"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base"]}}}"#,
+            r#"{"name":"dsh-profile-kivio","private":true,"dependencies":{"@deepseek-ai/dsh-sdk-protocol":"0.1.5-rc.2"},"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","@deepseek-ai/dsh-web-app","custom-bundle"]}}}"#,
         )
         .unwrap();
 
@@ -1006,9 +1034,23 @@ mod tests {
             "0.1.5-rc.2"
         );
         assert_eq!(
-            value["dsh"]["profile"]["bundles"][0],
-            "@deepseek-ai/dsh-base"
+            value["dsh"]["profile"]["bundles"],
+            serde_json::json!(["@deepseek-ai/dsh-base", "custom-bundle"])
         );
+    }
+
+    #[test]
+    fn malformed_profile_metadata_is_rejected_without_rewriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("package.json");
+        for raw in [
+            r#"{"dsh":false}"#,
+            r#"{"dsh":{"profile":{"bundles":false}}}"#,
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            assert!(normalize_profile_manifest(dir.path()).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
     }
 
     #[test]
@@ -1016,7 +1058,7 @@ mod tests {
         assert_eq!(normalize_agent_preset(None), "standard");
         assert_eq!(normalize_agent_preset(Some("")), "standard");
         assert_eq!(normalize_agent_preset(Some("default")), "standard");
-        assert_eq!(normalize_agent_preset(Some("code")), "code");
+        assert_eq!(normalize_agent_preset(Some("code")), "ptc");
         assert_eq!(normalize_agent_preset(Some("minimal")), "minimal");
         assert_eq!(normalize_agent_preset(Some("cordis")), "cordis");
         assert_eq!(normalize_agent_preset(Some("missing-custom")), "standard");
@@ -1029,7 +1071,7 @@ mod tests {
     #[test]
     fn patch_writes_the_selected_agent_preset() {
         let yml = render_patch(None, Some("minimal"));
-        assert!(yml.contains("includeUserRoot: true"));
+        assert!(yml.contains("@deepseek-ai/dsh-agent-preset-registry"));
         assert!(yml.contains("default: minimal"));
         assert!(!yml.contains("default: standard"));
     }

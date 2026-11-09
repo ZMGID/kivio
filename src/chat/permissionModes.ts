@@ -61,7 +61,7 @@ export const DSH_PRESET_OPTIONS: ModeOption[] = [
     tone: 'neutral',
   },
   {
-    value: 'code',
+    value: 'ptc',
     label: 'PTC 模式',
     description: 'Code Mode SDK · 多步工具写成一个程序',
     icon: Code2,
@@ -106,7 +106,8 @@ export function deriveDshPresetModes(
     })
   }
 
-  const selected = agentRuntime.externalAgentPreset ?? agentRuntime.external_agent_preset ?? ''
+  const saved = agentRuntime.externalAgentPreset ?? agentRuntime.external_agent_preset ?? ''
+  const selected = saved === 'code' ? 'ptc' : saved
   if (selected && !seen.has(selected)) {
     options.push({
       value: selected,

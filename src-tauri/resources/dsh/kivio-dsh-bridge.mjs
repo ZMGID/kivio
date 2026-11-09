@@ -1,8 +1,9 @@
 import Schema from '@deepseek-ai/schemastery'
 import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server'
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 
-class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
+export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   async initialize(params) {
     const result = await super.initialize(params)
     // Session tools read header.cwd; sandbox-policy falls back to process.cwd()
@@ -72,9 +73,17 @@ class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const handle = await this.ctx.agents.resume({
       resumeSessionId: sessionId,
       agentOptions: this.agentOptions(),
-      setup: (agentCtx) => {
-        const recorded = agentCtx.agent?.session?.header?.agentPreset
-        return this.mountPreset(agentCtx, recorded || this.agentPreset())
+      setup: async (agentCtx, agent) => {
+        const recorded = this.ctx.get('agentPresets')?.presetForSession(agent.session)
+        await this.mountPreset(agentCtx, recorded || this.agentPreset())
+        if (!agent.model?.select) throw new Error('Kivio requires DeepSeek Harness 0.2.2-rc.1 or later')
+        const selection = this.agentOptions()
+        const previous = agent.model.current()
+        if (selection.reasoningEffort === undefined && previous?.provider === selection.provider
+          && previous?.model === selection.model && previous.reasoningEffort !== undefined) {
+          selection.reasoningEffort = previous.reasoningEffort
+        }
+        agent.model.select(selection)
       },
     })
     const record = { handle, resumed: true }
@@ -107,21 +116,22 @@ class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   }
 
   agentPreset() {
-    const raw = process.env.DSH_AGENT_PRESET
-    if (raw === 'code' || raw === 'minimal' || raw === 'cordis') return raw
-    return 'standard'
+    const raw = process.env.DSH_AGENT_PRESET?.trim() || 'standard'
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(raw)) throw new TypeError('invalid dsh agent preset')
+    return raw === 'code' ? 'ptc' : raw
   }
 
   async mountPreset(agentCtx, presetId) {
     const presets = this.ctx.get('agentPresets')
-    if (!presets) return
-    await presets.mount(agentCtx, presetId)
+    if (!presets) throw new Error('dsh agent preset registry is unavailable')
+    await presets.mount(agentCtx, presetId === 'code' ? 'ptc' : presetId)
   }
 
   agentOptions() {
     return {
       provider: this.provider,
       model: this.model,
+      ...(this.reasoningEffort === undefined ? {} : { reasoningEffort: this.reasoningEffort }),
       ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
     }
   }
@@ -259,12 +269,6 @@ class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     return withExclusiveAgentCall(record.handle.agent, () => super.prompt(patched))
   }
 
-  // Official SDK only exposes session/prompt → agent.followup() (next turn).
-  // dsh itself has agent.steer() (next-step inbox). Reuse prompt()'s
-  // UserMessage construction by routing followup to steer for this one call.
-  // @deepseek-ai/dsh-llm is a peer of the SDK server, not a kivio profile dep.
-  // prompt() and steer() share a per-agent queue so a concurrent prompt cannot
-  // run while followup is patched to steer.
   async steer(params) {
     const sessionId = requireSessionId(params.sessionId)
     const contentBlocks = await materializeContentBlocks(this.ctx, params?.contentBlocks)
@@ -276,14 +280,12 @@ class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       throw new Error(`session agent was disposed outside the server: ${sessionId}`)
     }
     const agent = record.handle.agent
-    return withExclusiveAgentCall(agent, async () => {
-      const enqueueFollowup = agent.followup.bind(agent)
-      agent.followup = agent.steer.bind(agent)
-      try {
-        return await super.prompt({ sessionId, contentBlocks })
-      } finally {
-        agent.followup = enqueueFollowup
-      }
+    return withExclusiveAgentCall(agent, () => {
+      this.lifetime.signal.throwIfAborted()
+      this.assertLiveAgent(record, sessionId)
+      const message = createUserMessage({ content: contentBlocks, source: { kind: 'user' } })
+      agent.steer(message)
+      return { messageId: message.id }
     })
   }
 

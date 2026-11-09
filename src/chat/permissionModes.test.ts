@@ -206,6 +206,11 @@ describe('derivePermissionModes（顶栏权限按钮）', () => {
 })
 
 describe('deriveDshPresetModes（底栏 Agent 模式胶囊）', () => {
+  it('maps saved code mode to the current ptc preset', () => {
+    const modes = deriveDshPresetModes({ kind: 'external', externalAgentId: 'dsh', externalAgentPreset: 'code' })
+    expect(modes.current).toBe('ptc')
+    expect(modes.options.map(option => option.value)).toEqual(['standard', 'ptc', 'minimal', 'cordis'])
+  })
   it('uses the default preset unless a preset is selected', () => {
     expect(deriveDshPresetModes(externalRuntime('dsh')).current).toBe('standard')
     expect(deriveDshPresetModes({

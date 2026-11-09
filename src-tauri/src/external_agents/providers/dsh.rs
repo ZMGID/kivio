@@ -1,29 +1,6 @@
-//! DeepSeek Harness (`dsh`) —— 通过 SDK JSON-RPC stdio 协议驱动。
-//!
-//! # 为什么不是 ACP 家族的一条数据行
-//!
-//! dsh 确实有 ACP 服务端（`@deepseek-ai/dsh-acp`），但它的 README 与本机实测都指向同一个
-//! 结论：那是 automation-only 的桥，**只发 committed 的 `agent_message_chunk`**。实测
-//! （0.1.0-rc.6；rc.8 的 ACP 包仍是同一条 automation 桥）确认它没有 token 级 delta、
-//! 没有 reasoning、没有 tool call，
-//! `session/load` 直接回 `-32601 Method not found`。接进 Kivio 的话工具卡与思考块永远是空的，
-//! 等于把一个 agent harness 退化成问答框。
-//!
-//! 所以走 `@deepseek-ai/dsh-sdk-jsonrpc-server`（`StreamFormat::DshJsonRpc`）：同一个 CLI，
-//! 另一条协议，把**整条会话事件流**推过来 —— 本机实测拿到的事件类型是
-//! `turn/start` `step/start` `user/message` `request/header` `request/context`
-//! `assistant/chunk`(text-delta / reasoning-delta / usage / finish) `assistant/message`
-//! `tool/call` `tool/result` `turn/end`，正好覆盖 `UnifiedAgentEvent` 的全部出口。
-//!
-//! # 启动形状
-//!
-//! dsh 没有「一条命令直接出流式 JSON」的模式，它**只能 boot profile**。所以启动参数是
-//! `--profile <kivio profile>`，而那个 profile 由 `dsh_profile.rs` 生成并维护（Kivio 自己的
-//! 目录，绝不改用户的 `profiles/web` 或家目录 `cordis.patch.yml`）。进程 cwd、`initialize.cwd`
-//! 与 Host Workspace 挂载都指向 Kivio 项目根；不只是提示词里写一条路径。
-//!
-//! 模型 / 推理档位不是启动 flag，而是 `initialize` 的 RPC 参数（模型）与 Kivio profile
-//! `cordis.patch.yml` 中的 `llm-deepseek.reasoningEffort`（档位）—— 见 `dsh_profile.rs`。
+//! DeepSeek Harness uses its native SDK stream through a Kivio-owned profile.
+//! Rust owns installation, routing and protocol delivery; the in-process bridge
+//! composes native agents and exposes cancellation, steering and user interaction.
 
 use super::super::types::{CapabilitySupport, RewindStrategy};
 use super::super::types::{

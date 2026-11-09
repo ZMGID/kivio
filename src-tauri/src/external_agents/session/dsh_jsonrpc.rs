@@ -74,8 +74,7 @@ const CHILD_STEPS_MAX: usize = 24;
 const DEFAULT_PROVIDER: &str = "deepseek-official";
 const DEFAULT_MODEL: &str = "deepseek-v4-flash";
 
-// reasoningEffort 只能写进共享的 profiles/kivio patch。锁必须覆盖「写 patch → spawn →
-// initialize」整个窗口；只锁文件写入仍会让并发启动的另一轮在进程读配置前把值换掉。
+// 共享 profile 的配置必须在子进程完成 initialize 前保持不变。
 static DSH_PROFILE_BOOT_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// 运行中的 dsh 连接：一个进程可承载同一个 session 的多轮 prompt。
@@ -364,7 +363,15 @@ impl DshJsonRpcSession {
                 "cwd": init_cwd.to_string_lossy(),
                 "provider": route.provider,
                 "model": route.model,
+                "approvalRequests": true,
             });
+            let mut init_params = init_params;
+            if let Some(effort) = reasoning
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != "default")
+            {
+                init_params["reasoningEffort"] = json!(effort);
+            }
             // settings.yaml 里的 pi-ai 路由是异步挂上的。第一次 initialize 常会
             // 立刻回 `no adapter registered`——这是失败，不是成功。按这条错误重试
             // initialize；其它错误（超时、进程退出、真缺供应商）直接失败给用户。
@@ -523,7 +530,7 @@ impl DshJsonRpcSession {
     /// 运行中 `FollowUp` 走官方 `session/prompt`（下一轮 FIFO）。对端若在两轮之间
     /// 发 `idle`，这里按已 ACK 的 follow-up 数继续读，避免把下一轮丢给空闲泵；
     /// 没有用户 follow-up 时仍在**第一次** idle 返回，把 tool-jobs 的汇报留给空闲泵。
-    pub async fn run_turn(
+    pub(crate) async fn run_turn(
         &mut self,
         delivery: &TurnDelivery,
         prompt: &str,
@@ -533,7 +540,7 @@ impl DshJsonRpcSession {
         control: &mut mpsc::Receiver<SessionCommand>,
         mut approvals: Option<&mut ApprovalBridge>,
         mut idle_approvals: Option<&mut ApprovalBridge>,
-        idle_pending_asks: &mut std::collections::HashMap<String, Value>,
+        idle_pending_asks: &mut std::collections::HashMap<String, DshInteraction>,
     ) -> Result<(), String> {
         let requested_route = resolve_model_route_for_turn(model)?;
         if requested_route != self.route {
@@ -560,7 +567,7 @@ impl DshJsonRpcSession {
         let mut cancel_requested = false;
         let mut cancel_id: Option<u64> = None;
         let mut cancel_started: Option<std::time::Instant> = None;
-        let mut pending_asks: std::collections::HashMap<String, Value> =
+        let mut pending_asks: std::collections::HashMap<String, DshInteraction> =
             std::mem::take(idle_pending_asks);
         let mut pending_steers = PendingSteers::default();
         let mut pending_user_question_calls: VecDeque<PendingUserQuestionCall> = VecDeque::new();
@@ -1050,7 +1057,7 @@ pub fn spawn_dsh_session_actor_with_sink(
     crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         let mut idle_dead = false;
         let mut idle_hiccups = 0u32;
-        let mut idle_pending_asks: HashMap<String, Value> = HashMap::new();
+        let mut idle_pending_asks: HashMap<String, DshInteraction> = HashMap::new();
         let mut idle_pending_user_question_calls: VecDeque<PendingUserQuestionCall> =
             VecDeque::new();
         if !session.slash_commands.is_empty() {
@@ -1201,6 +1208,21 @@ pub fn spawn_dsh_session_actor_with_sink(
 }
 
 const SESSION_ASK_METHOD: &str = "session/ask";
+const APPROVAL_METHOD: &str = "approval/request";
+
+#[derive(Debug)]
+pub(crate) enum DshInteraction {
+    Question(Value),
+    Approval(Value),
+}
+
+impl DshInteraction {
+    fn id(&self) -> &Value {
+        match self {
+            Self::Question(id) | Self::Approval(id) => id,
+        }
+    }
+}
 const ASK_USER_QUESTION_TOOL: &str = "ask_user_question";
 const EXIT_PLAN_MODE_TOOL: &str = "exit_plan_mode";
 
@@ -1359,7 +1381,7 @@ fn is_incoming_rpc_request(value: &Value) -> bool {
 /// 空闲泵收到的入站 RPC：`session/ask` 交给宿主审批通道，其余仍 fail-close。
 fn classify_idle_incoming_rpc(value: &Value) -> DshIdlePump {
     let method = value.get("method").and_then(Value::as_str).unwrap_or("");
-    if method == SESSION_ASK_METHOD {
+    if matches!(method, SESSION_ASK_METHOD | APPROVAL_METHOD) {
         return DshIdlePump::Ask(value.clone());
     }
     let Some(id) = rpc_id(value) else {
@@ -1399,13 +1421,62 @@ async fn handle_incoming_request(
     session_id: &str,
     value: &Value,
     approvals: Option<&mut ApprovalBridge>,
-    pending_asks: &mut std::collections::HashMap<String, Value>,
+    pending_asks: &mut std::collections::HashMap<String, DshInteraction>,
     pending_user_question_calls: &mut VecDeque<PendingUserQuestionCall>,
 ) -> Result<(), String> {
     let Some(id) = rpc_id(value) else {
         return Ok(());
     };
     let method = value.get("method").and_then(Value::as_str).unwrap_or("");
+    if method == APPROVAL_METHOD {
+        let params = value.get("params").unwrap_or(&Value::Null);
+        let tool_name = params
+            .get("toolName")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty());
+        if !session_ask_id_accepted(params.get("sessionId").and_then(Value::as_str))
+            || tool_name.is_none()
+        {
+            return write_rpc_error(
+                stdin,
+                &id,
+                -32602,
+                "approval/request requires sessionId and toolName",
+                None,
+            )
+            .await;
+        }
+        let Some(bridge) = approvals else {
+            return write_rpc_result(stdin, &id, json!({ "outcome": "rejected" })).await;
+        };
+        if pending_asks.values().any(|pending| pending.id() == &id) {
+            return Ok(());
+        }
+        let interaction_id = uuid::Uuid::new_v4().to_string();
+        pending_asks.insert(interaction_id.clone(), DshInteraction::Approval(id.clone()));
+        if bridge
+            .requests
+            .send(ApprovalAsk {
+                interaction_id: interaction_id.clone(),
+                tool_call_id: params
+                    .get("callId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&interaction_id)
+                    .to_string(),
+                tool_name: tool_name.expect("validated tool name").to_string(),
+                input: params.clone(),
+                requires_user_interaction: true,
+                requires_manual_approval: true,
+                permission_suggestions: None,
+            })
+            .await
+            .is_err()
+        {
+            pending_asks.remove(&interaction_id);
+            return write_rpc_result(stdin, &id, json!({ "outcome": "cancelled" })).await;
+        }
+        return Ok(());
+    }
     if method != SESSION_ASK_METHOD {
         return write_rpc_error(
             stdin,
@@ -1462,13 +1533,13 @@ async fn handle_incoming_request(
         )
         .await;
     };
-    if pending_asks.values().any(|pending_id| pending_id == &id) {
+    if pending_asks.values().any(|pending| pending.id() == &id) {
         return Ok(());
     }
     let (tool_call_id, tool_name) =
         take_user_question_call(pending_user_question_calls, questions, &request_id);
     let interaction_id = uuid::Uuid::new_v4().to_string();
-    pending_asks.insert(interaction_id.clone(), id.clone());
+    pending_asks.insert(interaction_id.clone(), DshInteraction::Question(id.clone()));
     if bridge
         .requests
         .send(ApprovalAsk {
@@ -1498,7 +1569,7 @@ async fn handle_incoming_request(
 
 async fn drain_ask_decisions(
     stdin: &mut AgentStdin,
-    pending_asks: &mut std::collections::HashMap<String, Value>,
+    pending_asks: &mut std::collections::HashMap<String, DshInteraction>,
     mut turn_approvals: Option<&mut ApprovalBridge>,
     mut idle_approvals: Option<&mut ApprovalBridge>,
 ) -> Result<(), String> {
@@ -1514,12 +1585,23 @@ async fn drain_ask_decisions(
 
 async fn settle_session_ask(
     stdin: &mut AgentStdin,
-    pending_asks: &mut std::collections::HashMap<String, Value>,
+    pending_asks: &mut std::collections::HashMap<String, DshInteraction>,
     decision: ApprovalDecision,
 ) -> Result<(), String> {
-    let Some(id) = pending_asks.remove(&decision.interaction_id) else {
+    let Some(pending) = pending_asks.remove(&decision.interaction_id) else {
         return Ok(());
     };
+    if let DshInteraction::Approval(id) = pending {
+        return write_rpc_result(
+            stdin,
+            &id,
+            json!({
+                "outcome": if decision.approved { "allowed-once" } else { "rejected" }
+            }),
+        )
+        .await;
+    }
+    let id = pending.id();
     if decision.approved {
         if let Some(result) = decision.updated_input {
             return write_rpc_result(stdin, &id, result).await;
@@ -1545,13 +1627,21 @@ async fn settle_session_ask(
 
 async fn reject_pending_asks(
     stdin: &mut AgentStdin,
-    pending_asks: &mut std::collections::HashMap<String, Value>,
+    pending_asks: &mut std::collections::HashMap<String, DshInteraction>,
     code: &str,
     message: &str,
 ) {
-    let leftover: Vec<Value> = pending_asks.drain().map(|(_, id)| id).collect();
-    for id in leftover {
-        let _ = write_rpc_error(stdin, &id, -32000, message, Some(json!({ "code": code }))).await;
+    let leftover: Vec<_> = pending_asks.drain().map(|(_, pending)| pending).collect();
+    for pending in leftover {
+        match pending {
+            DshInteraction::Approval(id) => {
+                let _ = write_rpc_result(stdin, &id, json!({ "outcome": "cancelled" })).await;
+            }
+            DshInteraction::Question(id) => {
+                let _ = write_rpc_error(stdin, &id, -32000, message, Some(json!({ "code": code })))
+                    .await;
+            }
+        }
     }
 }
 
@@ -2940,6 +3030,118 @@ mod tests {
     use serde_json::Value;
 
     #[test]
+    fn approval_protocol_peer() {
+        if std::env::var_os("KIVIO_DSH_APPROVAL_PEER").is_none() {
+            return;
+        }
+        use std::io::BufRead;
+        let mut lines = std::io::stdin().lock().lines();
+        for (id, outcome) in [(1, "rejected"), (2, "allowed-once"), (3, "cancelled")] {
+            let response: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+            assert_eq!(response["id"], id);
+            assert_eq!(response["result"]["outcome"], outcome);
+        }
+    }
+
+    #[tokio::test]
+    async fn approvals_require_a_host_and_settle_once_with_native_outcomes() {
+        let mut child = Child::spawn(
+            tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "external_agents::session::dsh_jsonrpc::tests::approval_protocol_peer",
+                    "--nocapture",
+                ])
+                .env("KIVIO_DSH_APPROVAL_PEER", "1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .no_console_window()
+                .kill_on_drop(true),
+        )
+        .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let mut pending = HashMap::new();
+        let mut questions = VecDeque::new();
+        let request = |id| {
+            json!({"jsonrpc":"2.0","id":id,"method":"approval/request",
+            "params":{"sessionId":"child-session","toolName":"bash","callId":"call-1","reason":"outside workspace"}})
+        };
+        handle_incoming_request(
+            &mut stdin,
+            "parent-session",
+            &request(1),
+            None,
+            &mut pending,
+            &mut questions,
+        )
+        .await
+        .unwrap();
+        assert!(pending.is_empty());
+        let (requests, mut asks) = mpsc::channel(4);
+        let (_decisions, decisions) = mpsc::channel(4);
+        let mut bridge = ApprovalBridge {
+            requests,
+            decisions,
+        };
+        for id in [2, 3] {
+            let frame = request(id);
+            assert!(matches!(
+                classify_idle_incoming_rpc(&frame),
+                DshIdlePump::Ask(_)
+            ));
+            handle_incoming_request(
+                &mut stdin,
+                "parent-session",
+                &frame,
+                Some(&mut bridge),
+                &mut pending,
+                &mut questions,
+            )
+            .await
+            .unwrap();
+            handle_incoming_request(
+                &mut stdin,
+                "parent-session",
+                &frame,
+                Some(&mut bridge),
+                &mut pending,
+                &mut questions,
+            )
+            .await
+            .unwrap();
+            let ask = asks.try_recv().unwrap();
+            assert!(asks.try_recv().is_err());
+            assert!(ask.requires_manual_approval);
+            assert_eq!(ask.tool_call_id, "call-1");
+            if id == 2 {
+                let decision = ApprovalDecision {
+                    interaction_id: ask.interaction_id,
+                    approved: true,
+                    updated_input: None,
+                    set_permission_mode: None,
+                    updated_permissions: None,
+                    always: false,
+                };
+                settle_session_ask(&mut stdin, &mut pending, decision.clone())
+                    .await
+                    .unwrap();
+                settle_session_ask(&mut stdin, &mut pending, decision)
+                    .await
+                    .unwrap();
+            }
+        }
+        reject_pending_asks(&mut stdin, &mut pending, "ASK_ABORTED", "cancelled").await;
+        assert!(pending.is_empty());
+        drop(stdin);
+        assert!(timeout(Duration::from_secs(10), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success());
+    }
+
+    #[test]
     fn parses_default_and_provider_qualified_models() {
         assert_eq!(
             resolve_model_route(None),
@@ -4247,11 +4449,15 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires installed dsh; no model turn or account quota"]
     async fn live_dsh_profile_handshake_without_model_turn() {
-        let bin = crate::external_agents::spawn::resolve_binary(
-            &crate::external_agents::providers::dsh::DSH_AGENT_DEF,
-        )
-        .await
-        .expect("dsh binary");
+        let bin = if let Some(bin) = std::env::var_os("DSH_BIN") {
+            PathBuf::from(bin)
+        } else {
+            crate::external_agents::spawn::resolve_binary(
+                &crate::external_agents::providers::dsh::DSH_AGENT_DEF,
+            )
+            .await
+            .expect("dsh binary")
+        };
         let cwd = std::env::current_dir().expect("cwd");
         let args = vec!["--profile".to_string(), KIVIO_PROFILE.to_string()];
         let session = DshJsonRpcSession::connect(
