@@ -1351,14 +1351,16 @@ mod fork_file_tests {
     }
 }
 
-fn forget_subagents(
-    manager: &crate::chat::sub_agent::SubAgentManager,
+async fn forget_subagents(
+    state: &AppState,
     conversation_id: &str,
     artifacts_dir: impl FnOnce() -> Result<std::path::PathBuf, String>,
 ) -> Result<(), String> {
     crate::chat::storage::validate_conversation_id(conversation_id)?;
     let dir = artifacts_dir()?;
-    manager.forget_conversation(conversation_id);
+    state
+        .forget_chat_conversation_runtime(conversation_id)
+        .await?;
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -1397,13 +1399,22 @@ mod subagent_cleanup_tests {
                 Some(state),
                 Some(owner),
             ).await.unwrap();
-            let pid = output.lines().find_map(|line| line.strip_prefix("pid: "))
-                .unwrap().parse().unwrap();
-            Self { pid, handle: unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.unwrap() }
+            let pid = output
+                .lines()
+                .find_map(|line| line.strip_prefix("pid: "))
+                .unwrap()
+                .parse()
+                .unwrap();
+            Self {
+                pid,
+                handle: unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.unwrap(),
+            }
         }
 
         fn stopped(&self) -> bool {
-            use windows::Win32::{Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject};
+            use windows::Win32::{
+                Foundation::WAIT_OBJECT_0, System::Threading::WaitForSingleObject,
+            };
             unsafe { WaitForSingleObject(self.handle, 0) == WAIT_OBJECT_0 }
         }
     }
@@ -1411,8 +1422,12 @@ mod subagent_cleanup_tests {
     #[cfg(windows)]
     impl Drop for RunningCommand {
         fn drop(&mut self) {
-            if !self.stopped() { crate::native_tools::kill_process_group(self.pid); }
-            unsafe { let _ = windows::Win32::Foundation::CloseHandle(self.handle); }
+            if !self.stopped() {
+                crate::native_tools::kill_process_group(self.pid);
+            }
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(self.handle);
+            }
         }
     }
 
@@ -1426,29 +1441,52 @@ mod subagent_cleanup_tests {
         register_agent(&state.sub_agents, "conv_a", "child", &artifacts);
         register_agent(&state.sub_agents, "conv_a", "legacy", &artifacts);
         let commands = state.background_commands_handle();
-        let child_queue = state.runtime_injections.queue("subagent-conv_a-child", "conv_a", commands.clone());
+        let child_queue =
+            state
+                .runtime_injections
+                .queue("subagent-conv_a-child", "conv_a", commands.clone());
         let root = RunningCommand::start(&state, "conv_a", dir.path()).await;
         let child = RunningCommand::start(&state, "subagent-conv_a-child", &artifacts).await;
         let legacy = RunningCommand::start(&state, "subagent-conv_a-legacy", &artifacts).await;
         let unrelated = RunningCommand::start(&state, "conv_ab", dir.path()).await;
-        let child_notice = commands.snapshots(Some("subagent-conv_a-child"), false).pop().unwrap();
-        assert!(state.runtime_injections.shell_completed(child_notice.clone()));
+        let child_notice = commands
+            .snapshots(Some("subagent-conv_a-child"), false)
+            .pop()
+            .unwrap();
+        assert!(state
+            .runtime_injections
+            .shell_completed(child_notice.clone()));
         assert!(child_queue.has_waking_input());
 
-        let result = forget_subagents(&state.sub_agents, "conv_a", || Ok(artifacts.clone()));
-        assert!(root.stopped(), "root process still alive when cleanup returned: {result:?}");
-        assert!(child.stopped(), "child process still alive when cleanup returned: {result:?}");
-        assert!(legacy.stopped(), "child without mailbox survived root deletion: {result:?}");
+        let result = forget_subagents(&state, "conv_a", || Ok(artifacts.clone())).await;
+        assert!(
+            root.stopped(),
+            "root process still alive when cleanup returned: {result:?}"
+        );
+        assert!(
+            child.stopped(),
+            "child process still alive when cleanup returned: {result:?}"
+        );
+        assert!(
+            legacy.stopped(),
+            "child without mailbox survived root deletion: {result:?}"
+        );
         result.unwrap();
         assert!(!artifacts.exists());
         assert!(!unrelated.stopped());
         assert!(commands.snapshots(Some("conv_a"), false).is_empty());
-        assert!(commands.snapshots(Some("subagent-conv_a-child"), false).is_empty());
-        assert!(commands.snapshots(Some("subagent-conv_a-legacy"), false).is_empty());
+        assert!(commands
+            .snapshots(Some("subagent-conv_a-child"), false)
+            .is_empty());
+        assert!(commands
+            .snapshots(Some("subagent-conv_a-legacy"), false)
+            .is_empty());
         assert_eq!(commands.snapshots(Some("conv_ab"), false).len(), 1);
         assert!(!child_queue.has_waking_input());
         assert!(!state.runtime_injections.shell_completed(child_notice));
-        forget_subagents(&state.sub_agents, "conv_a", || Ok(artifacts.clone())).unwrap();
+        forget_subagents(&state, "conv_a", || Ok(artifacts.clone()))
+            .await
+            .unwrap();
     }
 
     fn register_agent(manager: &SubAgentManager, root: &str, id: &str, dir: &Path) {
@@ -1471,8 +1509,8 @@ mod subagent_cleanup_tests {
         });
     }
 
-    #[test]
-    fn deletion_forgets_only_the_root_and_removes_its_artifacts() {
+    #[tokio::test]
+    async fn deletion_forgets_only_the_root_and_removes_its_artifacts() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("conv_a");
         let other = dir.path().join("conv_ab");
@@ -1480,7 +1518,8 @@ mod subagent_cleanup_tests {
         std::fs::create_dir_all(&other).unwrap();
         std::fs::write(target.join("nested/session.jsonl"), "target").unwrap();
         std::fs::write(other.join("session.jsonl"), "other").unwrap();
-        let manager = SubAgentManager::default();
+        let state = crate::state::test_app_state();
+        let manager = &state.sub_agents;
         register_agent(&manager, "conv_a", "agent-a", &target);
         register_agent(&manager, "conv_ab", "agent-b", &other);
         let (job, cancelled) = manager
@@ -1494,16 +1533,23 @@ mod subagent_cleanup_tests {
         manager.set_user_interrupted("conv_ab", true);
 
         for invalid in ["", ".", "..", "../conv_ab", "conv_../conv_ab"] {
-            assert!(forget_subagents(&manager, invalid, || {
+            assert!(forget_subagents(&state, invalid, || {
                 panic!("invalid id reached the artifact resolver")
             })
+            .await
             .is_err());
         }
-        assert!(forget_subagents(&manager, "conv_ab", || Err("path unavailable".into())).is_err());
+        assert!(
+            forget_subagents(&state, "conv_ab", || Err("path unavailable".into()))
+                .await
+                .is_err()
+        );
         assert!(manager.registry.get("conv_ab", "agent-b").is_some());
         assert!(other.join("session.jsonl").is_file());
 
-        forget_subagents(&manager, "conv_a", || Ok(target.clone())).unwrap();
+        forget_subagents(&state, "conv_a", || Ok(target.clone()))
+            .await
+            .unwrap();
         assert!(!target.exists());
         assert_eq!(
             std::fs::read(other.join("session.jsonl"))
@@ -1519,11 +1565,15 @@ mod subagent_cleanup_tests {
         assert!(!*other_cancelled.borrow());
         assert!(!manager.user_interrupted("conv_a"));
         assert!(manager.user_interrupted("conv_ab"));
-        forget_subagents(&manager, "conv_a", || Ok(target.clone())).unwrap();
+        forget_subagents(&state, "conv_a", || Ok(target.clone()))
+            .await
+            .unwrap();
 
         let file = dir.path().join("conv_bad");
         std::fs::write(&file, "keep").unwrap();
-        let error = forget_subagents(&manager, "conv_bad", || Ok(file.clone())).unwrap_err();
+        let error = forget_subagents(&state, "conv_bad", || Ok(file.clone()))
+            .await
+            .unwrap_err();
         assert!(error.contains("remove sub-agent artifacts"), "{error}");
         assert_eq!(std::fs::read(&file).unwrap().as_slice(), b"keep");
         assert!(other.join("session.jsonl").is_file());
@@ -1537,9 +1587,7 @@ pub(crate) async fn chat_delete_conversation(
     state: tauri::State<'_, crate::state::AppState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
-    forget_subagents(&state.sub_agents, &conversation_id, || {
-        crate::chat::sub_agent::registry::artifacts_dir(&app, &conversation_id)
-    })?;
+    let artifacts = crate::chat::sub_agent::registry::artifacts_dir(&app, &conversation_id)?;
     // 删对话即终止其持久外部 CLI 会话（actor 关闭子进程）并清掉跨重启 resume 句柄。
     state.cancel_chat_generation(&conversation_id);
     let _retirement = state
@@ -1547,19 +1595,8 @@ pub(crate) async fn chat_delete_conversation(
         .retire_conversation(&conversation_id)
         .await?;
     crate::external_agents::session::clear_live_handle(&app, &conversation_id);
-    // 该对话起的后台命令也一并收掉。它们本来只在退出应用时统一清（跨轮存活是有意的），
-    // 但一个还在跑的 dev server 会把 cwd 钉在对话工作区里，Windows 上直接导致工作区
-    // 删不掉。删对话时这些进程已经没有归属，先杀掉再清目录。
-    let killed = state
-        .background_commands_handle()
-        .kill_for_conversation(&conversation_id);
-    if killed > 0 {
-        eprintln!("Deleted conversation {conversation_id}: killed {killed} background command(s)");
-    }
+    forget_subagents(&state, &conversation_id, || Ok(artifacts)).await?;
     crate::chat::popout::close_popout_for_conversation(&app, &conversation_id);
-    // 顺手清掉该对话在内存里按 conversation_id 累积的运行态小 map（stream 代际计数 /
-    // 会话级工具同意），它们只插不删、严格无界——对话删了便永远不会再被引用。
-    state.forget_chat_conversation_runtime(&conversation_id);
     let warnings = crate::chat::repository::repository(&app)
         .delete(&app, &conversation_id)
         .await
@@ -1908,12 +1945,14 @@ pub(crate) async fn chat_bulk_delete_conversations(
     let mut deleted = 0usize;
     let mut warnings: Vec<String> = Vec::new();
     for conversation_id in ids {
-        if let Err(error) = forget_subagents(&state.sub_agents, &conversation_id, || {
-            crate::chat::sub_agent::registry::artifacts_dir(&app, &conversation_id)
-        }) {
-            warnings.push(format!("{conversation_id}: {error}"));
-            continue;
-        }
+        let artifacts =
+            match crate::chat::sub_agent::registry::artifacts_dir(&app, &conversation_id) {
+                Ok(artifacts) => artifacts,
+                Err(error) => {
+                    warnings.push(format!("{conversation_id}: {error}"));
+                    continue;
+                }
+            };
         // 与单条删除一致：外部 CLI 会话 / 后台命令 / 运行态小 map 都先清，
         // 否则工作区被占着时副产物清理会失败，用户体感「删不掉」。
         state.cancel_chat_generation(&conversation_id);
@@ -1929,15 +1968,10 @@ pub(crate) async fn chat_bulk_delete_conversations(
             }
         };
         crate::external_agents::session::clear_live_handle(&app, &conversation_id);
-        let killed = state
-            .background_commands_handle()
-            .kill_for_conversation(&conversation_id);
-        if killed > 0 {
-            eprintln!(
-                "Bulk-deleted conversation {conversation_id}: killed {killed} background command(s)"
-            );
+        if let Err(error) = forget_subagents(&state, &conversation_id, || Ok(artifacts)).await {
+            warnings.push(format!("{conversation_id}: {error}"));
+            continue;
         }
-        state.forget_chat_conversation_runtime(&conversation_id);
         crate::chat::popout::close_popout_for_conversation(&app, &conversation_id);
         match crate::chat::repository::repository(&app)
             .delete(&app, &conversation_id)

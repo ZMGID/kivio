@@ -216,9 +216,10 @@ pub(crate) async fn read(
     path: &str,
 ) -> Result<String, String> {
     let state = app.state::<AppState>();
+    let settings = state.settings_read().clone();
     if path == "mcp://" {
-        let servers: Vec<_> = state.settings_read().chat_tools.servers.iter()
-            .filter(|server| server.enabled && context.mcp_server_ids.contains(&server.id))
+        let servers: Vec<_> = settings.chat_tools.servers.iter()
+            .filter(|server| settings.chat_tools.enabled && crate::mcp::registry::mcp_server_is_runtime_eligible(server) && context.mcp_server_ids.contains(&server.id))
             .map(|server| serde_json::json!({"name": server.name, "path": resource_path(&server.id, "")})).collect();
         return serde_json::to_string(&servers).map_err(|error| error.to_string());
     }
@@ -226,12 +227,15 @@ pub(crate) async fn read(
     if !context.mcp_server_ids.iter().any(|id| id == server_id) {
         return Err("MCP resource server is not authorized for this runtime".into());
     }
-    let server = state
-        .settings_read()
+    let server = settings
         .chat_tools
         .servers
         .iter()
-        .find(|server| server.enabled && server.id == server_id)
+        .find(|server| {
+            settings.chat_tools.enabled
+                && crate::mcp::registry::mcp_server_is_runtime_eligible(server)
+                && server.id == server_id
+        })
         .cloned()
         .ok_or("MCP resource server is unavailable")?;
     let connection = state

@@ -358,15 +358,28 @@ impl AppState {
         self.chat_runtime.cancel_conversation(conversation_id);
     }
 
-    /// 对话被删除时清理其按 conversation_id 累积的运行态痕迹：活跃 generation 集合、
-    /// 会话级工具同意标记、按工具名的「总是允许」集合。
-    pub fn forget_chat_conversation_runtime(&self, conversation_id: &str) {
-        for owner in self.runtime_injections.forget(conversation_id) {
-            self.lsp.close_owner(&owner);
+    /// 删除对话及子代理的运行态，等待后台进程退出。失败时保留归属和退出确认以便重试。
+    pub async fn forget_chat_conversation_runtime(
+        &self,
+        conversation_id: &str,
+    ) -> Result<(), String> {
+        let mut owners = self.sub_agents.retire_conversation(conversation_id);
+        owners.extend(self.runtime_injections.forget(conversation_id));
+        owners.push(conversation_id.to_owned());
+        owners.sort_unstable();
+        owners.dedup();
+        for owner in &owners {
+            self.lsp.close_owner(owner);
         }
-        self.lsp.close_owner(conversation_id);
-        self.chat_runtime.forget_conversation(conversation_id);
-        self.chat_interactions.forget_conversation(conversation_id);
+        self.background_commands
+            .retire_conversations(&owners)
+            .await?;
+        self.sub_agents.forget_conversation(conversation_id);
+        for owner in owners {
+            self.chat_runtime.forget_conversation(&owner);
+            self.chat_interactions.forget_conversation(&owner);
+        }
+        Ok(())
     }
 
     pub(crate) fn invalidate_chat_context_notifications(&self, conversation_id: &str) {
@@ -1006,8 +1019,8 @@ mod tests {
         assert!(!st.chat_interactions().has_session_consent("conv-2"));
     }
 
-    #[test]
-    fn chat_tool_always_allow_is_per_conversation_and_tool() {
+    #[tokio::test]
+    async fn chat_tool_always_allow_is_per_conversation_and_tool() {
         let st = test_state();
         assert!(!st
             .chat_interactions()
@@ -1029,7 +1042,7 @@ mod tests {
         assert!(!st
             .chat_interactions()
             .has_tool_always_allow("conv-2", "write"));
-        st.forget_chat_conversation_runtime("conv-1");
+        st.forget_chat_conversation_runtime("conv-1").await.unwrap();
         assert!(!st
             .chat_interactions()
             .has_tool_always_allow("conv-1", "write"));
@@ -1096,12 +1109,12 @@ mod tests {
         assert!(st.chat_runtime().try_begin_reply("conv", "run-1"));
     }
 
-    #[test]
-    fn forget_conversation_clears_active_generations() {
+    #[tokio::test]
+    async fn forget_conversation_clears_active_generations() {
         let st = test_state();
         let gen = st.chat_runtime().begin_generation("conv");
         assert!(st.chat_runtime().is_generation_active("conv", gen));
-        st.forget_chat_conversation_runtime("conv");
+        st.forget_chat_conversation_runtime("conv").await.unwrap();
         assert!(!st.chat_runtime().is_generation_active("conv", gen));
     }
 

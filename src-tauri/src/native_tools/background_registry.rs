@@ -1,7 +1,12 @@
 //! Owns background command transitions. Waiters hold this owner, never a map.
 //! Process termination and log deletion run after the registry lock is released.
 use super::{kill_process_group, BackgroundCommand, BackgroundCommandStatus as Status};
-use std::{collections::HashMap, path::PathBuf, sync::Mutex, time::SystemTime};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    sync::Mutex,
+    time::SystemTime,
+};
 #[derive(Clone, Debug)]
 pub(crate) struct BackgroundCommandSnapshot {
     pub conversation_id: Option<String>,
@@ -29,6 +34,7 @@ impl From<&BackgroundCommand> for BackgroundCommandSnapshot {
 }
 pub(crate) struct BackgroundCommandRegistry {
     jobs: Mutex<HashMap<String, BackgroundCommand>>,
+    retired: Mutex<HashSet<String>>,
     changed: tokio::sync::watch::Sender<u64>,
     completion: Mutex<Option<std::sync::Arc<dyn Fn(BackgroundCommandSnapshot) + Send + Sync>>>,
 }
@@ -36,6 +42,7 @@ impl Default for BackgroundCommandRegistry {
     fn default() -> Self {
         Self {
             jobs: Mutex::default(),
+            retired: Mutex::default(),
             changed: tokio::sync::watch::channel(0).0,
             completion: Mutex::default(),
         }
@@ -46,14 +53,27 @@ fn visible(job: &BackgroundCommand, caller: Option<&str>, include_unowned: bool)
         || job.conversation_id.as_deref() == caller
         || (include_unowned && job.conversation_id.is_none())
 }
+fn process_pending(job: &BackgroundCommand) -> bool {
+    matches!(job.status, Status::Running)
+        || job.reaped.as_ref().is_some_and(|reaped| !*reaped.borrow())
+}
 impl BackgroundCommandRegistry {
-    pub(crate) fn set_completion_hook(&self, hook: std::sync::Arc<dyn Fn(BackgroundCommandSnapshot) + Send + Sync>) {
+    pub(crate) fn set_completion_hook(
+        &self,
+        hook: std::sync::Arc<dyn Fn(BackgroundCommandSnapshot) + Send + Sync>,
+    ) {
         *self.completion.lock().unwrap_or_else(|e| e.into_inner()) = Some(hook);
     }
 
     fn completed(&self, job: BackgroundCommandSnapshot) {
-        let hook = self.completion.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(hook) = hook { hook(job); }
+        let hook = self
+            .completion
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(hook) = hook {
+            hook(job);
+        }
     }
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.changed.subscribe()
@@ -62,7 +82,22 @@ impl BackgroundCommandRegistry {
         self.changed
             .send_modify(|sequence| *sequence = sequence.wrapping_add(1));
     }
-    pub(crate) fn register(&self, job: crate::native_tools::BackgroundCommand) {
+    #[cfg(test)]
+    pub(crate) fn register(&self, job: BackgroundCommand) {
+        let owner = job.conversation_id.clone();
+        self.start(owner.as_deref(), || Ok((job, ()))).unwrap();
+    }
+
+    pub(super) fn start<T>(
+        &self,
+        owner: Option<&str>,
+        spawn: impl FnOnce() -> Result<(BackgroundCommand, T), String>,
+    ) -> Result<T, String> {
+        let retired = self.retired.lock().unwrap_or_else(|e| e.into_inner());
+        if owner.is_some_and(|owner| retired.contains(owner)) {
+            return Err("Conversation was deleted; background commands cannot start".into());
+        }
+        let (job, started) = spawn()?;
         const MAX_TRACKED_BACKGROUND_COMMANDS: usize = 64;
         let mut evicted_logs = Vec::new();
         let mut map = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -71,12 +106,7 @@ impl BackgroundCommandRegistry {
         while map.len() >= MAX_TRACKED_BACKGROUND_COMMANDS {
             let oldest_terminal = map
                 .values()
-                .filter(|j| {
-                    !matches!(
-                        j.status,
-                        crate::native_tools::BackgroundCommandStatus::Running
-                    )
-                })
+                .filter(|job| !process_pending(job))
                 .min_by_key(|j| j.started_at)
                 .map(|j| j.job_id.clone());
             match oldest_terminal {
@@ -94,10 +124,12 @@ impl BackgroundCommandRegistry {
         }
         map.insert(job.job_id.clone(), job);
         drop(map);
+        drop(retired);
         self.notify();
         for path in evicted_logs {
             let _ = std::fs::remove_file(path);
         }
+        Ok(started)
     }
     pub(crate) fn snapshot(
         &self,
@@ -126,13 +158,18 @@ impl BackgroundCommandRegistry {
     }
     pub(crate) fn complete(&self, id: &str, status: Status) {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
-        let completed = jobs.get_mut(id).filter(|job| matches!(job.status, Status::Running)).map(|job| {
-            job.status = status;
-            BackgroundCommandSnapshot::from(&*job)
-        });
+        let completed = jobs
+            .get_mut(id)
+            .filter(|job| matches!(job.status, Status::Running))
+            .map(|job| {
+                job.status = status;
+                BackgroundCommandSnapshot::from(&*job)
+            });
         drop(jobs);
         self.notify();
-        if let Some(job) = completed { self.completed(job); }
+        if let Some(job) = completed {
+            self.completed(job);
+        }
     }
     pub(crate) fn kill(&self, id: &str, caller: Option<&str>) -> Result<bool, String> {
         let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
@@ -161,7 +198,7 @@ impl BackgroundCommandRegistry {
         self.jobs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|_, j| matches!(j.status, Status::Running) || !visible(j, caller, false));
+            .retain(|_, j| process_pending(j) || !visible(j, caller, false));
         self.notify();
     }
     pub(crate) fn kill_all(&self) -> usize {
@@ -176,32 +213,125 @@ impl BackgroundCommandRegistry {
         Self::dispose(jobs)
     }
     pub(crate) fn kill_for_conversation(&self, conversation_id: &str) -> usize {
-        let mut jobs = self.jobs.lock().unwrap_or_else(|e| e.into_inner());
-        let owned: Vec<_> = jobs
-            .values()
-            .filter(|j| j.conversation_id.as_deref() == Some(conversation_id))
-            .map(|j| j.job_id.clone())
-            .collect();
-        let removed = owned
-            .into_iter()
-            .filter_map(|id| jobs.remove(&id))
-            .collect();
-        drop(jobs);
+        let mut requests = Vec::new();
+        self.jobs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, job| {
+                if job.conversation_id.as_deref() != Some(conversation_id) {
+                    return true;
+                }
+                let (signal, pid) = Self::take_stop(job);
+                let pending = job.reaped.as_ref().is_some_and(|reaped| !*reaped.borrow());
+                requests.push((signal, pid, (!pending).then(|| job.log_path.clone())));
+                pending
+            });
         self.notify();
-        Self::dispose(removed)
+        let mut killed = 0;
+        for (signal, pid, log) in requests {
+            killed += usize::from(Self::send_stop(signal, pid));
+            if let Some(log) = log {
+                let _ = std::fs::remove_file(log);
+            }
+        }
+        killed
+    }
+
+    pub(crate) async fn retire_conversations(&self, owners: &[String]) -> Result<usize, String> {
+        let mut jobs: Vec<_> = {
+            let mut retired = self.retired.lock().unwrap_or_else(|e| e.into_inner());
+            retired.extend(owners.iter().cloned());
+            self.jobs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .values_mut()
+                .filter(|job| {
+                    job.conversation_id
+                        .as_ref()
+                        .is_some_and(|owner| owners.contains(owner))
+                })
+                .map(|job| {
+                    let (signal, pid) = Self::take_stop(job);
+                    (
+                        job.job_id.clone(),
+                        job.log_path.clone(),
+                        job.reaped.clone(),
+                        signal,
+                        pid,
+                    )
+                })
+                .collect()
+        };
+        self.notify();
+        let mut killed = 0;
+        for (_, _, _, signal, pid) in &mut jobs {
+            killed += usize::from(Self::send_stop(signal.take(), pid.take()));
+        }
+        let mut error = None;
+        for (id, path, mut reaped, _, _) in jobs {
+            let result = if let Some(reaped) = reaped.as_mut() {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    reaped.wait_for(|exited| *exited),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => Ok(()),
+                    Ok(Err(_)) => Err(format!(
+                        "Background command {id} waiter ended without confirming process exit"
+                    )),
+                    Err(_) => Err(format!(
+                        "Timed out waiting for background command {id} to exit"
+                    )),
+                }
+            } else {
+                Ok(())
+            };
+            match result {
+                Ok(()) => {
+                    self.jobs
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&id);
+                    let _ = std::fs::remove_file(path);
+                }
+                Err(failure) => {
+                    error.get_or_insert(failure);
+                }
+            }
+        }
+        self.notify();
+        error.map_or(Ok(killed), Err)
+    }
+
+    fn take_stop(
+        job: &mut BackgroundCommand,
+    ) -> (Option<tokio::sync::oneshot::Sender<()>>, Option<u32>) {
+        if !matches!(job.status, Status::Running) {
+            return (None, None);
+        }
+        job.status = Status::Killed;
+        let signal = job.kill_tx.take();
+        let pid = if signal.is_none() { job.pid } else { None };
+        (signal, pid)
+    }
+
+    fn send_stop(signal: Option<tokio::sync::oneshot::Sender<()>>, pid: Option<u32>) -> bool {
+        if let Some(signal) = signal {
+            let _ = signal.send(());
+            true
+        } else if let Some(pid) = pid {
+            kill_process_group(pid);
+            true
+        } else {
+            false
+        }
     }
     fn dispose(jobs: Vec<BackgroundCommand>) -> usize {
         let mut killed = 0;
         for mut job in jobs {
-            if matches!(job.status, Status::Running) {
-                if let Some(signal) = job.kill_tx.take() {
-                    let _ = signal.send(());
-                    killed += 1;
-                } else if let Some(pid) = job.pid {
-                    kill_process_group(pid);
-                    killed += 1;
-                }
-            }
+            let (signal, pid) = Self::take_stop(&mut job);
+            killed += usize::from(Self::send_stop(signal, pid));
             let _ = std::fs::remove_file(&job.log_path);
         }
         killed
@@ -223,7 +353,132 @@ mod tests {
             status: Status::Running,
             started_at: SystemTime::now(),
             kill_tx: None,
+            reaped: None,
         }
+    }
+
+    #[tokio::test]
+    async fn owner_kill_keeps_exit_evidence_for_later_root_retirement() {
+        let owner = BackgroundCommandRegistry::default();
+        let (kill, killed) = tokio::sync::oneshot::channel();
+        let (exited, reaped) = tokio::sync::watch::channel(false);
+        let mut running = job("pending", Some("conv"));
+        running.kill_tx = Some(kill);
+        running.reaped = Some(reaped);
+        owner.register(running);
+        assert_eq!(owner.kill_for_conversation("conv"), 1);
+        killed.await.unwrap();
+        owner.clear_finished(Some("conv"));
+        assert!(owner.snapshot("pending", Some("conv")).is_some());
+        owner
+            .start(Some("conv"), || Ok((job("revived", Some("conv")), ())))
+            .unwrap();
+        let owners = ["conv".to_string()];
+        let mut retirement = Box::pin(owner.retire_conversations(&owners));
+        assert!(futures::poll!(retirement.as_mut()).is_pending());
+        exited.send(true).unwrap();
+        retirement.await.unwrap();
+        assert!(owner.snapshots(Some("conv"), false).is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_retirement_keeps_exit_evidence_for_retry_and_denies_late_spawn() {
+        let owner = std::sync::Arc::new(BackgroundCommandRegistry::default());
+        let (kill, killed) = tokio::sync::oneshot::channel();
+        let (exited, reaped) = tokio::sync::watch::channel(false);
+        let mut running = job("pending", Some("conv"));
+        running.kill_tx = Some(kill);
+        running.reaped = Some(reaped);
+        owner.register(running);
+        let retiring = owner.clone();
+        let task =
+            tokio::spawn(async move { retiring.retire_conversations(&["conv".into()]).await });
+        killed.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        owner.clear_finished(Some("conv"));
+        assert!(owner.snapshot("pending", Some("conv")).is_some());
+        assert!(owner
+            .start::<()>(Some("conv"), || panic!("retired owner reached OS spawn"))
+            .is_err());
+        exited.send(true).unwrap();
+        owner.retire_conversations(&["conv".into()]).await.unwrap();
+        assert!(owner.snapshot("pending", Some("conv")).is_none());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn retirement_waits_for_spawn_admission_and_disposes_the_inserted_process() {
+        use std::os::windows::process::CommandExt;
+        use windows::Win32::{
+            Foundation::{CloseHandle, WAIT_OBJECT_0},
+            System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+        };
+        let owner = std::sync::Arc::new(BackgroundCommandRegistry::default());
+        let (spawned, ready) = std::sync::mpsc::channel();
+        let (release, paused) = std::sync::mpsc::channel();
+        let spawning = owner.clone();
+        let starter = std::thread::spawn(move || {
+            spawning
+                .start(Some("conv"), || {
+                    let child = std::process::Command::new("powershell.exe")
+                        .args([
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-Command",
+                            "Start-Sleep -Seconds 60",
+                        ])
+                        .creation_flags(0x08000000 | 0x00000200)
+                        .spawn()
+                        .unwrap();
+                    let mut running = job("paused", Some("conv"));
+                    running.pid = Some(child.id());
+                    let (kill, killed) = tokio::sync::oneshot::channel();
+                    let (exited, reaped) = tokio::sync::watch::channel(false);
+                    running.kill_tx = Some(kill);
+                    running.reaped = Some(reaped);
+                    spawned.send(()).unwrap();
+                    paused.recv().unwrap();
+                    Ok((running, (child, killed, exited)))
+                })
+                .unwrap()
+        });
+        ready.recv().unwrap();
+        let retiring = owner.clone();
+        let mut retirement =
+            tokio::spawn(async move { retiring.retire_conversations(&["conv".into()]).await });
+        let early =
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut retirement).await;
+        let returned_before_insert = early.is_ok();
+        release.send(()).unwrap();
+        let (mut child, killed, exited) = starter.join().unwrap();
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, child.id()) }.unwrap();
+        let waiter = std::thread::spawn(move || {
+            let _ = killed.blocking_recv();
+            kill_process_group(child.id());
+            child.wait().unwrap();
+            exited.send(true).unwrap();
+        });
+        match early {
+            Ok(result) => result,
+            Err(_) => retirement.await,
+        }
+        .unwrap()
+        .unwrap();
+        let exited = unsafe { WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 };
+        waiter.join().unwrap();
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        assert!(
+            !returned_before_insert,
+            "retirement passed an OS spawn whose registry insert was pending"
+        );
+        assert!(
+            exited,
+            "process admitted before retirement survived cleanup"
+        );
+        assert!(owner.snapshots(Some("conv"), false).is_empty());
     }
 
     #[cfg(windows)]
@@ -235,16 +490,24 @@ mod tests {
         };
         let owner = std::sync::Arc::new(BackgroundCommandRegistry::default());
         let mut command = tokio::process::Command::new("powershell.exe");
-        command.args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60"])
+        command
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 60",
+            ])
             .creation_flags(0x08000000 | 0x00000200)
             .kill_on_drop(true);
         let mut child = command.spawn().unwrap();
         let pid = child.id().unwrap();
         let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) }.unwrap();
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let (reaped_tx, reaped) = tokio::sync::watch::channel(false);
         let mut running = job("process", Some("conv"));
         running.pid = Some(pid);
         running.kill_tx = Some(tx);
+        running.reaped = Some(reaped);
         owner.register(running);
         let waiter_owner = owner.clone();
         let waiter = tokio::spawn(async move {
@@ -252,13 +515,19 @@ mod tests {
             kill_process_group(pid);
             child.wait().await.unwrap();
             waiter_owner.complete("process", Status::Killed);
+            reaped_tx.send(true).unwrap();
         });
 
-        owner.kill_for_conversation("conv");
+        owner.retire_conversations(&["conv".into()]).await.unwrap();
         let stopped_at_return = unsafe { WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 };
         waiter.await.unwrap();
-        unsafe { let _ = CloseHandle(handle); }
-        assert!(stopped_at_return, "disposal returned before its waiter killed/reaped the process");
+        unsafe {
+            let _ = CloseHandle(handle);
+        }
+        assert!(
+            stopped_at_return,
+            "disposal returned before its waiter killed/reaped the process"
+        );
     }
 
     #[test]

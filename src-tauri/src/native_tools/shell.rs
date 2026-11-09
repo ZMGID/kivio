@@ -689,6 +689,8 @@ pub struct BackgroundCommand {
     /// tests). Sending requests a process-group kill + reap inside the waiter,
     /// which is the only place that still holds the live `Child`.
     pub kill_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Confirms the waiter has reaped the process before deletion removes its cwd.
+    pub reaped: Option<tokio::sync::watch::Receiver<bool>>,
 }
 
 /// Kill an entire process group / tree given the leader pid. Unix: SIGTERM the
@@ -799,17 +801,16 @@ async fn run_shell_command_background(
         });
     }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|err| format!("Failed to start background command: {err}"))?;
-    let pid = child.id();
-    let pid_text = pid
-        .map(|id| id.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
     // No registry (e.g. headless kivio-code without an AppState): fall back to
     // the legacy fire-and-forget shape so behavior never regresses.
     let Some(state) = state else {
+        let child = cmd
+            .spawn()
+            .map_err(|err| format!("Failed to start background command: {err}"))?;
+        let pid_text = child
+            .id()
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         return Ok(format!(
             "background: true\npid: {pid_text}\ncwd: {}\ncommand: {command}\n\nStarted in the background. (No job registry available in this context; the process keeps running and is not tracked.)\n",
             cwd.display()
@@ -819,21 +820,40 @@ async fn run_shell_command_background(
     // One-shot kill channel: the waiter task owns the live Child, so it is the
     // only place that can safely race a self-exit against a kill request. The
     // registry only holds the sender, never kills a pid directly.
-    let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
-
-    state
+    let started = state
         .background_commands_handle()
-        .register(BackgroundCommand {
-            job_id: job_id.clone(),
-            conversation_id: conversation_id.map(str::to_string),
-            pid,
-            command: command.to_string(),
-            cwd: cwd.display().to_string(),
-            log_path: log_path.clone(),
-            status: BackgroundCommandStatus::Running,
-            started_at: SystemTime::now(),
-            kill_tx: Some(kill_tx),
+        .start(conversation_id, || {
+            let child = cmd
+                .spawn()
+                .map_err(|err| format!("Failed to start background command: {err}"))?;
+            let (kill_tx, kill_rx) = tokio::sync::oneshot::channel::<()>();
+            let (reaped_tx, reaped) = tokio::sync::watch::channel(false);
+            let job = BackgroundCommand {
+                job_id: job_id.clone(),
+                conversation_id: conversation_id.map(str::to_string),
+                pid: child.id(),
+                command: command.to_string(),
+                cwd: cwd.display().to_string(),
+                log_path: log_path.clone(),
+                status: BackgroundCommandStatus::Running,
+                started_at: SystemTime::now(),
+                kill_tx: Some(kill_tx),
+                reaped: Some(reaped),
+            };
+            Ok((job, (child, kill_rx, reaped_tx)))
         });
+    let (mut child, kill_rx, reaped_tx) = match started {
+        Ok(started) => started,
+        Err(error) => {
+            drop(cmd);
+            let _ = std::fs::remove_file(&log_path);
+            return Err(error);
+        }
+    };
+    let pid = child.id();
+    let pid_text = pid
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
 
     // Reap the child off-thread: race a self-exit against a kill request. The
     // waiter owns the Child for its whole lifetime, so a kill always targets the
@@ -855,11 +875,17 @@ async fn run_shell_command_background(
                 if let Some(pid) = pid {
                     kill_process_group(pid);
                 }
-                let _ = child.wait().await;
-                BackgroundCommandStatus::Killed
+                match child.wait().await {
+                    Ok(_) => BackgroundCommandStatus::Killed,
+                    Err(err) => BackgroundCommandStatus::Error { message: format!("wait failed: {err}") },
+                }
             }
         };
+        let reaped = !matches!(status, BackgroundCommandStatus::Error { .. });
         waiter_state.complete(&waiter_job, status);
+        if reaped {
+            let _ = reaped_tx.send(true);
+        }
     });
 
     Ok(format!(
@@ -1473,6 +1499,7 @@ mod tests {
                 status: BackgroundCommandStatus::Exited { code: Some(0) },
                 started_at: SystemTime::now(),
                 kill_tx: None,
+                reaped: None,
             });
         let (_, first, offset, _) = snapshot_bash_output(&state, &job_id, 0, None).unwrap();
         assert_eq!(offset, MAX_INLINE_COMMAND_OUTPUT_BYTES as u64);
@@ -1758,6 +1785,7 @@ mod tests {
                 status: BackgroundCommandStatus::Exited { code: Some(0) },
                 started_at: SystemTime::now(),
                 kill_tx: None,
+                reaped: None,
             });
 
         // First read from offset 0 sees all bytes and reports next_offset = 5.
@@ -1805,6 +1833,7 @@ mod tests {
                     status: BackgroundCommandStatus::Running,
                     started_at: SystemTime::now(),
                     kill_tx: None,
+                    reaped: None,
                 });
         };
         let job_a = format!("conv-a-{}", uuid::Uuid::new_v4());
@@ -2069,6 +2098,7 @@ mod tests {
                 status: BackgroundCommandStatus::Running,
                 started_at: SystemTime::now(),
                 kill_tx: None,
+                reaped: None,
             });
         (job_id, log_path)
     }
@@ -2193,6 +2223,7 @@ mod tests {
                 status: BackgroundCommandStatus::Exited { code: Some(0) },
                 started_at: SystemTime::now(),
                 kill_tx: None,
+                reaped: None,
             });
         let _ = state.background_commands_handle().kill_all();
         // Registry cleared and the per-job log removed.
@@ -2222,6 +2253,7 @@ mod tests {
                     status: BackgroundCommandStatus::Running,
                     started_at: SystemTime::now(),
                     kill_tx: None,
+                    reaped: None,
                 });
             (job_id, log_path)
         };

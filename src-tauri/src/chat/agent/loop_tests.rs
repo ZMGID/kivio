@@ -3191,12 +3191,20 @@ async fn run_loop_steering_delivers_one_message_per_round() {
 /// assistant 消息、run 继续跑下一轮送达插话，而不是收束后靠前端把话重发成新消息。
 #[tokio::test]
 async fn run_loop_final_answer_with_pending_steering_continues() {
+    let host = Arc::new(TestHost::default());
+    let host_during_request = host.clone();
     let server = MockModelServer::start(vec![
-        // Round 1：模型直接给终答（无工具调用）。
-        MockResponse::Sse(vec![
-            r#"{"choices":[{"delta":{"content":"先答一版。"}}]}"#.to_string(),
-            "[DONE]".to_string(),
-        ]),
+        MockResponse::ForRequest(Box::new(move |body| {
+            assert!(!body.contains("README"));
+            host_during_request.steering.lock().unwrap().push_back(vec![
+                SteeringMessage::new("steer-late".into(), "顺便把 README 也更新")
+                    .expect("non-blank"),
+            ]);
+            MockResponse::Sse(vec![
+                r#"{"choices":[{"delta":{"content":"先答一版。"}}]}"#.to_string(),
+                "[DONE]".to_string(),
+            ])
+        })),
         // Round 2：带着插话续答。
         MockResponse::Sse(vec![
             r#"{"choices":[{"delta":{"content":"补充完毕。"}}]}"#.to_string(),
@@ -3205,12 +3213,6 @@ async fn run_loop_final_answer_with_pending_steering_continues() {
     ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
-    // 时序：轮首取信箱时是空的（批 1），插话在终答流式期间到达（批 2 在
-    // FinalAnswer 边界的 steering_pending 检查被取到）。
-    let host = Arc::new(TestHost::with_steering_batches(vec![
-        Vec::new(),
-        vec![SteeringMessage::new("steer-late".into(), "顺便把 README 也更新").expect("non-blank")],
-    ]));
     let executor = Arc::new(RecordingExecutor::default());
 
     let result = run_agent_loop(config, &host, &executor)

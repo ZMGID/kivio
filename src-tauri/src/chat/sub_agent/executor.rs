@@ -2356,6 +2356,24 @@ fn retain_mcp_grants(
     });
 }
 
+fn worker_mcp_grants(
+    tools: &[ChatToolDefinition],
+    settings: &crate::settings::Settings,
+    parent_servers: &[String],
+    saved_servers: Option<&[String]>,
+    seance: bool,
+) -> (Vec<(String, String)>, Vec<String>) {
+    let (tool_ids, mut server_ids) = crate::mcp::registry::mcp_grants(
+        tools,
+        settings,
+        Some(if seance { &[] } else { parent_servers }),
+    );
+    if let Some(saved) = saved_servers {
+        server_ids.retain(|id| saved.contains(id));
+    }
+    (tool_ids, server_ids)
+}
+
 fn clamp_tools(tools: &mut Vec<ChatToolDefinition>, saved: &session::SessionContract) {
     tools.retain(|tool| {
         (saved.tools.contains(&tool.id)
@@ -2843,7 +2861,16 @@ async fn prepare(
     if let Some(saved) = &worker.contract {
         clamp_tools(&mut tools, saved);
     }
-    let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
+    let (mcp_tool_ids, mcp_server_ids) = worker_mcp_grants(
+        &tools,
+        &settings,
+        &host.mcp_server_ids,
+        worker
+            .contract
+            .as_ref()
+            .map(|saved| saved.mcp_server_ids.as_slice()),
+        seance,
+    );
     let effective = settings.chat_tools.clone();
     let language = settings
         .settings_language
@@ -3051,6 +3078,7 @@ async fn execute(
                 .iter()
                 .any(|current| current.id == tool.id && current.server_id == tool.server_id)
     });
+    retain_mcp_grants(&mut tools, &host.mcp_tool_ids, &host.mcp_server_ids);
     crate::chat::tool_filter::filter_tools_for_agent(
         &mut tools,
         definition,
@@ -3120,7 +3148,16 @@ async fn execute(
         |saved| clamp_spawns(&saved.spawns, definition.spawns.as_deref()),
     ));
     host.lock().history = import_history(initial.clone());
-    let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
+    let (mcp_tool_ids, mcp_server_ids) = worker_mcp_grants(
+        &tools,
+        &settings,
+        &host.mcp_server_ids,
+        worker
+            .contract
+            .as_ref()
+            .map(|saved| saved.mcp_server_ids.as_slice()),
+        super::seance::is_bundled(definition),
+    );
     let effective = settings.chat_tools.clone();
     let language = settings
         .settings_language
@@ -4893,6 +4930,86 @@ mod tests {
             Some("src/partial")
         );
         assert!(probe_inflight(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn resource_server_grants_survive_cold_restore_with_parent_and_saved_limits() {
+        let mut settings = crate::settings::Settings::default();
+        settings.chat_tools.enabled = true;
+        settings.chat_tools.servers = ["resources", "sibling"]
+            .into_iter()
+            .map(|id| crate::settings::ChatMcpServer {
+                id: id.into(),
+                enabled: true,
+                ..Default::default()
+            })
+            .collect();
+        let read = crate::mcp::types::native_read_file_tool();
+        let parent_servers = vec!["resources".into(), "sibling".into()];
+        let (tool_ids, server_ids) =
+            worker_mcp_grants(&[read.clone()], &settings, &parent_servers, None, false);
+        assert!(tool_ids.is_empty());
+        assert_eq!(server_ids, parent_servers);
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut contract = session::test_contract(directory.path());
+        contract["tools"] = json!([read.id, "mcp__resources__old-tool"]);
+        contract["mcpToolIds"] = json!([["resources", "mcp__resources__old-tool"]]);
+        contract["mcpServerIds"] = json!(["resources"]);
+        let mut journal = Vec::new();
+        for entry in [
+            contract,
+            json!({"role":"system", "content":"system"}),
+            json!({"role":"user", "content":"task"}),
+        ] {
+            journal.extend(serde_json::to_vec(&entry).unwrap());
+            journal.push(b'\n');
+        }
+        let worker = session::replay(&journal, "r", "A").unwrap();
+        let saved = worker.contract.unwrap();
+        let mut discovered = read.clone();
+        discovered.source = "mcp".into();
+        discovered.id = "mcp__resources__old-tool".into();
+        discovered.server_id = Some("resources".into());
+        let mut tools = vec![read.clone(), discovered];
+        retain_mcp_grants(&mut tools, &[], &parent_servers);
+        clamp_tools(&mut tools, &saved);
+        assert_eq!(
+            tools.iter().map(|tool| &tool.id).collect::<Vec<_>>(),
+            vec![&read.id]
+        );
+        let restored = worker_mcp_grants(
+            &tools,
+            &settings,
+            &parent_servers,
+            Some(&saved.mcp_server_ids),
+            false,
+        );
+        assert_eq!(restored, (Vec::new(), vec!["resources".into()]));
+        for (parent, seance) in [
+            (&["sibling".into()][..], false),
+            (&parent_servers[..], true),
+        ] {
+            assert!(worker_mcp_grants(
+                &tools,
+                &settings,
+                parent,
+                Some(&saved.mcp_server_ids),
+                seance
+            )
+            .1
+            .is_empty());
+        }
+        settings.chat_tools.servers[0].enabled = false;
+        assert!(worker_mcp_grants(
+            &tools,
+            &settings,
+            &parent_servers,
+            Some(&saved.mcp_server_ids),
+            false
+        )
+        .1
+        .is_empty());
     }
 
     #[test]

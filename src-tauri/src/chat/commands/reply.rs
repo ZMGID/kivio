@@ -1023,7 +1023,11 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             conversation.context_state.measurement_seq,
             conversation.context_state.request_measurement.as_ref(),
         );
-        let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
+        let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(
+            &tools,
+            &settings,
+            allowed_mcp_server_ids(conversation, &settings),
+        );
         let control = crate::chat::runtime_state::ChatRunControl::new(
             state.chat_runtime(),
             &conversation.id,

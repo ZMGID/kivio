@@ -21,6 +21,8 @@ The queue is volatile. `Applied` means that an input entered live runtime histor
 
 The native `read` tool accepts `mcp://` to discover the run's authorized servers. `mcp://<server-id>` lists resources. The returned encoded paths read resources and subscribe when the server supports subscriptions. Listeners start before subscription requests and filter both the runtime's authorized server IDs and the URIs it has read. Removing authority, disconnecting or reconnecting invalidates old queued notices. Subscription lag produces a notice instead of pretending that every update arrived.
 
+Server grants come from enabled eligible servers intersected with the conversation's allowed servers. They do not require the server to expose a tool. Child grants remain within the parent's server grants and any saved session contract. Tool grants still contain only tools exposed by the run; granting resource access does not grant additional tool calls. Resource reads also recheck the current server configuration.
+
 ## LSP configuration
 
 Configure installed language servers in the existing application settings JSON. `chatTools.lspServers` defaults to an empty array. Kivio does not install executables or enable commands from workspace `.lsp.json` or plugin `lspServers` settings.

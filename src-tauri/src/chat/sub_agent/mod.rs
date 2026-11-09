@@ -109,6 +109,17 @@ impl SubAgentManager {
         self.jobs.cancel_root(root);
     }
 
+    /// Close spawn admission while retaining child identities for cleanup retries.
+    pub(crate) fn retire_conversation(&self, root: &str) -> Vec<String> {
+        self.admission.remove_root(root);
+        self.stop_conversation(root);
+        self.registry
+            .list(root)
+            .into_iter()
+            .map(|record| record.child_conversation_id)
+            .collect()
+    }
+
     /// Conversation deleted: drop all of its agents, jobs and admission state.
     pub fn forget_conversation(&self, root: &str) {
         // Admission first: `remove_root` permanently tombstones the root under the

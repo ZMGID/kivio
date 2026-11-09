@@ -495,7 +495,15 @@ async fn run_builtin_agent_node(
     };
     let max_output_tokens = settings.chat.max_output_tokens;
     let web_search_mode = WebSearchMode::resolve(None, &settings);
-    let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(&tools);
+    let (mcp_tool_ids, mcp_server_ids) = crate::mcp::registry::mcp_grants(
+        &tools,
+        &settings,
+        if is_chat && !settings.chat.chat_mode.mcp_read_only {
+            Some(&[])
+        } else {
+            None
+        },
+    );
 
     let config = AgentRunConfig {
         state,
