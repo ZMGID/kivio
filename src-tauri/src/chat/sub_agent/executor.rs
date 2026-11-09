@@ -2870,6 +2870,7 @@ async fn prepare(
     if let Some(saved) = &worker.contract {
         clamp_tools(&mut tools, saved);
     }
+    crate::chat::commands::move_mcp_tools_to_end(&mut tools);
     let (mcp_tool_ids, mcp_server_ids) = worker_mcp_grants(
         &tools,
         &settings,
@@ -3113,6 +3114,7 @@ async fn execute(
     if let Some(contract) = &worker.contract {
         clamp_tools(&mut tools, contract);
     }
+    crate::chat::commands::move_mcp_tools_to_end(&mut tools);
     let _ = host.todo_available.set(tools.iter().any(|tool| {
         tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name)
     }));

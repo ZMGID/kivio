@@ -365,22 +365,22 @@ pub(crate) fn tool_definition_with_policy(
         }),
     );
     if settings.chat_tools.task_file_enabled {
-        description.push_str("\nUse exactly one of task or taskFile. taskFile accepts an absolute path or local:// URL to a regular UTF-8 file up to 4 MiB. File tasks are never launched speculatively.\n");
+        description.push_str("\ntask/taskFile: exactly one. taskFile: absolute/local:// regular UTF-8 file ≤4 MiB; never speculative.\n");
     }
     if settings.chat_tools.task_enable_effort {
-        description.push_str("\nOptional effort lo/med/hi selects the resolved model's supported effort within the configured ceiling.\n");
+        description.push_str("\neffort: supported model effort, within configured ceiling.\n");
     }
     if settings.chat_tools.task_per_call_model == crate::settings::TaskPerCallModel::On {
-        description.push_str("\nOptional model selects one exact operator-approved provider/model identity. Unavailable or unapproved selections fail without fallback.\n");
+        description.push_str("\nmodel: exact operator-approved provider/model; unavailable/unapproved fails without fallback.\n");
     }
     if settings.chat_tools.task_structured || available.iter().any(|def| def.structured) {
-        description.push_str("\nStructured roles finish through yield. outputSchema overrides role output, including explicit null to disable schema validation. schemaMode is strict or permissive.\n");
+        description.push_str("\nStructured roles finish via yield. outputSchema overrides role output; null disables validation.\n");
     }
     if settings.chat_tools.task_isolation_enabled {
-        description.push_str("\nOptional isolated runs in a separate Git worktree. merge selects patch or branch. apply false retains recovery artifacts without applying changes. Conflicts preserve the isolated files and recovery patch.\n");
+        description.push_str("\nisolated: separate Git worktree. apply=false retains recovery artifacts without applying; conflicts preserve files/recovery patch.\n");
     }
     if available.iter().any(|def| super::seance::is_bundled(def)) {
-        description.push_str("\nThe bundled seance role requires sourceSession. It forks historical evidence read only and accepts an optional saved-model override.\n");
+        description.push_str("\nseance requires sourceSession: read-only history fork, optional saved-model override.\n");
     }
     let mut properties = json!({
         "name": {"type": "string"}, "agent": {"type": "string"},
@@ -407,7 +407,7 @@ pub(crate) fn tool_definition_with_policy(
         properties.insert("merge".into(), json!({"enum":["patch","branch"]}));
         properties.insert("apply".into(), json!({"type":"boolean"}));
     }
-    properties.insert("tools".into(), json!({"type":"array","items":{"type":"string","minLength":1},"description":"Names defined by this session's retained eval kernels. These are additional custom tools, not a native tool allowlist."}));
+    properties.insert("tools".into(), json!({"type":"array","items":{"type":"string","minLength":1},"description":"Additional retained eval-kernel tool names; not native allowlist."}));
     if available.iter().any(|def| super::seance::is_bundled(def)) {
         properties.insert(
             "sourceSession".into(),

@@ -758,19 +758,6 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         if !chat_mode && !plan_mode {
             append_agent_todo_tools(&mut tools);
         }
-        let goal_tools_available = if !chat_mode && !plan_mode && !orchestrate_mode && arm.is_none()
-        {
-            append_goal_tools(&mut tools, conversation.goal_state.as_ref())
-        } else {
-            false
-        };
-        if settings.chat_tools.native_tools.scheduled_tasks
-            && !plan_mode
-            && !builder_mode
-            && arm.is_none()
-        {
-            crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
-        }
         let project_prompt_context = project_prompt_context_for(app, conversation);
         append_main_subagent_tools(
             &mut tools,
@@ -779,6 +766,20 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             chat_mode,
             builder_mode,
         );
+        if settings.chat_tools.native_tools.scheduled_tasks
+            && !plan_mode
+            && !builder_mode
+            && arm.is_none()
+        {
+            crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
+        }
+        let goal_tools_available = if !chat_mode && !plan_mode && !orchestrate_mode && arm.is_none()
+        {
+            append_goal_tools(&mut tools, conversation.goal_state.as_ref())
+        } else {
+            false
+        };
+        super::tooling::move_mcp_tools_to_end(&mut tools);
         let runtime_tools_available = !tools.is_empty();
         let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
         let task_available = tools.iter().any(|tool| {

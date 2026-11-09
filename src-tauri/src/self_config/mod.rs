@@ -14,23 +14,23 @@ use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
 use crate::settings::{ChatMcpServer, Settings};
 
 pub fn inspect_definition() -> ChatToolDefinition {
-    definition("kivio_inspect", "Read Kivio's current configuration, skills, plugin packages, MCP summaries or hook status without exposing credentials or connecting servers. Disk/registry presence does not prove a capability is usable in this conversation.", json!({
+    definition("kivio_inspect", "Inspect live Kivio config; no credentials/connections. Presence doesn't prove conversation usability.", json!({
         "type":"object", "properties":{"topic":{"type":"string","enum":["status","skills","plugins","mcp","hooks"]}}, "additionalProperties":false
     }), false)
 }
 
 pub fn configure_definition() -> ChatToolDefinition {
-    definition("kivio_configure", "Install or configure Kivio extensions using live application services. Inspect current state before making changes. Acts on the user's requested resources only. New skills/plugins/MCP tools are usable on the next turn. MCP tests may launch a process/connect a service. Config JSON is read from config_path; no whole-settings replacement. Requires the host command tool toggle and normal session consent.", json!({
+    definition("kivio_configure", "Inspect first; change only requested resources. New capabilities work next turn. mcp_test may launch/connect. Requires host-command toggle/session consent; no whole-settings replacement.", json!({
         "type":"object", "properties":{
             "action":{"type":"string","enum":["skill_install","skill_set_enabled","skill_settings","playwright_extension_token","plugin_import","plugin_set_enabled","plugin_remove","mcp_upsert","mcp_remove","mcp_test","hooks_save"]},
-            "token":{"type":"string","description":"playwright_extension_token only: user-provided extension token or PLAYWRIGHT_MCP_EXTENSION_TOKEN=... assignment. Empty string clears it. Never echo the credential."},
-            "source":{"type":"string","description":"skill_install: local skill directory or one-skill ZIP; plugin_import: local package root or HTTPS Git URL"},
-            "scope":{"type":"string","enum":["user","project"],"description":"skill_install only; default user. project requires a project conversation."},
-            "replace":{"type":"boolean","description":"skill_install only; explicit replacement keeps a recoverable backup outside scan roots"},
-            "id":{"type":"string","description":"Actual skill/package/MCP id returned by inspection. mcp_upsert: omit to create, pass an existing id to patch."},
+            "token":{"type":"string","description":"playwright_extension_token: user token or PLAYWRIGHT_MCP_EXTENSION_TOKEN=...; empty clears. Never echo."},
+            "source":{"type":"string","description":"skill_install: local directory/one-skill ZIP; plugin_import: local package/HTTPS Git."},
+            "scope":{"type":"string","enum":["user","project"],"description":"skill_install: default user; project needs project conversation."},
+            "replace":{"type":"boolean","description":"skill_install: explicit replacement backs up outside scan roots."},
+            "id":{"type":"string","description":"Inspected skill/package/MCP id; mcp_upsert omits to create, existing to patch."},
             "enabled":{"type":"boolean"},
-            "subdirectory":{"type":"string","description":"plugin_import only, relative to source repository"},
-            "config_path":{"type":"string","description":"UTF-8 JSON file: mcp_upsert uses ChatMcpServer fields (partial update for existing id); hooks_save uses {enabled,hooks}; skill_settings uses skillScanPaths/skillAutoMatch/skillRuntime. Never an entire settings.json."}
+            "subdirectory":{"type":"string","description":"plugin_import: repository-relative."},
+            "config_path":{"type":"string","description":"UTF-8 JSON file. mcp_upsert: ChatMcpServer fields (existing id: partial); hooks_save: {enabled,hooks}; skill_settings: skillScanPaths/skillAutoMatch/skillRuntime."}
         },"required":["action"],"additionalProperties":false
     }), true)
 }

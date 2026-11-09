@@ -123,17 +123,7 @@ const STEPS_BETWEEN_REMINDERS: usize = 10;
 const REMINDER_OPEN_TAG: &str = "<todo-reminder>";
 const REMINDER_CLOSE_TAG: &str = "</todo-reminder>";
 
-const TOOL_DESCRIPTION: &str = "Maintain a short checklist of your own work in this conversation. The user sees it live in the app but cannot edit it.
-
-Use it when the work needs 3 or more distinct steps, when the user gives several tasks at once, or when new requirements arrive mid-task. Skip it for single-step requests, quick questions and plain conversation.
-
-- Send the complete list on every call; it replaces the previous list. Send an empty list to clear it.
-- Keep exactly one item in_progress while work remains, and mark an item in_progress before starting it.
-- Mark an item completed right after finishing it, and only once it is actually done (including any verification you planned). Do not batch completions.
-- If you are blocked, keep the item in_progress and add an item describing the blocker. Mark items that are no longer needed as cancelled.
-- Keep items short, specific and actionable. Preserve commands the user gave verbatim.
-- When every item is completed or cancelled the list is cleared automatically.
-- Do not repeat the list in your reply; the user already sees it.";
+const TOOL_DESCRIPTION: &str = "User-visible, agent-only checklist for 3+ steps, multiple tasks or mid-task requirements; skip simple requests. Replace the whole list; [] clears. Exactly one in_progress while work remains: set before starting, complete immediately after verification; never batch completions. Blocked: keep in_progress, add blocker item. Cancel unneeded items. Short actionable items; preserve user commands verbatim. All resolved auto-clears. Don't repeat in replies.";
 
 /// Model-facing item. Unknown fields (the old `id` / `blocks` / `blocked_by` /
 /// `owner`) are ignored so replayed legacy calls still parse.

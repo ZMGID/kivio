@@ -362,28 +362,28 @@ pub fn native_read_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__read_file".to_string(),
         name: "read".to_string(),
-        description: "Read a local file, directory, or authorized MCP resource. Use path mcp:// to discover authorized MCP servers, mcp://<server-id> to list that server's resources, and a returned resource path to read and subscribe to updates. MCP updates provide notices only; read again when current contents are needed. For a file: text is line-numbered as `N<TAB>line` for easy reference; the numbers are display-only and are NOT part of the file — never include them in edit old_string. Output is capped at 2000 lines or 50KB, whichever is hit first, so a single read can never flood the context; when the cap or your own limit stops the read early, the result ENDS with a notice like `[Showing lines X-Y of Z. Use offset=N to continue.]` — if the part you need is not in this window, call read again with that offset before moving on. Optional offset/limit select a 1-based line window (the cap still applies on top); an offset past the last line is an error. For a directory path: returns its entries (folded in the former `ls` tool); offset/limit are ignored. Image files (png/jpg/webp/…) are also supported: the image is shown to you directly when your model has vision, otherwise it is described or OCR'd to text. To inspect several images at once, pass `paths` (up to 12). Images are read individually by default — always do that for analysis, QA, spelling, logos, or any per-image detail. A numbered contact sheet is used only for a first-pass overview of 6–12 similar images when the user asked to skim the set, or when you set overview=true for that skim; never for analysis. Re-read a single path for fine text. For PDF/Word/Excel, extract content with available host parsing tools; this tool does not parse binary documents.".to_string(),
+        description: "Read a file, directory entries (ignores offset/limit), images (vision or description/OCR), or authorized MCP resource. Text prefixes `N<TAB>` are display-only: never copy into edit old_string. Capped at 2000 lines/50KB; follow the returned offset notice to read needed content beyond the window. PDF/Word/Excel need host parsers; binary documents are not parsed. MCP: mcp:// lists authorized servers, mcp://<server-id> lists resources; returned paths read/subscribe. Updates are notices; re-read for current contents.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "File path or directory to read. Relative paths use the current working directory (project root or conversation workbench). Explicit absolute and ~/ paths can point outside it; normal OS permissions and tool approvals apply. Use the user's disk path directly with artifact_ids: [] and paths: []; no registration is required. When selecting artifact_ids or paths, omit path or use an empty string." },
-                "artifact_ids": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 0, "maxItems": 12, "description": "Exact art_ IDs already returned by tools in this conversation. For a disk path, omit artifact_ids or use []; never invent placeholder IDs. Nonempty artifact_ids take precedence over path/paths: those fields are ignored. For ID reads use path: empty string and paths: []. No filesystem search or registration is needed when the ID is known." },
+                "path": { "type": "string", "description": "File path/directory/MCP URI. Relative to cwd; absolute/~/ may point outside, subject to permissions/approvals. Disk paths need no registration. Omit/empty when using other selectors." },
+                "artifact_ids": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 0, "maxItems": 12, "description": "Exact returned art_ IDs; nonempty overrides path/paths. Omit/[] for disk paths; never invent IDs." },
                 "paths": {
                     "type": "array",
-                    "description": "Several image files to inspect in one call (png/jpg/webp/gif, max 12). Default is one image each. Omit or use [] when reading by path or artifact_ids; never add dummy or placeholder paths. Do not use this for text files.",
+                    "description": "Image paths only, shown separately by default; omit/[] for other selectors. Never invent paths.",
                     "items": { "type": "string", "minLength": 1 },
                     "minItems": 0,
                     "maxItems": 12
                 },
                 "overview": {
                     "type": "boolean",
-                    "description": "If true, combine 6–12 images into one numbered contact sheet for a first-pass skim. Ignored when the user asked to analyze, verify, read text, or inspect each image — those always stay separate. Omit this (or false) unless you only need a coarse overview."
+                    "description": "Numbered contact sheet for skimming 6–12 similar images only. Analysis/QA/text/logos/per-image detail always use separate images; re-read one path for fine text. Default false."
                 },
-                "offset": { "type": "integer", "description": "1-based start line (optional)" },
-                "limit": { "type": "integer", "description": "Max lines to return (optional)" }
+                "offset": { "type": "integer", "description": "1-based start line; past EOF errors." },
+                "limit": { "type": "integer", "description": "Max lines; output cap still applies." }
             }
         }),
         sensitive: false,
@@ -421,23 +421,23 @@ pub fn native_search_files_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__search_files".to_string(),
         name: "grep".to_string(),
-        description: "Search text in a file or under a directory. By default `query` is a literal substring; set regex=true to treat it as a regular expression. If you already know the exact file, pass that file path directly; for broader searches, pass a directory and use `glob` to narrow the scope. Relative paths use the current working directory (project root or conversation workbench); explicit absolute and ~/ paths can point outside it. Respects .gitignore and skips common dependency/build folders (node_modules, target, dist, …); no matches does not establish that a file is missing or inaccessible.".to_string(),
+        description: "Search text in a file or under a directory; if known, pass that file path directly. Respects .gitignore; skips dependency/build folders. No matches does not prove absence/inaccessibility.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "query": { "type": "string", "description": "Text to search for (alias: pattern). Literal substring by default; a regular expression when regex=true." },
+                "query": { "type": "string", "description": "Search text; query or pattern required." },
                 "pattern": { "type": "string", "description": "Alias for query." },
-                "path": { "type": "string", "description": "File or directory path; defaults to the current working directory. To search elsewhere, pass that absolute or ~/ path explicitly." },
-                "regex": { "type": "boolean", "description": "Treat query as a regular expression, default false (literal substring)" },
-                "case_sensitive": { "type": "boolean", "description": "Case-sensitive matching, default false" },
+                "path": { "type": "string", "description": "File or directory path, default cwd; relative or explicit absolute/~/ allowed." },
+                "regex": { "type": "boolean", "description": "Default false: literal substring." },
+                "case_sensitive": { "type": "boolean", "description": "Default false." },
                 "include_hidden": { "type": "boolean", "description": "Include dotfiles and hidden entries" },
-                "glob": { "type": "string", "description": "Only search files whose relative path or name matches this glob. Supports brace expansion: \"*.{py,ts}\" matches both .py and .ts files. Examples: \"*.rs\", \"src/**/*.ts\", \"*.{py,ts,js}\"" },
-                "output_mode": { "type": "string", "enum": ["content", "files_with_matches", "count"], "description": "content: matching lines (default); files_with_matches: list of matching file paths; count: per-file match counts" },
-                "context": { "type": "integer", "description": "Number of context lines to include before and after each match (content mode only), default 0" },
-                "max_results": { "type": "integer", "description": "Maximum results to return, default 100, max 1000" }
+                "glob": { "type": "string", "description": "Filter relative paths/names, e.g. src/**/*.{rs,ts}." },
+                "output_mode": { "type": "string", "enum": ["content", "files_with_matches", "count"], "description": "Default content: lines; count: per-file counts." },
+                "context": { "type": "integer", "description": "Lines before/after matches; content only, default 0." },
+                "max_results": { "type": "integer", "description": "Default 100, max 1000." }
             },
             "required": []
         }),
@@ -451,17 +451,17 @@ pub fn native_glob_files_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__glob_files".to_string(),
         name: "glob".to_string(),
-        description: "Find files/directories under a directory by glob pattern such as \"src/**/*.tsx\". Relative paths use the current working directory (project root or conversation workbench); explicit absolute and ~/ paths can point outside it. Respects .gitignore; an empty result covers only the searched directory and filters. For a known file path, use read directly.".to_string(),
+        description: "Find files/directories; respects .gitignore. Empty results cover only this scope/filters. Read known paths directly.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "pattern": { "type": "string", "description": "Relative glob pattern with *, ?, and ** support; put the search directory in path, not in an absolute pattern." },
-                "path": { "type": "string", "description": "Directory path to search; defaults to the current working directory. To search elsewhere, pass that absolute or ~/ path explicitly." },
+                "pattern": { "type": "string", "description": "Relative glob (*, ?, **); directory goes in path." },
+                "path": { "type": "string", "description": "Directory, default cwd; relative or explicit absolute/~/ allowed." },
                 "include_hidden": { "type": "boolean", "description": "Include dotfiles and hidden entries" },
-                "max_results": { "type": "integer", "description": "Maximum paths to return, default 200, max 500" }
+                "max_results": { "type": "integer", "description": "Default 200, max 500." }
             },
             "required": ["pattern"]
         }),
@@ -490,22 +490,22 @@ pub fn native_edit_file_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__edit_file".to_string(),
         name: "edit".to_string(),
-        description: "Edit a file with one or more exact text replacements in a single call. Each edit's old_string must match a unique, contiguous region of the current file (copy it from read output WITHOUT the leading line-number prefix); if a snippet appears more than once, extend it with surrounding context. Edits apply in order. Prefer this over write for changes to existing files. Returns structured file mutation metadata including diff stats.".to_string(),
+        description: "Replace exact text in an existing file; prefer over write. Returns mutation metadata/diff stats.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Existing file path. Relative paths use the current working directory (project root or conversation workbench). Explicit absolute and ~/ paths can point outside it; normal OS permissions and tool approvals apply." },
+                "path": { "type": "string", "description": "Existing file; relative to cwd or absolute/~/ outside, subject to permissions/approvals." },
                 "edits": {
                     "type": "array",
-                    "description": "One or more replacements, applied in order. Each old_string must occur exactly once in the current file.",
+                    "description": "Applied in order.",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "old_string": { "type": "string", "description": "Exact text to replace (unique in the file)" },
-                            "new_string": { "type": "string", "description": "Replacement text" }
+                            "old_string": { "type": "string", "description": "Unique contiguous exact match; omit read's line numbers. Add context if repeated." },
+                            "new_string": { "type": "string" }
                         },
                         "required": ["old_string", "new_string"]
                     },
@@ -525,18 +525,18 @@ pub fn native_run_command_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__run_command".to_string(),
         name: "bash".to_string(),
-        description: format!("Run a host shell command (build, test, etc.).{shell_hint} Each call starts a fresh process; use cwd and command-local environment variables for the current call. With cwd omitted, start in the current working directory (project root or conversation workbench). An explicit absolute or ~/ cwd can point outside it and must be an existing directory; it is a startup directory, not a filesystem boundary. Normal OS permissions and tool approvals apply. Pass the startup directory through `cwd`, including paths with spaces, and put the operation itself in `command`. Foreground commands have a default kill deadline of 300000 ms; set timeout_ms to 0 for no deadline. Do not background finite jobs (builds, tests, image-generation batches); put parallel work inside one command. Long-running never-ending servers such as `npm run dev`, `npm run tauri dev`, and `vite` are started in the background automatically and return immediately with a job_id. Obey user constraints and obtain any required authorization for destructive, network, or environment-changing commands. A non-zero exit code is returned as a tool error with stdout/stderr. Host Python package installs require an explicit user request and allow_host_python_package_install=true."),
+        description: format!("Run a noninteractive host command in a fresh process.{shell_hint} Use call-local env. Do not background finite jobs; parallelize within one command. Nonzero exit returns an error with stdout/stderr. Obey user constraints and required authorization for destructive/network/environment changes."),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "command": { "type": "string", "description": "Shell command" },
-                "cwd": { "type": "string", "description": "Existing startup directory, defaults to the current working directory. Relative paths use that base; absolute and ~/ paths can point outside it. To run in another directory, pass it here, including when it contains spaces; do not use a leading `cd ... &&`." },
-                "background": { "type": "boolean", "description": "Run in background and return a job_id immediately. Auto-enabled for never-ending dev servers. Do not use this for finite jobs that will exit." },
-                "timeout_ms": { "type": "integer", "minimum": 0, "description": "Foreground kill deadline in ms. Default 300000; 0 disables the deadline. Positive values are clamped to 1000 to 600000. Timeout kills the process and returns partial output; it does not background the job." },
-                "allow_host_python_package_install": { "type": "boolean", "description": "Only true when the user explicitly asked to modify the host Python environment; installs must use --user or a virtual environment." }
+                "command": { "type": "string" },
+                "cwd": { "type": "string", "description": "Existing startup directory, default cwd; relative or absolute/~/ outside allowed, subject to permissions/approvals. Not a filesystem boundary. Use this even for spaces, never leading cd." },
+                "background": { "type": "boolean", "description": "Returns job_id immediately; automatic for never-ending dev servers." },
+                "timeout_ms": { "type": "integer", "minimum": 0, "description": "Foreground deadline: default 300000ms, 0 unlimited, positive clamped 1000–600000. Kills on timeout with partial output; never backgrounds." },
+                "allow_host_python_package_install": { "type": "boolean", "description": "Host Python installs require true AND explicit user request; use --user or a venv." }
             },
             "required": ["command"]
         }),
@@ -550,16 +550,16 @@ pub fn native_bash_output_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__bash_output".to_string(),
         name: "bash_output".to_string(),
-        description: "Inspect background commands started by bash (background:true / auto-detected never-ending servers). With a job_id: waits until that process exits or wait_ms elapses (default 30000; 0 = return immediately), then returns captured stdout/stderr since since_offset (default 0), status (running / exited with exit_code / killed / error), and next_offset; pass the returned next_offset as since_offset for the next read. New log lines do not end the wait. Finite jobs should use foreground bash (wait until exit) instead of this tool. With NO job_id: lists all background commands tracked in this app session (job_id, status, command, working directory, age) — background commands survive across turns until killed or the app exits. Always refresh once with bash_output before reporting a background command's result to the user.".to_string(),
+        description: "Inspect bash background jobs: stdout/stderr, status/exit_code, next_offset; pass the returned next_offset as since_offset. Refresh before reporting results. Jobs survive turns until killed/app exit; finite jobs belong in foreground bash.".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "job_id": { "type": "string", "description": "The job_id returned when the background command was started. Omit to list all tracked background jobs instead." },
-                "since_offset": { "type": "integer", "description": "Byte offset to read from (use next_offset from the previous bash_output call for incremental reads; default 0)" },
-                "wait_ms": { "type": "integer", "description": "Maximum time to wait for the process to exit (default 30000). Returns sooner if it exits. New output does not end the wait. 0 returns a snapshot immediately. Capped at the tool timeout." }
+                "job_id": { "type": "string", "description": "Returned job ID; omit to list all tracked jobs with status/command/cwd/age." },
+                "since_offset": { "type": "integer", "description": "Byte offset, default 0." },
+                "wait_ms": { "type": "integer", "description": "Wait for exit, not output; default 30000ms, 0 snapshot, capped at tool timeout." }
             }
         }),
         sensitive: false,
@@ -768,7 +768,7 @@ pub fn native_present_artifacts_tool() -> ChatToolDefinition {
     ChatToolDefinition {
         id: "native__present_artifacts".to_string(),
         name: "present_artifacts".to_string(),
-        description: "Prepare selected deliverables for final-answer references (default mode: prepare). For an existing local file, pass its path to obtain an art_ ID. In the final answer, place [label](artifact:art_ID) for a file or ![description](artifact:art_ID) for an image. Files that already have IDs can be referenced directly without calling this tool. Use mode preview only when the user explicitly requests an immediate preview or must inspect alternatives before you continue. Do not present internal QA screenshots, extracted frames, drafts, or failed attempts by default. Pass only a short JSON of identifiers: copy `art_…` ids from tool results into artifact_ids, or pass existing disk paths. Never both for the same file. Never invent a path for a generated file. Never put file contents, image bytes, base64, or data URLs in any field. Caption is optional plain text. Max 16 files. Unselected files stay hidden. Example: {\"artifact_ids\":[\"art_…\"]}".to_string(),
+        description: "Select final deliverables (max 16); unselected files stay hidden. Never send contents/bytes/base64/data URLs. Final references: [label](artifact:art_ID), images ![description](artifact:art_ID); known IDs need no call. Hide QA screenshots/frames/drafts/failed attempts by default. Example: {\"artifact_ids\":[\"art_…\"]}".to_string(),
         source: "native".to_string(),
         server_id: None,
         server_name: Some("Kivio".to_string()),
@@ -777,14 +777,14 @@ pub fn native_present_artifacts_tool() -> ChatToolDefinition {
             "properties": {
                 "artifact_ids": {
                     "type": "array",
-                    "description": "Copy `art_…` ids from tool results verbatim. For local files passed in paths, omit artifact_ids or use []; never supply dummy or placeholder IDs. Short strings only — not file names, paths, bytes, base64, or data URLs. Generated files have these ids and no usable path.",
+                    "description": "Exact returned `art_…` IDs; never placeholders. Omit/[] for local paths. Generated files use IDs, not invented paths.",
                     "items": { "type": "string", "minLength": 1 },
                     "minItems": 0,
                     "maxItems": 16
                 },
                 "paths": {
                     "type": "array",
-                    "description": "Existing disk paths for files you already read or wrote. Omit or use [] when selecting only artifact_ids. For a local file, use paths with artifact_ids: []. Do not use for generated artifacts (those use artifact_ids). Never file contents.",
+                    "description": "Existing files read/written; obtains art_ IDs. Omit/[] for ID-only selection; never select the same file both ways.",
                     "items": { "type": "string", "minLength": 1 },
                     "minItems": 0,
                     "maxItems": 16
@@ -792,11 +792,11 @@ pub fn native_present_artifacts_tool() -> ChatToolDefinition {
                 "mode": {
                     "type": "string",
                     "enum": ["prepare", "preview"],
-                    "description": "Defaults to prepare: register only selected final deliverables for inline references, without expanding them during work. preview immediately displays files for an explicit user preview/choice."
+                    "description": "Default prepare: register without display. preview: immediate display only for explicit user preview/necessary choice."
                 },
                 "caption": {
                     "type": "string",
-                    "description": "Optional plain-text caption (max 300 chars). Not for file contents or base64.",
+                    "description": "Optional plain-text caption.",
                     "maxLength": 300
                 }
             },

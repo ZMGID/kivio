@@ -31,8 +31,8 @@ const MIN_PREVIEW_WIDTH: u32 = 240;
 const MAX_PREVIEW_WIDTH: u32 = 1600;
 const PENDING_TTL: Duration = Duration::from_secs(10 * 60);
 
-pub(crate) const THEME_GUIDE: &str = "Use theme CSS variables on :root rather than fixed colors: --background, --foreground, --muted, --muted-foreground, --card, --card-foreground, --popover, --popover-foreground, --secondary, --secondary-foreground, --border, --input, --ring, --primary, --primary-foreground, --accent, --accent-foreground, --destructive, --destructive-foreground, --warning, --warning-foreground, --success, --success-foreground, --info, --info-foreground, --code-background, --code-foreground, --chart-1 through --chart-6, --radius, --font-sans, and --font-mono.";
-pub(crate) const LAYOUT_GUIDE: &str = "The frame is the reply column, about 728px wide on desktop and 360px on phones. Leave html, body, and the outer element without a page background, outer card, border, banner title, or side padding. Use fluid widths. A box needing a background gets 16px padding and var(--radius) corners. Give charts fixed pixel heights. Let content set the height: never use vh, svh, lvh, or dvh units, or height:100% on html or body.";
+pub(crate) const THEME_GUIDE: &str = "Use :root theme vars, e.g. --foreground, --background, --card, --border, --chart-1 through --chart-6, --radius, --font-sans/--font-mono; no fixed colors.";
+pub(crate) const LAYOUT_GUIDE: &str = "Fluid column (~728px desktop/360px phone). html/body/outer: no background/card/border/banner title/side padding. Background boxes: 16px padding, var(--radius). Charts: fixed px height. Content height; no vh/svh/lvh/dvh or html/body height:100%.";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1202,29 +1202,29 @@ pub(crate) async fn preview(
 }
 
 pub(crate) fn tool_definitions() -> Vec<Value> {
-    let page_rules = "Provide a complete, self-contained HTML document with inline style and script. Local images use absolute paths within this conversation's working, project, additional or attachment directories; symlinks are supported when their targets remain in those directories. Remote URLs load as-is.";
+    let page_rules = "Self-contained HTML, inline CSS/JS. Images: absolute local paths within conversation working/project/additional/attachment dirs (symlink targets too); remote URLs as-is.";
     vec![
         json!({
             "name": HTML_RENDER_TOOL,
-            "description": format!("Show a finished HTML page, such as a chart, diagram, or mockup, inline above your final reply. Do not announce or restate the page. {page_rules} {LAYOUT_GUIDE} {THEME_GUIDE}"),
+            "description": format!("Show finished HTML above final reply; do not announce/restate it. {page_rules} {LAYOUT_GUIDE} {THEME_GUIDE}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "html": {"type": "string", "minLength": 1, "maxLength": MAX_HTML_INPUT, "description": "Complete HTML document."},
+                    "html": {"type": "string", "minLength": 1, "maxLength": MAX_HTML_INPUT, "description": "Complete document."},
                     "title": {"type": "string", "minLength": 1, "maxLength": MAX_TITLE},
-                    "height": {"type": "integer", "minimum": MIN_HEIGHT, "maximum": MAX_HEIGHT, "description": "Frame height in CSS pixels; use contentHeight from html_preview."}
+                    "height": {"type": "integer", "minimum": MIN_HEIGHT, "maximum": MAX_HEIGHT, "description": "CSS px; use html_preview contentHeight."}
                 },
                 "required": ["html", "title", "height"]
             }
         }),
         json!({
             "name": HTML_PREVIEW_TOOL,
-            "description": format!("Check a page before html_render. Returns a PNG, content height, console messages, and missing local images. If the browser is installing, call again in a minute. {page_rules} {LAYOUT_GUIDE} {THEME_GUIDE}"),
+            "description": format!("Check before html_render: PNG/contentHeight/console/missing images. Browser installing? Retry in a minute. {page_rules} {LAYOUT_GUIDE} {THEME_GUIDE}"),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "html": {"type": "string", "minLength": 1, "maxLength": MAX_HTML_INPUT, "description": "Complete HTML document."},
-                    "width": {"type": "integer", "minimum": MIN_PREVIEW_WIDTH, "maximum": MAX_PREVIEW_WIDTH, "default": COLUMN_WIDTH, "description": "Viewport width in CSS pixels; use about 390 for phones."},
+                    "html": {"type": "string", "minLength": 1, "maxLength": MAX_HTML_INPUT, "description": "Complete document."},
+                    "width": {"type": "integer", "minimum": MIN_PREVIEW_WIDTH, "maximum": MAX_PREVIEW_WIDTH, "default": COLUMN_WIDTH, "description": "Viewport CSS px; ~390 for phones."},
                     "appearance": {"type": "string", "enum": ["dark", "light"], "default": "dark"}
                 },
                 "required": ["html"]

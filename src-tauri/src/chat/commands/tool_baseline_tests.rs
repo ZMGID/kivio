@@ -4,7 +4,7 @@
 
 use super::tooling::{
     append_agent_ask_user_tools, append_agent_todo_tools, append_goal_tools,
-    apply_agent_plan_tool_filter, apply_chat_mode_tool_filter,
+    apply_agent_plan_tool_filter, apply_chat_mode_tool_filter, move_mcp_tools_to_end,
 };
 use crate::chat::model::ModelTool;
 use crate::mcp::ChatToolDefinition;
@@ -47,18 +47,19 @@ fn main_tools(settings: &Settings, mode: Mode) -> Vec<ChatToolDefinition> {
     if !chat_mode && !plan_mode {
         append_agent_todo_tools(&mut tools);
     }
+    if !chat_mode {
+        let agents = crate::agents::builtin_agent_definitions();
+        crate::chat::sub_agent::append_tool_definitions(&mut tools, settings, &agents);
+    }
+    if settings.chat_tools.native_tools.scheduled_tasks && !plan_mode {
+        tools.extend(scheduled_tools());
+    }
     if mode == Mode::AgentGoal {
         tools.extend(crate::chat::goal::tool_definitions());
     } else if !chat_mode && !plan_mode {
         append_goal_tools(&mut tools, None);
     }
-    if settings.chat_tools.native_tools.scheduled_tasks && !plan_mode {
-        tools.extend(scheduled_tools());
-    }
-    if !chat_mode {
-        let agents = crate::agents::builtin_agent_definitions();
-        crate::chat::sub_agent::append_tool_definitions(&mut tools, settings, &agents);
-    }
+    move_mcp_tools_to_end(&mut tools);
     tools
 }
 
@@ -85,6 +86,7 @@ fn sub_agent_tools(settings: &Settings, role: &str) -> Vec<ChatToolDefinition> {
         1,
         settings.chat_tools.task_max_recursion_depth,
     );
+    move_mcp_tools_to_end(&mut tools);
     tools
 }
 
@@ -137,10 +139,10 @@ const AGENT_TOOLS: &[&str] = &[
     "skill",
     "ask_user",
     "todo_write",
-    "schedule",
     "task",
     "wait",
     "eval",
+    "schedule",
 ];
 const GOAL_TOOLS: &[&str] = &[
     "get_goal", "initialize_goal_criteria", "report_goal_progress", "goal_complete",
@@ -200,11 +202,9 @@ const SUBAGENT_SCOUT_TOOLS: &[&str] = &["read", "grep", "glob", "skill"];
 #[test]
 fn default_tool_list_baseline() {
     let settings = Settings::default();
-    let goal_at = AGENT_TOOLS.iter().position(|name| *name == "schedule").unwrap();
-    let agent_goal: Vec<&str> = AGENT_TOOLS[..goal_at]
+    let agent_goal: Vec<&str> = AGENT_TOOLS
         .iter()
         .chain(GOAL_TOOLS)
-        .chain(&AGENT_TOOLS[goal_at..])
         .copied()
         .collect();
     for (label, tools, expected) in [
@@ -217,5 +217,64 @@ fn default_tool_list_baseline() {
     ] {
         report(label, &tools);
         assert_eq!(names(&tools), expected, "{label} tool list changed");
+    }
+}
+
+#[test]
+fn goal_toggle_preserves_stable_tool_prefix() {
+    let settings = Settings::default();
+    let without = main_tools(&settings, Mode::Agent);
+    let with = main_tools(&settings, Mode::AgentGoal);
+    let goal_at = with
+        .iter()
+        .position(|tool| crate::chat::goal::is_goal_tool_name(&tool.name))
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&with[..goal_at]).unwrap(),
+        serde_json::to_value(&without).unwrap()
+    );
+    assert_eq!(names(&with[goal_at..]), GOAL_TOOLS);
+
+    let mut scheduled_turn = without.clone();
+    scheduled_turn.retain(|tool| tool.name != "schedule");
+    assert_eq!(
+        serde_json::to_value(&without[..scheduled_turn.len()]).unwrap(),
+        serde_json::to_value(&scheduled_turn).unwrap()
+    );
+}
+
+#[test]
+fn mcp_discovery_preserves_non_mcp_prefix_and_tool_set() {
+    let settings = Settings::default();
+    for mut tools in [
+        main_tools(&settings, Mode::AgentGoal),
+        sub_agent_tools(&settings, "task"),
+    ] {
+        let prefix = serde_json::to_value(&tools).unwrap();
+        let mut remote = crate::mcp::types::native_web_fetch_tool();
+        remote.id = "mcp__test__fetch".into();
+        remote.source = "mcp".into();
+        tools.insert(1, remote.clone());
+        remote.id = "mcp__test__other".into();
+        tools.insert(3, remote);
+        let before: Vec<_> = tools.iter().map(|tool| tool.id.clone()).collect();
+        move_mcp_tools_to_end(&mut tools);
+        let mcp_at = tools.iter().position(|tool| tool.source == "mcp").unwrap();
+        assert_eq!(serde_json::to_value(&tools[..mcp_at]).unwrap(), prefix);
+        assert_eq!(
+            tools[mcp_at..]
+                .iter()
+                .map(|tool| tool.id.as_str())
+                .collect::<Vec<_>>(),
+            ["mcp__test__fetch", "mcp__test__other"]
+        );
+        let mut after: Vec<_> = tools.iter().map(|tool| tool.id.clone()).collect();
+        let mut before = before;
+        before.sort();
+        after.sort();
+        assert_eq!(before, after);
+        let once = serde_json::to_value(&tools).unwrap();
+        move_mcp_tools_to_end(&mut tools);
+        assert_eq!(serde_json::to_value(&tools).unwrap(), once);
     }
 }

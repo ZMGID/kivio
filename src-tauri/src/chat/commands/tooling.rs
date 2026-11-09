@@ -211,6 +211,11 @@ pub(super) fn append_goal_tools(
     crate::chat::goal::append_tool_definitions(tools, goal)
 }
 
+/// Discovery can change MCP tools mid-conversation; preserve the other tools' cache prefix.
+pub(crate) fn move_mcp_tools_to_end(tools: &mut [ChatToolDefinition]) {
+    tools.sort_by_key(|tool| tool.source == "mcp");
+}
+
 pub(super) fn append_agent_ask_user_tools(tools: &mut Vec<ChatToolDefinition>) -> bool {
     crate::chat::ask_user::append_tool_definitions(tools);
     true
