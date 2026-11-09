@@ -780,6 +780,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             false
         };
         super::tooling::move_mcp_tools_to_end(&mut tools);
+        crate::chat::tool_on_demand::configure_tools(&mut tools, effective_chat_tools.tools_on_demand);
         let runtime_tools_available = !tools.is_empty();
         let available_builtin_tools = agent_prepare::available_builtin_tool_names(&tools);
         let task_available = tools.iter().any(|tool| {
@@ -831,6 +832,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             knowledge_base_prompt.as_deref(),
             &conversation.additional_directories,
         );
+        crate::chat::tool_on_demand::update_prompt(&mut prepared_prompt.context, &tools);
         let mut conversation_context = String::new();
         if !settings.chat.default_language.trim().is_empty() {
             conversation_context.push_str(&format!(

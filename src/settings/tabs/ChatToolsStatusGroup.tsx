@@ -1,3 +1,4 @@
+import { Toggle } from '../public/controls'
 import { SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
 import { MemoryIcon, AgentIcon, ProvidersIcon } from '../NavIcons'
@@ -25,6 +26,7 @@ export function ChatToolsStatusGroup({
   skillRuntimeEnabled,
   nativeBuiltinToolsEnabled,
   onNavigateTab,
+  onUpdateChatTools,
 }: {
   settings: SettingsData
   t: I18n
@@ -34,6 +36,7 @@ export function ChatToolsStatusGroup({
   skillRuntimeEnabled: boolean
   nativeBuiltinToolsEnabled: boolean
   onNavigateTab: (tab: SettingsTab) => void
+  onUpdateChatTools: (updates: Partial<ChatToolsConfig>) => void
 }) {
   const onLabel = lang === 'zh' ? '已启用' : 'On'
   const offLabel = lang === 'zh' ? '未启用' : 'Off'
@@ -41,6 +44,13 @@ export function ChatToolsStatusGroup({
 
   return (
     <SettingsGroup title={t.chatToolsSection}>
+      <SettingRow label={t.toolsOnDemand} description={t.toolsOnDemandHint}>
+        <Toggle
+          ariaLabel={t.toolsOnDemand}
+          checked={chatTools.toolsOnDemand ?? true}
+          onChange={(toolsOnDemand) => onUpdateChatTools({ toolsOnDemand })}
+        />
+      </SettingRow>
       <div className="flex flex-wrap gap-2 pb-2">
         <Button
           size="sm"

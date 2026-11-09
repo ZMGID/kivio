@@ -61,6 +61,7 @@ impl ContextNotesReminder {
                     .run
                     .tools
                     .iter()
+                    .filter(|tool| tool.declared)
                     .map(|tool| {
                         super::agent_preparation::estimate_value_tokens(
                             &tool.model.to_openai_tool(),

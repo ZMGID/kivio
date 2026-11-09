@@ -29,6 +29,7 @@ mod tests {
         deny_consent: bool,
         parallel_arm: bool,
         records: Mutex<Vec<ToolCallRecord>>,
+        lifecycle: Mutex<Vec<String>>,
     }
 
     impl AgentHost for ExecuteTestHost {
@@ -139,6 +140,7 @@ impl ExecuteTestHost {
 
     fn test_execution_context() -> ToolExecutionContext<'static> {
         ToolExecutionContext {
+            run_tools: &[],
             conversation_id: "conversation",
             run_id: "run",
             message_id: "message",
@@ -1315,6 +1317,7 @@ impl AgentEventSink for ExecuteTestHost {
                 if let Some(record) = crate::chat::agent_presentation::project_embedded(block) { self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &record); }
             }
             AgentEventKind::ToolUpdated(call) => self.emit_tool_record(id.conversation_id, id.run_id, id.message_id, &crate::chat::agent_presentation::project_tool(call, Some(id.run_id))),
+            AgentEventKind::ToolStarted { name, .. } | AgentEventKind::ToolEnded { name, .. } => self.lifecycle.lock().unwrap().push((*name).to_string()),
             _ => {}
         }
         EventDelivery::Accepted
@@ -1446,4 +1449,315 @@ fn match_tool_call<'a>(tools: &'a [ChatToolDefinition], name: &str) -> Option<&'
         assert_eq!(host.approvals.load(Ordering::SeqCst), 0);
     }
 
+    async fn execute_on_demand(
+        host: &Arc<ExecuteTestHost>,
+        dispatcher: &Arc<ExecuteTestExecutor>,
+        settings: &Settings,
+        tools: &[ChatToolDefinition],
+        plan: &crate::chat::types::AgentPlanState,
+        name: &str,
+        arguments: Value,
+    ) -> crate::chat::agent::execute::ToolCallResult {
+        let context = test_context(host);
+        let ctx = ToolExecutionContext {
+            plan_state: plan,
+            ..test_execution_context()
+        };
+        let adapter: Arc<dyn crate::chat::agent::execute::ToolExecutor> =
+            Arc::new(ApplicationToolExecutor {
+                snapshot: Arc::new(RunToolSnapshot::from_context(settings, &ctx, tools)),
+                host: host.clone(),
+                dispatcher: dispatcher.clone(),
+            });
+        let definitions: Vec<_> = tools.iter().map(|tool| tool.for_run(settings)).collect();
+        let tool = crate::chat::agent::execute::match_tool_call(&definitions, name).unwrap();
+        let core_ctx = crate::chat::agent::execute::ToolExecutionContext {
+            conversation_id: "conversation".into(),
+            run_id: "run".into(),
+            message_id: "message".into(),
+            generation: 1,
+            round: 1,
+            tool_call_id: "device-call".into(),
+        };
+        crate::chat::agent::execute::execute_tool_call(
+            &context,
+            &adapter,
+            &core_ctx,
+            tool,
+            test_pending_call("device-call", name, arguments),
+        )
+        .await
+    }
+
+    fn on_demand_tools() -> Vec<ChatToolDefinition> {
+        let mut tools = vec![
+            crate::mcp::types::native_read_file_tool(),
+            crate::mcp::types::native_write_file_tool(),
+            crate::mcp::types::native_automation_tool(),
+        ];
+        crate::chat::tool_on_demand::configure_tools(&mut tools, true);
+        tools
+    }
+
+    #[tokio::test]
+    async fn on_demand_device_and_direct_calls_share_target_approval_records_and_consent() {
+        for policy in ["auto", "always_confirm", "read_only"] {
+            for action in ["list", "delete"] {
+                for device in [true, false] {
+                    let tools = on_demand_tools();
+                    let host = Arc::new(ExecuteTestHost {
+                        deny_consent: true,
+                        ..Default::default()
+                    });
+                    let dispatcher = Arc::new(ExecuteTestExecutor::default());
+                    let mut settings = Settings::default();
+                    settings.chat_tools.approval_policy = policy.into();
+                    let args = serde_json::json!({"action":action,"id":"example"});
+                    let (name, input) = if device {
+                        (
+                            "write",
+                            serde_json::json!({"path":"tool://automation","content":args.to_string()}),
+                        )
+                    } else {
+                        ("automation", args.clone())
+                    };
+                    let result = execute_on_demand(
+                        &host,
+                        &dispatcher,
+                        &settings,
+                        &tools,
+                        &Default::default(),
+                        name,
+                        input,
+                    )
+                    .await;
+                    assert_eq!(
+                        result.record.status,
+                        AgentToolStatus::Success,
+                        "{}",
+                        result.content
+                    );
+                    assert_eq!(result.record.name, "automation");
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&result.record.arguments).unwrap(),
+                        args
+                    );
+                    assert_eq!(result.content, "result:automation");
+                    assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 1);
+                    assert_eq!(host.consents.load(Ordering::SeqCst), 0);
+                    assert_eq!(
+                        host.approvals.load(Ordering::SeqCst),
+                        usize::from(
+                            policy == "always_confirm" || (policy != "auto" && action != "list")
+                        )
+                    );
+                    assert!(host
+                        .records
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .all(|record| record.name == "automation"));
+                    assert_eq!(
+                        *host.lifecycle.lock().unwrap(),
+                        ["automation", "automation"]
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn on_demand_plan_and_role_restrictions_apply_to_device_direct_and_legacy_names() {
+        for mode in ["plan", "scout", "seance", "chat"] {
+            for action in ["list", "upsert", "delete"] {
+                let legacy = format!("automation_{action}");
+                for name in ["write", "automation", legacy.as_str()] {
+                    let mut tools = on_demand_tools();
+                    tools[2].restrict_to_read_only_calls(mode);
+                    let mut plan = crate::chat::types::AgentPlanState::default();
+                    if mode == "plan" {
+                        plan.mode = crate::chat::types::AgentPlanMode::Plan;
+                    }
+                    let host = Arc::new(ExecuteTestHost::default());
+                    let dispatcher = Arc::new(ExecuteTestExecutor::default());
+                    let mut settings = Settings::default();
+                    settings.chat_tools.approval_policy = "auto".into();
+                    let args = serde_json::json!({"action":action,"id":"example"});
+                    let input = if name == "write" {
+                        serde_json::json!({"path":"tool://automation","content":args.to_string()})
+                    } else {
+                        args
+                    };
+                    let result = execute_on_demand(
+                        &host,
+                        &dispatcher,
+                        &settings,
+                        &tools,
+                        &plan,
+                        name,
+                        input,
+                    )
+                    .await;
+                    assert_eq!(result.record.name, "automation");
+                    assert_eq!(
+                        result.record.status,
+                        if action == "list" {
+                            AgentToolStatus::Success
+                        } else {
+                            AgentToolStatus::Skipped
+                        },
+                        "{}",
+                        result.content
+                    );
+                    assert_eq!(
+                        dispatcher.calls.load(Ordering::SeqCst),
+                        usize::from(action == "list")
+                    );
+                    if action != "list" {
+                        assert!(result.content.contains("not allowed"));
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn on_demand_unknown_disabled_and_bad_arguments_never_dispatch() {
+        let host = Arc::new(ExecuteTestHost::default());
+        let dispatcher = Arc::new(ExecuteTestExecutor::default());
+        let mut settings = Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        for (path, content, expected) in [
+            ("tool://schedule", "{}", "not enabled"),
+            ("tool://invented", "{}", "not enabled"),
+            ("tool://automation", "{", "Input JSON schema"),
+            ("tool://automation", "{}", "Input JSON schema"),
+        ] {
+            let result = execute_on_demand(
+                &host,
+                &dispatcher,
+                &settings,
+                &on_demand_tools(),
+                &Default::default(),
+                "write",
+                serde_json::json!({"path":path,"content":content}),
+            )
+            .await;
+            assert_eq!(result.record.status, AgentToolStatus::Error);
+            assert!(result.content.contains(expected), "{}", result.content);
+            if path == "tool://automation" {
+                assert_eq!(result.record.name, "automation");
+            }
+        }
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(host.approvals.load(Ordering::SeqCst), 0);
+        assert_eq!(host.consents.load(Ordering::SeqCst), 0);
+        let mut tools = on_demand_tools();
+        tools.retain(|tool| tool.name != "automation");
+        assert!(match_tool_call(&tools, "automation").is_none());
+        assert!(match_tool_call(&tools, "automation_list").is_none());
+    }
+
+    #[tokio::test]
+    async fn on_demand_pre_and_post_hooks_match_target_name_and_validate_updated_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        for event in ["PreToolUse", "PostToolUse"] {
+            let mut host = host_with_hook(
+                dir.path(),
+                event,
+                serde_json::json!({"hookSpecificOutput":{"additionalContext":"target hook executed"}}),
+            );
+            for hook in &mut host.workflow.as_mut().unwrap().hooks {
+                hook.matcher = Some(regex::Regex::new("^automation$").unwrap());
+            }
+            let host = Arc::new(host);
+            let dispatcher = Arc::new(ExecuteTestExecutor::default());
+            let mut settings = Settings::default();
+            settings.chat_tools.approval_policy = "auto".into();
+            let result = execute_on_demand(
+                &host,
+                &dispatcher,
+                &settings,
+                &on_demand_tools(),
+                &Default::default(),
+                "write",
+                serde_json::json!({"path":"tool://automation","content":"{\"action\":\"list\"}"}),
+            )
+            .await;
+            assert_eq!(
+                result.record.status,
+                AgentToolStatus::Success,
+                "{}",
+                result.content
+            );
+            assert!(
+                result.content.contains("target hook executed"),
+                "{}",
+                result.content
+            );
+        }
+        let mut host = host_with_hook(
+            dir.path(),
+            "PreToolUse",
+            serde_json::json!({"hookSpecificOutput":{"updatedInput":{"action":"delete","id":"example"}}}),
+        );
+        for hook in &mut host.workflow.as_mut().unwrap().hooks {
+            hook.matcher = Some(regex::Regex::new("^automation$").unwrap());
+        }
+        let host = Arc::new(host);
+        let dispatcher = Arc::new(ExecuteTestExecutor::default());
+        let mut settings = Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        let mut tools = on_demand_tools();
+        tools[2].restrict_to_read_only_calls("plan");
+        let result = execute_on_demand(
+            &host,
+            &dispatcher,
+            &settings,
+            &tools,
+            &Default::default(),
+            "write",
+            serde_json::json!({"path":"tool://automation","content":"{\"action\":\"list\"}"}),
+        )
+        .await;
+        assert_eq!(result.record.status, AgentToolStatus::Skipped);
+        assert_eq!(dispatcher.calls.load(Ordering::SeqCst), 0);
+    }
+    #[tokio::test]
+    async fn on_demand_target_arguments_are_coerced_and_timeout_uses_target_policy() {
+        use crate::chat::agent::execute::ToolExecutor as _;
+        let tools = on_demand_tools();
+        let host = Arc::new(ExecuteTestHost::default());
+        let dispatcher = Arc::new(ExecuteTestExecutor::default());
+        let mut settings = Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        let result = execute_on_demand(&host, &dispatcher, &settings, &tools, &Default::default(), "write",
+            serde_json::json!({"path":"tool://automation","content":"{\"action\":\"set_enabled\",\"id\":\"example\",\"enabled\":\"true\"}"})).await;
+        assert_eq!(
+            result.record.status,
+            AgentToolStatus::Success,
+            "{}",
+            result.content
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.record.arguments).unwrap()["enabled"],
+            true
+        );
+        let ctx = test_execution_context();
+        let adapter = ApplicationToolExecutor {
+            snapshot: Arc::new(RunToolSnapshot::from_context(&settings, &ctx, &tools)),
+            host,
+            dispatcher,
+        };
+        let transport = tools[1].for_run(&settings);
+        let (target, call) = adapter.resolve_tool_call(&transport, test_pending_call("timeout", "write",
+            serde_json::json!({"path":"tool://automation","content":"{\"action\":\"run\",\"id\":\"example\",\"timeout_seconds\":1800}"}))).unwrap();
+        assert_eq!(target.label.name, "automation");
+        assert!(!transport.parallel_safe);
+        assert_eq!(
+            effective_tool_timeout_ms(&settings, adapter.definition(&target), &call.arguments),
+            crate::automation::tools::run_timeout_ms(&call.arguments)
+                .max(settings.chat_tools.tool_timeout_ms)
+        );
+    }
 }

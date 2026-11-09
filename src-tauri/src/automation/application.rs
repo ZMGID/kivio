@@ -410,6 +410,7 @@ async fn run_builtin_agent_node(
     if !is_chat {
         ensure_skill_activate_tool(&mut tools);
     }
+    crate::chat::tool_on_demand::configure_tools(&mut tools, settings.chat_tools.tools_on_demand);
     let builtin_names = available_builtin_tool_names(&tools);
 
     let workdir = workspace::workbench_dir(
@@ -472,6 +473,7 @@ async fn run_builtin_agent_node(
         None,
         &additional_directories,
     );
+    crate::chat::tool_on_demand::update_prompt(&mut system_prompt.context, &tools);
     if let Some(extra) = extra_loaded_skill_bodies(&loaded, &spec.skill_ids) {
         system_prompt.context.push_str("\n\n");
         system_prompt.context.push_str(&extra);

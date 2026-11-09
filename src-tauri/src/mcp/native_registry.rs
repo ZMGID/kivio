@@ -100,7 +100,15 @@ pub enum NativeToolCall {
     SubAgent(for<'a> fn(crate::chat::sub_agent::SubAgentCallCtx<'a>) -> NativeToolFuture<'a>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolLoadMode {
+    Essential,
+    #[default]
+    OnDemand,
+}
+
 pub struct NativeToolEntry {
+    pub load_mode: ToolLoadMode,
     pub name: &'static str,
     pub def: fn() -> ChatToolDefinition,
     /// Whether the tool is exposed in the model tool list for the given
@@ -128,6 +136,7 @@ pub struct NativeToolEntry {
 /// conversation-level tools that are appended elsewhere.
 pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "web_search",
         def: native_web_search_tool,
         enabled: |native, web_search_configured, _| native.web_search && web_search_configured,
@@ -141,6 +150,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_web_search),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "web_fetch",
         def: native_web_fetch_tool,
         enabled: |native, _, _| native.web_fetch,
@@ -154,6 +164,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_web_fetch),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "knowledge_search",
         def: native_knowledge_search_tool,
         enabled: |native, _, _| native.knowledge_search,
@@ -167,6 +178,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_knowledge_search),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "automation",
         def: native_automation_tool,
         enabled: |native, _, _| native.automation,
@@ -180,6 +192,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_automation),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "advisor",
         def: native_advisor_tool,
         // Never auto-listed: exposure depends on `default_models.advisor` being
@@ -197,6 +210,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_advisor),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "read",
         def: native_read_file_tool,
         enabled: |native, _, _| native.read_file,
@@ -217,6 +231,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
     // mode drops `ls` and the session-consent gate skips it. `call` is unused
     // (the GUI never dispatches it; kivio-code dispatches `ls` in its own executor).
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "ls",
         def: native_list_dir_tool,
         enabled: |_, _, _| false,
@@ -230,6 +245,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::SyncText(crate::native_tools::list_dir),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "grep",
         def: native_search_files_tool,
         enabled: |native, _, _| native.read_file,
@@ -243,6 +259,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::SyncText(crate::native_tools::search_files),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "glob",
         def: native_glob_files_tool,
         enabled: |native, _, _| native.read_file,
@@ -256,6 +273,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::SyncText(crate::native_tools::glob_files),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "write",
         def: native_write_file_tool,
         enabled: |native, _, _| native.write_file,
@@ -269,6 +287,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_write),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "edit",
         def: native_edit_file_tool,
         enabled: |native, _, _| native.edit_file,
@@ -282,6 +301,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::BlockingMutation(crate::native_tools::edit_file),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "bash",
         def: native_run_command_tool,
         enabled: |native, _, _| native.run_command,
@@ -301,6 +321,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
     // the former list_background tool); kill_background is a control action and
     // is neither. Neither bypasses approval — they ride bash's consent.
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "bash_output",
         def: native_bash_output_tool,
         enabled: |native, _, _| native.run_command,
@@ -314,6 +335,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_bash_output),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "kill_background",
         def: native_kill_background_tool,
         enabled: |native, _, _| native.run_command,
@@ -327,6 +349,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_kill_background),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         // 仅在「对话搭建专家」会话里手动 append(见 commands.rs);全局列表永不暴露。
         // call_native_tool 按名分发、调用期不复查 enabled,故手动 append 仍可执行。
         name: "save_assistant",
@@ -342,6 +365,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_save_assistant),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "kivio_list_agents",
         def: native_kivio_list_agents_tool,
         enabled: |_, _, _| false,
@@ -355,6 +379,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_agents")),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "kivio_list_projects",
         def: native_kivio_list_projects_tool,
         enabled: |_, _, _| false,
@@ -368,6 +393,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_projects")),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "kivio_list_conversations",
         def: native_kivio_list_conversations_tool,
         enabled: |_, _, _| false,
@@ -381,6 +407,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_conversations")),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "kivio_read_conversation",
         def: native_kivio_read_conversation_tool,
         enabled: |_, _, _| false,
@@ -394,6 +421,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_read_conversation")),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "kivio_create_conversation",
         def: native_kivio_create_conversation_tool,
         enabled: |_, _, _| false,
@@ -407,6 +435,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_create_conversation")),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "kivio_send_message",
         def: native_kivio_send_message_tool,
         enabled: |_, _, _| false,
@@ -420,6 +449,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_send_message")),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "kivio_interrupt",
         def: native_kivio_interrupt_tool,
         enabled: |_, _, _| false,
@@ -433,6 +463,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_interrupt")),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "present_artifacts",
         def: native_present_artifacts_tool,
         enabled: |_, _, _| true,
@@ -446,6 +477,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::SyncResult(call_present_artifacts),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: crate::html_render::HTML_RENDER_TOOL,
         def: native_html_render_tool,
         enabled: |_, _, _| true,
@@ -459,6 +491,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(call_html_tool),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: crate::html_render::HTML_PREVIEW_TOOL,
         def: native_html_preview_tool,
         enabled: |_, _, _| true,
@@ -472,6 +505,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(call_html_tool),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "kivio_inspect",
         def: crate::self_config::inspect_definition,
         enabled: |native, _, _| native.read_file,
@@ -485,6 +519,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(crate::self_config::inspect),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "kivio_configure",
         def: crate::self_config::configure_definition,
         enabled: |native, _, _| native.run_command,
@@ -498,6 +533,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(crate::self_config::configure),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "memory_read",
         def: native_memory_read_tool,
         enabled: |_, _, memory_enabled| memory_enabled,
@@ -511,6 +547,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_memory_read),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "memory_modify",
         def: native_memory_modify_tool,
         enabled: |_, _, memory_enabled| memory_enabled,
@@ -524,6 +561,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Async(call_memory_modify),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "memory_search",
         def: native_memory_search_tool,
         enabled: |_, _, memory_enabled| memory_enabled,
@@ -539,6 +577,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
     // Conversation-level tools below are appended in chat/commands.rs and
     // never exposed via list_native_builtin_tool_defs (enabled = false).
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: "save_plan",
         def: crate::chat::plan_document::tool,
         enabled: |_, _, _| false,
@@ -552,6 +591,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(crate::chat::plan_document::handle),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::todo::TODO_WRITE_TOOL_NAME,
         def: crate::chat::todo::todo_write_tool,
         enabled: |_, _, _| false,
@@ -565,6 +605,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(crate::chat::todo::handle_conversation_tool_call),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::goal::GET_GOAL_TOOL,
         def: || crate::chat::goal::tool_definitions().remove(0),
         enabled: |_, _, _| false,
@@ -578,6 +619,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::goal::INIT_GOAL_CRITERIA_TOOL,
         def: || crate::chat::goal::tool_definitions().remove(1),
         enabled: |_, _, _| false,
@@ -591,6 +633,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::goal::REPORT_GOAL_PROGRESS_TOOL,
         def: || crate::chat::goal::tool_definitions().remove(2),
         enabled: |_, _, _| false,
@@ -604,6 +647,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::goal::COMPLETE_GOAL_TOOL,
         def: || crate::chat::goal::tool_definitions().remove(3),
         enabled: |_, _, _| false,
@@ -617,6 +661,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::goal::BLOCK_GOAL_TOOL,
         def: || crate::chat::goal::tool_definitions().remove(4),
         enabled: |_, _, _| false,
@@ -630,6 +675,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::goal::WAIT_GOAL_TOOL,
         def: || crate::chat::goal::tool_definitions().remove(5),
         enabled: |_, _, _| false,
@@ -645,6 +691,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
     // Scheduled-task tools are conversation-bound; appended in chat reply
     // preparation (`scheduled_tasks::tools::append_tools`) when enabled.
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: crate::scheduled_tasks::tools::TOOL_NAME,
         def: crate::scheduled_tasks::tools::tool_definition,
         enabled: |_, _, _| false,
@@ -660,6 +707,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         ),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::ask_user::ASK_USER_TOOL_NAME,
         def: crate::chat::ask_user::ask_user_tool,
         enabled: |_, _, _| false,
@@ -674,6 +722,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
     },
     // Sub-agent tools are appended per request by chat/commands/reply.rs.
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::sub_agent::TASK_TOOL_NAME,
         // The request-specific schema uses the loaded roles and actual settings.
         def: || crate::chat::sub_agent::task::tool_definition(&[], &Settings::default()),
@@ -688,6 +737,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::task::dispatch),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::OnDemand,
         name: "eval",
         def: crate::chat::sub_agent::eval::definition,
         enabled: |_, _, _| false,
@@ -701,6 +751,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::eval::dispatch),
     },
     NativeToolEntry {
+        load_mode: ToolLoadMode::Essential,
         name: crate::chat::sub_agent::WAIT_TOOL_NAME,
         def: crate::chat::sub_agent::wait::definition,
         enabled: |_, _, _| false,
@@ -1688,6 +1739,29 @@ fn call_present_artifacts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adr_0008_load_modes_are_explicit() {
+        let essential = [
+            "web_search", "web_fetch", "read", "grep", "glob", "write", "edit", "bash",
+            "save_assistant", "kivio_list_agents", "kivio_list_projects", "kivio_list_conversations",
+            "kivio_read_conversation", "kivio_create_conversation", "kivio_send_message", "kivio_interrupt",
+            "present_artifacts", "save_plan", "todo_write", "get_goal", "initialize_goal_criteria",
+            "report_goal_progress", "goal_complete", "goal_blocked", "goal_wait", "ask_user", "task", "wait",
+        ];
+        let on_demand = [
+            "knowledge_search", "automation", "advisor", "ls", "bash_output", "kill_background",
+            "html_render", "html_preview", "kivio_inspect", "kivio_configure", "memory_read",
+            "memory_modify", "memory_search", "schedule", "eval",
+        ];
+        assert_eq!(NATIVE_TOOLS.len(), essential.len() + on_demand.len());
+        for (mode, names) in [(ToolLoadMode::Essential, essential.as_slice()), (ToolLoadMode::OnDemand, on_demand.as_slice())] {
+            for name in names {
+                assert_eq!(find_entry(name).unwrap().load_mode, mode, "{name}");
+            }
+        }
+        assert_eq!(ToolLoadMode::default(), ToolLoadMode::OnDemand);
+    }
 
     #[test]
     fn tool_policies_preserve_native_lifetimes_and_task_validation() {

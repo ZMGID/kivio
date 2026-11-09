@@ -2023,6 +2023,7 @@ fn prepare_worker_prompt(
         None,
         &[],
     );
+    crate::chat::tool_on_demand::update_prompt(&mut prompt.context, tools);
     prompt.system.push_str("\n\n");
     prompt.system.push_str(persona);
     prompt
@@ -2871,6 +2872,7 @@ async fn prepare(
         clamp_tools(&mut tools, saved);
     }
     crate::chat::commands::move_mcp_tools_to_end(&mut tools);
+    crate::chat::tool_on_demand::configure_tools(&mut tools, settings.chat_tools.tools_on_demand);
     let (mcp_tool_ids, mcp_server_ids) = worker_mcp_grants(
         &tools,
         &settings,
@@ -2901,6 +2903,7 @@ async fn prepare(
         refresh_worker_persona(&mut prompt.system, &rendered_persona);
         prompt.context = saved.runtime_context.clone();
     }
+    crate::chat::tool_on_demand::update_prompt(&mut prompt.context, &tools);
     let assignment = prompts::render(
         prompts::SUBAGENT_USER,
         &json!({"assignment": host.task.trim()}),
@@ -3115,6 +3118,7 @@ async fn execute(
         clamp_tools(&mut tools, contract);
     }
     crate::chat::commands::move_mcp_tools_to_end(&mut tools);
+    crate::chat::tool_on_demand::configure_tools(&mut tools, settings.chat_tools.tools_on_demand);
     let _ = host.todo_available.set(tools.iter().any(|tool| {
         tool.source == "native" && crate::chat::todo::is_agent_todo_tool_name(&tool.name)
     }));
@@ -3146,6 +3150,7 @@ async fn execute(
             .list_visible_to(&host.record.root, &host.record.id),
     );
     refresh_worker_persona(&mut prompt.system, &rendered_persona);
+    crate::chat::tool_on_demand::update_prompt(&mut prompt.context, &tools);
     if let Some(system) = worker
         .history
         .iter_mut()

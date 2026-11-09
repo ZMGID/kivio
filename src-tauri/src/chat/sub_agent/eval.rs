@@ -26,6 +26,7 @@ pub(crate) enum Language {
 
 #[derive(Clone)]
 pub(crate) struct Context {
+    pub run_tools: Vec<ChatToolDefinition>,
     pub app: AppHandle,
     pub root: String,
     pub owner: String,
@@ -46,6 +47,7 @@ pub(crate) struct Context {
 impl Context {
     pub(crate) fn native(&self) -> crate::mcp::registry::NativeToolContext<'_> {
         crate::mcp::registry::NativeToolContext {
+            run_tools: &self.run_tools,
             control: None,
             conversation_id: self.root.clone(),
             message_id: format!("eval-{}", self.tool_call_id),
@@ -697,6 +699,7 @@ pub fn dispatch(ctx: SubAgentCallCtx<'_>) -> crate::mcp::native_registry::Native
             })
             .ok_or("Cannot resolve eval working directory")?;
         let context = Context {
+            run_tools: ctx.native_ctx.run_tools.to_vec(),
             app: ctx.app.clone(),
             root: root.clone(),
             owner,

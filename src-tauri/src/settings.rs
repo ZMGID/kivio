@@ -1548,6 +1548,8 @@ impl TaskCompactionThreshold {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ChatToolsConfig {
+    #[serde(default = "default_true")]
+    pub tools_on_demand: bool,
     pub lsp_servers: Vec<crate::native_tools::lsp::LspServerConfig>,
     pub enabled: bool,
     pub servers: Vec<ChatMcpServer>,
@@ -1662,6 +1664,7 @@ impl ChatToolsConfig {
 impl Default for ChatToolsConfig {
     fn default() -> Self {
         Self {
+            tools_on_demand: true,
             enabled: false,
             servers: Vec::new(),
             lsp_servers: Vec::new(),

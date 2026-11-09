@@ -19,6 +19,7 @@ use super::types::{
 
 #[derive(Clone)]
 pub struct NativeToolContext<'a> {
+    pub run_tools: &'a [ChatToolDefinition],
     pub control: Option<crate::chat::agent::control::AgentRunHandle>,
     pub conversation_id: String,
     pub message_id: String,
@@ -51,6 +52,7 @@ impl<'a> NativeToolContext<'a> {
         control: crate::chat::agent::control::AgentRunHandle,
     ) -> Self {
         Self {
+            run_tools: ctx.run_tools,
             control: Some(control),
             conversation_id: ctx.tool_conversation_id.to_string(),
             message_id: ctx.message_id.to_string(),
@@ -1191,6 +1193,9 @@ async fn call_native_tool(
     }
 
     if tool.name == "write" {
+        if arguments.get("path").and_then(Value::as_str).is_some_and(|path| path.starts_with("tool://")) {
+            return Err("tool:// execution requires the run tool executor".into());
+        }
         if let Some(path) = arguments
             .get("path")
             .and_then(Value::as_str)
@@ -1240,6 +1245,11 @@ async fn call_native_tool(
     }
     if tool.name == "read" {
         if let Some(path) = arguments.get("path").and_then(Value::as_str) {
+            if path.starts_with("tool://") {
+                let ctx = native_ctx.as_ref().ok_or("read tool:// requires an agent context")?;
+                let content = crate::chat::tool_on_demand::read(ctx.run_tools, path)?;
+                return read_file_tool_result(crate::native_tools::read_text_content(path, content, &arguments)?);
+            }
             if path.starts_with("mcp://") {
                 let ctx = native_ctx.as_ref().ok_or("read mcp:// requires an agent context")?;
                 let content = crate::chat::runtime_injections::mcp::read(app, ctx, path).await?;
@@ -1608,6 +1618,7 @@ mod tests {
             let provider = crate::chat::agent::loop_::tests::test_provider("http://unused");
             let plan_state = Default::default();
             let native = NativeToolContext {
+                run_tools: &[],
                 control: None,
                 conversation_id: "resource-owner".into(),
                 message_id: "message".into(),

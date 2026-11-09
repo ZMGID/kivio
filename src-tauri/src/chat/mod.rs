@@ -88,6 +88,7 @@ pub(crate) mod context_policy;
 pub(crate) mod recovery_policy;
 
 pub(crate) mod tool_runtime;
+pub(crate) mod tool_on_demand;
 
 pub(crate) mod agent_preparation;
 pub(crate) mod file_ledger;

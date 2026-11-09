@@ -685,6 +685,7 @@ export type ChatHookPayload = {
 }
 
 export type ChatToolsConfig = {
+  toolsOnDemand?: boolean
   lspServers?: { command: string; args: string[]; languageId: string; extensions: string[] }[]
   enabled: boolean
   servers: ChatMcpServer[]

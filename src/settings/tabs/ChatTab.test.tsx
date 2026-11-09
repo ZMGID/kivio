@@ -15,7 +15,8 @@ const t = i18n.zh
 
 type Props = Parameters<typeof ChatTab>[0]
 /** 回调字段替换成 vi.fn Mock，测试里才能用 mockClear / mock.calls。 */
-type MockedProps = Omit<Props, 'onUpdateChat' | 'onUpdateVoice' | 'onUpdateNativeTools' | 'onNavigateTab'> & {
+type MockedProps = Omit<Props, 'onUpdateChatTools' | 'onUpdateChat' | 'onUpdateVoice' | 'onUpdateNativeTools' | 'onNavigateTab'> & {
+  onUpdateChatTools: ReturnType<typeof vi.fn>
   onUpdateChat: ReturnType<typeof vi.fn>
   onUpdateVoice: Mock
   onUpdateNativeTools: ReturnType<typeof vi.fn>
@@ -52,6 +53,7 @@ function renderTab(overrides: Partial<MockedProps> = {}) {
     chatMaxOutputModelLabel: 'p1 / gpt-4o',
     skillRuntimeEnabled: true,
     nativeBuiltinToolsEnabled: false,
+    onUpdateChatTools: vi.fn(),
     onUpdateChat: vi.fn(),
     onUpdateVoice: vi.fn(),
     onUpdateNativeTools: vi.fn(),
@@ -63,6 +65,14 @@ function renderTab(overrides: Partial<MockedProps> = {}) {
 }
 
 describe('ChatTab', () => {
+  it('defaults on-demand tools on and saves the toggle through chat tools settings', async () => {
+    const props = renderTab()
+    const toggle = screen.getByRole('switch', { name: t.toolsOnDemand })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    await userEvent.click(toggle)
+    expect(props.onUpdateChatTools).toHaveBeenCalledWith({ toolsOnDemand: false })
+  })
+
 
   it('工作目录输入走 onUpdateNativeTools 而非 onUpdateChat', async () => {
     const props = renderTab()

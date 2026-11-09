@@ -113,6 +113,15 @@ impl ToolCallResult {
 }
 
 pub trait ToolExecutor: Send + Sync {
+    /// Resolve host transports before records, validation, authorization and execution.
+    /// Scheduling remains conservative according to the original transport definition.
+    fn resolve_tool_call(
+        &self,
+        tool: &ToolDefinition,
+        call: PendingToolCall,
+    ) -> Result<(ToolDefinition, PendingToolCall), String> {
+        Ok((tool.clone(), call))
+    }
     /// Trusted host preparation: normalize and validate, apply policy, then authorize final values.
     /// Rejection returns `Complete`; a hook error fails the run. The core publishes terminal records.
     fn before_tool_call<'a>(
@@ -255,6 +264,35 @@ pub(crate) fn pending_tool_record(
 }
 
 pub async fn execute_tool_call(
+    host: &super::context::AgentContext<'_>,
+    executor: &Arc<dyn ToolExecutor>,
+    ctx: &ToolExecutionContext,
+    tool: &ToolDefinition,
+    call: PendingToolCall,
+) -> ToolCallResult {
+    let resolved = executor.resolve_tool_call(tool, call.clone());
+    let name = resolved
+        .as_ref()
+        .map_or(tool.label.name.as_str(), |(tool, _)| {
+            tool.label.name.as_str()
+        });
+    let mut lifecycle =
+        super::events::ToolEventGuard::new(&host.events, ctx.round, &ctx.tool_call_id, name);
+    let result = match &resolved {
+        Ok((tool, call)) => {
+            execute_resolved_tool_call(host, executor, ctx, tool, call.clone()).await
+        }
+        Err(error) => {
+            let record = invalid_tool_arguments_record(&call, tool, ctx.round, error.clone());
+            host.tool_updated(&record);
+            ToolCallResult::new(record, error.clone(), Vec::new())
+        }
+    };
+    lifecycle.cancelled = matches!(result.record.status, AgentToolStatus::Cancelled);
+    result
+}
+
+async fn execute_resolved_tool_call(
     host: &super::context::AgentContext<'_>,
     executor: &Arc<dyn ToolExecutor>,
     ctx: &ToolExecutionContext,

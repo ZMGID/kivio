@@ -1198,6 +1198,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 onUpdateChat={updateChat}
                 onUpdateVoice={updateVoice}
                 onUpdateNativeTools={updateNativeTools}
+                onUpdateChatTools={updateChatTools}
                 onNavigateTab={setActiveTab}
               />
             )}

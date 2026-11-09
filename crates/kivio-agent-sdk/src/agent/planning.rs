@@ -60,7 +60,7 @@ pub(crate) async fn planning_step(
     let step_number = state.step_number;
     // 循环内上下文治理：超限时先 snip / 摘要，得到本步发送视图（未超限时为原样 clone）。
     let active_tools = state.tools.clone();
-    let model_tools: Vec<_> = active_tools.iter().map(|tool| tool.model.clone()).collect();
+    let model_tools: Vec<_> = active_tools.iter().filter(|tool| tool.declared).map(|tool| tool.model.clone()).collect();
     let mut send_messages =
         super::compaction::maybe_compact_send_view(env, state, &model_tools, session).await?;
 

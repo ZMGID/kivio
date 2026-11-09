@@ -41,6 +41,9 @@ use crate::state::AppState;
 #[path = "compaction_live_tests.rs"]
 mod compaction_live_tests;
 
+#[path = "on_demand_tests.rs"]
+mod on_demand_tests;
+
 #[path = "tool_contract_tests.rs"]
 mod tool_contract_tests;
 
@@ -7277,6 +7280,7 @@ struct PresentedRoundResult {
 impl<'a> ToolRoundContext<'a> {
     fn execution(&self) -> ToolExecutionContext<'_> {
         ToolExecutionContext {
+            run_tools: &[],
             conversation_id: self.conversation_id,
             run_id: self.run_id,
             message_id: self.message_id,

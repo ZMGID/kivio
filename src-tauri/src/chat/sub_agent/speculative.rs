@@ -82,6 +82,7 @@ fn speculative_task_allowed(
 
 #[derive(Clone)]
 struct OwnedContext {
+    run_tools: Vec<ChatToolDefinition>,
     conversation_id: String,
     issuer_conversation_id: String,
     message_id: String,
@@ -101,6 +102,7 @@ struct OwnedContext {
 impl OwnedContext {
     fn new(ctx: &ToolExecutionContext<'_>) -> Self {
         Self {
+            run_tools: ctx.run_tools.to_vec(),
             conversation_id: ctx.tool_conversation_id.to_string(),
             issuer_conversation_id: ctx.conversation_id.to_string(),
             message_id: ctx.message_id.to_string(),
@@ -120,6 +122,7 @@ impl OwnedContext {
 
     fn native(&self, tool_call_id: &str) -> NativeToolContext<'_> {
         NativeToolContext {
+            run_tools: &self.run_tools,
             control: None,
             conversation_id: self.conversation_id.clone(),
             message_id: self.message_id.clone(),

@@ -477,17 +477,8 @@ async fn execute_tool_call_result(
         round: round_ctx.round,
         tool_call_id: tool_call_id.clone().into(),
     };
-    // 单点：串行与并行两条路径都经过这里，所以 start/end 一定成对。并行 chunk 里多个
-    // 工具的事件会交错——那是真实语义，脚本靠 toolCallId 自己配对，不做重排。
-    let mut lifecycle = super::events::ToolEventGuard::new(
-        &host.events,
-        round_ctx.round,
-        &tool_call_id,
-        &tool.label.name,
-    );
     let result = execute_tool_call(host, executor, &execution_ctx, tool, tool_call).await;
     let record = result.record;
-    lifecycle.cancelled = matches!(record.status, AgentToolStatus::Cancelled);
     let cancelled = matches!(record.status, AgentToolStatus::Cancelled) || !host.control.active();
     ToolExecutionResult {
         response_message: ModelMessage {

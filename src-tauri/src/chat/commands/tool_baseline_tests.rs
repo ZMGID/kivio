@@ -60,6 +60,7 @@ fn main_tools(settings: &Settings, mode: Mode) -> Vec<ChatToolDefinition> {
         append_goal_tools(&mut tools, None);
     }
     move_mcp_tools_to_end(&mut tools);
+    crate::chat::tool_on_demand::configure_tools(&mut tools, settings.chat_tools.tools_on_demand);
     tools
 }
 
@@ -87,6 +88,7 @@ fn sub_agent_tools(settings: &Settings, role: &str) -> Vec<ChatToolDefinition> {
         settings.chat_tools.task_max_recursion_depth,
     );
     move_mcp_tools_to_end(&mut tools);
+    crate::chat::tool_on_demand::configure_tools(&mut tools, settings.chat_tools.tools_on_demand);
     tools
 }
 
@@ -201,22 +203,73 @@ const SUBAGENT_SCOUT_TOOLS: &[&str] = &["read", "grep", "glob", "skill"];
 /// Run with `--nocapture` to print per-tool cost for before/after comparisons.
 #[test]
 fn default_tool_list_baseline() {
-    let settings = Settings::default();
-    let agent_goal: Vec<&str> = AGENT_TOOLS
-        .iter()
-        .chain(GOAL_TOOLS)
-        .copied()
-        .collect();
-    for (label, tools, expected) in [
-        ("agent", main_tools(&settings, Mode::Agent), AGENT_TOOLS),
-        ("agent+goal", main_tools(&settings, Mode::AgentGoal), agent_goal.as_slice()),
-        ("plan", main_tools(&settings, Mode::Plan), PLAN_TOOLS),
-        ("chat", main_tools(&settings, Mode::Chat), CHAT_TOOLS),
-        ("subagent:task", sub_agent_tools(&settings, "task"), SUBAGENT_TASK_TOOLS),
-        ("subagent:scout", sub_agent_tools(&settings, "scout"), SUBAGENT_SCOUT_TOOLS),
-    ] {
-        report(label, &tools);
-        assert_eq!(names(&tools), expected, "{label} tool list changed");
+    for enabled in [true, false] {
+        let mut settings = Settings::default();
+        settings.chat_tools.tools_on_demand = enabled;
+        let agent_goal: Vec<&str> = AGENT_TOOLS.iter().chain(GOAL_TOOLS).copied().collect();
+        for (label, tools, expected) in [
+            ("agent", main_tools(&settings, Mode::Agent), AGENT_TOOLS),
+            (
+                "agent+goal",
+                main_tools(&settings, Mode::AgentGoal),
+                agent_goal.as_slice(),
+            ),
+            ("plan", main_tools(&settings, Mode::Plan), PLAN_TOOLS),
+            ("chat", main_tools(&settings, Mode::Chat), CHAT_TOOLS),
+            (
+                "subagent:task",
+                sub_agent_tools(&settings, "task"),
+                SUBAGENT_TASK_TOOLS,
+            ),
+            (
+                "subagent:scout",
+                sub_agent_tools(&settings, "scout"),
+                SUBAGENT_SCOUT_TOOLS,
+            ),
+        ] {
+            assert_eq!(names(&tools), expected, "{label} executable set changed");
+            let listed: Vec<_> = tools
+                .iter()
+                .filter(|tool| !crate::chat::tool_on_demand::is_on_demand(tool))
+                .cloned()
+                .collect();
+            let expected_listed: Vec<_> = expected
+                .iter()
+                .copied()
+                .filter(|name| {
+                    !enabled
+                        || !matches!(label, "agent" | "agent+goal" | "subagent:task")
+                        || ![
+                            "automation",
+                            "bash_output",
+                            "kill_background",
+                            "html_render",
+                            "html_preview",
+                            "kivio_inspect",
+                            "kivio_configure",
+                            "eval",
+                            "schedule",
+                        ]
+                        .contains(name)
+                })
+                .collect();
+            report(&format!("{label} (on-demand={enabled})"), &listed);
+            let catalog = crate::chat::tool_on_demand::catalog(&tools);
+            println!(
+                "  on-demand catalog: {} tools, ~{} tokens, {} chars",
+                tools.len() - listed.len(),
+                crate::chat::agent_preparation::estimate_tokens(&catalog),
+                catalog.chars().count()
+            );
+            assert_eq!(
+                names(&listed),
+                expected_listed,
+                "{label} declared tool list changed"
+            );
+            if enabled && label == "agent" {
+                assert!(tool_cost(&listed).0 < tool_cost(&tools).0 * 3 / 4);
+            }
+        }
     }
 }
 

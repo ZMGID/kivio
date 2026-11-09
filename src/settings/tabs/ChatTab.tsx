@@ -56,6 +56,7 @@ interface ChatTabProps {
   onUpdateVoice: (updates: Partial<NonNullable<SettingsData['voice']>>) => void
   onUpdateNativeTools: (updates: Partial<NonNullable<ChatToolsConfig['nativeTools']>>) => void
   onNavigateTab: (tab: SettingsTab) => void
+  onUpdateChatTools: (updates: Partial<ChatToolsConfig>) => void
 }
 
 /** AI 客户端（聊天）标签页：共用资料 + Kivio Agent / Kivio Chat 两套设置。 */
@@ -76,6 +77,7 @@ export function ChatTab({
   onUpdateChat,
   onUpdateVoice,
   onUpdateNativeTools,
+  onUpdateChatTools,
   onNavigateTab,
 }: ChatTabProps) {
   const chatMode = resolveChatMode(chatConfig.chatMode)
@@ -253,6 +255,7 @@ export function ChatTab({
       </SettingsGroup>
 
       <ChatToolsStatusGroup
+        onUpdateChatTools={onUpdateChatTools}
         settings={settings}
         t={t}
         lang={lang}

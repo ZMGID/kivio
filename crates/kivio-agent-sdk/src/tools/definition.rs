@@ -10,6 +10,8 @@ pub struct ToolLabel {
 
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
+    /// Keep callable definitions in the registry without declaring them to the model.
+    pub declared: bool,
     pub key: String,
     pub model: ModelTool,
     pub label: ToolLabel,
@@ -24,6 +26,7 @@ pub struct ToolDefinition {
 impl ToolDefinition {
     pub fn new(model: ModelTool) -> Self {
         Self {
+            declared: true,
             key: model.name.clone(),
             label: ToolLabel {
                 name: model.name.clone(),

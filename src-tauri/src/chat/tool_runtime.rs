@@ -27,6 +27,7 @@ pub trait ToolDispatcher: Send + Sync {
 }
 
 pub struct ToolExecutionContext<'a> {
+    pub run_tools: &'a [ChatToolDefinition],
     pub conversation_id: &'a str,
     pub run_id: &'a str,
     pub message_id: &'a str,
@@ -132,6 +133,9 @@ async fn before_tool_call(
     call: PendingToolCall,
     mut record: AgentToolCall,
 ) -> Result<ToolPreparation, String> {
+    if let Some(error) = call.arguments_parse_error.clone() {
+        return Ok(schema_rejection(record, error, tool));
+    }
     let task_preflight = tool.argument_policy() == ArgumentPolicy::ToolAfterApproval;
     let mut call = call;
     if tool.source == "native" {
@@ -169,7 +173,7 @@ async fn before_tool_call(
     // Task batches own validation after approval; all other tools validate before policy hooks.
     if !task_preflight {
         if let Err(error) = validate_tool_arguments(tool, &call.arguments) {
-            return Ok(schema_rejection(record, error));
+            return Ok(schema_rejection(record, error, tool));
         }
     }
     if let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) {
@@ -192,7 +196,7 @@ async fn before_tool_call(
                     record.arguments = call.arguments_raw.clone();
                     if !task_preflight {
                         if let Err(error) = validate_tool_arguments(tool, &call.arguments) {
-                            return Ok(schema_rejection(record, error));
+                            return Ok(schema_rejection(record, error, tool));
                         }
                     }
                 }
@@ -353,7 +357,14 @@ fn tool_call_requires_approval(
     tool_requires_approval(settings, tool)
 }
 
-fn schema_rejection(mut record: AgentToolCall, error: String) -> ToolPreparation {
+fn schema_rejection(
+    mut record: AgentToolCall,
+    mut error: String,
+    tool: &ChatToolDefinition,
+) -> ToolPreparation {
+    if super::tool_on_demand::is_on_demand(tool) {
+        error.push_str(&format!(". Input JSON schema: {}", tool.input_schema));
+    }
     record.status = AgentToolStatus::Error;
     record.duration_ms = Some(0);
     record.completed_at = Some(chrono::Local::now().timestamp());
@@ -609,6 +620,7 @@ impl RunToolSnapshot {
         ctx: &'a crate::chat::agent::execute::ToolExecutionContext,
     ) -> ToolExecutionContext<'a> {
         ToolExecutionContext {
+            run_tools: &self.tools,
             conversation_id: &ctx.conversation_id,
             run_id: &ctx.run_id,
             message_id: &ctx.message_id,
@@ -644,6 +656,38 @@ impl ApplicationToolExecutor {
 }
 
 impl crate::chat::agent::execute::ToolExecutor for ApplicationToolExecutor {
+    fn resolve_tool_call(
+        &self,
+        tool: &crate::chat::tools::ToolDefinition,
+        mut call: PendingToolCall,
+    ) -> Result<(crate::chat::tools::ToolDefinition, PendingToolCall), String> {
+        if tool.label.source == "native" && tool.label.name == "write" {
+            if let Some(name) = call
+                .arguments
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(|path| path.strip_prefix("tool://"))
+            {
+                let target = super::tool_on_demand::find(&self.snapshot.tools, name)
+                    .ok_or_else(|| super::tool_on_demand::unavailable(name))?;
+                let arguments = call
+                    .arguments
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "tool:// content must be JSON text".to_string())
+                    .and_then(|content| {
+                        serde_json::from_str(content)
+                            .map_err(|error| format!("Invalid JSON arguments: {error}"))
+                    });
+                call.function_name = name.to_string();
+                call.arguments_parse_error = arguments.as_ref().err().cloned();
+                call.arguments = arguments.unwrap_or(Value::Null);
+                call.arguments_raw = call.arguments.to_string();
+                return Ok((target.for_run(&self.snapshot.settings), call));
+            }
+        }
+        Ok((tool.clone(), call))
+    }
     fn before_tool_call<'a>(
         &'a self,
         progress: &'a ToolProgress,

@@ -122,6 +122,7 @@ impl ChatToolDefinition {
     ) -> crate::chat::tools::ToolDefinition {
         let model = ModelTool::from(self);
         crate::chat::tools::ToolDefinition {
+            declared: !crate::chat::tool_on_demand::is_on_demand(self),
             key: self.id.clone(),
             aliases: LEGACY_TOOL_ALIASES.iter().filter(|(_, to)| *to == self.name || *to == model.name)
                 .map(|(from, _)| (*from).into()).collect(),
