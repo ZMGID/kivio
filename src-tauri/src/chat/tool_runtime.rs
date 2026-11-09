@@ -134,9 +134,17 @@ async fn before_tool_call(
 ) -> Result<ToolPreparation, String> {
     let task_preflight = tool.argument_policy() == ArgumentPolicy::ToolAfterApproval;
     let mut call = call;
+    if tool.source == "native" {
+        crate::mcp::types::inject_legacy_tool_action(&call.function_name, &mut call.arguments);
+    }
     if !task_preflight {
         call.arguments =
             coerce_tool_arguments(&tool.input_schema, std::mem::take(&mut call.arguments));
+    }
+    record.arguments = call.arguments.to_string();
+
+    if let Err(error) = validate_read_only_action(tool, &call.arguments, ctx.plan_state) {
+        return Ok(action_rejection(record, error));
     }
 
     let mut hook_context = Vec::new();
@@ -164,7 +172,6 @@ async fn before_tool_call(
             return Ok(schema_rejection(record, error));
         }
     }
-    record.arguments = call.arguments.to_string();
     if let Some(runtime) = host.workflow_hooks().filter(|r| !r.hooks.is_empty()) {
         let mut input = runtime.input("PreToolUse", ctx.conversation_id);
         input["tool_name"] = serde_json::json!(tool.name);
@@ -211,11 +218,13 @@ async fn before_tool_call(
         }
     }
 
+    if let Err(error) = validate_read_only_action(tool, &call.arguments, ctx.plan_state) {
+        return Ok(action_rejection(record, error));
+    }
+    let requires_approval = tool_call_requires_approval(settings, tool, &call.arguments);
     let interactive_approval = host.supports_interactive_approval();
     let asks_user = tool.source == "native" && ask_user::is_ask_user_tool_name(&tool.name);
-    if !interactive_approval
-        && (hook_approval_reason.is_some() || tool_requires_approval(settings, tool) || asks_user)
-    {
+    if !interactive_approval && (hook_approval_reason.is_some() || requires_approval || asks_user) {
         let reason = "多答模式无法安全审批；请改用单模型执行，或在设置中显式选择自动授权。Interactive approval is unavailable in parallel answers; use single-model mode or explicitly select automatic authorization.";
         record.status = AgentToolStatus::Skipped;
         record.duration_ms = Some(0);
@@ -275,7 +284,7 @@ async fn before_tool_call(
             let content = record.error.clone().unwrap_or_default();
             return Ok(ToolPreparation::Complete(record, content, Vec::new()));
         }
-    } else if !hook_approved && tool_requires_approval(settings, tool) {
+    } else if !hook_approved && requires_approval {
         let approved = host.request_tool_approval(ctx, &record).await;
         if !approved {
             skip(&mut record, "Tool call was not approved");
@@ -294,6 +303,54 @@ async fn before_tool_call(
         drain_on_cancel: tool.source == "mcp" || host.requires_tool_completion(),
         feedback: hook_context,
     }))
+}
+
+fn validate_read_only_action(
+    tool: &ChatToolDefinition,
+    arguments: &Value,
+    plan_state: &crate::chat::types::AgentPlanState,
+) -> Result<(), String> {
+    if tool.read_only_actions().is_empty() || tool.is_read_only_call(arguments) {
+        return Ok(());
+    }
+    let mode = if plan_state.mode == crate::chat::types::AgentPlanMode::Plan {
+        Some("plan")
+    } else {
+        tool.annotations
+            .as_ref()
+            .and_then(|annotations| annotations.get("kivioReadOnlyMode"))
+            .and_then(Value::as_str)
+    };
+    if let Some(mode) = mode {
+        let action = arguments
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("(missing action)");
+        return Err(format!(
+            "{action} is not allowed in {mode} mode; only read-only actions {} are allowed",
+            tool.read_only_actions().join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn action_rejection(mut record: AgentToolCall, error: String) -> ToolPreparation {
+    record.status = AgentToolStatus::Skipped;
+    record.completed_at = Some(chrono::Local::now().timestamp());
+    record.error = Some(error.clone());
+    ToolPreparation::Complete(record, error, Vec::new())
+}
+
+fn tool_call_requires_approval(
+    settings: &Settings,
+    tool: &ChatToolDefinition,
+    arguments: &Value,
+) -> bool {
+    if !tool.read_only_actions().is_empty() && tool.is_read_only_call(arguments) {
+        // schedule list historically bypassed approval; automation reads still honor always_confirm.
+        return tool.name != "schedule" && settings.chat_tools.approval_policy == "always_confirm";
+    }
+    tool_requires_approval(settings, tool)
 }
 
 fn schema_rejection(mut record: AgentToolCall, error: String) -> ToolPreparation {

@@ -28,15 +28,15 @@ fn catalog(settings: &Settings) -> Vec<ChatToolDefinition> {
     tools
 }
 
-fn scheduled_tools() -> [ChatToolDefinition; 4] {
-    use crate::scheduled_tasks::tools::{create_tool, delete_tool, list_tool, update_tool};
-    [create_tool(), list_tool(), update_tool(), delete_tool()]
+fn scheduled_tools() -> [ChatToolDefinition; 1] {
+    [crate::scheduled_tasks::tools::tool_definition()]
 }
 
 fn main_tools(settings: &Settings, mode: Mode) -> Vec<ChatToolDefinition> {
     let chat_mode = mode == Mode::Chat;
     let plan_mode = mode == Mode::Plan;
     let mut tools = catalog(settings);
+    super::tooling::apply_knowledge_base_tool_filter(&mut tools, &[]);
     if chat_mode {
         apply_chat_mode_tool_filter(&mut tools, true, &settings.chat.chat_mode);
     } else {
@@ -66,6 +66,7 @@ fn sub_agent_tools(settings: &Settings, role: &str) -> Vec<ChatToolDefinition> {
     let agents = crate::agents::builtin_agent_definitions();
     let definition = agents.iter().find(|agent| agent.name == role).unwrap();
     let mut tools = catalog(settings);
+    super::tooling::apply_knowledge_base_tool_filter(&mut tools, &[]);
     crate::chat::sub_agent::append_tool_definitions(&mut tools, settings, &agents);
     if let Some(tool) = tools
         .iter_mut()
@@ -118,33 +119,79 @@ fn report(label: &str, tools: &[ChatToolDefinition]) {
 }
 
 const AGENT_TOOLS: &[&str] = &[
-    "web_fetch", "knowledge_search", "automation_list", "automation_get", "automation_upsert",
-    "automation_set_enabled", "automation_run", "automation_runs", "automation_delete", "read",
-    "grep", "glob", "write", "edit", "bash", "bash_output", "kill_background",
-    "present_artifacts", "html_render", "html_preview", "kivio_inspect", "kivio_configure",
-    "skill", "ask_user", "todo_write", "schedule_create", "schedule_list", "schedule_update",
-    "schedule_delete", "task", "wait", "eval",
+    "web_fetch",
+    "automation",
+    "read",
+    "grep",
+    "glob",
+    "write",
+    "edit",
+    "bash",
+    "bash_output",
+    "kill_background",
+    "present_artifacts",
+    "html_render",
+    "html_preview",
+    "kivio_inspect",
+    "kivio_configure",
+    "skill",
+    "ask_user",
+    "todo_write",
+    "schedule",
+    "task",
+    "wait",
+    "eval",
 ];
 const GOAL_TOOLS: &[&str] = &[
     "get_goal", "initialize_goal_criteria", "report_goal_progress", "goal_complete",
     "goal_blocked", "goal_wait",
 ];
 const PLAN_TOOLS: &[&str] = &[
-    "web_fetch", "knowledge_search", "automation_list", "automation_get", "automation_runs",
-    "read", "grep", "glob", "bash_output", "present_artifacts", "html_render", "html_preview",
-    "kivio_inspect", "skill", "save_plan", "ask_user", "task", "wait", "eval",
+    "web_fetch",
+    "automation",
+    "read",
+    "grep",
+    "glob",
+    "bash_output",
+    "present_artifacts",
+    "html_render",
+    "html_preview",
+    "kivio_inspect",
+    "skill",
+    "save_plan",
+    "ask_user",
+    "task",
+    "wait",
+    "eval",
 ];
 const CHAT_TOOLS: &[&str] = &[
-    "web_fetch", "knowledge_search", "automation_list", "automation_get", "automation_runs",
-    "html_render", "html_preview", "ask_user", "schedule_create", "schedule_list",
-    "schedule_update", "schedule_delete",
+    "web_fetch",
+    "automation",
+    "html_render",
+    "html_preview",
+    "ask_user",
+    "schedule",
 ];
 const SUBAGENT_TASK_TOOLS: &[&str] = &[
-    "web_fetch", "knowledge_search", "automation_list", "automation_get", "automation_upsert",
-    "automation_set_enabled", "automation_run", "automation_runs", "automation_delete", "read",
-    "grep", "glob", "write", "edit", "bash", "bash_output", "kill_background",
-    "present_artifacts", "html_render", "html_preview", "kivio_inspect", "kivio_configure",
-    "skill", "task", "wait", "eval",
+    "web_fetch",
+    "automation",
+    "read",
+    "grep",
+    "glob",
+    "write",
+    "edit",
+    "bash",
+    "bash_output",
+    "kill_background",
+    "present_artifacts",
+    "html_render",
+    "html_preview",
+    "kivio_inspect",
+    "kivio_configure",
+    "skill",
+    "task",
+    "wait",
+    "eval",
 ];
 const SUBAGENT_SCOUT_TOOLS: &[&str] = &["read", "grep", "glob", "skill"];
 
@@ -153,10 +200,11 @@ const SUBAGENT_SCOUT_TOOLS: &[&str] = &["read", "grep", "glob", "skill"];
 #[test]
 fn default_tool_list_baseline() {
     let settings = Settings::default();
-    let agent_goal: Vec<&str> = AGENT_TOOLS[..25]
+    let goal_at = AGENT_TOOLS.iter().position(|name| *name == "schedule").unwrap();
+    let agent_goal: Vec<&str> = AGENT_TOOLS[..goal_at]
         .iter()
         .chain(GOAL_TOOLS)
-        .chain(&AGENT_TOOLS[25..])
+        .chain(&AGENT_TOOLS[goal_at..])
         .copied()
         .collect();
     for (label, tools, expected) in [

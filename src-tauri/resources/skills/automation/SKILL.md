@@ -1,40 +1,34 @@
 ---
 id: automation
 name: automation
-description: 创建/编辑/运行 Kivio 自动化工作流（画布上的触发器 + 动作节点：热键、Agent、通知、HTTP、命令、产出 PDF/Word）。Create, edit, and run Kivio automation graphs. Use ONLY when the user explicitly asks for 自动化, 工作流 or a graph of triggers and actions. NOT for 定时任务 / reminders / "every day at 9 do X" — those are scheduled tasks: use `schedule_create`, which sends the prompt into the current conversation. Activate this skill BEFORE calling automation_upsert — do not probe node types with dry_run.
+description: 创建/编辑/运行 Kivio 自动化工作流（画布上的触发器 + 动作节点：热键、Agent、通知、HTTP、命令、产出 PDF/Word）。Create, edit, and run Kivio automation graphs. Use ONLY when the user explicitly asks for 自动化, 工作流 or a graph of triggers and actions. NOT for 定时任务 / reminders / "every day at 9 do X" — those are scheduled tasks: use `schedule action=create`, which sends the prompt into the current conversation. Activate this skill BEFORE calling automation action=upsert — do not probe node types with dry_run.
 recommended-tools:
-  - automation_list
-  - automation_get
-  - automation_upsert
-  - automation_set_enabled
-  - automation_run
-  - automation_runs
-  - automation_delete
+  - automation
 ---
 
 # Kivio automations
 
 Kivio automations are directed graphs: one trigger, then actions and logic, stored as JSON.
 
-**Not for scheduled tasks.** When the user wants something done on a schedule in this conversation (定时任务, 提醒, "每天早上帮我…"), call `schedule_create` instead. Build an automation only when the user explicitly asks for an automation/workflow.
+**Not for scheduled tasks.** When the user wants something done on a schedule in this conversation (定时任务, 提醒, "每天早上帮我…"), call `schedule action=create` instead. Build an automation only when the user explicitly asks for an automation/workflow.
 
-**Do this:** activate this skill, `automation_list` once, then `automation_upsert` with a **complete** graph in one call.
+**Do this:** activate this skill, `automation action=list` once, then `automation action=upsert` with a **complete** graph in one call.
 
-**Do not:** glob the repo, invent node type names, or `dry_run` to discover the schema. `dry_run` is only for a finished candidate. This skill is the schema — `automation_upsert`'s tool description is short on purpose. Validation errors also return `allowedNodeTypes` + `schemaHint`.
+**Do not:** glob the repo, invent node type names, or `dry_run` to discover the schema. `dry_run` is only for a finished candidate. This skill is the schema — `automation action=upsert`'s tool description is short on purpose. Validation errors also return `allowedNodeTypes` + `schemaHint`.
 
-Chat exposes seven native tools. After creating a graph, tell the user to open `#chat/automations/{id}`.
+Chat exposes one native `automation` tool with seven actions. After creating a graph, tell the user to open `#chat/automations/{id}`.
 
 ## Tools
 
-1. `automation_list` — ids, names, enabled, trigger type. **Call this first** to avoid duplicates.
-2. `automation_get` — full graph for one id.
-3. `automation_upsert` — create or replace the whole graph in **one** call. Omit `id` to create. Omit node `position` to auto-layout. `dry_run: true` only after you already have a complete graph. Error-severity issues reject the save and return `allowedNodeTypes` + `schemaHint`; fix those and resubmit the whole graph.
-4. `automation_set_enabled` — start/stop schedule and hotkey registration (separate from upsert).
-5. `automation_run` — **blocking**. Optional `input` (string or `{ text, json }`) becomes `{{output}}` / `{{json.input.*}}` for later nodes. Default wait 600s (max 1800). Timeout is not a failure: the run continues; poll with `automation_runs`.
-6. `automation_runs` — recent summaries, or one run's per-node details when `run_id` is set.
-7. `automation_delete` — permanent. Goes through normal approval.
+1. `automation action=list` — ids, names, enabled, trigger type. **Call this first** to avoid duplicates.
+2. `automation action=get` — full graph for one id.
+3. `automation action=upsert` — create or replace the whole graph in **one** call. Omit `id` to create. Omit node `position` to auto-layout. `dry_run: true` only after you already have a complete graph. Error-severity issues reject the save and return `allowedNodeTypes` + `schemaHint`; fix those and resubmit the whole graph.
+4. `automation action=set_enabled` — start/stop schedule and hotkey registration (separate from upsert).
+5. `automation action=run` — **blocking**. Optional `input` (string or `{ text, json }`) becomes `{{output}}` / `{{json.input.*}}` for later nodes. Default wait 600s (max 1800). Timeout is not a failure: the run continues; poll with `automation action=runs`.
+6. `automation action=runs` — recent summaries, or one run's per-node details when `run_id` is set.
+7. `automation action=delete` — permanent. Goes through normal approval.
 
-Do **not** call these tools from inside an `action.agent` step. Workflow agents never receive `automation_*` tools.
+Do **not** call these tools from inside an `action.agent` step. Workflow agents never receive `automation` tools.
 
 After creating or changing a graph, tell the user to open `#chat/automations/{id}` (Extensions → Automations) to inspect the canvas.
 
@@ -62,9 +56,9 @@ After creating or changing a graph, tell the user to open `#chat/automations/{id
 
 Downstream templates:
 
-- `{{output}}` — previous node's text. After `automation_run` with a string input, this is that string at the trigger.
+- `{{output}}` — previous node's text. After `automation action=run` with a string input, this is that string at the trigger.
 - `{{json.path}}` — walk the previous JSON. Agent-run input is nested at `json.input`.
-- `{{json.input.topic}}` — a field from `automation_run` `{ "input": { "json": { "topic": "..." } } }`.
+- `{{json.input.topic}}` — a field from `automation action=run` `{ "input": { "json": { "topic": "..." } } }`.
 
 No `$json` expressions, no `$('Node')` cross-references.
 
@@ -143,17 +137,17 @@ Slot node `data.agent`:
 **`agent.context`** — `{ "agent": { "prompt": "Summarize {{output}} in 5 bullets." } }`
 
 **`agent.tool`** — `{ "agent": { "toolIds": ["web_search", "web_fetch"] } }`  
-Empty = read-only tools + skill loader. Never include `automation_*` or memory tools.
+Empty = read-only tools + skill loader. Never include `automation` or memory tools.
 
 **`agent.skill`** — `{ "agent": { "skillIds": ["<installed-skill-id>"] } }`（只写当前已启用技能的 id）
 
 ## Best practices
 
-1. `automation_list` before create. Reuse an id with upsert to replace.
+1. `automation action=list` before create. Reuse an id with upsert to replace.
 2. `dry_run: true` first. Fix every `severity: "error"` (`nodeId` + `message`).
-3. Leave `enabled: false` until the user wants the schedule/hotkey live; then `automation_set_enabled`.
-4. Only when the user explicitly wants an automation: `trigger.schedule` + `action.agent` + `action.notify` fits “every morning, do X and ping me”. A plain timed prompt is a scheduled task (`schedule_create`).
-5. For “take this problem and run my workflow”, `automation_run` with `input`; do not rebuild the graph each time.
+3. Leave `enabled: false` until the user wants the schedule/hotkey live; then `automation action=set_enabled`.
+4. Only when the user explicitly wants an automation: `trigger.schedule` + `action.agent` + `action.notify` fits “every morning, do X and ping me”. A plain timed prompt is a scheduled task (`schedule action=create`).
+5. For “take this problem and run my workflow”, `automation action=run` with `input`; do not rebuild the graph each time.
 6. After save, tell the user the name, id, and to open the Automations page.
 
 ## Example 1 — daily agent briefing
@@ -183,7 +177,7 @@ Empty = read-only tools + skill loader. Never include `automation_*` or memory t
 Existing graph: manual trigger → agent (prompt uses `{{output}}`) → notify.
 
 ```
-automation_run id=<id> input="Draft a reply to this email: …"
+automation action=run id=<id> input="Draft a reply to this email: …"
 ```
 
 The trigger text becomes that string; the agent prompt interpolates it.

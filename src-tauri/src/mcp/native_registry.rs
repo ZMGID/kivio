@@ -32,11 +32,9 @@ use crate::state::AppState;
 
 use super::registry::NativeToolContext;
 use super::types::{
-    native_advisor_tool, native_automation_delete_tool, native_automation_get_tool,
-    native_automation_list_tool, native_automation_run_tool, native_automation_runs_tool,
-    native_automation_set_enabled_tool, native_automation_upsert_tool, native_bash_output_tool,
-    native_edit_file_tool, native_glob_files_tool, native_html_preview_tool,
-    native_html_render_tool, native_kill_background_tool, native_kivio_create_conversation_tool,
+    native_advisor_tool, native_automation_tool, native_bash_output_tool, native_edit_file_tool,
+    native_glob_files_tool, native_html_preview_tool, native_html_render_tool,
+    native_kill_background_tool, native_kivio_create_conversation_tool,
     native_kivio_interrupt_tool, native_kivio_list_agents_tool,
     native_kivio_list_conversations_tool, native_kivio_list_projects_tool,
     native_kivio_read_conversation_tool, native_kivio_send_message_tool,
@@ -116,6 +114,8 @@ pub struct NativeToolEntry {
     pub arguments: ArgumentPolicy,
     pub bypasses_approval: bool,
     pub read_only: bool,
+    /// Read-only actions of a mixed tool; empty for tools with uniform metadata.
+    pub read_only_actions: &'static [&'static str],
     /// File/shell tools (read/write/edit/bash/grep/find/ls) gated by one-time
     /// per-conversation session consent. The flag lives on the entry so a rename
     /// or a newly-added tool can't silently bypass the consent gate.
@@ -136,6 +136,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(call_web_search),
     },
@@ -148,6 +149,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(call_web_fetch),
     },
@@ -160,92 +162,22 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(call_knowledge_search),
     },
     NativeToolEntry {
-        name: "automation_list",
-        def: native_automation_list_tool,
-        enabled: |native, _, _| native.automation,
-        parallel_safe: true,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: false,
-        read_only: true,
-        requires_session_consent: false,
-        call: NativeToolCall::Async(call_automation_list),
-    },
-    NativeToolEntry {
-        name: "automation_get",
-        def: native_automation_get_tool,
-        enabled: |native, _, _| native.automation,
-        parallel_safe: true,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: false,
-        read_only: true,
-        requires_session_consent: false,
-        call: NativeToolCall::Async(call_automation_get),
-    },
-    NativeToolEntry {
-        name: "automation_upsert",
-        def: native_automation_upsert_tool,
-        enabled: |native, _, _| native.automation,
-        parallel_safe: false,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: false,
-        read_only: false,
-        requires_session_consent: false,
-        call: NativeToolCall::Async(call_automation_upsert),
-    },
-    NativeToolEntry {
-        name: "automation_set_enabled",
-        def: native_automation_set_enabled_tool,
-        enabled: |native, _, _| native.automation,
-        parallel_safe: false,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: false,
-        read_only: false,
-        requires_session_consent: false,
-        call: NativeToolCall::Async(call_automation_set_enabled),
-    },
-    NativeToolEntry {
-        name: "automation_run",
-        def: native_automation_run_tool,
+        name: "automation",
+        def: native_automation_tool,
         enabled: |native, _, _| native.automation,
         parallel_safe: false,
         timeout: ToolTimeout::Arguments(automation_run_timeout_ms),
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &["list", "get", "runs"],
         requires_session_consent: false,
-        call: NativeToolCall::Async(call_automation_run),
-    },
-    NativeToolEntry {
-        name: "automation_runs",
-        def: native_automation_runs_tool,
-        enabled: |native, _, _| native.automation,
-        parallel_safe: true,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: false,
-        read_only: true,
-        requires_session_consent: false,
-        call: NativeToolCall::Async(call_automation_runs),
-    },
-    NativeToolEntry {
-        name: "automation_delete",
-        def: native_automation_delete_tool,
-        enabled: |native, _, _| native.automation,
-        parallel_safe: false,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: false,
-        read_only: false,
-        requires_session_consent: false,
-        call: NativeToolCall::Async(call_automation_delete),
+        call: NativeToolCall::Async(call_automation),
     },
     NativeToolEntry {
         name: "advisor",
@@ -260,6 +192,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(call_advisor),
     },
@@ -272,6 +205,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::Async(call_read_file),
     },
@@ -291,6 +225,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::SyncText(crate::native_tools::list_dir),
     },
@@ -303,6 +238,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::SyncText(crate::native_tools::search_files),
     },
@@ -315,6 +251,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::SyncText(crate::native_tools::glob_files),
     },
@@ -327,6 +264,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::Async(call_write),
     },
@@ -339,6 +277,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::BlockingMutation(crate::native_tools::edit_file),
     },
@@ -351,6 +290,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::Async(call_run_command),
     },
@@ -369,6 +309,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::Async(call_bash_output),
     },
@@ -381,6 +322,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::Async(call_kill_background),
     },
@@ -395,6 +337,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(call_save_assistant),
     },
@@ -407,6 +350,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_agents")),
     },
@@ -419,6 +363,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_projects")),
     },
@@ -431,6 +376,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_list_conversations")),
     },
@@ -443,6 +389,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_read_conversation")),
     },
@@ -455,6 +402,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_create_conversation")),
     },
@@ -467,6 +415,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_send_message")),
     },
@@ -479,6 +428,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(|ctx| call_voice_tool(ctx, "kivio_interrupt")),
     },
@@ -491,6 +441,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::SyncResult(call_present_artifacts),
     },
@@ -503,6 +454,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(call_html_tool),
     },
@@ -515,6 +467,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(call_html_tool),
     },
@@ -527,6 +480,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::Async(crate::self_config::inspect),
     },
@@ -539,6 +493,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::Async(crate::self_config::configure),
     },
@@ -551,6 +506,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(call_memory_read),
     },
@@ -563,6 +519,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(call_memory_modify),
     },
@@ -575,6 +532,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Async(call_memory_search),
     },
@@ -589,6 +547,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::plan_document::handle),
     },
@@ -601,6 +560,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::todo::handle_conversation_tool_call),
     },
@@ -613,6 +573,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
@@ -625,6 +586,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
@@ -637,6 +599,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
@@ -649,6 +612,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
@@ -661,6 +625,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
@@ -673,62 +638,22 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(crate::chat::goal::handle_conversation_tool_call),
     },
     // Scheduled-task tools are conversation-bound; appended in chat reply
     // preparation (`scheduled_tasks::tools::append_tools`) when enabled.
     NativeToolEntry {
-        name: crate::scheduled_tasks::tools::LIST_TOOL,
-        def: crate::scheduled_tasks::tools::list_tool,
-        enabled: |_, _, _| false,
-        parallel_safe: false,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: true,
-        read_only: true,
-        requires_session_consent: false,
-        call: NativeToolCall::Conversation(
-            crate::scheduled_tasks::tools::handle_conversation_tool_call,
-        ),
-    },
-    NativeToolEntry {
-        name: crate::scheduled_tasks::tools::CREATE_TOOL,
-        def: crate::scheduled_tasks::tools::create_tool,
+        name: crate::scheduled_tasks::tools::TOOL_NAME,
+        def: crate::scheduled_tasks::tools::tool_definition,
         enabled: |_, _, _| false,
         parallel_safe: false,
         timeout: ToolTimeout::Default,
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
-        requires_session_consent: false,
-        call: NativeToolCall::Conversation(
-            crate::scheduled_tasks::tools::handle_conversation_tool_call,
-        ),
-    },
-    NativeToolEntry {
-        name: crate::scheduled_tasks::tools::UPDATE_TOOL,
-        def: crate::scheduled_tasks::tools::update_tool,
-        enabled: |_, _, _| false,
-        parallel_safe: false,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: false,
-        read_only: false,
-        requires_session_consent: false,
-        call: NativeToolCall::Conversation(
-            crate::scheduled_tasks::tools::handle_conversation_tool_call,
-        ),
-    },
-    NativeToolEntry {
-        name: crate::scheduled_tasks::tools::DELETE_TOOL,
-        def: crate::scheduled_tasks::tools::delete_tool,
-        enabled: |_, _, _| false,
-        parallel_safe: false,
-        timeout: ToolTimeout::Default,
-        arguments: ArgumentPolicy::Schema,
-        bypasses_approval: false,
-        read_only: false,
+        read_only_actions: &["list"],
         requires_session_consent: false,
         call: NativeToolCall::Conversation(
             crate::scheduled_tasks::tools::handle_conversation_tool_call,
@@ -743,6 +668,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::HostMediated,
     },
@@ -757,6 +683,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::ToolAfterApproval,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::task::dispatch),
     },
@@ -769,6 +696,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: false,
         read_only: false,
+        read_only_actions: &[],
         requires_session_consent: true,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::eval::dispatch),
     },
@@ -781,6 +709,7 @@ pub static NATIVE_TOOLS: &[NativeToolEntry] = &[
         arguments: ArgumentPolicy::Schema,
         bypasses_approval: true,
         read_only: true,
+        read_only_actions: &[],
         requires_session_consent: false,
         call: NativeToolCall::SubAgent(crate::chat::sub_agent::wait::dispatch),
     },
@@ -797,7 +726,11 @@ fn bash_output_timeout_ms(default_ms: u64, arguments: &Value) -> u64 {
 }
 
 fn automation_run_timeout_ms(default_ms: u64, arguments: &Value) -> u64 {
-    default_ms.max(crate::automation::tools::run_timeout_ms(arguments))
+    if arguments.get("action").and_then(Value::as_str) == Some("run") {
+        default_ms.max(crate::automation::tools::run_timeout_ms(arguments))
+    } else {
+        default_ms
+    }
 }
 
 pub fn find_entry(name: &str) -> Option<&'static NativeToolEntry> {
@@ -1349,37 +1282,13 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     })
 }
 
-fn call_automation_list(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
-    Box::pin(async move { crate::automation::tools::list(ctx.app) })
-}
-
-fn call_automation_get(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
-    Box::pin(async move { crate::automation::tools::get(ctx.app, ctx.arguments) })
-}
-
-fn call_automation_upsert(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
-    Box::pin(async move { crate::automation::tools::upsert(ctx.app, ctx.arguments) })
-}
-
-fn call_automation_set_enabled(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
-    Box::pin(async move { crate::automation::tools::set_enabled(ctx.app, ctx.arguments) })
-}
-
-fn call_automation_run(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
+fn call_automation(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
     Box::pin(async move {
         let generation = ctx
             .native_ctx
             .map(|n| (n.conversation_id.as_str(), n.generation));
-        crate::automation::tools::run(ctx.app, ctx.arguments, generation).await
+        crate::automation::tools::dispatch(ctx.app, ctx.arguments, generation).await
     })
-}
-
-fn call_automation_runs(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
-    Box::pin(async move { crate::automation::tools::runs(ctx.app, ctx.arguments) })
-}
-
-fn call_automation_delete(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
-    Box::pin(async move { crate::automation::tools::delete(ctx.app, ctx.arguments) })
 }
 
 /// Advisor consultation (executor-advisor pattern). Runs a single-shot chat
@@ -1810,11 +1719,12 @@ mod tests {
                 .milliseconds(1, &serde_json::json!({"wait_ms": u64::MAX})),
             Some(crate::settings::CHAT_TOOL_MAX_TIMEOUT_MS)
         );
-        let automation = native_automation_run_tool();
+        let automation = native_automation_tool();
         assert_eq!(
-            automation
-                .timeout_policy()
-                .milliseconds(60_000, &serde_json::json!({"timeout_seconds": 120})),
+            automation.timeout_policy().milliseconds(
+                60_000,
+                &serde_json::json!({"action":"run", "timeout_seconds": 120})
+            ),
             Some(125_000)
         );
         for entry in NATIVE_TOOLS {
@@ -2048,13 +1958,7 @@ mod tests {
         "web_search",
         "web_fetch",
         "knowledge_search",
-        "automation_list",
-        "automation_get",
-        "automation_upsert",
-        "automation_set_enabled",
-        "automation_run",
-        "automation_runs",
-        "automation_delete",
+        "automation",
         "advisor",
         "read",
         "ls",
@@ -2089,10 +1993,7 @@ mod tests {
         "goal_complete",
         "goal_blocked",
         "goal_wait",
-        "schedule_list",
-        "schedule_create",
-        "schedule_update",
-        "schedule_delete",
+        "schedule",
         "ask_user",
         "task",
         "eval",
@@ -2127,9 +2028,6 @@ mod tests {
                 "web_search",
                 "web_fetch",
                 "knowledge_search",
-                "automation_list",
-                "automation_get",
-                "automation_runs",
                 "advisor",
                 "read",
                 "ls",
@@ -2174,7 +2072,6 @@ mod tests {
                 "goal_complete",
                 "goal_blocked",
                 "goal_wait",
-                "schedule_list",
                 "ask_user",
                 "wait",
             ]
@@ -2194,9 +2091,6 @@ mod tests {
                 "web_search",
                 "web_fetch",
                 "knowledge_search",
-                "automation_list",
-                "automation_get",
-                "automation_runs",
                 "advisor",
                 "read",
                 "ls",
@@ -2214,7 +2108,6 @@ mod tests {
                 "memory_read",
                 "memory_search",
                 "get_goal",
-                "schedule_list",
                 "wait",
             ],
             "memory_read/memory_search are read-only but deliberately not parallel-safe"
@@ -2362,13 +2255,7 @@ mod tests {
         assert_eq!(
             names(&automation_only, false, false),
             [
-                "automation_list",
-                "automation_get",
-                "automation_upsert",
-                "automation_set_enabled",
-                "automation_run",
-                "automation_runs",
-                "automation_delete",
+                "automation",
                 "present_artifacts",
                 "html_render",
                 "html_preview",
@@ -2409,13 +2296,7 @@ mod tests {
                 "web_search",
                 "web_fetch",
                 "knowledge_search",
-                "automation_list",
-                "automation_get",
-                "automation_upsert",
-                "automation_set_enabled",
-                "automation_run",
-                "automation_runs",
-                "automation_delete",
+                "automation",
                 "read",
                 "grep",
                 "glob",

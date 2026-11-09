@@ -59,7 +59,7 @@ pub(crate) mod mutations;
 
 pub(crate) use interaction::{emit_chat_stream_delta, emit_chat_tool_record};
 pub(crate) use messages::push_assistant_message;
-pub(crate) use tooling::apply_chat_mode_tool_filter;
+pub(crate) use tooling::{apply_chat_mode_tool_filter, apply_knowledge_base_tool_filter};
 
 #[cfg(test)]
 mod tests;

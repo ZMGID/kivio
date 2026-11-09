@@ -2333,10 +2333,11 @@ fn refresh_worker_persona(system: &mut String, persona: &str) {
 fn constrain_plan_tools(tools: &mut Vec<ChatToolDefinition>, definition: &AgentDefinition) {
     tools.retain(|tool| {
         tool.source == "native"
-            && definition
-                .tools
-                .as_ref()
-                .is_some_and(|allowed| allowed.contains(&tool.name))
+            && definition.tools.as_ref().is_some_and(|allowed| {
+                allowed
+                    .iter()
+                    .any(|name| crate::mcp::types::canonical_tool_name(name) == tool.name)
+            })
     });
 }
 
@@ -2375,14 +2376,17 @@ fn worker_mcp_grants(
 }
 
 fn clamp_tools(tools: &mut Vec<ChatToolDefinition>, saved: &session::SessionContract) {
-    tools.retain(|tool| {
+    tools.retain_mut(|tool| {
+        if saved.read_only {
+            tool.restrict_to_read_only_calls("read-only");
+        }
         (saved.tools.contains(&tool.id)
             || (tool.id == "native__yield"
                 && matches!(
                     saved.options.completion,
                     super::spawn::CompletionPolicy::Yield { .. }
                 )))
-            && (!saved.read_only || tool.is_read_only_tool())
+            && (!saved.read_only || tool.has_read_only_calls())
     });
     retain_mcp_grants(tools, &saved.mcp_tool_ids, &saved.mcp_server_ids);
 }
@@ -2802,6 +2806,10 @@ async fn prepare(
         ))
         .await?
         .tools;
+    crate::chat::commands::apply_knowledge_base_tool_filter(
+        &mut tools,
+        &conversation.knowledge_base_ids,
+    );
     retain_mcp_grants(&mut tools, &host.mcp_tool_ids, &host.mcp_server_ids);
     super::append_tool_definitions(&mut tools, &settings, &resources.agents);
     if let Some(tool) = tools
@@ -2822,8 +2830,9 @@ async fn prepare(
         settings.chat_tools.task_max_recursion_depth,
     );
     if seance {
-        tools.retain(|tool| {
-            tool.source != "mcp" && tool.is_read_only_tool() && tool.name != super::TASK_TOOL_NAME
+        tools.retain_mut(|tool| {
+            tool.restrict_to_read_only_calls("read-only");
+            tool.source != "mcp" && tool.has_read_only_calls() && tool.name != super::TASK_TOOL_NAME
         });
     }
     if host.plan_state.mode == crate::chat::types::AgentPlanMode::Plan {
@@ -2912,7 +2921,7 @@ async fn prepare(
         "tools": tools.iter().map(|tool| &tool.id).collect::<Vec<_>>(),
         "mountedTools": tools.iter().filter(|tool| tool.source == "mcp").collect::<Vec<_>>(),
         "mcpToolIds": mcp_tool_ids, "mcpServerIds": mcp_server_ids,
-        "readOnly": host.plan_state.mode == crate::chat::types::AgentPlanMode::Plan || tools.iter().all(ChatToolDefinition::is_read_only_tool),
+        "readOnly": seance || host.plan_state.mode == crate::chat::types::AgentPlanMode::Plan || tools.iter().all(ChatToolDefinition::is_read_only_tool),
         "restrictToolNames": true, "modelRole": definition.model, "resolvedModel": {"provider": provider.id, "model": model},
         "thinkingLevel": requested_thinking, "resolvedThinkingLevel": thinking_level,
         "thinkingEnabled": thinking_enabled, "approvalPolicy": settings.chat_tools.approval_policy,
@@ -3068,6 +3077,15 @@ async fn execute(
         ))
         .await?
         .tools;
+    crate::chat::commands::apply_knowledge_base_tool_filter(
+        &mut available,
+        crate::chat::storage::load_conversation(app, &host.record.root)
+            .ok()
+            .as_ref()
+            .map_or(&[], |conversation| {
+                conversation.knowledge_base_ids.as_slice()
+            }),
+    );
     super::append_tool_definitions(&mut available, &settings, &[]);
     tools.retain(|tool| {
         (tool.source == "eval"
@@ -5010,6 +5028,27 @@ mod tests {
         )
         .1
         .is_empty());
+    }
+
+    #[test]
+    fn saved_read_only_contract_keeps_only_read_actions_of_merged_tools() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut value = session::test_contract(directory.path());
+        value["tools"] = json!(["native__automation", "native__schedule", "native__write_file"]);
+        value["readOnly"] = json!(true);
+        let saved: session::SessionContract = serde_json::from_value(value).unwrap();
+        let mut tools = vec![
+            crate::mcp::types::native_automation_tool(),
+            crate::scheduled_tasks::tools::tool_definition(),
+            crate::mcp::types::native_write_file_tool(),
+        ];
+        clamp_tools(&mut tools, &saved);
+        assert_eq!(tools.len(), 2);
+        for tool in tools {
+            assert!(tool.is_read_only_call(&json!({"action":"list"})));
+            assert!(!tool.is_read_only_call(&json!({"action":"delete"})));
+            assert_eq!(tool.annotations.unwrap()["kivioReadOnlyMode"], "read-only");
+        }
     }
 
     #[test]

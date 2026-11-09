@@ -37,7 +37,10 @@ describe('agentTools', () => {
     expect(isAutomationOptInTool(memory)).toBe(false)
   })
 
-  it('strips automation_* tools from both always-on and opt-in lists', () => {
+  it('strips automation control tools from both always-on and opt-in lists', () => {
+    const merged = tool({ id: 'native__automation', name: 'automation', sensitive: true })
+    expect(isAutomationAlwaysOnTool(merged)).toBe(false)
+    expect(isAutomationOptInTool(merged)).toBe(false)
     const list = tool({ id: 'native__automation_list', name: 'automation_list' })
     const run = tool({ id: 'native__automation_run', name: 'automation_run', sensitive: true })
     expect(isAutomationAlwaysOnTool(list)).toBe(false)

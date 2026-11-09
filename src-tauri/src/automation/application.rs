@@ -631,7 +631,10 @@ fn is_skill_activate_tool(tool: &ChatToolDefinition) -> bool {
 }
 
 fn is_automation_control_tool(tool: &ChatToolDefinition) -> bool {
-    tool.name.starts_with("automation_") || tool.id.contains("automation_")
+    tool.name == "automation"
+        || tool.id == "native__automation"
+        || tool.name.starts_with("automation_")
+        || tool.id.contains("automation_")
 }
 
 fn is_workflow_forbidden_tool(tool: &ChatToolDefinition) -> bool {
@@ -1061,6 +1064,7 @@ mod tests {
     fn automation_control_tools_are_stripped_even_when_read_only() {
         let mut tools = vec![
             tool("native__read", "read"),
+            tool("native__automation", "automation"),
             tool("native__automation_list", "automation_list"),
             tool("native__automation_run", "automation_run"),
         ];

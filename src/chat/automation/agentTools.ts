@@ -25,7 +25,7 @@ export function isMemoryTool(tool: { name?: string, id?: string }): boolean {
 export function isAutomationControlTool(tool: { name?: string, id?: string }): boolean {
   const name = (tool.name || '').toLowerCase()
   const id = (tool.id || '').toLowerCase()
-  return name.startsWith('automation_') || id.includes('automation_')
+  return name === 'automation' || id === 'native__automation' || name.startsWith('automation_') || id.includes('automation_')
 }
 
 export function isSkillActivateTool(tool: { source?: string, name?: string }): boolean {

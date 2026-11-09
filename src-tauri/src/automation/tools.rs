@@ -31,6 +31,26 @@ pub(crate) fn run_timeout_ms(arguments: &Value) -> u64 {
         .saturating_add(RUN_TIMEOUT_BUFFER_MS)
 }
 
+pub(crate) async fn dispatch(
+    app: &AppHandle,
+    arguments: &Value,
+    chat_generation: Option<(&str, u64)>,
+) -> Result<McpToolCallResult, String> {
+    match arguments.get("action").and_then(Value::as_str) {
+        Some("list") => list(app),
+        Some("get") => get(app, arguments),
+        Some("upsert") => upsert(app, arguments),
+        Some("set_enabled") => set_enabled(app, arguments),
+        Some("run") => run(app, arguments, chat_generation).await,
+        Some("runs") => runs(app, arguments),
+        Some("delete") => delete(app, arguments),
+        _ => Err(
+            "automation requires action: list, get, upsert, set_enabled, run, runs or delete"
+                .into(),
+        ),
+    }
+}
+
 pub(crate) fn list(app: &AppHandle) -> Result<McpToolCallResult, String> {
     let items = storage::list(app)?;
     ok_json(json!({ "automations": items }))
@@ -150,7 +170,7 @@ pub(crate) async fn run(
                 "runId": run_id,
                 "automationId": id,
                 "name": automation.name,
-                "message": "Automation is still running. Use automation_runs with this run_id to inspect progress.",
+                "message": "Automation is still running. Use automation action=runs with this run_id to inspect progress.",
             }));
         }
         if !application::automation_run_active(app, &id, &run_id) {
@@ -324,7 +344,7 @@ fn validation_error(
         "automation": automation,
         "allowedNodeTypes": super::types::ALLOWED_NODE_TYPES,
         "schemaHint": schema_hint,
-        "message": "Fix every error issue and submit the COMPLETE graph in one automation_upsert. Do not probe types with dry_run. Warnings can be ignored.",
+        "message": "Fix every error issue and submit the COMPLETE graph with automation action=upsert. Do not probe types with dry_run. Warnings can be ignored.",
     });
     error_json(
         "validation",

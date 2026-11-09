@@ -14,10 +14,7 @@ use crate::mcp::types::{ChatToolDefinition, McpToolCallResult};
 use super::types::{ScheduleRule, ScheduledTask, ScheduledTaskInput, TaskSource, TaskTarget};
 use super::{emit_changed, now_secs, service};
 
-pub const CREATE_TOOL: &str = "schedule_create";
-pub const LIST_TOOL: &str = "schedule_list";
-pub const UPDATE_TOOL: &str = "schedule_update";
-pub const DELETE_TOOL: &str = "schedule_delete";
+pub const TOOL_NAME: &str = "schedule";
 
 /// Appends the tools unless this conversation is itself running a scheduled
 /// prompt (a scheduled turn must not reschedule itself).
@@ -25,7 +22,7 @@ pub fn append_tools(app: &AppHandle, conversation_id: &str, tools: &mut Vec<Chat
     if service(app).is_scheduled_conversation_busy(conversation_id) {
         return;
     }
-    tools.extend([create_tool(), list_tool(), update_tool(), delete_tool()]);
+    tools.push(tool_definition());
 }
 
 fn schedule_schema() -> Value {
@@ -47,88 +44,22 @@ fn schedule_schema() -> Value {
     })
 }
 
-fn tool(name: &str, description: &str, input_schema: Value, read_only: bool) -> ChatToolDefinition {
+pub fn tool_definition() -> ChatToolDefinition {
     ChatToolDefinition {
-        id: format!("native__{name}"),
-        name: name.into(),
-        description: description.into(),
-        source: "native".into(),
-        server_id: None,
-        server_name: Some("Kivio".into()),
-        input_schema,
-        sensitive: false,
-        annotations: Some(json!({
-            "readOnlyHint": read_only,
-            "destructiveHint": name == DELETE_TOOL,
-            "openWorldHint": false,
-        })),
-        output_schema: None,
+        id: "native__schedule".into(), name: TOOL_NAME.into(),
+        description: "Manage 定时任务: prompts sent into THIS conversation later. Default for reminders and recurring requests; use automation only for explicit workflows. create needs a self-contained prompt and schedule or delay_minutes (relative minutes). list shows next run times; report them to the user. update/delete need id; update changes only given fields, enabled=false pauses. delete removes run history.".into(),
+        source: "native".into(), server_id: None, server_name: Some("Kivio".into()),
+        input_schema: json!({
+            "type":"object", "properties": {
+                "action": {"type":"string", "enum":["create","list","update","delete"]},
+                "name": {"type":"string"}, "prompt": {"type":"string"},
+                "schedule": schedule_schema(),
+                "delay_minutes": {"type":"integer", "minimum":1},
+                "id": {"type":"string"}, "enabled": {"type":"boolean"}
+            }, "required":["action"]
+        }),
+        sensitive: false, annotations: None, output_schema: None,
     }
-}
-
-pub fn create_tool() -> ChatToolDefinition {
-    tool(
-        CREATE_TOOL,
-        "Create a 定时任务 (scheduled task): a prompt sent automatically into THIS conversation later, as if the user sent it. \
-This is the default for any timed or recurring request — 定时任务, 提醒, \"每天/每周/每月…帮我…\", \"X 分钟后…\", daily reports, periodic checks. \
-Do NOT build an automation (automation_upsert) for these unless the user explicitly asks for an automation/workflow. \
-For relative times (\"in 20 minutes\") pass `delay_minutes`; otherwise pass `schedule`. \
-`prompt` must be self-contained: describe the work to do at that time, not \"remind me to schedule\". \
-The result reports the next run time; tell it to the user.",
-        json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string", "description": "Short task name." },
-                "prompt": { "type": "string", "description": "The message that will be sent at run time." },
-                "schedule": schedule_schema(),
-                "delay_minutes": { "type": "integer", "minimum": 1, "description": "Run once, this many minutes from now." }
-            },
-            "required": ["prompt"]
-        }),
-        false,
-    )
-}
-
-pub fn list_tool() -> ChatToolDefinition {
-    tool(
-        LIST_TOOL,
-        "List the scheduled tasks bound to this conversation with their next run times.",
-        json!({ "type": "object", "properties": {} }),
-        true,
-    )
-}
-
-pub fn update_tool() -> ChatToolDefinition {
-    tool(
-        UPDATE_TOOL,
-        "Change a scheduled task of this conversation. Only the given fields change; `enabled: false` pauses it.",
-        json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "string" },
-                "name": { "type": "string" },
-                "prompt": { "type": "string" },
-                "schedule": schedule_schema(),
-                "delay_minutes": { "type": "integer", "minimum": 1 },
-                "enabled": { "type": "boolean" }
-            },
-            "required": ["id"]
-        }),
-        false,
-    )
-}
-
-pub fn delete_tool() -> ChatToolDefinition {
-    tool(
-        DELETE_TOOL,
-        "Delete a scheduled task of this conversation and its run history.",
-        json!({
-            "type": "object",
-            "properties": { "id": { "type": "string" } },
-            "required": ["id"]
-        }),
-        false,
-    )
 }
 
 #[derive(Deserialize, Default)]
@@ -195,27 +126,30 @@ fn call(
 fn dispatch(
     app: &AppHandle,
     ctx: &NativeToolContext,
-    tool_name: &str,
+    _tool_name: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    let action = arguments
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    validate_action(&action, ctx.depth)?;
     let conversation_id = ctx.conversation_id.as_str();
     let svc = service(app);
-    if tool_name == LIST_TOOL {
+    if action == "list" {
         let tasks: Vec<Value> = bound_tasks(&svc.list(), conversation_id)
             .into_iter()
             .map(describe)
             .collect();
         return Ok(json!({ "tasks": tasks }));
     }
-    if ctx.depth > 0 {
-        return Err("子代理不能创建或修改定时任务".into());
-    }
     if svc.is_scheduled_conversation_busy(conversation_id) {
         return Err("定时任务触发的这一轮对话里不能再创建或修改定时任务".into());
     }
     let now = now_secs();
-    match tool_name {
-        CREATE_TOOL => {
+    match action.as_str() {
+        "create" => {
             let args: CreateArgs = parse(arguments)?;
             let schedule = schedule_from(args.schedule, args.delay_minutes, now)?
                 .ok_or("需要提供 schedule 或 delay_minutes")?;
@@ -236,7 +170,7 @@ fn dispatch(
             emit_changed(app, &task.id, None);
             Ok(json!({ "created": describe(&task) }))
         }
-        UPDATE_TOOL => {
+        "update" => {
             let args: UpdateArgs = parse(arguments)?;
             let task = owned_task(&svc.list(), conversation_id, &args.id)?;
             let schedule = schedule_from(args.schedule, args.delay_minutes, now)?;
@@ -257,15 +191,25 @@ fn dispatch(
             emit_changed(app, &saved.id, None);
             Ok(json!({ "updated": describe(&saved) }))
         }
-        DELETE_TOOL => {
+        "delete" => {
             let args: IdArgs = parse(arguments)?;
             let task = owned_task(&svc.list(), conversation_id, &args.id)?;
             svc.delete(&task.id)?;
             emit_changed(app, &task.id, None);
             Ok(json!({ "deleted": task.id }))
         }
-        other => Err(format!("unknown scheduled task tool: {other}")),
+        other => Err(format!("unknown schedule action: {other}")),
     }
+}
+
+fn validate_action(action: &str, depth: u8) -> Result<(), String> {
+    if !matches!(action, "create" | "list" | "update" | "delete") {
+        return Err("schedule requires action: create, list, update or delete".into());
+    }
+    if depth > 0 && action != "list" {
+        return Err("子代理只能使用 schedule action=list，不能创建或修改定时任务".into());
+    }
+    Ok(())
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T, String> {
@@ -408,6 +352,18 @@ fn result(value: Value, is_error: bool) -> McpToolCallResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subagents_can_only_list_schedules() {
+        assert!(validate_action("list", 1).is_ok());
+        for action in ["create", "update", "delete"] {
+            assert!(validate_action(action, 1)
+                .unwrap_err()
+                .contains("action=list"));
+            assert!(validate_action(action, 0).is_ok());
+        }
+        assert!(validate_action("unknown", 0).is_err());
+    }
 
     #[test]
     fn delay_minutes_becomes_one_shot_from_now() {

@@ -720,8 +720,8 @@ fn chat_mode_tool_filter_keeps_research_tools_only() {
         crate::mcp::types::native_web_search_tool(),
         crate::mcp::types::native_web_fetch_tool(),
         crate::mcp::types::native_knowledge_search_tool(),
-        crate::mcp::types::native_automation_list_tool(),
-        crate::mcp::types::native_automation_run_tool(),
+        crate::mcp::types::native_automation_tool(),
+        crate::scheduled_tasks::tools::tool_definition(),
         crate::mcp::types::native_read_file_tool(),
         crate::mcp::types::native_write_file_tool(),
         crate::mcp::types::native_run_command_tool(),
@@ -753,8 +753,8 @@ fn chat_mode_tool_filter_keeps_research_tools_only() {
     assert!(names.contains(&"search_web".to_string()) || names.contains(&"web_search".to_string()));
     assert!(names.contains(&"web_fetch".to_string()));
     assert!(names.contains(&"knowledge_search".to_string()));
-    assert!(names.contains(&"automation_list".to_string()));
-    assert!(!names.contains(&"automation_run".to_string()));
+    assert!(names.contains(&"automation".to_string()));
+    assert!(names.contains(&"schedule".to_string()));
     assert!(names.contains(&"memory_read".to_string()));
     assert!(names.contains(&"ask_user".to_string()));
     assert!(names.contains(&"html_render".to_string()));

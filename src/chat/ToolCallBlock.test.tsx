@@ -522,15 +522,15 @@ describe('ToolCallBlock', () => {
     expect(screen.getByText('这样做')).toBeInTheDocument()
   })
 
-  it('renders an automation_run record as a live progress card', async () => {
+  it.each(['automation_run', 'automation'])('renders %s run as a live progress card', async (toolName) => {
     const user = userEvent.setup()
     render(
       <ToolCallBlock
         toolCall={buildToolCall({
-          toolName: 'automation_run',
+          toolName,
           source: 'native',
           status: 'running',
-          arguments: { id: 'auto-1' },
+          arguments: { id: 'auto-1', ...(toolName === 'automation' ? { action: 'run' } : {}) },
           structured_content: {
             type: 'automation_run',
             automationId: 'auto-1',
@@ -551,6 +551,17 @@ describe('ToolCallBlock', () => {
     expect(screen.getByText('打开工作流')).toBeInTheDocument()
     await user.click(screen.getByText('打开工作流'))
     expect(window.location.hash).toBe('#chat/automations/auto-1')
+  })
+
+  it.each([
+    ['automation', 'get', 'Get automation'],
+    ['automation_get', undefined, 'Get automation'],
+    ['schedule', 'update', '更新定时任务'],
+    ['schedule_update', undefined, '更新定时任务'],
+  ])('renders %s action %s with its label and target', (toolName, action, label) => {
+    render(<ToolCallBlock toolCall={buildToolCall({ toolName, source: 'native', arguments: { action, id: 'task-17' } })} />)
+    expect(screen.getByText(label)).toBeInTheDocument()
+    expect(screen.getByText('task-17')).toBeInTheDocument()
   })
 
   it('renders a knowledge_search record as a KNOWLEDGE consult card with query and hits', async () => {

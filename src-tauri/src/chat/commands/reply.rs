@@ -712,6 +712,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         };
         let unavailable_mcp_servers = tool_list.unavailable_mcp_servers;
         let mut tools = tool_list.tools;
+        super::apply_knowledge_base_tool_filter(&mut tools, &conversation.knowledge_base_ids);
         if video_plan.model.is_some() {
             tools.push(crate::chat::video_analysis::tool_definition());
         }

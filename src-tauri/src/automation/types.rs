@@ -26,7 +26,7 @@ pub fn allowed_node_types_csv() -> String {
     ALLOWED_NODE_TYPES.join(", ")
 }
 
-/// Compact schema returned on `automation_upsert` validation errors so the
+/// Compact schema returned on `automation action=upsert` validation errors so the
 /// model can fix a graph without probing. The always-on tool description stays
 /// short; detailed guidance can live in ordinary skills.
 pub const UPSERT_MINIMAL_EXAMPLE: &str = r#"{
@@ -64,7 +64,7 @@ Node data:\n\
 - logic.delay: data.delay {{seconds>=1}}\n\
 - agent.runtime: data.agent {{runtimeKind: builtin|chat|external, providerId, model, externalAgentId}}\n\
 - agent.context: data.agent {{prompt}}  agent.tool: data.agent {{toolIds}}  agent.skill: data.agent {{skillIds}}\n\
-Main edges: {{id, source, target}}. Templates: {{{{output}}}} previous text; {{{{json.path}}}} previous JSON; automation_run input is {{{{json.input.*}}}}.\n\
+Main edges: {{id, source, target}}. Templates: {{{{output}}}} previous text; {{{{json.path}}}} previous JSON; automation action=run input is {{{{json.input.*}}}}.\n\
 Omit node positions (auto-layout). Leave enabled=false until the user wants schedule/hotkey live. PDF/Word/Excel output = action.agent; attach an installed document skill with agent.skill if one exists — there is no dedicated output node.\n\
 Minimal example: {example}",
         types = allowed_node_types_csv(),

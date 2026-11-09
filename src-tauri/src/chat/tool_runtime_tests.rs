@@ -937,12 +937,136 @@ impl ExecuteTestHost {
         assert_eq!(content, "completed child result");
     }
 
+    #[tokio::test]
+    async fn merged_tools_enforce_mode_and_legacy_action_before_dispatch() {
+        let host = Arc::new(ExecuteTestHost::default());
+        let executor = Arc::new(ExecuteTestExecutor::default());
+        let mut settings = Settings::default();
+        settings.chat_tools.approval_policy = "auto".into();
+        let mut ctx = test_execution_context();
+        let plan = crate::chat::types::AgentPlanState {
+            mode: crate::chat::types::AgentPlanMode::Plan,
+            ..Default::default()
+        };
+        ctx.plan_state = &plan;
+        for tool in [
+            crate::mcp::types::native_automation_tool(),
+            crate::scheduled_tasks::tools::tool_definition(),
+        ] {
+            let (record, content, _) = execute_tool_call(
+                &host,
+                &executor,
+                &settings,
+                &ctx,
+                &tool,
+                test_pending_call(
+                    "mutate",
+                    &tool.name,
+                    serde_json::json!({"action":"delete","id":"a1"}),
+                ),
+            )
+            .await;
+            assert!(
+                matches!(record.status, ToolCallStatus::Skipped),
+                "{content}"
+            );
+            assert!(
+                content.contains("delete is not allowed in plan mode"),
+                "{content}"
+            );
+            let (record, content, _) = execute_tool_call(
+                &host,
+                &executor,
+                &settings,
+                &ctx,
+                &tool,
+                test_pending_call(
+                    "read",
+                    &format!("{}_list", tool.name),
+                    serde_json::json!({}),
+                ),
+            )
+            .await;
+            assert!(
+                matches!(record.status, ToolCallStatus::Success),
+                "{content}"
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&record.arguments).unwrap()["action"],
+                "list"
+            );
+            let mut chat_tools = vec![tool];
+            crate::chat::commands::apply_chat_mode_tool_filter(
+                &mut chat_tools,
+                true,
+                &Default::default(),
+            );
+            let (record, content, _) = execute_tool_call(
+                &host,
+                &executor,
+                &settings,
+                &test_execution_context(),
+                &chat_tools[0],
+                test_pending_call(
+                    "mutate-chat",
+                    &chat_tools[0].name,
+                    serde_json::json!({"action":"delete","id":"a1"}),
+                ),
+            )
+            .await;
+            assert!(
+                matches!(record.status, ToolCallStatus::Skipped),
+                "{content}"
+            );
+            assert!(content.contains("not allowed in chat mode"), "{content}");
+        }
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn merged_tool_approval_and_timeout_follow_actions() {
+        let mut settings = Settings::default();
+        let automation = crate::mcp::types::native_automation_tool();
+        let schedule = crate::scheduled_tasks::tools::tool_definition();
+        for policy in ["auto", "always_confirm", "read_only"] {
+            settings.chat_tools.approval_policy = policy.into();
+            for tool in [&automation, &schedule] {
+                assert_eq!(
+                    tool_call_requires_approval(
+                        &settings,
+                        tool,
+                        &serde_json::json!({"action":"list"})
+                    ),
+                    tool.name == "automation" && policy == "always_confirm"
+                );
+                assert_eq!(
+                    tool_call_requires_approval(
+                        &settings,
+                        tool,
+                        &serde_json::json!({"action":"delete"})
+                    ),
+                    policy == "always_confirm" || (tool.name == "automation" && policy != "auto")
+                );
+                assert!(!tool.parallel_safe());
+                assert!(!tool.is_read_only_tool());
+            }
+        }
+        assert_eq!(
+            effective_tool_timeout_ms(
+                &settings,
+                &automation,
+                &serde_json::json!({"action":"get","timeout_seconds":1800})
+            ),
+            settings.chat_tools.tool_timeout_ms
+        );
+    }
+
     #[test]
     fn automation_run_uses_requested_timeout_plus_buffer() {
         let mut settings = Settings::default();
         settings.chat_tools.tool_timeout_ms = 60_000;
-        let tool = crate::mcp::types::native_automation_run_tool();
-        let arguments = serde_json::json!({ "id": "a1", "timeout_seconds": 120 });
+        let tool = crate::mcp::types::native_automation_tool();
+        let arguments = serde_json::json!({ "action": "run", "id": "a1", "timeout_seconds": 120 });
         assert_eq!(
             effective_tool_timeout_ms(&settings, &tool, &arguments),
             125_000

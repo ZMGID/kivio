@@ -1695,7 +1695,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     navigation.startNewConversation()
   }, [navigation, requestTasksLeave])
 
-  // 任务页「通过对话创建」：开新对话并把请求预填进输入框，由 Agent 用 schedule_create / automation_upsert 完成。
+  // 任务页「通过对话创建」：开新对话并把请求预填进输入框，由 Agent 用 schedule action=create / automation action=upsert 完成。
   const handleCreateTaskByChat = useCallback(async (prompt: string) => {
     if (tasksLeaveGuardRef.current && !await requestTasksLeave()) return
     navigation.startNewConversation()

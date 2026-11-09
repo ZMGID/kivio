@@ -40,6 +40,17 @@ pub fn resolve_reserved_wire_alias(name: &str) -> &str {
 /// **方向与 `RESERVED_WIRE_ALIASES` 相反**：wire 别名是"内部名 → 模型可见名"（改对外暴露）；
 /// 这里是"旧输入名 → 现内部名"（把历史输入规整到现工具），**不参与**工具声明/提示词渲染。
 const LEGACY_TOOL_ALIASES: &[(&str, &str)] = &[
+    ("schedule_create", "schedule"),
+    ("schedule_list", "schedule"),
+    ("schedule_update", "schedule"),
+    ("schedule_delete", "schedule"),
+    ("automation_list", "automation"),
+    ("automation_get", "automation"),
+    ("automation_upsert", "automation"),
+    ("automation_set_enabled", "automation"),
+    ("automation_run", "automation"),
+    ("automation_runs", "automation"),
+    ("automation_delete", "automation"),
     ("read_file", "read"), // 对外名缩短前的文件工具
     ("write_file", "write"),
     ("edit_file", "edit"),
@@ -61,6 +72,20 @@ pub fn canonical_tool_name(name: &str) -> &str {
         .find(|(from, _)| *from == name)
         .map(|(_, to)| *to)
         .unwrap_or(name)
+}
+
+/// Preserve the action implied by a historical tool call before schema/policy checks.
+pub(crate) fn inject_legacy_tool_action(name: &str, arguments: &mut serde_json::Value) {
+    let canonical = canonical_tool_name(name);
+    if matches!(canonical, "automation" | "schedule") && canonical != name {
+        if let (Some(action), Some(object)) = (
+            name.strip_prefix(canonical)
+                .and_then(|s| s.strip_prefix('_')),
+            arguments.as_object_mut(),
+        ) {
+            object.insert("action".into(), action.into());
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +199,32 @@ impl ChatToolDefinition {
 
     pub fn open_world_hint(&self) -> Option<bool> {
         annotation_bool(self.annotations.as_ref(), "openWorldHint")
+    }
+
+    pub fn read_only_actions(&self) -> &'static [&'static str] {
+        if self.source != "native" {
+            return &[];
+        }
+        super::native_registry::find_entry(&self.name).map_or(&[], |entry| entry.read_only_actions)
+    }
+
+    pub fn has_read_only_calls(&self) -> bool {
+        self.is_read_only_tool() || !self.read_only_actions().is_empty()
+    }
+
+    pub fn is_read_only_call(&self, arguments: &serde_json::Value) -> bool {
+        self.is_read_only_tool()
+            || arguments
+                .get("action")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|action| self.read_only_actions().contains(&action))
+    }
+
+    pub(crate) fn restrict_to_read_only_calls(&mut self, mode: &str) {
+        if !self.read_only_actions().is_empty() {
+            self.annotations
+                .get_or_insert_with(|| serde_json::json!({}))["kivioReadOnlyMode"] = mode.into();
+        }
     }
 
     pub fn is_read_only_tool(&self) -> bool {
@@ -982,143 +1033,27 @@ pub fn native_web_fetch_tool() -> ChatToolDefinition {
     }
 }
 
-fn native_automation_tool(
-    name: &str,
-    description: &str,
-    input_schema: serde_json::Value,
-    sensitive: bool,
-) -> ChatToolDefinition {
+pub fn native_automation_tool() -> ChatToolDefinition {
     ChatToolDefinition {
-        id: format!("native__{name}"),
-        name: name.to_string(),
-        description: description.to_string(),
-        source: "native".to_string(),
-        server_id: None,
-        server_name: Some("Kivio".to_string()),
-        input_schema,
-        sensitive,
-        annotations: None,
-        output_schema: None,
+        id: "native__automation".into(), name: "automation".into(),
+        description: "Manage Kivio workflow graphs; use schedule action=create for timed prompts. List first to avoid duplicates. get/set_enabled/run/runs/delete require id; set_enabled also needs enabled. upsert needs a complete automation graph; omit its id to create and positions to auto-layout. Validation errors return allowedNodeTypes and schemaHint. run waits (default 600s, max 1800), then returns runId to poll with runs; delete is permanent.".into(),
+        source: "native".into(), server_id: None, server_name: Some("Kivio".into()),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {"type":"string", "enum":["list","get","upsert","set_enabled","run","runs","delete"]},
+                "id": {"type":"string"},
+                "automation": {"type":"object", "description":"Complete graph: {id?, name, enabled, nodes:[{id,type,data}], edges:[{id,source,target,sourceHandle?,targetHandle?}]}."},
+                "dry_run": {"type":"boolean", "description":"Validate a complete graph without saving; not for discovering node types."},
+                "enabled": {"type":"boolean"},
+                "input": {"description":"run payload: string or {text,json}; available as {{output}} / {{json.input.*}}."},
+                "timeout_seconds": {"type":"integer"},
+                "run_id": {"type":"string", "description":"runs: fetch one run's per-node details."}
+            },
+            "required":["action"]
+        }),
+        sensitive: true, annotations: None, output_schema: None,
     }
-}
-
-pub fn native_automation_list_tool() -> ChatToolDefinition {
-    native_automation_tool(
-        "automation_list",
-        "List Kivio automations (id, name, enabled, trigger type). Call this once to avoid duplicates, then create with automation_upsert. Do not discover node types by trial.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false
-        }),
-        false,
-    )
-}
-
-pub fn native_automation_get_tool() -> ChatToolDefinition {
-    native_automation_tool(
-        "automation_get",
-        "Get the full graph JSON for one automation by id (nodes, edges, viewport).",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "string", "description": "Automation id from automation_list." }
-            },
-            "required": ["id"]
-        }),
-        false,
-    )
-}
-
-pub fn native_automation_upsert_tool() -> ChatToolDefinition {
-    native_automation_tool(
-        "automation_upsert",
-        "Create or replace a Kivio automation graph in ONE call. Only when the user explicitly asks for an automation/workflow; for 定时任务 or reminders use schedule_create instead. Omit id to create. Omit node positions to auto-layout. Consult available workflow guidance for node types and examples. Validation errors return allowedNodeTypes and schemaHint.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "automation": {
-                    "type": "object",
-                    "description": "Complete graph: {name, enabled, nodes:[{id, type, data}], edges:[{id, source, target, sourceHandle?, targetHandle?}]}. schemaVersion is set by Kivio. Validation errors return allowedNodeTypes and schemaHint."
-                },
-                "dry_run": {
-                    "type": "boolean",
-                    "description": "Validate a COMPLETE candidate graph without saving. Never use this to discover node types."
-                }
-            },
-            "required": ["automation"]
-        }),
-        true,
-    )
-}
-
-pub fn native_automation_set_enabled_tool() -> ChatToolDefinition {
-    native_automation_tool(
-        "automation_set_enabled",
-        "Enable or disable an automation. Enabled graphs honor schedule and hotkey triggers.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "string" },
-                "enabled": { "type": "boolean" }
-            },
-            "required": ["id", "enabled"]
-        }),
-        true,
-    )
-}
-
-pub fn native_automation_run_tool() -> ChatToolDefinition {
-    native_automation_tool(
-        "automation_run",
-        "Run an automation and wait for it to finish. Optional input is exposed to later nodes as {{output}} / {{json.input.*}}. Returns per-node status plus the last step's output. If it is still running after timeout_seconds, returns runId so you can poll with automation_runs.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "string", "description": "Automation id to run." },
-                "input": {
-                    "description": "Optional payload: a string, or { text, json }. Downstream nodes read it via {{output}} and {{json.input.*}}."
-                },
-                "timeout_seconds": {
-                    "type": "integer",
-                    "description": "How long to wait (default 600, max 1800). On timeout the run continues in the background."
-                }
-            },
-            "required": ["id"]
-        }),
-        true,
-    )
-}
-
-pub fn native_automation_runs_tool() -> ChatToolDefinition {
-    native_automation_tool(
-        "automation_runs",
-        "List recent runs for an automation, or fetch one run's per-node details when run_id is set.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "string" },
-                "run_id": { "type": "string", "description": "Optional run id from automation_run." }
-            },
-            "required": ["id"]
-        }),
-        false,
-    )
-}
-
-pub fn native_automation_delete_tool() -> ChatToolDefinition {
-    native_automation_tool(
-        "automation_delete",
-        "Delete an automation and its run history. This cannot be undone.",
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "string" }
-            },
-            "required": ["id"]
-        }),
-        true,
-    )
 }
 
 /// `knowledge_search` — retrieve passages from the user's knowledge bases
@@ -1230,6 +1165,39 @@ pub fn looks_sensitive_tool(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merged_tool_legacy_names_route_and_preserve_their_action() {
+        let settings = crate::settings::Settings::default();
+        for tool in [
+            native_automation_tool(),
+            crate::scheduled_tasks::tools::tool_definition(),
+        ] {
+            let definition = tool.for_run(&settings);
+            for (legacy, canonical) in LEGACY_TOOL_ALIASES
+                .iter()
+                .filter(|(_, canonical)| *canonical == tool.name)
+            {
+                assert_eq!(
+                    crate::chat::agent::execute::match_tool_call(
+                        std::slice::from_ref(&definition),
+                        legacy
+                    )
+                    .unwrap()
+                    .label
+                    .name,
+                    *canonical
+                );
+                let mut arguments = serde_json::json!({"action":"delete", "id":"existing"});
+                inject_legacy_tool_action(legacy, &mut arguments);
+                assert_eq!(
+                    arguments["action"],
+                    legacy.strip_prefix(&format!("{canonical}_")).unwrap()
+                );
+                assert_eq!(arguments["id"], "existing");
+            }
+        }
+    }
 
     #[test]
     fn voice_orchestration_tool_schemas_match_their_contract() {
@@ -1383,8 +1351,8 @@ mod tests {
     }
 
     #[test]
-    fn automation_upsert_tool_description_stays_short() {
-        let def = native_automation_upsert_tool();
+    fn automation_tool_description_stays_short() {
+        let def = native_automation_tool();
         assert!(
             def.description.contains("Validation errors return"),
             "{}",

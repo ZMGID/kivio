@@ -216,6 +216,15 @@ pub(super) fn append_agent_ask_user_tools(tools: &mut Vec<ChatToolDefinition>) -
     true
 }
 
+pub(crate) fn apply_knowledge_base_tool_filter(
+    tools: &mut Vec<ChatToolDefinition>,
+    knowledge_base_ids: &[String],
+) {
+    if knowledge_base_ids.is_empty() {
+        tools.retain(|tool| !(tool.source == "native" && tool.name == "knowledge_search"));
+    }
+}
+
 pub(super) fn apply_agent_plan_tool_filter(
     tools: &mut Vec<ChatToolDefinition>,
     plan_mode: bool,
@@ -224,8 +233,11 @@ pub(super) fn apply_agent_plan_tool_filter(
         return Vec::new();
     }
     let mut blocked = Vec::new();
-    tools.retain(|tool| {
+    tools.retain_mut(|tool| {
         let allowed = agent_plan_allows_tool(tool);
+        if allowed {
+            tool.restrict_to_read_only_calls("plan");
+        }
         if !allowed {
             blocked.push(tool.clone());
         }
@@ -245,8 +257,11 @@ pub(crate) fn apply_chat_mode_tool_filter(
         return Vec::new();
     }
     let mut blocked = Vec::new();
-    tools.retain(|tool| {
+    tools.retain_mut(|tool| {
         let allowed = chat_mode_allows_tool(tool, config);
+        if allowed {
+            tool.restrict_to_read_only_calls("chat");
+        }
         if !allowed {
             blocked.push(tool.clone());
         }
@@ -275,7 +290,7 @@ fn chat_mode_allows_tool(
         "web_search" | "search_web" => config.web_search,
         "web_fetch" => config.web_fetch,
         "knowledge_search" => config.knowledge_search,
-        "automation_list" | "automation_get" | "automation_runs" => true,
+        "automation" | "schedule" => tool.has_read_only_calls(),
         // Display-only: writes just this conversation's own render attachments.
         "html_render" | "html_preview" => true,
         "memory_read" | "memory_search" => config.memory_tools,
@@ -294,10 +309,10 @@ fn agent_plan_allows_tool(tool: &ChatToolDefinition) -> bool {
         return true;
     }
     if tool.source == "native" {
-        return tool.is_read_only_tool();
+        return tool.has_read_only_calls();
     }
     if tool.source == "mcp" {
-        return tool.is_read_only_tool();
+        return tool.has_read_only_calls();
     }
     tool.source == "skill" && tool.name == "skill"
 }
@@ -398,6 +413,17 @@ mod discovery_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
     use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn knowledge_search_needs_an_attached_base() {
+        let tool = crate::mcp::types::native_knowledge_search_tool();
+        let mut tools = vec![tool.clone(), crate::mcp::types::native_automation_tool()];
+        apply_knowledge_base_tool_filter(&mut tools, &["kb".into()]);
+        assert_eq!(tools.len(), 2);
+        apply_knowledge_base_tool_filter(&mut tools, &[]);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "automation");
+    }
 
     #[tokio::test]
     async fn cancelled_cold_mcp_discovery_releases_the_conversation_for_resend() {

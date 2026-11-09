@@ -136,6 +136,14 @@ function toolRawName(toolCall: ToolCallRecord): string {
   return canonicalToolName(toolCall)
 }
 
+function toolActionName(toolCall: ToolCallRecord): string {
+  const name = toolRawName(toolCall)
+  const action = parsedArguments(toolCall)?.action
+  return (name === 'automation' || name === 'schedule') && typeof action === 'string'
+    ? `${name}_${action}`
+    : name
+}
+
 /** 文件类工具的目标路径。
  *
  *  claude Code 的内置工具用 `file_path`（NotebookEdit 用 `notebook_path`），Kivio 原生工具
@@ -220,6 +228,7 @@ function toolGlyph(toolCall: ToolCallRecord): LucideIcon | ComponentType<{ size?
       return Bot
     case 'ask_user':
       return MessageCircleQuestion
+    case 'automation':
     case 'automation_run':
     case 'automation_list':
     case 'automation_get':
@@ -228,6 +237,7 @@ function toolGlyph(toolCall: ToolCallRecord): LucideIcon | ComponentType<{ size?
     case 'automation_runs':
     case 'automation_delete':
       return Workflow
+    case 'schedule':
     case 'schedule_create':
     case 'schedule_list':
     case 'schedule_update':
@@ -816,7 +826,7 @@ function structuredAutomationRun(toolCall: ToolCallRecord): {
 
 function isAutomationRunRecord(toolCall: ToolCallRecord): boolean {
   if (structuredAutomationRun(toolCall)) return true
-  return toolRawName(toolCall) === 'automation_run'
+  return toolActionName(toolCall) === 'automation_run'
 }
 
 function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
@@ -1480,7 +1490,7 @@ function getDuration(toolCall: ToolCallRecord): number | undefined {
 }
 
 function getToolName(t: I18n, toolCall: ToolCallRecord): string {
-  const raw = toolRawName(toolCall) || 'Tool'
+  const raw = toolActionName(toolCall) || 'Tool'
   // default 分支要回落的**原始**名（MCP 工具名大小写有意义，归一化后的名字不能拿来显示）。
   const displayName = toolRecordRawName(toolCall) || 'Tool'
 
@@ -1639,7 +1649,7 @@ function formatReadFilePreview(t: I18n, view: ReadFileView): string {
 /** 折叠行的「目标」：以输入参数为主（文件名 / 命令 / pattern / url），不含动词、不含结果。
  *  Cursor 风格 —— 行内只呈现「动词 + 目标」，其余细节（结果、diff、错误）放展开区。 */
 function getToolTarget(t: I18n, toolCall: ToolCallRecord): string {
-  const raw = toolRawName(toolCall)
+  const raw = toolActionName(toolCall)
   const args = parsedArguments(toolCall)
   const path = toolPathArgument(args)
   const primary = ((): string => {
@@ -1692,6 +1702,10 @@ function getToolTarget(t: I18n, toolCall: ToolCallRecord): string {
       case 'web_search':
       case 'knowledge_search':
         return compactText(firstString(args?.query), 140)
+      case 'schedule_create':
+      case 'schedule_update':
+      case 'schedule_delete':
+        return compactText(firstString(args?.name, args?.id, args?.prompt), 140)
       case 'automation_run':
       case 'automation_get':
       case 'automation_set_enabled':
