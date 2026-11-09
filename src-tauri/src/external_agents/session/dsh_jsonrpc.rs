@@ -2896,15 +2896,22 @@ fn map_tool_results(
     state: &mut MapSessionState,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) {
-    let blocks = data
-        .get("message")
-        .and_then(|message| message.get("content"))
-        .and_then(Value::as_array);
-    let Some(blocks) = blocks else {
+    let Some(message) = data.get("message") else {
         return;
     };
+    let blocks = if message.get("role").and_then(Value::as_str) == Some("tool") {
+        std::slice::from_ref(message)
+    } else {
+        message
+            .get("content")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    };
     for block in blocks {
-        if block.get("type").and_then(Value::as_str) != Some("tool-result") {
+        if block.get("role").and_then(Value::as_str) != Some("tool")
+            && block.get("type").and_then(Value::as_str) != Some("tool-result")
+        {
             continue;
         }
         let tool_use_id = block
@@ -3847,6 +3854,30 @@ mod tests {
     }
 
     #[test]
+    fn maps_native_tool_message_results() {
+        for is_error in [false, true] {
+            let mut emitted = Vec::new();
+            map_tool_results(
+                &json!({ "message": {
+                    "role": "tool",
+                    "source": { "kind": "tool", "callId": "call_native" },
+                    "toolCallId": "call_native",
+                    "content": [{ "type": "text", "text": "actual output" }],
+                    "isError": is_error
+                }}),
+                &mut MapSessionState::default(),
+                &mut |event| emitted.push(event),
+            );
+            assert!(matches!(
+                emitted.as_slice(),
+                [UnifiedAgentEvent::ToolResult { tool_use_id, content, is_error: actual_error }]
+                    if tool_use_id == "call_native" && content == "actual output"
+                        && *actual_error == is_error
+            ));
+        }
+    }
+
+    #[test]
     fn maps_complete_tool_call_and_result() {
         let mut emitted = Vec::new();
         let mut state = MapSessionState::default();
@@ -4636,7 +4667,11 @@ mod tests {
         session
             .run_turn(
                 &TurnDelivery::default(),
-                "必须调用 bash 工具执行 `printf KIVIO_DSH_E2E`，然后只回答命令输出。",
+                if cfg!(target_os = "windows") {
+                    "必须调用 pwsh 工具执行 `Write-Output KIVIO_DSH_E2E`，然后只回答命令输出。"
+                } else {
+                    "必须调用 bash 工具执行 `printf KIVIO_DSH_E2E`，然后只回答命令输出。"
+                },
                 Some("deepseek-v4-flash"),
                 &[],
                 &event_tx,
@@ -4657,6 +4692,14 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, UnifiedAgentEvent::ToolUse { .. })),
             "missing tool event: {events:?}"
+        );
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                UnifiedAgentEvent::ToolResult { content, is_error: false, .. }
+                    if content.contains("KIVIO_DSH_E2E")
+            )),
+            "missing successful tool output: {events:?}"
         );
         assert!(
             events
