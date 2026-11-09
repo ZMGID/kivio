@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::tools::ToolDefinition;
 
-use super::error::{AgentAdmissionError, AgentFailure, AgentRunError};
+use super::error::{AgentAdmissionError, AgentFailure, AgentRunError, RunLimit};
 use super::execute::ToolExecutor;
 use super::finalize::{
     cancelled_run_result_from_state, finalize_completed, finalize_planning_final, SegmentBuilder,
@@ -454,14 +454,21 @@ enum AnswerBoundary {
 }
 
 fn check_model_budget(env: &LoopEnv<'_>, state: &RunState) -> Result<(), AgentFailure> {
+    if let Some(limit) = model_budget_failure(env, state) {
+        if limit == RunLimit::Timeout {
+            env.host.control.stop();
+        }
+        return Err(AgentFailure::LimitExceeded { limit });
+    }
+    Ok(())
+}
+
+fn model_budget_failure(env: &LoopEnv<'_>, state: &RunState) -> Option<RunLimit> {
     if env
         .deadline
         .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
     {
-        env.host.control.stop();
-        return Err(AgentFailure::LimitExceeded {
-            limit: super::error::RunLimit::Timeout,
-        });
+        return Some(RunLimit::Timeout);
     }
     if env
         .config
@@ -469,11 +476,9 @@ fn check_model_budget(env: &LoopEnv<'_>, state: &RunState) -> Result<(), AgentFa
         .max_model_steps
         .is_some_and(|max| state.model_steps >= max.get())
     {
-        return Err(AgentFailure::LimitExceeded {
-            limit: super::error::RunLimit::ModelSteps,
-        });
+        return Some(RunLimit::ModelSteps);
     }
-    Ok(())
+    None
 }
 
 async fn admit_injections(
@@ -572,20 +577,30 @@ async fn admit_injections(
                     continue;
                 }
             };
-            if !inputs.0.is_empty() {
-                check_model_budget(env, state)?;
-            }
             if !env.host.control.active() {
                 batch.settle(InjectionOutcome::Dropped(DropReason::RunStopped));
                 continue;
             }
             let count = inputs.0.len();
-            if batch.apply(inputs.0, &mut |inputs| {
+            let applied = batch.apply(inputs.0, &mut |inputs| {
+                if let Some(limit) = model_budget_failure(env, state) {
+                    return Err(AgentFailure::LimitExceeded { limit });
+                }
                 if let Some(answer) = answer.take() {
                     answer.absorb(state);
                 }
                 state.apply_inputs(inputs);
-            }) {
+                Ok(())
+            });
+            if matches!(
+                applied,
+                Err(AgentFailure::LimitExceeded {
+                    limit: RunLimit::Timeout
+                })
+            ) {
+                env.host.control.stop();
+            }
+            if applied? {
                 messages += count;
                 bytes += inputs.1;
             }
@@ -601,7 +616,7 @@ async fn admit_step(
     session: &mut dyn super::session::SessionPolicy,
     injections: &mut InjectionSources,
 ) -> Result<(), AgentFailure> {
-    inject_steering_messages(env, state, round, session).await?;
+    let steering_consumed = inject_steering_messages(env, state, round, session).await?;
     if !env.host.control.active() {
         return Ok(());
     }
@@ -622,6 +637,9 @@ async fn admit_step(
         &mut None,
     )
     .await?;
+    if !steering_consumed && env.host.control.active() {
+        inject_steering_messages(env, state, round, session).await?;
+    }
     Ok(())
 }
 

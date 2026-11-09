@@ -433,6 +433,7 @@ pub(crate) async fn run_session(
         &config.provider,
         config.retry_attempts,
     );
+    let mut injections = crate::chat::runtime_injections::sources(&config, host.clone());
     let core = AgentRunConfig {
         provider_runtime: config.provider_runtime.unwrap_or(&model),
         conversation_id: config.conversation_id.clone(),
@@ -488,7 +489,6 @@ pub(crate) async fn run_session(
         dispatcher,
     });
     let mut policy = AppSessionPolicy::new(&config, host.as_ref());
-    let mut injections = crate::chat::runtime_injections::sources(&config, host.clone());
     let result = match crate::chat::agent::run_agent_loop(
         core,
         host.as_ref(),

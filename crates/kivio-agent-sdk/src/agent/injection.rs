@@ -4,7 +4,10 @@ use std::{
     pin::Pin,
 };
 
-use super::{events::AgentRunIdentity, host::SessionInput, session::RunSnapshot, SessionHistory};
+use super::{
+    error::AgentFailure, events::AgentRunIdentity, host::SessionInput, session::RunSnapshot,
+    SessionHistory,
+};
 use crate::model::{MessagePart, ModelRole};
 
 pub type InjectionFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -119,8 +122,8 @@ pub(crate) trait PendingInjection: Send {
     fn apply(
         &mut self,
         inputs: Vec<SessionInput>,
-        append: &mut dyn FnMut(Vec<SessionInput>),
-    ) -> bool;
+        append: &mut dyn FnMut(Vec<SessionInput>) -> Result<(), AgentFailure>,
+    ) -> Result<bool, AgentFailure>;
     fn settle(&mut self, outcome: InjectionOutcome);
 }
 
@@ -158,14 +161,14 @@ impl InjectionBatch {
     pub(crate) fn apply(
         mut self,
         inputs: Vec<SessionInput>,
-        append: &mut dyn FnMut(Vec<SessionInput>),
-    ) -> bool {
+        append: &mut dyn FnMut(Vec<SessionInput>) -> Result<(), AgentFailure>,
+    ) -> Result<bool, AgentFailure> {
         let applied = if let Some(lazy) = &mut self.lazy {
-            lazy.apply(inputs, append)
+            lazy.apply(inputs, append)?
         } else if inputs.is_empty() {
             false
         } else {
-            append(inputs);
+            append(inputs)?;
             true
         };
         self.settle(if applied {
@@ -173,7 +176,7 @@ impl InjectionBatch {
         } else {
             InjectionOutcome::Dropped(DropReason::Released)
         });
-        applied
+        Ok(applied)
     }
     pub(crate) fn settle(&mut self, outcome: InjectionOutcome) {
         if let Some(mut lazy) = self.lazy.take() {

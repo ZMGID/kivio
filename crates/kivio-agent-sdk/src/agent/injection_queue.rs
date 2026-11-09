@@ -1,5 +1,5 @@
-use super::host::SessionInput;
 use super::injection::*;
+use super::{error::AgentFailure, host::SessionInput};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{oneshot, watch};
 
@@ -316,14 +316,14 @@ impl<T: Send + 'static> PendingInjection for KindBatch<T> {
     fn apply(
         &mut self,
         inputs: Vec<SessionInput>,
-        append: &mut dyn FnMut(Vec<SessionInput>),
-    ) -> bool {
+        append: &mut dyn FnMut(Vec<SessionInput>) -> Result<(), AgentFailure>,
+    ) -> Result<bool, AgentFailure> {
         let data = self.state.data.lock().unwrap();
         if !data.open || data.epoch != self.epoch || inputs.is_empty() {
-            return false;
+            return Ok(false);
         }
         // Clear and append linearize here; no producer callback runs under this lock.
-        append(inputs);
+        append(inputs)?;
         let senders: Vec<_> = self
             .entries
             .iter()
@@ -333,7 +333,7 @@ impl<T: Send + 'static> PendingInjection for KindBatch<T> {
         for sender in senders {
             let _ = sender.send(InjectionOutcome::Applied);
         }
-        true
+        Ok(true)
     }
     fn settle(&mut self, outcome: InjectionOutcome) {
         for entry in &self.entries {
@@ -369,13 +369,15 @@ mod tests {
     impl Wake for ApplyOnWake {
         fn wake(self: Arc<Self>) {
             let batch = self.0.lock().unwrap().take().unwrap();
-            assert!(!batch.apply(
-                vec![SessionInput::append(super::super::RuntimeMessage::text(
-                    crate::model::ModelRole::User,
-                    "revoked",
-                ))],
-                &mut |_| panic!("invalidated input was appended"),
-            ));
+            assert!(!batch
+                .apply(
+                    vec![SessionInput::append(super::super::RuntimeMessage::text(
+                        crate::model::ModelRole::User,
+                        "revoked",
+                    ))],
+                    &mut |_| panic!("invalidated input was appended"),
+                )
+                .unwrap());
         }
     }
 

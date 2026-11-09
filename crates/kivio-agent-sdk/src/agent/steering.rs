@@ -49,16 +49,16 @@ pub(crate) async fn inject_steering_messages(
     state: &mut RunState,
     round: u32,
     session: &mut dyn super::session::SessionPolicy,
-) -> Result<(), AgentFailure> {
+) -> Result<bool, AgentFailure> {
     state
         .pending_steering
         .extend(env.host.control.take_steering());
     let Some(message) = state.pending_steering.front().cloned() else {
-        return Ok(());
+        return Ok(false);
     };
     apply_prompt_hooks(env, state, &message.text, session).await?;
     if !env.host.control.active() {
-        return Ok(());
+        return Ok(false);
     }
     state.pending_steering.pop_front();
     append_injected_user_turn(
@@ -68,7 +68,7 @@ pub(crate) async fn inject_steering_messages(
         &message,
         super::content::InputKind::Steer,
     );
-    Ok(())
+    Ok(true)
 }
 
 /// FinalAnswer 边界的外层检查（对齐 pi agent-loop 的外层 `while`：agent 本要停下时轮询
