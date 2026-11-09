@@ -520,6 +520,7 @@ impl crate::chat::agent::AgentHost for ProbeAgentHost {
     }
 }
 
+#[cfg(debug_assertions)]
 impl crate::chat::tool_runtime::ApplicationHost for ProbeAgentHost {
     fn collect_runtime_inputs<'a>(
         &'a self,
