@@ -60,7 +60,10 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         sessionId,
         meta: { cwd, agentPreset: preset },
         agentOptions: this.agentOptions(),
-        setup: (agentCtx) => this.mountPreset(agentCtx, preset),
+        setup: async (agentCtx, agent) => {
+          await this.mountPreset(agentCtx, preset)
+          this.applyPermissionPreset(agent)
+        },
       }),
       resumed: false,
     }
@@ -84,6 +87,7 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           selection.reasoningEffort = previous.reasoningEffort
         }
         agent.model.select(selection)
+        this.applyPermissionPreset(agent)
       },
     })
     const record = { handle, resumed: true }
@@ -125,6 +129,12 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const presets = this.ctx.get('agentPresets')
     if (!presets) throw new Error('dsh agent preset registry is unavailable')
     await presets.mount(agentCtx, presetId === 'code' ? 'ptc' : presetId)
+  }
+
+  applyPermissionPreset(agent) {
+    this.ctx.get('permissionPresets').set(
+      agent.session, process.env.DSH_PERMISSION_MODE || 'workspace-write',
+    )
   }
 
   agentOptions() {
@@ -224,63 +234,36 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const record = await this.getOrCreateSession(sessionId)
     const agent = record.handle.agent
     const jobs = this.ctx.jobs
-    if (jobs && typeof jobs.kill === 'function') {
-      try {
-        const outcome = jobs.kill(jobId, agent, 'kivio-stop-task')
-        return { sessionId, jobId, outcome, target: 'job' }
-      } catch {
-        // Unknown job ids include childSessionId from subagent.started.
-      }
+    if (jobs?.list(agent.id).some(job => job.id === jobId)) {
+      const outcome = jobs.kill(jobId, agent.id, 'kivio-stop-task')
+      return { sessionId, jobId, outcome, target: 'job' }
     }
-    let subagents
-    try {
-      subagents = this.ctx.subagents
-    } catch {
-      subagents = undefined
-    }
-    if (subagents && typeof subagents.interrupt === 'function') {
-      try {
-        subagents.interrupt(jobId, { kind: 'user', parentSessionId: sessionId })
-        return { sessionId, jobId, outcome: 'requested', target: 'subagent' }
-      } catch {
-        // Fall through to a direct cancel of a live child agent.
-      }
-    }
-    let child
-    try {
-      child = this.ctx.agents?.get?.(jobId)
-    } catch {
-      child = undefined
-    }
-    if (child && child !== agent && typeof child.cancel === 'function') {
-      child.cancel({ kind: 'user' }, { keepInbox: true })
-      return { sessionId, jobId, outcome: 'requested', target: 'agent' }
+    const subagents = this.ctx.subagents
+    if (subagents) {
+      subagents.interrupt(jobId, { kind: 'ancestor', agent })
+      return { sessionId, jobId, outcome: 'requested', target: 'subagent' }
     }
     throw new Error(`unknown job or subagent: ${jobId}`)
   }
 
   async prompt(params) {
-    const contentBlocks = await materializeContentBlocks(this.ctx, params?.contentBlocks)
-    const patched = { ...params, contentBlocks }
-    if (typeof params?.sessionId !== 'string' || params.sessionId.trim() === '') {
-      return super.prompt(patched)
-    }
-    const record = await this.getOrCreateSession(params.sessionId)
-    return withExclusiveAgentCall(record.handle.agent, () => super.prompt(patched))
+    const sessionId = requireSessionId(params.sessionId)
+    const record = await this.getOrCreateSession(sessionId)
+    return withExclusiveAgentCall(record.handle.agent, async () => {
+      this.lifetime.signal.throwIfAborted()
+      const contentBlocks = await materializeContentBlocks(this.ctx, params.contentBlocks)
+      return super.prompt({ ...params, sessionId, contentBlocks })
+    })
   }
 
   async steer(params) {
     const sessionId = requireSessionId(params.sessionId)
-    const contentBlocks = await materializeContentBlocks(this.ctx, params?.contentBlocks)
-    if (contentBlocks.length === 0) {
-      throw new TypeError('session/steer requires contentBlocks')
-    }
     const record = await this.getOrCreateSession(sessionId)
-    if (this.ctx.agents.get(record.handle.agent.id) !== record.handle.agent) {
-      throw new Error(`session agent was disposed outside the server: ${sessionId}`)
-    }
     const agent = record.handle.agent
-    return withExclusiveAgentCall(agent, () => {
+    return withExclusiveAgentCall(agent, async () => {
+      this.lifetime.signal.throwIfAborted()
+      const contentBlocks = await materializeContentBlocks(this.ctx, params.contentBlocks)
+      if (contentBlocks.length === 0) throw new TypeError('session/steer requires contentBlocks')
       this.lifetime.signal.throwIfAborted()
       this.assertLiveAgent(record, sessionId)
       const message = createUserMessage({ content: contentBlocks, source: { kind: 'user' } })
@@ -436,7 +419,7 @@ async function materializeContentBlocks(ctx, blocks) {
 }
 
 export const name = 'kivio-dsh-jsonrpc-bridge'
-export const inject = ['agents', 'sessionPersistence', 'agentPresets', 'userQuestions', 'commands', 'attachments', 'jobs', 'subagents', 'workspaceRegistry']
+export const inject = ['agents', 'sessionPersistence', 'agentPresets', 'userQuestions', 'commands', 'attachments', 'jobs', 'subagents', 'workspaceRegistry', 'permissionPresets']
 export const Config = Schema.object({
   maxTokensAsSuccess: Schema.boolean().default(false),
 })

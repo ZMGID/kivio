@@ -113,6 +113,7 @@ struct MapSessionState {
     context_window: Option<u64>,
     compact: Option<PendingCompact>,
     background_calls: HashMap<String, PendingBackground>,
+    approval_calls: HashMap<(String, String), (String, Value)>,
     streamed_text: String,
     streamed_reasoning: String,
     streamed_usage: bool,
@@ -121,6 +122,84 @@ struct MapSessionState {
 }
 
 impl MapSessionState {
+    // Approval RPCs omit arguments; correlate only unresolved calls from the same session.
+    fn prepare_approval_input(&mut self, value: &mut Value) {
+        let method = value.get("method").and_then(Value::as_str).unwrap_or("");
+        let params = value.get("params").unwrap_or(&Value::Null);
+        let Some(session_id) = params.get("sessionId").and_then(Value::as_str) else {
+            return;
+        };
+        if method == APPROVAL_METHOD {
+            let input = params
+                .get("callId")
+                .and_then(Value::as_str)
+                .and_then(|id| {
+                    self.approval_calls
+                        .get(&(session_id.to_string(), id.to_string()))
+                })
+                .filter(|(name, _)| {
+                    params.get("toolName").and_then(Value::as_str) == Some(name.as_str())
+                })
+                .map(|(_, input)| {
+                    let mut input = input.clone();
+                    if let Some(object) = input.as_object_mut() {
+                        if let Some(reason) = params.get("reason") {
+                            object.insert("approvalReason".to_string(), reason.clone());
+                        }
+                    }
+                    input
+                });
+            if let Some(params) = value.get_mut("params").and_then(Value::as_object_mut) {
+                params.remove("input");
+                if let Some(input) = input {
+                    params.insert("input".to_string(), input);
+                }
+            }
+            return;
+        }
+        if method != "session.event" {
+            return;
+        }
+        let event = &params["event"];
+        let data = &event["data"];
+        match event.get("type").and_then(Value::as_str) {
+            Some("tool/call") => {
+                if let (Some(id), Some(name), Some(raw)) = (
+                    data.get("callId").and_then(Value::as_str),
+                    data.get("name").and_then(Value::as_str),
+                    data.get("arguments").and_then(Value::as_str),
+                ) {
+                    let input = serde_json::from_str(raw).unwrap_or_else(|_| json!({ "raw": raw }));
+                    self.approval_calls.insert(
+                        (session_id.to_string(), id.to_string()),
+                        (name.to_string(), input),
+                    );
+                }
+            }
+            Some("tool/result") => {
+                if let Some(id) = data
+                    .pointer("/message/source/callId")
+                    .and_then(Value::as_str)
+                {
+                    self.approval_calls
+                        .remove(&(session_id.to_string(), id.to_string()));
+                }
+                if let Some(blocks) = data.pointer("/message/content").and_then(Value::as_array) {
+                    for block in blocks {
+                        if let Some(id) = block.get("toolCallId").and_then(Value::as_str) {
+                            self.approval_calls
+                                .remove(&(session_id.to_string(), id.to_string()));
+                        }
+                    }
+                }
+            }
+            Some("turn/end") => self
+                .approval_calls
+                .retain(|(owner, _), _| owner != session_id),
+            _ => {}
+        }
+    }
+
     fn reset_usage(&mut self) {
         self.completed_usage = None;
         self.step_usage = None;
@@ -695,9 +774,10 @@ impl DshJsonRpcSession {
             if line.trim().is_empty() {
                 continue;
             }
-            let value: Value = serde_json::from_str(line.trim())
+            let mut value: Value = serde_json::from_str(line.trim())
                 .map_err(|error| format!("invalid dsh JSON: {error}"))?;
             let frame = decode_dsh_frame(&value)?;
+            self.map_state.prepare_approval_input(&mut value);
 
             if frame == DshFrame::Request {
                 handle_incoming_request(
@@ -957,12 +1037,13 @@ impl DshJsonRpcSession {
         if line.trim().is_empty() {
             return DshIdlePump::Quiet;
         }
-        let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+        let Ok(mut value) = serde_json::from_str::<Value>(line.trim()) else {
             return DshIdlePump::Dead;
         };
         if decode_dsh_frame(&value).is_err() {
             return DshIdlePump::Dead;
         }
+        self.map_state.prepare_approval_input(&mut value);
         self.classify_idle_value(&value)
     }
 
@@ -1464,7 +1545,7 @@ async fn handle_incoming_request(
                     .unwrap_or(&interaction_id)
                     .to_string(),
                 tool_name: tool_name.expect("validated tool name").to_string(),
-                input: params.clone(),
+                input: params.get("input").unwrap_or(params).clone(),
                 requires_user_interaction: true,
                 requires_manual_approval: true,
                 permission_suggestions: None,
@@ -3030,6 +3111,51 @@ mod tests {
     use serde_json::Value;
 
     #[test]
+    fn approval_cards_use_only_matching_unresolved_native_calls() {
+        let mut state = MapSessionState::default();
+        let event = |session: &str, kind: &str, data: Value| {
+            json!({
+                "method": "session.event", "params": {"sessionId": session, "event": {"type": kind, "data": data}}
+            })
+        };
+        for (session, command) in [("parent", "echo parent"), ("child", "echo child")] {
+            state.prepare_approval_input(&mut event(session, "tool/call", json!({
+                "callId":"same-id", "name":"bash", "arguments":json!({"command":command}).to_string()
+            })));
+        }
+        let ask = |session: &str, tool: &str| {
+            json!({"id":1,"method":"approval/request",
+            "params":{"sessionId":session,"toolName":tool,"callId":"same-id","reason":"outside workspace","input":{"command":"unverified"}}})
+        };
+        for (session, command) in [("parent", "echo parent"), ("child", "echo child")] {
+            let mut request = ask(session, "bash");
+            state.prepare_approval_input(&mut request);
+            assert_eq!(request["params"]["input"]["command"], command);
+            assert_eq!(
+                request["params"]["input"]["approvalReason"],
+                "outside workspace"
+            );
+        }
+        for (session, tool) in [("unrelated", "bash"), ("child", "write")] {
+            let mut request = ask(session, tool);
+            state.prepare_approval_input(&mut request);
+            assert!(request["params"].get("input").is_none());
+        }
+        state.prepare_approval_input(&mut event(
+            "child",
+            "tool/result",
+            json!({"message":{"content":[{
+                "type":"tool-result","toolCallId":"same-id"
+            }]}}),
+        ));
+        let mut request = ask("child", "bash");
+        state.prepare_approval_input(&mut request);
+        assert!(request["params"].get("input").is_none());
+        state.prepare_approval_input(&mut event("parent", "turn/end", json!({})));
+        assert!(state.approval_calls.is_empty());
+    }
+
+    #[test]
     fn approval_protocol_peer() {
         if std::env::var_os("KIVIO_DSH_APPROVAL_PEER").is_none() {
             return;
@@ -3065,7 +3191,7 @@ mod tests {
         let mut questions = VecDeque::new();
         let request = |id| {
             json!({"jsonrpc":"2.0","id":id,"method":"approval/request",
-            "params":{"sessionId":"child-session","toolName":"bash","callId":"call-1","reason":"outside workspace"}})
+            "params":{"sessionId":"child-session","toolName":"bash","callId":"call-1","reason":"outside workspace","input":{"command":"pwd"}}})
         };
         handle_incoming_request(
             &mut stdin,
@@ -3113,6 +3239,7 @@ mod tests {
             let ask = asks.try_recv().unwrap();
             assert!(asks.try_recv().is_err());
             assert!(ask.requires_manual_approval);
+            assert_eq!(ask.input["command"], "pwd");
             assert_eq!(ask.tool_call_id, "call-1");
             if id == 2 {
                 let decision = ApprovalDecision {
