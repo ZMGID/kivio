@@ -242,6 +242,22 @@ dialog.kv-modal {
   margin: auto;
 }
 
+/* 原生模态的进退场：面板与 ::backdrop 一起淡入，退场时同为 fast 同时收尾。
+   入场 fill 用 backwards：播完不留 transform，否则 dialog 会成为内部 fixed 菜单（Select 门户进 dialog）的包含块。 */
+dialog.kv-modal[open] {
+  animation: chat-motion-modal-in var(--kv-dur-normal) var(--kv-ease-standard) backwards;
+}
+dialog.kv-modal[open]::backdrop {
+  animation: chat-motion-fade var(--kv-dur-fast) var(--kv-ease-out) backwards;
+}
+dialog.kv-modal.is-closing {
+  animation: chat-motion-modal-out var(--kv-dur-fast) var(--kv-ease-in) both;
+  pointer-events: none;
+}
+dialog.kv-modal.is-closing::backdrop {
+  animation: chat-motion-fade-out var(--kv-dur-fast) var(--kv-ease-in) both;
+}
+
 /* 焦点环只在键盘操作时出现。data-focus-source 由 index.html 按最近输入来源维护：
    鼠标/触控操作期间，脚本聚焦（确认框默认按钮、菜单关闭还焦点等）也不画环，
    覆盖原生 outline 与各处 focus-visible:ring / outline 写法。文本输入框照常显示聚焦态。 */
@@ -309,10 +325,30 @@ html.dark[data-focus-source="keyboard"] :is(.chat-window-shell, dialog.kv-modal)
   width: min(340px, calc(100vw - 32px));
   z-index: 10000;
   display: grid;
-  gap: 8px;
   pointer-events: none;
   max-height: calc(100vh - 68px);
   overflow-y: auto;
+}
+/* 每条提示占一个槽：间距放在槽内，退场时槽高收到 0，下方提示平滑补位而不是跳上来。 */
+.kv-notice-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  padding-bottom: 8px;
+  animation: kv-notice-in var(--kv-dur-normal) var(--kv-ease-standard) backwards;
+}
+.kv-notice-slot > .kv-notice { min-height: 0; }
+.kv-notice-slot.is-leaving {
+  animation: kv-notice-out var(--kv-dur-normal) var(--kv-ease-in) both;
+  pointer-events: none;
+}
+.kv-notice-slot.is-leaving > .kv-notice { pointer-events: none; }
+@keyframes kv-notice-in {
+  from { opacity: 0; transform: translateX(16px) scale(0.98); }
+}
+@keyframes kv-notice-out {
+  from { opacity: 1; grid-template-rows: 1fr; padding-bottom: 8px; }
+  45% { opacity: 0; grid-template-rows: 1fr; padding-bottom: 8px; transform: translateX(12px); }
+  to { opacity: 0; grid-template-rows: 0fr; padding-bottom: 0; transform: translateX(12px); }
 }
 .kv-notice {
   display: flex;

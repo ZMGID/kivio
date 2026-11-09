@@ -115,7 +115,8 @@ it('keeps a saving draft when the page is left and shows the error for a later r
   await save()
   await act(async () => { await Promise.resolve() })
   expect(mocks.update.mock.lastCall?.[0].name).toBe('Helper draft')
-  expect(screen.queryByText('disk full')).not.toBeInTheDocument()
+  // 提示先播退场动画再卸载。
+  await waitFor(() => expect(screen.queryByText('disk full')).not.toBeInTheDocument())
 })
 
 it.each(['save', 'chatAssistantStartChat'])('keeps a returned editor open when its retired %s action finishes', async (action) => {

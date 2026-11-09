@@ -1,9 +1,12 @@
-import { useEffect, useId, useRef, useSyncExternalStore } from 'react'
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { Button } from './Button'
 import { useT } from './i18n'
 import { currentDialog, registerDialogHost, settleDialog, subscribeDialogs, type DialogRequest } from './dialogQueue'
 
 // 队列状态与 confirmDialog / alertDialog 见 ./dialogQueue.ts。
+
+/** 退场动画（--kv-dur-fast）的兜底时长：animationend 未触发时仍会出队。 */
+const DIALOG_EXIT_MS = 200
 
 /** 每个窗口根部挂一个；同一时间只显示队首的一个对话框。 */
 export function AppDialogHost() {
@@ -19,6 +22,7 @@ function AppDialog({ request }: { request: DialogRequest }) {
   const cancelRef = useRef<HTMLButtonElement>(null)
   const titleId = useId()
   const messageId = useId()
+  const [closing, setClosing] = useState(false)
   const isConfirm = request.kind === 'confirm'
   const danger = request.kind === 'confirm' && Boolean(request.options.danger)
   const { title, message } = request.options
@@ -37,7 +41,19 @@ function AppDialog({ request }: { request: DialogRequest }) {
     }
   }, [danger])
 
-  const finish = (value: boolean) => settleDialog(request.id, value)
+  // 答复立即交给调用方；对话框播完退场动画后才出队，下一个排队的对话框随后出现。
+  const answerRef = useRef(false)
+  const finish = (value: boolean) => {
+    if (closing) return
+    answerRef.current = value
+    request.resolve(value)
+    setClosing(true)
+  }
+  useEffect(() => {
+    if (!closing) return
+    const timer = window.setTimeout(() => settleDialog(request.id, answerRef.current), DIALOG_EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [closing, request.id])
 
   const confirmLabel = request.kind === 'confirm'
     ? request.options.confirmLabel || t.dialogConfirm
@@ -47,11 +63,15 @@ function AppDialog({ request }: { request: DialogRequest }) {
   return (
     <dialog
       ref={dialogRef}
-      className="kv-modal kv-app-dialog"
+      className={`kv-modal kv-app-dialog${closing ? ' is-closing' : ''}`}
       role="alertdialog"
       aria-modal="true"
+      aria-hidden={closing || undefined}
       aria-labelledby={title ? titleId : messageId}
       aria-describedby={title ? messageId : undefined}
+      onAnimationEnd={(event) => {
+        if (closing && event.target === event.currentTarget) settleDialog(request.id, answerRef.current)
+      }}
       // 模态框：按键不再冒泡到 window 上的监听（图片查看器 / 菜单的 Esc 等），免得连带关掉下层。
       onKeyDown={(event) => event.stopPropagation()}
       onCancel={(event) => {

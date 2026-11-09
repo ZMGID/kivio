@@ -2753,6 +2753,15 @@ dialog.kv-modal::backdrop {
   backdrop-filter: blur(1px);
 }
 
+/* 自绘弹窗入场：遮罩淡入、面板与聊天弹窗同款轻微上浮放大。退场由各弹窗直接卸载，不在此处理。
+   fill 用 backwards：播完不留 transform，避免把弹窗内 fixed 浮层的包含块钉到面板上。 */
+.kv-modal-backdrop {
+  animation: chat-motion-fade var(--kv-dur-fast) var(--kv-ease-out) backwards;
+}
+.kv-modal-backdrop > .kv-modal {
+  animation: chat-motion-modal-in var(--kv-dur-normal) var(--kv-ease-standard) backwards;
+}
+
 .kv-modal-backdrop--portal {
   position: fixed;
   z-index: 400;

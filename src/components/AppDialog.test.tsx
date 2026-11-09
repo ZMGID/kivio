@@ -16,6 +16,13 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** jsdom 不播动画：点击后手动结束退场，队列才会推进到下一个对话框。 */
+function clickAndClose(button: HTMLElement) {
+  fireEvent.click(button)
+  const closing = document.querySelector('dialog.kv-app-dialog.is-closing')
+  if (closing) fireEvent.animationEnd(closing)
+}
+
 describe('AppDialogHost', () => {
   it('resolves true on confirm and false on cancel', async () => {
     render(<AppDialogHost />)
@@ -24,14 +31,14 @@ describe('AppDialogHost', () => {
       answer = confirmDialog({ message: 'Delete it?', confirmLabel: 'Delete' })
     })
     expect(screen.getByRole('alertdialog', { name: 'Delete it?' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    clickAndClose(screen.getByRole('button', { name: 'Delete' }))
     await expect(answer).resolves.toBe(true)
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
 
     act(() => {
       answer = confirmDialog('Again?')
     })
-    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    clickAndClose(screen.getByRole('button', { name: '取消' }))
     await expect(answer).resolves.toBe(false)
   })
 
@@ -60,10 +67,10 @@ describe('AppDialogHost', () => {
     act(() => {
       void confirmDialog({ message: 'Next' })
     })
-    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    clickAndClose(screen.getByRole('button', { name: '取消' }))
     // 非破坏性确认：焦点落在确认键。
     expect(screen.getByRole('button', { name: '确定' })).toHaveFocus()
-    fireEvent.click(screen.getByRole('button', { name: '确定' }))
+    clickAndClose(screen.getByRole('button', { name: '确定' }))
   })
 
   it('shows queued dialogs one at a time in order', async () => {
@@ -76,10 +83,10 @@ describe('AppDialogHost', () => {
     })
     expect(screen.getAllByRole('alertdialog')).toHaveLength(1)
     expect(screen.getByRole('alertdialog', { name: 'First?' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '确定' }))
+    clickAndClose(screen.getByRole('button', { name: '确定' }))
     await expect(first).resolves.toBe(true)
     expect(screen.getByRole('alertdialog', { name: 'Second' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '好' }))
+    clickAndClose(screen.getByRole('button', { name: '好' }))
     await expect(second).resolves.toBeUndefined()
   })
 
@@ -102,10 +109,26 @@ describe('AppDialogHost', () => {
     const confirmation = screen.getByRole('alertdialog', { name: 'Discard changes?' })
     expect(confirmation).toHaveAttribute('open')
     expect(screen.getByRole('button', { name: '确定' })).toHaveFocus()
-    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    clickAndClose(screen.getByRole('button', { name: '取消' }))
     await expect(answer).resolves.toBe(false)
     expect(save).toHaveFocus()
     expect(screen.getByRole('dialog', { name: 'Editor' })).toHaveAttribute('open')
+  })
+
+  it('answers immediately and dequeues after the exit animation or its timeout', async () => {
+    vi.useFakeTimers()
+    render(<AppDialogHost />)
+    let first: Promise<boolean> = Promise.resolve(false)
+    act(() => {
+      first = confirmDialog('First?')
+      void confirmDialog('Second?')
+    })
+    fireEvent.click(screen.getByRole('button', { name: '确定' }))
+    await expect(first).resolves.toBe(true)
+    expect(document.querySelector('dialog.kv-app-dialog.is-closing')).not.toBeNull()
+    act(() => { vi.advanceTimersByTime(250) })
+    expect(screen.getByRole('alertdialog', { name: 'Second?' })).toBeInTheDocument()
+    vi.useRealTimers()
   })
 
   it('falls back to the native dialogs when no host is mounted', async () => {

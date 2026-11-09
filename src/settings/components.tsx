@@ -9,6 +9,8 @@ import { TextEditContextMenu } from './TextEditContextMenu'
 const MENU_GAP = 6
 const MENU_MARGIN = 8
 const MENU_MAX_HEIGHT = 260
+/** 退场动画（--kv-dur-fast）播完再卸载；animationend 未触发时的兜底。 */
+const MENU_EXIT_MS = 200
 
 function useSelectMenuRect(
   open: boolean,
@@ -131,6 +133,16 @@ function SelectMenuPortal({
   onPick: (value: string) => void
   compact?: boolean
 }) {
+  // 关闭后保留一个退场动画的挂载期；退场中的菜单不可交互、不进无障碍树。
+  const [mounted, setMounted] = useState(open)
+  if (open && !mounted) setMounted(true)
+  const closing = !open && mounted
+  useEffect(() => {
+    if (!closing) return
+    const timer = window.setTimeout(() => setMounted(false), MENU_EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [closing])
+
   useLayoutEffect(() => {
     if (!open) return
     const menu = menuRef.current
@@ -140,13 +152,26 @@ function SelectMenuPortal({
     }
   }, [open, value, menuRect.maxHeight, menuRef])
 
-  if (!open) return null
+  if (!open && !mounted) return null
+  const flipUp = menuRect.bottom !== undefined
   return createPortal(
     <div
       ref={menuRef as React.RefObject<HTMLDivElement>}
       role="listbox"
-      className={`kv-select-menu ${compact ? 'sm' : ''} fixed z-[1000] overflow-y-auto custom-scrollbar`}
-      style={{ left: menuRect.left, top: menuRect.top, bottom: menuRect.bottom, width: menuRect.width, maxHeight: menuRect.maxHeight }}
+      aria-hidden={closing || undefined}
+      className={`kv-select-menu ${compact ? 'sm' : ''} ${closing ? 'chat-motion-popover-out pointer-events-none' : 'chat-motion-popover'} fixed z-[1000] overflow-y-auto custom-scrollbar`}
+      style={{
+        left: menuRect.left,
+        top: menuRect.top,
+        bottom: menuRect.bottom,
+        width: menuRect.width,
+        maxHeight: menuRect.maxHeight,
+        ['--chat-popover-origin' as string]: flipUp ? 'bottom center' : 'top center',
+        ['--chat-popover-start-y' as string]: flipUp ? '3px' : '-3px',
+      }}
+      onAnimationEnd={(event) => {
+        if (closing && event.target === event.currentTarget) setMounted(false)
+      }}
       data-tauri-drag-region="false"
     >
       {options.map(opt => {
@@ -157,6 +182,7 @@ function SelectMenuPortal({
             type="button"
             role="option"
             aria-selected={active}
+            tabIndex={closing ? -1 : undefined}
             onClick={() => onPick(opt.value)}
             title={opt.title || opt.label}
             className={`kv-select-option ${active ? 'is-active' : ''}`}

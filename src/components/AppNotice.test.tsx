@@ -27,7 +27,21 @@ describe('shared operation errors', () => {
     fireEvent.click(screen.getByText('查看详情'))
     expect(screen.getByText(longError)).toBeVisible()
     fireEvent.click(screen.getAllByRole('button', { name: '关闭提示' })[2])
+    // 退场期间不再作为提示播报，播完后卸载。
+    expect(screen.getAllByRole('alert')).toHaveLength(2)
+    fireEvent.animationEnd(document.querySelector('.kv-notice-slot.is-leaving')!)
     expect(screen.queryByText(longError)).not.toBeInTheDocument()
+  })
+
+  it('keeps a dismissed notice mounted until its exit animation, with a timeout fallback', () => {
+    vi.useFakeTimers()
+    render(<AppNoticeHost />)
+    act(() => { notifyError('保存失败') })
+    fireEvent.click(screen.getByRole('button', { name: '关闭提示' }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(document.querySelector('.kv-notice-slot.is-leaving')).not.toBeNull()
+    act(() => { vi.advanceTimersByTime(300) })
+    expect(document.querySelector('.kv-notice-slot')).toBeNull()
   })
 
   it('follows page error state without reopening dismissed errors on ordinary renders or leaving stale errors', () => {
