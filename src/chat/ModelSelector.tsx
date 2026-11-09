@@ -230,7 +230,7 @@ function ModelSelectorBase({
       >
         {currentModel && <ModelIcon model={currentModel} size={16} />}
         <span className="chat-model-selector-label max-w-[200px] truncate font-medium text-neutral-800">{displayName}</span>
-        <ChevronDown size={15} className={`chat-model-selector-caret shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown size={15} className={`chat-model-selector-caret shrink-0 text-neutral-400 transition-transform ease-kv-standard ${open ? 'rotate-180' : ''}`} />
       </button>
       {portal ? createPortal(menu, document.body) : menu}
     </div>

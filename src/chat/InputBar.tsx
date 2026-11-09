@@ -2332,7 +2332,7 @@ export const InputBar = memo(function InputBar({
                 title={sendDisabledReason || (canSend ? t.chatSend : t.chatSendHintEmpty)}
                 aria-label={sendDisabledReason || t.chatSend}
                 aria-hidden={stopOwnsSendSlot}
-                className={`chat-composer-send absolute inset-0 flex items-center justify-center rounded-full transition-all duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-out)] ${
+                className={`chat-composer-send absolute inset-0 flex items-center justify-center rounded-full transition-[opacity,transform,background-color,color] ease-kv-standard ${
                   stopOwnsSendSlot
                     ? 'pointer-events-none scale-90 opacity-0'
                     : 'opacity-100'
@@ -2347,7 +2347,7 @@ export const InputBar = memo(function InputBar({
                   disabled={cancelling}
                   tabIndex={stopOwnsSendSlot ? undefined : -1}
                   aria-hidden={!stopOwnsSendSlot}
-                  className={`absolute inset-0 flex items-center justify-center rounded-full bg-neutral-900 text-neutral-50 transition-all duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:bg-neutral-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:disabled:text-neutral-500 ${
+                  className={`absolute inset-0 flex items-center justify-center rounded-full bg-neutral-900 text-neutral-50 transition-[opacity,transform,background-color,color] ease-kv-standard hover:bg-neutral-700 disabled:bg-neutral-300 disabled:text-neutral-500 dark:disabled:text-neutral-500 ${
                     stopOwnsSendSlot ? 'opacity-100' : 'pointer-events-none scale-90 opacity-0'
                   }`}
                   title={cancelling ? t.chatStopping : t.chatStopGenerating}

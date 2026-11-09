@@ -292,7 +292,7 @@
   color: inherit;
   background: transparent;
   cursor: pointer;
-  transition: color 0.12s ease;
+  transition: color var(--kv-dur-fast) var(--kv-ease-out);
 }
 .kv-subpage-entry:hover .kv-subpage-entry-title {
   color: var(--accent, #4f46e5);
@@ -316,7 +316,7 @@
   font-weight: 500;
   line-height: 1.3;
   color: var(--text);
-  transition: color 0.12s ease;
+  transition: color var(--kv-dur-fast) var(--kv-ease-out);
 }
 .kv-subpage-entry-title svg {
   flex-shrink: 0;
@@ -345,7 +345,7 @@
   font-size: 12px;
   color: var(--text-muted);
   opacity: 0.85;
-  transition: color 0.12s ease, opacity 0.12s ease;
+  transition: color var(--kv-dur-fast) var(--kv-ease-out), opacity var(--kv-dur-fast) var(--kv-ease-out);
 }
 .kv-subpage-back {
   display: flex;
@@ -593,7 +593,7 @@
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.15s;
+  transition: background-color var(--kv-dur-fast) var(--kv-ease-out);
   border: none;
   padding: 0;
 }
@@ -610,7 +610,7 @@
   border-radius: 50%;
   background: var(--theme-surface);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  transition: transform 0.15s;
+  transition: transform var(--kv-dur-fast) var(--kv-ease-standard);
 }
 .kv-toggle.on { background: var(--accent); }
 .kv-toggle.on::after { transform: translateX(12px); }
@@ -1094,7 +1094,7 @@ input[type="password"]::-ms-clear {
 .kv-progress > div {
   height: 100%;
   background: var(--accent);
-  transition: width 0.2s;
+  transition: width var(--kv-dur-normal) var(--kv-ease-out);
 }
 
 .kv-providers {
@@ -1151,7 +1151,7 @@ input[type="password"]::-ms-clear {
   color: var(--text);
   width: 100%;
   position: relative;
-  transition: background 0.15s ease, box-shadow 0.15s ease;
+  transition: background-color var(--kv-dur-fast) var(--kv-ease-out), box-shadow var(--kv-dur-fast) var(--kv-ease-out);
 }
 /* transform 过渡 + 合成层提升只在拖拽排序时启用：常态开启 will-change 会让 WebView2
    把每行常驻为合成层，间歇性吞掉首个 pointer 事件（表现为“点不动、要点两下”）。 */
@@ -1159,7 +1159,7 @@ input[type="password"]::-ms-clear {
   will-change: transform;
 }
 .kv-provider-list-items.is-sorting .kv-provider-item:not(.is-dragging) {
-  transition: transform 0.22s cubic-bezier(0.2, 0, 0, 1);
+  transition: transform var(--kv-dur-normal) var(--kv-ease-firm);
 }
 /* 侧栏分组（集/项目）与对话的插入线式拖拽：源行原地变淡作占位（**不位移**，
    否则列表会塌一个洞），一张跟手的浮起卡片表示正在搬的是哪个，目标位置画线。
@@ -1262,7 +1262,7 @@ input[type="password"]::-ms-clear {
   background: transparent;
   color: var(--text-muted);
   cursor: grab;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
 }
 .kv-provider-drag-handle:hover {
   background: var(--bg-hover);
@@ -1533,7 +1533,7 @@ input[type="password"]::-ms-clear {
 .kv-native-model-row {
   min-width: 0;
   padding: 10px 0;
-  animation: kv-native-model-row-in 0.16s ease-out;
+  animation: kv-native-model-row-in var(--kv-dur-fast) var(--kv-ease-standard);
 }
 .kv-native-model-row + .kv-native-model-row {
   border-top: 1px solid var(--divider);
@@ -1587,7 +1587,7 @@ input[type="password"]::-ms-clear {
   margin: 10px 38px 1px 36px;
   padding-top: 10px;
   border-top: 1px solid var(--divider);
-  animation: kv-native-model-row-in 0.16s ease-out;
+  animation: kv-native-model-row-in var(--kv-dur-fast) var(--kv-ease-standard);
 }
 .kv-native-model-main--opencode + .kv-native-model-advanced {
   margin-left: 0;
@@ -1736,7 +1736,7 @@ input[type="password"]::-ms-clear {
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color var(--kv-dur-fast) var(--kv-ease-out), background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out), box-shadow var(--kv-dur-fast) var(--kv-ease-out);
 }
 .kv-preset-btn:hover {
   border-color: var(--border-strong, var(--text-faint));
@@ -1790,7 +1790,7 @@ input[type="password"]::-ms-clear {
   color: var(--text-muted);
   cursor: pointer;
   box-shadow: var(--shadow-sm);
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+  transition: border-color var(--kv-dur-fast) var(--kv-ease-out), background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
 }
 .kv-suggest-input-toggle:hover {
   border-color: var(--border-strong, var(--text-faint));
@@ -1936,7 +1936,7 @@ input[type="password"]::-ms-clear {
   border-left: 4px solid var(--text-faint);
   border-top: 3.5px solid transparent;
   border-bottom: 3.5px solid transparent;
-  transition: transform 0.15s ease;
+  transition: transform var(--kv-dur-fast) var(--kv-ease-standard);
 }
 .kv-disclosure-caret.open { transform: rotate(90deg); }
 .kv-disclosure-count {
@@ -2550,7 +2550,7 @@ input[type="password"]::-ms-clear {
 .kv-dsh-chevron {
   flex-shrink: 0;
   color: var(--text-faint);
-  transition: transform 0.14s ease;
+  transition: transform var(--kv-dur-fast) var(--kv-ease-standard);
 }
 .kv-dsh-chevron.is-open {
   transform: rotate(180deg);
@@ -3019,7 +3019,7 @@ dialog.kv-modal::backdrop {
 .kv-model-picker-chevron {
   flex-shrink: 0;
   color: var(--text-muted);
-  transition: transform 0.15s ease;
+  transition: transform var(--kv-dur-fast) var(--kv-ease-standard);
 }
 
 .kv-model-picker-chevron.open {
@@ -3158,7 +3158,7 @@ dialog.kv-modal::backdrop {
   display: flex;
   flex-direction: column;
   z-index: 10000;
-  animation: kv-slide-in-right 0.2s ease;
+  animation: kv-slide-in-right var(--kv-dur-normal) var(--kv-ease-standard);
 }
 
 @keyframes kv-slide-in-right {

@@ -13,7 +13,7 @@
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
   cursor: default;
   white-space: nowrap;
-  animation: kv-add-to-chat-in 90ms ease-out;
+  animation: kv-add-to-chat-in var(--kv-dur-fast) var(--kv-ease-standard);
 }
 .dark .kv-add-to-chat {
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
@@ -106,7 +106,7 @@
 /* 墨团在状态行末尾接的那句嘴：淡入 + 从左滑 4px。key 随句子变，换句就重播。 */
 .kv-blob-quip {
   display: inline-block;
-  animation: kv-blob-quip-in 0.32s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation: kv-blob-quip-in var(--kv-dur-slow) var(--kv-ease-standard) both;
 }
 @keyframes kv-blob-quip-in {
   from { opacity: 0; transform: translateX(-4px); }
@@ -155,7 +155,7 @@
 }
 .kv-voice-caption { width: min(680px, calc(100% - 48px)); min-width: 0; margin-top: 16px; color: var(--text-muted); }
 .kv-voice-caption-line { min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-align: center; font-size: 18px; line-height: 28px; }
-.kv-voice-caption-text { display: inline-block; animation: kv-voice-stage-in 180ms var(--kv-ease-standard) both; }
+.kv-voice-caption-text { display: inline-block; animation: kv-voice-stage-in var(--kv-dur-fast) var(--kv-ease-out) both; }
 .kv-voice-call-bar-position { position: absolute; inset: auto 12px 32px; display: flex; justify-content: center; }
 .kv-voice-call-bar {
   display: flex;

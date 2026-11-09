@@ -39,6 +39,15 @@
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
 
+  /* 动效 token → Tailwind：ease-kv-standard 等工具类；未写时长/曲线的 transition-* 默认走 fast + kv-ease-out。 */
+  --ease-kv-standard: var(--kv-ease-standard);
+  --ease-kv-firm: var(--kv-ease-firm);
+  --ease-kv-spring: var(--kv-ease-spring);
+  --ease-kv-out: var(--kv-ease-out);
+  --ease-kv-in: var(--kv-ease-in);
+  --default-transition-duration: var(--kv-dur-fast);
+  --default-transition-timing-function: var(--kv-ease-out);
+
   /* 中性色阶只定义一次，不在 .dark 里再翻转。
      50–300 走纸面/边框，400 仍是弱文字、500 仍是次要文字，900 是主文字。
      明暗由主题运行时替换底层 token，text-neutral-400 不会被翻成深色块。
@@ -176,12 +185,15 @@ html.windows body {
   --kv-ease-firm: cubic-bezier(0.2, 0, 0, 1);          /* 拖拽/重排：起步快、落点稳 */
   --kv-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1); /* 轻弹：按压回弹、强调微动效 */
   --kv-ease-out: cubic-bezier(0.33, 1, 0.68, 1);       /* 收尾型：颜色/透明度过渡 */
+  --kv-ease-in: cubic-bezier(0.4, 0, 1, 1);            /* 退场：越走越快，避免半途「停住」 */
+  --kv-ease-inout: cubic-bezier(0.45, 0.05, 0.55, 0.95); /* 循环：呼吸/脉冲/波动等往复动画 */
 
   /* 时长（保持短促；交互反馈优先 instant/fast） */
   --kv-dur-instant: 90ms;  /* 按压/hover 等即时反馈 */
-  --kv-dur-fast: 150ms;    /* 弹出/小过渡 */
-  --kv-dur-normal: 220ms;  /* 入场/展开/cross-fade */
-  --kv-dur-slow: 320ms;    /* 较大位移/侧栏折叠 */
+  --kv-dur-fast: 150ms;    /* hover 颜色、弹出、小过渡、箭头旋转 */
+  --kv-dur-normal: 220ms;  /* 入场/展开/cross-fade、退场 */
+  --kv-dur-slow: 320ms;    /* 整页/大面板入场、较大位移 */
+  /* 加载、脉冲等循环动画和压缩分隔线这类仪式性动画按各自节奏，不套用以上档位。 */
 }
 
 /* 主题切换过渡：仅在首帧主题应用完成后（<html> 加 .theme-transitions-ready）才对主要表面的

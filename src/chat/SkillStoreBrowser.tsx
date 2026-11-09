@@ -148,7 +148,7 @@ export function SkillStoreBrowser() {
                 <div
                   key={`${card.slug}-${idx}`}
                   style={{ '--chat-motion-delay': `${Math.min(idx % PAGE_LIMIT, 8) * 24}ms` } as CSSProperties}
-                  className="chat-motion-fade-up group flex flex-col rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
+                  className="chat-motion-fade-up group flex flex-col rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow,transform] ease-kv-standard hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">{card.displayName}</span>

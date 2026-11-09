@@ -345,7 +345,7 @@
    不用扫光 / background-clip:text（WebView 会退化成色块）。 */
 .chat-composer-shell .chat-composer-editor.is-optimizing {
   caret-color: transparent;
-  animation: chat-composer-optimize-wait 1.7s ease-in-out infinite;
+  animation: chat-composer-optimize-wait 1.7s var(--kv-ease-inout) infinite;
 }
 
 .chat-composer-shell .chat-composer-editor.is-optimize-out {
@@ -398,7 +398,7 @@
 .kv-icon-btn.is-prompt-optimizing:disabled {
   opacity: 1;
   cursor: default;
-  animation: chat-composer-optimize-wand 1.4s ease-in-out infinite;
+  animation: chat-composer-optimize-wand 1.4s var(--kv-ease-inout) infinite;
 }
 
 @keyframes chat-composer-optimize-wand {
@@ -1284,7 +1284,7 @@ button.chat-composer-status-item:hover {
   /* 文字色而非 surface 色：surface-active 与选中行底色相同，竖线会被吞掉 */
   background: var(--text-muted);
   transform-origin: center;
-  animation: chat-gen-wave 1.4s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  animation: chat-gen-wave 1.4s var(--kv-ease-inout) infinite;
 }
 
 .chat-gen-wave > span:nth-child(1) { animation-delay: 0s; }
@@ -1382,13 +1382,13 @@ button.chat-composer-status-item:hover {
    等中心页内有 `fixed inset-0` 遮罩与弹窗，任何非 none 的 transform（包括 translateY(0)
    保留下来的 matrix(1,0,0,1,0,0)）都会把它们的包含块从视口钉到本元素上，遮罩不再铺满窗口。 */
 .chat-motion-view-in {
-  animation: chat-motion-view-in 280ms var(--kv-ease-standard) backwards;
+  animation: chat-motion-view-in var(--kv-dur-slow) var(--kv-ease-standard) backwards;
 }
 
 /* 中心页内部层级递进：只作用于中心页结构（assistant-center-root > main > 容器 > 大块）。
    设置页（无 assistant-center-root）不受影响，卡片自身的 fade-up stagger 在更深层、互不干扰。 */
 .chat-motion-view-in .assistant-center-root > main > div > * {
-  animation: chat-motion-panel-in 380ms var(--kv-ease-standard) both;
+  animation: chat-motion-panel-in var(--kv-dur-slow) var(--kv-ease-standard) both;
 }
 
 .chat-motion-view-in .assistant-center-root > main > div > *:nth-child(2) {
@@ -1416,7 +1416,7 @@ button.chat-composer-status-item:hover {
 }
 
 .chat-motion-row {
-  animation: chat-motion-row 180ms var(--kv-ease-standard) both;
+  animation: chat-motion-row var(--kv-dur-fast) var(--kv-ease-standard) both;
   animation-delay: var(--chat-motion-delay, 0ms);
 }
 
@@ -1454,7 +1454,7 @@ button.chat-composer-status-item:hover {
   }
 }
 .kv-search-focus-flash {
-  animation: kv-search-focus-flash 1.5s ease-out 1;
+  animation: kv-search-focus-flash 1.5s var(--kv-ease-out) 1;
   border-radius: 10px;
 }
 
@@ -1462,7 +1462,7 @@ button.chat-composer-status-item:hover {
    仅在打开态挂载（关闭走 chat-motion-popover-out，不带此 class，避免退场时重播）。
    纯 CSS nth-child 级联，复用 chat-motion-row 关键帧（reduced-motion 全局兜底覆盖）。 */
 .chat-motion-menu-cascade > * {
-  animation: chat-motion-row 160ms var(--kv-ease-standard) both;
+  animation: chat-motion-row var(--kv-dur-fast) var(--kv-ease-standard) both;
 }
 .chat-motion-menu-cascade > *:nth-child(1) { animation-delay: 20ms; }
 .chat-motion-menu-cascade > *:nth-child(2) { animation-delay: 44ms; }
@@ -1578,7 +1578,7 @@ button.chat-composer-status-item:hover {
 }
 
 .chat-motion-soft-pulse {
-  animation: chat-motion-soft-pulse 1.8s ease-in-out infinite;
+  animation: chat-motion-soft-pulse 1.8s var(--kv-ease-inout) infinite;
 }
 
 /* 多模型头像堆叠：新模型加入时从小弹入 */
@@ -1598,7 +1598,7 @@ button.chat-composer-status-item:hover {
 }
 
 .chat-motion-search-reveal {
-  animation: chat-motion-search-reveal 180ms var(--kv-ease-standard) both;
+  animation: chat-motion-search-reveal var(--kv-dur-fast) var(--kv-ease-standard) both;
 }
 
 .chat-motion-reveal {
@@ -1607,9 +1607,9 @@ button.chat-composer-status-item:hover {
   opacity: 0;
   transform: translateY(-2px);
   transition:
-    grid-template-rows 180ms var(--kv-ease-standard),
-    opacity 160ms var(--kv-ease-out),
-    transform 180ms var(--kv-ease-standard);
+    grid-template-rows var(--kv-dur-normal) var(--kv-ease-standard),
+    opacity var(--kv-dur-fast) var(--kv-ease-out),
+    transform var(--kv-dur-normal) var(--kv-ease-standard);
 }
 
 .chat-motion-reveal.is-open {
@@ -1666,7 +1666,7 @@ button.chat-composer-status-item:hover {
   border-radius: 999px;
   background: var(--theme-surface-active);
   box-shadow: 0 0 0 0 rgba(163, 163, 163, 0.3);
-  animation: image-generation-indicator-pulse 1.8s ease-in-out infinite;
+  animation: image-generation-indicator-pulse 1.8s var(--kv-ease-inout) infinite;
 }
 
 .dark .image-generation-pending-indicator {
@@ -1700,7 +1700,7 @@ button.chat-composer-status-item:hover {
 }
 
 .chat-motion-exit {
-  animation: chat-motion-exit var(--kv-dur-fast) var(--kv-ease-out) both;
+  animation: chat-motion-exit var(--kv-dur-fast) var(--kv-ease-in) both;
   pointer-events: none;
 }
 
@@ -1747,7 +1747,7 @@ button.chat-composer-status-item:hover {
   }
 }
 .chat-motion-modal-out {
-  animation: chat-motion-modal-out var(--kv-dur-normal) var(--kv-ease-out) both;
+  animation: chat-motion-modal-out var(--kv-dur-fast) var(--kv-ease-in) both;
 }
 
 @keyframes chat-motion-fade-out {
@@ -1759,7 +1759,7 @@ button.chat-composer-status-item:hover {
   }
 }
 .chat-motion-fade-out {
-  animation: chat-motion-fade-out var(--kv-dur-fast) var(--kv-ease-out) both;
+  animation: chat-motion-fade-out var(--kv-dur-fast) var(--kv-ease-in) both;
 }
 
 @keyframes chat-motion-popover-out {
@@ -1774,7 +1774,7 @@ button.chat-composer-status-item:hover {
 }
 .chat-motion-popover-out {
   transform-origin: var(--chat-popover-origin, top left);
-  animation: chat-motion-popover-out var(--kv-dur-fast) var(--kv-ease-out) both;
+  animation: chat-motion-popover-out var(--kv-dur-fast) var(--kv-ease-in) both;
 }
 
 /* 微动效：成功反馈（复制 ✓ 等）弹入。靠全局兜底在 reduced-motion 下变瞬时。 */
@@ -1865,7 +1865,7 @@ button.chat-composer-status-item:hover {
    fill 用 backwards 而非 both：动画结束后不能残留 transform —— .chat-main-pane 内有
    InputBar 的 `fixed inset-0` 遮罩，任何 transform 都会把它们的包含块钉到本元素上。 */
 .chat-motion-pane-in {
-  animation: chat-motion-view-in 260ms var(--kv-ease-standard) backwards;
+  animation: chat-motion-view-in var(--kv-dur-slow) var(--kv-ease-standard) backwards;
 }
 
 /* 设置页入场：从底部轻微上浮。位移用固定 px 而非 %（% 是元素自身高度，整页高度下会变成
@@ -1886,15 +1886,15 @@ button.chat-composer-status-item:hover {
   opacity: 1;
   transform: translateY(0);
   transition:
-    opacity 320ms var(--kv-ease-standard),
-    transform 320ms var(--kv-ease-standard);
+    opacity var(--kv-dur-slow) var(--kv-ease-standard),
+    transform var(--kv-dur-slow) var(--kv-ease-standard);
 }
 
 /* 设置页退场：下滑淡出。退场要加速曲线（越滑越快），减速曲线会在半途「停住」；
    时长与 Chat.tsx handleSettingsClose 的卸载延时一致（220ms）——进出时长不能差太多，
    否则是"缓缓推上来、啪一下掉下去"。终点全透明避免冻帧可见。 */
 .chat-motion-settings-out {
-  animation: chat-motion-settings-out 220ms cubic-bezier(0.4, 0, 1, 1) both;
+  animation: chat-motion-settings-out var(--kv-dur-normal) var(--kv-ease-in) both;
   will-change: transform, opacity;
   pointer-events: none;
 }
@@ -1913,11 +1913,11 @@ button.chat-composer-status-item:hover {
 /* 设置 section 切换入场（对齐 LiveAgent settingsSectionIn / settingsSectionTitleIn）：
    标题与内容各自 key={activeTab} 重播，内容 14px + 轻缩放，标题 8px。 */
 .settings-section-enter {
-  animation: settings-section-in 0.3s var(--kv-ease-standard) both;
+  animation: settings-section-in var(--kv-dur-slow) var(--kv-ease-standard) both;
   will-change: transform, opacity;
 }
 .settings-section-title-enter {
-  animation: settings-section-title-in 0.24s var(--kv-ease-standard) both;
+  animation: settings-section-title-in var(--kv-dur-normal) var(--kv-ease-standard) both;
   will-change: transform, opacity;
 }
 @keyframes settings-section-in {
@@ -2003,7 +2003,7 @@ button.chat-composer-status-item:hover {
 .chat-motion-tab-in {
   /* backwards：播完卸掉 transform，避免 fill-mode:both 把 translateY(0) 留在层上，
      子节点增删时整列合成层闪一下（侧栏归档最明显）。 */
-  animation: chat-motion-tab-in 200ms var(--kv-ease-standard) backwards;
+  animation: chat-motion-tab-in var(--kv-dur-normal) var(--kv-ease-standard) backwards;
 }
 
 @keyframes chat-motion-tab-in {
@@ -2047,7 +2047,7 @@ button.chat-composer-status-item:hover {
 /* 子 Agent「运行中」状态行：紫色文字亮度呼吸（autonomous agent working） */
 .chat-motion-subagent-shimmer {
   color: rgb(139, 92, 246);
-  animation: chat-motion-text-pulse 2s ease-in-out infinite;
+  animation: chat-motion-text-pulse 2s var(--kv-ease-inout) infinite;
 }
 
 .dark .chat-motion-subagent-shimmer {
@@ -2057,7 +2057,7 @@ button.chat-composer-status-item:hover {
 /* 普通工具「运行中」状态：主题强调色亮度呼吸，整行不缩放/发光。 */
 .chat-motion-tool-shimmer {
   color: var(--accent);
-  animation: chat-motion-text-pulse 2s ease-in-out infinite;
+  animation: chat-motion-text-pulse 2s var(--kv-ease-inout) infinite;
 }
 
 
@@ -2433,7 +2433,7 @@ button.chat-composer-status-item:hover {
 .chat-session-usage-grid > i[data-k='input'] { background: color-mix(in srgb, var(--accent) 45%, transparent); }
 .chat-session-usage-grid > i[data-k='output'] { background: var(--text-muted); }
 .chat-session-usage[data-live] .chat-session-usage-grid > i {
-  animation: chat-session-usage-wave 1.2s ease-in-out infinite;
+  animation: chat-session-usage-wave 1.2s var(--kv-ease-inout) infinite;
   animation-delay: calc(var(--c) * 45ms);
 }
 @keyframes chat-session-usage-in { from { opacity: 0; transform: scale(0.2); } }

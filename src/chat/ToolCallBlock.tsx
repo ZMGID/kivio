@@ -561,7 +561,7 @@ function ConsultCard({
   const hasBody = Boolean(children)
   const running = status === 'running'
   return (
-    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors duration-200 hover:bg-neutral-100/70 dark:text-neutral-400">
+    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400">
       <button
         type="button"
         onClick={() => { if (hasBody) setOpen((v) => !v) }}

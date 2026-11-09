@@ -29,7 +29,7 @@ export function PanelRow({ icon, children, trailing, onClick, disabled, title }:
       {icon}
       {children}
       {trailing && (
-        <span className="ms-auto flex shrink-0 opacity-0 transition-opacity duration-150 group-hover/row:opacity-100 group-focus-visible/row:opacity-100">
+        <span className="ms-auto flex shrink-0 opacity-0 transition-opacity group-hover/row:opacity-100 group-focus-visible/row:opacity-100">
           {trailing}
         </span>
       )}
@@ -107,7 +107,7 @@ export function SplitRow({ icon, label, meta, onPrimary, disabled, hint, menuLab
             onClick={toggle}
             className={`${CONTROL} w-8 justify-center rounded-s-none px-0 ${SURFACE}`}
           >
-            <ChevronDown className={`${PANEL_ICON} transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+            <ChevronDown className={`${PANEL_ICON} transition-transform ease-kv-standard ${open ? 'rotate-180' : ''}`} />
           </button>
           {presence.present && (
             <SplitMenu anchor={groupRef} closing={presence.closing} onClose={close}>{menu(close)}</SplitMenu>

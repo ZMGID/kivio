@@ -474,7 +474,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
             onClick={() => setExpandedId(expanded ? null : server.id)}
             data-tauri-drag-region="false"
           >
-            <ChevronDown size={15} className={`shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${expanded ? 'rotate-180' : ''}`} />
+            <ChevronDown size={15} className={`shrink-0 text-neutral-400 transition-transform ease-kv-standard ${expanded ? 'rotate-180' : ''}`} />
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <span className="truncate text-[13.5px] font-medium">{server.name}</span>

@@ -149,7 +149,7 @@ function AssistantSuiteCard({
       data-tauri-drag-region="false"
       aria-label={t.chatAssistantOpenNamed.replace('{name}', assistant.name)}
       style={{ '--chat-motion-delay': `${Math.min(index, 8) * 24}ms` } as CSSProperties}
-      className="chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 text-left shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15"
+      className="chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 text-left shadow-sm transition-[border-color,box-shadow,transform] ease-kv-standard hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2.5">

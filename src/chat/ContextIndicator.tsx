@@ -419,7 +419,7 @@ export function ContextIndicator({
               strokeLinecap="round"
               strokeDasharray={RING_CIRCUMFERENCE}
               strokeDashoffset={RING_CIRCUMFERENCE * (1 - ringRatio)}
-              className="transition-[stroke-dashoffset,stroke] duration-500 ease-out"
+              className="transition-[stroke-dashoffset,stroke] duration-500 ease-kv-out"
             />
           )}
         </svg>

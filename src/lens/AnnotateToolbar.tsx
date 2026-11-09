@@ -68,7 +68,7 @@ export function AnnotateToolbar({
           ? 'translateY(0) scale(1)'
           : `translateY(${placeAbove ? 8 : -8}px) scale(0.92)`,
         opacity: entered ? 1 : 0,
-        transition: 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease-out',
+        transition: 'transform var(--kv-dur-normal) var(--kv-ease-standard), opacity var(--kv-dur-fast) var(--kv-ease-out)',
         willChange: 'transform, opacity',
       }}
       onMouseDown={(e) => e.stopPropagation()}
@@ -85,7 +85,7 @@ export function AnnotateToolbar({
               type="button"
               title={label}
               onClick={() => onToolChange(kind)}
-              className={`w-9 h-9 rounded-[10px] flex items-center justify-center transition-all duration-150 ${
+              className={`w-9 h-9 rounded-[10px] flex items-center justify-center transition-[background-color,color,box-shadow,transform] ${
                 active
                   ? 'bg-neutral-900 text-neutral-50 scale-100 shadow-sm'
                   : 'text-neutral-600 hover:bg-neutral-900/[0.05] active:scale-90'
@@ -103,7 +103,7 @@ export function AnnotateToolbar({
           title={labels.undo}
           onClick={onUndo}
           disabled={!canUndo}
-          className={`w-9 h-9 rounded-[10px] flex items-center justify-center transition-all duration-150 ${
+          className={`w-9 h-9 rounded-[10px] flex items-center justify-center transition-[background-color,color,box-shadow,transform] ${
             canUndo
               ? 'text-neutral-600 hover:bg-neutral-900/[0.05] active:scale-90'
               : 'text-neutral-300 dark:text-neutral-600 cursor-not-allowed'
@@ -119,7 +119,7 @@ export function AnnotateToolbar({
           title={labels.save}
           onClick={onSave}
           disabled={saving}
-          className="h-9 px-3 rounded-[10px] flex items-center gap-1.5 text-[13px] font-medium text-neutral-700 hover:bg-neutral-900/[0.05] active:scale-95 transition-all duration-150 disabled:opacity-50"
+          className="h-9 px-3 rounded-[10px] flex items-center gap-1.5 text-[13px] font-medium text-neutral-700 hover:bg-neutral-900/[0.05] active:scale-95 transition-[background-color,color,box-shadow,transform] disabled:opacity-50"
         >
           {saving ? <Loader2 size={15} strokeWidth={1.75} className="animate-spin" /> : <Save size={15} strokeWidth={1.75} />}
           <span>{saving ? labels.saving : labels.save}</span>
@@ -129,7 +129,7 @@ export function AnnotateToolbar({
           type="button"
           title={labels.copy}
           onClick={onCopy}
-          className={`h-9 px-3.5 rounded-[10px] flex items-center gap-1.5 text-[13px] font-medium transition-all duration-150 active:scale-95 ${
+          className={`h-9 px-3.5 rounded-[10px] flex items-center gap-1.5 text-[13px] font-medium transition-[background-color,color,box-shadow,transform] active:scale-95 ${
             copied
               ? 'bg-green-500 text-white'
               : 'bg-neutral-900 text-neutral-50 hover:bg-neutral-700'

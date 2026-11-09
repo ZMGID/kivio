@@ -84,7 +84,7 @@
 .kv-media-pending { display: flex; flex-direction: column; gap: 14px; }
 .kv-media-pending-canvas { position: relative; display: grid; place-items: center; width: min(100%, calc(var(--kv-media-canvas-height, 360px) * var(--kv-media-ratio, 1))); aspect-ratio: var(--kv-media-ratio, 1); margin: 0 auto; border-radius: 12px; background: var(--color-muted); color: var(--text-faint); overflow: hidden; }
 .kv-media-pending-canvas::after { content: ''; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 30%, color-mix(in srgb, var(--bg-input) 65%, transparent) 50%, transparent 70%); transform: translateX(-100%); animation: kv-media-sheen 1.8s var(--kv-ease-standard) infinite; }
-.kv-media-pending-canvas > svg { animation: kv-media-breathe 1.8s ease-in-out infinite; }
+.kv-media-pending-canvas > svg { animation: kv-media-breathe 1.8s var(--kv-ease-inout) infinite; }
 .kv-media-pending-ratio { position: absolute; right: 10px; bottom: 8px; font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--text-faint); }
 .kv-media-pending-status { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; width: min(100%, max(340px, calc(var(--kv-media-canvas-height, 360px) * var(--kv-media-ratio, 1)))); margin: 0 auto; }
 .kv-media-pending-status p { margin: 0; color: var(--text); font-size: 13px; font-weight: 500; }

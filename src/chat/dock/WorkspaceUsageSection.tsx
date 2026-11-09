@@ -41,7 +41,7 @@ function MeterRow({ label, value, percent, tone, detail }: {
         className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-neutral-200/80 dark:bg-white/10"
       >
         {percent !== null && (
-          <span className={`block h-full rounded-full transition-[width] duration-500 ease-out ${bar}`} style={{ width: `${Math.max(2, Math.min(100, percent))}%` }} />
+          <span className={`block h-full rounded-full transition-[width] duration-500 ease-kv-out ${bar}`} style={{ width: `${Math.max(2, Math.min(100, percent))}%` }} />
         )}
       </span>
       <span className="shrink-0 tabular-nums text-neutral-600 dark:text-neutral-300">{value}</span>

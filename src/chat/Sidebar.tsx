@@ -412,14 +412,14 @@ function ExtensionsNav({
         }`}
         aria-expanded={expanded}
       >
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition duration-300 ease-out group-hover:text-neutral-800 dark:text-neutral-400">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition-colors group-hover:text-neutral-800 dark:text-neutral-400">
           <ExtensionsIcon size={18} strokeWidth={1.75} />
         </span>
         <span className="min-w-0 flex-1 truncate">{t.chatNavExtensions}</span>
         <ChevronRight
           size={14}
           strokeWidth={2}
-          className={`shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] dark:text-neutral-500 ${
+          className={`shrink-0 text-neutral-400 transition-transform ease-kv-standard dark:text-neutral-500 ${
             expanded ? 'rotate-90' : ''
           }`}
         />

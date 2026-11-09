@@ -19,7 +19,7 @@
 }
 
 .animate-lens-rise {
-  animation: lens-rise 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: lens-rise var(--kv-dur-slow) var(--kv-ease-standard) both;
 }
 
 /* Lens 整窗 fade-in：避免 webview show 那一帧 backdrop-filter 未合成时
@@ -31,7 +31,7 @@
 }
 
 .animate-lens-frame-fade {
-  animation: lens-frame-fade 220ms ease-out both;
+  animation: lens-frame-fade var(--kv-dur-normal) var(--kv-ease-out) both;
 }
 
 .chat-window-host {

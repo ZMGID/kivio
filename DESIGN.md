@@ -195,7 +195,7 @@ Windows / Linux 的 Dock 工具栏并入窗口顶栏右段，与面板同宽同�
 
 阴影保留现有作用域差异：root 的 shadow-sm 是主题文字混色，设置 .kv 的 shadow-sm / shadow-md 使用自身明暗值；深色嵌入设置卡片取消阴影。菜单采用多层柔和投影，window-frosted 使用饱和度与模糊（160% / 28px）。准确值在 sidecar 的 extensions.shadows 中，不复制为新的 CSS 来源。
 
-动效引用全局 --kv-ease-* 与 --kv-dur-*；目前仍有部分控件使用局部时长，不声称已全部统一。减少动态效果规则位于 chat-01-main.css，将时长压至（0.01ms），保留结束事件，取消按钮按压缩放。侧栏布局瞬时切换，仅透明度淡出，不动画 margin-left。
+动效统一引用 index.css 中的 --kv-ease-*（standard 入场展开、firm 拖拽重排、spring 弹性反馈、out 颜色透明度、in 退场、inout 循环往复）与 --kv-dur-*（instant 90 / fast 150 / normal 220 / slow 320ms）；Tailwind 侧使用 ease-kv-* 工具类，未指定时长与曲线的 transition-* 默认 fast + kv-ease-out，组件内不再写 duration-150 之类的固定数值，也不用 transition-all。hover 颜色、箭头旋转、菜单项与小弹出用 fast；展开、Tab 切换与区块标题入场用 normal；整页、中心页与设置区块入场用 slow。退场使用 kv-ease-in，模态面板与遮罩同为 fast，同时收尾。循环加载动画、进度数值填充、压缩分隔线等仪式性动画按各自节奏；Lens 浮层的位置与尺寸动画与原生窗口动画同步，沿用 TRANSITION_MS。减少动态效果规则位于 chat-01-main.css，将时长压至（0.01ms），保留结束事件，取消按钮按压缩放。侧栏布局瞬时切换，仅透明度淡出，不动画 margin-left。
 
 html、body 和 root 保持透明，让原生材质与截图浮窗继续工作。浏览器预览不能证明原生材质效果。
 

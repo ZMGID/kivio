@@ -115,7 +115,7 @@ export function SetDialog({
         <div className="px-5 pt-5 pb-4">
           <div className="flex items-start gap-3.5">
             <div
-              className={`grid size-12 shrink-0 place-items-center rounded-2xl transition-colors duration-200 ${
+              className={`grid size-12 shrink-0 place-items-center rounded-2xl transition-colors ${
                 color ? '' : 'bg-neutral-900/[0.05] text-neutral-400 dark:text-neutral-500'
               }`}
               style={color ? { backgroundColor: `${color}24`, color: accent } : undefined}

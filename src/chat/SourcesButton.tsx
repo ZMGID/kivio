@@ -21,7 +21,7 @@ function Switch({ checked }: { checked: boolean }) {
       }`}
     >
       <span
-        className={`absolute left-0.5 size-[14px] rounded-full bg-neutral-50 shadow-sm transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-spring)] ${
+        className={`absolute left-0.5 size-[14px] rounded-full bg-neutral-50 shadow-sm transition-transform ease-kv-spring ${
           checked ? 'translate-x-3' : ''
         }`}
       />

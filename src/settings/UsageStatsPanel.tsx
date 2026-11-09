@@ -633,7 +633,7 @@ function ModelDonut({ rows, lang }: { rows: UsageGroupStats[]; lang: string }) {
               opacity={hover == null || hover === arc.index ? 1 : 0.28}
               onMouseEnter={() => setHover(arc.index)}
               onMouseLeave={() => setHover(null)}
-              style={{ transition: 'opacity 160ms' }}
+              style={{ transition: 'opacity var(--kv-dur-fast) var(--kv-ease-out)' }}
             />
           ))}
         </svg>

@@ -203,7 +203,7 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
                 <div
                   key={card.id}
                   style={{ '--chat-motion-delay': `${Math.min(idx % PAGE_LIMIT, 8) * 24}ms` } as CSSProperties}
-                  className="chat-motion-fade-up group rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow,transform] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
+                  className="chat-motion-fade-up group rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow,transform] ease-kv-standard hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">

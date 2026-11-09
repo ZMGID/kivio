@@ -150,7 +150,7 @@ function SkillCard({
       data-tauri-drag-region="false"
       title={t.chatSkillViewFull}
       style={{ '--chat-motion-delay': `${Math.min(index, 8) * 24}ms` } as CSSProperties}
-      className={`chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border p-3.5 text-left transition-[border-color,box-shadow,transform,background-color] duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15 ${
+      className={`chat-motion-fade-up group flex h-full min-w-0 cursor-pointer flex-col rounded-xl border p-3.5 text-left transition-[border-color,box-shadow,transform,background-color] ease-kv-standard focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-900/15 ${
         enabled
           ? 'border-neutral-200 bg-neutral-50 shadow-sm hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md'
           : 'border-neutral-200/80 bg-neutral-50/60 hover:-translate-y-0.5 hover:border-neutral-300 hover:bg-neutral-50 hover:shadow-md'
@@ -263,7 +263,7 @@ function SkillSection({
         {collapsible && (
           <ChevronDown
             size={16}
-            className={`shrink-0 text-neutral-400 transition-transform duration-[var(--kv-dur-fast)] ease-[var(--kv-ease-standard)] ${collapsed ? '-rotate-90' : ''}`}
+            className={`shrink-0 text-neutral-400 transition-transform ease-kv-standard ${collapsed ? '-rotate-90' : ''}`}
           />
         )}
         <h3 className="text-[15px] font-semibold text-neutral-700">{title}</h3>

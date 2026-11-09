@@ -513,7 +513,7 @@
 .kv-automation-run-capsule.is-error .kv-automation-run-dot { background: #dc2626; }
 .kv-automation-run-capsule.is-running .kv-automation-run-dot {
   background: var(--accent);
-  animation: kv-automation-run-pulse 1.2s ease-in-out infinite;
+  animation: kv-automation-run-pulse 1.2s var(--kv-ease-inout) infinite;
 }
 .kv-automation-run-capsule.is-cancelled .kv-automation-run-dot { background: #ca8a04; }
 
@@ -561,7 +561,7 @@
 .kv-automation-run-chevron {
   flex-shrink: 0;
   color: var(--text-faint);
-  transition: transform 0.16s ease;
+  transition: transform var(--kv-dur-fast) var(--kv-ease-standard);
 }
 
 .kv-automation-run-chevron.is-open {
@@ -674,7 +674,7 @@
   box-shadow:
     0 1px 2px rgba(0, 0, 0, 0.05),
     0 6px 16px -8px rgba(0, 0, 0, 0.12);
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color var(--kv-dur-fast) var(--kv-ease-out), box-shadow var(--kv-dur-fast) var(--kv-ease-out);
 }
 
 .dark .kv-automation-node-card {
@@ -1001,7 +1001,7 @@
   transform: translateX(-50%);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--kv-dur-fast) var(--kv-ease-out);
 }
 
 .dark .kv-automation-node-toolbar {
@@ -1100,7 +1100,7 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s ease;
+  transition: opacity var(--kv-dur-fast) var(--kv-ease-out);
 }
 
 .dark .kv-automation-edge-actions {

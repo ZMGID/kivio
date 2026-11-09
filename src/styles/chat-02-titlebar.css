@@ -53,7 +53,7 @@
   background: var(--dot-color);
   box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.12);
   cursor: default;
-  transition: filter 0.12s ease;
+  transition: filter var(--kv-dur-fast) var(--kv-ease-out);
 }
 
 .chat-traffic:hover .chat-traffic-dot {
@@ -206,8 +206,8 @@
   line-height: 1;
   cursor: default;
   transition:
-    background-color 0.14s ease,
-    color 0.14s ease;
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    color var(--kv-dur-fast) var(--kv-ease-out);
 }
 
 .chat-win-btn:hover {

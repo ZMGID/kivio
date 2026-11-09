@@ -567,6 +567,16 @@
         "purpose": "颜色与透明度过渡。"
       },
       {
+        "name": "--kv-ease-in",
+        "value": "cubic-bezier(0.4, 0, 1, 1)",
+        "purpose": "退场：模态、遮罩、浮层与元素移除。"
+      },
+      {
+        "name": "--kv-ease-inout",
+        "value": "cubic-bezier(0.45, 0.05, 0.55, 0.95)",
+        "purpose": "循环往复：呼吸、脉冲与波动。"
+      },
+      {
         "name": "--kv-dur-instant",
         "value": "90ms",
         "purpose": "全局 instant 时长。"

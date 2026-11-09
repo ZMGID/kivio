@@ -75,7 +75,7 @@
    最稳定的实现，文字始终由自己的前景色绘制。 */
 .reasoning-shimmer-text {
   color: var(--text-muted);
-  animation: chat-motion-text-pulse 2.4s ease-in-out infinite;
+  animation: chat-motion-text-pulse 2.4s var(--kv-ease-inout) infinite;
 }
 
 

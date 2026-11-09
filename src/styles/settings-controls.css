@@ -22,7 +22,7 @@
   border: 1px solid var(--theme-surface-border);
   color: var(--text);
   border-radius: 6px;
-  transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
+  transition: border-color var(--kv-dur-fast) var(--kv-ease-out), box-shadow var(--kv-dur-fast) var(--kv-ease-out), background-color var(--kv-dur-fast) var(--kv-ease-out);
 }
 .settings-control::placeholder {
   color: var(--text-faint);

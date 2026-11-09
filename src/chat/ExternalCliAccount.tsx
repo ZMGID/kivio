@@ -95,7 +95,7 @@ export function ExternalCliAccount({ agent, conversationId }: {
         <circle cx="10" cy="10" r="8" fill="none" strokeWidth="3" className="stroke-black/[0.16] dark:stroke-white/[0.20]" />
         {minRemaining > 0 && <circle cx="10" cy="10" r="8" fill="none" stroke={tone(minRemaining)} strokeWidth="3" strokeLinecap="round"
           strokeDasharray={circumference} strokeDashoffset={circumference * (1 - minRemaining / 100)}
-          className="transition-[stroke-dashoffset,stroke] duration-500 ease-out" />}
+          className="transition-[stroke-dashoffset,stroke] duration-500 ease-kv-out" />}
       </svg>
     </button>
     {open && createPortal(<>
@@ -117,7 +117,7 @@ export function ExternalCliAccount({ agent, conversationId }: {
         return <div key={`${window.name}-${index}`} className="flex flex-col gap-1">
           <div className="flex justify-between gap-3"><span>{windowName(window.name, window.windowDurationMins)}</span><span className="tabular-nums">{Math.round(left)}% {zh ? '剩余' : 'remaining'}</span></div>
           <div className="h-1.5 overflow-hidden rounded-full bg-neutral-200/80 dark:bg-white/15" role="progressbar" aria-valuenow={Math.round(left)} aria-valuemin={0} aria-valuemax={100}>
-            <div className="h-full rounded-full transition-[width] duration-500" style={{ width: `${left}%`, background: tone(left) }} />
+            <div className="h-full rounded-full transition-[width] duration-500 ease-kv-out" style={{ width: `${left}%`, background: tone(left) }} />
           </div>
           <p className="text-[11px] text-neutral-500 dark:text-neutral-400">{resetLabel(window.resetsAt)}</p>
         </div>

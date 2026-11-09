@@ -2232,7 +2232,7 @@ export default function Lens() {
               type="button"
               onClick={() => void handleSend()}
               disabled={sendDisabled}
-              className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all duration-150 active:scale-95 ${
+              className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-[background-color,transform] active:scale-95 ${
                 !sendDisabled
                   ? 'bg-accent hover:bg-accent-hover hover:scale-105'
                   : 'bg-neutral-200 cursor-not-allowed'
