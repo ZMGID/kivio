@@ -1,9 +1,10 @@
-import { memo, type ReactNode } from 'react'
+import { memo, useState, type ReactNode } from 'react'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { WindowControls } from './WindowControls'
 import { IconButton } from '../components/Button'
 import { useT } from '../components/i18n'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
+import { usePanelShiftMotion } from './usePanelShiftMotion'
 
 type ChatTitlebarProps = {
   sidebarExpanded: boolean
@@ -40,6 +41,9 @@ type ChatTitlebarProps = {
  * 业务控件并进这一条 —— 非 mac 不再有主区 52px 顶栏，chrome 只此一行。
  * 侧栏展开时导航区撑到侧栏宽，业务控件随之让到主区一列（否则它们压在侧栏卡片上方，读作错位）。
  * Dock 打开时工具栏并入右段，右段与下方面板同宽；其余内容从标题栏下方开始。
+ *
+ * 侧栏 / Dock 开合时，布局和下方一样只切换一次：两列的底色与分隔线由 `chat-titlebar-panel-bg`
+ * 独立淡入淡出（与面板同时长、同位移），业务控件从旧左缘平移到新左缘（usePanelShiftMotion）。
  */
 export const ChatTitlebar = memo(function ChatTitlebar({
   sidebarExpanded,
@@ -55,11 +59,18 @@ export const ChatTitlebar = memo(function ChatTitlebar({
   children,
 }: ChatTitlebarProps) {
   const t = useT()
+  const [strip, setStrip] = useState<HTMLDivElement | null>(null)
+  usePanelShiftMotion(strip, sidebarVisible ? '1' : '0', settingsMode ? 'settings' : 'main', 'start')
+  // 进设置页时侧栏直接让位（见 .is-settings-cover），底色也不在设置页上方淡出。
+  const panelBgClass = (side: 'sidebar' | 'dock', visible: boolean) =>
+    `chat-titlebar-panel-bg chat-titlebar-panel-bg--${side}${visible ? ' is-visible' : ''}${settingsMode ? ' is-instant' : ''}`
   return (
     <div
+      ref={setStrip}
       className={`chat-titlebar-strip${settingsMode ? ' chat-titlebar-strip--settings' : ''}${hideNav && !settingsMode ? ' chat-titlebar-strip--popout' : ''}`}
       data-tauri-drag-region
     >
+      {!hideNav && <div aria-hidden className={panelBgClass('sidebar', sidebarVisible && !settingsMode)} />}
       {!settingsMode && !hideNav && (
         <div
           className={`chat-titlebar-strip-nav${sidebarVisible ? ' chat-titlebar-strip-nav--reserve' : ''}`}
@@ -73,16 +84,20 @@ export const ChatTitlebar = memo(function ChatTitlebar({
         </div>
       )}
       <div
-        className="chat-titlebar-strip-content flex min-w-0 flex-1 items-center gap-1 self-stretch"
+        className="chat-titlebar-strip-content chat-panel-shift-host flex min-w-0 flex-1 self-stretch"
         data-tauri-drag-region
       >
-        {children}
+        <div className="chat-titlebar-strip-controls flex min-w-0 flex-1 items-center gap-1" data-tauri-drag-region>
+          {children}
+        </div>
       </div>
       <div
         className={`chat-titlebar-strip-end${dockVisible ? ' chat-titlebar-strip-dock' : ''}`}
-        style={dockVisible ? { ['--chat-dock-width' as string]: `${dockWidth}px` } : undefined}
+        /* 收起时也保留宽度变量：Dock 底色要按原宽度淡出。拖拽时 RightDock 直写这一节点。 */
+        style={dockWidth != null ? { ['--chat-dock-width' as string]: `${dockWidth}px` } : undefined}
         data-tauri-drag-region
       >
+        {onToggleDock && <div aria-hidden className={panelBgClass('dock', dockVisible)} />}
         {dockVisible && <div ref={dockToolbarRef} className="chat-titlebar-dock-tools" data-tauri-drag-region />}
         {onToggleDock && <IconButton label={t.dockToggle} size="sm" variant="ghost" className="group" aria-expanded={dockVisible} onClick={onToggleDock} data-tauri-drag-region="false">
           <SidebarToggleIcon side="right" open={dockVisible} />

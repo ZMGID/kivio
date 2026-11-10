@@ -31,4 +31,28 @@ describe('ChatTitlebar dock toggle', () => {
     render(<LangContext.Provider value="zh"><ChatTitlebar sidebarExpanded onToggleSidebar={() => {}} onNewConversation={() => {}} /></LangContext.Provider>)
     expect(screen.queryByRole('button', { name: '面板' })).not.toBeInTheDocument()
   })
+
+  it('fades the sidebar and dock columns with their panels instead of switching them instantly', () => {
+    const props = { sidebarExpanded: true, onToggleSidebar: vi.fn(), onNewConversation: vi.fn(), onToggleDock: vi.fn(), dockWidth: 420 }
+    const header = (sidebarVisible: boolean, dockVisible: boolean, settingsMode = false) => <LangContext.Provider value="zh">
+      <ChatTitlebar {...props} sidebarVisible={sidebarVisible} dockVisible={dockVisible} settingsMode={settingsMode} />
+    </LangContext.Provider>
+    const view = render(header(true, true))
+    const sidebarBg = document.querySelector('.chat-titlebar-panel-bg--sidebar')!
+    const dockBg = document.querySelector('.chat-titlebar-panel-bg--dock')!
+    expect(sidebarBg).toHaveClass('is-visible')
+    expect(dockBg).toHaveClass('is-visible')
+
+    // Collapsing keeps the same layers (so CSS can fade them) and the dock width they fade out at.
+    view.rerender(header(false, false))
+    expect(document.querySelector('.chat-titlebar-panel-bg--sidebar')).toBe(sidebarBg)
+    expect(document.querySelector('.chat-titlebar-panel-bg--dock')).toBe(dockBg)
+    expect(sidebarBg).not.toHaveClass('is-visible')
+    expect(dockBg).not.toHaveClass('is-visible')
+    expect((dockBg.parentElement as HTMLElement).style.getPropertyValue('--chat-dock-width')).toBe('420px')
+
+    // The settings page covers the sidebar at once; its column does not fade over the page.
+    view.rerender(header(false, false, true))
+    expect(document.querySelector('.chat-titlebar-panel-bg--sidebar')).toHaveClass('is-instant')
+  })
 })

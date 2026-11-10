@@ -5,6 +5,13 @@ const SHIFT_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)' // --kv-ease-standard
 
 type Rect = { left: number; width: number }
 
+/** 对齐点：主区内容居中，取中心；标题栏控件靠左，取左缘。 */
+export type PanelShiftAnchor = 'center' | 'start'
+
+function anchorX(rect: Rect, anchor: PanelShiftAnchor): number {
+  return anchor === 'center' ? rect.left + rect.width / 2 : rect.left
+}
+
 function currentTranslateX(element: HTMLElement): number {
   const transform = getComputedStyle(element).transform
   if (!transform || transform === 'none') return 0
@@ -27,11 +34,20 @@ function currentTranslateX(element: HTMLElement): number {
  * - 连续开合从当前视觉位置接着走，不回跳；
  * - 减少动态效果时不播放。
  *
- * @param row 承载「侧栏 | 主区 | 右侧面板」的行元素；主区宿主为其 `.chat-panel-shift-host` 子元素。
+ * Windows / Linux 标题栏带用同一套时长和缓动，把业务控件从旧左缘平移到新左缘，与下方主区同步。
+ *
+ * @param row 平移宿主的父元素（主区是「侧栏 | 主区 | 右侧面板」那一行，标题栏是整条带）；
+ *   宿主为其 `.chat-panel-shift-host` 子元素，动画作用在宿主内可见的那个子元素上。
  * @param panels 面板可见性的签名，变化即视为一次开合。
  * @param view 当前视图；与 panels 同时变化时不播放。
+ * @param anchor 用旧、新位置的哪一点计算平移距离。
  */
-export function usePanelShiftMotion(row: HTMLElement | null, panels: string, view: string): void {
+export function usePanelShiftMotion(
+  row: HTMLElement | null,
+  panels: string,
+  view: string,
+  anchor: PanelShiftAnchor = 'center',
+): void {
   const lastRectRef = useRef<Rect | null>(null)
   const lastPanelsRef = useRef(panels)
   const lastViewRef = useRef(view)
@@ -73,7 +89,7 @@ export function usePanelShiftMotion(row: HTMLElement | null, panels: string, vie
       animationRef.current = null
       running.cancel()
     }
-    const dx = before.left + before.width / 2 + visualOffset - (rect.left + rect.width / 2)
+    const dx = anchorX(before, anchor) + visualOffset - anchorX(rect, anchor)
     if (Math.abs(dx) < 2) {
       host.classList.remove('is-panel-shifting')
       return
@@ -91,7 +107,7 @@ export function usePanelShiftMotion(row: HTMLElement | null, panels: string, vie
     }
     animation.addEventListener('finish', finish)
     animation.addEventListener('cancel', finish)
-  }, [panels, row, view])
+  }, [anchor, panels, row, view])
 
   useEffect(() => () => {
     animationRef.current?.cancel()

@@ -78,6 +78,7 @@
 /* Windows / Linux 共用 44px 标题栏：与原生窗口命中区保持一致。
    导航段和侧栏同宽同色，内容段与主内容同色，分隔线从顶端连续向下。 */
 .chat-titlebar-strip {
+  position: relative;
   display: flex;
   flex-shrink: 0;
   align-items: center;
@@ -104,8 +105,7 @@
 
 .chat-titlebar-strip-dock {
   width: var(--chat-dock-width);
-  border-left: 1px solid var(--theme-surface-border);
-  background: var(--theme-surface-soft);
+  background: transparent;
 }
 
 .chat-titlebar-dock-tools {
@@ -139,8 +139,64 @@
 .chat-titlebar-strip-nav--reserve {
   width: var(--chat-sidebar-width, 240px);
   min-width: var(--chat-sidebar-width, 240px);
-  border-right: 1px solid var(--theme-surface-border);
+  background: transparent;
+}
+
+/* 侧栏 / Dock 在标题栏上的那一列：底色和分隔线独立成层，与下方面板同时长、同位移地淡入淡出
+   （见 chat-01-main.css「左右侧面板开合」）。各段布局仍只切换一次；收起时这层按原宽浮在主区底色之上淡出。
+   层叠顺序：各段底色（非定位）→ 这层 → 各段内的控件（relative，文档顺序在后），所以按钮始终在上。 */
+.chat-titlebar-panel-bg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
   background: var(--theme-surface-soft);
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--kv-dur-normal) var(--kv-ease-in),
+    transform var(--kv-dur-normal) var(--kv-ease-in),
+    visibility 0s linear var(--kv-dur-normal);
+}
+
+.chat-titlebar-panel-bg.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition:
+    opacity var(--kv-dur-normal) var(--kv-ease-out),
+    transform var(--kv-dur-normal) var(--kv-ease-standard),
+    visibility 0s linear 0s;
+}
+
+.chat-titlebar-panel-bg.is-instant,
+.chat-window-shell.is-sidebar-resizing .chat-titlebar-panel-bg {
+  transition: none;
+}
+
+.chat-titlebar-panel-bg--sidebar {
+  left: 0;
+  width: var(--chat-sidebar-width, 240px);
+  border-right: 1px solid var(--theme-surface-border);
+  transform: translateX(-12px);
+}
+
+.chat-titlebar-panel-bg--dock {
+  right: 0;
+  width: var(--chat-dock-width, 360px);
+  border-left: 1px solid var(--theme-surface-border);
+  transform: translateX(12px);
+}
+
+.chat-titlebar-strip-nav > *,
+.chat-titlebar-strip-controls,
+.chat-titlebar-strip-end > :not(.chat-titlebar-panel-bg) {
+  position: relative;
+}
+
+/* 业务控件平移时不裁剪：它们从侧栏那一列上方滑过，裁掉会读作凭空擦出。 */
+.chat-titlebar-strip > .chat-titlebar-strip-content.is-panel-shifting {
+  overflow: visible;
 }
 
 /* 设置页：带浮起、不占行高，让 200/52px 灰导航栏自己从 y=0 画起（见 ChatTitlebar 注释）。
