@@ -2952,6 +2952,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           dockVisible={showConversationDock && dockOpen}
           dockWidth={dock.width}
           dockToolbarRef={setDockToolbarHost}
+          onToggleDock={showConversationDock ? handleToggleDock : undefined}
         >
           {chatView === 'conversation' ? conversationTitlebarControls : null}
         </ChatTitlebar>

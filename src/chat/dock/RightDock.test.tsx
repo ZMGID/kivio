@@ -176,6 +176,7 @@ describe('RightDock tabs', () => {
     try {
       const props = dockProps({ toolbarHost: host })
       const view = render(<RightDock {...props} />)
+      expect(host.querySelector('[aria-expanded]')).toBeNull()
       fireEvent.click(screen.getByText('文件'))
       expect(screen.getByTestId('files-panel')).toHaveAttribute('data-active', 'true')
       fireEvent.click(host.querySelector<HTMLButtonElement>('[aria-label="打开面板"]')!)

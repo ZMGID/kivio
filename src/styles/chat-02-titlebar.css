@@ -87,7 +87,7 @@
 }
 
 .chat-titlebar-strip-content,
-.chat-titlebar-strip > .chat-win-controls {
+.chat-titlebar-strip-end {
   background: var(--theme-surface);
 }
 
@@ -95,11 +95,14 @@
   padding-left: 8px;
 }
 
-.chat-titlebar-strip-dock {
+.chat-titlebar-strip-end {
   display: flex;
   flex-shrink: 0;
   align-self: stretch;
   align-items: center;
+}
+
+.chat-titlebar-strip-dock {
   width: var(--chat-dock-width);
   border-left: 1px solid var(--theme-surface-border);
   background: var(--theme-surface-soft);
@@ -173,7 +176,7 @@
   pointer-events: none;
 }
 .chat-titlebar-strip--settings > .chat-titlebar-strip-content,
-.chat-titlebar-strip--settings > .chat-win-controls {
+.chat-titlebar-strip--settings > .chat-titlebar-strip-end {
   background: transparent;
 }
 .chat-titlebar-strip--settings .chat-win-controls {

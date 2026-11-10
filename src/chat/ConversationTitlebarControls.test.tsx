@@ -103,6 +103,7 @@ describe('ConversationTitlebarControls', () => {
     expect(getByTestId('model-selector')).toBeTruthy()
     expect(getByTestId('thinking')).toBeTruthy()
     expect(queryByTestId('external-model')).toBeNull()
+    expect(screen.queryByRole('button', { name: '面板' })).toBeNull()
   })
 
   it('keeps task and history branch entries out of the titlebar', () => {

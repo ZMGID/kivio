@@ -480,6 +480,85 @@ describe('WorkspaceActionsMenu', () => {
     expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
   })
 
+  describe('panel placement', () => {
+    let pane: HTMLDivElement
+    let paneRect: DOMRect
+    let observers: Set<() => void>
+    const layoutChanged = () => act(() => { for (const measure of [...observers]) measure() })
+
+    beforeEach(() => {
+      vi.stubGlobal('innerWidth', 1600)
+      vi.stubGlobal('innerHeight', 900)
+      pane = document.createElement('div')
+      pane.className = 'chat-main-pane'
+      document.body.append(pane)
+      paneRect = new DOMRect(240, 44, 1360, 856)
+      observers = new Set()
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(private measure: () => void) {}
+        observe() { observers.add(this.measure) }
+        disconnect() { observers.delete(this.measure) }
+      })
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        return this === pane ? paneRect : new DOMRect(700, 8, 24, 28)
+      })
+    })
+
+    afterEach(() => { pane.remove() })
+
+    it('follows the chat edge when the dock opens, resizes and closes without a window resize', () => {
+      const props = { workdir: '/repo', projectName: 'Repo', conversationId: 'c1', lang: 'zh' as const }
+      const view = render(<WorkspaceActionsMenu {...props} dockOpen={false} />)
+      const panel = screen.getByRole('complementary', { name: '工作区' })
+      expect(panel.style.right).toBe('8px')
+      paneRect = new DOMRect(240, 44, 1040, 856)
+      view.rerender(<WorkspaceActionsMenu {...props} dockOpen />)
+      layoutChanged()
+      expect(panel.style.right).toBe('328px')
+      paneRect = new DOMRect(240, 44, 960, 856)
+      layoutChanged()
+      expect(panel.style.right).toBe('408px')
+      paneRect = new DOMRect(240, 44, 1360, 856)
+      view.rerender(<WorkspaceActionsMenu {...props} dockOpen={false} />)
+      layoutChanged()
+      expect(panel.style.right).toBe('8px')
+    })
+
+    it('aligns a narrow-window popover with the chat edge below the titlebar', () => {
+      vi.stubGlobal('innerWidth', 900)
+      paneRect = new DOMRect(220, 44, 680, 856)
+      const panel = openPanel({ dockOpen: false })
+      expect(panel.style.right).toBe('8px')
+      expect(panel.style.top).toBe('52px')
+    })
+
+    it('releases the reserved chat width when opening the dock leaves too little room', () => {
+      render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen={false} lang="zh" />)
+      expect(document.documentElement.style.getPropertyValue('--chat-details-inset')).toBe('316px')
+      paneRect = new DOMRect(240, 44, 700, 856)
+      layoutChanged()
+      expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
+      expect(document.documentElement.style.getPropertyValue('--chat-details-inset')).toBe('')
+      fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+      expect(screen.getByRole('dialog', { name: '工作区' }).style.right).toBe('668px')
+    })
+
+    it('keeps the popover usable when the dock leaves a narrow chat column', () => {
+      paneRect = new DOMRect(240, 44, 260, 856)
+      const panel = openPanel()
+      expect(panel.style.width).toBe('300px')
+      expect(panel.style.right).toBe('1108px')
+    })
+
+    it('constrains the popover to the viewport in a very small window', () => {
+      vi.stubGlobal('innerWidth', 280)
+      paneRect = new DOMRect(0, 44, 280, 856)
+      const panel = openPanel()
+      expect(panel.style.width).toBe('264px')
+      expect(panel.style.right).toBe('8px')
+    })
+  })
+
   it('hides the empty task section', () => {
     const panel = openPanel()
     expect(within(panel).queryByText('任务')).not.toBeInTheDocument()

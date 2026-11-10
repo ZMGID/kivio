@@ -3,7 +3,7 @@ import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 // 段一 = 项目行 / Open in 拆分按钮；段二 = 分支 / Git 主操作拆分按钮 / Changes（仅项目对话）；
 // 段三 = 历史分支；段四 = 后台任务 / 子代理。
 // Git 数据来自 useGitBadge（只在面板可见时订阅），主操作规则见 workspaceGitAction。
-// 位置：浮层贴触发按钮右下展开；内联常驻时贴对话区右缘，并通过 --chat-details-inset 让出内容宽度。
+// 位置：面板贴对话区右缘；内联常驻时通过 --chat-details-inset 让出内容宽度。
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import CursorIcon from '@lobehub/icons/es/Cursor/components/Mono'
@@ -186,7 +186,7 @@ function WorkspaceActionsPanel({
   const tasks = useBackgroundTasks(conversationId)
   const { running: activeTasks, finished: finishedTasks } = partitionTasks(tasks)
   const runningTasks = activeTasks.length
-  const [place, setPlace] = useState<{ top: number; right: number }>({ top: 0, right: 8 })
+  const [place, setPlace] = useState({ top: 0, right: PANEL_EDGE, width: PANEL_WIDTH })
   const wrapRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLDivElement>(null)
   const [busy, setBusy] = useState<GitAction | 'branch' | 'init' | null>(null)
@@ -216,20 +216,29 @@ function WorkspaceActionsPanel({
 
   // 浮层只临时打开，恢复内联布局后即关闭，不能覆盖常驻面板的收起选择。
   useLayoutEffect(() => { if (inline) setPopoverOpen(false) }, [inline])
-  // 浮层：顶边贴按钮下沿、右边与按钮右缘对齐；内联：贴对话区右缘，与标题栏下沿留同样间距。
+  // 标题栏包含窗口按钮，不能用触发按钮的右缘代替聊天区右缘。
   useLayoutEffect(() => {
     if (!presence.present) return
+    const pane = document.querySelector<HTMLElement>('.chat-main-pane')
     const measure = () => {
       const button = wrapRef.current?.getBoundingClientRect()
       if (!button) return
-      const pane = inline ? document.querySelector<HTMLElement>('.chat-main-pane')?.getBoundingClientRect() : null
-      const right = pane ? window.innerWidth - pane.right + PANEL_EDGE : window.innerWidth - button.right
-      setPlace({ top: button.bottom + 6, right: Math.max(PANEL_EDGE, right) })
+      const bounds = pane?.getBoundingClientRect()
+      const width = Math.max(0, Math.min(PANEL_WIDTH, window.innerWidth - PANEL_EDGE * 2))
+      const right = bounds ? window.innerWidth - bounds.right + PANEL_EDGE : window.innerWidth - button.right
+      const top = Math.max(PANEL_EDGE, button.bottom + 6, bounds ? bounds.top + PANEL_EDGE : 0)
+      setPlace({ top, right: Math.max(PANEL_EDGE, Math.min(right, window.innerWidth - width - PANEL_EDGE)), width })
     }
     measure()
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
+    if (pane) observer?.observe(pane)
+    if (wrapRef.current) observer?.observe(wrapRef.current)
     window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [presence.present, inline])
+    return () => {
+      observer?.disconnect()
+      window.removeEventListener('resize', measure)
+    }
+  }, [presence.present, inline, dockOpen])
   // 内联展开时把主区右侧让出来，对话列往左挤；浮层模式不让位。
   useLayoutEffect(() => {
     if (!open || !inline) return
@@ -502,8 +511,8 @@ function WorkspaceActionsPanel({
           style={{
             top: place.top,
             right: place.right,
-            width: PANEL_WIDTH,
-            maxHeight: `calc(100vh - ${place.top}px - 12px)`,
+            width: place.width,
+            maxHeight: `max(0px, calc(100vh - ${place.top}px - ${PANEL_EDGE}px))`,
             ['--chat-popover-origin' as string]: 'top right',
           }}
           role={inline ? 'complementary' : 'dialog'}

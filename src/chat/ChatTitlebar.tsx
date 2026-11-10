@@ -1,6 +1,9 @@
 import { memo, type ReactNode } from 'react'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { WindowControls } from './WindowControls'
+import { IconButton } from '../components/Button'
+import { useT } from '../components/i18n'
+import { SidebarToggleIcon } from './SidebarToggleIcon'
 
 type ChatTitlebarProps = {
   sidebarExpanded: boolean
@@ -25,6 +28,7 @@ type ChatTitlebarProps = {
   dockVisible?: boolean
   dockWidth?: number
   dockToolbarRef?: (node: HTMLDivElement | null) => void
+  onToggleDock?: () => void
   /** 会话页的业务控件（模型 / 思考档位 / 权限 / Dock 等）。中心页传 null，带内只剩导航与三键。 */
   children?: ReactNode
 }
@@ -47,8 +51,10 @@ export const ChatTitlebar = memo(function ChatTitlebar({
   dockVisible = false,
   dockWidth,
   dockToolbarRef,
+  onToggleDock,
   children,
 }: ChatTitlebarProps) {
+  const t = useT()
   return (
     <div
       className={`chat-titlebar-strip${settingsMode ? ' chat-titlebar-strip--settings' : ''}${hideNav && !settingsMode ? ' chat-titlebar-strip--popout' : ''}`}
@@ -72,16 +78,17 @@ export const ChatTitlebar = memo(function ChatTitlebar({
       >
         {children}
       </div>
-      {dockVisible ? (
-        <div
-          className="chat-titlebar-strip-dock"
-          style={{ ['--chat-dock-width' as string]: `${dockWidth}px` }}
-          data-tauri-drag-region
-        >
-          <div ref={dockToolbarRef} className="chat-titlebar-dock-tools" data-tauri-drag-region />
-          <WindowControls />
-        </div>
-      ) : <WindowControls />}
+      <div
+        className={`chat-titlebar-strip-end${dockVisible ? ' chat-titlebar-strip-dock' : ''}`}
+        style={dockVisible ? { ['--chat-dock-width' as string]: `${dockWidth}px` } : undefined}
+        data-tauri-drag-region
+      >
+        {dockVisible && <div ref={dockToolbarRef} className="chat-titlebar-dock-tools" data-tauri-drag-region />}
+        {onToggleDock && <IconButton label={t.dockToggle} size="sm" variant="ghost" className="group" aria-expanded={dockVisible} onClick={onToggleDock} data-tauri-drag-region="false">
+          <SidebarToggleIcon side="right" open={dockVisible} />
+        </IconButton>}
+        <WindowControls />
+      </div>
     </div>
   )
 })

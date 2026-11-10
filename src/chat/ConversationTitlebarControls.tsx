@@ -8,6 +8,7 @@ import { PermissionPicker } from './PermissionPicker'
 import { ExternalCliAccount } from './ExternalCliAccount'
 import { ThinkingLevelSelector } from './ThinkingLevelSelector'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
+import { usesNativeTitlebar } from './platform'
 import { WorkspaceActionsMenu, type WorkspaceEnvironment } from './dock/WorkspaceActionsMenu'
 import { ConversationHistoryBranches, type HistoryBranchActions } from './ConversationHistoryBranches'
 import type { WorkspaceUsageSource } from './dock/WorkspaceUsageSection'
@@ -157,7 +158,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
         {showWorkspace && (
           <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} blank={workspaceBlank} environment={environment} usage={usage} contextState={contextState} />
         )}
-        {!usesChatRuntime && !dockOpen && (
+        {usesNativeTitlebar && !usesChatRuntime && !dockOpen && (
           <div className="shrink-0" data-tauri-drag-region="false">
             <IconButton
               label={i18n[uiLang].dockToggle}
