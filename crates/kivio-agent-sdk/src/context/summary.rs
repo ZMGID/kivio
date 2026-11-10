@@ -30,9 +30,39 @@ pub fn auto_compact_budget(window: usize) -> usize {
     window.saturating_sub(reserve)
 }
 
-pub fn request_context_budget(window: usize, max_output_tokens: u32) -> usize {
+/// Output room every request keeps below the window. A larger model output cap is
+/// fitted per request instead of shrinking the compaction budget (Pi
+/// `clampMaxTokensToContext`, OMP `fitOutputTokensToContextWindow`).
+pub const MIN_REQUEST_OUTPUT_TOKENS: u32 = 4_096;
+
+/// Largest prompt that still leaves the minimum output room.
+pub fn hard_context_limit(window: usize, max_output_tokens: u32) -> usize {
     let window = if window == 0 { 200_000 } else { window };
-    auto_compact_budget(window).min(window.saturating_sub(max_output_tokens as usize))
+    let output = if max_output_tokens == 0 {
+        MIN_REQUEST_OUTPUT_TOKENS
+    } else {
+        max_output_tokens.min(MIN_REQUEST_OUTPUT_TOKENS)
+    };
+    window.saturating_sub(output as usize)
+}
+
+/// Automatic compaction threshold. The configured output cap only matters when it
+/// would not otherwise fit beside the prompt (small windows).
+pub fn request_context_budget(window: usize, max_output_tokens: u32) -> usize {
+    auto_compact_budget(window).min(hard_context_limit(window, max_output_tokens))
+}
+
+/// Output cap for one request so prompt plus output stays inside the window.
+/// `prompt_tokens` should already include tool schemas and estimation margin.
+pub fn fit_output_tokens(window: usize, prompt_tokens: usize, max_output_tokens: u32) -> u32 {
+    if max_output_tokens == 0 || window == 0 {
+        return max_output_tokens;
+    }
+    let room = window.saturating_sub(prompt_tokens);
+    if room >= max_output_tokens as usize {
+        return max_output_tokens;
+    }
+    (room as u32).max(MIN_REQUEST_OUTPUT_TOKENS.min(max_output_tokens))
 }
 
 /// Groups begin at assistant messages, keeping every tool call beside its results.
@@ -611,6 +641,29 @@ pub fn tool_history_as_text(messages: &mut [Value]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_output_cap_does_not_halve_the_compaction_budget() {
+        // qwen3.8-flash-next: 262144 window, 131072 output cap. The old budget fired at 131072.
+        let budget = request_context_budget(262_144, 131_072);
+        assert_eq!(budget, auto_compact_budget(262_144));
+        assert!(budget > 220_000, "{budget}");
+        // The request then fits its output beside the prompt instead.
+        assert_eq!(fit_output_tokens(262_144, 200_000, 131_072), 62_144);
+        assert_eq!(fit_output_tokens(262_144, 100_000, 131_072), 131_072);
+        assert_eq!(
+            fit_output_tokens(262_144, 261_000, 131_072),
+            MIN_REQUEST_OUTPUT_TOKENS
+        );
+        assert_eq!(fit_output_tokens(262_144, 261_000, 0), 0);
+    }
+
+    #[test]
+    fn small_windows_still_reserve_their_output() {
+        assert!(request_context_budget(8_000, 4_096) + 4_096 <= 8_000);
+        assert!(hard_context_limit(32_000, 16_384) <= 32_000 - MIN_REQUEST_OUTPUT_TOKENS as usize);
+        assert_eq!(hard_context_limit(32_000, 1_000), 31_000);
+    }
     use crate::agent::provider_runtime::{ModelOutputSink, ProviderFuture};
     use crate::model::{GenerateOutput, MessagePart, ModelError, ModelMessage};
 

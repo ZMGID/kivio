@@ -197,14 +197,11 @@ it('merges receipt snapshots per child while retaining newer live progress and t
   expect(screen.getByText('B final')).toBeVisible()
 })
 
-it('keeps a rejected task and its error inspectable without claiming it ran', () => {
-  render(<ToolCallBlock toolCall={{ id: 'task', source: 'native', name: 'task', status: 'error', arguments: { tasks: [{ name: '调查', task: 'Read package.json', solutionSpace: 'Read only' }] }, error: 'Task rejected' }} />)
-  expect(screen.getByRole('button', { name: '调查 派工失败' })).toBeVisible()
-  expect(screen.queryByRole('button', { name: '调查 开始工作' })).toBeNull()
-  expect(screen.queryByText('Task rejected')).not.toBeInTheDocument()
-  fireEvent.click(screen.getByRole('button', { name: /调查/ }))
-  expect(screen.getByRole('alert')).toHaveTextContent('Task rejected')
-  expect(screen.getByText('Read package.json')).toBeVisible()
+it('hides a batch rejected before any subagent started', () => {
+  const { container } = render(<ToolCallBlock toolCall={{ id: 'task', source: 'native', name: 'task', status: 'error', arguments: { tasks: [{ name: '调查', task: 'Read package.json', solutionSpace: 'Read only' }] }, error: 'Task rejected' }} />)
+  expect(screen.queryByRole('button', { name: /调查/ })).toBeNull()
+  expect(screen.queryByText('Task rejected')).toBeNull()
+  expect(container.querySelector('.kv-agent-events')).toBeNull()
 })
 
 it('shows individual failures without duplicating them or exposing the raw task receipt', () => {

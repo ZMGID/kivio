@@ -53,7 +53,7 @@ impl BudgetState {
         pruned: bool,
     ) -> BudgetDecision {
         let window = if window == 0 { 200_000 } else { window };
-        let hard_limit = window.saturating_sub(max_output as usize);
+        let hard_limit = hard_context_limit(window, max_output);
         let budget = threshold
             .unwrap_or_else(|| request_context_budget(window, max_output))
             .min(hard_limit);
@@ -285,7 +285,7 @@ impl SessionPolicy for BudgetContextPolicy {
                 self.window
             };
             let blocked = self.estimate(&view).saturating_add(self.tool_schema_tokens)
-                > window.saturating_sub(self.max_output_tokens as usize);
+                > hard_context_limit(window, self.max_output_tokens);
             (Vec::new(), blocked)
         })
     }

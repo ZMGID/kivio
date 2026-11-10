@@ -236,6 +236,21 @@ pub(crate) async fn planning_step(
                         .is_empty()
                     && state.generated_images.is_empty()
                 {
+                    // The rejected attempt never enters history; withdraw what it streamed
+                    // (reasoning, buffered text, tool drafts) before retrying or recovering.
+                    let draft_count = planning_tool_drafts.segments().len();
+                    let (mut block_ids, tool_ids) = planning_tool_drafts.discard_all();
+                    block_ids.push(planning_reasoning_segment.id);
+                    block_ids.push(planning_text_segment.id);
+                    host.discard_attempt(
+                        0,
+                        stream
+                            .reasoning
+                            .as_deref()
+                            .map_or(0, |r| r.chars().count() as u32),
+                        block_ids,
+                        tool_ids,
+                    );
                     if !state.planning_empty_retried {
                         state.planning_empty_retried = true;
                         eprintln!("Chat tools planning returned an empty response; retrying once");
@@ -250,7 +265,7 @@ pub(crate) async fn planning_step(
                             finish_kind.map_or_else(|| "unknown".into(), |kind| format!("{kind:?}")),
                             stream.text.chars().count(),
                             stream.reasoning.as_deref().map_or(0, |text| text.chars().count()),
-                            stream.tool_calls.len(), planning_tool_drafts.segments().len(),
+                            stream.tool_calls.len(), draft_count,
                             tokens(stream.usage.as_ref().and_then(|usage| usage.input_tokens)),
                             tokens(stream.usage.as_ref().and_then(|usage| usage.output_tokens)),
                         ),

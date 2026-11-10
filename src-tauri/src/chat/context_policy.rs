@@ -311,6 +311,32 @@ impl<'a> ContextPolicy<'a> {
         Ok(result)
     }
 
+    /// Fits the request's output cap beside its prompt. The window, not the model's
+    /// output cap, decides when to compact (Pi/OMP); a large cap only shrinks per request.
+    pub(crate) fn fit_request_output(
+        &self,
+        call: &mut kivio_agent_sdk::agent::provider_runtime::ModelCall,
+    ) -> Result<(), String> {
+        let window = context_window_for_model(Some(&self.provider), &self.model).0;
+        let window = if window == 0 { 200_000 } else { window };
+        let mut messages = self.project(&call.history)?;
+        prune_runtime_images(&mut messages, IMAGE_BYTES_BUDGET);
+        let local = estimate_runtime_request_tokens(&messages, &self.provider, &self.model)
+            .saturating_add(
+                call.tools
+                    .iter()
+                    .map(|tool| estimate_value_tokens(&tool.to_openai_tool()))
+                    .sum::<usize>(),
+            );
+        // Character estimates can undercount the provider tokenizer; keep OMP's 10% margin.
+        let prompt = local
+            .saturating_add(local.div_ceil(10))
+            .saturating_add(OUTPUT_FIT_HEADWAY_TOKENS);
+        call.options.max_tokens =
+            kivio_agent_sdk::context::fit_output_tokens(window, prompt, call.options.max_tokens);
+        Ok(())
+    }
+
     pub(crate) fn request_blocked(
         &self,
         history: &[RuntimeMessage],
@@ -327,7 +353,7 @@ impl<'a> ContextPolicy<'a> {
         prune_runtime_images(&mut request, IMAGE_BYTES_BUDGET);
         estimate_runtime_request_tokens(&request, &self.provider, &self.model)
             .saturating_add(self.tool_schema_tokens)
-            > window.saturating_sub(self.max_output_tokens as usize)
+            > kivio_agent_sdk::context::hard_context_limit(window, self.max_output_tokens)
     }
 
     pub(crate) fn context_applied(
@@ -416,22 +442,24 @@ impl<'a> ContextPolicy<'a> {
     }
 }
 
-pub(crate) use kivio_agent_sdk::context::{
-    auto_compact_budget, estimate_message_tokens, estimate_messages_tokens,
-    estimate_model_messages_tokens, estimate_runtime_message_tokens, prune_runtime_images,
-    BudgetState, IMAGE_BYTES_BUDGET, PERSISTED_SUMMARY_PREFIX, SUMMARY_OUTPUT_TOKENS,
-};
 #[cfg(test)]
 use kivio_agent_sdk::context::{
-    group_starts, initial_kept_groups, project_summary_media, prune_image_parts,
-    request_context_budget, skill_reload_reminders, summary_message, summary_text,
-    tool_history_as_text,
+    auto_compact_budget, group_starts, initial_kept_groups, project_summary_media,
+    prune_image_parts, request_context_budget, skill_reload_reminders, summary_message,
+    summary_text, tool_history_as_text,
+};
+pub(crate) use kivio_agent_sdk::context::{
+    estimate_message_tokens, estimate_messages_tokens, estimate_model_messages_tokens,
+    estimate_runtime_message_tokens, prune_runtime_images, BudgetState, IMAGE_BYTES_BUDGET,
+    PERSISTED_SUMMARY_PREFIX, SUMMARY_OUTPUT_TOKENS,
 };
 #[cfg(test)]
 const DUPLICATE_IMAGE_PLACEHOLDER: &str = "[同一张图片已在上下文中提供，此处不重复上传]";
 #[cfg(test)]
 const IMAGE_PART_PLACEHOLDER: &str = "[image attachment omitted]";
 const SUMMARY_MARKER_PREFIX: &str = "[context summary]";
+/// Request framing no message estimate sees (OMP `OUTPUT_FIT_HEADWAY_TOKENS`).
+const OUTPUT_FIT_HEADWAY_TOKENS: usize = 64;
 fn estimate_request_tokens(
     messages: &[Value],
     provider: &crate::settings::ModelProvider,

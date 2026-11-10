@@ -345,6 +345,15 @@ impl SessionPolicy for AppSessionPolicy<'_> {
         self.context.context_rejected(phase, progress);
     }
 
+    fn prepare_request<'a>(
+        &'a mut self,
+        _run: RunSnapshot<'a>,
+        request: &'a mut crate::chat::agent::provider_runtime::ModelCall,
+        _control: AgentRunHandle,
+    ) -> PolicyFuture<'a, Result<(), String>> {
+        Box::pin(async move { self.context.fit_request_output(request) })
+    }
+
     fn transform_context<'a>(
         &'a mut self,
         history: &'a [RuntimeMessage],

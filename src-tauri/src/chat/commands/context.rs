@@ -672,8 +672,14 @@ pub(super) async fn compute_context_state(
         estimated_input_tokens,
         context_window_tokens: Some(context_window_tokens),
         context_window_estimated,
-        auto_compact_threshold_tokens: Some(crate::chat::context_policy::auto_compact_budget(
+        // Same threshold the run uses, so the meter matches when compaction fires.
+        auto_compact_threshold_tokens: Some(kivio_agent_sdk::context::request_context_budget(
             context_window_tokens,
+            crate::chat::model_metadata::chat_max_output_tokens_on_wire(
+                provider.as_ref(),
+                &conversation.model,
+                settings.chat.max_output_tokens,
+            ),
         )),
         usage_ratio,
         status,

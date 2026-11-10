@@ -303,3 +303,78 @@ async fn restoring_recovery_keeps_earlier_valid_text_even_if_it_matches_notice()
         kivio_agent_sdk::agent::content::ContentPhase::Plain
     );
 }
+
+/// Streams reasoning and a tool draft, then finishes with no usable output.
+struct StreamedEmptyThenAnswer {
+    calls: AtomicUsize,
+}
+impl ModelRuntime for StreamedEmptyThenAnswer {
+    fn generate<'a>(
+        &'a self,
+        call: ModelCall,
+        sink: &'a mut dyn ModelOutputSink,
+    ) -> ProviderFuture<'a, Result<GenerateOutput, ModelError>> {
+        Box::pin(async move {
+            sink.request_started(&call);
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                use kivio_agent_sdk::model::StreamPart;
+                sink.emit(StreamPart::ReasoningDelta {
+                    delta: "half a thought".into(),
+                })?;
+                sink.emit(StreamPart::ToolCallStart {
+                    id: "draft-1".into(),
+                    name: "echo".into(),
+                })?;
+                return Ok(GenerateOutput::text(
+                    String::new(),
+                    Some("half a thought".into()),
+                ));
+            }
+            Ok(text("retry answer"))
+        })
+    }
+}
+
+#[tokio::test]
+async fn empty_retry_withdraws_streamed_reasoning_and_tool_drafts() {
+    let model = StreamedEmptyThenAnswer {
+        calls: AtomicUsize::new(0),
+    };
+    let control = Arc::new(support::Control::default());
+    let discarded = Mutex::new(Vec::new());
+    let result = run_agent_loop(
+        support::config(&model, support::initial_history()),
+        &support::Host,
+        Arc::new(support::EchoTool::new(true)),
+        &mut NoSessionPolicy,
+        &mut InjectionSources::new(),
+        &|event: &AgentEvent<'_>| {
+            if let kivio_agent_sdk::agent::events::AgentEventKind::AttemptDiscarded {
+                reasoning_chars,
+                tool_ids,
+                ..
+            } = &event.kind
+            {
+                discarded
+                    .lock()
+                    .unwrap()
+                    .push((*reasoning_chars, tool_ids.clone()));
+            }
+            EventDelivery::Accepted
+        },
+        support::handle(&control),
+    )
+    .await
+    .unwrap();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(result.status, AgentRunStatus::Completed);
+    assert_eq!(result.content, "retry answer");
+    assert!(result.tool_records.is_empty());
+    let discarded = discarded.into_inner().unwrap();
+    assert!(
+        discarded
+            .iter()
+            .any(|(chars, tools)| *chars > 0 && tools == &vec!["draft-1".to_string()]),
+        "{discarded:?}"
+    );
+}

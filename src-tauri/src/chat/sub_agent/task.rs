@@ -407,7 +407,7 @@ pub(crate) fn tool_definition_with_policy(
         properties.insert("merge".into(), json!({"enum":["patch","branch"]}));
         properties.insert("apply".into(), json!({"type":"boolean"}));
     }
-    properties.insert("tools".into(), json!({"type":"array","items":{"type":"string","minLength":1},"description":"Additional retained eval-kernel tool names; not native allowlist."}));
+    properties.insert("tools".into(), json!({"type":"array","items":{"type":"string","minLength":1},"description":"Rarely needed. Only names of functions defined in an eval cell. Built-in tools (read, write, bash, ...) are inherited automatically; never list them here."}));
     if available.iter().any(|def| super::seance::is_bundled(def)) {
         properties.insert(
             "sourceSession".into(),
@@ -504,7 +504,15 @@ fn preflight(
         .keys()
         .find(|key| !matches!(key.as_str(), "context" | "tasks"))
     {
-        return Err(format!("Unexpected top-level field `{key}`."));
+        let hint = if matches!(
+            key.as_str(),
+            "solutionSpace" | "name" | "taskFile" | "tools" | "model" | "effort"
+        ) {
+            format!(" Put `{key}` inside each `tasks[]` item.")
+        } else {
+            String::new()
+        };
+        return Err(format!("Unexpected top-level field `{key}`.{hint}"));
     }
     let tasks = obj
         .get("tasks")

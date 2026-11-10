@@ -6,7 +6,6 @@ import { parsedRecord, record, text } from '../api/subagents'
 import { AgentProgress, AgentOutput, AgentStatus } from './AgentProgress'
 import { SubagentDialog } from './AgentHub'
 import { requestDockSubagent } from './dock/dockPreview'
-import { normalizeToolCallStatus } from './toolStatus'
 import { AgentAvatar } from './AgentAvatar'
 import type { SubagentTimelineEntry, SubagentTimelineStatus } from '../generated/chatProtocol'
 import type { ToolCallRecord } from './types'
@@ -100,11 +99,7 @@ export function SubagentTimelineEvents({ toolCall, conversationId }: { toolCall:
   const structured = record(toolCall.structured_content ?? toolCall.structuredContent)
   const tasks = arrayRecords(args.tasks)
   const rows = taskRows(structured)
-  const status = normalizeToolCallStatus(toolCall.status)
   const label = t('派工回执', 'Dispatch receipt')
-  const dispatchStatus = status === 'error' ? t('派工失败', 'dispatch failed')
-    : status === 'cancelled' || status === 'skipped' ? t('派工已中断', 'dispatch cancelled')
-      : ''
   const result = text(toolCall.result_preview ?? toolCall.resultPreview ?? toolCall.result ?? toolCall.output)
   const issue = toolCall.error || text(structured.error)
   const root = conversationId || toolCall.conversationId
@@ -118,12 +113,8 @@ export function SubagentTimelineEvents({ toolCall, conversationId }: { toolCall:
           : state === 'aborted' || state === 'cancelled' ? t('已中断', 'was interrupted') : ''
     return action ? [{ id: row.id, key: row.id || row.index, name: row.name || t('子代理', 'Subagent'), action }] : []
   })
-  if (rows.length === 0 && timelineAgentIds.size === 0 && (dispatchStatus || issue)) events.push({
-    id: '', key: 'dispatch', name: tasks.length === 1
-      ? text(tasks[0].name) || text(tasks[0].agent) || t('子代理', 'Subagents')
-      : t('子代理', 'Subagents'),
-    action: dispatchStatus || t('派工失败', 'dispatch failed'),
-  })
+  // A batch rejected before any subagent started is the model's to retry, not a timeline event;
+  // the error still returns to the model. Only started subagents appear here.
   if (events.length === 0 && !inspection) return null
   return <section className="not-prose kv-agent-events">
     {events.map(({ id, key, name, action }, index) => {

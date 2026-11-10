@@ -12,8 +12,9 @@ pub use media::{prune_image_parts, prune_runtime_images, IMAGE_BYTES_BUDGET};
 pub use policy::*;
 use serde_json::Value;
 pub use summary::{
-    auto_compact_budget, has_compactable_history, request_context_budget, summarize_history,
-    PERSISTED_SUMMARY_PREFIX, SUMMARY_OUTPUT_TOKENS,
+    auto_compact_budget, fit_output_tokens, hard_context_limit, has_compactable_history,
+    request_context_budget, summarize_history, MIN_REQUEST_OUTPUT_TOKENS, PERSISTED_SUMMARY_PREFIX,
+    SUMMARY_OUTPUT_TOKENS,
 };
 #[doc(hidden)]
 pub use summary::{

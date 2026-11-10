@@ -111,6 +111,22 @@ impl ToolCallDraftTracker {
             .take();
     }
 
+    /// Drops every draft of a rejected attempt and returns (segment ids, tool ids).
+    pub(crate) fn discard_all(&self) -> (Vec<u32>, Vec<String>) {
+        let mut state = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        if let Some(scope) = state.speculative.as_ref() {
+            scope.discard();
+        }
+        if let Some(order) = state.drafts.iter().map(|d| d.segment.id).min() {
+            state.next_order = order;
+        }
+        state
+            .drafts
+            .drain(..)
+            .map(|draft| (draft.segment.id, draft.record.id))
+            .unzip()
+    }
+
     pub fn has_started(&self) -> bool {
         !self
             .inner
