@@ -1,5 +1,6 @@
+import { FolderIcon as Folder } from '../components/FileIcon'
 import { useEffect, useState } from 'react'
-import { Folder } from 'lucide-react'
+
 import { dockApi } from './dock/api'
 
 // Rows mounting together share the read; remounting can discover a changed logo.

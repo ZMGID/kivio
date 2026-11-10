@@ -1,3 +1,4 @@
+import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 // 标题栏工作区面板，参照 T3 Code 的 ThreadDetailsPanel：
 // 段一 = 项目行 / Open in 拆分按钮；段二 = 分支 / Git 主操作拆分按钮 / Changes（仅项目对话）；
 // 段三 = 历史分支；段四 = 后台任务 / 子代理。
@@ -7,7 +8,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { createPortal } from 'react-dom'
 import CursorIcon from '@lobehub/icons/es/Cursor/components/Mono'
 import WindsurfIcon from '@lobehub/icons/es/Windsurf/components/Mono'
-import { Activity, ArrowDown, ArrowUp, Bot, Check, ChevronRight, CloudDownload, CloudUpload, Code2, FileDiff, FolderGit2, FolderOpen, GitBranch, GitCommitHorizontal, Globe, Laptop, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu, TerminalSquare } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, Bot, Check, ChevronRight, CloudDownload, CloudUpload, Code2, FileDiff, FolderGit2, GitBranch, GitCommitHorizontal, Globe, Laptop, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu, TerminalSquare } from 'lucide-react'
 import { IconButton } from '../../components/Button'
 import { notifyError } from '../../components/appNoticeStore'
 import { i18n, type Lang } from '../../components/i18n'
@@ -72,7 +73,7 @@ function OpenTargetIcon({ id }: { id: string }) {
     case 'cursor': return <CursorIcon size={16} className={className} aria-hidden="true" />
     case 'windsurf': return <WindsurfIcon size={16} className={className} aria-hidden="true" />
     case 'zed': return <span aria-hidden="true" className={`${className} bg-current`} style={{ maskImage: 'url("/editor-icons/zed.svg")', maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center' }} />
-    case 'file-manager': return <FolderOpen className={PANEL_ICON} />
+    case 'file-manager': return <FolderOpen open className={PANEL_ICON} />
     default: return <Code2 className={PANEL_ICON} />
   }
 }
@@ -544,7 +545,7 @@ function WorkspaceActionsPanel({
             {show.project && <PanelRow
               icon={<Monitor className={PANEL_ICON} />}
               title={workdir}
-              trailing={<FolderOpen className={PANEL_ICON} />}
+              trailing={<FolderOpen open className={PANEL_ICON} />}
               onClick={() => void run(() => dockApi.fsOpenPath(workdir, '', 'open'))}
             >
               <span className="min-w-0 flex-1 truncate">{name}</span>

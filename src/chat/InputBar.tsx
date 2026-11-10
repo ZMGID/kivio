@@ -1,22 +1,10 @@
+import { FolderIcon as Folder } from '../components/FileIcon'
 import { ErrorNotice } from '../components/AppNotice'
 import { cloneElement, isValidElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import {
-  ArrowUp,
-  Check,
-  ChevronDown,
-  Folder,
-  FolderPlus,
-  Layers,
-  Plus,
-  Search,
-  Square,
-  TextQuote,
-  WandSparkles,
-  X,
-} from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, FolderPlus, Layers, Plus, Search, Square, TextQuote, WandSparkles, X } from 'lucide-react'
 import { ChatAttachments } from './ChatAttachments'
 import { PastedTextEditorModal } from './PastedTextEditorModal'
 import { ComposerAddMenu } from './ComposerAddMenu'
@@ -1826,7 +1814,7 @@ export const InputBar = memo(function InputBar({
                       : 'text-neutral-800 hover:bg-neutral-100'
                   }`}
                 >
-                  <Folder size={14} strokeWidth={1.75} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+                  <Folder size={14} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[12px] font-semibold">{project.name}</span>
                     {pathLabel && (
@@ -1854,7 +1842,7 @@ export const InputBar = memo(function InputBar({
             onClick={() => void selectProject(null)}
             className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400"
           >
-            <Folder size={14} strokeWidth={1.75} className="shrink-0" />
+            <Folder size={14} className="shrink-0" />
             <span className="min-w-0 flex-1 truncate">{t.chatLeaveProject}</span>
           </button>
         )}
@@ -1875,7 +1863,7 @@ export const InputBar = memo(function InputBar({
           disabled={projectCreating}
           className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-800 transition-colors hover:bg-neutral-100 disabled:cursor-default disabled:opacity-50"
         >
-          <Folder size={14} strokeWidth={1.75} className="shrink-0 text-neutral-600" />
+          <Folder size={14} className="shrink-0 text-neutral-600" />
           <span className="min-w-0 flex-1 truncate">{t.chatUseExistingFolder}</span>
         </button>
       </div>
@@ -2177,7 +2165,7 @@ export const InputBar = memo(function InputBar({
                   }`}
                 >
                   {effectiveProject
-                    ? <Folder size={18} strokeWidth={1.75} />
+                    ? <Folder size={18} />
                     : <FolderPlus size={18} strokeWidth={1.75} />}
                 </IconButton>
                 {projectMenuOpen && (

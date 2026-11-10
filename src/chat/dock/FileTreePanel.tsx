@@ -1,35 +1,9 @@
+import { FolderIcon as Folder, FolderIcon as FolderOpen } from '../../components/FileIcon'
 // 文件树面板：懒加载树（virtua 虚拟化）+ 搜索 + 内联新建/重命名 + 右键菜单 + 删除确认。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { VList, type VListHandle } from 'virtua'
-import {
-  AtSign,
-  ChevronDown,
-  ChevronRight,
-  Copy,
-  Database,
-  ExternalLink,
-  Eye,
-  EyeOff,
-  File,
-  FileArchive,
-  FileCode,
-  FileCog,
-  FileImage,
-  FileJson,
-  FileLock,
-  FilePlus2,
-  FileText,
-  Folder,
-  FolderOpen,
-  FolderPlus,
-  Loader2,
-  Pencil,
-  RefreshCw,
-  Search,
-  Terminal,
-  Trash2,
-  X,
-} from 'lucide-react'
+import { FILE_TREE_DENSITY_PRESETS } from '@pierre/trees'
+import { AtSign, Copy, ExternalLink, Eye, EyeOff, FilePlus2, FolderPlus, Loader2, Pencil, RefreshCw, Search, Trash2, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
 import { ConfirmDialog } from './ConfirmDialog'
@@ -49,91 +23,11 @@ import { useFileTree } from './useFileTree'
 import { FileViewer } from './FileViewer'
 import { DiffView } from './DiffView'
 import { ChatMarkdown } from '../ChatMarkdown'
+import { FileIcon } from '../../components/FileIcon'
 import type { DockFsEntry } from '../../api/dockContracts'
 import type { DockPreviewRequest } from './RightDock'
 
-const ROW_HEIGHT = 28
-
-type IconComponent = typeof File
-
-type FileVisual = { Icon: IconComponent; className: string }
-
-/** 扩展名 → 图标 + 颜色（对齐 VS Code 文件图标主题的语言色：JS 黄 / TS 蓝 / Rust 橙…）。 */
-const FILE_VISUAL_BY_EXT: Record<string, FileVisual> = {
-  ts: { Icon: FileCode, className: 'text-sky-500 dark:text-sky-400' },
-  tsx: { Icon: FileCode, className: 'text-sky-500 dark:text-sky-400' },
-  mts: { Icon: FileCode, className: 'text-sky-500 dark:text-sky-400' },
-  cts: { Icon: FileCode, className: 'text-sky-500 dark:text-sky-400' },
-  js: { Icon: FileCode, className: 'text-yellow-500 dark:text-yellow-400' },
-  jsx: { Icon: FileCode, className: 'text-yellow-500 dark:text-yellow-400' },
-  mjs: { Icon: FileCode, className: 'text-yellow-500 dark:text-yellow-400' },
-  cjs: { Icon: FileCode, className: 'text-yellow-500 dark:text-yellow-400' },
-  vue: { Icon: FileCode, className: 'text-emerald-500 dark:text-emerald-400' },
-  svelte: { Icon: FileCode, className: 'text-orange-500 dark:text-orange-400' },
-  rs: { Icon: FileCode, className: 'text-orange-600 dark:text-orange-400' },
-  py: { Icon: FileCode, className: 'text-green-600 dark:text-green-400' },
-  go: { Icon: FileCode, className: 'text-cyan-600 dark:text-cyan-400' },
-  java: { Icon: FileCode, className: 'text-red-500 dark:text-red-400' },
-  kt: { Icon: FileCode, className: 'text-violet-500 dark:text-violet-400' },
-  kts: { Icon: FileCode, className: 'text-violet-500 dark:text-violet-400' },
-  c: { Icon: FileCode, className: 'text-blue-500 dark:text-blue-400' },
-  h: { Icon: FileCode, className: 'text-blue-500 dark:text-blue-400' },
-  cc: { Icon: FileCode, className: 'text-indigo-500 dark:text-indigo-400' },
-  cpp: { Icon: FileCode, className: 'text-indigo-500 dark:text-indigo-400' },
-  cxx: { Icon: FileCode, className: 'text-indigo-500 dark:text-indigo-400' },
-  hpp: { Icon: FileCode, className: 'text-indigo-500 dark:text-indigo-400' },
-  rb: { Icon: FileCode, className: 'text-rose-500 dark:text-rose-400' },
-  php: { Icon: FileCode, className: 'text-violet-400 dark:text-violet-300' },
-  swift: { Icon: FileCode, className: 'text-orange-500 dark:text-orange-400' },
-  html: { Icon: FileCode, className: 'text-orange-500 dark:text-orange-400' },
-  htm: { Icon: FileCode, className: 'text-orange-500 dark:text-orange-400' },
-  css: { Icon: FileCode, className: 'text-sky-500 dark:text-sky-400' },
-  scss: { Icon: FileCode, className: 'text-pink-500 dark:text-pink-400' },
-  less: { Icon: FileCode, className: 'text-pink-500 dark:text-pink-400' },
-  sh: { Icon: Terminal, className: 'text-emerald-600 dark:text-emerald-400' },
-  bash: { Icon: Terminal, className: 'text-emerald-600 dark:text-emerald-400' },
-  zsh: { Icon: Terminal, className: 'text-emerald-600 dark:text-emerald-400' },
-  ps1: { Icon: Terminal, className: 'text-sky-500 dark:text-sky-400' },
-  bat: { Icon: Terminal, className: 'text-sky-500 dark:text-sky-400' },
-  sql: { Icon: Database, className: 'text-sky-500 dark:text-sky-400' },
-  json: { Icon: FileJson, className: 'text-amber-500 dark:text-amber-400' },
-  jsonc: { Icon: FileJson, className: 'text-amber-500 dark:text-amber-400' },
-  yaml: { Icon: FileJson, className: 'text-rose-400 dark:text-rose-300' },
-  yml: { Icon: FileJson, className: 'text-rose-400 dark:text-rose-300' },
-  toml: { Icon: FileJson, className: 'text-amber-600 dark:text-amber-400' },
-  xml: { Icon: FileCode, className: 'text-orange-400 dark:text-orange-300' },
-  ini: { Icon: FileCog, className: 'text-neutral-400' },
-  cfg: { Icon: FileCog, className: 'text-neutral-400' },
-  conf: { Icon: FileCog, className: 'text-neutral-400' },
-  env: { Icon: FileCog, className: 'text-neutral-400' },
-  md: { Icon: FileText, className: 'text-sky-500 dark:text-sky-400' },
-  markdown: { Icon: FileText, className: 'text-sky-500 dark:text-sky-400' },
-  txt: { Icon: FileText, className: 'text-neutral-400' },
-  log: { Icon: FileText, className: 'text-neutral-400' },
-  pdf: { Icon: FileText, className: 'text-red-500 dark:text-red-400' },
-  png: { Icon: FileImage, className: 'text-violet-500 dark:text-violet-400' },
-  jpg: { Icon: FileImage, className: 'text-violet-500 dark:text-violet-400' },
-  jpeg: { Icon: FileImage, className: 'text-violet-500 dark:text-violet-400' },
-  gif: { Icon: FileImage, className: 'text-violet-500 dark:text-violet-400' },
-  webp: { Icon: FileImage, className: 'text-violet-500 dark:text-violet-400' },
-  ico: { Icon: FileImage, className: 'text-violet-500 dark:text-violet-400' },
-  bmp: { Icon: FileImage, className: 'text-violet-500 dark:text-violet-400' },
-  svg: { Icon: FileImage, className: 'text-orange-400 dark:text-orange-300' },
-  zip: { Icon: FileArchive, className: 'text-amber-600 dark:text-amber-400' },
-  tar: { Icon: FileArchive, className: 'text-amber-600 dark:text-amber-400' },
-  gz: { Icon: FileArchive, className: 'text-amber-600 dark:text-amber-400' },
-  '7z': { Icon: FileArchive, className: 'text-amber-600 dark:text-amber-400' },
-  rar: { Icon: FileArchive, className: 'text-amber-600 dark:text-amber-400' },
-  lock: { Icon: FileLock, className: 'text-neutral-400' },
-}
-
-const DEFAULT_FILE_VISUAL: FileVisual = { Icon: File, className: 'text-neutral-400' }
-
-function fileVisualFor(name: string): FileVisual {
-  const lower = name.toLowerCase()
-  const ext = lower.includes('.') ? lower.slice(lower.lastIndexOf('.') + 1) : ''
-  return FILE_VISUAL_BY_EXT[ext] ?? DEFAULT_FILE_VISUAL
-}
+const ROW_HEIGHT = FILE_TREE_DENSITY_PRESETS.compact.itemHeight
 
 type EditingState = {
   mode: 'create-file' | 'create-dir' | 'rename'
@@ -580,7 +474,7 @@ export function FileTreePanel({
       items.push({
         key: 'reveal',
         label: t.dockRevealInFinder,
-        icon: <FolderOpen strokeWidth={1.75} />,
+        icon: <FolderOpen open />,
         onSelect: () => handleOpenEntry(node.path, 'reveal'),
       })
     }
@@ -653,8 +547,6 @@ export function FileTreePanel({
     if (!node) return null
     const isDir = node.kind === 'dir'
     const expanded = expandedSet.has(path)
-    const DirIcon = expanded ? FolderOpen : Folder
-    const fileVisual = isDir ? null : fileVisualFor(node.name)
     // 拖到文件行 = 拖进它所在的目录（Finder 行为）。
     const rowDropDir = isDir ? path : parentDirOf(path)
     return (
@@ -696,34 +588,19 @@ export function FileTreePanel({
             key={level}
             aria-hidden="true"
             className="pointer-events-none absolute bottom-0 top-0 w-px bg-neutral-900/[0.08]"
-            style={{ left: 2 + level * 14 + 6 }}
+            style={{ left: 2 + level * 14 + 8 }}
           />
         ))}
         {isDir ? (
           node.loading ? (
-            <Loader2 size={12} className="shrink-0 animate-spin text-neutral-400" />
-          ) : expanded ? (
-            <ChevronDown size={12} strokeWidth={2} className="shrink-0 text-neutral-400" />
+            <Loader2 size={16} className="shrink-0 animate-spin text-neutral-400" />
           ) : (
-            <ChevronRight size={12} strokeWidth={2} className="shrink-0 text-neutral-400" />
+            <Folder variant="tree" open={expanded} size={16} className="shrink-0" />
           )
         ) : (
-          <span className="w-3 shrink-0" />
+          <FileIcon name={node.name} size={16} className="shrink-0" />
         )}
-        {isDir ? (
-          <DirIcon
-            size={13}
-            strokeWidth={1.75}
-            className="shrink-0 text-amber-500/80 dark:text-amber-300/70"
-          />
-        ) : fileVisual ? (
-          <fileVisual.Icon
-            size={13}
-            strokeWidth={1.75}
-            className={`shrink-0 ${fileVisual.className}`}
-          />
-        ) : null}
-        <span className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700">
+        <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-700">
           {node.name}
         </span>
       </div>
@@ -732,12 +609,13 @@ export function FileTreePanel({
 
   const renderEditRow = (depth: number) => {
     if (!editing) return null
-    const Icon = editing.mode === 'create-dir' ? Folder : editing.mode === 'rename' ? Pencil : File
     return (
       <div className="flex flex-col pr-2" style={{ paddingLeft: 6 + depth * 14 }}>
-        <div className="flex h-[28px] items-center gap-1">
+        <div className="flex items-center gap-1" style={{ height: ROW_HEIGHT }}>
           <span className="w-3 shrink-0" />
-          <Icon size={13} strokeWidth={1.75} className="shrink-0 text-neutral-400" />
+          {editing.mode === 'rename'
+            ? <Pencil size={13} strokeWidth={1.75} className="shrink-0 text-neutral-400" />
+            : <FileIcon name={editing.value} folder={editing.mode === 'create-dir'} size={14} className="shrink-0" />}
           <input
             ref={editInputRef}
             autoFocus
@@ -850,17 +728,14 @@ export function FileTreePanel({
               <div className="py-6 text-center text-[12px] text-neutral-400">{t.dockSearchEmpty}</div>
             )}
             {(tree.searchResults ?? []).map((entry: DockFsEntry) => {
-              const visual =
-                entry.kind === 'dir'
-                  ? { Icon: Folder, className: 'text-amber-500/80 dark:text-amber-300/70' }
-                  : fileVisualFor(basenameOf(entry.path))
               const dir = parentDirOf(entry.path)
               return (
                 <div
                   key={entry.path}
                   role="button"
                   tabIndex={0}
-                  className={`mx-1 flex h-[28px] cursor-default items-center gap-1.5 rounded-md px-1.5 ${
+                  style={{ height: ROW_HEIGHT }}
+                  className={`mx-1 flex cursor-default items-center gap-1.5 rounded-md px-1.5 ${
                     selected.has(entry.path)
                       ? 'bg-neutral-500/12 dark:bg-neutral-400/12'
                       : 'hover:bg-neutral-500/8 dark:hover:bg-neutral-400/8'
@@ -885,8 +760,8 @@ export function FileTreePanel({
                     setMenu({ anchor: { left: e.clientX, top: e.clientY }, path: entry.path })
                   }}
                 >
-                  <visual.Icon size={13} strokeWidth={1.75} className={`shrink-0 ${visual.className}`} />
-                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700">
+                  <FileIcon name={entry.path} folder={entry.kind === 'dir'} size={16} className="shrink-0" />
+                  <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-700">
                     {basenameOf(entry.path)}
                     {dir && (
                       <span className="ml-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">{dir}</span>

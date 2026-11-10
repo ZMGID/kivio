@@ -1,9 +1,10 @@
+import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { ErrorNotice } from '../components/AppNotice'
 // MCP 整页（Chat 窗口「插件 → MCP」）。已安装按来源分组（个人 / 连接器 / 网络搜索 / 插件），
 // 与 Skill 页同一套「凡是已加载的都列出来」；插件与网络搜索 MCP 只读（开关在各自设置页）。
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from 'react'
-import { ChevronDown, FolderOpen, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ChevronDown, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { McpIcon } from '../settings/public/icons'
 import { McpServerIcon } from './McpServerIcon'
 import { useLang, useT } from '../components/i18n'
@@ -713,7 +714,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
                 <div className="mb-1.5 text-[13px] font-medium text-neutral-800">{t.chatMcpImportJsonTitle}</div>
                 <p className="mb-2 text-[12px] text-neutral-500 dark:text-neutral-400">{t.chatMcpImportJsonDesc}</p>
                 <Button onClick={() => void handleImportJson()} data-tauri-drag-region="false">
-                  <FolderOpen size={14} />
+                  <FolderOpen open size={14} />
                   {t.chatMcpImportJsonPick}
                 </Button>
               </div>

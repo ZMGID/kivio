@@ -1,7 +1,8 @@
+import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 import { ErrorNotice } from '../../components/AppNotice'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { ArrowLeft, ChevronDown, ExternalLink, FolderOpen, GitBranch, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ExternalLink, GitBranch, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import { api, isTauriRuntime } from '../../api/tauri'
 import { MARKET_CHANGED_EVENT, type Marketplace, type MarketplacePlugin, type MarketPlugin } from '../../api/market'
 import type { PluginPackage } from '../../api/pluginPackages'
@@ -527,7 +528,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
       </div>
       {addMenu && <DockContextMenu anchor={addMenu} onClose={() => setAddMenu(null)} items={[
         { key: 'marketplace', label: text('添加插件市场', 'Add marketplace'), icon: <Plus size={16} />, onSelect: () => setMarketDialog('add') },
-        { key: 'local', label: text('从本地目录导入', 'Import from a folder'), icon: <FolderOpen size={16} />, onSelect: () => setImportKind('local') },
+        { key: 'local', label: text('从本地目录导入', 'Import from a folder'), icon: <FolderOpen open size={16} />, onSelect: () => setImportKind('local') },
         { key: 'git', label: text('从 Git 仓库导入', 'Import from Git'), icon: <GitBranch size={16} />, onSelect: () => setImportKind('git') },
       ]} />}
       {marketDialog && <MarketplaceDialog mode={marketDialog} zh={zh} onClose={() => setMarketDialog(null)} />}

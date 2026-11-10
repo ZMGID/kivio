@@ -1,7 +1,8 @@
+import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { open } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import type { ChatProject } from './types'
 import { useCloseAnimation } from './useCloseAnimation'
 
@@ -107,7 +108,7 @@ export function ProjectDialog({
             disabled={saving}
             className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-left text-[13px] text-neutral-700 outline-none transition-colors hover:border-neutral-300 disabled:cursor-default disabled:opacity-50 dark:hover:border-neutral-600"
           >
-            <FolderOpen size={15} strokeWidth={1.75} className="shrink-0 text-neutral-500" />
+            <FolderOpen open size={15} className="shrink-0 text-neutral-500" />
             <span className={`min-w-0 flex-1 truncate ${rootPath ? '' : 'text-neutral-400'}`}>
               {rootPath || '选择文件夹'}
             </span>

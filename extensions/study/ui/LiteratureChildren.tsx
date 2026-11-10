@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState, type ReactNode, type MouseEvent } from 'react'
-import { ChevronDown, ChevronRight, FileText, Highlighter, Languages, NotebookPen } from 'lucide-react'
-import { Button, IconButton } from '../../sdk/ui'
+import { ChevronDown, ChevronRight, Highlighter, NotebookPen } from 'lucide-react'
+import { Button, FileIcon, IconButton } from '../../sdk/ui'
 import { ErrorNotice } from '../../sdk/ui'
 import type { ReadingDocument, ReadingNote, ReadingOpenTarget } from '../api/reading'
 import { readingOperationsApi, type ReadingVersion } from '../api/readingOperations'
@@ -62,11 +62,11 @@ export default function LiteratureChildren({ doc, active, selected, onSelect, on
   const notes = doc.notes.filter(note => note.kind !== 'highlight' || !note.anchor || doc.hasPdf === false || (!loading && note.anchor.view && !versions.some(version => version.runId === note.anchor?.view?.runId)))
   return <>
     <ErrorNotice message={error} />
-    {doc.hasPdf !== false && row({ id: 'source', title: '原文 PDF', description: '原始文件', target: { view: { kind: 'source' } } }, <FileText size={15} />, 1, annotations('source'))}
+    {doc.hasPdf !== false && row({ id: 'source', title: '原文 PDF', description: '原始文件', target: { view: { kind: 'source' } } }, <FileIcon name="source.pdf" size={15} />, 1, annotations('source'))}
     {versions.map((version, index) => (['mono', 'dual'] as const).map(kind => {
       const language = readingLanguageName(version.targetLang)
       const date = version.createdAt ? new Date(version.createdAt).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' }) : ''
-      return row({ id: `${kind}:${version.runId}`, title: kind === 'mono' ? `${language}译文` : `${language}双语 PDF`, description: [version.page ? `第 ${version.page} 页` : '全文', index === 0 ? '最新' : date || '历史版本'].join(' · '), target: { view: { kind, runId: version.runId } } }, <Languages size={15} />, 1, annotations(kind, version.runId))
+      return row({ id: `${kind}:${version.runId}`, title: kind === 'mono' ? `${language}译文` : `${language}双语 PDF`, description: [version.page ? `第 ${version.page} 页` : '全文', index === 0 ? '最新' : date || '历史版本'].join(' · '), target: { view: { kind, runId: version.runId } } }, <FileIcon name="translated.pdf" size={15} />, 1, annotations(kind, version.runId))
     }))}
     {loading && <tr className="literature-child-row"><td colSpan={2}><p className="literature-child-status" role="status">正在读取翻译版本…</p></td></tr>}
     {error && <tr className="literature-child-row"><td colSpan={2}><div className="literature-child-status"><Button size="sm" variant="ghost" onClick={() => setRetry(value => value + 1)}>重新读取翻译版本</Button></div></td></tr>}

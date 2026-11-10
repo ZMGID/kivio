@@ -1,4 +1,5 @@
 import { ErrorNotice } from '../components/AppNotice'
+import { FileIcon } from '../components/FileIcon'
 import { useModelDatabase } from '../data/useModelDatabase'
 // 知识库中心页（扩展 → 知识库）：与 Skill/MCP 中心页同级同语汇的独立页面，
 // 取代原「设置 → 知识库」标签页。库列表卡片网格 + 库详情（导入/进度/重建）+ RAG 设置 tab。
@@ -10,7 +11,6 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
-  FileText,
   Library,
   Link2,
   Loader2,
@@ -155,7 +155,7 @@ function DocRow({
   return (
     <div className="px-3 py-2 text-sm">
       <div className="flex items-center gap-2">
-        <FileText size={14} className="shrink-0 text-neutral-400" />
+        <FileIcon name={doc.name} size={14} className="shrink-0" />
         <span className="flex-1 truncate" title={doc.name}>
           {doc.name}
         </span>

@@ -1,14 +1,7 @@
+import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { ErrorNotice } from '../components/AppNotice'
 import { useEffect, useMemo } from 'react'
-import {
-  ArrowLeft,
-  BookOpen,
-  FolderOpen,
-  FolderPlus,
-  RefreshCw,
-  Search,
-  Trash2,
-} from 'lucide-react'
+import { ArrowLeft, BookOpen, FolderPlus, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
   externalCliSettingsApi as piSkillsSettingsApi,
@@ -97,7 +90,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
             disabled={busy !== null}
             onClick={() => void piSkillsSettingsApi.piSkillsOpenDir('pi')}
           >
-            <FolderOpen size={13} />
+            <FolderOpen open size={13} />
           </IconButton>
           <IconButton
             size="sm"
@@ -281,7 +274,7 @@ function SkillRow({
           disabled={busy !== null}
           onClick={() => void onOpen()}
         >
-          <FolderOpen size={12} />
+          <FolderOpen open size={12} />
         </IconButton>
         {skill.canRemove && (
           <IconButton

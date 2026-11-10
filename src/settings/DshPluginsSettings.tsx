@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { ArrowLeft, ChevronDown, FileText, RefreshCw, Search, Terminal, Workflow, Globe } from 'lucide-react'
+import { ArrowLeft, ChevronDown, RefreshCw, Search, Terminal, Workflow, Globe } from 'lucide-react'
+import { FileIcon } from '../components/FileIcon'
 import {
   externalCliSettingsApi as dshPluginSettingsApi,
   type DshPluginEntry,
@@ -80,7 +81,7 @@ export function DshPluginsSettings({
           <p className="kv-row-desc kv-dsh-plugins-copy">{t.externalAgentsDshPluginsIntro}</p>
         )}
         <Button size="sm" onClick={() => void dshPluginSettingsApi.dshOpenSettingsFile()}>
-          <FileText size={12} />
+          <FileIcon name={snapshot?.settingsPath ?? 'settings.json'} size={12} />
           {t.externalAgentsDshPluginsOpenFile}
         </Button>
       </div>

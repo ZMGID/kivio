@@ -1,5 +1,6 @@
+import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 import { useEffect, useRef } from 'react'
-import { FolderOpen } from 'lucide-react'
+
 import { Button } from '../../components/Button'
 import { Input } from '../../settings/public/controls'
 import { useWindowStore } from '../../utils/windowStore'
@@ -28,7 +29,7 @@ export function PluginImportDialog({ zh, kind, onClose }: {
         <Input autoFocus aria-label={text('插件来源', 'Plugin source')} value={draft.source} onChange={value => setImportSource(kind, value)} disabled={draft.busy}
           placeholder={kind === 'local' ? text('选择包含插件的文件夹', 'Choose a plugin folder') : 'https://github.com/owner/repository'} />
       </label>
-      {kind === 'local' && <Button disabled={draft.busy} onClick={() => void runPickImportFolder(kind)}><FolderOpen size={14} />{text('选择目录', 'Choose folder')}</Button>}
+      {kind === 'local' && <Button disabled={draft.busy} onClick={() => void runPickImportFolder(kind)}><FolderOpen open size={14} />{text('选择目录', 'Choose folder')}</Button>}
       <label className="kv-market-field">
         <span>{text('子目录（可选）', 'Subdirectory (optional)')}</span>
         <Input aria-label={text('插件子目录', 'Plugin subdirectory')} value={draft.subdirectory} onChange={value => setImportSubdirectory(kind, value)} disabled={draft.busy} placeholder="plugins/my-plugin" />

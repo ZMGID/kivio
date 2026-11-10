@@ -1,5 +1,6 @@
+import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 import { ErrorNotice } from '../../components/AppNotice'
-import { RefreshCw, FolderOpen } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { SettingRow, SettingsGroup, Toggle } from '../components'
 import { Button } from '../../components/Button'
 import {
@@ -163,7 +164,7 @@ export function MemoryTab({
               onClick={onOpenFolder}
               data-tauri-drag-region="false"
             >
-              <FolderOpen size={11} />
+              <FolderOpen open size={11} />
               {lang === 'zh' ? '打开文件夹' : 'Open folder'}
             </Button>
             {memoryDir && <span className="kv-row-desc min-w-0 break-all">{memoryDir}</span>}

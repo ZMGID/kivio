@@ -1,15 +1,8 @@
+import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { ErrorNotice } from '../components/AppNotice'
+import { FileIcon } from '../components/FileIcon'
 import { useEffect, useMemo, useRef } from 'react'
-import {
-  ArrowLeft,
-  Download,
-  FileCode2,
-  FolderOpen,
-  Package,
-  RefreshCw,
-  Search,
-  Trash2,
-} from 'lucide-react'
+import { ArrowLeft, Download, Package, RefreshCw, Search, Trash2 } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
   externalCliSettingsApi as piExtensionsSettingsApi,
@@ -105,7 +98,7 @@ export function PiExtensionsSettings({ lang, onBack }: { lang: Lang; onBack: () 
           label={t.externalAgentsPiExtensionsOpenDir}
           onClick={() => void piExtensionsSettingsApi.piExtensionsOpenDir()}
         >
-          <FolderOpen size={13} />
+          <FolderOpen open size={13} />
         </IconButton>
         <Button
           size="sm"
@@ -141,7 +134,7 @@ export function PiExtensionsSettings({ lang, onBack }: { lang: Lang; onBack: () 
             disabled={busy !== null}
             onClick={() => void pickLocalPackage()}
           >
-            <FolderOpen size={13} />
+            <FolderOpen open size={13} />
           </IconButton>
           <Button
             size="sm"
@@ -320,7 +313,7 @@ function PackageRow({
           disabled={!item.path || busy !== null}
           onClick={() => void piExtensionsSettingsApi.piExtensionOpen('package', item.source)}
         >
-          <FolderOpen size={13} />
+          <FolderOpen open size={13} />
         </IconButton>
         <IconButton
           size="sm"
@@ -359,7 +352,7 @@ function LocalExtensionRow({
   return (
     <div className="kv-row kv-pi-extension-row">
       <span className="kv-pi-extension-icon">
-        <FileCode2 size={14} />
+        <FileIcon name={item.relativePath} folder={item.kind === 'directory'} size={14} />
       </span>
       <div className="kv-row-text">
         <div className="kv-row-label">{item.name}</div>
@@ -387,7 +380,7 @@ function LocalExtensionRow({
           disabled={busy !== null}
           onClick={() => void piExtensionsSettingsApi.piExtensionOpen('local', item.relativePath)}
         >
-          <FolderOpen size={13} />
+          <FolderOpen open size={13} />
         </IconButton>
       </div>
     </div>

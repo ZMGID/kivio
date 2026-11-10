@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { RefreshCw, Trash2, Download, Copy, Check, ChevronRight, Search, Terminal, FileJson } from 'lucide-react'
+import { RefreshCw, Trash2, Download, Copy, Check, ChevronRight, Search, Terminal } from 'lucide-react'
+import { FileIcon } from '../components/FileIcon'
 import { api, type RequestDebugRecord } from '../api/tauri'
 import { Button } from '../components/Button'
 import { SettingRow, SettingsGroup, Toggle } from './components'
@@ -914,7 +915,7 @@ function DetailView({ selected, lang }: { selected: RequestDebugRecord; lang: st
             <CopyButtonIcon
               text={prettyJson(selected)}
               lang={lang}
-              icon={<FileJson size={11} />}
+              icon={<FileIcon name="request.json" size={11} />}
               label={zh ? '整条' : 'Record'}
             />
           </div>
@@ -1095,7 +1096,7 @@ function TraceView({
         <CopyButtonIcon
           text={formatPayload({ input: inputPayload, output: outputPayload, metadata }, mode)}
           lang={lang}
-          icon={<FileJson size={11} />}
+          icon={<FileIcon name={mode === 'yaml' ? 'request.yaml' : 'request.json'} size={11} />}
           label={zh ? '整条' : 'All'}
         />
       </div>

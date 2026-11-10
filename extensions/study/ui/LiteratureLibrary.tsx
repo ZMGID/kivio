@@ -1,27 +1,8 @@
-import { ErrorNotice, OperationNotice } from '../../sdk/ui'
+import { FolderIcon as Folder } from '../../sdk/ui'
+import { ErrorNotice, FileIcon, OperationNotice } from '../../sdk/ui'
 import { memo, Fragment, useEffect, useMemo, useRef, useState, type ReactNode, type PointerEvent, type CSSProperties, type MouseEvent } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import {
-  BookOpen,
-  FileText,
-  Folder,
-  FolderPlus,
-  Import,
-  Plus,
-  Search,
-  Star,
-  Trash2,
-  X,
-  ArrowUpDown,
-  RotateCcw,
-  Tag,
-  ChevronRight,
-  ChevronDown,
-  Pencil,
-  MoreHorizontal,
-  SlidersHorizontal,
-  Settings2,
-} from 'lucide-react'
+import { BookOpen, FolderPlus, Import, Plus, Search, Star, Trash2, X, ArrowUpDown, RotateCcw, Tag, ChevronRight, ChevronDown, Pencil, MoreHorizontal, SlidersHorizontal, Settings2 } from 'lucide-react'
 import { loadReadingPdf } from './pdfDocument'
 import { StudyIcon } from '../../sdk/ui'
 import { Button, IconButton } from '../../sdk/ui'
@@ -707,7 +688,7 @@ function LiteratureLibrary({
                 ]}
               />
               {!inspectorVisible && selectedDocs.length > 0 && <Button size="sm" variant="ghost" onClick={() => setInspectorOpen(true)}>
-                <FileText size={15} />资料
+                <FileIcon name="document" size={15} />资料
               </Button>}
               <Button
                 size="sm"
@@ -1240,7 +1221,7 @@ function LiteratureLibrary({
               </>
             ) : (
               <div className="literature-empty">
-                <FileText size={28} />
+                <FileIcon name="document" size={28} />
                 <h3>选择一篇文献</h3>
                 <p>在这里整理书目信息、标签与文献集，或打开全文继续阅读。</p>
               </div>

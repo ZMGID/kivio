@@ -68,5 +68,5 @@ export function SiteIcon({ url }: { url: string }) {
   const Icon = siteIconFor(url)
   if (!Icon) return null
   // U+2060 禁止图标与后面的文字之间换行。
-  return <><Icon aria-hidden size="1em" className="mr-1 inline-block align-[-0.125em]" />{'\u2060'}</>
+  return <><Icon aria-hidden size="1em" className="mr-1 inline-block align-[-0.125em] text-[var(--text)]" />{'\u2060'}</>
 }

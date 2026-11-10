@@ -1,17 +1,6 @@
+import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from 'react'
-import {
-  ChevronDown,
-  Download,
-  ExternalLink,
-  FolderOpen,
-  Plus,
-  RefreshCw,
-  Search,
-  Sliders,
-  Sparkles,
-  Trash2,
-  X,
-} from 'lucide-react'
+import { ChevronDown, Download, ExternalLink, Plus, RefreshCw, Search, Sliders, Sparkles, Trash2, X } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { ChatMarkdown } from './ChatMarkdown'
 import {
@@ -606,7 +595,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                   disabled={ops.busyKeys.includes('import-folder')}
                   data-tauri-drag-region="false"
                 >
-                  <FolderOpen size={17} />
+                  <FolderOpen open size={17} />
                 </IconButton>
                 <IconButton
                   size="lg"
@@ -671,7 +660,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
             <div key="import" className="chat-motion-tab-in mt-5 space-y-4">
               <div className="flex flex-wrap gap-2">
                 <Button onClick={() => void handleImportSkill()} disabled={ops.busyKeys.includes('import-folder')} data-tauri-drag-region="false">
-                  <FolderOpen size={14} />
+                  <FolderOpen open size={14} />
                   {t.chatSkillImportFolder}
                 </Button>
                 <Button onClick={() => void handleImportSkillZip()} disabled={ops.busyKeys.includes('import-zip')} data-tauri-drag-region="false">

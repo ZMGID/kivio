@@ -1,5 +1,6 @@
+import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 import { useEffect, useRef } from 'react'
-import { FolderOpen, Loader2, RefreshCw, Trash2 } from 'lucide-react'
+import { Loader2, RefreshCw, Trash2 } from 'lucide-react'
 import { Button, IconButton } from '../../components/Button'
 import { Input } from '../../settings/public/controls'
 import { useWindowStore } from '../../utils/windowStore'
@@ -31,7 +32,7 @@ export function MarketplaceDialog({ zh, mode, onClose }: {
         </label>
         <div className="kv-market-source-shortcuts">
           <Button size="sm" disabled={!!busy} onClick={() => setMarketSource('anthropics/claude-plugins-official')}>{text('Claude 官方市场', 'Claude official marketplace')}</Button>
-          <Button size="sm" disabled={!!busy} onClick={() => void runPickMarketplaceFolder()}><FolderOpen size={14} />{text('本地目录', 'Local folder')}</Button>
+          <Button size="sm" disabled={!!busy} onClick={() => void runPickMarketplaceFolder()}><FolderOpen open size={14} />{text('本地目录', 'Local folder')}</Button>
         </div>
         <p className="kv-market-muted">{text('支持 GitHub 简写、HTTPS Git 仓库、JSON 地址或本地市场。Git 来源可用 #分支 指定版本。', 'Use GitHub owner/repo, an HTTPS Git repository, a JSON URL or a local market. Append #ref to pin a Git revision.')}</p>
       </> : <div className="kv-market-sources custom-scrollbar">

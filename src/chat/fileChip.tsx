@@ -1,92 +1,14 @@
-import {
-  File,
-  FileArchive,
-  FileCode,
-  FileJson,
-  FileMusic,
-  FilePlay,
-  FileSpreadsheet,
-  FileText,
-  Folder,
-  Presentation,
-  FolderOpen,
-} from 'lucide-react'
+import { FolderIcon as FolderOpen } from '../components/FileIcon'
+
 import { useState } from 'react'
+import { FileIcon } from '../components/FileIcon'
+import { fileKindVisual, folderKindVisual } from '../components/fileIconVisual'
 import { DockContextMenu, type DockMenuAnchor } from './dock/DockContextMenu'
-
-type FileKindVisual = {
-  Icon: typeof File
-  label: string
-  iconClass: string
-  wellClass: string
-}
-
-const CODE_EXTS = new Set([
-  'ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs',
-  'py', 'rs', 'go', 'java', 'kt', 'kts', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp',
-  'rb', 'php', 'swift', 'html', 'htm', 'css', 'scss', 'less', 'vue', 'svelte',
-  'sh', 'bash', 'zsh', 'ps1', 'bat', 'sql',
-])
-
-function extensionOf(name: string): string {
-  const slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'))
-  const base = slash >= 0 ? name.slice(slash + 1) : name
-  const dot = base.lastIndexOf('.')
-  if (dot <= 0 || dot === base.length - 1) return ''
-  return base.slice(dot + 1).toLowerCase()
-}
-
-function folderKindVisual(): FileKindVisual {
-  return {
-    Icon: Folder,
-    label: 'FOLDER',
-    iconClass: 'text-amber-600 dark:text-amber-400',
-    wellClass: 'bg-amber-500/10 dark:bg-amber-400/15',
-  }
-}
-
-function fileKindVisual(name: string): FileKindVisual {
-  const ext = extensionOf(name)
-  const label = ext ? ext.toUpperCase() : 'FILE'
-  if (ext === 'pdf') {
-    return { Icon: FileText, label, iconClass: 'text-red-500 dark:text-red-400', wellClass: 'bg-red-500/10 dark:bg-red-400/15' }
-  }
-  if (ext === 'doc' || ext === 'docx') {
-    return { Icon: FileText, label, iconClass: 'text-blue-600 dark:text-blue-400', wellClass: 'bg-blue-500/10 dark:bg-blue-400/15' }
-  }
-  if (ext === 'xls' || ext === 'xlsx' || ext === 'xlsm' || ext === 'csv' || ext === 'tsv') {
-    return { Icon: FileSpreadsheet, label, iconClass: 'text-emerald-600 dark:text-emerald-400', wellClass: 'bg-emerald-500/10 dark:bg-emerald-400/15' }
-  }
-  if (ext === 'ppt' || ext === 'pptx') {
-    return { Icon: Presentation, label, iconClass: 'text-orange-500 dark:text-orange-400', wellClass: 'bg-orange-500/10 dark:bg-orange-400/15' }
-  }
-  if (ext === 'zip' || ext === 'tar' || ext === 'gz' || ext === '7z' || ext === 'rar') {
-    return { Icon: FileArchive, label, iconClass: 'text-amber-600 dark:text-amber-400', wellClass: 'bg-amber-500/10 dark:bg-amber-400/15' }
-  }
-  if (ext === 'json' || ext === 'jsonc' || ext === 'yaml' || ext === 'yml' || ext === 'toml') {
-    return { Icon: FileJson, label, iconClass: 'text-amber-500 dark:text-amber-400', wellClass: 'bg-amber-500/10 dark:bg-amber-400/15' }
-  }
-  if (ext === 'mp3' || ext === 'wav' || ext === 'm4a' || ext === 'flac' || ext === 'ogg' || ext === 'aac') {
-    return { Icon: FileMusic, label, iconClass: 'text-violet-500 dark:text-violet-400', wellClass: 'bg-violet-500/10 dark:bg-violet-400/15' }
-  }
-  if (ext === 'mp4' || ext === 'mov' || ext === 'webm' || ext === 'mkv' || ext === 'avi') {
-    return { Icon: FilePlay, label, iconClass: 'text-fuchsia-500 dark:text-fuchsia-400', wellClass: 'bg-fuchsia-500/10 dark:bg-fuchsia-400/15' }
-  }
-  if (CODE_EXTS.has(ext)) {
-    return { Icon: FileCode, label, iconClass: 'text-sky-500 dark:text-sky-400', wellClass: 'bg-sky-500/10 dark:bg-sky-400/15' }
-  }
-  if (ext === 'md' || ext === 'markdown' || ext === 'txt' || ext === 'log') {
-    return { Icon: FileText, label, iconClass: 'text-neutral-500', wellClass: 'bg-neutral-500/10' }
-  }
-  return { Icon: File, label, iconClass: 'text-neutral-500', wellClass: 'bg-neutral-500/10' }
-}
 
 /** 正文里本地文件链接前的类型图标；与附件卡片共用同一份类型映射。 */
 export function FileKindIcon({ name, folder = false }: { name: string; folder?: boolean }) {
-  const visual = folder ? folderKindVisual() : fileKindVisual(name)
-  const Icon = visual.Icon
   // U+2060 禁止图标与后面的文字之间换行，否则长路径会把图标单独留在上一行。
-  return <><Icon aria-hidden="true" size="1em" strokeWidth={1.8} className={`mr-1 inline-block align-[-0.125em] ${visual.iconClass}`} />{'\u2060'}</>
+  return <><FileIcon name={name} folder={folder} size="1em" className="mr-1 inline-block align-[-0.125em]" />{'\u2060'}</>
 }
 
 /** 上传附件使用卡片，正文产物使用跟随文字行高的链接。 */
@@ -108,7 +30,6 @@ export function FileChip({
   const [menuAnchor, setMenuAnchor] = useState<DockMenuAnchor | null>(null)
   const [locationError, setLocationError] = useState(false)
   const visual = kind === 'folder' ? folderKindVisual() : fileKindVisual(name)
-  const Icon = visual.Icon
   const contextMenu = onRevealLocation ? (event: React.MouseEvent) => {
     event.preventDefault()
     event.stopPropagation()
@@ -117,7 +38,7 @@ export function FileChip({
   } : undefined
   const menu = <>
     {menuAnchor && onRevealLocation && <DockContextMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} items={[{
-      key: 'reveal', label: '打开所在位置', icon: <FolderOpen size={16} strokeWidth={1.75} />,
+      key: 'reveal', label: '打开所在位置', icon: <FolderOpen open size={16} />,
       onSelect: () => { void onRevealLocation().catch(() => setLocationError(true)) },
     }]} />}
     {locationError && <span role="status" className="ml-1 text-xs text-neutral-500">无法打开所在位置，请检查文件是否仍存在。</span>}
@@ -152,7 +73,7 @@ export function FileChip({
       aria-label={ariaLabel ?? name}
     >
       <span className={`flex shrink-0 items-center justify-center rounded-md ${variant === 'compact' ? 'h-5 w-5' : `h-11 w-11 ${visual.wellClass}`}`}>
-        <Icon size={variant === 'compact' ? 14 : 18} strokeWidth={1.8} className={visual.iconClass} />
+        <FileIcon name={name} folder={kind === 'folder'} size={variant === 'compact' ? 14 : 18} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12px] font-medium leading-tight text-neutral-800">

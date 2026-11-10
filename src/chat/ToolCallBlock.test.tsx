@@ -46,6 +46,22 @@ function toolIndex(...calls: ToolCallRecord[]): ReadonlyMap<string, ToolCallReco
   return new Map(calls.map(call => [call.id, call]))
 }
 
+describe('file tool icons', () => {
+  it.each([
+    ['read_file', 'main.py', 'python'],
+    ['write_file', 'main.rs', 'rust'],
+    ['edit_file', 'App.tsx', 'react'],
+  ])('uses the file type for %s', (toolName, path, token) => {
+    const { container } = render(<ToolCallBlock toolCall={buildToolCall({ toolName, arguments: { path } })} />)
+    expect(container.querySelector('use')).toHaveAttribute('href', `#file-tree-builtin-${token}`)
+  })
+  it('preserves the failure indicator for file operations', () => {
+    const { container } = render(<ToolCallBlock toolCall={buildToolCall({ status: 'error', arguments: { path: 'main.py' } })} />)
+    expect(container.querySelector('.lucide-circle-alert')).not.toBeNull()
+    expect(container.querySelector('use')).toBeNull()
+  })
+})
+
 describe('HTML tool labels', () => {
   it.each([
     ['html_render', 'Render HTML'],

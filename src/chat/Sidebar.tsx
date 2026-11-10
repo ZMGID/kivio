@@ -1,20 +1,10 @@
+import { FolderIcon as Folder } from '../components/FileIcon'
 import { SidebarNavItem as NavRow } from '../components/SidebarNavItem'
 import { notifyError } from '../components/appNoticeStore'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
-import {
-  ChevronRight,
-  CircleArrowUp,
-  Folder,
-  FolderPlus,
-  Layers,
-  MoreHorizontal,
-  Plus,
-  Search,
-  Settings,
-  SquarePen,
-} from 'lucide-react'
+import { ChevronRight, CircleArrowUp, FolderPlus, Layers, MoreHorizontal, Plus, Search, Settings, SquarePen } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
 import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
@@ -1813,7 +1803,6 @@ export const Sidebar = memo(function Sidebar({
                             />
                             <Folder
                               size={15}
-                              strokeWidth={1.75}
                               className="shrink-0 text-neutral-500 dark:text-neutral-400"
                             />
                             <span className="min-w-0 truncate">{project.name}</span>

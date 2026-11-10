@@ -39,6 +39,7 @@
     "@lobehub/icons": "^5.10.0",
     "@milkdown/crepe": "^7.21.3",
     "@milkdown/prose": "7.21.3",
+    "@pierre/trees": "1.0.0-beta.6",
     "@streamdown/cjk": "^1.0.3",
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",

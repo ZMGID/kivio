@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileText } from 'lucide-react'
+import { FileIcon } from '../../sdk/ui'
 import { loadReadingPdf } from './pdfDocument'
 import { readingApi } from '../api/reading'
 
@@ -99,10 +99,7 @@ export function PdfThumbnail({
       {source ? (
         <img src={source} alt={`${name} 的 PDF 首页`} />
       ) : (
-        <FileText
-          size={20}
-          aria-label={failed ? 'PDF 预览不可用' : '正在加载 PDF 首页'}
-        />
+        <span role="img" aria-label={failed ? 'PDF 预览不可用' : '正在加载 PDF 首页'}><FileIcon name="document.pdf" size={20} /></span>
       )}
     </span>
   )

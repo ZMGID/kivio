@@ -1,21 +1,8 @@
+import { FolderIcon as Folder, FolderIcon as FolderOpen } from '../components/FileIcon'
 import { ErrorNotice } from '../components/AppNotice'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWindowStore } from '../utils/windowStore'
-import {
-  ArrowLeft,
-  Check,
-  ChevronLeft,
-  Folder,
-  FolderInput,
-  FolderOpen,
-  FolderPlus,
-  MessageSquare,
-  NotebookPen,
-  Pencil,
-  Plus,
-  Search,
-  Trash2,
-} from 'lucide-react'
+import { ArrowLeft, Check, ChevronLeft, FolderInput, FolderPlus, MessageSquare, NotebookPen, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { Crepe } from '@milkdown/crepe'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
@@ -559,7 +546,7 @@ export function NotesCenter() {
 
             <div className="ml-auto flex shrink-0 items-center gap-2">
               <Button variant="ghost" onClick={() => void openNotesFolder()}>
-                <FolderOpen size={14} />
+                <FolderOpen open size={14} />
                 {t.chatNotesOpenFolder}
               </Button>
               {inLibraryRoot && (

@@ -1,41 +1,9 @@
+import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { type ComponentType, type ReactNode, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
+import { FileIcon } from '../components/FileIcon'
 import { SubagentTimelineEvents } from './SubagentTimelineEvents'
-import {
-  AlertCircle,
-  Bot,
-  Brain,
-  CheckCircle2,
-  ChevronDown,
-  CircleSlash,
-  Clock,
-  Copy,
-  Download,
-  ExternalLink,
-  Eye,
-  Film,
-  FilePen,
-  FilePlus2,
-  FileSearch,
-  FileText,
-  FolderInput,
-  FolderOpen,
-  FolderPlus,
-  ImageOff,
-  ImagePlus,
-  ListChecks,
-  Loader2,
-  MessageCircleQuestion,
-  Plug,
-  Save,
-  ScrollText,
-  Search,
-  SquareTerminal,
-  Trash2,
-  Workflow,
-  Wrench,
-  XCircle,
-} from 'lucide-react'
+import { AlertCircle, Bot, Brain, CheckCircle2, ChevronDown, CircleSlash, Clock, Copy, Download, ExternalLink, Eye, Film, FileSearch, FolderInput, FolderPlus, ImageOff, ImagePlus, ListChecks, Loader2, MessageCircleQuestion, Plug, Save, ScrollText, Search, SquareTerminal, Trash2, Workflow, Wrench, XCircle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessageSegment, ToolCallRecord, ToolCallStatus } from './types'
 import { normalizeToolCallStatus } from './toolStatus'
@@ -164,15 +132,6 @@ function toolPathArgument(args: Record<string, unknown> | null): string {
 function toolGlyph(toolCall: ToolCallRecord): LucideIcon | ComponentType<{ size?: number; strokeWidth?: number; className?: string }> {
   const raw = toolRawName(toolCall)
   switch (raw) {
-    case 'read':
-    case 'read_file':
-      return FileText
-    case 'write':
-    case 'write_file':
-      return FilePlus2
-    case 'edit':
-    case 'edit_file':
-      return FilePen
     case 'bash':
     case 'run_command':
       return SquareTerminal
@@ -1901,6 +1860,10 @@ function ToolTypeIcon({ toolCall, status }: { toolCall: ToolCallRecord; status: 
   }
   if (status === 'cancelled') {
     return <XCircle className={`shrink-0${justFailed ? ' chat-motion-pop' : ''}`} size={14} strokeWidth={1.9} />
+  }
+  if (['read', 'read_file', 'write', 'write_file', 'edit', 'edit_file'].includes(toolRawName(toolCall))) {
+    return <FileIcon name={toolPathArgument(parsedArguments(toolCall))} size={14}
+      className={`shrink-0${status === 'running' ? ' animate-pulse' : justCompleted ? ' chat-motion-pop' : ''}`} />
   }
   const Glyph = toolGlyph(toolCall)
   if (status === 'running') {

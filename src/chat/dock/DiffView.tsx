@@ -2,7 +2,8 @@
 // 大 patch 按文件默认折叠（点击展开），不做 IntersectionObserver ——
 // 折叠态本来就不渲染 hunk 行，成本已可控。
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, FileCode } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { FileIcon } from '../../components/FileIcon'
 import { i18n, type Lang } from '../../components/i18n'
 import { countDiffStats, intralineRanges, parseDiff, type DiffFile, type DiffLine } from './diffParse'
 
@@ -47,7 +48,7 @@ function DiffFileCard({ file, defaultOpen, lang }: { file: DiffFile; defaultOpen
         ) : (
           <ChevronRight size={13} strokeWidth={2} className="shrink-0 text-neutral-400" />
         )}
-        <FileCode size={13} strokeWidth={1.75} className="shrink-0 text-neutral-400" />
+        <FileIcon name={file.isDeleted ? file.oldPath : displayPath} size={14} className="shrink-0" />
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-neutral-700">
           {file.isDeleted ? file.oldPath : displayPath}
         </span>

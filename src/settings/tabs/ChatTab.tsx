@@ -1,4 +1,5 @@
-import { RefreshCw, FolderOpen } from 'lucide-react'
+import { FolderIcon as FolderOpen } from '../../components/FileIcon'
+import { RefreshCw } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { homeDir, join } from '@tauri-apps/api/path'
 import { Select, Input, Toggle } from '../public/controls'
@@ -179,7 +180,7 @@ export function ChatTab({
                 }}
                 data-tauri-drag-region="false"
               >
-                <FolderOpen size={11} />
+                <FolderOpen open size={11} />
                 {lang === 'zh' ? '选择' : 'Choose'}
               </Button>
               <Button

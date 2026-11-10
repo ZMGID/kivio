@@ -1,5 +1,5 @@
 import { AttachmentPresentationContext } from '../../sdk/chat'
-import { ErrorNotice, OperationNotice } from '../../sdk/ui'
+import { ErrorNotice, FileIcon, OperationNotice } from '../../sdk/ui'
 import { notifyError } from '../../sdk/ui'
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import {
@@ -12,7 +12,6 @@ import {
   X,
   ArrowLeft,
   ArrowUpRight,
-  FileText,
   Minus,
   Highlighter,
   MousePointer2,
@@ -1380,7 +1379,7 @@ function ReadingWorkspace({
                   showProjectEntry={false}
                   contextSlot={
                     <div className="reading-context-status">
-                      <span className="context-label"><FileText size={12} />{indexing ? `正在读取${edition}…` : `${edition} ${pages.length} 页`}</span>
+                      <span className="context-label"><FileIcon name="document.pdf" size={12} />{indexing ? `正在读取${edition}…` : `${edition} ${pages.length} 页`}</span>
                       {chatReady && !chatLoading && inputBarProps.contextSlot}
                     </div>
                   }

@@ -1,6 +1,7 @@
+import { FolderIcon as Folder } from '../components/FileIcon'
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronRight, Copy, Download, Folder, Hash, Layers, RotateCcw, SquareArrowOutUpRight, Trash2 } from 'lucide-react'
+import { ChevronRight, Copy, Download, Hash, Layers, RotateCcw, SquareArrowOutUpRight, Trash2 } from 'lucide-react'
 import { i18n, type Lang } from '../components/i18n'
 import type { ChatProject, ChatSet } from './types'
 import { useCloseAnimation } from './useCloseAnimation'
@@ -126,7 +127,7 @@ export function ConversationContextMenu({
           role="menuitem"
           className="kv-menu-item"
         >
-          <Folder strokeWidth={1.75} />
+          <Folder />
           <span className="min-w-0 flex-1">{t.chatAddToProject}</span>
           <ChevronRight size={16} className="shrink-0 text-neutral-400" />
         </button>

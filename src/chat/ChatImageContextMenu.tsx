@@ -1,8 +1,9 @@
+import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { notifyError } from '../components/appNoticeStore'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
-import { Check, Clipboard, Download, FolderOpen, Maximize2 } from 'lucide-react'
+import { Check, Clipboard, Download, Maximize2 } from 'lucide-react'
 import { api } from '../api/tauri'
 import { useT } from '../components/i18n'
 
@@ -154,7 +155,7 @@ export function ChatImageContextMenu({
         setLocationError(false)
         void onRevealLocation().then(onClose).catch(() => setLocationError(true))
       }}>
-        <FolderOpen size={16} strokeWidth={1.75} />
+        <FolderOpen open size={16} />
         {t.chatImageRevealLocation}
       </button>}
       {locationError && <span role="status" className="block max-w-64 px-3 py-1 text-xs text-neutral-500">{t.chatImageRevealFailed}</span>}
