@@ -17,6 +17,8 @@ import { artifactDataUrl, isImageArtifact } from './artifacts'
 import { artifactReferenceId, inlineArtifactReferenceLinks } from './artifactReferences'
 import { artifactId } from './artifactPresentation'
 import { ArtifactFileChip } from './GeneratedFileArtifacts'
+import { FileKindIcon } from './fileChip'
+import { SiteIcon } from './linkSiteIcon'
 import { loadArtifactDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
 import { citationMapsEqual, remarkCitations, type CitationView } from './citations'
@@ -999,6 +1001,7 @@ function LinkAnchor({
   const isSystemScheme = /^(mailto|tel|sms):/i.test(decodedHref)
   // 页内锚点（目录跳转）保留默认行为：它不会导航走，只是滚动。
   const isHashOnly = decodedHref.startsWith('#')
+  const localTarget = !isWeb && !isSystemScheme && !isHashOnly && decodedHref ? localLinkTarget(decodedHref) : null
   return (
     <a
       // 不能加 target="_blank"：WRY 的 new-window 处理在 WKWebView 委托层，
@@ -1026,10 +1029,28 @@ function LinkAnchor({
           .catch((err) => console.error('openLocalFile failed', err))
       }}
     >
+      {isWeb && <SiteIcon url={decodedHref} />}
+      {localTarget && <FileKindIcon name={localTarget.name} folder={localTarget.folder} />}
       {children}
     </a>
   )
 }
+
+/** 从本地链接里取出用于判断图标的文件名：去掉 file://、行号后缀（:12、:12:3、#L12）。
+ *  没有扩展名或以斜杠结尾的当文件夹——前端不查文件系统，这是展示层的启发式。 */
+function localLinkTarget(href: string): { name: string; folder: boolean } {
+  const path = href
+    .replace(/^file:\/\//i, '')
+    .replace(/[?#].*$/, '')
+    .replace(/:\d+(?::\d+)?$/, '')
+  const folder = /[\\/]$/.test(path)
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const name = trimmed.slice(Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\')) + 1)
+  const looksLikeFile = /\.[^.]+$/.test(name) || EXTENSIONLESS_FILES.has(name.toLowerCase())
+  return { name, folder: folder || !looksLikeFile }
+}
+
+const EXTENSIONLESS_FILES = new Set(['makefile', 'dockerfile', 'license', 'readme', 'changelog', 'procfile', 'gemfile', 'rakefile', 'justfile'])
 
 /** 引用角标 `[n]`：点击弹出对应来源片段。KB 命中显示「文档 · 标题 · 正文」；
  *  联网来源显示「标题 · 域名 · 日期 · 摘要」，标题可点直接在浏览器打开。 */

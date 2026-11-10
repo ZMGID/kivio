@@ -81,6 +81,14 @@ function fileKindVisual(name: string): FileKindVisual {
   return { Icon: File, label, iconClass: 'text-neutral-500', wellClass: 'bg-neutral-500/10' }
 }
 
+/** 正文里本地文件链接前的类型图标；与附件卡片共用同一份类型映射。 */
+export function FileKindIcon({ name, folder = false }: { name: string; folder?: boolean }) {
+  const visual = folder ? folderKindVisual() : fileKindVisual(name)
+  const Icon = visual.Icon
+  // U+2060 禁止图标与后面的文字之间换行，否则长路径会把图标单独留在上一行。
+  return <><Icon aria-hidden="true" size="1em" strokeWidth={1.8} className={`mr-1 inline-block align-[-0.125em] ${visual.iconClass}`} />{'\u2060'}</>
+}
+
 /** 上传附件使用卡片，正文产物使用跟随文字行高的链接。 */
 export function FileChip({
   name,
@@ -126,7 +134,7 @@ export function FileChip({
         title={name}
         aria-label={ariaLabel ?? name}
       >
-        <Icon aria-hidden="true" size="1em" strokeWidth={1.8} className={`mr-1 inline-block align-[-0.125em] ${visual.iconClass}`} />
+        <FileKindIcon name={name} folder={kind === 'folder'} />
         {name}
       </button>
       {menu}

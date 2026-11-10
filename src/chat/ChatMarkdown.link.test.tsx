@@ -75,3 +75,42 @@ describe('ChatMarkdown 链接点击', () => {
     expect(openLocalFile).not.toHaveBeenCalled()
   })
 })
+
+describe('ChatMarkdown 链接图标', () => {
+  function linkOf(content: string) {
+    const { container } = render(<ChatMarkdown content={content} artifacts={[]} />)
+    return container.querySelector('a')!
+  }
+
+  it('已收录站点（GitHub）在链接前显示品牌图标', () => {
+    const link = linkOf('[仓库](https://github.com/a/b)')
+    const icon = link.querySelector('svg')!
+    expect(icon.getAttribute('aria-hidden')).toBe('true')
+    icon.remove()
+    expect(link.textContent).toBe('\u2060仓库')
+  })
+
+  it('子域名同样命中', () => {
+    expect(linkOf('[页面](https://docs.github.com/x)').querySelector('svg')).not.toBeNull()
+  })
+
+  it('未收录站点保持纯文字链接', () => {
+    expect(linkOf('[说明](https://example.com/a)').querySelector('svg')).toBeNull()
+  })
+
+  it('仿冒域名不命中', () => {
+    expect(linkOf('[x](https://github.com.evil.io/a)').querySelector('svg')).toBeNull()
+  })
+
+  it('本地文件链接显示文件类型图标', () => {
+    const link = linkOf('[planning_recovery.rs](/repo/tests/planning_recovery.rs:12)')
+    const icon = link.querySelector('svg')!
+    expect(icon.getAttribute('aria-hidden')).toBe('true')
+    expect(link.textContent).toBe('\u2060planning_recovery.rs')
+  })
+
+  it('页内锚点和 mailto 不加图标', () => {
+    expect(linkOf('[跳转](#intro)').querySelector('svg')).toBeNull()
+    expect(linkOf('[联系](mailto:a@b.com)').querySelector('svg')).toBeNull()
+  })
+})
