@@ -197,15 +197,46 @@
   background: var(--theme-surface);
 }
 
+/* ===== 左右侧面板开合 =====
+   布局只切换一次，绝不逐帧改宽：transition margin / width 会让 flex 主区每帧变宽，
+   长聊天里的 Markdown / 代码块连续重排，开合把聊天区一起拖卡（拖拽调宽另走 rAF 直写变量）。
+   - 展开：面板立即占位，自身淡入并轻移到位。
+   - 收起：主区立即铺满；面板改为绝对定位浮在上层淡出，播完再隐藏。
+   - 主区不跟着改宽动画，而是由 usePanelShiftMotion 把内容从旧中心平移到新中心（只动 transform）。
+   面板始终压在主区之上，主区平移时从面板下方滑过。 */
+.chat-sidebar-shell,
+.chat-dock-shell {
+  position: relative;
+  z-index: 2;
+  transition:
+    opacity var(--kv-dur-normal) var(--kv-ease-out),
+    transform var(--kv-dur-normal) var(--kv-ease-standard),
+    visibility 0s linear 0s;
+}
+
+.chat-sidebar-shell.is-collapsed,
+.chat-dock-shell.is-collapsed {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--kv-dur-normal) var(--kv-ease-in),
+    transform var(--kv-dur-normal) var(--kv-ease-in),
+    visibility 0s linear var(--kv-dur-normal);
+}
+
 .chat-sidebar-shell {
   width: var(--chat-sidebar-width, 240px);
   border-right: 1px solid var(--theme-surface-border);
   margin: 0;
-  /* 折叠时只做透明度动画。不要 transition margin-left：它会让 flex 主区在每一帧改变宽度，
-     长聊天里的 Markdown / 代码块随之连续重排，侧栏动画会把聊天区一起拖卡。布局位置一次切换，
-     由外壳 overflow:hidden 裁掉滑出的卡片。也不要 transition width：拖拽调宽走 rAF 直写变量。 */
-  transition:
-    opacity var(--kv-dur-normal) var(--kv-ease-out);
+}
+
+.chat-sidebar-shell.is-collapsed {
+  left: 0;
+  transform: translateX(-12px);
 }
 
 /* 右缘拖拽手柄：6px 命中区，hover / 拖动时才露出细线，避免常驻一条分割线。 */
@@ -248,16 +279,9 @@
   transition: none;
 }
 
-.chat-sidebar-shell.is-collapsed {
-  /* 负 margin 等于侧栏宽，折叠后主区铺满。 */
-  margin-left: calc(-1 * var(--chat-sidebar-width, 240px));
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* 设置页齐边铺满：撤掉折叠侧栏留下的外沿，避免导航栏左边透出桌面。 */
+/* 进设置页：设置页有自己的入场，侧栏直接让位，不在导航栏上方叠一层淡出。 */
 .chat-sidebar-shell.is-collapsed.is-settings-cover {
-  margin-right: 0;
+  transition: none;
 }
 
 .chat-dock-shell {
@@ -265,17 +289,16 @@
   width: var(--chat-dock-width, 360px);
   border-left: 1px solid var(--theme-surface-border);
   margin: 0;
-  /* 折叠：负 margin-right 把整张卡片滑出右侧，宽度不变内容不被压缩。 */
-  transition:
-    margin-right var(--kv-dur-slow) var(--kv-ease-standard),
-    opacity var(--kv-dur-normal) var(--kv-ease-out);
 }
 
 .chat-dock-shell.is-collapsed {
-  /* 面板完全出屏，主区延伸到右侧窗口边缘。 */
-  margin-right: calc(-1 * var(--chat-dock-width, 360px));
-  opacity: 0;
-  pointer-events: none;
+  right: 0;
+  transform: translateX(12px);
+}
+
+/* 主区平移期间裁掉越出自身的内容，不从半透明面板（原生材质）下面透出来。 */
+.chat-panel-shift-host.is-panel-shifting {
+  overflow: clip;
 }
 
 .chat-dock-launcher {
@@ -419,6 +442,17 @@
     animation: none;
     transform: none;
   }
+}
+
+/* 编辑器外层：高度由 ComposerEditor 写成编辑器的自然高度并平滑过渡（逐行长高 / 发送后收回）。 */
+.chat-composer-editor-host {
+  transition: height var(--kv-dur-normal) var(--kv-ease-standard);
+}
+.chat-composer-editor-host.is-resizing {
+  overflow: hidden;
+}
+.chat-composer-editor-host.is-instant {
+  transition: none;
 }
 
 /* The editor owns caret/selection geometry, including atomic command chips. */
@@ -1372,6 +1406,13 @@ button.chat-composer-status-item:hover {
   animation: chat-motion-bubble-in var(--kv-dur-normal) var(--kv-ease-standard) backwards;
 }
 
+/* 刚发出的用户消息：从输入框方向（右下）升起落位，读作「我刚说的话」。
+   只在气泡挂载时播一次；同样不保留 transform。 */
+.chat-motion-sent-in {
+  transform-origin: 100% 100%;
+  animation: chat-motion-sent-in var(--kv-dur-slow) var(--kv-ease-standard) backwards;
+}
+
 /* 视图/页面切换入场：三段式递进（对齐 LiveAgent hubPageIn/hubPanelIn）——
    整页轻位移打底，中心页内部大块（头部→tab 行→内容）再依序入场，见下方级联规则。
    注意：Chat.tsx 各视图分支的包裹 div 带 key={view}，否则 React 原地复用 DOM 节点、
@@ -1760,6 +1801,21 @@ button.chat-composer-status-item:hover {
   animation: chat-motion-fade-out var(--kv-dur-fast) var(--kv-ease-in) both;
 }
 
+/* chat-motion-pop 的退场：收缩淡出（回到底部按钮等小圆钮）。 */
+@keyframes chat-motion-pop-out {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+}
+.chat-motion-pop-out {
+  animation: chat-motion-pop-out var(--kv-dur-fast) var(--kv-ease-in) both;
+}
+
 @keyframes chat-motion-popover-out {
   from {
     opacity: 1;
@@ -1834,6 +1890,20 @@ button.chat-composer-status-item:hover {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes chat-motion-sent-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+  60% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -2308,6 +2378,7 @@ button.chat-composer-status-item:hover {
 
   .chat-motion-fade-up,
   .chat-motion-bubble-in,
+  .chat-motion-sent-in,
   .chat-motion-view-in,
   .chat-motion-pane-in,
   .chat-motion-settings-out,

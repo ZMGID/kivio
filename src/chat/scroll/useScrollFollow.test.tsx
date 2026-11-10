@@ -313,3 +313,99 @@ describe('useScrollFollow scroll source timing', () => {
   })
 
 })
+
+function GlideHarness() {
+  const [viewport, setViewport] = useState<HTMLDivElement | null>(null)
+  const [content, setContent] = useState<HTMLDivElement | null>(null)
+  const { following } = useScrollFollow({ viewport, content, glideGrowth: true })
+  return (
+    <>
+      <output data-testid="following">{String(following)}</output>
+      <div ref={setViewport} data-testid="viewport"><div ref={setContent} /></div>
+    </>
+  )
+}
+
+describe('useScrollFollow streaming glide', () => {
+  const originalResizeObserver = window.ResizeObserver
+  let growth: ResizeObserverCallback | null = null
+  let frames: FrameRequestCallback[] = []
+  let clock = 0
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    window.ResizeObserver = originalResizeObserver
+    growth = null
+    frames = []
+  })
+
+  function mountGlide() {
+    window.ResizeObserver = class {
+      constructor(callback: ResizeObserverCallback) { growth = callback }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
+    vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((cb) => frames.push(cb))
+    vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {})
+    vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    render(<GlideHarness />)
+    const viewport = screen.getByTestId('viewport')
+    let scrollHeight = 1000
+    let scrollTop = 500
+    Object.defineProperties(viewport, {
+      // Browsers clamp writes to the scrollable range.
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value: number) => { scrollTop = Math.max(0, Math.min(value, scrollHeight - 500)) },
+      },
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { configurable: true, get: () => 500 },
+    })
+    const grow = (px: number) => {
+      scrollHeight += px
+      act(() => { growth?.([], {} as ResizeObserver) })
+    }
+    const frame = () => {
+      clock += 16
+      const pending = frames.splice(0)
+      act(() => { pending.forEach((cb) => cb(clock)) })
+      fireEvent.scroll(viewport)
+    }
+    return { viewport, grow, frame }
+  }
+
+  it('eases a new line into view instead of jumping', () => {
+    const { viewport, grow, frame } = mountGlide()
+    grow(26)
+    expect(viewport.scrollTop).toBe(500)
+    const positions: number[] = []
+    for (let i = 0; i < 30 && viewport.scrollTop < 526; i++) {
+      frame()
+      positions.push(viewport.scrollTop)
+    }
+    expect(viewport.scrollTop).toBe(526)
+    expect(positions.length).toBeGreaterThan(3)
+    expect(positions.some((value) => value > 500 && value < 526)).toBe(true)
+    for (let i = 1; i < positions.length; i++) expect(positions[i]).toBeGreaterThanOrEqual(positions[i - 1])
+    expect(screen.getByTestId('following')).toHaveTextContent('true')
+  })
+
+  it('stops the glide as soon as the reader wheels up', () => {
+    const { viewport, grow, frame } = mountGlide()
+    grow(120)
+    frame()
+    const reached = viewport.scrollTop
+    fireEvent.wheel(viewport, { deltaY: -40 })
+    expect(screen.getByTestId('following')).toHaveTextContent('false')
+    for (let i = 0; i < 10; i++) frame()
+    expect(viewport.scrollTop).toBe(reached)
+  })
+
+  it('pins large growth instantly', () => {
+    const { viewport, grow } = mountGlide()
+    grow(600)
+    expect(viewport.scrollTop).toBe(1100)
+  })
+})

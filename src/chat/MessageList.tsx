@@ -42,6 +42,7 @@ import { useStreamCoarse, useStreamSnapshot } from './streamingStore'
 import { StreamStatusLine } from './StreamStatusLine'
 import { getActiveGroup, useGroupVersion } from './groupStreamingStore'
 import { ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollow'
+import { usePresence } from './dock/workspacePanelMotion'
 import {
   chatMessageLayoutRevision,
   correctCachedChatRow,
@@ -634,7 +635,11 @@ function MessageListBase({
     content: contentEl,
     trackKeys: true,
     growthSignal: streamGrowthSignal,
+    // 出字中逐行增长缓动到底；打开会话、导航与回到底部仍瞬时。
+    glideGrowth: streaming && !streamFrozen,
   })
+  // 回到底部按钮：消失时收缩淡出再卸载。
+  const jumpButton = usePresence(showJumpButton)
   const followContext = useMemo(() => ({
     following,
     isFollowing: followHandle.isFollowing,
@@ -2745,13 +2750,14 @@ function MessageListBase({
           会静默失效（表现就是「加了没效果」）。不走 mask-image：那会让整个滚动容器每帧走遮罩合成，长列表上白给。 */}
       <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 z-[1] h-6 bg-gradient-to-b from-[var(--theme-surface)] to-transparent" />
       <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-8 bg-gradient-to-t from-[var(--theme-surface)] to-transparent" />
-      {showJumpButton && (
+      {jumpButton.present && (
         <button
           type="button"
           onClick={handleJumpToBottom}
           aria-label="回到底部"
           title="回到底部"
-          className="chat-motion-pop absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-600 shadow-md backdrop-blur transition-transform duration-[var(--kv-dur-instant)] ease-[var(--kv-ease-spring)] hover:text-neutral-900 active:scale-90"
+          tabIndex={jumpButton.closing ? -1 : undefined}
+          className={`${jumpButton.closing ? 'chat-motion-pop-out pointer-events-none' : 'chat-motion-pop'} absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-600 shadow-md backdrop-blur transition-transform duration-[var(--kv-dur-instant)] ease-[var(--kv-ease-spring)] hover:text-neutral-900 active:scale-90`}
         >
           <ChevronDown size={18} strokeWidth={2} />
         </button>

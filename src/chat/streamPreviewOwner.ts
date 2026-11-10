@@ -49,12 +49,15 @@ function frameInterval(snapshot: ConversationStreamSnapshot): number {
   const contentSize = snapshot.content.length + snapshot.reasoning.length
   const structuredSize = snapshot.toolCalls.length * 512 + snapshot.segments.length * 64
   const totalSize = contentSize + structuredSize
-  const foreground = totalSize >= 250_000 ? 220
-    : totalSize >= 120_000 ? 180
-      : totalSize >= 60_000 ? 140
-        : snapshot.toolCalls.length > 0 || snapshot.segments.length > 8 ? 120
-          : totalSize >= 12_000 ? 80
-            : 50
+  // 正文 Markdown 不再随每次发布重渲：它按 streamReveal 的节奏更新，未闭合语法也只修尾块
+  // （见 ChatMarkdown.parseStreamingBlocks）。这里的间隔只约束 live 行其余部分（工具卡、
+  // 分段、状态）的重渲，并决定逐字显示能多早拿到新文字——越短，显示落后越少。
+  const foreground = totalSize >= 250_000 ? 160
+    : totalSize >= 120_000 ? 120
+      : totalSize >= 60_000 ? 90
+        : snapshot.toolCalls.length > 0 || snapshot.segments.length > 8 ? 80
+          : totalSize >= 12_000 ? 50
+            : 33
   if (typeof document !== 'undefined' && document.hidden) {
     return Math.min(750, Math.max(160, foreground * 5))
   }

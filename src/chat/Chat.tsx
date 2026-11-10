@@ -52,6 +52,7 @@ import {
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import { ChatTitlebar } from './ChatTitlebar'
 import { WindowControls } from './WindowControls'
+import { usePanelShiftMotion } from './usePanelShiftMotion'
 import { deriveToolStatusHint, findUnavailableRecommendedTools } from './toolAvailability'
 import { useChatToolIndicator } from './hooks/useChatToolIndicator'
 import { useConversationContext } from './hooks/useConversationContext'
@@ -2933,6 +2934,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   const showConversationDock = chatView === 'conversation' && !conversationOccupied
     && (!usesChatRuntime || Boolean(dock.subagent.selection))
+  // 侧栏 / 右侧面板开合时，主区内容平移到新位置（只动 transform，不逐帧重排）。
+  const [panelRow, setPanelRow] = useState<HTMLDivElement | null>(null)
+  usePanelShiftMotion(
+    panelRow,
+    `${sidebarCollapsed || settingsPanelActive ? 0 : 1}${showConversationDock && dockOpen ? 1 : 0}`,
+    chatView,
+  )
   return (
     <LangContext.Provider value={uiLang}>
     <AsyncQuestionsContext.Provider value={asyncQuestionsValue}>
@@ -2959,7 +2967,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           {chatView === 'conversation' ? conversationTitlebarControls : null}
         </ChatTitlebar>
       )}
-      <div className="flex min-h-0 w-full flex-1">
+      {/* relative：收起中的侧面板以绝对定位浮在这一行上层淡出。 */}
+      <div ref={setPanelRow} className="relative flex min-h-0 w-full flex-1">
         {chatView !== 'onboarding' ? (
         /* 设置页自带 200px 导航栏，聊天侧栏此时借用已有的折叠过渡整体滑出（不再直接卸载，
            否则左列会先空一帧、且关闭时侧栏是瞬间 pop 回来的）。退场期保持折叠，

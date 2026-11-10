@@ -70,6 +70,8 @@ import { normalizeToolCallStatus } from './toolStatus'
 
 const DIRECT_IMAGE_GENERATION_PENDING = '[[KIVIO_DIRECT_IMAGE_GENERATION_PENDING]]'
 const EMPTY_TOOL_CALLS: ToolCallRecord[] = []
+// 「刚发出」的判定窗口：消息创建后这么久内挂载的用户气泡播放发送入场。
+const SENT_ENTRANCE_WINDOW_S = 3
 
 // 模块级稳定引用：内联箭头每次渲染新建会打穿 ChatMarkdown 的 memo（导致公式重渲）。
 const handleChatImageClick = (src: string, alt: string, name?: string) =>
@@ -1182,6 +1184,11 @@ function MessageBubbleComponent({
   // 历史消息会被虚拟列表反复卸载/挂载；只让真正的流式预览播放进入动画，
   // 否则滚动时每个重新进入 DOM 的旧气泡都会淡入并上移，看起来像刷新且阻滞滚动。
   const playEntranceAnimation = messageStreaming
+  // 用户消息只有「刚发出」的那条播入场：在挂载这一刻判定一次（创建不到 3 秒）。
+  // 打开会话载入的历史早已过时；虚拟列表日后重挂同一行也不会重播。
+  const [playSentAnimation] = useState(() => isUser
+    && Number.isFinite(message.timestamp)
+    && Date.now() / 1000 - message.timestamp < SENT_ENTRANCE_WINDOW_S)
   // 「这条是否已落盘并允许历史操作」：门控重新生成。`onUpdateMessage` / `onDeleteMessage`
   // 在这里作为完整可变能力信号；MessageGroup 的在飞列不传它们，从而一次关掉这些入口。
   // 气泡上不再放编辑入口。多答组里每一条的删除在组页脚，不在这条操作行上。
@@ -1394,7 +1401,7 @@ function MessageBubbleComponent({
     return (
       <div
         {...hoverProps}
-        className={`flex justify-end py-2 ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}
+        className={`flex justify-end py-2 ${playSentAnimation ? 'chat-motion-sent-in' : ''}`}
       >
         <div className="flex min-w-0 max-w-[85%] flex-col items-end gap-1">
           {showModelTags && (

@@ -73,6 +73,13 @@ const JUMP_BUTTON_SHOW_RATIO = 0.35
 const JUMP_BUTTON_SHOW_MIN_PX = 240
 const JUMP_BUTTON_SHOW_MAX_PX = 480
 
+// 流式跟随的缓动：每帧向底部逼近剩余距离的 1 - e^(-dt/τ)。τ=70ms 时一行（约 26px）
+// 在 ~200ms 内平滑到位，跟得上逐字出字的换行节奏。
+const GLIDE_TAU_MS = 70
+// 超过这个缺口不缓动、直接到底：打开会话、行重测、大块内容落地都可能一次长出很多，
+// 缓动过去会读成一段「自动滚动动画」，也会和虚拟列表的补偿互抢。
+const GLIDE_MAX_PX = 240
+
 export type UseScrollFollowArgs = {
   viewport: HTMLElement | null
   content?: Element | null
@@ -86,6 +93,11 @@ export type UseScrollFollowArgs = {
    * 高度没变则 no-op，避免和 RO 双通道每 token 互写。
    */
   growthSignal?: string | number | null
+  /**
+   * 跟随中内容小幅增长时缓动到底，而不是瞬间钉底（流式出字时开启）。
+   * 只影响 contentGrowth 引起的钉底；强制跟随、回到底部、松手重接等仍是瞬时。
+   */
+  glideGrowth?: boolean
 }
 
 export function useScrollFollow(args: UseScrollFollowArgs): {
@@ -100,7 +112,10 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     enabled = true,
     trackKeys = false,
     growthSignal = null,
+    glideGrowth = false,
   } = args
+  const glideGrowthRef = useRef(glideGrowth)
+  glideGrowthRef.current = glideGrowth
 
 
   const stateRef = useRef<FollowState>(createFollowState())
@@ -157,13 +172,67 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     })
   }, [])
 
+  // 缓动循环：每帧读取最新的底部位置（内容在缓动中继续增长也会被追上）。
+  const glideRef = useRef<{ frame: number; last: number } | null>(null)
+  const stopGlide = useCallback(() => {
+    const glide = glideRef.current
+    if (!glide) return
+    cancelAnimationFrame(glide.frame)
+    glideRef.current = null
+  }, [])
+
   const pinToBottom = useCallback(() => {
     // 对齐 LiveAgent：瞬时单次写入。双帧 rAF 会在 paint 后再钉一次，
     // 流式中表现就是生成内容整段「往下闪」。virtualizer 估算→实测的第二下
     // 高度变化由 ResizeObserver contentGrowth 再钉，节奏已 ≤1/frame。
+    stopGlide()
     const el = boundViewportRef.current
     if (el) applyScrollTop(el, el.scrollHeight)
-  }, [applyScrollTop])
+  }, [applyScrollTop, stopGlide])
+
+  const glideToBottom = useCallback(() => {
+    const el = boundViewportRef.current
+    if (!el) return
+    const gap = el.scrollHeight - el.clientHeight - el.scrollTop
+    const reducedMotion = typeof window !== 'undefined'
+      && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true
+    if (gap > GLIDE_MAX_PX || reducedMotion) {
+      pinToBottom()
+      return
+    }
+    if (glideRef.current) return
+    const step = (now: number) => {
+      const glide = glideRef.current
+      const viewport = boundViewportRef.current
+      if (!glide || !viewport) {
+        glideRef.current = null
+        return
+      }
+      const state = stateRef.current
+      // 用户接管（滚轮、触摸、按住拖选、主动脱离）立刻停，不和人抢视口。
+      if (!state.following || state.pointerHeld) {
+        glideRef.current = null
+        return
+      }
+      const max = viewport.scrollHeight - viewport.clientHeight
+      const remaining = max - viewport.scrollTop
+      if (remaining <= 1) {
+        // 最后不到 1px 直接落到底，不留小数缺口。
+        if (remaining > 0.01) applyScrollTop(viewport, max)
+        glideRef.current = null
+        return
+      }
+      const dt = Math.min(64, Math.max(0, now - glide.last))
+      glide.last = now
+      const next = remaining > GLIDE_MAX_PX
+        ? max
+        : viewport.scrollTop + Math.min(remaining, Math.max(1, remaining * (1 - Math.exp(-dt / GLIDE_TAU_MS))))
+      applyScrollTop(viewport, next)
+      glide.frame = requestAnimationFrame(step)
+    }
+    const startedAt = performance.now()
+    glideRef.current = { frame: requestAnimationFrame(step), last: startedAt }
+  }, [applyScrollTop, pinToBottom])
 
   const dispatch = useCallback(
     (event: FollowEvent) => {
@@ -171,7 +240,14 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
       const step = reduceFollowEvent(stateRef.current, event, configRef.current)
       stateRef.current = step.state
       if (step.pin) {
-        pinToBottom()
+        // 流式增长：缓动到底。缓动自身产生的 scroll 事件仍处于离底状态，reducer 会要求
+        // 「纠正钉底」，此时交给正在进行的缓动，而不是瞬间打断它。
+        const glide = glideGrowthRef.current
+          && (event.type === 'contentGrowth' || (event.type === 'scroll' && glideRef.current !== null))
+        if (glide) glideToBottom()
+        else pinToBottom()
+      } else if (!step.state.following) {
+        stopGlide()
       }
       if (step.state.following !== wasFollowing) {
         setFollowing(step.state.following)
@@ -182,7 +258,7 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
       const shouldShowJumpButton = !step.state.following && gap > jumpButtonThreshold()
       setShowJumpButton((visible) => visible === shouldShowJumpButton ? visible : shouldShowJumpButton)
     },
-    [jumpButtonThreshold, pinToBottom],
+    [glideToBottom, jumpButtonThreshold, pinToBottom, stopGlide],
   )
 
   const stickToBottom = useCallback(() => {
@@ -431,13 +507,14 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
         layoutCompensationClearRafRef.current = null
       }
       layoutCompensationTicketRef.current = false
+      stopGlide()
       ignoreScrollTopRef.current = null
       boundViewportRef.current = null
       lastScrollHeightRef.current = null
       lastScrollTopRef.current = null
       geometrySampledRef.current = false
     }
-  }, [applyScrollTop, content, dispatch, enabled, jumpButtonThreshold, listenerRoot, markLayoutCompensation, pinToBottom, trackKeys, viewport])
+  }, [applyScrollTop, content, dispatch, enabled, jumpButtonThreshold, listenerRoot, markLayoutCompensation, pinToBottom, stopGlide, trackKeys, viewport])
 
   // RO 主路径之外的补钉：仅当跟随中且 scrollHeight 真的变了。
   useLayoutEffect(() => {

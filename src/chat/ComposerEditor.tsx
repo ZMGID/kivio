@@ -1,4 +1,4 @@
-import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState, type AnimationEventHandler } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type AnimationEventHandler } from 'react'
 import { Schema, type Node as ProseNode } from '@milkdown/prose/model'
 import { EditorState, Plugin, TextSelection } from '@milkdown/prose/state'
 import { EditorView } from '@milkdown/prose/view'
@@ -274,5 +274,49 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     view.dom.dataset.empty = String(view.state.doc.content.size === 0)
   })
 
-  return <div ref={mount} onAnimationEnd={props.onAnimationEnd} />
+  // 输入框随行数长高 / 变矮时，外层平滑过渡到编辑器的自然高度，而不是逐行跳。
+  // 只在过渡期间裁剪溢出（不常驻 overflow:hidden，免得裁掉聚焦光环和优化动画）。
+  // 隐藏（高度 0）或刚显示时直接到位，不从 0 长出来。
+  useEffect(() => {
+    const host = mount.current
+    const editor = viewRef.current?.dom
+    if (!host || !editor || typeof ResizeObserver === 'undefined') return
+    let height = editor.offsetHeight
+    if (height > 0) host.style.height = `${height}px`
+    const settle = (event: TransitionEvent) => {
+      if (event.target === host && event.propertyName === 'height') host.classList.remove('is-resizing')
+    }
+    const observer = new ResizeObserver(() => {
+      const next = editor.offsetHeight
+      if (next === height) return
+      const instant = height === 0 || next === 0
+      height = next
+      if (next === 0) {
+        host.style.height = ''
+        host.classList.remove('is-resizing')
+        return
+      }
+      if (instant) {
+        host.classList.add('is-instant')
+        host.style.height = `${next}px`
+        void host.offsetHeight
+        host.classList.remove('is-instant')
+        return
+      }
+      host.classList.add('is-resizing')
+      host.style.height = `${next}px`
+    })
+    observer.observe(editor)
+    host.addEventListener('transitionend', settle)
+    host.addEventListener('transitioncancel', settle)
+    return () => {
+      observer.disconnect()
+      host.removeEventListener('transitionend', settle)
+      host.removeEventListener('transitioncancel', settle)
+      host.style.height = ''
+      host.classList.remove('is-resizing')
+    }
+  }, [])
+
+  return <div ref={mount} className="chat-composer-editor-host" onAnimationEnd={props.onAnimationEnd} />
 })
