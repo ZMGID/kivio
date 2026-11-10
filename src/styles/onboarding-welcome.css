@@ -1,0 +1,271 @@
+/* ===== Onboarding 序章：主张与四张会动的产品切片 =====
+   循环插画的静止样式即「结果态」，减少动态效果时直接停在结果上。 */
+
+.ob-hero {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  column-gap: clamp(24px, 4cqw, 72px);
+  width: 100%;
+  max-width: 1340px;
+  min-height: 100cqh;
+  margin: 0 auto;
+  padding: clamp(8px, 2cqh, 24px) var(--ob-pad-x) 0;
+  --mx: 0;
+  --my: 0;
+}
+
+.ob-hero-copy { display: flex; flex-direction: column; align-self: center; gap: 18px; min-width: 0; padding: 16px 0; }
+.ob-greet { display: flex; align-items: center; gap: 10px; }
+.ob-greet-blob { display: inline-flex; }
+.ob-greet-bubble {
+  padding: 7px 12px;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: 14px 14px 14px 4px;
+  background: var(--ob-paper);
+  box-shadow: var(--ob-shadow);
+  font-size: 13px;
+}
+
+.ob-hero-title {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  font-size: clamp(32px, 5cqw, 64px);
+  font-weight: 750;
+  line-height: 1.06;
+  letter-spacing: -0.045em;
+  text-wrap: balance;
+}
+.ob-hero-line { display: block; }
+.ob-hero-line--ink.ob-in {
+  background: linear-gradient(100deg, var(--text) 0%, var(--accent) 30%, color-mix(in srgb, var(--accent) 45%, var(--text)) 55%, var(--text) 80%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation:
+    ob-rise 760ms var(--kv-ease-standard) calc(var(--i, 0) * 70ms + 60ms) both,
+    ob-ink-sweep 9s var(--kv-ease-inout) 1.2s infinite alternate;
+}
+.ob-hero-sub { max-width: 34em; font-size: 14px; }
+
+.ob-route { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 0; padding: 0; list-style: none; }
+.ob-route li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px 0 5px;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: 999px;
+  background: var(--ob-paper);
+  font-size: 12.5px;
+  animation: ob-rise 600ms var(--kv-ease-standard) both;
+  animation-delay: calc(var(--i, 0) * 70ms + 420ms);
+}
+.ob-route-num {
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: 600 10.5px/1 var(--font-mono);
+}
+.ob-hero-note { max-width: 40em; margin: 0; color: var(--text-faint); font-size: 12px; line-height: 1.6; }
+
+.ob-collage { position: relative; align-self: center; min-width: 0; height: clamp(360px, 64cqh, 560px); }
+.ob-depth {
+  position: absolute;
+  --depth: 1;
+  translate: calc(var(--mx) * var(--depth) * -12px) calc(var(--my) * var(--depth) * -9px);
+  transition: translate 700ms var(--kv-ease-out);
+  animation: ob-pop 900ms var(--kv-ease-standard) both;
+  animation-delay: calc(var(--i, 0) * 120ms + 160ms);
+}
+.ob-depth--agent { left: 0; top: 2%; width: 62%; --depth: 1.2; --rot: -1.6deg; z-index: 1; }
+.ob-depth--cli { right: 0; top: 24%; width: 52%; --depth: 2.2; --rot: 2.2deg; z-index: 2; }
+.ob-depth--lens { left: 7%; bottom: 0; width: 48%; --depth: 1.7; --rot: 1.2deg; z-index: 3; }
+.ob-depth--translate { right: 3%; bottom: 10%; width: 42%; --depth: 2.8; --rot: -2.6deg; z-index: 4; }
+
+.ob-vig {
+  position: relative;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: 16px;
+  background: var(--theme-surface);
+  box-shadow: var(--ob-shadow-lift);
+  color: var(--text);
+  font-size: 12px;
+  rotate: var(--rot, 0deg);
+  animation: ob-float 8s var(--kv-ease-inout) infinite alternate;
+}
+.ob-depth--cli .ob-vig { animation-duration: 9.5s; animation-delay: -2s; }
+.ob-depth--lens .ob-vig { animation-duration: 7s; animation-delay: -4s; }
+.ob-depth--translate .ob-vig { animation-duration: 10s; animation-delay: -1s; }
+.ob-vig-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: var(--text-faint);
+  font: 500 11px/1 var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* Agent：提问 → 工具活动 → 流式回答 */
+.ob-agent-user {
+  width: fit-content;
+  max-width: 88%;
+  margin-left: auto;
+  padding: 7px 10px;
+  border-radius: 12px 12px 4px 12px;
+  background: var(--theme-surface-hover);
+  line-height: 1.45;
+  animation: ob-agent-user 10s var(--kv-ease-standard) infinite;
+}
+.ob-agent-act {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-top: 10px;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  animation: ob-agent-act 10s var(--kv-ease-standard) infinite;
+}
+.ob-agent-spin, .ob-agent-check { position: absolute; left: 0; top: 50%; margin-top: -6px; }
+.ob-agent-spin {
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 1.5px solid var(--ob-line-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  animation: ob-spin 0.9s linear infinite, ob-agent-spin 10s linear infinite;
+}
+.ob-agent-check { color: var(--accent); animation: ob-agent-check 10s linear infinite; }
+.ob-agent-lines { margin-top: 4px; }
+.ob-agent-lines i {
+  display: block;
+  height: 7px;
+  margin-top: 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  transform-origin: left;
+}
+.ob-agent-lines i:nth-child(1) { width: 94%; animation: ob-agent-line1 10s var(--kv-ease-out) infinite; }
+.ob-agent-lines i:nth-child(2) { width: 80%; animation: ob-agent-line2 10s var(--kv-ease-out) infinite; }
+.ob-agent-lines i:nth-child(3) { width: 54%; background: color-mix(in srgb, var(--accent) 30%, transparent); animation: ob-agent-line3 10s var(--kv-ease-out) infinite; }
+
+/* 外部 CLI：代理名逐个滚过 */
+.ob-vig--cli { background: var(--theme-surface-soft); }
+.ob-cli-dots { display: inline-flex; gap: 4px; margin-right: 4px; }
+.ob-cli-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--theme-surface-border-strong); }
+.ob-cli-line { display: flex; align-items: center; gap: 8px; font: 500 13px/1 var(--font-mono); }
+.ob-cli-line::after { content: ''; width: 7px; height: 14px; margin-left: -2px; background: var(--accent); animation: ob-caret 1.05s steps(1) infinite; }
+.ob-cli-prompt { color: var(--accent); }
+.ob-cli-roll { position: relative; height: 20px; overflow: hidden; }
+.ob-cli-track { display: flex; flex-direction: column; animation: ob-cli-roll 12s var(--kv-ease-standard) infinite; }
+.ob-cli-agent { display: flex; align-items: center; gap: 7px; height: 20px; white-space: nowrap; }
+.ob-cli-note { margin-top: 10px; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+
+/* Lens：框选 → 回答 */
+.ob-lens-screen { position: relative; height: 104px; overflow: hidden; padding: 12px; border-radius: 10px; background: var(--theme-surface-muted); }
+.ob-lens-bar { display: block; width: 60%; height: 6px; margin-bottom: 6px; border-radius: 3px; background: color-mix(in srgb, var(--text) 12%, transparent); }
+.ob-lens-bar--short { width: 36%; }
+.ob-lens-chart { position: absolute; left: 12px; bottom: 10px; width: calc(100% - 24px); height: 52px; }
+.ob-lens-chart path {
+  fill: none;
+  stroke: var(--text-muted);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 260;
+  animation: ob-lens-draw 8s var(--kv-ease-out) infinite;
+}
+.ob-lens-select {
+  position: absolute;
+  left: 36%;
+  top: 30%;
+  width: 38%;
+  height: 60%;
+  border: 1.5px dashed var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  transform-origin: top left;
+  animation: ob-lens-select 8s var(--kv-ease-standard) infinite;
+}
+.ob-lens-select i { position: absolute; width: 6px; height: 6px; border: 1.5px solid var(--accent); border-radius: 1.5px; background: var(--theme-surface); }
+.ob-lens-select i:nth-child(1) { left: -4px; top: -4px; }
+.ob-lens-select i:nth-child(2) { right: -4px; top: -4px; }
+.ob-lens-select i:nth-child(3) { left: -4px; bottom: -4px; }
+.ob-lens-select i:nth-child(4) { right: -4px; bottom: -4px; }
+.ob-lens-answer {
+  display: inline-flex;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 10px 10px 10px 3px;
+  background: var(--accent);
+  color: var(--text-onaccent);
+  font-size: 11.5px;
+  transform-origin: bottom left;
+  animation: ob-lens-answer 8s var(--kv-ease-spring) infinite;
+}
+
+/* 截图翻译：扫描线经过，原文换成译文 */
+.ob-tr-stack { position: relative; display: grid; padding: 2px 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
+.ob-tr-from, .ob-tr-to { grid-area: 1 / 1; }
+.ob-tr-from { opacity: 0; animation: ob-tr-from 7s var(--kv-ease-standard) infinite; }
+.ob-tr-to { color: var(--accent); animation: ob-tr-to 7s var(--kv-ease-standard) infinite; }
+.ob-tr-sweep {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  left: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 14px var(--accent);
+  opacity: 0;
+  animation: ob-tr-sweep 7s var(--kv-ease-inout) infinite;
+}
+
+/* 跑马灯 */
+.ob-ticker {
+  grid-column: 1 / -1;
+  align-self: end;
+  overflow: hidden;
+  margin: 12px calc(var(--ob-pad-x) * -1) 0;
+  padding: 14px 0 18px;
+  border-top: 1px solid color-mix(in srgb, var(--theme-surface-border) 60%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+.ob-ticker-track { display: flex; width: max-content; animation: ob-marquee 70s linear infinite; }
+.ob-ticker:hover .ob-ticker-track { animation-play-state: paused; }
+.ob-ticker ul { display: flex; margin: 0; padding: 0; list-style: none; }
+.ob-ticker li { display: flex; align-items: center; gap: 18px; padding-right: 18px; color: var(--text-muted); font-size: 12.5px; white-space: nowrap; }
+.ob-ticker li::before { content: ''; width: 4px; height: 4px; border-radius: 1px; background: var(--accent); opacity: 0.6; transform: rotate(45deg); }
+
+@container ob-stage (max-width: 860px) {
+  .ob-hero { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto; min-height: 0; }
+  .ob-collage { height: 320px; margin-top: 8px; }
+}
+
+@container ob-stage (max-width: 560px) {
+  .ob-depth--lens, .ob-depth--translate { display: none; }
+  .ob-depth--agent { width: 86%; }
+  .ob-depth--cli { width: 76%; top: 46%; }
+  .ob-collage { height: 260px; }
+}
+
+@container ob-stage (max-height: 560px) and (min-width: 861px) {
+  .ob-collage { height: 320px; }
+  .ob-hero-note { display: none; }
+}

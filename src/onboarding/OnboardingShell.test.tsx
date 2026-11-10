@@ -41,3 +41,18 @@ describe('OnboardingShell load failure', () => {
     expect(onSkip).not.toHaveBeenCalled()
   })
 })
+
+describe('OnboardingShell appearance preview', () => {
+  it('previews the chosen theme live and restores the saved theme when left unsaved', async () => {
+    const { makeSettings } = await import('../settings/tabs/testFixtures')
+    load.mockResolvedValue({ settings: makeSettings({ settingsLanguage: 'zh', themeColor: 'neutral' }), version: { epoch: 'test', revision: 1 } })
+    const view = render(<OnboardingShell onComplete={vi.fn()} onSkip={vi.fn()} windowControls={<span data-testid="caption" />} />)
+    expect(await screen.findByTestId('caption')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '开始配置' }))
+    fireEvent.click(screen.getByRole('radio', { name: '北欧 Nord' }))
+    expect(screen.getByRole('radio', { name: '北欧 Nord' })).toHaveAttribute('aria-checked', 'true')
+    expect(document.documentElement.dataset.themeColor).toBe('nord')
+    view.unmount()
+    expect(document.documentElement.dataset.themeColor).toBe('neutral')
+  })
+})

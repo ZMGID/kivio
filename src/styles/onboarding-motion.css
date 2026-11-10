@@ -1,0 +1,175 @@
+/* ===== Onboarding 动效：关键帧与减少动态效果 =====
+   循环插画在 reduced-motion 下直接移除动画，停在静止样式（结果态）上；
+   入场动画交给全局 0.01ms 兜底，落到终态。 */
+
+@keyframes ob-rise { from { opacity: 0; transform: translate3d(0, 18px, 0); filter: blur(8px); } to { opacity: 1; transform: none; filter: none; } }
+@keyframes ob-slide { from { opacity: 0; transform: translate3d(var(--ob-dx, 28px), 0, 0); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+@keyframes ob-pop { from { opacity: 0; transform: translate3d(0, 14px, 0) scale(0.94); } to { opacity: 1; transform: none; } }
+@keyframes ob-rule { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes ob-bar-in { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes ob-numeral-in { from { opacity: 0; transform: translate3d(0, 60px, 0); } to { opacity: 1; transform: none; } }
+
+@keyframes ob-drift-a { from { transform: translate(-4%, -3%) scale(1); } to { transform: translate(5%, 4%) scale(1.12); } }
+@keyframes ob-drift-b { from { transform: translate(4%, 2%) scale(1.08); } to { transform: translate(-5%, -4%) scale(0.94); } }
+@keyframes ob-drift-c { from { transform: translate(0, -5%) scale(0.9); } to { transform: translate(-6%, 5%) scale(1.1); } }
+@keyframes ob-contour { to { stroke-dashoffset: -1800; } }
+@keyframes ob-ink-sweep { from { background-position: 0% 50%; } to { background-position: 100% 50%; } }
+@keyframes ob-marquee { to { transform: translateX(-50%); } }
+
+@keyframes ob-float { from { translate: 0 0; } to { translate: 0 -10px; } }
+@keyframes ob-orb { from { translate: 0 0; } to { translate: -4px -10px; } }
+@keyframes ob-breathe { from { transform: scale(1); opacity: 0.75; } to { transform: scale(1.14); opacity: 1; } }
+@keyframes ob-ping { from { transform: scale(0.6); opacity: 0.9; } to { transform: scale(1.7); opacity: 0; } }
+@keyframes ob-drop { 0%, 100% { transform: translateY(0); opacity: 0.4; } 50% { transform: translateY(-8px); opacity: 1; } }
+@keyframes ob-spin { to { transform: rotate(360deg); } }
+@keyframes ob-caret { 0% { opacity: 1; } 50% { opacity: 0; } }
+@keyframes ob-orbit { to { transform: rotate(360deg); } }
+@keyframes ob-counter { to { transform: rotate(-360deg); } }
+
+/* Agent 切片：10s */
+@keyframes ob-agent-user {
+  0% { opacity: 0; transform: translateY(8px) scale(0.96); }
+  6%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; transform: none; }
+}
+@keyframes ob-agent-act {
+  0%, 12% { opacity: 0; transform: translateY(6px); }
+  16%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; }
+}
+@keyframes ob-agent-spin { 0%, 14% { opacity: 0; } 15%, 40% { opacity: 1; } 41%, 100% { opacity: 0; } }
+@keyframes ob-agent-check {
+  0%, 40% { opacity: 0; transform: scale(0.4); }
+  44%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; }
+}
+@keyframes ob-agent-line1 { 0%, 42% { transform: scaleX(0); opacity: 1; } 52%, 92% { transform: scaleX(1); opacity: 1; } 98%, 100% { transform: scaleX(1); opacity: 0; } }
+@keyframes ob-agent-line2 { 0%, 48% { transform: scaleX(0); opacity: 1; } 58%, 92% { transform: scaleX(1); opacity: 1; } 98%, 100% { transform: scaleX(1); opacity: 0; } }
+@keyframes ob-agent-line3 { 0%, 54% { transform: scaleX(0); opacity: 1; } 66%, 92% { transform: scaleX(1); opacity: 1; } 98%, 100% { transform: scaleX(1); opacity: 0; } }
+
+/* CLI 切片：六个代理各停 2s，末项与首项相同以无缝循环 */
+@keyframes ob-cli-roll {
+  0%, 13% { transform: translateY(0); }
+  16.67%, 29.67% { transform: translateY(-20px); }
+  33.33%, 46.33% { transform: translateY(-40px); }
+  50%, 63% { transform: translateY(-60px); }
+  66.67%, 79.67% { transform: translateY(-80px); }
+  83.33%, 96.33% { transform: translateY(-100px); }
+  100% { transform: translateY(-120px); }
+}
+
+/* Lens 切片：8s */
+@keyframes ob-lens-draw { 0% { stroke-dashoffset: 260; } 25%, 100% { stroke-dashoffset: 0; } }
+@keyframes ob-lens-select {
+  0%, 22% { opacity: 0; transform: scale(0); }
+  24% { opacity: 1; transform: scale(0.04); }
+  40%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; transform: none; }
+}
+@keyframes ob-lens-answer {
+  0%, 42% { opacity: 0; transform: translateY(6px) scale(0.6); }
+  48%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; transform: none; }
+}
+
+/* 翻译切片：7s */
+@keyframes ob-tr-from {
+  0%, 38% { opacity: 1; filter: none; }
+  46%, 94% { opacity: 0; filter: blur(4px); }
+  100% { opacity: 1; filter: none; }
+}
+@keyframes ob-tr-to {
+  0%, 42% { opacity: 0; transform: translateY(6px); }
+  50%, 90% { opacity: 1; transform: none; }
+  96%, 100% { opacity: 0; transform: none; }
+}
+@keyframes ob-tr-sweep {
+  0%, 34% { opacity: 0; left: 0; }
+  36% { opacity: 1; left: 0; }
+  48% { opacity: 1; left: 100%; }
+  52%, 100% { opacity: 0; left: 100%; }
+}
+
+/* 外观、联网、快捷键、就绪 */
+@keyframes ob-bubble {
+  0% { opacity: 0; transform: translateY(6px) scale(0.96); }
+  10%, 90% { opacity: 1; transform: none; }
+  97%, 100% { opacity: 0; transform: none; }
+}
+@keyframes ob-type { 0% { clip-path: inset(0 100% 0 0); } 28%, 100% { clip-path: inset(0 0 0 0); } }
+@keyframes ob-search-hit {
+  0%, 30% { opacity: 0; transform: translateY(8px); }
+  36%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; transform: none; }
+}
+@keyframes ob-search-hit2 {
+  0%, 34% { opacity: 0; transform: translateY(8px); }
+  40%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; transform: none; }
+}
+@keyframes ob-search-hit3 {
+  0%, 38% { opacity: 0; transform: translateY(8px); }
+  44%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; transform: none; }
+}
+@keyframes ob-search-answer {
+  0%, 52% { opacity: 0; transform: translateY(6px); }
+  60%, 92% { opacity: 1; transform: none; }
+  98%, 100% { opacity: 0; transform: none; }
+}
+@keyframes ob-cap-drop {
+  from { opacity: 0; transform: translateY(-28px) rotateX(48deg); }
+  to { opacity: 1; transform: rotateX(18deg); }
+}
+@keyframes ob-cap-press { 0%, 70%, 100% { translate: 0 0; } 78% { translate: 0 5px; } }
+@keyframes ob-ripple { from { opacity: 0.8; transform: scale(0.6); } to { opacity: 0; transform: scale(2.3); } }
+@keyframes ob-splash {
+  0% { opacity: 0; transform: rotate(calc(var(--d) * 45deg)) translateY(-24px) scale(0.4); }
+  30% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(calc(var(--d) * 45deg)) translateY(-128px) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ob-ink,
+  .ob-rail-link > span,
+  .ob-foot-bar > span { transition: none; }
+
+  .ob-ink > span,
+  .ob-contours path,
+  .ob-rail-item.is-active .ob-rail-dot::after,
+  .ob-loading-drop,
+  .ob-hero-line--ink.ob-in,
+  .ob-vig,
+  .ob-agent-user,
+  .ob-agent-act,
+  .ob-agent-spin,
+  .ob-agent-check,
+  .ob-agent-lines i,
+  .ob-cli-track,
+  .ob-cli-line::after,
+  .ob-lens-chart path,
+  .ob-lens-select,
+  .ob-lens-answer,
+  .ob-tr-from,
+  .ob-tr-to,
+  .ob-tr-sweep,
+  .ob-ticker-track,
+  .ob-mini-window,
+  .ob-mini-user,
+  .ob-mini-orb,
+  .ob-orbit-ring,
+  .ob-orbit-chip,
+  .ob-orbit-pulse,
+  .ob-search,
+  .ob-search-query > span,
+  .ob-search-hit,
+  .ob-search-answer,
+  .ob-cap,
+  .ob-keys .ob-cap--ghost,
+  .ob-finale-ring,
+  .ob-finale-drop {
+    animation: none;
+  }
+
+  .ob-depth { translate: none; transition: none; }
+}

@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import type { ReactNode } from 'react'
 import type { Settings } from '../../api/tauri'
 import { HotkeyInput, Select, Toggle } from '../../settings/public/controls'
 import type { I18n } from '../../components/i18n'
-import { buildHotkey } from '../../settings/public/hotkeys'
+import { buildHotkey, formatHotkey, getPlatform } from '../../settings/public/hotkeys'
 import { OnboardingFormRow } from '../OnboardingFormRow'
-import { OnboardingStepFrame } from '../OnboardingStepFrame'
+import { OnboardingBlock, OnboardingStepFrame } from '../OnboardingStepFrame'
 
 type RecordingTarget = 'chat' | 'main' | 'screenshot' | 'selectedText' | 'replace' | 'lens'
 
@@ -30,8 +30,34 @@ type HotkeySection = {
   fields: HotkeyField[]
 }
 
+/**
+ * 「快捷键」插画：把正在关注的那一组快捷键画成实体键帽，依次按下；录到新组合时键帽重新落位。
+ * 录制中显示等待按键的空键帽。
+ */
+function KeycapArt({ t, label, hotkey, recording }: { t: I18n; label: string; hotkey: string; recording: boolean }) {
+  const keys = hotkey.trim() ? formatHotkey(hotkey, getPlatform()) : []
+  return (
+    <div className={`ob-keys${recording ? ' is-recording' : ''}`}>
+      <div key={recording ? 'recording' : hotkey} className="ob-keys-row">
+        {recording || keys.length === 0 ? (
+          <span className="ob-cap ob-cap--ghost">{recording ? t.hotkeyRecordingPlaceholder : t.onboardingDoneNotConfigured}</span>
+        ) : keys.map((key, index) => (
+          <span key={`${key}-${index}`} className={`ob-cap${key.length > 1 ? ' ob-cap--wide' : ''}`} style={{ '--k': index } as CSSProperties}>
+            <span className="ob-cap-face">{key}</span>
+          </span>
+        ))}
+      </div>
+      <div className="ob-keys-caption">
+        <span className="ob-keys-dot" />
+        {label}
+      </div>
+    </div>
+  )
+}
+
 export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
   const [recordingTarget, setRecordingTarget] = useState<RecordingTarget | null>(null)
+  const [focusTarget, setFocusTarget] = useState<RecordingTarget>('chat')
 
   useEffect(() => {
     if (!recordingTarget) return
@@ -177,17 +203,28 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
   ]
 
   const replaceEnabled = settings.screenshotTranslation.replaceEnabled !== false
+  const allFields = sections.flatMap((section) => section.fields)
+  const focused = allFields.find((field) => field.id === (recordingTarget ?? focusTarget)) ?? allFields[0]
 
   return (
-    <OnboardingStepFrame title={t.onboardingHotkeyTitle} subtitle={t.onboardingHotkeyDesc}>
-      {sections.map((section) => (
-        <div key={section.title} className="onboarding-section">
-          <div className="onboarding-section-label">{section.title}</div>
-          <div className="onboarding-card onboarding-card--rows">
-            {section.lead}
-            {section.fields.map((field) => (
+    <OnboardingStepFrame
+      index={4}
+      eyebrow={t.onboardingStepHotkey}
+      title={t.onboardingHotkeyTitle}
+      subtitle={t.onboardingHotkeyDesc}
+      art={<KeycapArt t={t} label={focused.label} hotkey={focused.value} recording={recordingTarget !== null} />}
+    >
+      {sections.map((section, sectionIndex) => (
+        <OnboardingBlock key={section.title} order={sectionIndex} label={section.title}>
+          {section.lead}
+          {section.fields.map((field) => (
+            <div
+              key={field.id}
+              className={`ob-hotkey-row${focused.id === field.id ? ' is-focused' : ''}`}
+              onPointerEnter={() => { if (!recordingTarget) setFocusTarget(field.id) }}
+              onFocus={() => { if (!recordingTarget) setFocusTarget(field.id) }}
+            >
               <OnboardingFormRow
-                key={field.id}
                 label={field.label}
                 hint={field.hint}
                 stack
@@ -214,6 +251,7 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
                     recording={recordingTarget === field.id}
                     onToggleRecording={() => {
                       if (field.id === 'replace' && !replaceEnabled) return
+                      setFocusTarget(field.id)
                       setRecordingTarget((current) => (current === field.id ? null : field.id))
                     }}
                     recordLabel={t.hotkeyRecord}
@@ -224,9 +262,9 @@ export function HotkeyStep({ t, settings, onChange }: HotkeyStepProps) {
                   />
                 </div>
               </OnboardingFormRow>
-            ))}
-          </div>
-        </div>
+            </div>
+          ))}
+        </OnboardingBlock>
       ))}
     </OnboardingStepFrame>
   )

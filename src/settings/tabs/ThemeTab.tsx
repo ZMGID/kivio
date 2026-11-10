@@ -9,6 +9,7 @@ import type { Lang } from '../../components/i18n'
 import { copyToClipboard } from '../../utils/clipboard'
 import { BUILTIN_THEMES, exportThemeJson, paletteVariables, parseThemeJson, resolveTheme } from '../../theme/theme'
 import { THEME_FIELDS, type ThemeDefinition, type ThemePalette } from '../../theme/types'
+import { themeDisplayName } from '../themeLabels'
 
 const FIELD_LABELS: Record<keyof ThemePalette, string> = {
   surface: '主表面', surfaceSoft: '次级表面', surfaceMuted: '弱化表面',
@@ -24,13 +25,6 @@ const COLOR_GROUPS: { zh: string; en: string; fields: (keyof ThemePalette)[] }[]
   { zh: '强调色', en: 'Accent', fields: ['accent', 'accentHover', 'accentSoft', 'onAccent'] },
   { zh: '危险状态', en: 'Danger', fields: ['danger', 'dangerSoft'] },
 ]
-
-const BUILTIN_LABELS: Record<string, string> = {
-  neutral: '中性', warm: '暖白', cool: '冷白',
-  graphite: '石墨', blossom: '樱粉', grove: '森林',
-  ocean: '海湾', ember: '余烬', iris: '鸢尾',
-  white: '纯白', nord: '北欧 Nord', solarized: '日晒 Solarized',
-}
 
 function ThemePreview({ theme, mode, lang }: { theme: ThemeDefinition; mode: 'light' | 'dark'; lang: Lang }) {
   // An incomplete hex value is an editor state, never an applied CSS value.
@@ -85,7 +79,7 @@ export function ThemeTab({ settings, lang, draft, onDraftChange, onCommit }: {
   const selected = themes.find(theme => theme.id === selectedId) ?? resolveTheme(settings)
   const preview = draft ?? selected
   const isBuiltin = BUILTIN_THEMES.some(theme => theme.id === preview.id)
-  const previewName = zh && isBuiltin ? BUILTIN_LABELS[preview.id] : preview.name
+  const previewName = themeDisplayName(preview, lang, isBuiltin)
   const active = settings.themeColor === selected.id
   const nameValid = draft && draft.name.trim().length > 0 && draft.name.trim().length <= 80 && !/\p{Cc}/u.test(draft.name.trim())
   const invalidFields = draft ? THEME_FIELDS.filter(field => !/^#[0-9a-f]{6}$/i.test(draft[paletteMode][field])) : []
@@ -174,7 +168,7 @@ export function ThemeTab({ settings, lang, draft, onDraftChange, onCommit }: {
             const chosen = selected.id === theme.id
             const current = settings.themeColor === theme.id
             const builtin = BUILTIN_THEMES.some(item => item.id === theme.id)
-            const name = zh && builtin ? BUILTIN_LABELS[theme.id] : theme.name
+            const name = themeDisplayName(theme, lang, builtin)
             return (
               <button key={theme.id} type="button" role="radio" aria-checked={chosen} tabIndex={chosen ? 0 : -1}
                 aria-label={`${name} · ${current ? (zh ? '正在使用' : 'Active') : builtin ? (zh ? '内置' : 'Built-in') : (zh ? '自定义' : 'Custom')}`}

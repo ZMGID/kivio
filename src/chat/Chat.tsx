@@ -51,6 +51,7 @@ import {
 } from './chatRoutes'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import { ChatTitlebar } from './ChatTitlebar'
+import { WindowControls } from './WindowControls'
 import { deriveToolStatusHint, findUnavailableRecommendedTools } from './toolAvailability'
 import { useChatToolIndicator } from './hooks/useChatToolIndicator'
 import { useConversationContext } from './hooks/useConversationContext'
@@ -2940,7 +2941,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       <div
         className={`chat-window-shell${usesNativeTitlebar ? ' chat-window-shell--native-titlebar' : ''}`}
       >
-      {!usesNativeTitlebar && (
+      {/* 引导页整窗铺满：不渲染标题栏带，窗口三键由引导页自己的顶栏承载。 */}
+      {!usesNativeTitlebar && chatView !== 'onboarding' && (
         <ChatTitlebar
           sidebarExpanded={!sidebarCollapsed}
           /* 与下方 <Sidebar collapsed> 取反同源：设置页里侧栏也是收起的，
@@ -3004,6 +3006,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         {chatView === 'onboarding' ? (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             <OnboardingShell
+              windowControls={usesNativeTitlebar ? null : <WindowControls />}
               onComplete={handleOnboardingExit}
               onSkip={handleOnboardingExit}
               onSettingsChange={handleSettingsChange}

@@ -51,8 +51,11 @@ it('refreshes the chat draft from the saved setup before the first conversation'
   window.history.replaceState(null, '', '#chat/onboarding')
   render(<Chat onSettingsChange={() => {}} />)
   fireEvent.click(await screen.findByRole('button', { name: '开始配置' }))
-  for (let step = 0; step < 3; step++) fireEvent.click(screen.getByRole('button', { name: '下一步' }))
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '开始使用 Kivio Desktop' })) })
+  // 引导页铺满整窗：不渲染聊天标题栏带，窗口三键挂在引导自己的顶栏上。
+  expect(document.querySelector('.chat-titlebar-strip')).toBeNull()
+  expect(screen.getByRole('button', { name: '最小化' }).closest('.ob-top')).not.toBeNull()
+  for (let step = 0; step < 4; step++) fireEvent.click(screen.getByRole('button', { name: '下一步' }))
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '进入 Kivio' })) })
   await waitFor(() => expect(screen.getByRole('button', { name: binding.model })).toBeInTheDocument())
   expect(screen.queryByRole('button', { name: initial.chatModel })).not.toBeInTheDocument()
   expect(cached.onboardingStatus).toBe('completed')

@@ -10,6 +10,7 @@ import { PROVIDER_PRESETS, type ProviderPreset } from '../settings/public/modelS
 import { isProviderEnabled, ProviderOAuthPanel } from '../settings/public/providers'
 import { ProviderIcon } from '../components/ModelIcon'
 import { createProviderRequestDraft } from '../settings/public/providerDraft'
+import { OnboardingBlock } from './OnboardingStepFrame'
 
 type ProviderSetupPanelProps = {
   t: I18n
@@ -112,6 +113,13 @@ function maybeAutoBindDefaults(settings: Settings, provider: ModelProvider): Set
       providerId: provider.id,
       model: primaryModel,
     }
+  }
+
+  const chatEmpty = !next.defaultModels.chat.providerId.trim() || !next.defaultModels.chat.model.trim()
+  if (chatEmpty) {
+    next.defaultModels = { ...next.defaultModels, chat: { providerId: provider.id, model: primaryModel } }
+    next.chatProviderId = provider.id
+    next.chatModel = primaryModel
   }
 
   const lensEmpty = !next.lens?.providerId?.trim() || !next.lens?.model?.trim()
@@ -321,9 +329,8 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
   )
 
   return (
-    <div className="onboarding-provider-panel">
-      <div className="onboarding-section">
-        <div className="onboarding-section-label">{t.onboardingProviderList}</div>
+    <>
+      <OnboardingBlock order={0} label={t.onboardingProviderList}>
         <div className="onboarding-pick-grid">
           {settings.providers.map((item) => (
             <button
@@ -363,139 +370,168 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
           <p className="onboarding-panel-note">{t.onboardingProviderEmpty}</p>
         ) : null}
 
-        {provider ? (
-          <div className="onboarding-card onboarding-provider-card">
-            <ProviderOAuthPanel
-              key={provider.id}
-              provider={provider}
-              lang={lang}
-              authorizedNotice={t.onboardingProviderAuthorized}
-              onUpdateProvider={(id, patch) => onChange(updateProviderInSettings(settings, id, patch))}
-            />
-            <div className="onboarding-provider-grid">
-              <div className="onboarding-field">
-                <Label>{t.onboardingProviderName}</Label>
-                <Input
-                  value={provider.name}
-                  onChange={(value) => updateProvider({ name: value })}
-                  placeholder={t.onboardingProviderCustom}
-                />
-              </div>
-              <div className="onboarding-field">
-                <Label>{t.baseUrl}</Label>
-                <Input
-                  value={provider.baseUrl}
-                  disabled={Boolean(provider.request.oauth)}
-                  onChange={(value) => {
-                    const baseUrlChanged = value !== provider.baseUrl
-                    updateProvider({
-                      baseUrl: value,
-                      ...(baseUrlChanged ? { availableModels: [], enabledModels: [] } : {}),
-                    })
-                  }}
-                  placeholder="https://api.example.com/v1"
-                  mono
-                />
-              </div>
-            </div>
+      </OnboardingBlock>
 
+      {provider ? (
+        <OnboardingBlock
+          order={1}
+          className="onboarding-provider-card"
+          label={(
+            <span className="ob-provider-title">
+              <ProviderIcon name={provider.name} baseUrl={provider.baseUrl} size={15} />
+              {provider.name.trim() || provider.id}
+            </span>
+          )}
+          aside={provider.enabledModels.length > 0 ? t.onboardingProviderModelCount.replace('{n}', String(provider.enabledModels.length)) : undefined}
+        >
+          <ProviderOAuthPanel
+            key={provider.id}
+            provider={provider}
+            lang={lang}
+            authorizedNotice={t.onboardingProviderAuthorized}
+            onUpdateProvider={(id, patch) => onChange(updateProviderInSettings(settings, id, patch))}
+          />
+          <div className="onboarding-provider-grid">
             <div className="onboarding-field">
-              <Label>{t.onboardingProviderProtocol}</Label>
-              <Select
-                value={provider.apiFormat}
-                disabled={Boolean(provider.request.oauth)}
-                onChange={(value) => updateProvider({ apiFormat: value as ProviderApiFormat, availableModels: [], enabledModels: [] })}
-                options={[
-                  { value: 'openai_chat', label: 'OpenAI Chat' },
-                  { value: 'openai_responses', label: 'OpenAI Responses' },
-                  { value: 'anthropic_messages', label: 'Anthropic' },
-                  { value: 'gemini', label: 'Gemini' },
-                  { value: 'xai_responses', label: 'Grok (xAI)' },
-                ]}
+              <Label>{t.onboardingProviderName}</Label>
+              <Input
+                value={provider.name}
+                onChange={(value) => updateProvider({ name: value })}
+                placeholder={t.onboardingProviderCustom}
               />
             </div>
-            {isOpenCodeFree(provider) ? <p className="onboarding-panel-note">{t.onboardingProviderFreeHint}</p> : null}
-            {!provider.request.oauth && !isOpenCodeFree(provider) ? <div className="onboarding-field">
-              <Label>{t.onboardingProviderApiKey}</Label>
+            <div className="onboarding-field">
+              <Label>{t.baseUrl}</Label>
               <Input
-                type="password"
-                value={provider.apiKeys[0] || ''}
-                onChange={(value) => updateProvider({ apiKeys: [value.trim(), ...provider.apiKeys.slice(1)] })}
-                placeholder="sk-..."
+                value={provider.baseUrl}
+                disabled={Boolean(provider.request.oauth)}
+                onChange={(value) => {
+                  const baseUrlChanged = value !== provider.baseUrl
+                  updateProvider({
+                    baseUrl: value,
+                    ...(baseUrlChanged ? { availableModels: [], enabledModels: [] } : {}),
+                  })
+                }}
+                placeholder="https://api.example.com/v1"
                 mono
               />
-              <p className="onboarding-field-hint">{t.onboardingProviderKeyHint}</p>
-              {(() => {
-                // 命中快速预设 baseUrl 时，给出「获取 API Key」外链引导申请（与设置页一致）。
-                const preset = PROVIDER_PRESETS.find(
-                  (p) => p.baseUrl === provider.baseUrl && p.apiKeyUrl,
-                )
-                if (!preset?.apiKeyUrl) return null
-                return (
-                  <button
-                    type="button"
-                    onClick={() => void api.openExternal(preset.apiKeyUrl!)}
-                    className="inline-flex w-fit items-center text-[12px] text-indigo-500 hover:underline dark:text-indigo-300"
-                    data-tauri-drag-region="false"
-                  >
-                    {lang === 'zh' ? `获取 ${preset.name} API Key ↗` : `Get ${preset.name} API key ↗`}
-                  </button>
-                )
-              })()}
-            </div> : null}
-
-            <div className="onboarding-action-row">
-              <Button
-                onClick={() => void handleTestConnection()}
-                disabled={testing || !providerAuthenticationReady(provider)}
-                data-tauri-drag-region="false"
-              >
-                {testing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                {t.onboardingProviderTest}
-              </Button>
-              <Button
-                variant="primary"
-                onClick={openModelPicker}
-                disabled={!providerAuthenticationReady(provider)}
-                data-tauri-drag-region="false"
-              >
-                {t.onboardingProviderManageModels}
-                {provider.enabledModels.length > 0 ? ` · ${provider.enabledModels.length}` : ''}
-              </Button>
-              {testFeedback ? (
-                <span className={`kv-tag ${testFeedback.ok ? 'ok' : 'danger'}`}>{testFeedback.message}</span>
-              ) : null}
-              <IconButton
-                variant="danger"
-                size="xs"
-                className="onboarding-action-trailing"
-                onClick={() => setConfirmDelete(true)}
-                data-tauri-drag-region="false"
-                title={t.deleteProvider}
-                label={t.deleteProvider}
-              >
-                <Trash2 size={13} />
-              </IconButton>
             </div>
-
-            {provider.enabledModels.length > 0 ? (
-              <div className="onboarding-model-list">
-                {provider.enabledModels.map((model) => (
-                  <span key={model} className="onboarding-model-chip">
-                    <Check size={12} />
-                    {model}
-                  </span>
-                ))}
-              </div>
-            ) : null}
           </div>
-        ) : null}
-      </div>
+
+          <div className="onboarding-field">
+            <Label>{t.onboardingProviderProtocol}</Label>
+            <Select
+              value={provider.apiFormat}
+              disabled={Boolean(provider.request.oauth)}
+              onChange={(value) => updateProvider({ apiFormat: value as ProviderApiFormat, availableModels: [], enabledModels: [] })}
+              options={[
+                { value: 'openai_chat', label: 'OpenAI Chat' },
+                { value: 'openai_responses', label: 'OpenAI Responses' },
+                { value: 'anthropic_messages', label: 'Anthropic' },
+                { value: 'gemini', label: 'Gemini' },
+                { value: 'xai_responses', label: 'Grok (xAI)' },
+              ]}
+            />
+          </div>
+          {isOpenCodeFree(provider) ? <p className="onboarding-panel-note">{t.onboardingProviderFreeHint}</p> : null}
+          {!provider.request.oauth && !isOpenCodeFree(provider) ? <div className="onboarding-field">
+            <Label>{t.onboardingProviderApiKey}</Label>
+            <Input
+              type="password"
+              value={provider.apiKeys[0] || ''}
+              onChange={(value) => updateProvider({ apiKeys: [value.trim(), ...provider.apiKeys.slice(1)] })}
+              placeholder="sk-..."
+              mono
+            />
+            <p className="onboarding-field-hint">{t.onboardingProviderKeyHint}</p>
+            {(() => {
+              // 命中快速预设 baseUrl 时，给出「获取 API Key」外链引导申请（与设置页一致）。
+              const preset = PROVIDER_PRESETS.find(
+                (p) => p.baseUrl === provider.baseUrl && p.apiKeyUrl,
+              )
+              if (!preset?.apiKeyUrl) return null
+              return (
+                <button
+                  type="button"
+                  onClick={() => void api.openExternal(preset.apiKeyUrl!)}
+                  className="ob-link"
+                  data-tauri-drag-region="false"
+                >
+                  {lang === 'zh' ? `获取 ${preset.name} API Key ↗` : `Get ${preset.name} API key ↗`}
+                </button>
+              )
+            })()}
+          </div> : null}
+
+          <div className="onboarding-action-row">
+            <Button
+              onClick={() => void handleTestConnection()}
+              disabled={testing || !providerAuthenticationReady(provider)}
+              data-tauri-drag-region="false"
+            >
+              {testing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              {t.onboardingProviderTest}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={openModelPicker}
+              disabled={!providerAuthenticationReady(provider)}
+              data-tauri-drag-region="false"
+            >
+              {t.onboardingProviderManageModels}
+              {provider.enabledModels.length > 0 ? ` · ${provider.enabledModels.length}` : ''}
+            </Button>
+            {testFeedback ? (
+              <span className={`kv-tag ${testFeedback.ok ? 'ok' : 'danger'}`}>{testFeedback.message}</span>
+            ) : null}
+            <IconButton
+              variant="danger"
+              size="xs"
+              className="onboarding-action-trailing"
+              onClick={() => setConfirmDelete(true)}
+              data-tauri-drag-region="false"
+              title={t.deleteProvider}
+              label={t.deleteProvider}
+            >
+              <Trash2 size={13} />
+            </IconButton>
+          </div>
+
+          {provider.enabledModels.length > 0 ? (
+            <div className="onboarding-model-list">
+              {provider.enabledModels.map((model) => (
+                <span key={model} className="onboarding-model-chip">
+                  <Check size={12} />
+                  {model}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </OnboardingBlock>
+      ) : null}
 
       {hasAnyEnabledModels ? (
-        <div className="onboarding-section">
-          <div className="onboarding-section-label">{t.onboardingProviderDefaultModels}</div>
+        <OnboardingBlock order={2} label={t.onboardingProviderDefaultModels}>
           <div className="onboarding-defaults-grid">
+            <div className="onboarding-default-cell">
+              <span className="onboarding-field-label">{t.onboardingProviderChatModel}</span>
+              <ModelPairSelect
+                providerId={settings.defaultModels.chat.providerId}
+                model={settings.defaultModels.chat.model}
+                providers={settings.providers}
+                className="w-full"
+                ariaLabel={t.onboardingProviderChatModel}
+                onChange={(providerId, model) => {
+                  onChange({
+                    ...settings,
+                    defaultModels: { ...settings.defaultModels, chat: { providerId, model } },
+                    chatProviderId: providerId,
+                    chatModel: model,
+                  })
+                }}
+              />
+              <p className="onboarding-field-hint">{t.onboardingProviderChatHint}</p>
+            </div>
             <div className="onboarding-default-cell">
               <span className="onboarding-field-label">{t.onboardingProviderQuickTranslateModel}</span>
               <ModelPairSelect
@@ -537,7 +573,7 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
               <p className="onboarding-field-hint">{t.onboardingProviderLensHint}</p>
             </div>
           </div>
-        </div>
+        </OnboardingBlock>
       ) : null}
 
       {confirmDelete && provider ? (
@@ -610,6 +646,6 @@ export function ProviderSetupPanel({ t, lang, settings, onChange }: ProviderSetu
           }}
         />
       ) : null}
-    </div>
+    </>
   )
 }

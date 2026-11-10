@@ -157,10 +157,9 @@
   overflow: hidden;
 }
 
-/* 内嵌设置页：齐边铺满聊天窗口。不跟会话主区那套缝/圆角/阴影走 ——
-   设置是整页工作面（左导航 + 右主区），浮卡缝会让顶栏三键/导航顶边读成「没贴齐」。
-   引导页（.onboarding-shell.settings-embedded）仍用浮卡规则。 */
-.chat-window-shell .settings-embedded:not(.onboarding-shell) {
+/* 内嵌设置页与引导页：齐边铺满聊天窗口。不跟会话主区那套缝/圆角/阴影走 ——
+   设置是整页工作面（左导航 + 右主区），浮卡缝会让顶栏三键/导航顶边读成「没贴齐」。 */
+.chat-window-shell .settings-embedded {
   margin: 0;
   border: none;
   border-radius: 0;

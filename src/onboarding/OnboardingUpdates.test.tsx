@@ -49,7 +49,7 @@ describe('onboarding matches current capabilities', () => {
       return <HotkeyStep t={i18n.zh} settings={settings} onChange={next => { latest = next; setSettings(next) }} />
     }
     render(<Setup />)
-    const row = screen.getByText(i18n.zh.chatHotkeyLabel).closest('.onboarding-form-row') as HTMLElement
+    const row = screen.getByText(i18n.zh.chatHotkeyLabel, { selector: '.onboarding-field-label' }).closest('.onboarding-form-row') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: i18n.zh.hotkeyRecord }))
     fireEvent.keyDown(window, { key: 'u', code: 'KeyU', ctrlKey: true, shiftKey: true })
     expect(latest.chatHotkey).toBe('CommandOrControl+Shift+U')
@@ -66,8 +66,8 @@ describe('onboarding matches current capabilities', () => {
   it('reports chat search as enabled independently from Lens search', () => {
     const settings = makeSettings({ providers: [makeProvider()] })
     settings.lens.webSearch = { enabled: false, provider: 'tavily', tavilyApiKey: 'key', exaApiKey: '', maxResults: 5, searchDepth: 'basic' }
-    render(<DoneStep t={i18n.zh} settings={settings} />)
-    const summary = within(screen.getByText(i18n.zh.onboardingDoneSectionModels).parentElement as HTMLElement)
+    render(<DoneStep t={i18n.zh} lang="zh" settings={settings} />)
+    const summary = within(screen.getByText(i18n.zh.onboardingDoneSectionModels).closest('.ob-block') as HTMLElement)
     const chatRow = summary.getByText(`${i18n.zh.webSearchChatSection} · ${i18n.zh.onboardingDoneWebSearch}`).closest('.onboarding-summary-row') as HTMLElement
     const lensRow = summary.getByText(`${i18n.zh.webSearchLensSection} · ${i18n.zh.onboardingDoneWebSearch}`).closest('.onboarding-summary-row') as HTMLElement
     expect(within(chatRow).getByText(i18n.zh.enabled)).toBeInTheDocument()

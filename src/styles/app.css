@@ -18,8 +18,13 @@
 @import "./settings-01-embedded.css";
 /* Former index.css 3640-3875: Chat-owned titlebar and platform window controls. */
 @import "./chat-02-titlebar.css";
-/* Former index.css 3876-8236: Settings-owned pages, dialogs, and onboarding. */
+/* Former index.css 3876-8236: Settings-owned pages and dialogs. */
 @import "./settings-02-pages.css";
+/* Onboarding-owned first-run setup: shell, prologue, steps, motion. */
+@import "./onboarding.css";
+@import "./onboarding-welcome.css";
+@import "./onboarding-steps.css";
+@import "./onboarding-motion.css";
 /* Former index.css 8237-8274: Notes-owned Milkdown editor integration. */
 @import "./notes-editor.css";
 /* Former index.css 8275-8401: Chat-owned selection and loading overlays. */
