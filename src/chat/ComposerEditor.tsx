@@ -1,5 +1,4 @@
 import { forwardRef, useImperativeHandle, useLayoutEffect, useRef, useState, type AnimationEventHandler } from 'react'
-import { createPortal } from 'react-dom'
 import { Schema, type Node as ProseNode } from '@milkdown/prose/model'
 import { EditorState, Plugin, TextSelection } from '@milkdown/prose/state'
 import { EditorView } from '@milkdown/prose/view'
@@ -7,7 +6,6 @@ import { history, undo, redo, undoDepth, redoDepth, closeHistory } from '@milkdo
 import { keymap } from '@milkdown/prose/keymap'
 import { deleteSelection, selectAll } from '@milkdown/prose/commands'
 import { findComposerCommands, type SlashCommandDefinition } from './slashCommands'
-import { SlashCommandIcon } from './SlashCommandIcon'
 
 const schema = new Schema({ nodes: {
   doc: { content: 'inline*', whitespace: 'pre' },
@@ -110,7 +108,6 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
   current.current = props
   const scope = useRef(props.scopeKey)
   const [, finishComposition] = useState(0)
-  const [iconMounts, setIconMounts] = useState<{ key: number; commandId: string; dom: HTMLElement }[]>([])
 
   useImperativeHandle(ref, () => {
     const selection = (start: number, end: number) => {
@@ -154,11 +151,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
 
   useLayoutEffect(() => {
     if (!mount.current) return
-    let active = true
-    let iconKey = 0
     let compositionJustEnded = false
     let compositionTimer: ReturnType<typeof setTimeout> | undefined
-    setIconMounts([])
     const normalize = new Plugin({
       appendTransaction(transactions, _old, state) {
         if (viewRef.current?.composing || !transactions.some(tr => tr.docChanged || tr.getMeta('normalize'))) return null
@@ -234,20 +228,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
           dom.dataset.command = node.attrs.id
           const command = current.current.commands.find(item => item.id === node.attrs.id)
           dom.title = command?.description ?? node.attrs.token
-          const icon = document.createElement('span')
-          icon.className = 'chat-composer-command-icon'
-          icon.setAttribute('aria-hidden', 'true')
-          const key = iconKey++
-          setIconMounts(items => [...items, { key, commandId: node.attrs.id, dom: icon }])
-          const label = document.createElement('span')
-          label.textContent = node.attrs.token
-          dom.append(icon, label)
-          return {
-            dom,
-            // React owns the icon subtree; editor parsing must ignore its updates.
-            ignoreMutation: mutation => mutation.type !== 'selection',
-            destroy() { if (active) setIconMounts(items => items.filter(item => item.key !== key)) },
-          }
+          dom.textContent = node.attrs.token
+          return { dom }
         },
       },
       dispatchTransaction(tr) {
@@ -259,7 +241,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
       },
     })
     viewRef.current = view
-    return () => { active = false; clearTimeout(compositionTimer); viewRef.current = null; view.destroy() }
+    return () => { clearTimeout(compositionTimer); viewRef.current = null; view.destroy() }
   }, [])
 
   useLayoutEffect(() => {
@@ -292,11 +274,5 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     view.dom.dataset.empty = String(view.state.doc.content.size === 0)
   })
 
-  return <>
-    <div ref={mount} onAnimationEnd={props.onAnimationEnd} />
-    {iconMounts.map(({ key, commandId, dom }) => {
-      const command = props.commands.find(item => item.id === commandId)
-      return command ? createPortal(<SlashCommandIcon command={command} size={14} />, dom, key) : null
-    })}
-  </>
+  return <div ref={mount} onAnimationEnd={props.onAnimationEnd} />
 })

@@ -25,7 +25,6 @@ import { SourcesButton } from './SourcesButton'
 import { onComposerInsert, onComposerTextInsert } from './composerInsert'
 import { beginComposerAttachmentOperation, beginComposerDraftOperation, invalidateComposerAttachmentPath, draftKey, getComposerDraft, registerComposerDraftScope, setComposerDraft, subscribeComposerDraft, updateComposerDraft } from './composerDraft'
 import { ComposerEditor, type ComposerEditorHandle } from './ComposerEditor'
-import { SlashCommandIcon } from './SlashCommandIcon'
 import { canOptimizeComposerText } from './promptOptimize'
 import { AssistantPicker } from './AssistantPicker'
 import { MultiModelSelector } from './MultiModelSelector'
@@ -1970,19 +1969,14 @@ export const InputBar = memo(function InputBar({
                           : 'text-neutral-700 hover:bg-neutral-50'
                       }`}
                     >
-                      <SlashCommandIcon
-                        command={command}
-                        size={13}
-                        className="shrink-0 text-neutral-600"
-                      />
-                      <span className="min-w-0 flex-1 truncate text-[12px] leading-none">
-                        <span className="font-semibold">{command.title}</span>
+                      <span className="min-w-0 flex-1 truncate text-[12px] leading-[18px]">
+                        <span className="font-medium">{command.slash}</span>
                         {command.argumentHint && (
                           <span className="ml-1 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
                             {command.argumentHint}
                           </span>
                         )}
-                        <span className="ml-1.5 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                        <span className="ml-1.5 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
                           {command.description}
                         </span>
                       </span>

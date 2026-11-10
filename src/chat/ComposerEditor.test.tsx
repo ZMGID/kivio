@@ -48,12 +48,12 @@ describe('ComposerEditor', () => {
     expect(editor.current!.value).toBe('')
   })
 
-  it('renders every command kind inline with icons and preserves plain-text serialization', () => {
+  it('renders every command kind as slash text without icons and preserves plain-text serialization', () => {
     const text = '先 /plan 然后请用/review 最后 /compact '
     const { editor, textbox } = setup(text)
     expect(textbox.querySelectorAll('[data-command]')).toHaveLength(3)
-    expect(textbox.querySelector('[data-command="plan"] svg')).not.toBeNull()
-    expect(textbox.querySelector('[data-command="cli:claude:compact"] img')).not.toBeNull()
+    expect(textbox.querySelector('svg, img')).toBeNull()
+    expect(textbox.textContent).toBe(text)
     expect(editor.current!.value).toBe(text)
   })
 
@@ -177,18 +177,4 @@ describe('ComposerEditor', () => {
     await waitFor(() => expect(textbox.textContent).toBe('/review 三）时间安排'))
   })
 
-  it('refreshes an existing chip icon when its command metadata changes without changing the draft', () => {
-    const editor = createRef<ComposerEditorHandle>()
-    const props = { ref: editor, placeholder: 'Write', onChange: vi.fn(), onSelect: vi.fn(), onKeyDown: vi.fn(), onPaste: vi.fn(), onContextMenu: vi.fn(), scopeKey: 'a', value: '/review ' }
-    const fallback = { ...commands[1], kind: 'action' as const }
-    const { rerender } = render(<ComposerEditor {...props} commands={[fallback]} />)
-    const textbox = screen.getByRole('textbox')
-    expect(textbox.querySelector('.lucide-sparkles')).not.toBeNull()
-    act(() => editor.current!.setSelectionRange(8, 8))
-    rerender(<ComposerEditor {...props} commands={[commands[1]]} />)
-    expect(textbox.querySelector('.lucide-sparkles')).toBeNull()
-    expect(textbox.querySelector('.chat-composer-command-icon svg')).not.toBeNull()
-    expect(editor.current!.value).toBe('/review ')
-    expect(editor.current!.selectionStart).toBe(8)
-  })
 })

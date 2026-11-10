@@ -447,25 +447,13 @@
   position: absolute;
 }
 .chat-composer-command {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 100%;
-  padding: 0 5px;
-  margin: 0 1px;
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  border-radius: 4px;
   color: var(--accent);
-  line-height: 1.4;
-  vertical-align: baseline;
-  white-space: nowrap;
+  font: inherit;
 }
-.chat-composer-command > span:last-child { overflow: hidden; text-overflow: ellipsis; }
-.chat-composer-command-icon { display: inline-flex; flex: none; align-self: center; }
 .chat-composer-command.ProseMirror-selectednode {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  outline: none;
 }
 .chat-composer-editor .ProseMirror-separator { display: none; }
 
