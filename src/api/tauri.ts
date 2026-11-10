@@ -1180,6 +1180,7 @@ export type WebSearchProviderId =
   | 'searxng'
   | 'kimi'
   | 'keenable'
+  | 'specstream'
 
 export type WebSearchMcpAuth = NonNullable<ChatMcpServer['auth']>
 
@@ -1218,6 +1219,8 @@ export type WebSearchConfig = {
   kimiBaseUrl?: string
   keenableApiKey?: string
   keenableBaseUrl?: string
+  specstreamApiKey?: string
+  specstreamBaseUrl?: string
   maxResults: number
   searchDepth: 'ultra-fast' | 'fast' | 'basic' | 'advanced'
 }

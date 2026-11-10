@@ -589,6 +589,7 @@ pub enum WebSearchProvider {
     Searxng,
     Kimi,
     Keenable,
+    Specstream,
     /// 前端可能列出尚未接入后端的占位服务商；持久化时兜底为未知，避免旧值导致整份设置解析失败。
     #[serde(other)]
     Unknown,
@@ -677,6 +678,10 @@ pub struct LensWebSearchConfig {
     pub keenable_api_key: String,
     #[serde(default = "default_keenable_base_url")]
     pub keenable_base_url: String,
+    #[serde(default)]
+    pub specstream_api_key: String,
+    #[serde(default = "default_specstream_base_url")]
+    pub specstream_base_url: String,
     #[serde(default = "default_web_search_max_results")]
     pub max_results: u8,
     #[serde(default = "default_web_search_depth")]
@@ -719,6 +724,8 @@ impl Default for LensWebSearchConfig {
             kimi_base_url: default_kimi_base_url(),
             keenable_api_key: String::new(),
             keenable_base_url: default_keenable_base_url(),
+            specstream_api_key: String::new(),
+            specstream_base_url: default_specstream_base_url(),
             max_results: default_web_search_max_results(),
             search_depth: default_web_search_depth(),
         }
@@ -779,6 +786,10 @@ fn default_tinyfish_mcp_url() -> String {
 
 fn default_keenable_base_url() -> String {
     "https://api.keenable.ai".to_string()
+}
+
+fn default_specstream_base_url() -> String {
+    "https://api.specstream.ai".to_string()
 }
 
 fn default_kimi_base_url() -> String {

@@ -48,6 +48,8 @@ const DEFAULT_WEB_SEARCH: WebSearchConfig = {
   kimiBaseUrl: 'https://api.kimi.com/coding/v1/search',
   keenableApiKey: '',
   keenableBaseUrl: 'https://api.keenable.ai',
+  specstreamApiKey: '',
+  specstreamBaseUrl: 'https://api.specstream.ai',
   maxResults: 5,
   searchDepth: 'basic',
 }
@@ -71,6 +73,7 @@ type ProviderDef = {
     | 'tinyfishApiKey'
     | 'kimiApiKey'
     | 'keenableApiKey'
+    | 'specstreamApiKey'
   /** API Key 输入框占位符。 */
   keyPlaceholder?: string
   /** 可编辑的 API base 字段（代理/自建网关可改）；写入对应 *BaseUrl 设置。 */
@@ -88,6 +91,7 @@ type ProviderDef = {
     | 'deepseekBaseUrl'
     | 'kimiBaseUrl'
     | 'keenableBaseUrl'
+    | 'specstreamBaseUrl'
   /** base 输入框占位符（也是官方默认值）。 */
   baseUrlPlaceholder?: string
   /** 可编辑 MCP endpoint（写入 exaMcpUrl / tinyfishMcpUrl）。 */
@@ -229,6 +233,16 @@ const PROVIDERS: ProviderDef[] = [
     baseUrlField: 'serperBaseUrl',
     baseUrlPlaceholder: 'https://google.serper.dev',
     icon: '/search-icons/serper.png',
+  },
+  {
+    id: 'specstream',
+    name: 'SpecStream',
+    site: 'https://specstream.ai/search-api',
+    apiKeyUrl: 'https://specstream.ai',
+    keyField: 'specstreamApiKey',
+    keyPlaceholder: 'specstream key',
+    baseUrlField: 'specstreamBaseUrl',
+    baseUrlPlaceholder: 'https://api.specstream.ai',
   },
   {
     id: 'tavily',
