@@ -173,6 +173,8 @@ export interface DegradedAnswer {
   detail?: string | null
   /** 本轮已完成的工具调用摘要。 */
   toolSummaries?: { name: string; preview: string }[]
+  /** 本轮全部工具调用数（包括失败调用）；旧消息可能缺省。 */
+  totalToolCalls?: number | null
   /** 纯文本版本，供不渲染卡片的场景回落。 */
   text: string
 }

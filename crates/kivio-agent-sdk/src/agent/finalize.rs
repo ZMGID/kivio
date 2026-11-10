@@ -238,6 +238,10 @@ impl SegmentBuilder {
         segments
     }
 
+    pub(crate) fn remove_segment(&mut self, id: u32) {
+        self.segments.retain(|segment| segment.id != id);
+    }
+
     pub(crate) fn next_order(&self) -> u32 {
         self.next_order
     }
@@ -419,6 +423,22 @@ pub(crate) fn cancelled_run_result_from_state(state: &mut RunState) -> AgentRunR
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn removing_a_candidate_segment_preserves_its_reserved_order() {
+        let mut builder = super::SegmentBuilder::new();
+        let notice = builder.reserve(
+            super::ContentKind::Text,
+            super::ContentPhase::Synthesis,
+            None,
+            None,
+            "notice",
+        );
+        builder.append_text_from_template(&notice, "temporary failure");
+        builder.remove_segment(notice.id);
+        assert!(builder.segments().is_empty());
+        assert!(builder.next_order() > notice.id);
+    }
+
     use super::*;
     use crate::agent::content::{AgentToolStatus, InputKind};
     use crate::agent::context::AgentContext;

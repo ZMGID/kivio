@@ -3405,8 +3405,47 @@ async fn run_loop_final_injections_continue_and_preserve_delivery_ownership() {
 }
 
 #[tokio::test]
+async fn recovery_followed_by_success_drops_stale_degraded_card() {
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(planning_tool_call_sse_events()),
+        MockResponse::Status(400, r#"{"error":"temporary failure"}"#.into()),
+        MockResponse::Sse(vec![
+            r#"{"choices":[{"delta":{"content":"final answer"}}]}"#.into(),
+            "[DONE]".into(),
+        ]),
+    ]);
+    let state = test_app_state();
+    let config = test_run_config(&state, &server.base_url);
+    let host = Arc::new(TestHost::with_follow_up_batches(vec![vec![
+        SteeringMessage::new("continue".into(), "Continue working").unwrap(),
+    ]]));
+    let executor = Arc::new(RecordingExecutor::default());
+    let result = run_agent_loop(config, &host, &executor).await.unwrap();
+    assert_eq!(result.stream_outcome, "completed");
+    assert_eq!(result.content, "final answer");
+    assert!(result.degraded.is_none());
+    assert_eq!(server.captured_bodies().len(), 3);
+    assert!(
+        result.api_messages.iter().any(|message| {
+            message["role"] == "assistant"
+                && crate::chat::model::openai_message_text_content(message)
+                    .is_some_and(|text| text.contains("工具调用") || text.contains("tool call"))
+        }),
+        "the recovered candidate must remain in API history"
+    );
+    assert!(!result.segments.iter().any(|s| s
+        .text
+        .as_deref()
+        .is_some_and(|t| t.contains("temporary failure"))));
+    assert!(result.tool_records.iter().any(|r| r.id == "call_read"));
+}
+
+#[tokio::test]
 async fn run_loop_empty_planning_response_fails_without_executing_tools() {
-    let server = MockModelServer::start(vec![MockResponse::Sse(vec!["[DONE]".into()])]);
+    let server = MockModelServer::start(vec![
+        MockResponse::Sse(vec!["[DONE]".into()]),
+        MockResponse::Sse(vec!["[DONE]".into()]),
+    ]);
     let state = test_app_state();
     let config = test_run_config(&state, &server.base_url);
     let host = Arc::new(TestHost::default());
@@ -3415,7 +3454,7 @@ async fn run_loop_empty_planning_response_fails_without_executing_tools() {
     let error = run_agent_loop(config, &host, &executor).await.unwrap_err();
 
     assert!(error.contains("empty assistant response"));
-    assert_eq!(server.captured_bodies().len(), 1);
+    assert_eq!(server.captured_bodies().len(), 2);
     assert!(executor.events().is_empty());
     assert!(host.recorded_persists().is_empty());
 }

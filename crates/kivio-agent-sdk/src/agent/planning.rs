@@ -31,8 +31,7 @@ pub(crate) enum PlanningStepOutcome {
     RetryWithTools,
     /// Planning returned an empty assistant response (no text, no tool calls) —
     /// flaky gateways do this intermittently. Retried once via the skeleton's
-    /// `continue`; a second empty lands in FinalAnswer and fails at finalize
-    /// with the existing "empty assistant response" error.
+    /// `continue`; a second consecutive empty enters the recovery ladder.
     RetryEmptyResponse,
     /// Provider rejected tools; `state.provider_tools_unsupported` was set and a
     /// step was pushed. The skeleton breaks out of the tool loop.
@@ -231,6 +230,34 @@ pub(crate) async fn planning_step(
                 );
                 state.generated_images.append(&mut stream.images);
                 let finish_kind = stream.finish_reason.as_ref().map(|reason| reason.kind);
+                if stream.tool_calls.is_empty()
+                    && sanitize_assistant_text_response(&stream.text)
+                        .trim()
+                        .is_empty()
+                    && state.generated_images.is_empty()
+                {
+                    if !state.planning_empty_retried {
+                        state.planning_empty_retried = true;
+                        eprintln!("Chat tools planning returned an empty response; retrying once");
+                        return Ok(PlanningStepOutcome::RetryEmptyResponse);
+                    }
+                    let tokens = |value: Option<u64>| {
+                        value.map_or_else(|| "unknown".into(), |n| n.to_string())
+                    };
+                    break Err(ModelError::with_kind(
+                        format!(
+                            "Chat tools planning returned an empty assistant response (finish_reason={}, text_chars={}, reasoning_chars={}, tool_calls={}, tool_drafts={}, input_tokens={}, output_tokens={})",
+                            finish_kind.map_or_else(|| "unknown".into(), |kind| format!("{kind:?}")),
+                            stream.text.chars().count(),
+                            stream.reasoning.as_deref().map_or(0, |text| text.chars().count()),
+                            stream.tool_calls.len(), planning_tool_drafts.segments().len(),
+                            tokens(stream.usage.as_ref().and_then(|usage| usage.input_tokens)),
+                            tokens(stream.usage.as_ref().and_then(|usage| usage.output_tokens)),
+                        ),
+                        ModelErrorKind::EmptyResponse,
+                    ));
+                }
+                state.planning_empty_retried = false;
                 break Ok((stream, finish_kind));
             }
             Err(AgentFailure::Model { source: err, .. }) if planning_tool_drafts.has_started() => {
@@ -330,19 +357,6 @@ pub(crate) async fn planning_step(
         .reconcile_speculation(&tool_calls, finish_kind == Some(FinishKind::Length));
     if tool_calls.is_empty() {
         let response = sanitize_assistant_text_response(&message.text);
-        // 空响应重试（一次）：正文空 + 无工具调用 = 抽风网关的典型症状（HTTP 200 但
-        // 正文什么都没给，可能残留一段 reasoning）。这种消息走到 finalize 必报
-        // "empty assistant response"——与其断轮不如原地重试一次；再空则照旧报错。
-        // 例外：本轮出了图（hosted image generation，如 Responses 的 image_generation_call）
-        // 时正文本就是空串——图即答案，重试只会再生成一张，必须放行。
-        if response.trim().is_empty()
-            && state.generated_images.is_empty()
-            && !state.planning_empty_retried
-        {
-            state.planning_empty_retried = true;
-            eprintln!("Chat tools planning returned an empty response; retrying once");
-            return Ok(PlanningStepOutcome::RetryEmptyResponse);
-        }
         if !response.trim().is_empty() {
             let mut segment = planning_text_segment.clone();
             segment.phase = ContentPhase::Plain;

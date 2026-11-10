@@ -87,8 +87,15 @@ pub fn start(conversation: &mut Conversation, objective: &str) -> Result<GoalSta
 
 pub fn format_prompt(goal: Option<&GoalState>) -> Option<String> {
     let goal = goal.filter(|g| is_running(g.status))?;
+    Some(format!(
+        "Goal mode is active. Keep working autonomously toward the objective; do not stop at a plan or partial result. Use the Goal tools to maintain criteria and evidence. Only goal_complete can finish the Goal. For a blocking question the user can answer now, use ask_user and continue this run; use goal_wait only when work must pause for an approval or external event. Use goal_blocked only for a concrete impasse.\n\nSnapshot from run start; get_goal and later Goal tool results return current criteria and progress. If no criteria were initialized at run start, call initialize_goal_criteria before substantial work unless you have since initialized them; use get_goal for the current list.\n\nGoal id: {}\nGoal version: {}\nObjective: {}\n\n{}",
+        goal.id, goal.version, goal.objective, format_goal_progress(goal)
+    ))
+}
+
+fn format_goal_progress(goal: &GoalState) -> String {
     let criteria = if goal.criteria.is_empty() {
-        "No acceptance criteria have been initialized. Call initialize_goal_criteria before substantial work.".to_string()
+        "No acceptance criteria initialized.".to_string()
     } else {
         goal.criteria
             .iter()
@@ -107,11 +114,12 @@ pub fn format_prompt(goal: Option<&GoalState>) -> Option<String> {
             .collect::<Vec<_>>()
             .join("\n")
     };
-    Some(format!(
-        "Goal mode is active. Keep working autonomously toward the objective; do not stop at a plan or partial result. Use the Goal tools to maintain criteria and evidence. Only goal_complete can finish the Goal. For a blocking question the user can answer now, use ask_user and continue this run; use goal_wait only when work must pause for an approval or external event. Use goal_blocked only for a concrete impasse.\n\nGoal id: {}\nGoal version: {}\nObjective: {}\n\nAcceptance criteria:\n{}\n\nLatest progress: {}",
-        goal.id, goal.version, goal.objective, criteria,
-        goal.progress_summary.as_deref().unwrap_or("No progress reported yet.")
-    ))
+    format!(
+        "Acceptance criteria:\n{criteria}\n\nLatest progress: {}",
+        goal.progress_summary
+            .as_deref()
+            .unwrap_or("No progress reported yet.")
+    )
 }
 
 pub fn append_tool_definitions(
@@ -461,8 +469,11 @@ fn goal_tool_result(goal: &GoalState, changed: &str) -> McpToolCallResult {
     let raw = serde_json::json!({"goalState":goal,"changed":changed});
     McpToolCallResult {
         content: format!(
-            "Goal updated: {changed}. Status: {:?}. Version: {}",
-            goal.status, goal.version
+            "Goal updated: {changed}. Status: {:?}. Version: {}. Goal id: {}\n\n{}",
+            goal.status,
+            goal.version,
+            goal.id,
+            format_goal_progress(goal)
         ),
         is_error: false,
         raw: raw.clone(),
@@ -487,63 +498,80 @@ pub async fn record_run(
     app: &AppHandle,
     conversation_id: &str,
     goal_id: &str,
-    goal_version: u64,
     run_id: &str,
     assistant_message_id: &str,
     content: &str,
     usage: Option<&ModelUsage>,
     automatic: bool,
 ) -> Result<Conversation, String> {
-    let fingerprint = normalize_fingerprint(content);
     let persisted = crate::chat::repository::repository(app)
         .mutate(app, conversation_id, |c| {
-            let Some(g) = c.goal_state.as_mut() else {
-                return Ok(());
-            };
-            if g.id != goal_id || g.version != goal_version {
-                return Ok(());
+            if let Some(g) = c.goal_state.as_mut() {
+                record_run_state(
+                    g,
+                    goal_id,
+                    run_id,
+                    assistant_message_id,
+                    content,
+                    usage,
+                    automatic,
+                );
             }
-            for criterion in &mut g.criteria {
-                if criterion.evidence_kind.as_deref() == Some("model_self_check")
-                    && criterion.evidence_ref.as_deref() == Some("current_run")
-                {
-                    criterion.evidence_ref = Some(assistant_message_id.to_string());
-                }
-            }
-            g.active_run_id = None;
-            if automatic {
-                g.automatic_runs += 1;
-            }
-            merge_usage(&mut g.input_tokens, usage.and_then(|u| u.input_tokens));
-            merge_usage(&mut g.output_tokens, usage.and_then(|u| u.output_tokens));
-            merge_usage(&mut g.total_tokens, usage.and_then(|u| u.total_tokens));
-            if is_running(g.status) {
-                if !automatic || g.progress_revision > g.last_recorded_progress_revision {
-                    g.no_progress_runs = 0;
-                } else {
-                    g.no_progress_runs = next_no_progress_count(
-                        g.no_progress_runs,
-                        g.last_response_fingerprint.as_deref(),
-                        &fingerprint,
-                    );
-                }
-                g.last_recorded_progress_revision = g.progress_revision;
-                g.last_response_fingerprint = Some(fingerprint);
-                if g.no_progress_runs >= 3 {
-                    g.status = GoalStatus::Paused;
-                    g.status_reason = Some(
-                        "Goal paused after three automatic runs with no observable progress".into(),
-                    );
-                }
-            }
-            let _ = run_id;
-            g.updated_at = chrono::Local::now().timestamp();
             Ok(())
         })
         .await
         .map_err(crate::chat::repository::repository_error)?;
     emit_goal_state(app, &persisted);
     Ok(persisted)
+}
+
+fn record_run_state(
+    g: &mut GoalState,
+    goal_id: &str,
+    run_id: &str,
+    assistant_message_id: &str,
+    content: &str,
+    usage: Option<&ModelUsage>,
+    automatic: bool,
+) {
+    // Goal edits revoke active_run_id; tool updates may change version within the owning run.
+    if g.id != goal_id || g.active_run_id.as_deref() != Some(run_id) {
+        return;
+    }
+    for criterion in &mut g.criteria {
+        if criterion.evidence_kind.as_deref() == Some("model_self_check")
+            && criterion.evidence_ref.as_deref() == Some("current_run")
+        {
+            criterion.evidence_ref = Some(assistant_message_id.to_string());
+        }
+    }
+    g.active_run_id = None;
+    if automatic {
+        g.automatic_runs += 1;
+    }
+    merge_usage(&mut g.input_tokens, usage.and_then(|u| u.input_tokens));
+    merge_usage(&mut g.output_tokens, usage.and_then(|u| u.output_tokens));
+    merge_usage(&mut g.total_tokens, usage.and_then(|u| u.total_tokens));
+    if is_running(g.status) {
+        let fingerprint = normalize_fingerprint(content);
+        if !automatic || g.progress_revision > g.last_recorded_progress_revision {
+            g.no_progress_runs = 0;
+        } else {
+            g.no_progress_runs = next_no_progress_count(
+                g.no_progress_runs,
+                g.last_response_fingerprint.as_deref(),
+                &fingerprint,
+            );
+        }
+        g.last_recorded_progress_revision = g.progress_revision;
+        g.last_response_fingerprint = Some(fingerprint);
+        if g.no_progress_runs >= 3 {
+            g.status = GoalStatus::Paused;
+            g.status_reason =
+                Some("Goal paused after three automatic runs with no observable progress".into());
+        }
+    }
+    g.updated_at = chrono::Local::now().timestamp();
 }
 
 pub async fn claim_run(
@@ -845,6 +873,97 @@ mod tests {
         assert_eq!(event["completedMessageId"], "result");
         assert_eq!(event["updatedAt"], 20);
     }
+    #[test]
+    fn goal_tool_content_exposes_current_criteria_and_progress() {
+        let goal: GoalState = serde_json::from_value(serde_json::json!({
+            "id":"g", "version":1, "objective":"Deliver", "status":"active", "created_at":1, "updated_at":1,
+            "criteria":[{"id":"c1","text":"Tests pass","verified":true,"evidence":"Unit checks passed"},
+                {"id":"c2","text":"Review changes","verified":false}], "progress_summary":"Tests finished"
+        })).unwrap();
+        let tool = goal_tool_result(&goal, GET_GOAL_TOOL);
+        for text in [
+            "[x] c1: Tests pass",
+            "evidence: Unit checks passed",
+            "[ ] c2: Review changes",
+            "Tests finished",
+        ] {
+            assert!(
+                tool.content.contains(text),
+                "{} missing {text}",
+                tool.content
+            );
+            assert!(format_prompt(Some(&goal)).unwrap().contains(text));
+        }
+        let mut empty = goal.clone();
+        empty.criteria.clear();
+        let prompt = format_prompt(Some(&empty)).unwrap();
+        assert!(prompt.contains("run start"));
+        assert!(prompt.contains("get_goal"));
+        assert!(prompt.contains("current"));
+    }
+
+    #[test]
+    fn completed_goal_records_owning_run_once_without_pause_logic() {
+        let mut goal: GoalState = serde_json::from_value(serde_json::json!({
+            "id":"g", "version":2, "objective":"Deliver", "status":"completed", "created_at":1, "updated_at":1,
+            "active_run_id":"run", "no_progress_runs":2,
+            "criteria":[{"id":"c1","text":"Check","verified":true,"evidence_kind":"model_self_check","evidence_ref":"current_run"}]
+        })).unwrap();
+        let usage = ModelUsage {
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            total_tokens: Some(12),
+            ..Default::default()
+        };
+        let before = goal.clone();
+        record_run_state(
+            &mut goal,
+            "other-goal",
+            "run",
+            "message",
+            "done",
+            Some(&usage),
+            true,
+        );
+        assert_eq!(goal, before, "another Goal cannot receive this run's usage");
+        record_run_state(
+            &mut goal,
+            "g",
+            "other-run",
+            "message",
+            "done",
+            Some(&usage),
+            true,
+        );
+        assert_eq!(goal, before, "another run cannot account for this Goal");
+        // The run started at version 1; goal_complete has already left a completed Goal.
+        record_run_state(&mut goal, "g", "run", "message", "done", Some(&usage), true);
+        assert_eq!(goal.status, GoalStatus::Completed);
+        assert_eq!(goal.active_run_id, None);
+        assert_eq!(
+            (goal.input_tokens, goal.output_tokens, goal.total_tokens),
+            (Some(10), Some(2), Some(12))
+        );
+        assert_eq!(goal.criteria[0].evidence_ref.as_deref(), Some("message"));
+        assert_eq!(goal.no_progress_runs, 2);
+        let recorded = goal.clone();
+        record_run_state(&mut goal, "g", "run", "message", "done", Some(&usage), true);
+        assert_eq!(goal, recorded, "cleanup is idempotent");
+    }
+
+    #[test]
+    fn running_goal_still_pauses_after_three_automatic_runs_without_progress() {
+        let mut goal: GoalState = serde_json::from_value(serde_json::json!({
+            "id":"g", "version":2, "objective":"Deliver", "status":"active",
+            "created_at":1, "updated_at":1, "active_run_id":"run", "no_progress_runs":2
+        }))
+        .unwrap();
+        record_run_state(&mut goal, "g", "run", "message", "", None, true);
+        assert_eq!(goal.active_run_id, None);
+        assert_eq!(goal.no_progress_runs, 3);
+        assert_eq!(goal.status, GoalStatus::Paused);
+    }
+
     #[test]
     fn fingerprint_normalizes_case_and_space() {
         assert_eq!(normalize_fingerprint(" Done!  NOW "), "done now");

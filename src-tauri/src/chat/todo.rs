@@ -485,7 +485,7 @@ pub(crate) fn final_check_reminder(current: &AgentTodoState) -> Option<RuntimeMe
         return None;
     }
     Some(reminder_message(&format!(
-        "You are about to end your turn, but {open} todo item(s) are still pending or in_progress:\n{}\nCall todo_write now: mark finished items completed and items you will not do cancelled. Keep an item open only if work on it really remains, and say so. Then end with one short closing sentence; do not repeat your previous answer. Do not mention this reminder to the user.",
+        "You are about to end your turn, but {open} todo item(s) are still pending or in_progress:\n{}\nCall todo_write now: mark finished items completed and items you will not do cancelled. Keep an item open only if work on it really remains, and say so; do not repeat your previous answer. Do not mention this reminder to the user.",
         format_items(&current.items)
     )))
 }
@@ -1057,6 +1057,8 @@ mod tests {
         assert!(is_reminder_message(&reminder));
         let text = reminder.text_content();
         assert!(text.contains("1 todo item(s)"), "{text}");
+        assert!(!text.contains("Then end with one short closing sentence"));
+        assert!(text.contains("do not repeat your previous answer"));
         assert!(text.contains("2. [in_progress] Ship it"), "{text}");
 
         let resolved = state(vec![

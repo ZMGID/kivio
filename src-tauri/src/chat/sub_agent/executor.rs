@@ -1975,6 +1975,10 @@ fn result_summary(
     format!("{}\n\n{}", summary.trim(), follow_up.trim())
 }
 
+fn empty_final_error(detail: &str) -> String {
+    format!("{EMPTY_FINAL}\n{}", detail.trim())
+}
+
 fn terminal_preview(id: &str, output: &str, error: Option<&str>, output_available: bool) -> String {
     let output = output.trim();
     let head = utf16_head(output, PREVIEW_CHARS);
@@ -1989,13 +1993,31 @@ fn terminal_preview(id: &str, output: &str, error: Option<&str>, output_availabl
             preview.push_str(&format!("agent://{id}"));
         }
     }
-    if let Some(error) = error.filter(|error| !error.trim().is_empty()) {
+    if let Some(error) = error.filter(|error| !error.trim().is_empty() && error.trim() != output) {
         if !preview.is_empty() {
             preview.push_str("\n\n");
         }
         preview.push_str(utf16_head(error.trim(), 1_000));
     }
     preview
+}
+
+fn terminal_output(
+    outcome: Result<String, String>,
+    aborted: bool,
+    tail: &str,
+    requests: u32,
+    tokens: u64,
+) -> String {
+    let failed = outcome.is_err();
+    let mut output = outcome.unwrap_or_default();
+    if aborted && output.trim().is_empty() {
+        output = salvage(tail, requests, tokens);
+    }
+    if !aborted && failed && output.trim().is_empty() && !tail.trim().is_empty() {
+        output = tail.to_string();
+    }
+    output
 }
 
 fn salvage(text: &str, requests: u32, tokens: u64) -> String {
@@ -3444,7 +3466,7 @@ async fn execute(
             let result = attempt.map_err(|error| {
                 let error = error.to_string();
                 if error.contains("empty assistant response") {
-                    EMPTY_FINAL.to_string()
+                    empty_final_error(&error)
                 } else if error == "cancelled"
                     || error.starts_with("Cannot ")
                     || error.starts_with("Subagent transcript")
@@ -3464,9 +3486,6 @@ async fn execute(
             }
             if let Some(degraded) = &result.degraded {
                 host.lock().history = import_history(history);
-                if degraded.kind == "empty_response" {
-                    return Err(EMPTY_FINAL.into());
-                }
                 let detail = degraded
                     .detail
                     .as_deref()
@@ -3475,6 +3494,9 @@ async fn execute(
                     || degraded.reason.clone(),
                     |detail| format!("{}: {detail}", degraded.reason),
                 );
+                if degraded.kind == "empty_response" {
+                    return Err(empty_final_error(&error));
+                }
                 return Err(attribute_model_error(
                     &error,
                     &config.provider.id,
@@ -4179,16 +4201,7 @@ async fn run_turn(app: AppHandle, req: Request, accept_irc: bool) {
             host.budget
         ));
     }
-    let mut output = outcome.unwrap_or_default();
-    if error.as_deref() == Some(EMPTY_FINAL) {
-        output = EMPTY_FINAL.into();
-    }
-    if aborted && output.trim().is_empty() {
-        output = salvage(&tail, requests, tokens);
-    }
-    if !aborted && error.is_some() && output.trim().is_empty() && !tail.trim().is_empty() {
-        output = tail.clone();
-    }
+    let mut output = terminal_output(outcome, aborted, &tail, requests, tokens);
     let transcript_available = if transcript_created {
         match host.save_history(&history).await {
             Ok(()) => true,
@@ -4978,6 +4991,43 @@ mod tests {
         assert!(terminal.contains("provider failed"));
         assert!(utf16_len(&terminal) < 6_100);
         assert!(!terminal_preview("A", &text, None, false).contains("agent://"));
+    }
+
+    #[test]
+    fn empty_final_failure_keeps_partial_output_and_detail() {
+        let detail = "empty assistant response (finish_reason=Stop, output_tokens=42)";
+        let error = empty_final_error(detail);
+        assert!(error.starts_with(EMPTY_FINAL));
+        assert!(error.contains(detail));
+        assert_eq!(
+            terminal_output(
+                Err(EMPTY_FINAL.into()),
+                false,
+                "wrote draft; unchecked",
+                2,
+                42
+            ),
+            "wrote draft; unchecked"
+        );
+        assert_eq!(
+            terminal_output(Err(error.clone()), false, "wrote draft; unchecked", 2, 42),
+            "wrote draft; unchecked"
+        );
+        let preview = terminal_preview("A", "wrote draft; unchecked", Some(&error), false);
+        assert!(preview.contains(detail));
+        assert_eq!(preview.matches(EMPTY_FINAL).count(), 1);
+    }
+
+    #[test]
+    fn terminal_preview_does_not_repeat_the_same_warning() {
+        assert_eq!(
+            terminal_preview("A", EMPTY_FINAL, Some(EMPTY_FINAL), false),
+            EMPTY_FINAL
+        );
+        assert_eq!(
+            terminal_preview("A", "partial work", Some("failed"), false),
+            "partial work\n\nfailed"
+        );
     }
 
     #[test]

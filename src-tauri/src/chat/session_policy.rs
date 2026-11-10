@@ -535,7 +535,10 @@ fn application_result(
     use crate::chat::agent::history::export_history;
     let (compaction_boundary, compaction_summary) =
         policy.context.finish_run(result.history.context());
-    let degraded = policy.recovery.take_degraded();
+    let degraded = policy
+        .recovery
+        .take_degraded()
+        .filter(|_| result.status == crate::chat::agent::types::AgentRunStatus::Recovered);
     ApplicationRunResult {
         content: result.content,
         reasoning: result.reasoning,

@@ -201,6 +201,9 @@ pub struct DegradedAnswer {
     /// 本轮已完成的工具调用摘要（名称 + 结果首行），让用户知道哪些工作没白做。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_summaries: Vec<DegradedToolSummary>,
+    /// All attempted tool calls, including failed calls; summaries only show successful previews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tool_calls: Option<usize>,
     /// 与 `tool_summaries` 同源的纯文本版本；旧前端 / 外部 CLI 直接显示这个。
     pub text: String,
 }
@@ -485,14 +488,11 @@ pub(crate) fn assemble_degraded_answer(
     }
     let reason = failure_reason_line(kind, zh);
     let note = if zh {
-        format!(
-            "本轮已完成 {} 个工具调用,完整结果见上方卡片:",
-            blocks.len() + overflow
-        )
+        format!("本轮共 {} 个工具调用,完整结果见上方卡片:", records.len())
     } else {
         format!(
-            "Completed {} tool call(s) this round — full results are shown above:",
-            blocks.len() + overflow
+            "{} tool call(s) this round — full results are shown above:",
+            records.len()
         )
     };
     let mut out = format!("{reason}\n\n{note}\n{}", blocks.join("\n"));
@@ -508,6 +508,7 @@ pub(crate) fn assemble_degraded_answer(
         reason: reason.to_string(),
         detail: raw_error.and_then(extract_error_detail),
         tool_summaries: summaries,
+        total_tool_calls: Some(records.len()),
         text: out,
     })
 }
@@ -816,6 +817,27 @@ mod tests {
         assert_eq!(
             decide(FailureKind::ContextOverflow, false, false, false),
             RecoveryAction::Surface
+        );
+    }
+
+    #[test]
+    fn degraded_total_includes_all_calls_beyond_summary_cap_and_reads_old_messages() {
+        let mut records: Vec<_> = (0..12)
+            .map(|_| rec("read", AgentToolStatus::Success, Some("result")))
+            .collect();
+        records.push(rec("bash", AgentToolStatus::Error, None));
+        let answer = assemble_degraded_answer(&records, "zh-CN", FailureKind::Empty, None).unwrap();
+        assert_eq!(answer.tool_summaries.len(), 8);
+        assert_eq!(answer.total_tool_calls, Some(13));
+        assert!(answer.text.contains("本轮共 13 个工具调用"));
+        let mut json = serde_json::to_value(&answer).unwrap();
+        assert_eq!(json["totalToolCalls"], 13);
+        json.as_object_mut().unwrap().remove("totalToolCalls");
+        assert_eq!(
+            serde_json::from_value::<DegradedAnswer>(json)
+                .unwrap()
+                .total_tool_calls,
+            None
         );
     }
 

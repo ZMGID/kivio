@@ -20,9 +20,14 @@ describe('DegradedAnswerCard', () => {
   it('显示失败原因与工具调用计数（不复述工具列表）', () => {
     render(<DegradedAnswerCard degraded={makeDegraded()} />)
     expect(screen.getByText(/限流或配额耗尽/)).toBeTruthy()
-    expect(screen.getByText(/本轮已完成 2 个工具调用/)).toBeTruthy()
+    expect(screen.getByText(/最近 2 个工具结果/)).toBeTruthy()
     // 工具结果在上方的工具卡片里，卡片里再列一遍就是噪音
     expect(screen.queryByText('mixer_generate_image')).toBeNull()
+  })
+
+  it('显示完整调用数而不是截断后的摘要数', () => {
+    render(<DegradedAnswerCard degraded={makeDegraded({ totalToolCalls: 646 })} />)
+    expect(screen.getByText(/本轮共 646 个工具调用/)).toBeTruthy()
   })
 
   it('有 detail 时显示供应商原始报错', () => {
@@ -59,15 +64,13 @@ describe('DegradedAnswerCard', () => {
 
   it('没有工具摘要时不渲染摘要区', () => {
     render(<DegradedAnswerCard degraded={makeDegraded({ toolSummaries: [] })} />)
-    expect(screen.queryByText(/本轮已完成/)).toBeNull()
+    expect(screen.queryByText(/本轮共|最近 .* 个工具结果/)).toBeNull()
     // 原因仍要显示
     expect(screen.getByText(/限流或配额耗尽/)).toBeTruthy()
   })
 
   it('toolSummaries 缺省（旧数据）不崩溃', () => {
-    const d = makeDegraded()
-    delete (d as Partial<DegradedAnswer>).toolSummaries
-    render(<DegradedAnswerCard degraded={d} />)
+    render(<DegradedAnswerCard degraded={makeDegraded({ toolSummaries: undefined })} />)
     expect(screen.getByText(/限流或配额耗尽/)).toBeTruthy()
   })
 

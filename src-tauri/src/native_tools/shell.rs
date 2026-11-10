@@ -582,6 +582,9 @@ fn parse_leading_cd_prefix(command: &str) -> Option<(String, String)> {
 
     let after_cd = trimmed.get(3..)?.trim_start();
     let (path_part, rest) = find_cd_and_separator(after_cd)?;
+    if path_part.contains(['>', '<', '|', ';', '&', '`']) || path_part.contains("$(") {
+        return None;
+    }
     let cd_path = strip_shell_quotes(path_part.trim());
     let rest = rest.trim();
     if cd_path.is_empty() || rest.is_empty() {
@@ -624,15 +627,27 @@ fn is_long_running_dev_command(command: &str) -> bool {
         return true;
     }
 
-    if lowered.contains("vite build") || lowered.contains("vite preview") {
-        return false;
-    }
-
-    lowered.starts_with("vite")
-        || lowered.starts_with("npx vite")
-        || lowered.contains(" npx vite")
-        || lowered.contains("&& vite")
-        || lowered.contains("; vite")
+    lowered.split(['&', ';', '|']).any(|part| {
+        let mut words = part.split_whitespace();
+        let mut command = words.next();
+        match command {
+            Some("npx" | "yarn" | "bunx") => command = words.next(),
+            Some("pnpm") => {
+                if !matches!(words.next(), Some("exec" | "dlx")) {
+                    return false;
+                }
+                command = words.next();
+            }
+            Some("npm") => {
+                if words.next() != Some("exec") {
+                    return false;
+                }
+                command = words.next();
+            }
+            _ => {}
+        }
+        command == Some("vite") && !matches!(words.next(), Some("build" | "preview" | "optimize"))
+    })
 }
 
 /// Filename prefix for per-job background-command logs in temp_dir. App startup
@@ -2435,6 +2450,26 @@ mod tests {
     }
 
     #[test]
+    fn normalize_run_command_leaves_shell_syntax_untouched() {
+        for command in [
+            "cd /d/x 2>/dev/null && echo ok",
+            "cd /x < input && ls",
+            "cd /x | cat && ls",
+            "cd /x; pwd && ls",
+            "cd /x & pwd && ls",
+            "cd `pwd` && ls",
+            "cd $(pwd) && ls",
+        ] {
+            assert_eq!(
+                normalize_run_command(command, None).unwrap(),
+                (command.to_string(), None)
+            );
+        }
+        let error = normalize_run_command("cd \"/a b\" && ls", None).unwrap_err();
+        assert!(error.contains("Suggested cwd: /a b"));
+    }
+
+    #[test]
     fn normalize_run_command_rejects_cd_with_spaces() {
         let err = normalize_run_command("cd /Users/zmair/ZM database/foo && npm install", None)
             .expect_err("spaced cd path should require cwd");
@@ -2699,6 +2734,35 @@ mod tests {
         assert!(is_long_running_dev_command("npx vite --port 5173"));
         assert!(!is_long_running_dev_command("npm run build"));
         assert!(!is_long_running_dev_command("vite build"));
+        for command in [
+            "npx vitest run",
+            "npx vitest ls",
+            "vitest run",
+            "vitest",
+            "vite preview",
+            "vite optimize",
+            "pnpm exec vitest run",
+            "npm exec vitest run",
+            "echo text,vite",
+        ] {
+            assert!(!is_long_running_dev_command(command), "{command}");
+        }
+        for command in [
+            "vite",
+            "cd app && vite",
+            "vite dev",
+            "vite serve",
+            "pnpm exec vite",
+            "pnpm dlx vite",
+            "yarn vite",
+            "bunx vite",
+            "npm exec vite -- --port 5173",
+            "echo ok; vite",
+            "echo ok || vite",
+            "echo ok | vite",
+        ] {
+            assert!(is_long_running_dev_command(command), "{command}");
+        }
     }
 
     #[tokio::test]

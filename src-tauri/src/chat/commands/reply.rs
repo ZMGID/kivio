@@ -1215,6 +1215,7 @@ fn finish_prepared_reply<'a, 'state: 'a>(
                     reason: error.clone(),
                     detail: None,
                     tool_summaries: Vec::new(),
+                    total_tool_calls: Some(result.tool_records.len()),
                     text: error.clone(),
                 });
         }
@@ -1345,8 +1346,8 @@ fn finish_prepared_reply<'a, 'state: 'a>(
         let goal_run = conversation
             .goal_state
             .as_ref()
-            .filter(|g| crate::chat::goal::is_running(g.status))
-            .map(|g| (g.id.clone(), g.version));
+            .filter(|g| g.active_run_id.as_deref() == Some(run_id.as_str()))
+            .map(|g| g.id.clone());
         let goal_usage = result.usage.clone();
         let run_plan_update = message_plan.clone();
         push_assistant_message(
@@ -1373,12 +1374,11 @@ fn finish_prepared_reply<'a, 'state: 'a>(
             Some(history_commit),
         )
         .await?;
-        if let Some((goal_id, goal_version)) = goal_run {
+        if let Some(goal_id) = goal_run {
             *conversation = crate::chat::goal::record_run(
                 app,
                 &conversation.id,
                 &goal_id,
-                goal_version,
                 &run_id,
                 &goal_assistant_message_id,
                 &terminal_content,

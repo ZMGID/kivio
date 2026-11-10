@@ -790,7 +790,6 @@ pub fn validate_stream_output(
     policy: AgentStreamPolicy,
     output: &GenerateOutput,
 ) -> Result<(), String> {
-    let tool_calls_from_stream = !output.tool_calls.is_empty();
     // hosted 出图（Responses `image_generation_call` / Gemini inlineData）时正文本就是
     // 空串——图即答案。此时空正文不是失败，否则整轮报「空助手响应」而图被丢掉。
     if output.text.trim().is_empty() && !output.images.is_empty() {
@@ -802,9 +801,6 @@ pub fn validate_stream_output(
                 return Err(empty_assistant_response_error(label));
             }
             AgentStreamPolicy::SynthesisDeferEmpty => return Ok(()),
-            AgentStreamPolicy::PlanningNoDoneUntilNoTools if !tool_calls_from_stream => {
-                return Err(empty_assistant_response_error(label));
-            }
             AgentStreamPolicy::PlanningNoDoneUntilNoTools => {}
         }
     }
@@ -1114,7 +1110,7 @@ mod tests {
             AgentStreamPolicy::PlanningNoDoneUntilNoTools,
             &output
         )
-        .is_err());
+        .is_ok());
     }
 
     #[test]

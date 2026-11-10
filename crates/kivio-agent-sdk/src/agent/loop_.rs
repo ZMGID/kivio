@@ -41,9 +41,7 @@ pub(crate) struct RunState {
     pub(crate) model_steps: u32,
     pub(crate) provider_tools_unsupported: bool,
     pub(crate) fallback_prompt: Option<super::session::PromptUpdate>,
-    /// 空响应重试守门（一次）：抽风网关会间歇性返回 200 + 空正文（无文本无工具调用）。
-    /// 第一次遇到时 planning 返回 `RetryEmptyResponse` 原地重试；已重试过则照旧走
-    /// FinalAnswer → finalize 报 "empty assistant response"。
+    /// One retry per consecutive empty planning streak; reset after a valid response.
     pub(crate) planning_empty_retried: bool,
     /// 待注入的用户插话本地队列（对齐 pi `PendingMessageQueue`）：信箱一次取空后暂存在
     /// 这里，`inject_steering_messages` 每个轮次边界只弹一条（one-at-a-time），剩余的由
@@ -392,6 +390,13 @@ impl Answer {
     fn absorb(self, state: &mut RunState) {
         let message = match self {
             Self::Recovered(result) => {
+                // Recovery builders append the candidate notice last; keep its ordinal consumed.
+                if let Some(notice) = result.segments.last().filter(|segment| {
+                    segment.kind == super::content::ContentKind::Text
+                        && segment.text.as_deref() == Some(result.content.as_str())
+                }) {
+                    state.segment_builder.remove_segment(notice.id);
+                }
                 RuntimeMessage::model(result.final_message.unwrap_or_else(|| {
                     super::stop::final_assistant_message(
                         &result.content,

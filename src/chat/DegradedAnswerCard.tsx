@@ -66,9 +66,11 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
           )}
 
           {/* 工具结果本身已在上方的工具卡片里，这里只给一句计数指路，不再复述一遍列表。 */}
-          {summaries.length > 0 && (
+          {(degraded.totalToolCalls != null || summaries.length > 0) && (
             <div className="mt-2 text-[11.5px] text-neutral-500 dark:text-neutral-500">
-              本轮已完成 {summaries.length} 个工具调用，结果见上方卡片
+              {degraded.totalToolCalls != null
+                ? `本轮共 ${degraded.totalToolCalls} 个工具调用，结果见上方卡片`
+                : `最近 ${summaries.length} 个工具结果，见上方卡片`}
             </div>
           )}
         </div>
