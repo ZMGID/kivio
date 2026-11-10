@@ -2,6 +2,7 @@ import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { ReasoningPreviewContext } from './reasoningPreview'
+import { useRevealedText } from './streamReveal'
 
 type ReasoningBlockProps = {
   reasoning: string
@@ -25,7 +26,9 @@ function formatThinkingDuration(durationMs: number | null | undefined): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
 }
 
-export function ReasoningBlock({ reasoning, defaultOpen = false, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
+export function ReasoningBlock({ reasoning: arrivedReasoning, defaultOpen = false, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
+  // 思考写入时与正文同样按节奏显示新增文字。
+  const reasoning = useRevealedText(arrivedReasoning, streaming)
   const collapsible = reasoning.trim().length > 0
   const previewEnabled = useContext(ReasoningPreviewContext)
   const [expanded, setExpanded] = useState(defaultOpen)

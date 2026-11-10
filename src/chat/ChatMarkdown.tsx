@@ -2,7 +2,8 @@ import { createContext, isValidElement, memo, useCallback, useContext, useEffect
 import { createPortal } from 'react-dom'
 import { Code2, ExternalLink, Eye, Loader2 } from 'lucide-react'
 import type { BlockProps, Components, UrlTransform } from 'streamdown'
-import { Block, defaultRemarkPlugins, Streamdown } from 'streamdown'
+import { Block, defaultRemarkPlugins, parseMarkdownIntoBlocks, Streamdown } from 'streamdown'
+import remend, { type RemendOptions } from 'remend'
 import type { PluggableList } from 'unified'
 import { cjk } from '@streamdown/cjk'
 import { code } from '@streamdown/code'
@@ -26,6 +27,7 @@ import { citationPopoverPosition, type CitationPopoverPosition } from './citatio
 import { isWebCitation } from './webSearchCitations'
 import { ChatInlineImage } from './ChatInlineImage'
 import { MarkdownStreamingContext } from './markdownStreaming'
+import { LiveRevealContext, useRevealedText } from './streamReveal'
 import { getSettledMarkdownCacheEntry, getSettledMarkdownOutline, type SettledMarkdownCacheEntry } from './settledMarkdownCache'
 import {
   markdownHeadingAnchorId,
@@ -1364,6 +1366,29 @@ const streamdownRemarkPlugins: PluggableList = [
   remarkLiteralUnderscore,
 ]
 
+// remend 的 italic 会给未闭合的 `_` 补一个结尾下划线。下划线不再表示强调，
+// 补出来的字符会直接显示；星号加粗仍由 bold 补全。
+const STREAMING_REMEND_OPTIONS: RemendOptions = { italic: false }
+
+/**
+ * 出字中的分块：先按顶层块切分，再只修补最后一块的未闭合语法。
+ *
+ * Streamdown 自带的 parseIncompleteMarkdown 每次都对**全文**跑 remend，成本随长度超线性
+ * 增长（实测 12k 字约 9ms、80k 字约 260ms），长回答越写越卡。未闭合的语法只会出现在
+ * 最后一个顶层块里（未闭合的代码围栏 / $$ 公式会被切块器并成到结尾的同一块），
+ * 只修尾块结果相同；也避免前面已完成段落里落单的 `**` 让结尾凭空多出补全符。
+ */
+function parseStreamingBlocks(markdown: string): string[] {
+  const blocks = parseMarkdownIntoBlocks(markdown)
+  const last = blocks.length - 1
+  if (last < 0) return blocks
+  const repaired = remend(blocks[last], STREAMING_REMEND_OPTIONS)
+  if (repaired === blocks[last]) return blocks
+  const next = blocks.slice()
+  next[last] = repaired
+  return next
+}
+
 // Streamdown 2.5 can leave a block stale after a non-prefix replacement. Scope
 // that recovery to the affected block: resetting the entire document also
 // destroys unchanged code, math, image and preview state on every correction.
@@ -1472,10 +1497,9 @@ const MarkdownDocument = memo(function MarkdownDocument({
       BlockComponent={ChatMarkdownBlock}
       // The outer shell owns dir="auto". Streamdown's dir wrappers use
       // display:contents, which breaks the block spacing selectors.
-      parseIncompleteMarkdown={streaming}
-      // remend 的 italic 会给未闭合的 `_` 补一个结尾下划线。下划线不再表示强调，
-      // 补出来的字符会直接显示；星号加粗仍由 bold 补全。
-      remend={streaming ? { italic: false } : undefined}
+      // 未闭合语法的修补由 parseStreamingBlocks 只对尾块进行，见其说明。
+      parseIncompleteMarkdown={false}
+      parseMarkdownIntoBlocksFn={streaming ? parseStreamingBlocks : parseMarkdownIntoBlocks}
       normalizeHtmlIndentation
       plugins={streamdownPlugins}
       remarkPlugins={remarkPlugins}
@@ -1507,6 +1531,8 @@ function ChatMarkdownComponent({
   outlineSource,
 }: ChatMarkdownProps) {
   const streaming = useContext(MarkdownStreamingContext)
+  // 出字中按节奏显示新增文字；完成或停止时立即显示全文。
+  const visibleContent = useRevealedText(content, useContext(LiveRevealContext))
   const [documentRoot, setDocumentRoot] = useState<HTMLDivElement | null>(null)
   const artifactContext = useMemo(() => ({
     artifacts: new Map(artifacts.filter(a => artifactId(a)).map(a => [artifactId(a), a])),
@@ -1526,7 +1552,7 @@ function ChatMarkdownComponent({
       <MarkdownErrorBoundary fallbackText={content}>
         <MarkdownReferencesContext.Provider value={artifactContext}>
           <MarkdownDocument
-            content={content}
+            content={visibleContent}
             components={referencedMarkdownComponents}
             remarkPlugins={streamdownRemarkPlugins}
             streaming={streaming}

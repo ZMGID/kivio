@@ -291,4 +291,23 @@ describe('ChatMarkdown streaming stability', () => {
       Object.defineProperty(navigator, 'clipboard', { configurable: true, value: previousClipboard })
     }
   })
+
+  it('repairs only the unfinished tail while streaming', async () => {
+    // An unmatched ** in a finished paragraph used to make the whole-text repair
+    // append a stray closing ** to the end of the answer.
+    const view = (content: string) => (
+      <MarkdownStreamingContext.Provider value>
+        <ChatMarkdown content={content} />
+      </MarkdownStreamingContext.Provider>
+    )
+    const { container, rerender } = render(view('Price is 2 ** 3 in Python.\n\nNext **bold'))
+    await act(async () => { await Promise.resolve() })
+    const paragraphs = container.querySelectorAll('p')
+    expect(paragraphs[0].textContent).toBe('Price is 2 ** 3 in Python.')
+    expect(paragraphs[1].querySelector('[data-streamdown="strong"]')?.textContent).toBe('bold')
+    expect(container.textContent).not.toMatch(/bold\*\*/)
+    rerender(view('Price is 2 ** 3 in Python.\n\nNext **bold** and `code'))
+    await act(async () => { await Promise.resolve() })
+    expect(container.querySelectorAll('p')[1].textContent).toBe('Next bold and code')
+  })
 })

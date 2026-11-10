@@ -25,6 +25,7 @@ import { HtmlFrame } from './HtmlFrame'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { GeneratedFileArtifacts } from './GeneratedFileArtifacts'
 import { MarkdownStreamingContext } from './markdownStreaming'
+import { LiveRevealContext } from './streamReveal'
 import { artifactId, artifactPresentationFromToolCall, htmlRenderReferenceFromToolCall, isPresentationToolCall, isVisiblePresentation } from './artifactPresentation'
 import { referencedArtifactIds } from './artifactReferences'
 import { hasAgentPlanText } from './agentPlan'
@@ -1467,6 +1468,7 @@ function MessageBubbleComponent({
 
   return (
     <MarkdownStreamingContext.Provider value={markdownStreaming}>
+    <LiveRevealContext.Provider value={messageStreaming}>
     <div
       {...hoverProps}
       className={`flex justify-start py-3 ${turnWork && !turnWork.open ? 'has-[>div:empty]:py-0' : ''} ${playEntranceAnimation ? 'chat-motion-bubble-in' : ''}`}
@@ -1642,6 +1644,7 @@ function MessageBubbleComponent({
         )}
       </div>
     </div>
+    </LiveRevealContext.Provider>
     </MarkdownStreamingContext.Provider>
   )
 }
