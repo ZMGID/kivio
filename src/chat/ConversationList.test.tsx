@@ -222,7 +222,7 @@ describe('ConversationList generating wave', () => {
     expect(onTogglePin).toHaveBeenCalledWith('conversation-1', true)
   })
 
-  it('keeps pin visible when already pinned, without the wave', () => {
+  it('keeps the pin marker and shows the wave when a pinned conversation is generating', () => {
     const { container } = render(
       <ConversationList
         {...listProps}
@@ -232,15 +232,40 @@ describe('ConversationList generating wave', () => {
     )
 
     const trailing = container.querySelector('.kv-conv-trailing')
-    expect(trailing).not.toHaveAttribute('data-busy')
+    expect(trailing).toHaveAttribute('data-busy')
     expect(trailing).toHaveAttribute('data-pinned')
-    expect(screen.queryByRole('status', { name: '正在生成' })).not.toBeInTheDocument()
+    expect(container.querySelector('.kv-conv-meta svg')).toBeInTheDocument()
+    expect(screen.getByRole('status', { name: '正在生成' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '取消置顶' })).toBeInTheDocument()
   })
 })
 
-describe('ConversationList compact age', () => {
-  it('shows last-activity age in the trailing slot', () => {
+describe('ConversationList folder marker', () => {
+  it('shows the owning project as a glyph with its name as tooltip, not inline text', () => {
+    vi.spyOn(dockApi, 'projectIcon').mockResolvedValue(null)
+    render(
+      <ConversationList
+        {...listProps}
+        showFolderLabel
+        conversations={[{ ...conversation, project_id: 'project' }]}
+        projects={[{ id: 'project', name: 'Kivio Mobile', root_path: '/p', created_at: 1, updated_at: 1 }]}
+      />,
+    )
+    expect(screen.getByLabelText('Kivio Mobile')).toBeInTheDocument()
+    const row = screen.getByRole('button', { name: '原会话标题' })
+    fireEvent.mouseEnter(row)
+    expect(row.title).toContain('Kivio Mobile')
+    expect(screen.queryByText('Kivio Mobile')).not.toBeInTheDocument()
+  })
+
+  it('marks the selected row', () => {
+    const { container } = render(<ConversationList {...listProps} currentConversationId="conversation-1" />)
+    expect(container.querySelector('.kv-conv-row')).toHaveClass('is-active')
+  })
+})
+
+describe('ConversationList trailing status', () => {
+  it('shows no age in the row and puts the relative time into the row tooltip', () => {
     const nowSec = Math.floor(Date.now() / 1000)
     const { container } = render(
       <ConversationList
@@ -249,9 +274,41 @@ describe('ConversationList compact age', () => {
       />,
     )
 
-    const age = container.querySelector('.kv-conv-age')
-    expect(age).toHaveTextContent('2h')
-    expect(age).toHaveAttribute('aria-label', '2 小时前')
+    expect(container.querySelector('.kv-conv-trailing')).not.toHaveTextContent('2h')
+    const row = screen.getByRole('button', { name: '原会话标题' })
+    fireEvent.mouseEnter(row)
+    expect(row).toHaveAttribute('title', '原会话标题\n2 小时前')
+  })
+
+  it('lists only the first line of a multi-line title and keeps the full title in the tooltip', () => {
+    render(<ConversationList {...listProps} conversations={[{ ...conversation, title: '聊天渲染相关代码概览\n聊天消息的渲染流程' }]} />)
+    const row = screen.getByRole('button', { name: '聊天渲染相关代码概览' })
+    fireEvent.mouseEnter(row)
+    expect(row.title.startsWith('聊天渲染相关代码概览\n聊天消息的渲染流程')).toBe(true)
+  })
+
+  it('groups pinned conversations under a header and separates the rest', () => {
+    const { container } = render(
+      <ConversationList
+        {...listProps}
+        groupPinned
+        conversations={[
+          { ...conversation, id: 'p', title: '置顶的', pinned: true },
+          { ...conversation, id: 'n', title: '普通的' },
+        ]}
+      />,
+    )
+
+    expect(screen.getByText('置顶')).toBeInTheDocument()
+    expect(screen.getAllByRole('separator')).toHaveLength(1)
+    // 分组内不再逐行画钉子：行尾无状态
+    expect(container.querySelector('.kv-conv-meta svg')).not.toBeInTheDocument()
+  })
+
+  it('shows neither header nor separator when nothing is pinned', () => {
+    render(<ConversationList {...listProps} groupPinned />)
+    expect(screen.queryByText('置顶')).not.toBeInTheDocument()
+    expect(screen.queryByRole('separator')).not.toBeInTheDocument()
   })
 })
 

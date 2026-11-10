@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  displayConversationTitle,
   isPlaceholderTitle,
   isProvisionalTitle,
   optimisticConversationTitle,
@@ -62,5 +63,20 @@ describe('isProvisionalTitle', () => {
   it('does not collapse internal whitespace (matches Rust generate_title)', () => {
     expect(isProvisionalTitle('你好 世界', '你好\n世界')).toBe(false)
     expect(isProvisionalTitle('你好\n世界', '你好\n世界')).toBe(true)
+  })
+})
+
+describe('displayConversationTitle', () => {
+  it('strips leading markdown heading and bold markers', () => {
+    expect(displayConversationTitle('## 聊天渲染（Chat Rendering）')).toBe('聊天渲染（Chat Rendering）')
+    expect(displayConversationTitle('**工具集成测试**')).toBe('工具集成测试')
+    expect(displayConversationTitle('新对话', '# 第一句')).toBe('第一句')
+    expect(displayConversationTitle('C# 入门')).toBe('C# 入门')
+  })
+})
+
+describe('displayConversationTitle first line', () => {
+  it('keeps only the first non-empty line', () => {
+    expect(displayConversationTitle('\n## 概览\n第二行')).toBe('概览')
   })
 })

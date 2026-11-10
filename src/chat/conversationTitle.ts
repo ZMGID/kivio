@@ -46,8 +46,23 @@ export function displayConversationTitle(
   title: string | null | undefined,
   fallbackText?: string | null,
 ): string {
-  if (!isPlaceholderTitle(title) && title?.trim()) return title
-  return optimisticConversationTitle(fallbackText ?? '')
+  if (!isPlaceholderTitle(title) && title?.trim()) return listTitle(title)
+  return listTitle(optimisticConversationTitle(fallbackText ?? ''))
+}
+
+/** 列表里的一行标题：只取第一个非空行（模型标题偶尔带第二行，首句也可能多行），再去掉 Markdown 标记。 */
+function listTitle(title: string): string {
+  const firstLine = title.split(/\r?\n/).find((line) => line.trim()) ?? title
+  return stripTitleMarkdown(firstLine.trim())
+}
+
+/** 模型标题或首句偶尔带 Markdown 标题/粗体标记（`## 标题`、`**标题**`），列表只显示文字。 */
+function stripTitleMarkdown(title: string): string {
+  const stripped = title
+    .replace(/^\s*#{1,6}\s+/, '')
+    .replace(/^\*\*(.+?)\*\*/, '$1')
+    .trim()
+  return stripped || title
 }
 
 /**
@@ -57,5 +72,5 @@ export function displayConversationTitle(
 export function isProvisionalTitle(title: string, preview: string | null | undefined): boolean {
   if (!preview) return false
   const truncated = optimisticConversationTitle(preview)
-  return Boolean(truncated) && title === truncated
+  return Boolean(truncated) && (title === truncated || title === listTitle(truncated))
 }

@@ -1297,35 +1297,46 @@ button.chat-composer-status-item:hover {
   }
 }
 
-/* 侧栏会话行尾：短龄 / 慢波 / pin+归档 互斥替换。
-   平时显示 2m/13h；悬停或焦点让给按钮；生成中优先慢波（悬停同样让给按钮）。
-   已置顶时针常驻左侧，短龄叠在右侧归档位上，悬停换成归档。
-   慢波保持 .chat-gen-wave 原始 14×11 尺寸 + absolute right-1（与 4a68189 一致），
-   绝不要 width/height:auto 去铺满槽——那会把竖线拉高，动画就不是原来那个了。
-   互斥用 visibility（unlayered），避免 Tailwind group-hover 盖不过 unlayered 样式。 */
-.kv-conv-age {
-  visibility: visible;
+/* 侧栏会话行：标题常规字重 + 次级文字色；悬停是很淡的洗色，选中更深一档并把标题加粗、
+   提到主文字色——选中与悬停靠字重和文字色区分，不只靠底色深浅。 */
+.kv-conv-row {
+  color: color-mix(in srgb, var(--text) 72%, var(--text-muted));
+  transition: background-color var(--kv-dur-fast) var(--kv-ease-out),
+    color var(--kv-dur-fast) var(--kv-ease-out);
 }
-/* :has(:focus-visible) 而非 :focus-within：鼠标点击后焦点留在行内按钮上，
-   不能让按钮常驻、盖住慢波；键盘 Tab 进入时仍显示。 */
-.kv-conv-row:hover .kv-conv-age,
-.kv-conv-row:has(:focus-visible) .kv-conv-age,
-.kv-conv-trailing[data-busy] > .kv-conv-age {
+.kv-conv-row:hover {
+  background-color: color-mix(in srgb, var(--text) 4%, transparent);
+  color: var(--text);
+}
+.kv-conv-row.is-active {
+  background-color: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+.kv-conv-row.is-active .kv-conv-title {
+  font-weight: 500;
+}
+
+/* 行尾交换槽：平时只显示状态标记（钉/定时/慢波/归属），悬停或键盘焦点时整体换成置顶 + 归档。
+   按钮用 opacity 隐藏而非 visibility：隐藏时仍可 Tab 聚焦，聚焦后 :has(:focus-visible) 把它们亮出来。
+   :has(:focus-visible) 而非 :focus-within：鼠标点击后焦点留在行内，不能让按钮常驻盖住短龄。 */
+.kv-conv-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-conv-row:hover .kv-conv-actions,
+.kv-conv-row:has(:focus-visible) .kv-conv-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.kv-conv-row:hover .kv-conv-meta,
+.kv-conv-row:has(:focus-visible) .kv-conv-meta {
   visibility: hidden;
 }
-.kv-conv-trailing[data-busy] > .kv-conv-wave {
-  visibility: visible;
-}
-.kv-conv-trailing[data-busy] > .kv-conv-actions {
-  visibility: hidden;
-}
-.kv-conv-row:hover .kv-conv-trailing[data-busy] > .kv-conv-wave,
-.kv-conv-row:has(:focus-visible) .kv-conv-trailing[data-busy] > .kv-conv-wave {
-  visibility: hidden;
-}
-.kv-conv-row:hover .kv-conv-trailing[data-busy] > .kv-conv-actions,
-.kv-conv-row:has(:focus-visible) .kv-conv-trailing[data-busy] > .kv-conv-actions {
-  visibility: visible;
+/* 行尾平时只按状标记占宽（没有就是 0），悬停时撑开到按钮宽度，按钮不压在标题上。 */
+.kv-conv-row:hover .kv-conv-trailing,
+.kv-conv-row:has(:focus-visible) .kv-conv-trailing {
+  min-width: 44px;
 }
 
 /* 侧栏归档退场：高度收到 0，下面的行跟着滑上来，而不是瞬间塌洞抽一下。

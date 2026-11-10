@@ -584,6 +584,31 @@ describe('Sidebar view choice', () => {
     expect(await screen.findByRole('button', { name: '最近', current: true })).toBeInTheDocument()
   })
 
+  it('hides project chats from Recent when asked, keeps them under Projects, and remembers it', async () => {
+    window.localStorage.removeItem('kivio-chat-recent-hides-projects')
+    const user = userEvent.setup()
+    const { props, projectChat, setChat, looseChat } = setup()
+    const view = render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: projectChat.title })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '对话列表操作' }))
+    const option = await screen.findByRole('menuitemcheckbox', { name: '最近中隐藏项目对话' })
+    expect(option).toHaveAttribute('aria-checked', 'false')
+    await user.click(option)
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: projectChat.title })).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: setChat.title })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: looseChat.title })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '项目', current: false }))
+    expect(await screen.findByRole('button', { name: projectChat.title })).toBeInTheDocument()
+
+    view.unmount()
+    render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: looseChat.title })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: projectChat.title })).not.toBeInTheDocument()
+    window.localStorage.removeItem('kivio-chat-recent-hides-projects')
+  })
+
   it('opens the selected project or set and creates in that group', async () => {
     const user = userEvent.setup()
     const { props, projectChat, setChat, looseChat, set } = setup()

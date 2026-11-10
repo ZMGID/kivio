@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { PanelsTopLeft, Search, SquarePen, Trash2 } from 'lucide-react'
+import { Check, PanelsTopLeft, Search, SquarePen, Trash2 } from 'lucide-react'
 import { useT } from '../components/i18n'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import { useCloseAnimation } from './useCloseAnimation'
@@ -13,6 +13,9 @@ interface ChatSectionMenuProps {
   onOpenSearch: () => void
   flatView: boolean
   onToggleView: () => void
+  /** 仅经典视图显示：「最近」是否隐藏项目对话。 */
+  recentHidesProjects: boolean
+  onToggleRecentHidesProjects: () => void
   onClearAll: () => void
   onClose: () => void
   triggerRef?: RefObject<HTMLElement | null>
@@ -25,6 +28,8 @@ export function ChatSectionMenu({
   onOpenSearch,
   flatView,
   onToggleView,
+  recentHidesProjects,
+  onToggleRecentHidesProjects,
   onClearAll,
   onClose: onCloseProp,
   triggerRef,
@@ -98,6 +103,24 @@ export function ChatSectionMenu({
         <PanelsTopLeft strokeWidth={1.75} />
         {flatView ? t.chatSidebarUseClassic : t.chatSidebarUseFlat}
       </button>
+
+      {!flatView && (
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={recentHidesProjects}
+          className="kv-menu-item"
+          onClick={() => {
+            onToggleRecentHidesProjects()
+            onClose()
+          }}
+        >
+          <span className="flex size-3.5 shrink-0 items-center justify-center">
+            {recentHidesProjects && <Check size={13} strokeWidth={2} />}
+          </span>
+          {t.chatSidebarRecentHideProjects}
+        </button>
+      )}
 
       <div className="my-1 border-t border-neutral-200/80" />
 

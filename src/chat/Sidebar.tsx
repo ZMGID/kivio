@@ -4,7 +4,7 @@ import { notifyError } from '../components/appNoticeStore'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { save } from '@tauri-apps/plugin-dialog'
-import { ChevronRight, CircleArrowUp, FolderPlus, Layers, MoreHorizontal, Plus, Search, Settings, SquarePen } from 'lucide-react'
+import { ChevronRight, ChevronsDownUp, ChevronsUpDown, CircleArrowUp, FolderPlus, Layers, MoreHorizontal, Plus, Search, Settings, SquarePen } from 'lucide-react'
 import type { ChatAssistant, ChatProject, ChatSet, ConversationListItem, ConversationSearchHit } from './types'
 import { HighlightText } from './searchHighlight'
 import { AgentIcon, ComposeIcon, ExtensionsIcon, KnowledgeIcon, MediaIcon, NotesIcon, PluginIcon, TasksIcon, SearchNavIcon } from '../settings/public/icons'
@@ -28,7 +28,7 @@ import { useInsertionReorder } from '../utils/insertionReorder'
 import { applyConversationPins, withPinAt, type ConversationPin } from './conversationPins'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { chatTitlebarMacInsetClass, isMac, usesNativeTitlebar } from './platform'
-import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH, getRememberedSidebarView, rememberSidebarView } from './persistence'
+import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH, getRememberedRecentHidesProjects, getRememberedSidebarView, rememberRecentHidesProjects, rememberSidebarView } from './persistence'
 import { useChatPerfRenderProbe } from './chatPerformanceProbe'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import type { ChatUserProfile } from './types'
@@ -127,6 +127,8 @@ function conversationMatchesSearch(conversation: ConversationListItem, query: st
   if (!query) return true
   return (
     displayConversationTitle(conversation.title, conversation.preview).toLowerCase().includes(query) ||
+    // 列表只显示标题第一行，搜索仍覆盖完整标题（占位「新对话」除外）。
+    (!isPlaceholderTitle(conversation.title) && (conversation.title ?? '').toLowerCase().includes(query)) ||
     conversation.preview.toLowerCase().includes(query)
   )
 }
@@ -758,6 +760,12 @@ export const Sidebar = memo(function Sidebar({
     const next = flatView ? 'classic' : 'flat'
     setSidebarView(next)
     rememberSidebarView(next)
+  }
+  const [recentHidesProjects, setRecentHidesProjects] = useState(getRememberedRecentHidesProjects)
+  const toggleRecentHidesProjects = () => {
+    const next = !recentHidesProjects
+    setRecentHidesProjects(next)
+    rememberRecentHidesProjects(next)
   }
 
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
@@ -1414,7 +1422,13 @@ export const Sidebar = memo(function Sidebar({
     if (effectiveFlatScope === 'ungrouped') return !projectId && !setId && !conversation.folder
     return effectiveFlatScope === (setId ? `set:${setId}` : `project:${projectId}`)
   })
-  const listedConversations = flatView ? flatConversations : recentConversations
+  const listedConversations = flatView
+    ? flatConversations
+    : recentHidesProjects
+      // 只影响经典视图「最近」的显示；项目对话仍在「项目」里，搜索与清空不受影响。
+      ? recentConversations.filter(conversation =>
+        !projects.some(project => conversationBelongsToProject(conversation, project)))
+      : recentConversations
   const openFlatScope = (scope: string) => {
     setFlatScope(scope)
     const project = projects.find(item => scope === `project:${item.id}`)
@@ -1605,7 +1619,7 @@ export const Sidebar = memo(function Sidebar({
                   options={flatScopeOptions}
                   triggerLabel={flatScopeLabel}
                   triggerIcon={flatProject
-                    ? <ProjectIcon workdir={flatProject.root_path ?? flatProject.rootPath} color={flatProject.color} />
+                    ? <ProjectIcon workdir={flatProject.root_path ?? flatProject.rootPath} color={flatProject.color} name={flatProject.name} />
                     : flatSet
                       ? <Layers size={16} style={flatSet.color ? { color: flatSet.color } : undefined} />
                       : undefined}
@@ -1684,7 +1698,9 @@ export const Sidebar = memo(function Sidebar({
                       }}
                       label={allVisibleSetsCollapsed ? t.chatExpandAllSets : t.chatCollapseAllSets}
                     >
-                      <MoreHorizontal size={15} />
+                      {allVisibleSetsCollapsed
+                        ? <ChevronsUpDown size={15} strokeWidth={1.75} />
+                        : <ChevronsDownUp size={15} strokeWidth={1.75} />}
                     </IconButton>
                     <IconButton
                       size="sm"
@@ -1712,7 +1728,9 @@ export const Sidebar = memo(function Sidebar({
                       }}
                       label={allVisibleProjectsCollapsed ? t.chatExpandAllProjects : t.chatCollapseAllProjects}
                     >
-                      <MoreHorizontal size={15} />
+                      {allVisibleProjectsCollapsed
+                        ? <ChevronsUpDown size={15} strokeWidth={1.75} />
+                        : <ChevronsDownUp size={15} strokeWidth={1.75} />}
                     </IconButton>
                     <IconButton
                       size="sm"
@@ -1794,14 +1812,9 @@ export const Sidebar = memo(function Sidebar({
                             title={(collapsedProject ? t.chatExpandNamed : t.chatCollapseNamed).replace('{name}', project.name)}
                             aria-expanded={!collapsedProject}
                           >
-                            <ChevronRight
-                              size={13}
-                              strokeWidth={2}
-                              className={`shrink-0 text-neutral-400 transition-transform dark:text-neutral-500 ${
-                                collapsedProject ? '' : 'rotate-90'
-                              }`}
-                            />
+                            {/* 文件夹开合即展开状态，不另画箭头 */}
                             <Folder
+                              open={!collapsedProject}
                               size={15}
                               className="shrink-0 text-neutral-500 dark:text-neutral-400"
                             />
@@ -1903,7 +1916,7 @@ export const Sidebar = memo(function Sidebar({
                       className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[13px] text-neutral-400 transition-colors hover:bg-neutral-900/[0.035] hover:text-neutral-600 dark:text-neutral-500"
                     >
                       <Plus size={14} strokeWidth={2} className="shrink-0" />
-                      {t.chatNewSetHint}
+                      {t.chatNewSet}
                     </button>
                   ) : (
                     sets.map((set) => {
@@ -2057,6 +2070,8 @@ export const Sidebar = memo(function Sidebar({
                   onOpenSearch={() => onSearchOpenChange(true)}
                   flatView={flatView}
                   onToggleView={toggleSidebarView}
+                  recentHidesProjects={recentHidesProjects}
+                  onToggleRecentHidesProjects={toggleRecentHidesProjects}
                   onClearAll={() => void handleClearAllConversations()}
                   onClose={() => setSectionMenuAnchor(null)}
                   triggerRef={sectionMenuButtonRef}
@@ -2078,6 +2093,7 @@ export const Sidebar = memo(function Sidebar({
                       compact
                       showAssistantName={false}
                       showFolderLabel
+                      groupPinned
                       onSelectConversation={(id, conversation) => {
                         const setId = conversation?.set_id ?? conversation?.setId
                         onSelectConversation(id, conversation, flatView && conversation ? {

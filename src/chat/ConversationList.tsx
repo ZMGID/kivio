@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, Clock, GitBranch, Layers, Pin } from 'lucide-react'
 import type { ChatProject, ChatSet, ConversationListItem } from './types'
 import { i18n, type I18n, type Lang } from '../components/i18n'
@@ -14,7 +14,7 @@ import {
   ConversationContextMenu,
   type ConversationMenuAnchor,
 } from './ConversationContextMenu'
-import { formatCompactAge, formatRelativeTime } from './sessionLibrary/format'
+import { formatRelativeTime } from './sessionLibrary/format'
 import { useGitBadge } from './dock/useGitBadge'
 import { ProjectIcon } from './ProjectIcon'
 
@@ -81,6 +81,8 @@ interface ConversationListProps {
   // 「最近」平铺列表用：在每条对话右侧显示其所属「集 / 项目」标签（与搜索弹层一致）。
   // 项目/集 tab 的嵌套列表不传（已在该分组下，标签冗余）。
   showFolderLabel?: boolean
+  /** 「最近」平铺列表用：置顶对话（调用方已排在最前）归入「置顶」小标题下，与其余对话用分隔线隔开。 */
+  groupPinned?: boolean
   /**
    * 集/项目下的手动排序。**不传 = 不可拖**（「最近」就不传：那里的语义是时间线）。
    * `scopeId` 写进容器的 `data-reorder-scope`，让 useInsertionReorder 只在本分组内取样。
@@ -117,6 +119,7 @@ export const ConversationList = memo(function ConversationList({
   indent = false,
   showAssistantName = true,
   showFolderLabel = false,
+  groupPinned = false,
   reorder,
   onSelectConversation,
   onRenameConversation,
@@ -142,11 +145,6 @@ export const ConversationList = memo(function ConversationList({
   const exitingRef = useRef<Map<string, ExitingRow>>(new Map())
   const exitTimersRef = useRef<Map<string, number>>(new Map())
   const [exitingIds, setExitingIds] = useState<ReadonlySet<string>>(() => new Set())
-  const [nowSec, setNowSec] = useState(() => Math.floor(Date.now() / 1000))
-  useEffect(() => {
-    const id = window.setInterval(() => setNowSec(Math.floor(Date.now() / 1000)), 60_000)
-    return () => window.clearInterval(id)
-  }, [])
 
   const finishExit = useCallback((id: string) => {
     const timer = exitTimersRef.current.get(id)
@@ -258,8 +256,8 @@ export const ConversationList = memo(function ConversationList({
     if (!nextTitle || isPlaceholderTitle(nextTitle)) return
     const conv = conversations.find((c) => c.id === conversationId)
     if (!conv || conv.title === nextTitle) return
-    const listed = displayConversationTitle(conv.title, conv.preview)
-    if (isPlaceholderTitle(conv.title) && nextTitle === listed) return
+    // 未改动即不提交：列表显示的是整理过的标题（占位回落、去 Markdown），不能因为失焦就把它写回。
+    if (nextTitle === displayConversationTitle(conv.title, conv.preview)) return
     await onRenameConversation(conversationId, nextTitle)
   }
 
@@ -286,7 +284,7 @@ export const ConversationList = memo(function ConversationList({
   return (
     <>
       <div
-        className={compact ? 'space-y-0.5 py-0.5' : 'space-y-0.5 py-1'}
+        className={cardLayout ? 'space-y-0.5 py-0.5' : compact ? 'py-0.5' : 'space-y-0.5 py-1'}
         data-reorder-scope={reorder?.scopeId}
       >
         {displayedConversations.map((conv, index) => {
@@ -299,9 +297,14 @@ export const ConversationList = memo(function ConversationList({
           const setId = conv.set_id ?? conv.setId
           const ownerSet = setId ? sets.find(item => item.id === setId) : undefined
           const projectId = conv.project_id ?? conv.projectId
-          const project = !(conv.set_id ?? conv.setId) && cardLayout
+          const project = !setId && folderLabel
             ? projects.find(item => projectId ? item.id === projectId : item.name === conv.folder)
             : undefined
+          const folderGlyph = folderLabel
+            ? setId
+              ? <Layers size={cardLayout ? 14 : 13} className="shrink-0" style={ownerSet?.color ? { color: ownerSet.color } : undefined} aria-hidden="true" />
+              : <ProjectIcon workdir={project ? project.root_path ?? project.rootPath : undefined} color={project?.color} name={project?.name ?? folderLabel} />
+            : null
           const projectWorkdir = project ? project.root_path ?? project.rootPath : undefined
           const scheduledTaskNames = scheduledTaskNamesByConversation?.get(conv.id)
           const scheduledTasksTitle = scheduledTaskNames
@@ -318,13 +321,36 @@ export const ConversationList = memo(function ConversationList({
           const visibleTitle = displayTitle || t.chatLibUntitled
           const isDragging = reorder?.draggingId === conv.id
           const updatedAt = conv.updated_at ?? 0
-          const compactAge = formatCompactAge(updatedAt, nowSec)
-          const ageLabel = formatRelativeTime(updatedAt, t, nowSec)
+          // 行内不放时间与归属文字，统一收进悬停提示；悬停/聚焦时才算，不必为了「x 分钟前」定时重绘整列表。
+          // 列表只显示标题第一行，提示里给完整标题。
+          const fullTitle = !isPlaceholderTitle(conv.title) && conv.title?.includes('\n')
+            ? conv.title.trim()
+            : visibleTitle
+          const describeRow = () => [
+            isGenerating || isTitleGenerating
+              ? t.chatTitleGenerating.replace('{title}', fullTitle)
+              : fullTitle,
+            !cardLayout ? folderLabel : '',
+            scheduledTasksTitle,
+            formatRelativeTime(updatedAt, t),
+          ].filter(Boolean).join('\n')
+          const showRowTooltip = (e: React.SyntheticEvent<HTMLElement>) => {
+            e.currentTarget.title = describeRow()
+          }
+          const pinnedHeader = groupPinned && conv.pinned && index === 0
+          const pinnedDivider = groupPinned && !conv.pinned && index > 0
+            && Boolean(displayedConversations[index - 1]?.pinned)
 
+          const groupMarker = pinnedHeader
+            ? <div className="px-2.5 pb-0.5 pt-1 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">{t.chatPinnedGroup}</div>
+            : pinnedDivider
+              ? <div className="mx-2.5 my-1.5 h-px bg-neutral-900/[0.06]" role="separator" />
+              : null
           if (isRenaming) {
             return (
+            <Fragment key={conv.id}>
+            {groupMarker}
               <div
-                key={conv.id}
                 className={`kv-conv-exit${isExiting ? ' is-exiting' : ''}`}
                 aria-hidden={isExiting || undefined}
               >
@@ -332,11 +358,7 @@ export const ConversationList = memo(function ConversationList({
                   data-reorder-id={conv.id}
                   className={`kv-conv-row group relative flex min-w-0 items-center rounded-lg ${
                     isDragging ? 'is-dragging ' : ''
-                  }${
-                    active
-                      ? 'bg-neutral-900/[0.07]'
-                      : cardLayout ? 'hover:bg-neutral-900/[0.025]' : 'hover:bg-neutral-900/[0.04]'
-                  }`}
+                  }${active ? 'is-active' : ''}`}
                 >
                   <input
                     ref={renameInputRef}
@@ -357,23 +379,21 @@ export const ConversationList = memo(function ConversationList({
                       cardLayout
                         ? 'h-[58px] px-2.5 pb-[30px] pt-2 text-[13px] leading-5'
                         : compact
-                        ? `${indent ? 'pl-8' : 'pl-2.5'} pr-2 py-1 text-[13px] leading-5`
+                        ? `${indent ? 'pl-8' : 'pl-2.5'} h-7 pr-2 text-[13px] leading-5`
                         : 'px-3 py-2 text-[13px]'
-                    } font-medium ${
-                      active
-                        ? 'text-neutral-900'
-                        : 'text-neutral-700'
-                    }`}
+                    } text-neutral-900`}
                     placeholder={t.chatLibUntitled}
                   />
                 </div>
               </div>
+            </Fragment>
             )
           }
 
           return (
+          <Fragment key={conv.id}>
+          {groupMarker}
             <div
-              key={conv.id}
               className={`kv-conv-exit${isExiting ? ' is-exiting' : ''}`}
               aria-hidden={isExiting || undefined}
               onTransitionEnd={(event) => {
@@ -395,11 +415,7 @@ export const ConversationList = memo(function ConversationList({
                 }}
                 className={`kv-conv-row group relative flex min-w-0 items-center rounded-lg ${
                   isDragging ? 'is-dragging ' : ''
-                }${
-                  active
-                    ? 'bg-neutral-900/[0.07]'
-                    : cardLayout ? 'hover:bg-neutral-900/[0.025]' : 'hover:bg-neutral-900/[0.04]'
-                }`}
+                }${active ? 'is-active' : ''}`}
               >
               <button
                 type="button"
@@ -410,22 +426,15 @@ export const ConversationList = memo(function ConversationList({
                   e.stopPropagation()
                   startRename(conv)
                 }}
-                className={`min-w-0 flex-1 text-left font-medium transition-colors ${
+                className={`kv-conv-title min-w-0 flex-1 text-left outline-none transition-colors ${
                   cardLayout
                     ? 'px-2.5 py-2 text-[13px] leading-5'
                     : compact
-                    ? `${indent ? 'pl-8' : 'pl-2.5'} pr-2 py-1 text-[13px] leading-5`
+                    ? `${indent ? 'pl-8' : 'pl-2.5'} h-7 pr-2 text-[13px] leading-5`
                     : 'px-3 py-2 text-[13px]'
-                } ${
-                  active
-                    ? 'text-neutral-900'
-                    : 'text-neutral-700'
                 }`}
-                title={
-                  isGenerating || isTitleGenerating
-                    ? t.chatTitleGenerating.replace('{title}', visibleTitle)
-                    : visibleTitle
-                }
+                onMouseEnter={showRowTooltip}
+                onFocus={showRowTooltip}
               >
                 <span className="flex min-w-0 items-center gap-1.5">
                   {/* 模型标题替换乐观截断标题时打字机逐字打出；生成中的临时标题置灰 */}
@@ -446,21 +455,11 @@ export const ConversationList = memo(function ConversationList({
                       {t.chatForkSuffix}
                     </span>
                   )}
-                  {folderLabel && !cardLayout && (
-                    <span
-                      className="max-w-[96px] shrink-0 truncate text-[11px] font-normal text-neutral-400 dark:text-neutral-500"
-                      title={folderLabel}
-                    >
-                      {folderLabel}
-                    </span>
-                  )}
                 </span>
                 {cardLayout && (
                   <span className={`mt-0.5 flex h-5 min-w-0 items-center gap-1.5 text-[11px] font-normal text-neutral-500 ${scheduledTasksTitle ? 'pr-16' : 'pr-12'}`}>
                     {folderLabel && <>
-                      {setId
-                        ? <Layers size={14} className="shrink-0" style={ownerSet?.color ? { color: ownerSet.color } : undefined} aria-hidden="true" />
-                        : <ProjectIcon workdir={projectWorkdir} color={project?.color} />}
+                      {folderGlyph}
                       <span className="min-w-0 flex-1 truncate" title={folderLabel}>
                         {folderLabel}
                       </span>
@@ -474,47 +473,32 @@ export const ConversationList = memo(function ConversationList({
                   </span>
                 )}
               </button>
-              {scheduledTasksTitle && (
-                <span
-                  className={`${cardLayout ? 'absolute right-[54px] bottom-[11.5px] text-neutral-500' : 'mr-1 text-neutral-400 dark:text-neutral-500'} flex shrink-0 items-center`}
-                  title={scheduledTasksTitle}
-                  aria-label={scheduledTasksTitle}
-                >
-                  <Clock size={13} strokeWidth={1.75} aria-hidden="true" />
-                </span>
-              )}
-              {/* 行尾：平时短龄；悬停让给 PIN + 归档；生成中优先慢波。
-                  短龄叠在槽右侧（置顶时针占左、龄占右）。慢波保持原始 chat-gen-wave。 */}
-
+              {/* 行尾只放状态：[钉][定时][慢波][所属集/项目]，没有就不占位；时间与归属名称在行提示里。
+                  悬停或键盘焦点时整体换成置顶 + 归档（槽宽由 CSS 撑开）。 */}
               <div
-                className={`kv-conv-trailing ${cardLayout ? 'absolute right-1.5 bottom-[7px]' : 'relative mr-1'} flex h-[22px] shrink-0 items-center justify-end ${
-                  conv.pinned ? 'w-[48px]' : 'w-[44px]'
-                }`}
-                data-busy={isGenerating && !conv.pinned ? '' : undefined}
+                className={`kv-conv-trailing ${cardLayout ? 'absolute right-1.5 bottom-[7px]' : 'relative mr-1.5'} flex h-[22px] shrink-0 items-center justify-end`}
+                data-busy={isGenerating ? '' : undefined}
                 data-pinned={conv.pinned ? '' : undefined}
               >
-                {compactAge && (
-                  <span
-                    className={`kv-conv-age pointer-events-none absolute right-0.5 flex h-full items-center text-[11px] tabular-nums leading-none ${cardLayout ? 'text-neutral-500' : 'text-neutral-400 dark:text-neutral-500'}`}
-                    aria-label={ageLabel || undefined}
-                  >
-                    {compactAge}
-                  </span>
-                )}
-                {isGenerating && !conv.pinned && (
-                  <span
-                    className="kv-conv-wave chat-gen-wave pointer-events-none absolute right-1"
-                    aria-label={t.chatGenerating}
-                    role="status"
-                  >
-                    <span /><span /><span /><span />
-                  </span>
-                )}
-                <div
-                  className={`kv-conv-actions flex items-center ${
-                    conv.pinned ? 'w-full justify-between' : ''
-                  }`}
-                >
+                <span className={`kv-conv-meta pointer-events-none flex items-center gap-1.5 pr-0.5 ${cardLayout ? 'text-neutral-500' : 'text-neutral-400 dark:text-neutral-500'}`}>
+                  {conv.pinned && !groupPinned && <Pin size={12} strokeWidth={2} className="shrink-0" aria-hidden="true" />}
+                  {scheduledTasksTitle && (
+                    <Clock size={13} strokeWidth={1.75} className="shrink-0" aria-label={scheduledTasksTitle} />
+                  )}
+                  {isGenerating && (
+                    <span
+                      className="kv-conv-wave chat-gen-wave"
+                      aria-label={t.chatGenerating}
+                      role="status"
+                    >
+                      <span /><span /><span /><span />
+                    </span>
+                  )}
+                  {!cardLayout && folderGlyph && (
+                    <span className="flex opacity-80" aria-label={folderLabel}>{folderGlyph}</span>
+                  )}
+                </span>
+                <div className="kv-conv-actions absolute inset-y-0 right-0 flex items-center gap-0.5">
                   <button
                     type="button"
                     data-no-drag
@@ -522,10 +506,8 @@ export const ConversationList = memo(function ConversationList({
                       e.stopPropagation()
                       void onTogglePinConversation(conv.id, !conv.pinned)
                     }}
-                    className={`shrink-0 rounded-md p-0.5 transition-opacity hover:bg-neutral-900/[0.06] ${
-                      conv.pinned
-                        ? 'text-neutral-700 opacity-100'
-                        : `${cardLayout ? 'text-neutral-500' : 'text-neutral-400'} hover:text-neutral-600 ${isGenerating ? '' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`
+                    className={`shrink-0 rounded-md p-0.5 hover:bg-neutral-900/[0.06] ${
+                      conv.pinned ? 'text-neutral-700' : 'text-neutral-400 hover:text-neutral-700'
                     }`}
                     aria-label={conv.pinned ? t.chatUnpin : t.chatPin}
                     title={conv.pinned ? t.chatUnpin : t.chatPin}
@@ -539,11 +521,7 @@ export const ConversationList = memo(function ConversationList({
                       e.stopPropagation()
                       beginArchive(conv, index)
                     }}
-                    className={`shrink-0 rounded-md p-0.5 ${cardLayout ? 'text-neutral-500' : 'text-neutral-400'} transition-opacity hover:bg-neutral-900/[0.06] hover:text-neutral-600 ${
-                      isGenerating && !conv.pinned
-                        ? ''
-                        : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'
-                    }`}
+                    className="shrink-0 rounded-md p-0.5 text-neutral-400 hover:bg-neutral-900/[0.06] hover:text-neutral-700"
                     aria-label={t.chatLibArchive}
                     title={t.chatLibArchive}
                   >
@@ -554,6 +532,7 @@ export const ConversationList = memo(function ConversationList({
 
               </div>
             </div>
+          </Fragment>
           )
         })}
       </div>

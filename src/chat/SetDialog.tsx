@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
-import { Bot, Check, Layers, X } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { Check, Layers, X } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import { useT } from '../components/i18n'
+import { FieldBlock, Input, Select, TextArea } from '../settings/public/controls'
 import type { ChatAssistant, ChatSet } from './types'
-import { useCloseAnimation } from './useCloseAnimation'
 
 // ponytail: same palette as AssistantCenter so 集/助手 colors match; duplicated 6-element array, not worth sharing
 const setColors = ['#6A8FBD', '#2f6ff0', '#4F9D7A', '#8A6FBD', '#B7791F', '#5E8C6A']
@@ -23,6 +22,7 @@ interface SetDialogProps {
   onClose: () => void
 }
 
+/** 新建 / 编辑集：只有名称必填；颜色、系统提示词、默认助手都可留空。 */
 export function SetDialog({
   set,
   assistants,
@@ -40,230 +40,186 @@ export function SetDialog({
     set?.default_assistant_id ?? set?.defaultAssistantId ?? '',
   )
   const [color, setColor] = useState<string | null>(set?.color ?? null)
-  const [assistantOpen, setAssistantOpen] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
-  const assistantRef = useRef<HTMLDivElement>(null)
+  const dialogRef = useRef<HTMLDialogElement>(null)
+  // 在对话框内按下、拖到遮罩上松开（例如选中文字）不算点遮罩。
+  const pressedBackdrop = useRef(false)
+  const titleId = useId()
+  const nameId = useId()
+  const promptId = useId()
   const title = set ? t.chatEditSet : t.chatNewSet
-  const { closing, startClose, onAnimationEnd } = useCloseAnimation(onClose)
-  const selectableAssistants = assistants.filter((a) => !a.archived)
-  const selectedAssistant = selectableAssistants.find((a) => a.id === defaultAssistantId) ?? null
-  const accent = color ?? '#8E8E93'
+
+  const assistantOptions = [
+    { value: '', label: t.chatSetDefaultAssistantNone },
+    ...assistants
+      .filter((a) => !a.archived || a.id === defaultAssistantId)
+      .map((a) => ({ value: a.id, label: a.name })),
+  ]
 
   useEffect(() => {
-    inputRef.current?.focus()
-    inputRef.current?.select()
+    const dialog = dialogRef.current
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    if (dialog && !dialog.open) dialog.showModal?.()
+    const nameInput = dialog?.querySelector<HTMLInputElement>('input')
+    nameInput?.focus()
+    nameInput?.select()
+    return () => {
+      if (previous?.isConnected) previous.focus()
+    }
   }, [])
 
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        if (assistantOpen) {
-          setAssistantOpen(false)
-          return
-        }
-        startClose()
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [assistantOpen, startClose])
-
-  useEffect(() => {
-    if (!assistantOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (assistantRef.current?.contains(e.target as Node)) return
-      setAssistantOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    return () => document.removeEventListener('mousedown', onDown)
-  }, [assistantOpen])
-
+  const canSubmit = Boolean(name.trim()) && !saving
   const submit = () => {
-    const nextName = name.trim()
-    if (!nextName || saving) return
-    onSave(nextName, systemPrompt.trim(), defaultAssistantId.trim() || null, color)
+    if (!canSubmit) return
+    onSave(name.trim(), systemPrompt.trim(), defaultAssistantId.trim() || null, color)
   }
 
-  return createPortal(
-    <div
-      className={`${closing ? 'chat-motion-fade-out' : 'chat-motion-fade'} fixed inset-0 z-[300] flex items-center justify-center bg-neutral-900/35 px-4 backdrop-blur-[2px]`}
+  return (
+    <dialog
+      ref={dialogRef}
+      className="kv kv-modal chat-motion-modal-in overflow-hidden"
+      aria-labelledby={titleId}
+      style={{ width: 'min(480px, calc(100vw - 32px))', maxWidth: 480, maxHeight: 'calc(100dvh - 48px)', padding: 0 }}
       data-tauri-drag-region="false"
+      onCancel={(e) => {
+        e.preventDefault()
+        onClose()
+      }}
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) startClose()
+        pressedBackdrop.current = e.target === e.currentTarget
+      }}
+      onClick={(e) => {
+        const fromBackdrop = pressedBackdrop.current && e.target === e.currentTarget
+        pressedBackdrop.current = false
+        if (fromBackdrop) onClose()
       }}
     >
       <form
-        className={`${closing ? 'chat-motion-modal-out' : 'chat-motion-modal-in'} w-full max-w-[520px] overflow-hidden rounded-2xl bg-neutral-50 text-neutral-900 shadow-[0_24px_64px_-20px_rgba(0,0,0,0.35)]`}
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onAnimationEnd={onAnimationEnd}
+        className="flex max-h-[calc(100dvh-48px)] min-h-0 flex-col"
         onSubmit={(e) => {
           e.preventDefault()
           submit()
         }}
+        onKeyDown={(e) => {
+          // 多行提示词里回车是换行，Ctrl/⌘+Enter 直接提交。
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault()
+            submit()
+          }
+        }}
       >
-        <div className="flex items-center justify-between px-5 pt-4">
-          <span className="text-[11px] font-medium tracking-[0.14em] text-neutral-400 uppercase dark:text-neutral-500">
-            {title}
-          </span>
-          <IconButton size="xs" label={t.cancel} onClick={startClose}>
-            <X strokeWidth={1.75} />
+        <header className="flex shrink-0 items-start gap-3 px-5 pb-3 pt-5">
+          {/* 图标即侧栏里的样子：选颜色时实时着色 */}
+          <div
+            className={`grid size-10 shrink-0 place-items-center rounded-xl transition-colors ${
+              color ? '' : 'bg-neutral-900/[0.05] text-neutral-500'
+            }`}
+            style={color ? { backgroundColor: `${color}1f`, color } : undefined}
+            aria-hidden="true"
+          >
+            <Layers size={19} strokeWidth={1.75} />
+          </div>
+          <div className="min-w-0 flex-1 pt-0.5">
+            <h2 id={titleId} className="truncate text-[15px] font-semibold leading-5">
+              {name.trim() || title}
+            </h2>
+            <p className="mt-0.5 text-[12px] leading-[18px] text-neutral-500">{t.chatSetDialogSubtitle}</p>
+          </div>
+          <IconButton label={t.cancel} variant="ghost" onClick={onClose}>
+            <X size={16} strokeWidth={1.75} />
           </IconButton>
-        </div>
+        </header>
 
-        <div className="px-5 pt-5 pb-4">
-          <div className="flex items-start gap-3.5">
-            <div
-              className={`grid size-12 shrink-0 place-items-center rounded-2xl transition-colors ${
-                color ? '' : 'bg-neutral-900/[0.05] text-neutral-400 dark:text-neutral-500'
-              }`}
-              style={color ? { backgroundColor: `${color}24`, color: accent } : undefined}
-            >
-              <Layers size={22} strokeWidth={1.6} />
-            </div>
-            <div className="min-w-0 flex-1 pt-0.5">
-              <input
-                ref={inputRef}
-                type="text"
-                value={name}
-                maxLength={80}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full bg-transparent text-[22px] font-semibold leading-tight tracking-tight text-neutral-900 outline-none placeholder:font-medium placeholder:text-neutral-300 dark:placeholder:text-neutral-600"
-                placeholder={t.chatSetNamePlaceholder}
-                aria-label={t.chatSetName}
-              />
-              <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setColor(null)}
-                  className={`grid size-[18px] place-items-center rounded-full border transition-transform ${
-                    color === null
-                      ? 'scale-110 border-neutral-800'
-                      : 'border-neutral-300 hover:scale-110'
-                  }`}
-                  aria-label={t.chatSetNoColor}
-                  title={t.chatSetNoColor}
-                >
-                  <span className="block h-px w-2.5 rotate-45 bg-neutral-400" />
-                </button>
-                {setColors.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setColor(c)}
-                    className={`size-[18px] rounded-full transition-transform ${
-                      color === c ? 'scale-110 ring-2 ring-neutral-900 ring-offset-2 ring-offset-[var(--theme-surface)]' : 'hover:scale-110'
-                    }`}
-                    style={{ backgroundColor: c }}
-                    aria-label={t.chatAssistantSelectColorNamed.replace('{name}', c)}
-                  />
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="mx-5 overflow-hidden rounded-xl bg-neutral-50">
-          <div className="flex items-center justify-between px-3.5 pt-3">
-            <span className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-              {t.chatSystemPrompt}
-            </span>
-            <span className="text-[10.5px] text-neutral-300 dark:text-neutral-600">
-              {t.chatSetSystemPromptHint}
-            </span>
-          </div>
-          <textarea
-            value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value)}
-            rows={6}
-            className="min-h-[148px] w-full resize-none bg-transparent px-3.5 pt-2 pb-3.5 text-[13.5px] leading-relaxed text-neutral-800 outline-none placeholder:text-neutral-300 dark:placeholder:text-neutral-600"
-            placeholder={t.chatSetSystemPromptPlaceholder}
-            aria-label={t.chatSystemPrompt}
-          />
-        </div>
-
-        {error && <p className="px-5 pt-3 text-[12px] text-red-600 dark:text-red-400">{error}</p>}
-
-        <div className="flex items-center justify-between gap-3 px-5 pt-4 pb-4">
-          <div ref={assistantRef} className="relative min-w-0">
-            <button
-              type="button"
-              onClick={() => setAssistantOpen((open) => !open)}
-              className="flex max-w-[220px] items-center gap-1.5 rounded-full bg-neutral-50 px-2.5 py-1 text-[12px] text-neutral-600 transition-colors hover:bg-[var(--theme-surface-hover)]"
-              aria-haspopup="listbox"
-              aria-expanded={assistantOpen}
-              title={t.chatSetDefaultAssistantHint}
-            >
-              <span className="grid size-4 shrink-0 place-items-center text-neutral-400 dark:text-neutral-500">
-                <Bot size={13} strokeWidth={1.75} />
-              </span>
-              <span className="min-w-0 truncate">
-                {selectedAssistant ? selectedAssistant.name : t.chatSetDefaultAssistantNone}
-              </span>
-            </button>
-            {assistantOpen && (
-              <div
-                className="chat-motion-popover absolute bottom-full left-0 z-50 mb-1.5 w-[240px] overflow-y-auto kv-menu"
-                style={{ ['--chat-popover-origin' as string]: 'bottom left', maxHeight: 260 }}
-                role="listbox"
+        <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-2">
+          <FieldBlock label={t.chatSetName} htmlFor={nameId}>
+            <Input
+              id={nameId}
+              value={name}
+              maxLength={80}
+              onChange={setName}
+              placeholder={t.chatSetNamePlaceholder}
+            />
+            <div className="mt-2.5 flex items-center gap-2" role="radiogroup" aria-label={t.chatSetColor}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={color === null}
+                onClick={() => setColor(null)}
+                className={`grid size-5 place-items-center rounded-full border transition-transform ${
+                  color === null ? 'border-neutral-500' : 'border-neutral-300 hover:scale-110'
+                }`}
+                aria-label={t.chatSetNoColor}
+                title={t.chatSetNoColor}
               >
+                {color === null
+                  ? <Check size={11} strokeWidth={2.5} className="text-neutral-600" />
+                  : <span className="block h-px w-2.5 rotate-45 bg-neutral-400" />}
+              </button>
+              {setColors.map((c) => (
                 <button
+                  key={c}
                   type="button"
-                  role="option"
-                  aria-selected={!selectedAssistant}
-                  onClick={() => {
-                    setDefaultAssistantId('')
-                    setAssistantOpen(false)
-                  }}
-                  className="kv-menu-item"
+                  role="radio"
+                  aria-checked={color === c}
+                  onClick={() => setColor(c)}
+                  className={`grid size-5 place-items-center rounded-full text-white transition-transform ${
+                    color === c ? '' : 'hover:scale-110'
+                  }`}
+                  style={{ backgroundColor: c }}
+                  aria-label={t.chatAssistantSelectColorNamed.replace('{name}', c)}
                 >
-                  <Bot size={13} strokeWidth={1.75} />
-                  {t.chatSetDefaultAssistantNone}
-                  {!selectedAssistant && <Check size={12} strokeWidth={2.5} className="ml-auto" />}
+                  {color === c && <Check size={11} strokeWidth={3} />}
                 </button>
-                {selectableAssistants.map((assistant) => {
-                  const active = assistant.id === defaultAssistantId
-                  return (
-                    <button
-                      key={assistant.id}
-                      type="button"
-                      role="option"
-                      aria-selected={active}
-                      onClick={() => {
-                        setDefaultAssistantId(assistant.id)
-                        setAssistantOpen(false)
-                      }}
-                      className="kv-menu-item"
-                    >
-                      <span className="grid size-4 shrink-0 place-items-center">
-                        <Bot size={13} strokeWidth={1.75} />
-                      </span>
-                      <span className="min-w-0 flex-1 truncate">{assistant.name}</span>
-                      {active && <Check size={12} strokeWidth={2.5} />}
-                    </button>
-                  )
-                })}
+              ))}
+            </div>
+          </FieldBlock>
+
+          <FieldBlock
+            label={<>
+              {t.chatSystemPrompt}
+              <span className="ml-1.5 font-normal text-neutral-400">{t.chatSetOptional}</span>
+            </>}
+            description={t.chatSetSystemPromptHint}
+            htmlFor={promptId}
+          >
+            <TextArea
+              id={promptId}
+              value={systemPrompt}
+              onChange={setSystemPrompt}
+              rows={5}
+              maxRows={12}
+              placeholder={t.chatSetSystemPromptPlaceholder}
+            />
+          </FieldBlock>
+
+          <div className="flex items-center justify-between gap-4 py-2">
+            <div className="min-w-0">
+              <div className="kv-row-label">
+                {t.chatSetDefaultAssistant}
+                <span className="ml-1.5 font-normal text-neutral-400">{t.chatSetOptional}</span>
               </div>
-            )}
+              <p className="kv-row-desc">{t.chatSetDefaultAssistantHint}</p>
+            </div>
+            <Select
+              className="w-[180px] shrink-0"
+              value={defaultAssistantId}
+              onChange={setDefaultAssistantId}
+              options={assistantOptions}
+              ariaLabel={t.chatSetDefaultAssistant}
+            />
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
-            <Button size="sm" onClick={startClose}>
-              {t.cancel}
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              size="sm"
-              disabled={!name.trim() || saving}
-            >
-              {saving ? t.saving : set ? t.save : t.chatSetCreate}
-            </Button>
-          </div>
+          {error && <p className="kv-inline-error">{error}</p>}
         </div>
+
+        <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-[var(--color-border)] px-5 py-3">
+          <Button size="sm" onClick={onClose}>
+            {t.cancel}
+          </Button>
+          <Button type="submit" variant="primary" size="sm" disabled={!canSubmit}>
+            {saving ? t.saving : set ? t.save : t.chatSetCreate}
+          </Button>
+        </footer>
       </form>
-    </div>,
-    document.body,
+    </dialog>
   )
 }
