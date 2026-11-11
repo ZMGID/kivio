@@ -1,10 +1,11 @@
-//! 右侧 Dock（文件树 + Git 面板 + 终端面板）后端：文件系统命令、Git 命令、
+//! 右侧 Dock（文件树 + Git 面板 + 拉取请求 + 终端面板）后端：文件系统命令、Git 命令、
 //! PTY 终端会话、workspace 变更监听。
 //! 架构思路参考 LiveAgent 的 Right Dock，按 kivio 惯例精简重写（命令返回
 //! `Result<T, String>`，响应结构体 serde camelCase）。
 
 pub mod fs;
 pub mod git;
+pub mod pull_requests;
 pub mod terminal;
 pub mod watch;
 

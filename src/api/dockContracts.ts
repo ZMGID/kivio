@@ -140,6 +140,70 @@ export type WorkspaceActivityEvent = {
   truncated: boolean
 }
 
+// ---------- 拉取请求（src-tauri/src/dock/pull_requests.rs） ----------
+
+export type PullRequestState = 'open' | 'draft' | 'merged' | 'closed'
+export type PullRequestChecks = 'success' | 'failure' | 'pending' | 'none'
+export type PullRequestReviewDecision = 'approved' | 'changes_requested' | 'review_required' | ''
+/** 服务端状态筛选；草稿是 open 的子集，由前端过滤。 */
+export type PullRequestStateFilter = 'open' | 'merged' | 'closed' | 'all'
+export type PullRequestListStatus = 'ready' | 'not_repo' | 'gh_missing' | 'gh_unauthenticated' | 'no_github_remote'
+
+export type PullRequestLabel = { name: string; color: string }
+
+export type PullRequestItem = {
+  number: number
+  title: string
+  url: string
+  state: PullRequestState
+  createdAt: string
+  updatedAt: string
+  additions: number
+  deletions: number
+  changedFiles: number
+  headRef: string
+  baseRef: string
+  crossRepository: boolean
+  author: string
+  authorAvatar: string
+  labels: PullRequestLabel[]
+  comments: number
+  checks: PullRequestChecks
+  reviewDecision: PullRequestReviewDecision
+  conflicting: boolean
+  reviewRequested: boolean
+}
+
+export type PullRequestList = {
+  status: PullRequestListStatus
+  hint: string
+  viewer: string
+  repository: string
+  repositoryUrl: string
+  defaultBranch: string
+  currentBranch: string
+  current: PullRequestItem | null
+  totalCount: number
+  items: PullRequestItem[]
+  endCursor: string | null
+  hasMore: boolean
+}
+
+export type PullRequestCheck = {
+  name: string
+  workflow: string
+  status: 'success' | 'failure' | 'pending' | 'skipped'
+  url: string
+}
+
+export type PullRequestDetail = {
+  number: number
+  body: string
+  checks: PullRequestCheck[]
+  reviews: { author: string; state: string }[]
+  files: { path: string; additions: number; deletions: number }[]
+}
+
 // ---------- normalizers ----------
 
 type RawRecord = Record<string, unknown>
@@ -327,5 +391,98 @@ export function normalizeWorkspaceActivityEvent(raw: unknown): WorkspaceActivity
     git: pickBoolean(record, 'git', 'git'),
     changedPaths: pickStringArray(record, 'changedPaths', 'changed_paths'),
     truncated: pickBoolean(record, 'truncated', 'truncated'),
+  }
+}
+
+function oneOf<T extends string>(value: string, allowed: readonly T[], fallback: T): T {
+  return (allowed as readonly string[]).includes(value) ? (value as T) : fallback
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
+}
+
+export function normalizePullRequestItem(raw: unknown): PullRequestItem {
+  const record = asRecord(raw)
+  return {
+    number: pickNumber(record, 'number', 'number'),
+    title: pickString(record, 'title', 'title'),
+    url: pickString(record, 'url', 'url'),
+    state: oneOf(pickString(record, 'state', 'state'), ['open', 'draft', 'merged', 'closed'], 'open'),
+    createdAt: pickString(record, 'createdAt', 'created_at'),
+    updatedAt: pickString(record, 'updatedAt', 'updated_at'),
+    additions: pickNumber(record, 'additions', 'additions'),
+    deletions: pickNumber(record, 'deletions', 'deletions'),
+    changedFiles: pickNumber(record, 'changedFiles', 'changed_files'),
+    headRef: pickString(record, 'headRef', 'head_ref'),
+    baseRef: pickString(record, 'baseRef', 'base_ref'),
+    crossRepository: pickBoolean(record, 'crossRepository', 'cross_repository'),
+    author: pickString(record, 'author', 'author'),
+    authorAvatar: pickString(record, 'authorAvatar', 'author_avatar'),
+    labels: asArray(record.labels).map((item) => {
+      const label = asRecord(item)
+      return { name: pickString(label, 'name', 'name'), color: pickString(label, 'color', 'color') }
+    }),
+    comments: pickNumber(record, 'comments', 'comments'),
+    checks: oneOf(pickString(record, 'checks', 'checks'), ['success', 'failure', 'pending', 'none'], 'none'),
+    reviewDecision: oneOf(
+      pickString(record, 'reviewDecision', 'review_decision'),
+      ['approved', 'changes_requested', 'review_required', ''],
+      '',
+    ),
+    conflicting: pickBoolean(record, 'conflicting', 'conflicting'),
+    reviewRequested: pickBoolean(record, 'reviewRequested', 'review_requested'),
+  }
+}
+
+export function normalizePullRequestList(raw: unknown): PullRequestList {
+  const record = asRecord(raw)
+  const current = record.current
+  return {
+    status: oneOf(
+      pickString(record, 'status', 'status'),
+      ['ready', 'not_repo', 'gh_missing', 'gh_unauthenticated', 'no_github_remote'],
+      'not_repo',
+    ),
+    hint: pickString(record, 'hint', 'hint'),
+    viewer: pickString(record, 'viewer', 'viewer'),
+    repository: pickString(record, 'repository', 'repository'),
+    repositoryUrl: pickString(record, 'repositoryUrl', 'repository_url'),
+    defaultBranch: pickString(record, 'defaultBranch', 'default_branch'),
+    currentBranch: pickString(record, 'currentBranch', 'current_branch'),
+    current: current ? normalizePullRequestItem(current) : null,
+    totalCount: pickNumber(record, 'totalCount', 'total_count'),
+    items: asArray(record.items).map(normalizePullRequestItem),
+    endCursor: pick<string | null>(record, 'endCursor', 'end_cursor', null),
+    hasMore: pickBoolean(record, 'hasMore', 'has_more'),
+  }
+}
+
+export function normalizePullRequestDetail(raw: unknown): PullRequestDetail {
+  const record = asRecord(raw)
+  return {
+    number: pickNumber(record, 'number', 'number'),
+    body: pickString(record, 'body', 'body'),
+    checks: asArray(record.checks).map((item) => {
+      const check = asRecord(item)
+      return {
+        name: pickString(check, 'name', 'name'),
+        workflow: pickString(check, 'workflow', 'workflow'),
+        status: oneOf(pickString(check, 'status', 'status'), ['success', 'failure', 'pending', 'skipped'], 'pending'),
+        url: pickString(check, 'url', 'url'),
+      }
+    }),
+    reviews: asArray(record.reviews).map((item) => {
+      const review = asRecord(item)
+      return { author: pickString(review, 'author', 'author'), state: pickString(review, 'state', 'state') }
+    }),
+    files: asArray(record.files).map((item) => {
+      const file = asRecord(item)
+      return {
+        path: pickString(file, 'path', 'path'),
+        additions: pickNumber(file, 'additions', 'additions'),
+        deletions: pickNumber(file, 'deletions', 'deletions'),
+      }
+    }),
   }
 }

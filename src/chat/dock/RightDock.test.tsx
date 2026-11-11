@@ -36,6 +36,12 @@ vi.mock('./GitPanel', () => {
   loadedPanels.push('git')
   return { GitPanel: () => <div data-testid="git-panel" /> }
 })
+vi.mock('./PullRequestsPanel', () => {
+  loadedPanels.push('pulls')
+  return {
+    PullRequestsPanel: ({ active }: { active: boolean }) => <div data-testid="pulls-panel" data-active={active} />,
+  }
+})
 vi.mock('./TerminalPanel', () => {
   loadedPanels.push('terminal')
   return {
@@ -266,8 +272,8 @@ describe('RightDock tabs', () => {
   it('renders panels immediately on opening without waiting for hover or an import', () => {
     const props = dockProps({ open: false })
     const { rerender } = render(<RightDock {...props} />)
-    expect(loadedPanels).toHaveLength(3)
-    expect(loadedPanels).toEqual(expect.arrayContaining(['files', 'git', 'terminal']))
+    expect(loadedPanels).toHaveLength(4)
+    expect(loadedPanels).toEqual(expect.arrayContaining(['files', 'git', 'pulls', 'terminal']))
     expect(screen.queryByTestId('terminal-panel')).toBeNull()
 
     rerender(<RightDock {...props} open />)
@@ -282,14 +288,33 @@ describe('RightDock tabs', () => {
     expect(screen.getByTestId('terminal-panel')).toHaveAttribute('data-active', 'true')
   })
 
-  it('exposes files, git, terminal, and tasks — not trajectory', async () => {
+  it('exposes files, git, pull requests, terminal, and tasks — not trajectory', async () => {
     render(<RightDock {...dockProps()} />)
     await screen.findByTestId('files-panel')
     expect(screen.getByText('文件')).toBeTruthy()
     expect(screen.getByText('Git')).toBeTruthy()
+    expect(screen.getByText('PR')).toBeTruthy()
     expect(screen.getByText('终端')).toBeTruthy()
     expect(screen.getByText('任务')).toBeTruthy()
     expect(screen.queryByText('轨迹')).toBeNull()
+  })
+
+  it('opens the pull request panel from the launcher shortcut and only activates it while shown', () => {
+    const onToggleTab = vi.fn()
+    const props = dockProps({ onToggleTab })
+    const { rerender } = render(<RightDock {...props} />)
+    const pulls = screen.getByTestId('pulls-panel')
+    expect(pulls).toHaveAttribute('data-active', 'false')
+    expect(screen.getByRole('button', { name: 'PR p' })).toHaveAttribute('aria-keyshortcuts', 'p')
+
+    fireEvent.keyDown(document.body, { key: 'p' })
+    expect(onToggleTab).toHaveBeenCalledWith('pulls')
+    rerender(<RightDock {...props} activeTab="pulls" />)
+    expect(pulls).toBeVisible()
+    expect(pulls).toHaveAttribute('data-active', 'true')
+
+    rerender(<RightDock {...props} activeTab="pulls" open={false} />)
+    expect(pulls).toHaveAttribute('data-active', 'false')
   })
 
   it('does not mount a remembered terminal tab while the dock is closed', async () => {

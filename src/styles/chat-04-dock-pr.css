@@ -1,0 +1,843 @@
+/* Dock「拉取请求」面板（src/chat/dock/PullRequestsPanel.tsx）。
+   基础控件（Button / IconButton / Input / Select / Toggle）保持共享样式，这里只负责
+   面板布局、PR 行与状态动效。时长与曲线只用 --kv-dur-* / --kv-ease-*；
+   减少动态效果由 chat-01-main.css 的全局兜底压到 0.01ms，循环动画随之停在首帧。 */
+
+.chat-pr-panel {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+/* ---------- 顶部：仓库、搜索与筛选 ---------- */
+
+.chat-pr-header {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 8px;
+  border-bottom: 1px solid var(--theme-surface-border);
+}
+
+.chat-pr-repo {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding-left: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.chat-pr-repo-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-pr-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.chat-pr-search > svg {
+  position: absolute;
+  left: 9px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+/* 只为放大镜和清除按钮让出位置，不改共享输入框的边框、圆角与聚焦表现。 */
+.chat-pr-search .kv-input {
+  padding-left: 28px;
+  padding-right: 28px;
+}
+
+.chat-pr-search-clear {
+  position: absolute;
+  right: 3px;
+}
+
+.chat-pr-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 状态分段：浅色轨道上滑动抬升的选中片段。 */
+.chat-pr-segment {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  isolation: isolate;
+}
+
+.chat-pr-segment-thumb {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 0;
+  z-index: -1;
+  width: var(--seg-w, 0px);
+  border-radius: 6px;
+  background: var(--theme-surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.08), 0 0 0 0.5px rgba(24, 24, 27, 0.06);
+  transform: translateX(var(--seg-x, 0px));
+  transition:
+    transform var(--kv-dur-normal) var(--kv-ease-standard),
+    width var(--kv-dur-normal) var(--kv-ease-standard);
+}
+
+.dark .chat-pr-segment-thumb {
+  background: var(--theme-surface-active);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.chat-pr-segment-thumb.is-measuring {
+  transition: none;
+}
+
+.chat-pr-segment button {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 6px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+  transition: color var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+.chat-pr-segment button:hover {
+  color: var(--text);
+}
+
+.chat-pr-segment button[aria-checked='true'] {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.chat-pr-segment-count {
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 15px;
+  animation: chat-pr-pop var(--kv-dur-normal) var(--kv-ease-spring) both;
+}
+
+.chat-pr-filter-anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+.chat-pr-filter-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid var(--theme-surface-soft);
+  border-radius: 999px;
+  background: var(--accent);
+  pointer-events: none;
+  animation: chat-pr-pop var(--kv-dur-normal) var(--kv-ease-spring) both;
+}
+
+/* 已有数据时的后台刷新：顶部一条细进度光带，不遮挡列表。 */
+.chat-pr-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.chat-pr-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: chat-pr-progress 1.1s var(--kv-ease-inout) infinite;
+}
+
+/* ---------- 当前分支卡片 ---------- */
+
+.chat-pr-branch-card {
+  position: relative;
+  margin: 10px 10px 2px;
+  overflow: hidden;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: 10px;
+  background: var(--theme-surface);
+  animation: chat-motion-fade-up var(--kv-dur-normal) var(--kv-ease-standard) both;
+}
+
+/* 当前 PR 的检查还在跑：卡片顶缘一道流动的强调色细线。 */
+.chat-pr-branch-card.is-running::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1.5px;
+  background: linear-gradient(90deg, transparent 0%, #f59e0b 50%, transparent 100%);
+  background-size: 50% 100%;
+  background-repeat: no-repeat;
+  animation: chat-pr-scan 1.6s var(--kv-ease-inout) infinite;
+}
+
+.chat-pr-branch-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.chat-pr-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-pr-branch-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.chat-pr-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 10px 10px;
+}
+
+.chat-pr-create-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ---------- 列表 ---------- */
+
+.chat-pr-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 4px;
+  background: var(--theme-surface-soft);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.chat-pr-group-head::after {
+  content: '';
+  height: 1px;
+  flex: 1;
+  margin-left: 4px;
+  background: var(--theme-surface-border);
+}
+
+.chat-pr-group-count {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-pr-row {
+  position: relative;
+  margin: 0 6px;
+  border-radius: 8px;
+  transition: background-color var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+.chat-pr-row:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.chat-pr-row.is-open {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.chat-pr-row-main {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.chat-pr-row-main:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+.chat-pr-state {
+  position: relative;
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  width: 16px;
+  height: 18px;
+}
+
+.chat-pr-state-conflict {
+  position: absolute;
+  right: -4px;
+  bottom: -2px;
+  display: grid;
+  place-items: center;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--theme-surface-soft);
+  color: #ef4444;
+}
+
+.chat-pr-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.chat-pr-number {
+  margin-right: 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-pr-mark {
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: inherit;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.chat-pr-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.chat-pr-meta-ref {
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-pr-side {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  padding-top: 1px;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+.chat-pr-time {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.chat-pr-avatar {
+  display: grid;
+  flex-shrink: 0;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--theme-surface-muted);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 600;
+  object-fit: cover;
+}
+
+.chat-pr-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.chat-pr-label {
+  display: inline-flex;
+  max-width: 120px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--label-color, #888) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--label-color, #888) 30%, transparent);
+  color: var(--text);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.chat-pr-label::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--label-color, #888);
+}
+
+.chat-pr-label span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* GitHub 式五格行数色块，挂载时依次弹入。 */
+.chat-pr-blocks {
+  display: inline-flex;
+  gap: 1.5px;
+}
+
+.chat-pr-blocks i {
+  width: 6px;
+  height: 6px;
+  border-radius: 1.5px;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  animation: chat-pr-block-in var(--kv-dur-normal) var(--kv-ease-spring) both;
+  animation-delay: calc(var(--i, 0) * 35ms + 80ms);
+}
+
+.chat-pr-blocks i.is-add {
+  background: #22a35a;
+}
+
+.chat-pr-blocks i.is-del {
+  background: #e5484d;
+}
+
+/* 检查进行中：缓慢旋转的虚线圆。 */
+.chat-pr-pending {
+  color: #d97706;
+  animation: chat-pr-spin 2.4s linear infinite;
+}
+
+.dark .chat-pr-pending {
+  color: #fbbf24;
+}
+
+/* ---------- 展开详情 ---------- */
+
+.chat-pr-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--kv-dur-normal) var(--kv-ease-standard);
+}
+
+.chat-pr-collapse.is-open {
+  grid-template-rows: 1fr;
+}
+
+.chat-pr-collapse > div {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-pr-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 10px 10px 32px;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition:
+    opacity var(--kv-dur-normal) var(--kv-ease-out),
+    transform var(--kv-dur-normal) var(--kv-ease-standard);
+}
+
+.chat-pr-collapse.is-open .chat-pr-detail {
+  opacity: 1;
+  transform: none;
+  transition-delay: 40ms;
+}
+
+.chat-pr-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-pr-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chat-pr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.chat-pr-chip.is-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.chat-pr-chip.is-success {
+  background: color-mix(in srgb, #22a35a 14%, transparent);
+  color: #1a7f45;
+}
+
+.dark .chat-pr-chip.is-success {
+  color: #4ade80;
+}
+
+.chat-pr-chip.is-warning {
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  color: #b45309;
+}
+
+.dark .chat-pr-chip.is-warning {
+  color: #fbbf24;
+}
+
+.chat-pr-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* 检查结果比例条：三段宽度从 0 展开。 */
+.chat-pr-checkbar {
+  display: flex;
+  height: 4px;
+  margin-bottom: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.chat-pr-checkbar span {
+  height: 100%;
+  transform-origin: left center;
+  animation: chat-pr-grow var(--kv-dur-slow) var(--kv-ease-standard) both;
+}
+
+.chat-pr-check {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 11.5px;
+  text-align: left;
+}
+
+.chat-pr-check:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.chat-pr-check:disabled {
+  cursor: default;
+}
+
+.chat-pr-body {
+  position: relative;
+  max-height: 168px;
+  overflow: hidden;
+  font-size: 12px;
+  transition: max-height var(--kv-dur-slow) var(--kv-ease-standard);
+}
+
+.chat-pr-body.is-expanded {
+  max-height: 2400px;
+}
+
+/* PR 描述是侧栏里的参考文本：比聊天正文小一档，标题压到正文附近，段距收紧。 */
+.chat-pr-body .chat-markdown {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.chat-pr-body .chat-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 10px 0 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.chat-pr-body .chat-markdown > :first-child,
+.chat-pr-body .chat-markdown > :first-child > :first-child {
+  margin-top: 0;
+}
+
+.chat-pr-body .chat-markdown :is(p, ul, ol, blockquote, pre, table) {
+  margin-top: 4px;
+  margin-bottom: 4px;
+}
+
+.chat-pr-body .chat-markdown :is(li) {
+  margin: 1px 0;
+}
+
+.chat-pr-body .chat-markdown :is(code) {
+  font-size: 11px;
+}
+
+.chat-pr-body:not(.is-expanded).is-clipped::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 48px;
+  background: linear-gradient(to bottom, transparent, var(--theme-surface-soft));
+  pointer-events: none;
+}
+
+.chat-pr-row.is-open .chat-pr-body:not(.is-expanded).is-clipped::after {
+  background: linear-gradient(to bottom, transparent, color-mix(in srgb, var(--text) 5%, var(--theme-surface-soft)));
+}
+
+.chat-pr-file {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.chat-pr-file-path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-muted);
+  direction: rtl;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-pr-add {
+  color: #1a7f45;
+}
+
+.chat-pr-del {
+  color: #d1242f;
+}
+
+.dark .chat-pr-add {
+  color: #4ade80;
+}
+
+.dark .chat-pr-del {
+  color: #f87171;
+}
+
+/* ---------- 空态 / 不可用 ---------- */
+
+.chat-pr-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 32px 28px 64px;
+  text-align: center;
+  animation: chat-motion-fade-up var(--kv-dur-slow) var(--kv-ease-standard) both;
+}
+
+.chat-pr-orbit {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 8px;
+  border-radius: 999px;
+  background: var(--theme-surface-muted);
+  color: var(--text-muted);
+}
+
+.chat-pr-orbit::before,
+.chat-pr-orbit::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--theme-surface-border);
+  border-radius: inherit;
+  animation: chat-pr-ripple 2.8s var(--kv-ease-out) infinite;
+}
+
+.chat-pr-orbit::after {
+  animation-delay: 1.4s;
+}
+
+.chat-pr-empty-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-pr-empty-hint {
+  max-width: 240px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.chat-pr-skeleton-row {
+  display: flex;
+  gap: 8px;
+  padding: 9px 14px;
+}
+
+/* ---------- keyframes ---------- */
+
+@keyframes chat-pr-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes chat-pr-block-in {
+  from {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes chat-pr-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes chat-pr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes chat-pr-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+@keyframes chat-pr-scan {
+  from {
+    background-position: -100% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes chat-pr-ripple {
+  from {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.7);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-pr-progress::after,
+  .chat-pr-branch-card.is-running::before,
+  .chat-pr-orbit::before,
+  .chat-pr-orbit::after,
+  .chat-pr-pending {
+    animation: none;
+  }
+}

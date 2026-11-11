@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
+import { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { Check, ChevronDown, ExternalLink, X } from 'lucide-react'
 import { formatHotkey, getPlatform, type SelectOption } from './utils'
@@ -383,7 +383,7 @@ export function SuggestInput({
 /**
  * 文本输入 — 默认 sans，需要等宽时调用方自行加 font-mono
  */
-export function Input({ value, onChange, type = 'text', placeholder = '', className = '', mono = false, ...props }: {
+export const Input = forwardRef<HTMLInputElement, {
   value: string
   onChange: (v: string) => void
   type?: string
@@ -391,9 +391,13 @@ export function Input({ value, onChange, type = 'text', placeholder = '', classN
   className?: string
   /** 启用 font-mono（仅 baseUrl/apiKey/model 名等代码型字段使用） */
   mono?: boolean
-} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>) {
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>>(function Input(
+  { value, onChange, type = 'text', placeholder = '', className = '', mono = false, ...props },
+  ref,
+) {
   return (
     <input
+      ref={ref}
       type={type}
       value={value}
       onChange={(e) => onChange(e.target.value)}
@@ -403,7 +407,7 @@ export function Input({ value, onChange, type = 'text', placeholder = '', classN
       {...props}
     />
   )
-}
+})
 
 /**
  * 多行文本输入 — 默认 sans

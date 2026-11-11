@@ -124,9 +124,9 @@ pub struct GitOperationResponse {
     pub message: String,
 }
 
-struct GitOutput {
-    stdout: String,
-    stderr: String,
+pub(super) struct GitOutput {
+    pub(super) stdout: String,
+    pub(super) stderr: String,
 }
 
 // ---- 进程执行 ----
@@ -240,7 +240,7 @@ fn run_with_timeout(
     })
 }
 
-fn trim_output(bytes: &[u8]) -> String {
+pub(super) fn trim_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim().to_string()
 }
 
@@ -425,7 +425,7 @@ fn parse_status_porcelain_v2(raw: &[u8]) -> (String, String, i32, i32, i32, Vec<
     (head, upstream, ahead, behind, stash_count, entries)
 }
 
-fn git_status_sync(workdir: &str) -> Result<GitRepoState, String> {
+pub(super) fn git_status_sync(workdir: &str) -> Result<GitRepoState, String> {
     let workdir = workdir.trim();
     let Some(repo_root) = discover_repo(workdir)? else {
         return Ok(not_repo_state(workdir));
@@ -471,7 +471,7 @@ fn git_status_sync(workdir: &str) -> Result<GitRepoState, String> {
     })
 }
 
-fn ensure_ready_state(workdir: &str) -> Result<GitRepoState, String> {
+pub(super) fn ensure_ready_state(workdir: &str) -> Result<GitRepoState, String> {
     let state = git_status_sync(workdir)?;
     if state.status == "ready" {
         Ok(state)
@@ -1092,7 +1092,7 @@ pub async fn dock_git_branches(workdir: String) -> Result<GitBranchesResponse, S
 // ---- 变更操作 ----
 
 /// 操作结束后重跑 status，把最新仓库状态一并返回给前端。
-fn operation_response(
+pub(super) fn operation_response(
     workdir: &str,
     result: Result<GitOutput, String>,
     success_message: &str,
@@ -1322,7 +1322,7 @@ fn git_commit_sync(workdir: &str, message: String) -> Result<GitOperationRespons
 
 dock_git_mutation!(dock_git_commit, git_commit_sync, (message: String));
 
-fn git_push_sync(workdir: &str) -> Result<GitOperationResponse, String> {
+pub(super) fn git_push_sync(workdir: &str) -> Result<GitOperationResponse, String> {
     let state = ensure_ready_state(workdir)?;
     let result = if !state.upstream.is_empty() {
         git_success(&state.repo_root, &["push"])
@@ -1476,7 +1476,7 @@ pub(crate) fn staged_change_context(workdir: &str) -> Result<Option<(String, Str
 
 const GH_TIMEOUT_SECS: u64 = 120;
 
-fn run_gh(workdir: &str, args: &[&str]) -> Result<Output, String> {
+pub(super) fn run_gh(workdir: &str, args: &[&str]) -> Result<Output, String> {
     let mut command = Command::new("gh");
     command.env("GH_PROMPT_DISABLED", "1").env("NO_COLOR", "1");
     run_with_timeout(command, workdir, args, GH_TIMEOUT_SECS, "gh")

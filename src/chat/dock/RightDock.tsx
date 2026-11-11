@@ -1,25 +1,27 @@
-// Right Dock 容器：tab 条（文件树 / Git / 终端 / 任务）+ 常驻面板 + 左缘拖拽调宽 + 折叠滑出。
+// Right Dock 容器：tab 条（文件树 / Git / PR / 终端 / 任务）+ 常驻面板 + 左缘拖拽调宽 + 折叠滑出。
 // 宽度通过 CSS 变量 --chat-dock-width 直写（拖拽过程不触发 React 重渲），松手才持久化。
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
-import { Activity, FolderTree, GitBranch, Plus, Terminal, X } from 'lucide-react'
+import { Activity, FolderTree, GitBranch, GitPullRequest, Plus, Terminal, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
 import { FileTreePanel } from './FileTreePanel'
 import { GitPanel } from './GitPanel'
+import { PullRequestsPanel } from './PullRequestsPanel'
 import { TerminalPanel } from './TerminalPanel'
 import { BackgroundTasksPanel } from './BackgroundTasksPanel'
 import { SidebarToggleIcon } from '../SidebarToggleIcon'
 import { SubagentSidebar } from '../AgentHub'
 import type { DockSubagent } from './dockPreview'
 
-export type DockTab = 'files' | 'git' | 'terminal' | 'tasks'
+export type DockTab = 'files' | 'git' | 'pulls' | 'terminal' | 'tasks'
 export type DockOpenTabRequest = { tab: DockTab }
 
 // 启动页入口：单键直达（仅启动页可见时生效，输入框内不拦截）。
 const DOCK_ENTRIES = [
   { tab: 'files', key: 'f', icon: FolderTree, label: 'dockTabFiles' },
   { tab: 'git', key: 'g', icon: GitBranch, label: 'dockTabGit' },
+  { tab: 'pulls', key: 'p', icon: GitPullRequest, label: 'dockTabPullRequests' },
   { tab: 'terminal', key: 't', icon: Terminal, label: 'dockTabTerminal' },
   { tab: 'tasks', key: 'k', icon: Activity, label: 'dockTabTasks' },
 ] as const
@@ -139,6 +141,7 @@ export const RightDock = memo(function RightDock({
   const shown = showLauncher ? null : activeTab
   const filesActive = open && shown === 'files'
   const gitActive = open && shown === 'git'
+  const pullsActive = open && shown === 'pulls'
   const terminalActive = open && shown === 'terminal'
   const selectedSubagent = open && shown === 'tasks' && subagent?.conversationId === conversationId ? subagent : null
   // 代码提前加载，PTY 和画布只在首次真正打开终端时创建，之后切标签保留会话。
@@ -267,7 +270,7 @@ export const RightDock = memo(function RightDock({
         </div>
       )}
 
-      {/* 文件 / Git / 终端保留面板；后台任务仅在任务页可见时读取。 */}
+      {/* 文件 / Git / PR / 终端保留面板；后台任务仅在任务页可见时读取。 */}
       <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'files'}>
         <FileTreePanel
           workdir={workdir}
@@ -283,6 +286,9 @@ export const RightDock = memo(function RightDock({
       </div>
       <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'git'}>
         <GitPanel workdir={workdir} active={gitActive} lang={lang} onRevealInTree={onRevealInTree} />
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'pulls'}>
+        <PullRequestsPanel workdir={workdir} active={pullsActive} lang={lang} />
       </div>
       <div className="flex min-h-0 flex-1 flex-col" hidden={shown !== 'terminal'}>
         {terminalMounted && (

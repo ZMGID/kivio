@@ -12,6 +12,8 @@ import {
   normalizeGitLogResult,
   normalizeGitMutationResult,
   normalizeGitRepoState,
+  normalizePullRequestDetail,
+  normalizePullRequestList,
   type DockFsEntryKind,
   type DockFsListResult,
   type DockFsMutationResult,
@@ -24,6 +26,9 @@ import {
   type GitMutationResult,
   type GitRepoState,
   type GitSnapshot,
+  type PullRequestDetail,
+  type PullRequestList,
+  type PullRequestStateFilter,
 } from '../../api/dockContracts'
 
 const MOCK_NOT_REPO: GitRepoState = {
@@ -293,5 +298,32 @@ export const dockApi = {
   async gitAddToGitignore(workdir: string, path: string): Promise<GitMutationResult> {
     if (!isTauriRuntime()) return MOCK_MUTATION
     return normalizeGitMutationResult(await invoke('dock_git_add_to_gitignore', { workdir, path }))
+  },
+
+  // ---- 拉取请求（GitHub CLI）----
+
+  /** 一页 PR；不带 after 时同时返回当前分支的 PR。gh 不可用等情况通过 status 表达，不抛错。 */
+  async pullRequests(workdir: string, state: PullRequestStateFilter, after?: string | null): Promise<PullRequestList> {
+    if (!isTauriRuntime()) return normalizePullRequestList({ status: 'not_repo' })
+    return normalizePullRequestList(await invoke('dock_pr_list', { workdir, state, after: after ?? null }))
+  },
+
+  async pullRequestDetail(workdir: string, number: number): Promise<PullRequestDetail> {
+    if (!isTauriRuntime()) throw new Error('Pull requests require the desktop app')
+    return normalizePullRequestDetail(await invoke('dock_pr_detail', { workdir, number }))
+  },
+
+  async pullRequestCheckout(workdir: string, number: number): Promise<GitMutationResult> {
+    if (!isTauriRuntime()) return MOCK_MUTATION
+    return normalizeGitMutationResult(await invoke('dock_pr_checkout', { workdir, number }))
+  },
+
+  /** 为当前分支创建 PR；远端缺分支或有未推送提交时后端先推送。返回新 PR 链接。 */
+  async pullRequestCreate(
+    workdir: string,
+    input: { title: string; body: string; base: string; draft: boolean },
+  ): Promise<{ url: string }> {
+    if (!isTauriRuntime()) throw new Error('Pull requests require the desktop app')
+    return invoke<{ url: string }>('dock_pr_create', { workdir, ...input })
   },
 }
