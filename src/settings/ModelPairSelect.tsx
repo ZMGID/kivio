@@ -1,4 +1,5 @@
 import { type ModelProvider } from '../api/tauri'
+import { useT } from '../components/i18n'
 import { Select } from './components'
 import { buildModelPairOptions, modelPairValue, parseModelPairValue } from './utils'
 
@@ -26,6 +27,7 @@ export function ModelPairSelect({
   ariaLabel,
   filterModel,
 }: ModelPairSelectProps) {
+  const t = useT()
   const filtered = buildModelPairOptions(providers, filterModel)
   // 当前已选模型若被筛掉（如老配置选了非生图模型），仍补进选项，避免显示空白。
   const currentValue = modelPairValue(providerId, model)
@@ -35,7 +37,9 @@ export function ModelPairSelect({
   const currentLabel = providers.find(p => p.id === providerId)?.name
   const options = [
     ...(offOption ? [{ value: 'off', label: offOption.label }] : []),
-    ...(inheritLabel ? [{ value: modelPairValue('', ''), label: inheritLabel }] : []),
+    ...(inheritLabel
+      ? [{ value: modelPairValue('', ''), label: inheritLabel }]
+      : !providerId && !model ? [{ value: currentValue, label: t.chatSelectModel, disabled: true }] : []),
     ...filtered,
     ...(hasCurrent
       ? []
@@ -46,6 +50,7 @@ export function ModelPairSelect({
     <Select
       className={className}
       ariaLabel={ariaLabel}
+      disabled={filtered.length === 0 && !inheritLabel && !offOption}
       value={offOption?.selected ? 'off' : currentValue}
       onChange={(value) => {
         if (value === 'off' && offOption) {

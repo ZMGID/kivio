@@ -143,7 +143,7 @@ pub struct OpenAIConfig {
     pub api_key: String,
     #[serde(default = "default_openai_base_url")]
     pub base_url: String,
-    #[serde(default = "default_openai_model")]
+    #[serde(default)]
     pub model: String,
 }
 
@@ -152,7 +152,7 @@ impl Default for OpenAIConfig {
         Self {
             api_key: "".to_string(),
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "gpt-4o".to_string(),
+            model: String::new(),
         }
     }
 }
@@ -473,7 +473,7 @@ pub struct ScreenshotTranslationConfig {
     pub replace_enabled: bool,
     #[serde(default)]
     pub provider_id: String,
-    #[serde(default = "default_openai_model")]
+    #[serde(default)]
     pub model: String,
     #[serde(default = "default_false")]
     pub direct_translate: bool,
@@ -530,8 +530,8 @@ impl Default for ScreenshotTranslationConfig {
             text_hotkey: default_screenshot_translation_text_hotkey(),
             replace_hotkey: default_screenshot_translation_replace_hotkey(),
             replace_enabled: true,
-            provider_id: "default-ocr".to_string(),
-            model: "gpt-4o".to_string(),
+            provider_id: String::new(),
+            model: String::new(),
             direct_translate: false,
             thinking_enabled: false,
             stream_enabled: true,
@@ -2096,7 +2096,7 @@ pub struct Settings {
     pub chat_completion_notifications: bool,
     #[serde(default)]
     pub translator_provider_id: String,
-    #[serde(default = "default_openai_model")]
+    #[serde(default)]
     pub translator_model: String,
     #[serde(default)]
     pub chat_provider_id: String,
@@ -2294,8 +2294,8 @@ impl Default for Settings {
             launch_minimized_to_tray: false,
             keep_chat_window_alive: false,
             chat_completion_notifications: false,
-            translator_provider_id: "default-translator".to_string(),
-            translator_model: "gpt-4o".to_string(),
+            translator_provider_id: String::new(),
+            translator_model: String::new(),
             chat_provider_id: String::new(),
             chat_model: String::new(),
             default_models: DefaultModelsConfig::default(),
@@ -2490,7 +2490,11 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
                 api_key_legacy: None,
                 base_url: old_openai.base_url,
                 available_models: vec![],
-                enabled_models: vec![old_openai.model.clone()],
+                enabled_models: if old_openai.model.is_empty() {
+                    vec![]
+                } else {
+                    vec![old_openai.model.clone()]
+                },
                 enabled: true,
                 api_format: "openai".to_string(),
                 model_overrides: std::collections::HashMap::new(),
@@ -2516,7 +2520,11 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
                 api_key_legacy: None,
                 base_url: old_ocr.base_url,
                 available_models: vec![],
-                enabled_models: vec![old_ocr.model.clone()],
+                enabled_models: if old_ocr.model.is_empty() {
+                    vec![]
+                } else {
+                    vec![old_ocr.model.clone()]
+                },
                 enabled: true,
                 api_format: "openai".to_string(),
                 model_overrides: std::collections::HashMap::new(),
@@ -2734,9 +2742,12 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
 
     if settings.providers.is_empty() {
         settings.translator_provider_id.clear();
+        settings.translator_model.clear();
         settings.default_models = DefaultModelsConfig::default();
         settings.screenshot_translation.provider_id.clear();
+        settings.screenshot_translation.model.clear();
         settings.lens.provider_id.clear();
+        settings.lens.model.clear();
         settings.chat_tools.sub_agent_models.clear();
     } else {
         if !provider_selectable(&settings.translator_provider_id) {
@@ -3872,10 +3883,6 @@ fn default_target_lang() -> String {
 
 fn default_openai_base_url() -> String {
     "https://api.openai.com/v1".to_string()
-}
-
-fn default_openai_model() -> String {
-    "gpt-4o".to_string()
 }
 
 fn default_settings_language() -> Option<String> {
