@@ -1429,6 +1429,36 @@ pub struct ChatProtocolHub {
 }
 
 impl ChatProtocolHub {
+    /// The live run that dispatched a sub-agent: its own run, or the live run whose
+    /// message holds the dispatching `task` call. Lifecycle events never move into a
+    /// later, unrelated run; once the dispatching turn ended there is no live owner.
+    fn dispatching_run(
+        &self,
+        conversation_id: &str,
+        origin_run_id: &str,
+        dispatch_call: &str,
+    ) -> Option<String> {
+        self.runs
+            .values()
+            .filter(|run| {
+                run.snapshot.conversation_id == conversation_id && run.terminal_at.is_none()
+            })
+            .find(|run| {
+                run.snapshot.run_id == origin_run_id
+                    || run
+                        .snapshot
+                        .tools
+                        .iter()
+                        .any(|tool| tool.id == dispatch_call)
+                    || run
+                        .snapshot
+                        .segments
+                        .iter()
+                        .any(|item| item.tool_call_id.as_deref() == Some(dispatch_call))
+            })
+            .map(|run| run.snapshot.run_id.clone())
+    }
+
     /// Read the authoritative, already folded tool records of this exact live run.
     /// Goal validation must not wait for the assistant's final message to be saved.
     pub(crate) fn running_snapshot(
@@ -2386,22 +2416,10 @@ fn place_subagent_activity(
             }
         }
     }
-    let mut active = hub
-        .runs
-        .values()
-        .filter(|run| run.snapshot.conversation_id == conversation_id && run.terminal_at.is_none());
-    let run_id = if let Some(origin) = active
-        .clone()
-        .find(|run| run.snapshot.run_id == origin_run_id)
-    {
-        origin.snapshot.run_id.clone()
-    } else {
-        let only = active.next()?;
-        if active.next().is_some() {
-            return None;
-        }
-        only.snapshot.run_id.clone()
+    let ChatMessageSegmentKind::Subagent(entry) = &segment.kind else {
+        return None;
     };
+    let run_id = hub.dispatching_run(conversation_id, origin_run_id, &entry.parent_tool_call_id)?;
     if let Some(envelope) = hub.flush_pending_delta(&run_id) {
         emit_protocol(app, ChatProtocolEvent::Run(envelope));
     }
@@ -2512,6 +2530,30 @@ pub(crate) fn capture_subagent_activity(
     })
 }
 
+/// Stored message that owns the dispatching `task` call; the latest visible message
+/// only when that call is not stored yet.
+fn dispatching_message_id(
+    messages: &[crate::chat::ChatMessage],
+    dispatch_call: &str,
+) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find(|message| {
+            message
+                .tool_calls
+                .iter()
+                .any(|call| call.id == dispatch_call)
+        })
+        .or_else(|| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| !message.id.starts_with("subagent-result-"))
+        })
+        .map(|message| message.id.clone())
+}
+
 async fn save_subagent_activity(
     app: &AppHandle,
     conversation_id: &str,
@@ -2535,15 +2577,11 @@ async fn save_subagent_activity(
                     .map(|message| message.id.clone())
                     .or(message_id)
                     .or_else(|| {
-                        if let ChatMessageSegmentKind::Subagent(entry) = &mut segment.kind {
-                            entry.after_order = Some(u32::MAX);
-                        }
-                        conversation
-                            .messages
-                            .iter()
-                            .rev()
-                            .find(|message| !message.id.starts_with("subagent-result-"))
-                            .map(|message| message.id.clone())
+                        let ChatMessageSegmentKind::Subagent(entry) = &mut segment.kind else {
+                            return None;
+                        };
+                        entry.after_order = Some(u32::MAX);
+                        dispatching_message_id(&conversation.messages, &entry.parent_tool_call_id)
                     });
                 if let Some(message_id) = message_id {
                     target_message = Some(message_id.clone());
@@ -2918,6 +2956,58 @@ pub async fn chat_sync_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subagent_lifecycle_stays_with_the_dispatching_turn() {
+        let tool = |id: &str| -> ChatRunEvent {
+            serde_json::from_value(serde_json::json!({
+                "type":"tool_updated",
+                "tool":{"id":id,"name":"task","source":"native","serverId":null,"status":"running",
+                    "argumentsPreview":"{}","resultPreview":null,"error":null,"startedAt":null,
+                    "completedAt":null,"durationMs":null,"round":1,"sensitive":false,"artifacts":[],
+                    "traceId":null,"spanId":null,"structuredContent":null}
+            }))
+            .unwrap()
+        };
+        let mut hub = ChatProtocolHub::default();
+        hub.register("conv", "first", "first-message", 0).unwrap();
+        hub.push("first", tool("dispatch")).unwrap();
+        assert_eq!(
+            hub.dispatching_run("conv", "first", "dispatch").as_deref(),
+            Some("first")
+        );
+        // A continuation under a new run id still owns the message with the task call.
+        assert_eq!(
+            hub.dispatching_run("conv", "retired", "dispatch")
+                .as_deref(),
+            Some("first")
+        );
+        hub.runs.get_mut("first").unwrap().terminal_at = Some(Instant::now());
+        hub.register("conv", "second", "second-message", 0).unwrap();
+        assert_eq!(
+            hub.dispatching_run("conv", "first", "dispatch"),
+            None,
+            "an unrelated later turn must not adopt the finish event"
+        );
+
+        let messages: Vec<crate::chat::ChatMessage> = serde_json::from_value(serde_json::json!([
+            {"id":"user-1","role":"user","content":"start","timestamp":1},
+            {"id":"first-message","role":"assistant","content":"started","timestamp":2,
+             "tool_calls":[{"id":"dispatch","name":"task","arguments":"{}","status":"success"}]},
+            {"id":"user-2","role":"user","content":"next","timestamp":3},
+            {"id":"second-message","role":"assistant","content":"later","timestamp":4},
+            {"id":"subagent-result-x","role":"assistant","content":"report","timestamp":5}
+        ]))
+        .unwrap();
+        assert_eq!(
+            dispatching_message_id(&messages, "dispatch").as_deref(),
+            Some("first-message")
+        );
+        assert_eq!(
+            dispatching_message_id(&messages, "unknown").as_deref(),
+            Some("second-message")
+        );
+    }
 
     #[test]
     fn protocol_owner_exposes_only_matching_live_run_snapshot() {
