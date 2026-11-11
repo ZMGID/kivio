@@ -8,7 +8,7 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState }
 import { createPortal } from 'react-dom'
 import CursorIcon from '@lobehub/icons/es/Cursor/components/Mono'
 import WindsurfIcon from '@lobehub/icons/es/Windsurf/components/Mono'
-import { Activity, ArrowDown, ArrowUp, Bot, Check, ChevronRight, CloudDownload, CloudUpload, Code2, FileDiff, FolderGit2, GitBranch, GitCommitHorizontal, Globe, Laptop, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu, TerminalSquare } from 'lucide-react'
+import { Activity, ArrowDown, ArrowUp, Check, ChevronRight, CloudDownload, CloudUpload, Code2, FileDiff, FolderGit2, GitBranch, GitCommitHorizontal, Globe, Laptop, Loader2, Monitor, SlidersHorizontal, Square, SquareMenu } from 'lucide-react'
 import { IconButton } from '../../components/Button'
 import { notifyError } from '../../components/appNoticeStore'
 import { i18n, type Lang } from '../../components/i18n'
@@ -24,6 +24,7 @@ import { PANEL_ICON, PANEL_SCOPE_ATTR, PanelRow, PanelSection, PanelSkeletonRows
 import { motionClass, usePresence } from './workspacePanelMotion'
 import { requestDockSubagent } from './dockPreview'
 import { AgentAvatar } from '../AgentAvatar'
+import { BackgroundTaskIcon } from './BackgroundTaskIcon'
 import { AgentStatus } from '../AgentProgress'
 import { useSubagentRoster } from '../useSubagentRoster'
 import { subagentsApi, type SubagentView } from '../../api/subagents'
@@ -85,7 +86,6 @@ function WorkspaceTaskRow({ task, conversationId, lang, onOpen }: {
   const t = i18n[lang]
   const [stopping, setStopping] = useState(false)
   const running = task.status === 'running'
-  const Icon = task.kind === 'local_agent' || task.kind === 'remote_agent' ? Bot : TerminalSquare
   const status = task.status === 'completed' ? t.chatBgStatusCompleted
     : task.status === 'failed' ? t.chatBgStatusFailed : t.chatBgStatusStopped
   const stop = async () => {
@@ -95,7 +95,7 @@ function WorkspaceTaskRow({ task, conversationId, lang, onOpen }: {
     finally { setStopping(false) }
   }
   return <div className="group/task flex items-center">
-    <PanelRow icon={<Icon className={PANEL_ICON} />} title={[task.title, task.summary].filter(Boolean).join('\n')} onClick={onOpen}>
+    <PanelRow icon={<BackgroundTaskIcon kind={task.kind} className={PANEL_ICON} />} title={[task.title, task.summary].filter(Boolean).join('\n')} onClick={onOpen}>
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate leading-4">{task.title}</span>
         {task.summary && <span className="truncate text-[11px] font-normal leading-4 text-neutral-400">{task.summary}</span>}

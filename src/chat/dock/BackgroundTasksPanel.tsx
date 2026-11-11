@@ -1,6 +1,6 @@
 // Background tasks 面板：内置 run_command 后台作业 + 外部 CLI（claude）自报的后台任务。
 // Running（可停止）/ Finished（可清空）两段，2.5s 轮询；inactive 时停轮询（同兄弟面板惯例）。
-import { Bot, Square, TerminalSquare } from 'lucide-react'
+import { Square } from 'lucide-react'
 import { api, type BackgroundTaskInfo } from '../../api/tauri'
 import { i18n, type Lang } from '../../components/i18n'
 import { notifyError } from '../../components/appNoticeStore'
@@ -8,11 +8,10 @@ import { formatTaskElapsed, partitionTasks } from '../backgroundTasks'
 import { stopBackgroundTask, updateBackgroundTasks, useBackgroundTasks } from '../useBackgroundTasks'
 import { SubagentTaskList } from '../AgentHub'
 import { useSubagentRoster } from '../useSubagentRoster'
+import { BackgroundTaskIcon } from './BackgroundTaskIcon'
 
 function TaskGlyph({ kind }: { kind: string }) {
-  const isAgent = kind === 'local_agent' || kind === 'remote_agent'
-  const Icon = isAgent ? Bot : TerminalSquare
-  return <Icon size={14} strokeWidth={1.8} className="mt-0.5 shrink-0 text-neutral-400" />
+  return <BackgroundTaskIcon kind={kind} size={14} strokeWidth={1.8} className="mt-0.5 shrink-0 text-neutral-400" />
 }
 
 type BackgroundTasksPanelProps = {

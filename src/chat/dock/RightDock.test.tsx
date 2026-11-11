@@ -201,19 +201,25 @@ describe('RightDock tabs', () => {
       id: 'external-1', source: 'external', kind: 'local_agent', title: 'Indexer',
       status: 'running', elapsedSecs: 2, startedAtMs: 2, conversationId: 'conv-1',
     }
+    const codex: BackgroundTaskInfo = { ...external, id: 'external-2', kind: 'codex_agent', title: 'architecture' }
     const finished: BackgroundTaskInfo = { ...command, id: 'finished-1', title: 'Older task', status: 'completed' }
-    vi.mocked(api.chatListBackgroundTasks).mockResolvedValue([command, external, finished])
+    vi.mocked(api.chatListBackgroundTasks).mockResolvedValue([command, external, codex, finished])
     render(<RightDock {...dockProps({ activeTab: 'tasks' })} />)
     expect(api.chatListBackgroundTasks).not.toHaveBeenCalled()
     fireEvent.click(screen.getByText('任务'))
     expect(await screen.findByText('node server.js')).toBeVisible()
     expect(screen.getByText('Indexer')).toBeVisible()
     expect(screen.getByText('Older task')).toBeVisible()
+    const taskRow = (title: string) => screen.getByText(title).parentElement!.parentElement!
+    expect(taskRow('architecture').querySelector('title')).toHaveTextContent('OpenAI')
+    expect(taskRow('Indexer').querySelector('.lucide-bot')).not.toBeNull()
 
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '终止 node server.js' })) })
     expect(api.chatKillBackgroundCommand).toHaveBeenCalledWith('command-1')
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '终止 Indexer' })) })
     expect(api.chatStopExternalBackgroundTask).toHaveBeenCalledWith('conv-1', 'external-1')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '终止 architecture' })) })
+    expect(api.chatStopExternalBackgroundTask).toHaveBeenCalledWith('conv-1', 'external-2')
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '清空' })) })
     expect(api.chatClearFinishedBackgroundTasks).toHaveBeenCalledWith('conv-1')
     expect(screen.getByText('没有后台任务。agent 后台运行的命令和子代理会出现在这里。')).toBeVisible()
