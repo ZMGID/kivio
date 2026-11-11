@@ -89,13 +89,14 @@ describe('tool activity in the message timeline', () => {
     const task: ToolCallRecord = { id: 'task', source: 'native', name: 'task', status: 'success',
       arguments: { context: 'Shared', tasks: [{ name: 'Research', task: 'Inspect', solutionSpace: 'Read' }] } }
     const wait: ToolCallRecord = { id: 'wait', source: 'native', name: 'wait', status: 'running', arguments: {} }
-    const external: ToolCallRecord = { id: 'external', source: 'external_cli', name: 'Task', status: 'running', arguments: { description: 'CLI research' } }
+    const external: ToolCallRecord = { id: 'external', source: 'external_cli', name: 'delegate', status: 'running',
+      structured_content: { type: 'subagent', name: 'CLI research' } }
     const externalMessage: ToolCallRecord = { id: 'external-message', source: 'external_cli', name: 'SendMessage', status: 'completed' }
     const mcpTask: ToolCallRecord = { id: 'mcp', source: 'mcp', name: 'task', status: 'completed' }
     const { container } = render(<MessageBubble message={message([read, task, wait, external, externalMessage, mcpTask, command])} messageStreaming />)
     expect(screen.queryByRole('button', { name: 'Research 已派工' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /等待子代理/ })).not.toBeInTheDocument()
-    expect(screen.getByText('SUBAGENT').closest('[data-tool-call-cluster]')).toBeNull()
+    expect(screen.getByRole('button', { name: 'CLI research 开始工作' }).closest('[data-tool-call-cluster]')).toBeNull()
     expect(screen.getByText('SendMessage').closest('[data-tool-call-cluster]')).toBeNull()
     expect(container.querySelectorAll('[data-tool-call-cluster]')).toHaveLength(2)
   })

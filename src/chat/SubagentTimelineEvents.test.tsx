@@ -11,6 +11,40 @@ beforeEach(() => {
 })
 const receiptDialog = () => within(screen.getByRole('dialog'))
 
+it('shows a resumed Claude subagent through its new result without converting ordinary messages', () => {
+  const call: ToolCallRecord = {
+    id: 'send', source: 'external_cli', name: 'SendMessage', status: 'running',
+    arguments: { to: 'child', message: 'Review the second change' },
+  }
+  const { rerender } = render(<ToolCallBlock toolCall={call} />)
+  expect(screen.queryByRole('button', { name: /开始工作/ })).not.toBeInTheDocument()
+  const resumed: ToolCallRecord = { ...call,
+    structured_content: { resumedSubagent: { taskId: 'child', name: 'Reviewer' } },
+  }
+  rerender(<ToolCallBlock toolCall={resumed} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Reviewer 开始工作' }))
+  expect(receiptDialog().getByText('Review the second change')).toBeVisible()
+  const completed = mergeSubagentProgress(resumed, {
+    parentConversationId: 'conv', parentRunId: 'run', parentToolCallId: 'send',
+    taskId: 'child', name: 'Reviewer', depth: 1, status: 'completed', preview: 'The "resumedAgentId" field is correct',
+  })
+  rerender(<ToolCallBlock toolCall={completed} />)
+  expect(screen.getByRole('button', { name: 'Reviewer 已完成' })).toBeVisible()
+  expect(receiptDialog().getByText('The "resumedAgentId" field is correct')).toBeVisible()
+})
+
+it('explains missing historical results without claiming the child is running or completed', () => {
+  render(<ToolCallBlock toolCall={{
+    id: 'old', source: 'external_cli', name: 'Agent', status: 'success',
+    arguments: { description: 'Old worker', prompt: 'Inspect source' },
+    result_preview: 'Async agent launched successfully. agentId: old-child',
+  }} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Old worker 开始工作' }))
+  expect(receiptDialog().getByText('这条旧记录没有保存后台子代理的结果，无法确认完成状态。')).toBeVisible()
+  expect(receiptDialog().queryByText(/运行中|已完成|Async agent launched/)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Old worker 已完成' })).not.toBeInTheDocument()
+})
+
 it('keeps dispatch placeholders out of the timeline before and after admission', () => {
   const toolCall: ToolCallRecord = {
     id: 'task', source: 'native', name: 'task', status: 'running',

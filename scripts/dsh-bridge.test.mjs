@@ -15,6 +15,7 @@ function fixture(preset = 'standard', previous = { provider: 'deepseek-official'
       }
     },
     Buffer,
+    carrierKeyOf: carrier => carrier?.parent,
     createUserMessage: message => ({ ...message, id: 'message-1' }),
     process: { env: { DSH_AGENT_PRESET: preset, DSH_PERMISSION_MODE: 'read-only' } },
     console,
@@ -200,4 +201,26 @@ test('native job cancellation failures are reported without trying another targe
   server.ctx.subagents = { interrupt: () => { interrupted = true } }
   await assert.rejects(server.stopJob({ sessionId: agent.id, jobId: 'bash-1' }), /kill failed/)
   assert.equal(interrupted, false)
+})
+
+
+test('subagent lifecycle preserves exact parent, child and run identity', () => {
+  const { server } = fixture()
+  const listeners = new Map(), sent = []
+  server.ctx.on = (name, listener) => { listeners.set(name, listener); return () => listeners.delete(name) }
+  server.transport = { notify: (method, params) => sent.push({ method, ...params }) }
+  const dispose = server.subscribeSubagentLifecycle()
+  const carrier = { parent: { session: { id: 'parent-a' } } }
+  listeners.get('subagent/start').call(carrier, { id: 'child-b', runId: 'run-2', provider: 'local', local: true })
+  listeners.get('subagent/end').call(carrier, { id: 'child-b', runId: 'run-1', stopReason: 'cancelled' })
+  listeners.get('subagent/start').call({}, { id: 'foreign', runId: 'other' })
+  assert.equal(sent.length, 2)
+  assert.equal(sent[0].parentSessionId, 'parent-a')
+  assert.equal(sent[0].childSessionId, 'child-b')
+  assert.equal(sent[0].runId, 'run-2')
+  assert.equal(sent[1].runId, 'run-1')
+  assert.equal(sent[1].stopReason, 'cancelled')
+  assert.equal(sent[0].method, 'kivio/subagent.started')
+  dispose()
+  assert.equal(listeners.size, 0)
 })

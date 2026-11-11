@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1388,6 +1388,138 @@ struct AcpUpdateState {
     thought: AcpTextAssembler,
     emitted_tools: HashSet<String>,
     context_tokens: Option<u64>,
+    children: HashMap<String, AcpChildState>,
+}
+
+#[derive(Default)]
+struct AcpChildState {
+    text: AcpTextAssembler,
+    thought: AcpTextAssembler,
+    steps: Vec<String>,
+    tool_call_id: Option<String>,
+    finished: bool,
+}
+
+impl AcpChildState {
+    fn emit_progress(&self, sink: &mut dyn FnMut(UnifiedAgentEvent)) {
+        if self.finished {
+            return;
+        }
+        if let Some(task_id) = &self.tool_call_id {
+            let preview = if self.text.current.is_empty() {
+                &self.thought.current
+            } else {
+                &self.text.current
+            };
+            sink(UnifiedAgentEvent::SubagentProgress {
+                task_id: task_id.clone(),
+                status: "running".to_string(),
+                preview: head_chars(preview, 4000),
+                steps: self.steps.clone(),
+            });
+        }
+    }
+}
+
+pub(crate) fn is_acp_child_update(update: &serde_json::Map<String, Value>) -> bool {
+    update
+        .get("_meta")
+        .and_then(Value::as_object)
+        .is_some_and(|meta| meta.contains_key("opencode/child-session"))
+}
+
+fn route_acp_child_update(
+    update: &serde_json::Map<String, Value>,
+    state: &mut AcpUpdateState,
+    sink: &mut dyn FnMut(UnifiedAgentEvent),
+) -> bool {
+    if is_acp_child_update(update) {
+        let Some(id) = update
+            .get("_meta")
+            .and_then(|meta| meta.get("opencode/child-session"))
+            .and_then(|child| child.get("id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            return true;
+        };
+        let child = state.children.entry(id.to_string()).or_default();
+        if child.finished {
+            return true;
+        }
+        match update.get("sessionUpdate").and_then(Value::as_str) {
+            Some("agent_message_chunk") => {
+                child.thought.on_boundary();
+                child.text.push_chunk(acp_update_text(update));
+            }
+            Some("agent_thought_chunk") => {
+                child.text.on_boundary();
+                child.thought.push_chunk(acp_update_text(update));
+            }
+            Some("tool_call") | Some("tool_call_update") => {
+                child.text.on_boundary();
+                child.thought.on_boundary();
+                if let Some(title) = update
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .filter(|title| !title.is_empty())
+                {
+                    if child.steps.last().map(String::as_str) != Some(title) {
+                        child.steps.push(head_chars(title, 240));
+                        if child.steps.len() > 20 {
+                            child.steps.remove(0);
+                        }
+                    }
+                }
+            }
+            _ => return true,
+        }
+        child.emit_progress(sink);
+        return true;
+    }
+    if !matches!(
+        update.get("sessionUpdate").and_then(Value::as_str),
+        Some("tool_call" | "tool_call_update")
+    ) {
+        return false;
+    }
+    let Some(tool_id) = update
+        .get("toolCallId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    else {
+        return false;
+    };
+    let metadata = update
+        .get("rawOutput")
+        .and_then(|output| output.get("metadata"));
+    if let Some(id) = metadata
+        .and_then(|meta| meta.get("sessionID"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
+        // 子会话可能先于派工回执到达；只用 sessionID 绑定，不能按标题或当前运行任务猜配。
+        let child = state.children.entry(id.to_string()).or_default();
+        child.tool_call_id = Some(tool_id.to_string());
+        child.emit_progress(sink);
+    }
+    let child_status = metadata
+        .and_then(|meta| meta.get("status"))
+        .and_then(Value::as_str);
+    let tool_status = update.get("status").and_then(Value::as_str);
+    let finished = matches!(child_status, Some("completed" | "failed" | "cancelled"))
+        || (child_status != Some("running")
+            && matches!(tool_status, Some("completed" | "failed" | "cancelled")));
+    if finished {
+        for child in state
+            .children
+            .values_mut()
+            .filter(|child| child.tool_call_id.as_deref() == Some(tool_id))
+        {
+            child.finished = true;
+        }
+    }
+    false
 }
 
 fn acp_update_text(update: &serde_json::Map<String, Value>) -> &str {
@@ -1442,6 +1574,13 @@ fn acp_apply_session_update_ex(
     terminals: Option<&AcpTerminalHost>,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) {
+    let mut child_progress = None;
+    if route_acp_child_update(update, state, &mut |event| child_progress = Some(event)) {
+        if let Some(event) = child_progress {
+            sink(event);
+        }
+        return;
+    }
     let session_update = update
         .get("sessionUpdate")
         .and_then(|v| v.as_str())
@@ -1508,10 +1647,19 @@ fn acp_apply_session_update_ex(
             // tool_call / tool_call_update 是消息边界:发出工具事件后,重置正文与思考游标,
             // 使其后到来的累积快照被识别为新消息起点。
             if apply_acp_session_update_ex(update, &mut state.emitted_tools, terminals, &mut |e| {
+                // 首次看见派工的可能就是结果帧：先创建工具，再补子会话进度，最后写终态。
+                if matches!(e, UnifiedAgentEvent::ToolResult { .. }) {
+                    if let Some(event) = child_progress.take() {
+                        sink(event);
+                    }
+                }
                 sink(e)
             }) {
                 state.text.on_boundary();
                 state.thought.on_boundary();
+            }
+            if let Some(event) = child_progress {
+                sink(event);
             }
         }
     }
@@ -4238,6 +4386,140 @@ mod tests {
             })
             .collect();
         (text, events)
+    }
+
+    #[test]
+    fn opencode_child_updates_stay_with_their_exact_parent_tool() {
+        let child = |id: &str, mut update: Value| {
+            update["_meta"] =
+                json!({"opencode/child-session": {"id": id, "parentID": "root", "depth": 1}});
+            update.as_object().unwrap().clone()
+        };
+        let finish = |id: &str, session: &str| {
+            json!({
+                "sessionUpdate": "tool_call_update", "toolCallId": id, "status": "completed",
+                "rawOutput": {"metadata": {"sessionID": session, "status": "completed"}},
+                "content": [{"type": "content", "content": {"type": "text", "text": "done"}}]
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        let (text, events) = run_updates(&[
+            msg_chunk("Root"),
+            tool_call_update("task-a"),
+            tool_call_update("task-b"),
+            child(
+                "a",
+                json!({"sessionUpdate":"agent_thought_chunk", "content":{"text":"private thought"}}),
+            ),
+            child(
+                "a",
+                json!({"sessionUpdate":"tool_call", "toolCallId":"a:read", "title":"Read A"}),
+            ),
+            child(
+                "b",
+                json!({"sessionUpdate":"agent_message_chunk", "content":{"text":"Answer B"}}),
+            ),
+            child(
+                "a",
+                json!({"sessionUpdate":"agent_message_chunk", "content":{"text":"Answer A"}}),
+            ),
+            child("a", json!({"sessionUpdate":"plan", "entries":[]})),
+            finish("task-b", "b"),
+            finish("task-a", "a"),
+            child(
+                "a",
+                json!({"sessionUpdate":"agent_message_chunk", "content":{"text":"late"}}),
+            ),
+            msg_chunk("Summary"),
+        ]);
+        assert_eq!(text, "RootSummary");
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            UnifiedAgentEvent::ThinkingDelta { .. } | UnifiedAgentEvent::TodoWrite { .. }
+        )));
+        let tools: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                UnifiedAgentEvent::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(tools.iter().all(|id| *id == "task-a" || *id == "task-b"));
+        let progress: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                UnifiedAgentEvent::SubagentProgress {
+                    task_id,
+                    preview,
+                    steps,
+                    ..
+                } => Some((task_id.as_str(), preview.as_str(), steps.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            progress,
+            vec![
+                ("task-b", "Answer B", vec![]),
+                ("task-a", "Answer A", vec!["Read A".to_string()])
+            ]
+        );
+        for id in ["task-a", "task-b"] {
+            let progress_at = events.iter().position(|e| matches!(e, UnifiedAgentEvent::SubagentProgress { task_id, .. } if task_id == id)).unwrap();
+            let result_at = events.iter().position(|e| matches!(e, UnifiedAgentEvent::ToolResult { tool_use_id, .. } if tool_use_id == id)).unwrap();
+            assert!(progress_at < result_at);
+        }
+    }
+
+    #[test]
+    fn opencode_child_progress_waits_for_tool_creation_and_ignores_malformed_metadata() {
+        let child = |text: &str| {
+            json!({"sessionUpdate":"agent_message_chunk", "content":{"text":text},
+            "_meta":{"opencode/child-session":{"id":"child"}}})
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        let link = |status: &str| {
+            json!({"sessionUpdate":"tool_call_update", "toolCallId":"task", "status":"completed",
+            "rawOutput":{"metadata":{"sessionID":"child", "status":status}}})
+            .as_object()
+            .unwrap()
+            .clone()
+        };
+        let (text, events) = run_updates(&[
+            child("A"),
+            link("running"),
+            child("AB"),
+            link("completed"),
+            child("late"),
+            json!({"sessionUpdate":"agent_message_chunk", "content":{"text":"malformed child"},
+                "_meta":{"opencode/child-session":null}})
+            .as_object()
+            .unwrap()
+            .clone(),
+        ]);
+        assert!(text.is_empty());
+        assert!(matches!(events[0], UnifiedAgentEvent::ToolUse { .. }));
+        let previews: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                UnifiedAgentEvent::SubagentProgress {
+                    task_id, preview, ..
+                } => {
+                    assert_eq!(task_id, "task");
+                    Some(preview.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(previews, ["A", "AB", "AB"]);
+        assert!(matches!(
+            events.last(),
+            Some(UnifiedAgentEvent::ToolResult { .. })
+        ));
     }
 
     #[test]

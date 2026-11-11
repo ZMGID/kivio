@@ -25,7 +25,6 @@ async fn offline_replay_dsh_two_prompts_and_disconnect_keep_native_delivery() {
             route: resolve_model_route_for_turn(None).unwrap(),
             context_window: None,
             map_state: MapSessionState::default(),
-            child_progress: HashMap::new(),
             idle_wake: IdleWakeState::default(),
             slash_commands: Vec::new(),
         };

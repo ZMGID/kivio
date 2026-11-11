@@ -832,6 +832,9 @@ pub fn parse_acp_updates(updates: &[Value]) -> Vec<ImportedMessage> {
     let mut pending = Pending::default();
 
     for update in updates {
+        if update.as_object().is_some_and(super::session::acp::is_acp_child_update) {
+            continue;
+        }
         let kind = update
             .get("sessionUpdate")
             .and_then(Value::as_str)
@@ -989,6 +992,27 @@ mod tests {
 
     fn jsonl(lines: &[&str]) -> String {
         lines.join("\n")
+    }
+
+    #[test]
+    fn acp_import_excludes_child_session_text_thought_and_tools() {
+        let meta = serde_json::json!({"opencode/child-session": {"id":"child", "parentID":"root"}});
+        let updates = vec![
+            serde_json::json!({"sessionUpdate":"agent_message_chunk", "content":{"text":"Parent"}}),
+            serde_json::json!({"sessionUpdate":"agent_message_chunk", "content":{"text":"Child"}, "_meta":meta}),
+            serde_json::json!({"sessionUpdate":"agent_thought_chunk", "content":{"text":"Child thought"}, "_meta":meta}),
+            serde_json::json!({"sessionUpdate":"tool_call", "toolCallId":"child:read", "title":"Child read", "_meta":meta}),
+        ];
+        let messages = parse_acp_updates(&updates);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].message.content, "Parent");
+        assert!(messages[0].message.tool_calls.is_empty());
+        assert!(messages[0]
+            .message
+            .reasoning
+            .as_deref()
+            .unwrap_or("")
+            .is_empty());
     }
 
     #[test]

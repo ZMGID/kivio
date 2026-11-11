@@ -222,25 +222,41 @@ export function isExternalSubagentToolCall(toolCall: ToolCallRecord): boolean {
     || name === 'ralph'
 }
 
-/** 画成子代理时间线行（不画工具卡）的外部 CLI 子代理：Codex 一个子线程一条记录（带
- *  `provider: "codex"`）；Claude Code 的 `Agent` / 旧版 `Task`，入参必有 `description` 与 `prompt`
- *  （Pi 的 BTW 也叫 `Agent`，但没有 `description`）；OpenCode 的 ACP 派工参数在 rawInput。 */
-export type LifecycleSubagentProvider = 'codex' | 'claude' | 'opencode'
+export type LifecycleSubagentProvider = 'codex' | 'claude' | 'opencode' | 'external'
+
+export function externalSubagentInput(toolCall: ToolCallRecord): Record<string, unknown> {
+  return { ...recordObject(toolCall.structured_content ?? toolCall.structuredContent), ...toolCallArgObject(toolCall) }
+}
+
+export function isExternalChildToolCall(toolCall: ToolCallRecord): boolean {
+  return toolCall.source === 'external_cli'
+    && Object.hasOwn(recordObject(externalSubagentInput(toolCall)._meta) ?? {}, 'opencode/child-session')
+}
 
 export function lifecycleSubagentProvider(toolCall: ToolCallRecord): LifecycleSubagentProvider | null {
-  if (toolCall.source !== 'external_cli') return null
+  if (toolCall.source !== 'external_cli' || isExternalChildToolCall(toolCall)) return null
   const name = foldedToolName(toolCall)
-  const args = toolCallArgObject(toolCall)
+  const args = externalSubagentInput(toolCall)
   if (name === 'subagent' && args?.provider === 'codex') return 'codex'
   if (args?.sessionUpdate === 'tool_call' || args?.sessionUpdate === 'tool_call_update') {
-    if (recordObject(args._meta)?.['opencode/child-session']) return null
     const tool = recordString(args.name) || recordString(args.toolName) || name
     if (args.kind === 'think' && tool === 'subagent') return 'opencode'
-    return null
+    if (args.kind && args.kind !== 'think') return null
   }
   if ((name === 'agent' || name === 'task')
     && typeof args?.description === 'string' && typeof args.prompt === 'string') return 'claude'
-  return null
+  // `SendMessage` 继续已有子代理：后端在任务开工时记下 `resumedSubagent`；其他 SendMessage 仍是普通工具。
+  if (name === 'sendmessage' && resumedSubagentName(toolCall) !== null) return 'claude'
+  return isExternalSubagentToolCall(toolCall) || args.type === 'subagent' || recordObject(args.subagentProgress)
+    ? 'external' : null
+}
+
+/** `SendMessage` 卡继续的那个子代理的名字；不是继续子代理时为 `null`。 */
+export function resumedSubagentName(toolCall: ToolCallRecord): string | null {
+  const structured = recordObject(toolCall.structured_content ?? toolCall.structuredContent)
+  const resumed = recordObject(structured?.resumedSubagent)
+  if (!resumed || !recordString(resumed.taskId)) return null
+  return recordString(resumed.name)
 }
 
 export function isNativeTaskToolCall(toolCall: ToolCallRecord): boolean {

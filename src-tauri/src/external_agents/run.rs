@@ -3455,7 +3455,7 @@ fn apply_idle_dsh_event(
                 preview.clone(),
                 steps.clone(),
             );
-            persist_subagent_card(
+            tauri::async_runtime::spawn(persist_subagent_card(
                 app.clone(),
                 conversation_id.to_string(),
                 SubagentCardKey::Task(task_id),
@@ -3464,7 +3464,7 @@ fn apply_idle_dsh_event(
                 steps,
                 None,
                 identity.clone(),
-            );
+            ));
         }
         UnifiedAgentEvent::SlashCommands { commands } => {
             let key = crate::external_agents::workspace::resolve_detection_cwd(
@@ -3483,7 +3483,7 @@ fn apply_idle_dsh_event(
 
 /// 轮间到达的子代理卡更新怎么对应到卡。
 enum SubagentCardKey {
-    /// dsh：只有任务 / 子会话 id，对不上时可以归到唯一一张运行中的卡。
+    /// dsh / codex：精确匹配任务或子会话 id。
     Task(String),
     /// claude：任务帧直接带派出它的 `tool_use_id`，只认这一张卡。
     LaunchedBy(String),
@@ -3534,7 +3534,7 @@ fn update_subagent_card_between_turns(
         preview.clone(),
         Vec::new(),
     );
-    persist_subagent_card(
+    tauri::async_runtime::spawn(persist_subagent_card(
         app.clone(),
         conversation_id.to_string(),
         key,
@@ -3543,7 +3543,7 @@ fn update_subagent_card_between_turns(
         Vec::new(),
         summary,
         identity.clone(),
-    );
+    ));
 }
 
 fn emit_live_subagent_progress(
@@ -3580,7 +3580,18 @@ fn emit_live_subagent_progress(
     );
 }
 
-fn persist_subagent_card(
+/// 一次子代理卡更新的内容（轮间写回用）。
+struct SubagentCardUpdate {
+    status: String,
+    preview: String,
+    steps: Vec<String>,
+    summary: Option<String>,
+}
+
+/// 等「卡所在的那轮」存完消息的上限。正常只是写盘的几毫秒；超时就放弃，不长期挂着。
+const SUBAGENT_CARD_TURN_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn persist_subagent_card(
     app: AppHandle,
     conversation_id: String,
     key: SubagentCardKey,
@@ -3593,55 +3604,135 @@ fn persist_subagent_card(
     let Some(actor_id) = identity.instance_id() else {
         return;
     };
-    let actor_id = actor_id.to_string();
-    tauri::async_runtime::spawn(async move {
-        let now = Local::now().timestamp();
-        if let Err(err) = crate::chat::repository::repository(&app)
-            .mutate(&app, &conversation_id, |conversation| {
-                app.state::<AppState>()
-                    .external_live_sessions()
-                    .with_current(&conversation.id.clone(), &identity, || {
-                        for message in conversation.messages.iter_mut().rev() {
-                            let Some(record) = key.find(&mut message.tool_calls, Some(&actor_id))
-                            else {
-                                continue;
-                            };
-                            if !steps.is_empty() || !preview.is_empty() {
-                                merge_subagent_progress(
-                                    record,
-                                    &preview,
-                                    &steps,
-                                    &status,
-                                    key.id(),
-                                );
-                            } else {
-                                attach_child_session_id(record, key.id());
-                            }
-                            if status != "running" {
-                                record.status = match status.as_str() {
-                                    "failed" => ToolCallStatus::Error,
-                                    "stopped" | "cancelled" => ToolCallStatus::Cancelled,
-                                    _ => ToolCallStatus::Success,
-                                };
-                                if let Some(summary) =
-                                    summary.as_ref().filter(|text| !text.is_empty())
-                                {
-                                    record.result_preview =
-                                        Some(truncate_for_preview(summary, 800));
-                                }
-                                record.completed_at = Some(now);
-                            }
-                            return Ok(());
-                        }
-                        Ok(())
-                    })
-                    .unwrap_or_else(|| Err("external CLI session retired".to_string()))
-            })
-            .await
-        {
-            eprintln!("[external-agent] persist dsh subagent card failed: {err}");
+    let update = SubagentCardUpdate {
+        status,
+        preview,
+        steps,
+        summary,
+    };
+    let state = app.state::<AppState>();
+    let runtime = state.chat_runtime();
+    // 先记住当前轮次，避免首次查卡后、订阅等待前恰好完成落盘。
+    let generations = runtime.active_generation_ids(&conversation_id);
+    let written =
+        write_subagent_card(&app, &conversation_id, &identity, actor_id, &key, &update).await;
+    if !matches!(written, Ok(false)) {
+        if let Err(err) = written {
+            eprintln!("[external-agent] persist subagent card failed: {err}");
         }
-    });
+        return;
+    }
+    // 轮间读在 CLI 报完「本轮结束」后就开始了，而那一轮的消息（连同这张卡）稍后才落盘。
+    // 只等此刻进行中的几轮收尾，再写一次。
+    if generations.is_empty() {
+        return;
+    }
+    if tokio::time::timeout(SUBAGENT_CARD_TURN_WAIT, async {
+        for generation in generations {
+            runtime
+                .wait_for_generation_inactive(&conversation_id, generation)
+                .await;
+        }
+    })
+    .await
+    .is_err()
+    {
+        eprintln!("[external-agent] timed out waiting to persist subagent card");
+    }
+    match write_subagent_card(&app, &conversation_id, &identity, actor_id, &key, &update).await {
+        // 那一轮收尾时窗口重读的是旧卡，再推一次。
+        Ok(true) => emit_live_subagent_progress(
+            &app,
+            &conversation_id,
+            actor_id,
+            &key,
+            &update.status,
+            update.preview.clone(),
+            update.steps.clone(),
+        ),
+        Ok(false) => {}
+        Err(err) => eprintln!("[external-agent] persist subagent card failed: {err}"),
+    }
+}
+
+/// 把更新写进会话里对应的卡。`Ok(false)` = 还没有这张卡（什么也没写）。
+async fn write_subagent_card(
+    app: &AppHandle,
+    conversation_id: &str,
+    identity: &crate::external_agents::session::live::SessionIdentity,
+    actor_id: Uuid,
+    key: &SubagentCardKey,
+    update: &SubagentCardUpdate,
+) -> Result<bool, String> {
+    const CARD_NOT_FOUND: &str = "subagent card not found";
+    let actor_id = actor_id.to_string();
+    let now = Local::now().timestamp();
+    let mut missing = false;
+    let result = crate::chat::repository::repository(app)
+        .mutate(app, conversation_id, |conversation| {
+            app.state::<AppState>()
+                .external_live_sessions()
+                .with_current(&conversation.id.clone(), identity, || {
+                    let Some(record) = conversation
+                        .messages
+                        .iter_mut()
+                        .rev()
+                        .find_map(|message| key.find(&mut message.tool_calls, Some(&actor_id)))
+                    else {
+                        // 不写盘：会话没变化。
+                        missing = true;
+                        return Err(CARD_NOT_FOUND.to_string());
+                    };
+                    apply_subagent_card_update(record, key, update, now);
+                    Ok(())
+                })
+                .unwrap_or_else(|| Err("external CLI session retired".to_string()))
+        })
+        .await;
+    match result {
+        Ok(_) => Ok(true),
+        Err(_) if missing => Ok(false),
+        Err(err) => Err(format!("{err:?}")),
+    }
+}
+
+fn apply_subagent_card_update(
+    record: &mut ToolCallRecord,
+    key: &SubagentCardKey,
+    update: &SubagentCardUpdate,
+    now: i64,
+) {
+    // 异步写回可能乱序，迟到的运行中进度不能覆盖已经保存的终态。
+    if update.status == "running"
+        && !matches!(
+            record.status,
+            ToolCallStatus::Pending | ToolCallStatus::Running
+        )
+    {
+        return;
+    }
+    if !update.steps.is_empty() || !update.preview.is_empty() {
+        merge_subagent_progress(
+            record,
+            &update.preview,
+            &update.steps,
+            &update.status,
+            key.id(),
+        );
+    } else {
+        attach_child_session_id(record, key.id());
+    }
+    if update.status != "running" {
+        record.status = match update.status.as_str() {
+            "failed" => ToolCallStatus::Error,
+            "stopped" | "cancelled" => ToolCallStatus::Cancelled,
+            _ => ToolCallStatus::Success,
+        };
+        if let Some(summary) = update.summary.as_ref().filter(|text| !text.is_empty()) {
+            record.result_preview = Some(truncate_for_preview(summary, 800));
+        }
+        record.completed_at = Some(now);
+    }
 }
 
 /// 把唤醒轮（后台任务完成后 CLI 自起的一轮）的正文落成一条真正的助手消息，
@@ -4584,10 +4675,24 @@ fn apply_unified_event(
         UnifiedAgentEvent::BackgroundTask {
             task_id,
             status,
+            kind,
+            description,
             summary,
             tool_use_id,
-            ..
         } => {
+            // claude 用 `SendMessage` 继续一个子代理：任务开工帧带着这次调用的 id 和子代理的描述。
+            // 记到卡上，卡就画成那个子代理的开始 / 完成行。
+            if status == "running" && kind.as_deref() == Some("local_agent") {
+                if let Some(record) = tool_use_id
+                    .as_deref()
+                    .and_then(|id| find_launched_subagent_record(tool_calls, id))
+                    .filter(|record| record.name == "SendMessage")
+                {
+                    if attach_resumed_subagent(record, &task_id, description.as_deref()) {
+                        emit_chat_tool_record(app, run_id, record);
+                    }
+                }
+            }
             // dsh 后台子代理的 tool/result 只是派出回执；claude 的后台子代理同理，前台子代理的
             // 终态先于它的 tool_result 到。终态走 BackgroundTask，同一轮里把对应工具卡收掉。
             if status != "running" {
@@ -4615,7 +4720,8 @@ fn apply_unified_event(
             preview,
             steps,
         } => {
-            if let Some(record) = find_dsh_subagent_record(tool_calls, &task_id, None) {
+            if let Some(record) = find_dsh_subagent_record(tool_calls, &task_id, None)
+                .filter(|record| status != "running" || matches!(record.status, ToolCallStatus::Pending | ToolCallStatus::Running)) {
                 merge_subagent_progress(record, &preview, &steps, &status, &task_id);
                 emit_chat_tool_record(app, run_id, record);
                 crate::chat::protocol::emit_run_event(
@@ -4842,9 +4948,8 @@ fn apply_external_tool_result(
             &record.name,
             result_content,
         );
-        let claude_launch =
-            crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&record.name)
-                && crate::external_agents::stream::claude::is_subagent_launch_ack(result_content);
+        let claude_launch = is_subagent_call(&record.name)
+            && crate::external_agents::stream::claude::is_subagent_launch_ack(result_content);
         if dsh_task_id.is_some() || claude_launch {
             // 派出回执只表示子代理开始跑。终态要是先到（子代理很快跑完），别拿回执盖掉它。
             if matches!(
@@ -4956,20 +5061,53 @@ fn attach_child_session_id(record: &mut ToolCallRecord, task_id: &str) {
     record.structured_content = Some(payload);
 }
 
-/// claude 任务帧带的 `tool_use_id` 就是子代理卡的 id。只认子代理工具：后台 Bash 也带
-/// `tool_use_id`，它的卡不归这里管。
+/// claude 任务帧带的 `tool_use_id` 就是子代理卡的 id。只认派出或继续子代理的工具：后台 Bash
+/// 也带 `tool_use_id`，它的卡不归这里管。
 fn find_launched_subagent_record<'a>(
     tool_calls: &'a mut [ToolCallRecord],
     tool_use_id: &str,
 ) -> Option<&'a mut ToolCallRecord> {
-    tool_calls.iter_mut().rev().find(|record| {
-        record.id == tool_use_id
-            && crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&record.name)
-    })
+    tool_calls
+        .iter_mut()
+        .rev()
+        .find(|record| record.id == tool_use_id && is_subagent_call(&record.name))
 }
 
-/// 派出回执是 `jobs` 的 `jobId`（`subagent-1`），子会话 `session.event` 是另一个
-/// `session.id`。对得上就精确绑；对不上且只有一张 Running 子代理卡时绑到那张。
+/// 派出子代理的工具，或 claude 用来继续已有子代理的 `SendMessage`。
+fn is_subagent_call(name: &str) -> bool {
+    crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(name)
+        || name == "SendMessage"
+}
+
+/// 把 `SendMessage` 卡标成「继续某个子代理」。只在第一次记下时返回 `true`。
+fn attach_resumed_subagent(
+    record: &mut ToolCallRecord,
+    task_id: &str,
+    description: Option<&str>,
+) -> bool {
+    let mut payload = record
+        .structured_content
+        .clone()
+        .filter(|value| value.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let Some(object) = payload.as_object_mut() else {
+        return false;
+    };
+    if object.contains_key("resumedSubagent") {
+        return false;
+    }
+    object.insert(
+        "resumedSubagent".to_string(),
+        serde_json::json!({
+            "taskId": task_id,
+            "name": description.unwrap_or_default(),
+        }),
+    );
+    record.structured_content = Some(payload);
+    true
+}
+
+/// 只按已记录的身份关联；未知子会话不能占用另一回合正在运行的工具。
 fn find_dsh_subagent_record<'a>(
     tool_calls: &'a mut [ToolCallRecord],
     task_id: &str,
@@ -4989,20 +5127,6 @@ fn find_dsh_subagent_record<'a>(
         }) {
             return tool_calls.get_mut(index);
         }
-    }
-    // ponytail: 并行多个子代理时不猜，避免把 A 的步骤写到 B 上。
-    let running: Vec<usize> = tool_calls
-        .iter()
-        .enumerate()
-        .filter(|(_, record)| {
-            owns(record)
-                && record.status == ToolCallStatus::Running
-                && crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&record.name)
-        })
-        .map(|(index, _)| index)
-        .collect();
-    if running.len() == 1 {
-        return tool_calls.get_mut(running[0]);
     }
     None
 }
@@ -5205,6 +5329,29 @@ mod tests {
             span_id: None,
             structured_content: Some(input),
         }
+    }
+
+    #[test]
+    fn dsh_subagent_unknown_id_never_claims_another_turns_running_tool() {
+        let mut record = render_test_record(
+            "subagent",
+            serde_json::json!({
+                "backgroundTaskId": "child-b", "externalSessionId": "actor"
+            }),
+        );
+        record.status = ToolCallStatus::Running;
+        assert!(find_dsh_subagent_record(
+            std::slice::from_mut(&mut record),
+            "child-a",
+            Some("actor")
+        )
+        .is_none());
+        assert!(find_dsh_subagent_record(
+            std::slice::from_mut(&mut record),
+            "child-b",
+            Some("actor")
+        )
+        .is_some());
     }
 
     #[test]
@@ -5813,10 +5960,71 @@ mod tests {
         apply_external_tool_result(&mut tools[0], ack, false, 7);
         assert_eq!(tools[0].status, ToolCallStatus::Success);
         assert_eq!(tools[0].result_preview.as_deref(), Some("A_FIRST"));
+
+        // 用 SendMessage 继续这个子代理：回执保持运行中，任务开工时记下它继续的是谁，
+        // 终态按这次调用的 id 找到它。
+        tools.push(card("toolu-send", "SendMessage"));
+        apply_external_tool_result(
+            &mut tools[2],
+            r#"{"success":true,"message":"Resuming agent a1a715b","resumedAgentId":"a1a715b7d0bdfefea"}"#,
+            false,
+            8,
+        );
+        assert_eq!(tools[2].status, ToolCallStatus::Running);
+        assert!(attach_resumed_subagent(
+            &mut tools[2],
+            "a1a715b7d0bdfefea",
+            Some("Agent A")
+        ));
+        assert!(!attach_resumed_subagent(
+            &mut tools[2],
+            "a1a715b7d0bdfefea",
+            Some("Agent A")
+        ));
+        assert_eq!(
+            tools[2].structured_content.as_ref().unwrap()["resumedSubagent"]["name"],
+            "Agent A"
+        );
+        assert_eq!(
+            SubagentCardKey::LaunchedBy("toolu-send".into())
+                .find(&mut tools, None)
+                .map(|record| record.id.clone())
+                .as_deref(),
+            Some("toolu-send")
+        );
+        let key = SubagentCardKey::LaunchedBy("toolu-send".into());
+        apply_subagent_card_update(
+            &mut tools[2],
+            &key,
+            &SubagentCardUpdate {
+                status: "completed".into(),
+                preview: "A_SECOND".into(),
+                steps: vec![],
+                summary: Some("A_SECOND".into()),
+            },
+            9,
+        );
+        apply_subagent_card_update(
+            &mut tools[2],
+            &key,
+            &SubagentCardUpdate {
+                status: "running".into(),
+                preview: "stale progress".into(),
+                steps: vec![],
+                summary: None,
+            },
+            10,
+        );
+        assert_eq!(tools[2].status, ToolCallStatus::Success);
+        assert_eq!(tools[2].result_preview.as_deref(), Some("A_SECOND"));
+        assert_eq!(
+            tools[2].structured_content.as_ref().unwrap()["subagentProgress"]["preview"],
+            "A_SECOND"
+        );
     }
 
     #[test]
-    fn subagent_progress_binds_child_session_to_the_launch_receipt_card() {
+    fn subagent_progress_uses_the_exact_launch_receipt_identity() {
         let mut tools = vec![ToolCallRecord {
             id: "c1".into(),
             name: "subagent".into(),
@@ -5835,7 +6043,7 @@ mod tests {
             trace_id: None,
             span_id: None,
             structured_content: Some(serde_json::json!({
-                "backgroundTaskId": "subagent-1",
+                "backgroundTaskId": "018b08fc-session",
                 "description": "搜资讯"
             })),
         }];
@@ -5851,7 +6059,7 @@ mod tests {
             );
         }
         assert_eq!(
-            tools[0].structured_content.as_ref().unwrap()["childSessionId"],
+            tools[0].structured_content.as_ref().unwrap()["backgroundTaskId"],
             "018b08fc-session"
         );
         assert_eq!(

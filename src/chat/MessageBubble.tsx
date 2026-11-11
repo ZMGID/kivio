@@ -48,12 +48,12 @@ import {
   formatWorkDuration,
   groupTimelineSegments,
   groupWorkDurationMs,
-  isExternalSubagentToolCall,
   lifecycleSubagentProvider,
   isImageReadToolCall,
   isNativeTaskToolCall,
   isNativeIrcToolCall,
   isNativeWaitToolCall,
+  isExternalChildToolCall,
   isSubagentTimelineSegment,
   isUserFollowUpToolCall,
   isUserSteerToolCall,
@@ -744,7 +744,7 @@ function renderProcessSegments({
       && !hasAskUserStructuredContent(tool.structured_content ?? tool.structuredContent)
       && !tool.requires_confirmation && !tool.requiresConfirmation
       && !isPresentationToolCall(tool)
-      && !isExternalSubagentToolCall(tool)
+      && !lifecycleSubagentProvider(tool)
       && !(tool.source === 'external_cli' && canonicalToolName(tool) === 'agent')
       && !isNativeTaskToolCall(tool)
   }
@@ -1216,7 +1216,7 @@ function MessageBubbleComponent({
   const prepared = useMemo(() => {
     const attachments = message.attachments ?? []
     const recordedCalls = message.tool_calls ?? message.toolCalls ?? EMPTY_TOOL_CALLS
-    const hiddenCalls = new Set(recordedCalls.filter(tool => isNativeWaitToolCall(tool) || isNativeIrcToolCall(tool)))
+    const hiddenCalls = new Set(recordedCalls.filter(tool => isNativeWaitToolCall(tool) || isNativeIrcToolCall(tool) || isExternalChildToolCall(tool)))
     const hiddenCallIds = new Set([...hiddenCalls].map(toolRecordId).filter(Boolean))
     const visibleCalls = hiddenCalls.size ? recordedCalls.filter(tool => !hiddenCalls.has(tool)) : recordedCalls
     const lifecycleAgentsByCall = new Map<string, string[]>()

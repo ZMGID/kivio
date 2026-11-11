@@ -198,6 +198,15 @@ impl ChatRuntimeState {
             .is_some_and(|active| !active.is_empty())
     }
 
+    /// 此刻仍在进行的各次生成。用来只等「现在这几轮」结束，不被之后新开的轮次拖住。
+    pub(crate) fn active_generation_ids(&self, conversation_id: &str) -> Vec<u64> {
+        self.indexes()
+            .active_generations
+            .get(conversation_id)
+            .map(|active| active.keys().copied().collect())
+            .unwrap_or_default()
+    }
+
     /// Subscribe before checking ownership so retirement cannot fall between
     /// the check and the wait. Other generations waking us remain active.
     pub(crate) async fn wait_for_generation_inactive(

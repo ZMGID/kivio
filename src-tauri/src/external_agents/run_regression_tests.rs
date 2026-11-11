@@ -164,6 +164,118 @@ fn message(id: &str, role: &str, text: &str) -> crate::chat::ChatMessage {
     serde_json::from_value(json!({"id":id,"role":role,"content":text,"timestamp":1})).unwrap()
 }
 
+#[test]
+fn subagent_completion_waits_for_the_parent_message_to_be_saved() {
+    if isolated_peer_test() {
+        return;
+    }
+    with_acp_peer("subagent-storage", |app, _| {
+        run_peer(async {
+            use crate::external_agents::session::live::{
+                LiveSession, SessionControl, SessionIdentity,
+            };
+            use std::sync::{atomic::AtomicBool, Arc};
+
+            let state = app.state::<AppState>();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let control =
+                SessionControl::spawn(tx, async move { while rx.recv().await.is_some() {} });
+            let identity = SessionIdentity::from_control(&control);
+            let actor_id = identity.instance_id().unwrap();
+            let id = "conv_subagent_storage";
+            state.external_live_sessions().register(
+                id.into(),
+                LiveSession {
+                    control,
+                    _chat_credential: None,
+                    agent_id: "claude".into(),
+                    cwd: String::new(),
+                    launch_config: LaunchConfig::default(),
+                    last_activity: Instant::now(),
+                    child_pid: None,
+                    turns_served: 1,
+                    busy: Arc::new(AtomicBool::new(false)),
+                },
+            );
+            let repo = repository(app);
+            let original = repo.create(app, conversation(id)).await.unwrap();
+            let key = SubagentCardKey::LaunchedBy("toolu-child".into());
+            let update = SubagentCardUpdate {
+                status: "completed".into(),
+                preview: "Final answer".into(),
+                steps: vec![],
+                summary: Some("Final answer".into()),
+            };
+            assert!(
+                !write_subagent_card(app, id, &identity, actor_id, &key, &update)
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(repo.get(app, id).await.unwrap().revision, original.revision);
+            assert!(write_subagent_card(
+                app,
+                "conv_missing_subagent",
+                &identity,
+                actor_id,
+                &key,
+                &update
+            )
+            .await
+            .is_err());
+
+            let runtime = state.chat_runtime();
+            let generation = runtime.begin_reply_generation(id).unwrap();
+            let saving = persist_subagent_card(
+                app.clone(),
+                id.into(),
+                key,
+                update.status.clone(),
+                update.preview.clone(),
+                vec![],
+                update.summary.clone(),
+                identity.clone(),
+            );
+            let (_, next) = tokio::join!(biased; saving, async {
+                repo.mutate(app, id, |conversation| {
+                let mut parent = message("parent", "assistant", "Dispatched");
+                parent.tool_calls.push(serde_json::from_value(json!({
+                    "id":"toolu-child", "name":"SendMessage", "source":"external_cli", "status":"running",
+                    "structured_content":{"resumedSubagent":{"taskId":"child","name":"Worker"}}
+                })).unwrap());
+                conversation.messages.push(parent);
+                Ok(())
+                }).await.unwrap();
+                runtime.end_generation(id, generation);
+                runtime.begin_reply_generation(id).unwrap()
+            });
+            let stored = repo.get(app, id).await.unwrap();
+            let record = &stored.messages[0].tool_calls[0];
+            assert_eq!(record.status, ToolCallStatus::Success);
+            assert_eq!(record.result_preview.as_deref(), Some("Final answer"));
+            assert!(record.completed_at.is_some());
+            assert_eq!(
+                record.structured_content.as_ref().unwrap()["resumedSubagent"]["taskId"],
+                "child"
+            );
+            assert!(runtime.is_generation_active(id, next));
+            runtime.end_generation(id, next);
+
+            state.external_live_sessions().remove(id);
+            assert!(write_subagent_card(
+                app,
+                id,
+                &identity,
+                actor_id,
+                &SubagentCardKey::LaunchedBy("toolu-child".into()),
+                &update
+            )
+            .await
+            .is_err());
+            assert_eq!(repo.get(app, id).await.unwrap().revision, stored.revision);
+        });
+    });
+}
+
 fn wire(directory: &Path) -> Vec<Value> {
     std::fs::read_to_string(directory.join("wire.jsonl"))
         .unwrap()

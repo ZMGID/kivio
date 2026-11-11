@@ -25,6 +25,34 @@ beforeEach(() => {
 })
 
 describe('OpenCode subagent timeline', () => {
+  it.each(['Agent', 'Task', 'subagent', 'subagent_fork', 'workflow', 'ralph'])('replaces every legacy %s card even before arguments arrive', (name) => {
+    const { rerender } = render(<ToolCallBlock toolCall={call({ name, arguments: {}, status: 'running' })} />)
+    expect(screen.queryByText('SUBAGENT')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /开始工作/ })).toBeVisible()
+    rerender(<ToolCallBlock toolCall={call({ name, arguments: {}, status: 'success',
+      structured_content: { type: 'subagent', name: 'Worker', model: 'model-a', result: 'Final report',
+        usage: { inputTokens: 30, outputTokens: 10, totalTokens: 40 },
+        subagentProgress: { status: 'completed', steps: ['Read source', 'Reviewed tests'] } },
+    })} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Worker 已完成' }))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByText('Final report')).toBeVisible()
+    expect(dialog.getByText('Read source')).toBeVisible()
+    expect(dialog.getByText('Reviewed tests')).toBeVisible()
+    expect(dialog.getByText(/40.*token/)).toBeVisible()
+  })
+
+  it('recognizes partial ACP arguments from structured content and hides historical child tool rows', () => {
+    const root = call()
+    render(<ToolCallBlock toolCall={{ ...root, arguments: {}, structured_content: root.arguments }} />)
+    expect(screen.getByRole('button', { name: 'Inspect source 开始工作' })).toBeVisible()
+    render(<ToolCallBlock toolCall={call({ name: 'Inspect source: shell', arguments: {
+      sessionUpdate: 'tool_call', name: 'shell', kind: 'execute', rawInput: { command: 'dir' },
+      _meta: { 'opencode/child-session': { id: 'child', parentID: 'parent', depth: 1 } },
+    } })} />)
+    expect(screen.queryByText(/Inspect source: shell/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/opencode\/child-session/)).not.toBeInTheDocument()
+  })
   it('recognizes V2 subagent ACP calls without confusing V1, native, MCP or child tools', () => {
     expect(lifecycleSubagentProvider(call())).toBe('opencode')
     expect(lifecycleSubagentProvider(call({ name: 'Inspect source', arguments: {
@@ -60,13 +88,18 @@ describe('OpenCode subagent timeline', () => {
 
   it('unwraps a V2 result and groups parallel launches in the message', () => {
     const first = call({ status: 'success', result_preview: '<subagent id="child">\nCHILD_OK\n</subagent>' })
+    const child = call({ id: 'child:tool', name: 'Inspect source: shell', arguments: {
+      _meta: { 'opencode/child-session': { id: 'child' } }, name: 'shell', rawInput: { command: 'ls' },
+    } })
     render(<MessageBubble message={{ id: 'message', role: 'assistant', timestamp: 1, content: '',
-      tool_calls: [first, call({ id: 'oc-b' })], segments: [
+      tool_calls: [first, child, call({ id: 'oc-b' })], segments: [
         { id: 'a', kind: 'tool', phase: 'tool_loop', order: 0, tool_call_id: 'oc-a' },
-        { id: 'b', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'oc-b' },
+        { id: 'child', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'child:tool' },
+        { id: 'b', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'oc-b' },
       ],
     }} />)
     fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    expect(screen.queryByText(/Inspect source: shell|opencode\/child-session/)).not.toBeInTheDocument()
     const starts = screen.getAllByRole('button', { name: 'Inspect source 开始工作' })
     expect(starts).toHaveLength(2)
     expect(starts[0].parentElement).toBe(starts[1].parentElement)

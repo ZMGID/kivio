@@ -1,6 +1,11 @@
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
+  HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open') }
+})
 
 const openExternal = vi.fn(() => Promise.resolve())
 vi.mock('../api/tauri', () => ({
@@ -187,7 +192,7 @@ describe('ToolCallBlock', () => {
   })
 
   it.each([
-    ['Agent', /SUBAGENT/],
+    ['Agent', /开始工作/],
     ['web_search', /WEB SEARCH/],
   ] as const)('shows external %s partial output inside its specialized disclosure', async (toolName, label) => {
     render(<ToolCallBlock toolCall={buildToolCall({
@@ -754,7 +759,8 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    expect(screen.getByText('SUBAGENT')).toBeInTheDocument()
+    expect(screen.queryByText('SUBAGENT')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /开始工作/ }))
     expect(screen.getByText('web_search 最新AI资讯')).toBeInTheDocument()
     expect(screen.queryByText('运行中…')).not.toBeInTheDocument()
   })
@@ -774,8 +780,9 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    expect(screen.getByText('SUBAGENT')).toBeInTheDocument()
-    expect(screen.getByText('运行中…')).toBeInTheDocument()
+    expect(screen.queryByText('SUBAGENT')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /开始工作/ }))
+    expect(screen.getByText('运行中')).toBeInTheDocument()
     expect(screen.queryByText('已完成')).not.toBeInTheDocument()
     expect(screen.queryByText(/started subagent/)).not.toBeInTheDocument()
   })
@@ -795,13 +802,14 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    expect(screen.getByText('SUBAGENT')).toBeInTheDocument()
-    expect(screen.getByText('运行中…')).toBeInTheDocument()
+    expect(screen.queryByText('SUBAGENT')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /开始工作/ }))
+    expect(screen.getByText('运行中')).toBeInTheDocument()
     expect(screen.queryByText('已完成')).not.toBeInTheDocument()
     expect(screen.queryByText(/started background subagent job/)).not.toBeInTheDocument()
   })
 
-  it('renders a dsh subagent call as a SUBAGENT consult card', () => {
+  it('renders a dsh subagent call in the shared timeline', () => {
     render(
       <ToolCallBlock
         toolCall={buildToolCall({
@@ -815,8 +823,9 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    expect(screen.getByText('SUBAGENT')).toBeInTheDocument()
-    expect(screen.getByText('读协议')).toBeInTheDocument()
+    expect(screen.queryByText('SUBAGENT')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /开始工作/ }))
+    expect(screen.getByRole('dialog', { name: '读协议' })).toBeVisible()
   })
 
   it('maps dsh str_replace_editor and job_output off the raw JSON row', () => {

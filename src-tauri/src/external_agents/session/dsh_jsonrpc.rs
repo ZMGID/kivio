@@ -31,7 +31,7 @@
 //!
 //! 服务端广播**运行时里的所有 session**（包含子代理）。父会话的正文/工具卡按
 //! `params.sessionId` 过滤；子会话的 `tool/call` / 正文折成 `SubagentProgress`，挂到
-//! 父工具卡上，不进父气泡。`subagent.started` / `subagent.finished` 没有 `sessionId`，
+//! 父工具卡上，不进父气泡。bridge 的 `kivio/subagent.started` / `finished` 携带父子 id 与 runId，
 //! 改按 `parentSessionId` 认父会话。父轮结束后 `tool-jobs` 会对空闲父会话
 //! `followup` 开一轮汇报（和官方 web 同一条路）；空闲读要攒这轮 `TextDelta`，
 //! `turn/end` 时落成一条助手消息，不能只留任务边沿。Kivio bridge 直接调用 dsh
@@ -93,8 +93,6 @@ pub struct DshJsonRpcSession {
     context_window: Option<u64>,
     /// 跨轮保留：父轮压缩/后台 call 配对，以及轮间空闲读的 leftover。
     map_state: MapSessionState,
-    /// 子会话进度。官方 subagent 默认后台，父轮结束后孩子还在跑。
-    child_progress: HashMap<String, ChildProgress>,
     /// 轮间父会话唤醒轮：`tool-jobs` 对空闲 owner `followup` 之后的正文。
     idle_wake: IdleWakeState,
     /// `session/open` 之后 `ctx.commands.list` 的快照。空 = 发现失败，菜单走内建兜底。
@@ -110,6 +108,7 @@ struct ModelRoute {
 /// `map_session_event` 跨事件的少量状态：压缩 summary→end 配对、后台 tool/call→result。
 #[derive(Default)]
 struct MapSessionState {
+    children: HashMap<String, ChildProgress>,
     context_window: Option<u64>,
     compact: Option<PendingCompact>,
     background_calls: HashMap<String, PendingBackground>,
@@ -295,6 +294,9 @@ struct ChildProgress {
     steps: Vec<String>,
     preview: String,
     last_emit: Option<Instant>,
+    run_id: Option<String>,
+    bound: bool,
+    terminal: Option<UnifiedAgentEvent>,
 }
 
 /// 轮间空闲读副作用：任务边沿 / 子代理进度 / 唤醒轮正文。会话层没有 `AppHandle`。
@@ -580,7 +582,6 @@ impl DshJsonRpcSession {
                 route,
                 context_window: None,
                 map_state: MapSessionState::default(),
-                child_progress: HashMap::new(),
                 idle_wake: IdleWakeState::default(),
                 slash_commands,
             }),
@@ -890,19 +891,14 @@ impl DshJsonRpcSession {
                 continue;
             };
             let params = value.get("params").unwrap_or(&Value::Null);
-            if matches!(method, "subagent.started" | "subagent.finished") {
-                // 官方通知只有 parentSessionId / childSessionId，没有 sessionId。
+            if matches!(method, "kivio/subagent.started" | "kivio/subagent.finished") {
+                // 归属只认直接派工的父会话，不把其他会话的子代理进度带进来。
                 if params.get("parentSessionId").and_then(Value::as_str)
                     != Some(self.session_id.as_str())
                 {
                     continue;
                 }
-                if method == "subagent.finished" {
-                    if let Some(child_id) = params.get("childSessionId").and_then(Value::as_str) {
-                        self.child_progress.remove(child_id);
-                    }
-                }
-                if let Some(event) = map_subagent_notification(method, params) {
+                if let Some(event) = fold_subagent_lifecycle(method, params, &mut self.map_state) {
                     let _ = events.send(event).await;
                 }
                 continue;
@@ -910,7 +906,8 @@ impl DshJsonRpcSession {
             if params.get("sessionId").and_then(Value::as_str) != Some(self.session_id.as_str()) {
                 // 子会话：折成进度，不进父气泡，也不结束父轮。
                 if method == "session.event" {
-                    if let Some(event) = fold_child_session_params(params, &mut self.child_progress)
+                    if let Some(event) =
+                        fold_child_session_params(params, &mut self.map_state.children)
                     {
                         let _ = events.send(event).await;
                     }
@@ -1055,18 +1052,13 @@ impl DshJsonRpcSession {
             return DshIdlePump::Quiet;
         };
         let params = value.get("params").unwrap_or(&Value::Null);
-        if matches!(method, "subagent.started" | "subagent.finished") {
+        if matches!(method, "kivio/subagent.started" | "kivio/subagent.finished") {
             if params.get("parentSessionId").and_then(Value::as_str)
                 != Some(self.session_id.as_str())
             {
                 return DshIdlePump::Quiet;
             }
-            if method == "subagent.finished" {
-                if let Some(child_id) = params.get("childSessionId").and_then(Value::as_str) {
-                    self.child_progress.remove(child_id);
-                }
-            }
-            return map_subagent_notification(method, params)
+            return fold_subagent_lifecycle(method, params, &mut self.map_state)
                 .map(DshIdlePump::Event)
                 .unwrap_or(DshIdlePump::Quiet);
         }
@@ -1074,7 +1066,7 @@ impl DshJsonRpcSession {
             return DshIdlePump::Quiet;
         }
         if params.get("sessionId").and_then(Value::as_str) != Some(self.session_id.as_str()) {
-            return fold_child_session_params(params, &mut self.child_progress)
+            return fold_child_session_params(params, &mut self.map_state.children)
                 .map(DshIdlePump::Event)
                 .unwrap_or(DshIdlePump::Quiet);
         }
@@ -2557,7 +2549,7 @@ fn map_subagent_notification(method: &str, params: &Value) -> Option<UnifiedAgen
         .filter(|id| !id.is_empty())?
         .to_string();
     match method {
-        "subagent.started" => Some(UnifiedAgentEvent::BackgroundTask {
+        "subagent.started" | "kivio/subagent.started" => Some(UnifiedAgentEvent::BackgroundTask {
             task_id,
             status: "running".to_string(),
             kind: Some("local_agent".to_string()),
@@ -2565,12 +2557,17 @@ fn map_subagent_notification(method: &str, params: &Value) -> Option<UnifiedAgen
             summary: None,
             tool_use_id: None,
         }),
-        "subagent.finished" => {
-            let ok = params.get("status").and_then(Value::as_str) == Some("ok");
+        "subagent.finished" | "kivio/subagent.finished" => {
+            let status = match params.get("stopReason").and_then(Value::as_str) {
+                Some("cancelled" | "aborted" | "interrupted") => "stopped",
+                Some("completed") => "completed",
+                None if params.get("status").and_then(Value::as_str) == Some("ok") => "completed",
+                _ => "failed",
+            };
             let summary = content_blocks_text(params.get("lastAssistantMessage"));
             Some(UnifiedAgentEvent::BackgroundTask {
                 task_id,
-                status: if ok { "completed" } else { "failed" }.to_string(),
+                status: status.to_string(),
                 kind: None,
                 description: None,
                 summary: (!summary.is_empty()).then_some(summary),
@@ -2579,6 +2576,38 @@ fn map_subagent_notification(method: &str, params: &Value) -> Option<UnifiedAgen
         }
         _ => None,
     }
+}
+
+fn fold_subagent_lifecycle(
+    method: &str,
+    params: &Value,
+    state: &mut MapSessionState,
+) -> Option<UnifiedAgentEvent> {
+    let id = params
+        .get("childSessionId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())?;
+    let run_id = optional_string(params, "runId");
+    let child = state.children.entry(id.to_string()).or_default();
+    if method == "kivio/subagent.started" {
+        if child.run_id == run_id {
+            return None;
+        }
+        child.run_id = run_id;
+        child.terminal = None;
+        child.preview.clear();
+        child.steps.clear();
+        child.last_emit = None;
+    } else {
+        if child.terminal.is_some() || (child.run_id.is_some() && child.run_id != run_id) {
+            return None;
+        }
+        child.terminal = map_subagent_notification(method, params);
+    }
+    child
+        .bound
+        .then(|| map_subagent_notification(method, params))
+        .flatten()
 }
 
 /// 父轮已经收尾后，`tool-jobs` 会对空闲 owner `followup` 再开一轮。
@@ -2648,7 +2677,10 @@ fn fold_child_session_event(
     if session_id.is_empty() {
         return None;
     }
-    let progress = child_progress.entry(session_id.to_string()).or_default();
+    let progress = child_progress.get_mut(session_id)?;
+    if progress.terminal.is_some() {
+        return None;
+    }
     let mut force = false;
     match event_type {
         "tool/call" => {
@@ -2700,6 +2732,9 @@ fn fold_child_session_event(
             force = true;
         }
         _ => return None,
+    }
+    if !progress.bound {
+        return None;
     }
     let now = Instant::now();
     if !force {
@@ -2946,7 +2981,13 @@ fn map_tool_results(
             .get("isError")
             .and_then(Value::as_bool)
             .unwrap_or_else(|| data.get("error").is_some());
-        if let Some(pending) = state.background_calls.remove(&tool_use_id) {
+        let pending = state.background_calls.remove(&tool_use_id);
+        let child_id = pending
+            .as_ref()
+            .filter(|pending| is_subagent_tool_name(&pending.name))
+            .filter(|_| !is_error)
+            .and_then(|pending| subagent_launch_task_id(&pending.name, &content));
+        if let Some(pending) = pending.filter(|_| !is_error) {
             if let Some(task_id) = parse_background_task_id(content.trim()) {
                 sink(UnifiedAgentEvent::BackgroundTask {
                     task_id,
@@ -2963,6 +3004,22 @@ fn map_tool_results(
             content,
             is_error,
         });
+        if let Some(id) = child_id {
+            let child = state.children.entry(id.clone()).or_default();
+            child.bound = true;
+            // 回执先建立 child id 关联，再送达先到的进度和终态。
+            if !child.preview.is_empty() || !child.steps.is_empty() {
+                sink(UnifiedAgentEvent::SubagentProgress {
+                    task_id: id,
+                    status: "running".to_string(),
+                    preview: child.preview.clone(),
+                    steps: child.steps.clone(),
+                });
+            }
+            if let Some(terminal) = &child.terminal {
+                sink(terminal.clone());
+            }
+        }
     }
 }
 
@@ -3053,7 +3110,6 @@ mod tests {
                 route: resolve_model_route_for_turn(None).unwrap(),
                 context_window: None,
                 map_state: MapSessionState::default(),
-                child_progress: HashMap::new(),
                 idle_wake: IdleWakeState::default(),
                 slash_commands: Vec::new(),
             };
@@ -4215,6 +4271,89 @@ mod tests {
     }
 
     #[test]
+    fn dsh_subagent_buffers_parallel_children_until_exact_receipts() {
+        let mut state = MapSessionState::default();
+        for id in ["a", "b"] {
+            assert!(fold_subagent_lifecycle(
+                "kivio/subagent.started",
+                &json!({"childSessionId":id,"runId":"run-1"}),
+                &mut state
+            )
+            .is_none());
+            assert!(fold_child_session_event(
+                id,
+                "assistant/message",
+                &json!({"message":{"content":[{"type":"text","text":id}]}}),
+                &mut state.children
+            )
+            .is_none());
+        }
+        assert!(fold_subagent_lifecycle("kivio/subagent.finished", &json!({"childSessionId":"a","runId":"run-1","stopReason":"completed","lastAssistantMessage":[{"type":"text","text":"A done"}]}), &mut state).is_none());
+        for id in ["b", "a"] {
+            let events = map_events_in_state(
+                &mut state,
+                &[
+                    (
+                        "tool/call",
+                        json!({"callId":format!("tool-{id}"),"name":"subagent","arguments":"{}"}),
+                    ),
+                    (
+                        "tool/result",
+                        json!({"message":{"content":[{"type":"tool-result","toolCallId":format!("tool-{id}"),"content":[{"type":"text","text":format!("started subagent {id}")}]}]}}),
+                    ),
+                ],
+            );
+            let receipt_at = events
+                .iter()
+                .position(|e| matches!(e, UnifiedAgentEvent::ToolResult { .. }))
+                .unwrap();
+            let progress_at = events.iter().position(|e| matches!(e, UnifiedAgentEvent::SubagentProgress { task_id, preview, .. } if task_id == id && preview == id)).unwrap();
+            assert!(receipt_at < progress_at);
+            if id == "a" {
+                assert!(
+                    matches!(events.last(), Some(UnifiedAgentEvent::BackgroundTask { task_id, status, summary, .. }) if task_id == "a" && status == "completed" && summary.as_deref() == Some("A done"))
+                );
+            }
+        }
+        assert!(fold_child_session_event(
+            "foreign",
+            "assistant/message",
+            &json!({"message":{"content":[{"type":"text","text":"wrong"}]}}),
+            &mut state.children
+        )
+        .is_none());
+        assert!(fold_child_session_event(
+            "a",
+            "assistant/message",
+            &json!({"message":{"content":[{"type":"text","text":"late"}]}}),
+            &mut state.children
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn dsh_subagent_ignores_previous_run_end_and_preserves_cancellation() {
+        let mut state = MapSessionState::default();
+        for run in ["old", "new"] {
+            fold_subagent_lifecycle(
+                "kivio/subagent.started",
+                &json!({"childSessionId":"a","runId":run}),
+                &mut state,
+            );
+        }
+        state.children.get_mut("a").unwrap().bound = true;
+        assert!(fold_subagent_lifecycle(
+            "kivio/subagent.finished",
+            &json!({"childSessionId":"a","runId":"old","stopReason":"completed"}),
+            &mut state
+        )
+        .is_none());
+        assert!(
+            matches!(fold_subagent_lifecycle("kivio/subagent.finished", &json!({"childSessionId":"a","runId":"new","stopReason":"cancelled"}), &mut state), Some(UnifiedAgentEvent::BackgroundTask { status, .. }) if status == "stopped")
+        );
+    }
+
+    #[test]
     fn maps_subagent_edges_only_for_the_parent_session() {
         assert!(matches!(
             map_subagent_notification(
@@ -4257,7 +4396,13 @@ mod tests {
 
     #[test]
     fn child_session_tools_and_text_fold_into_progress() {
-        let mut progress = HashMap::new();
+        let mut progress = HashMap::from([(
+            "child-9".to_string(),
+            ChildProgress {
+                bound: true,
+                ..Default::default()
+            },
+        )]);
         let first = fold_child_session_event(
             "child-9",
             "tool/call",

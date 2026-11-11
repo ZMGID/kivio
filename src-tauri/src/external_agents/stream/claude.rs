@@ -724,9 +724,20 @@ const SUBAGENT_HAND_BACK: &str = "[Subagent hand-back]";
 const SUBAGENT_REPORT_FOLLOWS: &str = "The report follows:\n";
 
 /// 后台子代理的派出回执：子代理刚开始跑，结果要等同一任务的 `task_notification`。
+/// 用 `SendMessage` 继续一个子代理时，结果是带 `resumedAgentId` 的 JSON 回执，同样只表示开始跑。
 /// `content` 是本解析器为子代理工具发出的 `ToolResult.content`。
 pub fn is_subagent_launch_ack(content: &str) -> bool {
-    content.trim_start().starts_with(SUBAGENT_LAUNCH_ACK)
+    let content = content.trim_start();
+    content.starts_with(SUBAGENT_LAUNCH_ACK)
+        || serde_json::from_str::<Value>(content)
+            .ok()
+            .and_then(|value| value.get("resumedAgentId").cloned())
+            .is_some_and(|id| id.as_str().is_some_and(|id| !id.is_empty()))
+}
+
+/// 主线上派出或继续子代理的工具调用。它们的 tool_result 要整理成子代理的回答或回执。
+fn is_claude_subagent_call(name: &str) -> bool {
+    is_claude_spawn_tool(name) || name == "SendMessage"
 }
 
 /// 主线 `Agent` / `Task` 的 tool_result → 子代理自己的回答。
@@ -757,6 +768,15 @@ fn subagent_result_text(content: Option<&Value>, tool_use_result: Option<&Value>
     }
     if async_launched {
         return format!("{SUBAGENT_LAUNCH_ACK}\n{text}");
+    }
+    // `SendMessage` 继续子代理：以结构化的回执为准。
+    if let Some(resumed) = tool_use_result.filter(|result| {
+        result
+            .get("resumedAgentId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+    }) {
+        return resumed.to_string();
     }
     let report = text
         .strip_prefix(SUBAGENT_HAND_BACK)
@@ -1467,7 +1487,7 @@ impl ClaudeStreamState {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("tool")
                                         .to_string();
-                                    if is_claude_spawn_tool(&name) {
+                                    if is_claude_subagent_call(&name) {
                                         self.spawn_tool_use_ids.insert(id.clone());
                                     }
                                     sink(UnifiedAgentEvent::ToolUse {
@@ -1836,7 +1856,7 @@ impl ClaudeStreamState {
                     return;
                 }
                 self.streamed_tool_use_ids.insert(id.clone());
-                if is_claude_spawn_tool(&name) {
+                if is_claude_subagent_call(&name) {
                     self.spawn_tool_use_ids.insert(id.clone());
                 }
                 sink(UnifiedAgentEvent::ToolUse { id, name, input });
@@ -1978,7 +1998,10 @@ mod tests {
             .collect();
         assert_eq!(
             launched_by,
-            [(Some("toolu_01Ps"), "running"), (Some("toolu_01Ps"), "completed")]
+            [
+                (Some("toolu_01Ps"), "running"),
+                (Some("toolu_01Ps"), "completed")
+            ]
         );
     }
 
@@ -2033,6 +2056,29 @@ mod tests {
             &events[..],
             [UnifiedAgentEvent::ToolResult { content, .. }] if content.starts_with("[{")
         ));
+    }
+
+    #[test]
+    fn resuming_a_subagent_with_send_message_is_a_receipt() {
+        let events = run(&[
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m2","content":[{"type":"tool_use","id":"toolu_send","name":"SendMessage","input":{"to":"a1a715b7d0bdfefea","summary":"Resume Agent A","message":"Reply with exactly: A_SECOND"}}]}}"#,
+            r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"tool_use_id":"toolu_send","type":"tool_result","content":[{"type":"text","text":"{\"success\":true,\"message\":\"Resuming agent a1a715b\",\"resumedAgentId\":\"a1a715b7d0bdfefea\"}"}]}]},"tool_use_result":{"success":true,"message":"Resuming agent a1a715b","resumedAgentId":"a1a715b7d0bdfefea"}}"#,
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m3","content":[{"type":"tool_use","id":"toolu_team","name":"SendMessage","input":{"to":"researcher","message":"hi"}}]}}"#,
+            r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"tool_use_id":"toolu_team","type":"tool_result","content":[{"type":"text","text":"{\"success\":true,\"message\":\"Message sent to researcher\"}"}]}]}}"#,
+        ]);
+        let results: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                UnifiedAgentEvent::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => Some((tool_use_id.as_str(), is_subagent_launch_ack(content))),
+                _ => None,
+            })
+            .collect();
+        // 继续子代理是回执；发给队友的普通消息不是。
+        assert_eq!(results, [("toolu_send", true), ("toolu_team", false)]);
     }
 
     /// `task_notification`（completed）→ 终态条目，且**不**发气泡提示

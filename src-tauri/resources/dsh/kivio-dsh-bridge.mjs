@@ -2,8 +2,29 @@ import Schema from '@deepseek-ai/schemastery'
 import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server'
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
 
 export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
+  subscribeSubagentLifecycle() {
+    const transport = this.transport
+    const forward = (method, carrier, info) => {
+      const parent = carrierKeyOf(carrier)
+      if (!parent?.session?.id || typeof info?.id !== 'string' || !info.id) return
+      transport.notify(method, {
+        parentSessionId: String(parent.session.id), childSessionId: info.id,
+        runId: info.runId, provider: info.provider,
+        stopReason: info.stopReason, lastAssistantMessage: info.lastAssistantMessage,
+      })
+    }
+    const start = this.ctx.on('subagent/start', function (info) {
+      forward('kivio/subagent.started', this, info)
+    })
+    const end = this.ctx.on('subagent/end', function (info) {
+      forward('kivio/subagent.finished', this, info)
+    })
+    return () => { start(); end() }
+  }
+
   async initialize(params) {
     const result = await super.initialize(params)
     // Session tools read header.cwd; sandbox-policy falls back to process.cwd()
@@ -433,6 +454,8 @@ export function apply(ctx, config) {
   const server = new KivioHarnessSdkJsonRpcServer(ctx, transport, {
     maxTokensAsSuccess: config.maxTokensAsSuccess,
   })
+  // SDK session/created notifications omit runId and miss resumed child runs.
+  ctx.effect(() => server.subscribeSubagentLifecycle(), 'kivio-jsonrpc.subagents')
   const parentPid = process.ppid
   let parentWatchdog
   let exitTask

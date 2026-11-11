@@ -6,7 +6,7 @@ import type {
 } from '../api/tauri'
 import { mergeSubagentEntry, mergeToolRecord, type ConversationStreamSnapshot } from './conversationRuns'
 import { record } from '../api/subagents'
-import { canonicalToolName, compareTimelineSegments, isExternalSubagentToolCall, isSubagentTimelineSegment, segmentStepNumber, segmentToolCallId } from './segments'
+import { canonicalToolName, compareTimelineSegments, isSubagentTimelineSegment, segmentStepNumber, segmentToolCallId } from './segments'
 import { normalizeToolCallStatus } from './toolStatus'
 import type { ChatMessage, ChatMessageSegment, ToolCallRecord } from './types'
 
@@ -336,19 +336,16 @@ function matchesSubagentTool(tool: ToolCallRecord, payload: ChatSubagentPayload)
 }
 
 export function findSubagentToolIndex(tools: ToolCallRecord[], payload: ChatSubagentPayload): number {
-  const exact = tools.findIndex((item) => matchesSubagentTool(item, payload))
-  if (exact >= 0) return exact
-  const running = tools
-    .map((item, index) => ({ item, index }))
-    .filter(({ item }) => item.status === 'running' && isExternalSubagentToolCall(item)
-      && (payload.externalSessionId === undefined || toolStructured(item).externalSessionId === payload.externalSessionId))
-  return running.length === 1 ? running[0].index : -1
+  return tools.findIndex((item) => matchesSubagentTool(item, payload))
 }
 
 export function mergeSubagentProgress(
   tool: ToolCallRecord,
   payload: ChatSubagentPayload,
 ): ToolCallRecord {
+  if (tool.source === 'external_cli'
+    && (payload.status === 'running' || payload.status === 'pending')
+    && !['running', 'pending'].includes(normalizeToolCallStatus(tool.status))) return tool
   const existing = toolStructured(tool)
   if (tool.source === 'native' && canonicalToolName(tool) === 'task') {
     const byTask = record(existing.subagentProgressByTask)

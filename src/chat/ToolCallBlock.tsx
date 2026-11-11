@@ -9,7 +9,7 @@ import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessageSegment
 import { normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { hasAskUserStructuredContent, isAskUserToolName } from './askUserTools'
-import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, isNativeTaskToolCall, isNativeWaitToolCall, imageReadCount, imageReadItems, lifecycleSubagentProvider, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
+import { canonicalToolName, isExternalChildToolCall, isImageReadToolCall, isNativeTaskToolCall, isNativeWaitToolCall, imageReadCount, imageReadItems, lifecycleSubagentProvider, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
 import { requestDockDiffPreview, requestDockPreview } from './dock/dockPreview'
 import { DiffView } from './dock/DiffView'
 import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
@@ -313,134 +313,6 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-interface SubagentView {
-  name: string
-  agentType?: string
-  model?: string
-  depth: number
-  status: string
-  result?: string
-  error?: string
-  preview?: string
-  steps: string[]
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number }
-}
-
-/** Parse the optional token usage from a final sub-agent structured result.
- *  Live `subagentProgress` has no usage; only the completed `{type:"subagent"}`
- *  payload carries it. */
-function subagentUsage(value: unknown): SubagentView['usage'] {
-  const usage = objectValue(value)
-  if (!usage) return undefined
-  const input = typeof usage.inputTokens === 'number' ? usage.inputTokens : undefined
-  const output = typeof usage.outputTokens === 'number' ? usage.outputTokens : undefined
-  const total = typeof usage.totalTokens === 'number' ? usage.totalTokens : undefined
-  if (input == null && output == null && total == null) return undefined
-  return { inputTokens: input, outputTokens: output, totalTokens: total }
-}
-
-/** Compact token count, e.g. 1234 → "1.2K", 999 → "999"。大写 K 与消息用量条、
- *  上下文用量条一致（见 `utils/tokens.ts::formatTokensK`）。 */
-function formatTokenCount(value?: number): string {
-  if (value == null || !Number.isFinite(value) || value < 0) return ''
-  if (value < 1000) return String(Math.round(value))
-  const thousands = value / 1000
-  return `${thousands >= 100 ? Math.round(thousands) : thousands.toFixed(1)}K`
-}
-
-/** One-line token summary like `↑1.2K ↓340 · 1.5K tokens`. Empty when no usage. */
-function subagentUsageLine(usage: SubagentView['usage']): string {
-  if (!usage) return ''
-  const parts: string[] = []
-  const input = formatTokenCount(usage.inputTokens)
-  const output = formatTokenCount(usage.outputTokens)
-  if (input) parts.push(`↑${input}`)
-  if (output) parts.push(`↓${output}`)
-  const total = formatTokenCount(usage.totalTokens)
-  const head = parts.join(' ')
-  if (head && total) return `${head} · ${total} tokens`
-  if (head) return head
-  if (total) return `${total} tokens`
-  return ''
-}
-
-/** Parse sub-agent state (P3) from a tool record's structured content: either
- *  the final `{ type: "subagent", ... }` result or the live `subagentProgress`
- *  merged in from typed subagent protocol events. */
-function structuredSubagent(toolCall: ToolCallRecord): SubagentView | null {
-  const structured = objectValue(toolCall.structured_content ?? toolCall.structuredContent)
-  if (!structured) return null
-  const isFinal = structured.type === 'subagent'
-  const progress = objectValue(structured.subagentProgress)
-  if (!isFinal && !progress) return null
-  return {
-    name: stringValue(progress?.name) || stringValue(structured.name) || 'subagent',
-    agentType: stringValue(structured.agentType) || undefined,
-    model: stringValue(structured.model) || stringValue(progress?.model) || undefined,
-    depth: numberValue(progress?.depth ?? structured.depth),
-    status: stringValue(progress?.status) || stringValue(structured.status) || 'running',
-    result: stringValue(structured.result) || undefined,
-    error: stringValue(structured.error) || undefined,
-    preview: stringValue(progress?.preview) || undefined,
-    steps: stringArrayValue(progress?.steps),
-    usage: subagentUsage(structured.usage),
-  }
-}
-
-function isSubagentToolRecord(toolCall: ToolCallRecord): boolean {
-  return toolCall.source === 'external_cli'
-    && (isExternalSubagentToolCall(toolCall) || Boolean(structuredSubagent(toolCall)))
-}
-
-/** Sub-agent type / display name fall back to the spawn arguments while the run
- *  is live (structured content only carries agentType in the final result). */
-function subagentAgentType(view: SubagentView | null, args: Record<string, unknown> | null): string {
-  return view?.agentType || stringValue(args?.subagent_type) || ''
-}
-
-function subagentName(view: SubagentView | null, args: Record<string, unknown> | null): string {
-  return (
-    view?.name ||
-    stringValue(args?.name) ||
-    // 外部 CLI（claude Agent/Task）：args.description 是那句人话任务名（"搜索最近 AI 资讯"）。
-    stringValue(args?.description) ||
-    stringValue(args?.subagent_type) ||
-    'subagent'
-  )
-}
-
-function subagentPrompt(args: Record<string, unknown> | null): string {
-  return stringValue(args?.prompt)
-}
-
-/** dsh 后台子代理的 tool/result 只是派出回执，不是跑完。 */
-function isSubagentLaunchReceipt(text: string | undefined): boolean {
-  const trimmed = text?.trim() ?? ''
-  return trimmed.startsWith('started background subagent job ')
-    || trimmed.startsWith('started background subagent task ')
-    || trimmed.startsWith('started subagent ')
-}
-
-function subagentDisplayStatus(t: I18n, toolCall: ToolCallRecord, status: ToolCallStatus): ToolCallStatus {
-  if (status === 'completed' && isSubagentLaunchReceipt(getResultPreview(t, toolCall))) {
-    return 'running'
-  }
-  return status
-}
-
-function subagentStatusLine(t: I18n, view: SubagentView | null, status: ToolCallStatus): string {
-  if (status === 'completed') return t.toolCardDone
-  if (status === 'error') return view?.error ? compactText(view.error, 160) : t.toolCardFailed
-  if (status === 'cancelled') return t.toolCardCancelled
-  if (status === 'running') {
-    const lastStep = view?.steps?.length ? view.steps[view.steps.length - 1] : ''
-    if (lastStep) return compactText(lastStep, 160)
-    if (view?.preview) return compactText(view.preview, 160)
-    return t.toolCardRunning
-  }
-  return t.toolCardStarting
-}
-
 function CardEyebrow({ running = false }: { running?: boolean }) {
   // 品牌标记：7×7 实心方块（黑/白随主题）。运行中像终端光标一样步进闪烁，呼应官网运行轨迹方块。
   return (
@@ -504,7 +376,7 @@ function StreamingToolOutput({ output }: { output: string }) {
 
 
 /** Shared boxed "consult card" shell for standalone delegations/consultations
- *  (SUBAGENT / ADVISOR / KNOWLEDGE). Owns the eyebrow + uppercase mono label +
+ *  (ADVISOR / KNOWLEDGE). Owns the eyebrow + uppercase mono label +
  *  status mark + status line + collapse; callers supply identity chips, metric
  *  chips, and the expandable body. Header order matches the original hand-rolled
  *  cards: eyebrow · LABEL · identity chips · status mark · metric chips ·
@@ -569,98 +441,6 @@ function ConsultCard({
         </ChatDisclosureBody>
       )}
     </div>
-  )
-}
-
-function SubAgentCard({ toolCall }: ToolCallBlockProps) {
-  const t = useT()
-  const status = subagentDisplayStatus(t, toolCall, normalizeToolCallStatus(toolCall.status))
-  const view = useMemo(() => structuredSubagent(toolCall), [toolCall])
-  const args = useMemo(() => parsedArguments(toolCall), [toolCall])
-
-
-  const agentType = subagentAgentType(view, args)
-  const name = subagentName(view, args)
-  const model = view?.model || ''
-  const duration = status === 'running' ? '' : formatDuration(getDuration(toolCall))
-  const statusLine = subagentStatusLine(t, view, status)
-  const prompt = subagentPrompt(args)
-  // External CLI results can arrive in result_preview rather than structured content.
-  const result =
-    view?.result || (status !== 'running' && status !== 'pending' ? getResultPreview(t, toolCall) : '')
-  const error = view?.error || (toolCall.error ? compactToolError(toolCall.error) : '')
-  const steps = view?.steps ?? []
-  const preview = view?.preview || ''
-  const partialOutput = externalPartialOutput(toolCall)
-  const usageLine = status !== 'running' ? subagentUsageLine(view?.usage) : ''
-
-  const hasBody = Boolean(prompt || steps.length || preview || result || partialOutput || error)
-  const displayName = name && name !== agentType ? name : ''
-
-  return (
-    <ConsultCard
-      label="SUBAGENT"
-      status={status}
-      identityChips={
-        <>
-          {agentType && <CardChip>{agentType}</CardChip>}
-          {displayName && <CardChip>{displayName}</CardChip>}
-          {model && <CardChip>{model}</CardChip>}
-        </>
-      }
-      metricChips={
-        <>
-          {duration && <CardChip tabular>{duration}</CardChip>}
-          {usageLine && <CardChip tabular>{usageLine}</CardChip>}
-        </>
-      }
-      statusLine={statusLine}
-    >
-      {hasBody && (
-        <>
-          {prompt && (
-            <CardSection label="Task">
-              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-                {compactText(prompt, 600)}
-              </div>
-            </CardSection>
-          )}
-          {status === 'running' && (steps.length > 0 || preview) && (
-            <div className="border-l border-neutral-300 pl-2.5">
-              {steps.length > 0 && (
-                <div className="space-y-0.5 font-mono text-[10.5px] text-neutral-500 dark:text-neutral-400">
-                  {steps.map((step, index) => (
-                    <div key={`${index}-${step}`} className="truncate">
-                      {step}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {preview && (
-                <div className="mt-0.5 whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-                  {preview}
-                </div>
-              )}
-            </div>
-          )}
-          {partialOutput && (
-            <CardSection label={t.toolCardResult}>
-              <StreamingToolOutput output={partialOutput} />
-            </CardSection>
-          )}
-          {status !== 'running' && result && (
-            <CardSection label="Result">
-              <ChatMarkdown content={result} />
-            </CardSection>
-          )}
-          {error && (
-            <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
-              {error}
-            </div>
-          )}
-        </>
-      )}
-    </ConsultCard>
   )
 }
 
@@ -984,7 +764,7 @@ function isKnowledgeSearchRecord(toolCall: ToolCallRecord): boolean {
 }
 
 /** Dedicated card for a `knowledge_search` (RAG) consultation: same consult-card
- *  shell as SUBAGENT/ADVISOR. Body shows the query plus the retrieved [n]
+ *  shell as ADVISOR. Body shows the query plus the retrieved [n]
  *  passages (KnowledgeHits) or, when nothing matched, the plain result text. */
 function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
   const t = useT()
@@ -1087,7 +867,7 @@ function WebSources({ citations }: { citations: WebCitationView[] }) {
 }
 
 /** Dedicated card for a `web_search` (builtin hosted search / third-party search_web):
- *  same consult-card shell as SUBAGENT/ADVISOR/KNOWLEDGE. Body shows the queries plus
+ *  same consult-card shell as ADVISOR/KNOWLEDGE. Body shows the queries plus
  *  the numbered, clickable source directory; falls back to the plain result text when
  *  structured citations are absent (old persisted records). */
 function WebSearchCard({ toolCall }: ToolCallBlockProps) {
@@ -2283,7 +2063,7 @@ export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = fals
 }
 
 function ToolCallBlockComponent(props: ToolCallBlockProps) {
-  if (isNativeWaitToolCall(props.toolCall)) return null
+  if (isNativeWaitToolCall(props.toolCall) || isExternalChildToolCall(props.toolCall)) return null
   if (isNativeTaskToolCall(props.toolCall)) {
     return <SubagentTimelineEvents toolCall={props.toolCall} conversationId={props.conversationId} />
   }
@@ -2295,9 +2075,6 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
   }
   if (isImageReadToolCall(props.toolCall)) {
     return <ImageReadCluster toolCalls={[props.toolCall]} conversationId={props.conversationId} defaultOpen={props.defaultOpen} />
-  }
-  if (isSubagentToolRecord(props.toolCall)) {
-    return <SubAgentCard {...props} />
   }
   if (isAdvisorRecord(props.toolCall)) {
     return <AdvisorCard {...props} />

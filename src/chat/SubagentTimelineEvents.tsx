@@ -1,14 +1,15 @@
 import { Fragment, useState, type ReactNode } from 'react'
-import { Ellipsis, Users } from 'lucide-react'
+import { Bot, Ellipsis, Users } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
 import { ProviderIcon } from '../components/ModelIcon'
+import { formatTokensK } from '../utils/tokens'
 import { parsedRecord, record, text } from '../api/subagents'
 import { AgentProgress, AgentOutput, AgentStatus } from './AgentProgress'
 import { SubagentDialog } from './AgentHub'
 import { requestDockSubagent } from './dock/dockPreview'
 import { AgentAvatar } from './AgentAvatar'
-import { toolRecordId, lifecycleSubagentProvider, type LifecycleSubagentProvider } from './segments'
+import { toolRecordId, externalSubagentInput, lifecycleSubagentProvider, resumedSubagentName, type LifecycleSubagentProvider } from './segments'
 import { normalizeToolCallStatus } from './toolStatus'
 import type { SubagentTimelineEntry, SubagentTimelineStatus } from '../generated/chatProtocol'
 import type { ToolCallRecord } from './types'
@@ -79,12 +80,14 @@ type ExternalSubagentView = {
   name: string
   prompt: string
   model: string
+  usage: string
   state: 'running' | 'completed' | 'failed' | 'cancelled'
   finishedAt: number
-  preview: string
-  step: string
+  progress: Record<string, unknown>
   result: string
   error: string
+  /** 旧版把后台派出回执当成了结果并标为完成：子代理早已结束，但结果和成败都没有保存。 */
+  unrecorded: boolean
 }
 
 const externalFinish: Record<Exclude<ExternalSubagentView['state'], 'running'>, SubagentTimelineStatus> = {
@@ -97,6 +100,7 @@ const providerLabels: Record<LifecycleSubagentProvider, { icon: string; zh: stri
   codex: { icon: 'openai', zh: 'Codex 子代理', en: 'Codex subagent' },
   claude: { icon: 'claude', zh: 'Claude 子代理', en: 'Claude subagent' },
   opencode: { icon: 'opencode', zh: 'OpenCode 子代理', en: 'OpenCode subagent' },
+  external: { icon: '', zh: '子代理', en: 'Subagent' },
 }
 
 /** 派出回执只表示子代理开始跑：Codex 的 `started subagent …`；Claude 后台子代理的
@@ -104,14 +108,17 @@ const providerLabels: Record<LifecycleSubagentProvider, { icon: string; zh: stri
 function isLaunchReceipt(resultPreview: string): boolean {
   const trimmed = resultPreview.trim()
   return trimmed.startsWith('started subagent ') || trimmed.includes('Async agent launched successfully.')
+    || Boolean(text(parsedRecord(trimmed).resumedAgentId))
+    || trimmed.startsWith('started background subagent job ')
+    || trimmed.startsWith('started background subagent task ')
 }
 
 function externalSubagentView(toolCall: ToolCallRecord, provider: LifecycleSubagentProvider, zh: boolean): ExternalSubagentView {
-  const input = parsedRecord(toolCall.arguments ?? toolCall.args ?? toolCall.input)
+  const input = externalSubagentInput(toolCall)
   const args = provider === 'opencode' ? record(input.rawInput) : input
   const structured = record(toolCall.structured_content ?? toolCall.structuredContent)
   const progress = record(structured.subagentProgress)
-  const resultPreview = text(toolCall.result_preview ?? toolCall.resultPreview)
+  const resultPreview = text(structured.result) || text(toolCall.result_preview ?? toolCall.resultPreview ?? toolCall.result ?? toolCall.output)
   // shortcut: OpenCode ACP 尚未订阅跨回合子会话终态，接入该通道前，后台派出回执保持运行中。
   const receipt = provider === 'opencode'
     ? record(record(structured.rawOutput ?? input.rawOutput).metadata).status === 'running'
@@ -119,22 +126,29 @@ function externalSubagentView(toolCall: ToolCallRecord, provider: LifecycleSubag
   const status = normalizeToolCallStatus(toolCall.status)
   const state = status === 'error' ? 'failed' : status === 'cancelled' ? 'cancelled'
     : receipt || status === 'running' || status === 'pending' ? 'running' : 'completed'
-  const steps = Array.isArray(progress.steps) ? progress.steps.map(text).filter(Boolean) : []
+  const usage = record(structured.usage)
   const label = providerLabels[provider]
   return {
     id: toolRecordId(toolCall),
     provider,
-    name: text(args.description) || text(args.name) || text(args.subagent_type) || text(args.agent) || (zh ? label.zh : label.en),
-    prompt: text(args.prompt),
-    model: text(args.model),
+    name: text(args.description) || (structured.type === 'subagent' ? text(structured.name) : '')
+      || text(args.name) || resumedSubagentName(toolCall) || text(progress.name)
+      || text(args.subagent_type) || text(args.agent) || (zh ? label.zh : label.en),
+    // `SendMessage` 的任务是发给子代理的那句话。
+    prompt: text(args.prompt) || text(args.message),
+    model: text(structured.model) || text(progress.model) || text(args.model),
+    usage: [['↑', usage.inputTokens], ['↓', usage.outputTokens]].flatMap(([label, value]) =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0 ? [`${label}${formatTokensK(value)}`] : []).join(' '),
     state,
     finishedAt: toolCall.completed_at ?? toolCall.completedAt ?? 0,
-    preview: text(progress.preview),
-    step: steps[steps.length - 1] ?? '',
+    progress: { ...progress, preview: receipt || !resultPreview ? progress.preview : undefined,
+      tokens: progress.tokens ?? usage.totalTokens,
+      durationMs: progress.durationMs ?? toolCall.duration_ms ?? toolCall.durationMs },
     result: receipt ? '' : provider === 'opencode'
       ? (/^<subagent\b[^>]*>\s*([\s\S]*?)\s*<\/subagent>$/.exec(resultPreview.trim())?.[1]
         ?? resultPreview) : resultPreview,
-    error: toolCall.error ?? '',
+    error: toolCall.error || text(structured.error),
+    unrecorded: (provider === 'codex' || provider === 'claude') && receipt && status === 'completed',
   }
 }
 
@@ -149,9 +163,11 @@ export function ExternalSubagentEvents({ toolCalls, live = false }: { toolCalls:
   }).filter(agent => agent.id)
   if (agents.length === 0) return null
   const providers = new Map(agents.map(agent => [agent.id, agent.provider]))
-  const avatar = (agentId: string) => (
-    <ProviderIcon name={providerLabels[providers.get(agentId) ?? 'codex'].icon} size={18} className="shrink-0" />
-  )
+  const avatar = (agentId: string) => {
+    const icon = providerLabels[providers.get(agentId) ?? 'external'].icon
+    return icon ? <ProviderIcon name={icon} size={18} className="shrink-0" />
+      : <Bot size={18} className="shrink-0" aria-hidden="true" />
+  }
   const entry = (agent: ExternalSubagentView, status: SubagentTimelineStatus): SubagentTimelineEntry => ({
     agentId: agent.id, name: agent.name, status, parentToolCallId: '',
     afterSegmentId: null, afterOrder: null, textChars: null,
@@ -160,7 +176,7 @@ export function ExternalSubagentEvents({ toolCalls, live = false }: { toolCalls:
   const finished = agents.filter(agent => agent.state !== 'running')
     .sort((left, right) => left.finishedAt - right.finishedAt)
   const opened = agents.find(agent => agent.id === openId)
-  const output = opened?.result || (opened?.state === 'running' ? opened.preview || opened.step : '')
+  const output = opened?.result
   return <>
     <SubagentLifecycleEvent event={first} parallel={rest} live={live} avatar={avatar} onOpen={setOpenId} />
     {finished.map(agent => agent.state !== 'running' && <SubagentLifecycleEvent key={agent.id}
@@ -168,10 +184,15 @@ export function ExternalSubagentEvents({ toolCalls, live = false }: { toolCalls:
     {opened && <SubagentDialog title={opened.name} onClose={() => setOpenId(null)}>
       <div className="kv-agent-panel-scroll space-y-4 text-[13px] leading-6 custom-scrollbar">
         <article className="kv-agent-answer">
-          <h4>{opened.name}<AgentStatus state={opened.state} zh={zh} /></h4>
+          <h4>{opened.name}{!opened.unrecorded && <AgentStatus state={opened.state} zh={zh} />}</h4>
           {opened.model && <p className="break-words text-xs text-[var(--text-muted)]">{opened.model}</p>}
           {opened.prompt && <div><span className="text-xs text-[var(--text-muted)]">{zh ? '任务' : 'Task'}</span><AgentOutput content={opened.prompt} /></div>}
+          <AgentProgress value={opened.progress} zh={zh} />
+          {opened.usage && <p className="text-xs text-[var(--text-muted)]">{opened.usage} tokens</p>}
           {output && <div><span className="text-xs text-[var(--text-muted)]">{zh ? '回答' : 'Reply'}</span><AgentOutput content={output} /></div>}
+          {opened.unrecorded && <p className="text-xs text-[var(--text-muted)]">
+            {zh ? '这条旧记录没有保存后台子代理的结果，无法确认完成状态。' : 'This older record did not save the background subagent\'s result, so its final status is unknown.'}
+          </p>}
           {opened.error && <p role="alert" className="whitespace-pre-wrap break-words text-[var(--danger)]">{opened.error}</p>}
         </article>
       </div>
