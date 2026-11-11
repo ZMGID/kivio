@@ -444,6 +444,121 @@ mod tests {
     }
 
     #[test]
+    fn launch_identity_ignores_codex_ui_state_but_tracks_launch_settings() {
+        let def = crate::external_agents::registry::get_agent_def("codex").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("codex");
+        let config = temp.path().join("config.toml");
+        std::fs::write(&bin, b"executable").unwrap();
+        let environment = [("CODEX_HOME".into(), temp.path().as_os_str().to_owned())].into();
+        let capture = || LaunchIdentity::from_environment(def, &bin, Some(0), None, &environment);
+        let first = capture();
+        std::fs::write(
+            &config,
+            "[tui]\nscreen_reader_detection_done = true\n\n[desktop]\nfollowUpQueueMode = 'queue'\n\n[notice]\nhide_full_access_warning = true\n",
+        )
+        .unwrap();
+        assert_eq!(first, capture());
+
+        for setting in [
+            "model_provider = 'relay'",
+            "[model_providers.relay]\nbase_url = 'https://example.com/v1'",
+            "[mcp_servers.node]\ncommand = 'node'",
+            "approval_policy = 'never'",
+            "sandbox_mode = 'read-only'",
+            "[projects.'d:\\work']\ntrust_level = 'trusted'",
+            "[hooks.state.plugin]\ntrusted_hash = 'h'",
+            "[plugins.example]\nenabled = true",
+            "unknown_future_setting = true",
+            "invalid toml",
+        ] {
+            std::fs::write(&config, setting).unwrap();
+            assert_ne!(first, capture(), "{setting}");
+        }
+    }
+
+    #[test]
+    fn launch_identity_ignores_codex_token_rotation_but_tracks_account_changes() {
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use serde_json::json;
+
+        let def = crate::external_agents::registry::get_agent_def("codex").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("codex");
+        let auth = temp.path().join("auth.json");
+        let environment = [("CODEX_HOME".into(), temp.path().as_os_str().to_owned())].into();
+        let capture = || LaunchIdentity::from_environment(def, &bin, Some(0), None, &environment);
+        let account = |user: &str, workspace: &str, rotation: u64| {
+            let payload = URL_SAFE_NO_PAD.encode(
+                json!({
+                    "sub": user, "exp": rotation, "iat": rotation, "jti": rotation,
+                    "at_hash": format!("access-hash-{rotation}"), "rat": rotation,
+                    "https://api.openai.com/auth": {"chatgpt_user_id": user}
+                })
+                .to_string(),
+            );
+            json!({
+                "auth_mode": "chatgpt", "OPENAI_API_KEY": null,
+                "tokens": {"id_token": format!("header.{payload}.sig-{rotation}"),
+                    "access_token": format!("access-{rotation}"),
+                    "refresh_token": format!("refresh-{rotation}"), "account_id": workspace},
+                "last_refresh": rotation
+            })
+        };
+        std::fs::write(&auth, account("user-a", "workspace-a", 1).to_string()).unwrap();
+        let first = capture();
+        std::fs::write(&auth, account("user-a", "workspace-a", 2).to_string()).unwrap();
+        assert_eq!(first, capture());
+
+        for changed in [
+            account("user-b", "workspace-a", 2),
+            account("user-a", "workspace-b", 2),
+            json!({"auth_mode":"apikey", "OPENAI_API_KEY":"fixture-key"}),
+            json!({}),
+        ] {
+            std::fs::write(&auth, changed.to_string()).unwrap();
+            assert_ne!(first, capture());
+        }
+        for (path, value) in [
+            ("/auth_mode", json!("chatgptAuthTokens")),
+            ("/auth_mode", json!(42)),
+            ("/OPENAI_API_KEY", json!("fixture-key")),
+            ("/tokens/id_token", json!("invalid")),
+            ("/tokens/account_id", json!(null)),
+            ("/tokens/access_token", json!("")),
+        ] {
+            let mut changed = account("user-a", "workspace-a", 2);
+            *changed.pointer_mut(path).unwrap() = value;
+            std::fs::write(&auth, changed.to_string()).unwrap();
+            assert_ne!(first, capture(), "{path}");
+            let invalid = capture();
+            changed["tokens"]["refresh_token"] = json!("rotated-again");
+            std::fs::write(&auth, changed.to_string()).unwrap();
+            if path != "/OPENAI_API_KEY" {
+                assert_ne!(
+                    invalid,
+                    capture(),
+                    "{path} must retain raw credential changes"
+                );
+            }
+        }
+        for field in ["login_owner_id", "oauth_provenance", "unknown_future_field"] {
+            let mut changed = account("user-a", "workspace-a", 2);
+            changed["tokens"][field] = json!("changed");
+            std::fs::write(&auth, changed.to_string()).unwrap();
+            assert_ne!(first, capture(), "{field}");
+        }
+        let mut unidentified = account("", "workspace-a", 1);
+        std::fs::write(&auth, unidentified.to_string()).unwrap();
+        let unknown = capture();
+        unidentified["tokens"]["access_token"] = json!("rotated");
+        std::fs::write(&auth, unidentified.to_string()).unwrap();
+        assert_ne!(unknown, capture());
+        std::fs::remove_file(&auth).unwrap();
+        assert_ne!(first, capture());
+    }
+
+    #[test]
     fn manual_env_wins_over_provider_env() {
         let base = HashMap::from([
             (

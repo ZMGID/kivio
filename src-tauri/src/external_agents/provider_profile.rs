@@ -1185,33 +1185,133 @@ fn launch_config_file_revision(
         return Some(metadata_revision());
     }
     match (strategy, path.file_name().and_then(OsStr::to_str)) {
-        (ProviderProfileStrategy::Codex, Some("config.toml")) => {
+        (
+            ProviderProfileStrategy::Codex
+            | ProviderProfileStrategy::Grok
+            | ProviderProfileStrategy::Kimi,
+            Some("config.toml"),
+        ) => {
             if let Some(mut config) = std::str::from_utf8(&content)
                 .ok()
                 .and_then(|text| toml::from_str::<toml::Table>(text).ok())
             {
-                config.remove("model");
-                config.remove("model_reasoning_effort");
-                return (!config.is_empty())
+                if strategy == ProviderProfileStrategy::Codex {
+                    // Per-turn model choices and UI bookkeeping do not change the CLI runtime.
+                    for key in [
+                        "model",
+                        "model_reasoning_effort",
+                        "tui",
+                        "desktop",
+                        "notice",
+                    ] {
+                        config.remove(key);
+                    }
+                }
+                return (strategy != ProviderProfileStrategy::Codex || !config.is_empty())
                     .then(|| hasher.hash_one(toml::Value::Table(config).to_string()));
             }
         }
-        (ProviderProfileStrategy::Claude, Some(name)) if name != ".credentials.json" => {
-            if let Ok(mut config) = serde_json::from_slice::<Map<String, Value>>(&content) {
-                config.remove("model");
-                if let Some(env) = config.get_mut("env").and_then(Value::as_object_mut) {
-                    env.retain(|key, _| !CLAUDE_CHAT_MODEL_ENV_KEYS.contains(&key.as_str()));
-                    if env.is_empty() {
-                        config.remove("env");
+        (ProviderProfileStrategy::Codex, Some("auth.json")) => {
+            if let Some(auth) = codex_launch_auth(&content) {
+                return Some(hasher.hash_one(auth.to_string()));
+            }
+        }
+        (
+            ProviderProfileStrategy::Claude
+            | ProviderProfileStrategy::Pi
+            | ProviderProfileStrategy::OpenCode,
+            Some(name),
+        ) => {
+            let parsed = if strategy == ProviderProfileStrategy::OpenCode && name != "auth.json" {
+                std::str::from_utf8(&content)
+                    .ok()
+                    .and_then(|text| json5::from_str(text).ok())
+            } else {
+                serde_json::from_slice::<Map<String, Value>>(&content).ok()
+            };
+            if let Some(mut config) = parsed {
+                let claude_settings =
+                    strategy == ProviderProfileStrategy::Claude && name != ".credentials.json";
+                let pi_settings =
+                    strategy == ProviderProfileStrategy::Pi && name == "settings.json";
+                if claude_settings {
+                    config.remove("model");
+                    if let Some(env) = config.get_mut("env").and_then(Value::as_object_mut) {
+                        env.retain(|key, _| !CLAUDE_CHAT_MODEL_ENV_KEYS.contains(&key.as_str()));
+                        if env.is_empty() {
+                            config.remove("env");
+                        }
                     }
                 }
-                return (!config.is_empty())
+                if pi_settings {
+                    // Older Pi RPC versions persist per-turn selection; changelogs are UI state.
+                    for key in [
+                        "defaultProvider",
+                        "defaultModel",
+                        "defaultThinkingLevel",
+                        "lastChangelogVersion",
+                        "extensionChangelogVersions",
+                    ] {
+                        config.remove(key);
+                    }
+                }
+                let empty_is_default = claude_settings
+                    || pi_settings
+                    || (strategy == ProviderProfileStrategy::Pi && name == "auth.json");
+                return (!empty_is_default || !config.is_empty())
                     .then(|| hasher.hash_one(Value::Object(config).to_string()));
+            }
+        }
+        (ProviderProfileStrategy::Dsh, Some(".credentials.yaml")) => {
+            if let Some(Value::Object(config)) =
+                serde_yaml::from_slice::<serde_yaml::Value>(&content)
+                    .ok()
+                    .and_then(|value| serde_json::to_value(value).ok())
+            {
+                return Some(hasher.hash_one(Value::Object(config).to_string()));
             }
         }
         _ => {}
     }
     Some(hasher.hash_one(content))
+}
+
+fn codex_launch_auth(content: &[u8]) -> Option<Value> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    let mut auth: Value = serde_json::from_slice(content).ok()?;
+    if auth.get("auth_mode").is_some_and(|mode| mode != "chatgpt") {
+        return None;
+    }
+    let tokens = auth.get_mut("tokens")?.as_object_mut()?;
+    for key in ["account_id", "access_token", "refresh_token"] {
+        tokens.get(key)?.as_str().filter(|s| !s.trim().is_empty())?;
+    }
+    let mut parts = tokens.get("id_token")?.as_str()?.split('.');
+    let (header, payload, signature) = (parts.next()?, parts.next()?, parts.next()?);
+    if header.is_empty() || signature.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    let mut claims: Map<String, Value> =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+    let identity = claims.get("https://api.openai.com/auth")?;
+    identity
+        .get("chatgpt_user_id")
+        .or_else(|| identity.get("user_id"))?
+        .as_str()
+        .filter(|s| !s.trim().is_empty())?;
+    // Compare known ownership, not rotating secrets; Codex still validates the actual credentials.
+    claims.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "iss" | "sub" | "aud" | "https://api.openai.com/auth"
+        )
+    });
+    tokens.insert("id_token".into(), Value::Object(claims));
+    tokens.remove("access_token");
+    tokens.remove("refresh_token");
+    auth.as_object_mut()?.remove("last_refresh");
+    Some(auth)
 }
 
 /// claude 启动时要追加的 `--settings <path>`；无供应商 / 文件没物化成功时返回 None。
@@ -2975,6 +3075,135 @@ fn parse_native_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_revision_ignores_pi_selection_and_empty_auth_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let auth = dir.path().join("auth.json");
+        let hasher = std::collections::hash_map::RandomState::new();
+        let revision =
+            |path: &Path| launch_config_file_revision(path, ProviderProfileStrategy::Pi, &hasher);
+        let initial = revision(&settings);
+        std::fs::write(
+            &settings,
+            r#"{
+            "defaultProvider":"relay", "defaultModel":"model-b", "defaultThinkingLevel":"high",
+            "lastChangelogVersion":"1.5.2", "extensionChangelogVersions":{"example":"2"}
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(initial, revision(&settings));
+        let no_auth = revision(&auth);
+        std::fs::write(&auth, "{}").unwrap();
+        assert_eq!(no_auth, revision(&auth));
+        for value in [
+            r#"{"extensions":["./extension.ts"]}"#,
+            r#"{"compaction":{"enabled":false}}"#,
+            r#"{"modelThinkingLevels":{"relay/model-b":"low"}}"#,
+            r#"{"unknownFutureSetting":true}"#,
+            "invalid json",
+        ] {
+            std::fs::write(&settings, value).unwrap();
+            assert_ne!(initial, revision(&settings), "{value}");
+        }
+        std::fs::write(&auth, r#"{"relay":{"type":"api_key","key":"first"}}"#).unwrap();
+        let first = revision(&auth);
+        assert_ne!(no_auth, first);
+        std::fs::write(&auth, r#"{"relay":{"type":"api_key","key":"second"}}"#).unwrap();
+        assert_ne!(first, revision(&auth));
+    }
+
+    #[test]
+    fn launch_revision_compares_native_config_values_not_formatting() {
+        use ProviderProfileStrategy::*;
+        let dir = tempfile::tempdir().unwrap();
+        let hasher = std::collections::hash_map::RandomState::new();
+        for (strategy, file, before, formatted, changed) in [
+            (
+                Claude,
+                ".credentials.json",
+                r#"{"oauth":{"accessToken":"a","expiresAt":1}}"#,
+                "{\n \"oauth\": {\"expiresAt\":1, \"accessToken\":\"a\"}\n}",
+                r#"{"oauth":{"accessToken":"b","expiresAt":1}}"#,
+            ),
+            (
+                Pi,
+                "auth.json",
+                r#"{"p":{"type":"oauth","access":"a","refresh":"r","expires":1}}"#,
+                r#"{ "p": { "expires": 1, "refresh": "r", "access": "a", "type": "oauth" } }"#,
+                r#"{"p":{"type":"oauth","access":"b","refresh":"r","expires":1}}"#,
+            ),
+            (
+                Pi,
+                "models.json",
+                r#"{"providers":{"p":{"baseUrl":"https://one.example"}}}"#,
+                "{\n \"providers\": {\"p\": {\"baseUrl\":\"https://one.example\"}}\n}",
+                r#"{"providers":{"p":{"baseUrl":"https://two.example"}}}"#,
+            ),
+            (
+                OpenCode,
+                "auth.json",
+                r#"{"p":{"type":"api","key":"a"}}"#,
+                r#"{ "p": { "key": "a", "type": "api" } }"#,
+                r#"{"p":{"type":"api","key":"b"}}"#,
+            ),
+            (
+                OpenCode,
+                "opencode.jsonc",
+                r#"{"permission":{"bash":"ask"}}"#,
+                "// rewritten\n{\"permission\": {\"bash\": \"ask\",},}",
+                r#"{"permission":{"bash":"allow"}}"#,
+            ),
+            (
+                Grok,
+                "config.toml",
+                "api_key = 'a'\nmodel = 'one'\n",
+                "# rewritten\nmodel='one'\napi_key=\"a\"\n",
+                "api_key = 'b'\nmodel = 'one'\n",
+            ),
+            (
+                Kimi,
+                "config.toml",
+                "[providers.p]\napi_key = 'a'\n",
+                "# rewritten\n[providers.p]\napi_key=\"a\"\n",
+                "[providers.p]\napi_key = 'b'\n",
+            ),
+            (
+                Dsh,
+                ".credentials.yaml",
+                "version: 1\nrefs:\n  KEY: a\n",
+                "# rewritten\nrefs: { KEY: a }\nversion: 1\n",
+                "version: 1\nrefs:\n  KEY: b\n",
+            ),
+        ] {
+            let path = dir.path().join(file);
+            let revision = || launch_config_file_revision(&path, strategy, &hasher);
+            std::fs::write(&path, before).unwrap();
+            let first = revision();
+            std::fs::write(&path, formatted).unwrap();
+            assert_eq!(first, revision(), "{strategy:?}: {file}");
+            std::fs::write(&path, changed).unwrap();
+            assert_ne!(first, revision(), "{strategy:?}: {file}");
+            std::fs::write(&path, "invalid [{").unwrap();
+            let invalid = revision();
+            assert_ne!(first, invalid, "{strategy:?}: invalid {file}");
+            std::fs::write(&path, "different invalid [{").unwrap();
+            assert_ne!(invalid, revision(), "{strategy:?}: changed invalid {file}");
+        }
+    }
+
+    #[test]
+    fn launch_revision_does_not_hide_duplicate_yaml_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".credentials.yaml");
+        let hasher = std::collections::hash_map::RandomState::new();
+        let revision = || launch_config_file_revision(&path, ProviderProfileStrategy::Dsh, &hasher);
+        std::fs::write(&path, "version: 1\nrefs: {KEY: a}\n").unwrap();
+        let valid = revision();
+        std::fs::write(&path, "version: 1\nversion: 1\nrefs: {KEY: a}\n").unwrap();
+        assert_ne!(valid, revision());
+    }
 
     struct ProfileRoot;
     impl Drop for ProfileRoot {
