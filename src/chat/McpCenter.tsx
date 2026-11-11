@@ -4,7 +4,7 @@ import { ErrorNotice } from '../components/AppNotice'
 // 与 Skill 页同一套「凡是已加载的都列出来」；插件与网络搜索 MCP 只读（开关在各自设置页）。
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type CSSProperties } from 'react'
-import { ChevronDown, Loader2, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ChevronDown, FileJson, Loader2, Plus, RefreshCw, Search, Terminal, Trash2 } from 'lucide-react'
 import { McpIcon } from '../settings/public/icons'
 import { McpServerIcon } from './McpServerIcon'
 import { useLang, useT } from '../components/i18n'
@@ -15,17 +15,18 @@ import {
   type ChatNativeToolsConfig,
   type ChatToolsConfig,
   type CliImportScan,
-  type McpServerState,
   type McpServerStatePayload,
   type McpServerIcon as McpIconImage,
   type McpOAuthClient,
   type Settings,
 } from '../api/tauri'
 import { peekSettings, refreshSettings, subscribeSettings, updateSettingsCached } from '../api/settingsCache'
-import { Toggle, Select, Input } from '../settings/public/controls'
+import { Toggle, Select, Input, TextArea } from '../settings/public/controls'
 import { Button, IconButton } from '../components/Button'
+import { confirmDialog } from '../components/dialogQueue'
 import { McpRegistryBrowser } from './McpRegistryBrowser'
 import { SubagentRoleSettings } from './SubagentRoleSettings'
+import { AddMenuButton, CenterEmpty, CenterHeader, CenterSection, CenterTabs } from './market/PluginCenterParts'
 import {
   argsToText,
   CHAT_TOOL_TIMEOUT_PRESETS_MS,
@@ -51,26 +52,6 @@ import {
 
 type TestFeedback = { ok: boolean; message: string; icons?: McpIconImage[] }
 type OAuthClientDraft = { clientId: string; clientSecret?: string; scopesText?: string }
-
-function StatusDot({ state }: { state?: McpServerState }) {
-  const t = useT()
-  const kind = state?.kind ?? 'disconnected'
-  const color =
-    kind === 'connected' ? 'bg-emerald-500'
-    : kind === 'connecting' ? 'bg-amber-500'
-    : kind === 'error' ? 'bg-red-500'
-    : 'bg-neutral-300 dark:bg-neutral-600'
-  const label = kind === 'connected' ? t.chatMcpStatusConnected : kind === 'connecting' ? t.chatMcpStatusConnecting : kind === 'error' ? t.chatMcpStatusError : t.chatMcpStatusDisconnected
-  return (
-    <span className="inline-flex items-center gap-1.5 text-[11.5px] text-neutral-500 dark:text-neutral-400">
-      <span className={`h-2 w-2 rounded-full ${color}`} />
-      {label}
-    </span>
-  )
-}
-
-const TEXTAREA_CLASS =
-  'w-full rounded-md border border-neutral-200 bg-neutral-50 px-2.5 py-2 font-mono text-[12px] text-neutral-800 outline-none focus:border-neutral-300'
 
 export function McpCenter({ heading, conversationId }: { heading?: ReactNode; conversationId?: string } = {}) {
   const t = useT()
@@ -476,6 +457,48 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
     : kind === 'websearch' ? t.chatMcpSourceWebSearch
     : null
 
+  // 手动添加：建一条停用的 stdio 空白配置并直接展开编辑。
+  const handleAddManual = useCallback(() => {
+    const id = `manual-${typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : Date.now().toString(36)}`
+    const server: ChatMcpServer = {
+      id, name: t.chatMcpNewServerName, enabled: false, transport: 'stdio',
+      url: '', command: '', args: [], env: {}, headers: {}, cwd: null, enabledTools: [],
+    }
+    setQuery('')
+    setView('installed')
+    setExpandedId(id)
+    void mutateServers((list) => [...list, server])
+  }, [mutateServers, t])
+
+  const handleDeleteServer = useCallback(async (server: ChatMcpServer) => {
+    const ok = await confirmDialog({
+      title: t.chatMcpDeleteTitle,
+      message: t.chatMcpDeleteConfirm.replace('{name}', server.name),
+      confirmLabel: t.chatDelete,
+      danger: true,
+    })
+    if (!ok) return
+    setExpandedId((current) => (current === server.id ? null : current))
+    void mutateServers((list) => list.filter((s) => s.id !== server.id))
+  }, [mutateServers, t])
+
+  const handleStartCliImport = useCallback(() => {
+    setView('import')
+    void handleCliScan()
+  }, [handleCliScan])
+
+  const statusView = (server: ChatMcpServer) => {
+    if (!server.enabled) return { dot: 'bg-neutral-300 dark:bg-neutral-600', label: t.chatMcpDisabled, error: '' }
+    const state = states[server.id]?.state
+    const kind = state?.kind ?? 'disconnected'
+    if (kind === 'connected') return { dot: 'bg-emerald-500', label: t.chatMcpStatusConnected, error: '' }
+    if (kind === 'connecting') return { dot: 'bg-amber-500 animate-pulse', label: t.chatMcpStatusConnecting, error: '' }
+    if (kind === 'error') {
+      return { dot: 'bg-red-500', label: t.chatMcpStatusError, error: state?.kind === 'error' ? state.message : '' }
+    }
+    return { dot: 'bg-neutral-300 dark:bg-neutral-600', label: t.chatMcpStatusDisconnected, error: '' }
+  }
+
   const renderServerRow = (entry: McpInstalledEntry, idx: number) => {
     const { server, kind, manageLocked } = entry
     const expanded = expandedId === server.id
@@ -483,158 +506,159 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
     const feedback = testFeedback[server.id]
     const tag = sourceTag(kind)
     const note = lockedNote(kind)
+    const status = statusView(server)
+    const address = isHttp ? server.url : [server.command, ...server.args].filter(Boolean).join(' ')
+    const oauthKey = `${server.id}:${server.url}`
+    const actions = (
+      <div className="kv-mcp-actions">
+        <Button size="sm" onClick={() => void handleTest(server)} disabled={testingId === server.id}>
+          {testingId === server.id && <Loader2 size={12} className="animate-spin" />}
+          {t.chatMcpTestConnection}
+        </Button>
+        {isHttp && (
+          <Button size="sm" variant="ghost" onClick={() => void handleOauth(entry)} disabled={oauthId !== null}>
+            {oauthId === server.id && <Loader2 size={12} className="animate-spin" />}
+            {t.chatMcpOauthAuthorize}
+          </Button>
+        )}
+        {feedback && (
+          <span className={`kv-mcp-feedback ${feedback.ok ? 'is-ok' : 'is-error'}`}>{feedback.message}</span>
+        )}
+        {!manageLocked && (
+          <Button size="sm" variant="danger" className="is-end" onClick={() => void handleDeleteServer(server)}>
+            <Trash2 size={13} />
+            {t.chatMcpDeleteTitle}
+          </Button>
+        )}
+      </div>
+    )
     return (
       <div
         key={server.id}
         style={{ '--chat-motion-delay': `${Math.min(idx, 8) * 24}ms` } as CSSProperties}
-        className="chat-motion-fade-up overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300"
+        className={`kv-mcp-row chat-motion-fade-up${expanded ? ' is-open' : ''}`}
       >
-        <div className="flex items-center gap-3 px-4 py-3">
+        <div className="kv-mcp-row-head">
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+            className="kv-mcp-row-main"
+            aria-expanded={expanded}
             onClick={() => setExpandedId(expanded ? null : server.id)}
             data-tauri-drag-region="false"
           >
-            <ChevronDown size={15} className={`shrink-0 text-neutral-400 transition-transform ease-kv-standard ${expanded ? 'rotate-180' : ''}`} />
-            <McpServerIcon icons={feedback?.icons ?? states[server.id]?.icons} />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="truncate text-[13.5px] font-medium">{server.name}</span>
-                <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">{isHttp ? 'http' : 'stdio'}</span>
-                {tag && (
-                  <span className="shrink-0 rounded bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">{tag}</span>
-                )}
-              </div>
-              <div className="mt-0.5 flex items-center gap-3">
-                {server.enabled ? <StatusDot state={states[server.id]?.state} /> : <span className="text-[11.5px] text-neutral-400">{t.chatMcpDisabled}</span>}
-                <span className="truncate font-mono text-[10.5px] text-neutral-400">{isHttp ? server.url : [server.command, ...server.args].filter(Boolean).join(' ')}</span>
-              </div>
-            </div>
+            <span className="kv-mcp-row-icon">
+              <McpServerIcon icons={feedback?.icons ?? states[server.id]?.icons} />
+              <span className={`kv-mcp-row-dot ${status.dot}`} aria-hidden="true" />
+            </span>
+            <span className="kv-mcp-row-text">
+              <span className="kv-mcp-row-title">
+                <strong>{server.name}</strong>
+                <span className="kv-skill-chip">{isHttp ? 'HTTP' : 'stdio'}</span>
+                {tag && <span className="kv-skill-chip">{tag}</span>}
+              </span>
+              <span className="kv-mcp-row-sub">
+                <span className={`kv-mcp-row-status${status.error ? ' is-error' : ''}`} title={status.error || undefined}>{status.label}</span>
+                {address && <code>{address}</code>}
+              </span>
+            </span>
+            <ChevronDown size={15} className="kv-mcp-row-chevron" aria-hidden="true" />
           </button>
-          <span title={manageLocked ? note : undefined}>
+          <span className="kv-mcp-row-actions" title={manageLocked ? note : undefined}>
             <Toggle
               checked={server.enabled}
               disabled={manageLocked}
               onChange={(enabled) => toggleServerEnabled(server.id, enabled)}
-              ariaLabel={manageLocked ? note : undefined}
+              ariaLabel={manageLocked ? note : t.chatMcpEnableNamed.replace('{name}', server.name)}
             />
           </span>
-          {manageLocked ? null : (
-            <IconButton size="sm" variant="danger" label={t.chatDelete} onClick={() => void mutateServers((list) => list.filter((s) => s.id !== server.id))} data-tauri-drag-region="false">
-              <Trash2 size={14} />
-            </IconButton>
-          )}
         </div>
 
         {expanded && (
-          <div className="chat-motion-search-reveal space-y-3 border-t border-neutral-100 px-4 py-3">
-            {isHttp && (
-              <>
-              {isBuiltinGithubOAuth(server.url) && <p className="text-[12px] text-neutral-500">{t.chatMcpGithubBuiltin}</p>}
-              <details open={oauthAppOpen[`${server.id}:${server.url}`] ?? false}
-                onToggle={(event) => {
-                  const open = event.currentTarget.open
-                  setOauthAppOpen((prev) => prev[`${server.id}:${server.url}`] === open ? prev : { ...prev, [`${server.id}:${server.url}`]: open })
-                }}>
-                <summary className="cursor-pointer text-[12px] text-neutral-500">{isBuiltinGithubOAuth(server.url) ? t.chatMcpOauthAdvancedApp : t.chatMcpOauthApp}</summary>
-                <div className="mt-2 space-y-2">
-                  <p className="text-[12px] text-neutral-500">{t.chatMcpOauthAppHint}</p>
-                  {(['clientId', 'clientSecret', 'scopesText'] as const).map((field) => (
-                    <label key={field} className="block text-[12px]">
-                      {field === 'clientId' ? 'Client ID' : field === 'clientSecret' ? 'Client Secret' : 'Scopes'}
-                      <input className={TEXTAREA_CLASS} type={field === 'clientSecret' ? 'password' : 'text'}
-                        autoComplete="off" disabled={oauthId === server.id}
-                        value={oauthClientFor(server)[field] ?? ''}
-                        placeholder={field === 'scopesText' ? t.chatMcpOauthScopes : field === 'clientSecret' ? t.chatMcpOauthOptional : ''}
-                        onChange={(event) => {
-                          const text = event.target.value
-                          setOauthClients((prev) => ({ ...prev, [`${server.id}:${server.url}`]: { ...oauthClientFor(server), [field]: text } }))
-                        }} />
-                    </label>
-                  ))}
-                </div>
-              </details>
-              </>
-            )}
+          <div className="kv-mcp-row-body chat-motion-search-reveal">
+            {status.error && <p className="kv-mcp-feedback is-error">{status.error}</p>}
             {manageLocked ? (
               <>
-                {note && (
-                  <p className="text-[12px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-                    {note}
-                  </p>
-                )}
-                <div className="font-mono text-[12px] text-neutral-500 dark:text-neutral-400">
-                  {isHttp ? server.url : [server.command, ...server.args].filter(Boolean).join(' ')}
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button size="sm" onClick={() => void handleTest(server)} disabled={testingId === server.id} data-tauri-drag-region="false">
-                    {testingId === server.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpTestConnection}
-                  </Button>
-                  {isHttp && (
-                    <Button size="sm" variant="ghost" onClick={() => void handleOauth(entry)} disabled={oauthId !== null} data-tauri-drag-region="false">
-                      {oauthId === server.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpOauthAuthorize}
-                    </Button>
-                  )}
-                </div>
-                {feedback && (
-                  <div className={`text-[12px] ${feedback.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>{feedback.message}</div>
-                )}
+                {note && <p className="kv-mcp-note">{note}</p>}
+                {address && <code className="kv-skill-detail-path">{address}</code>}
               </>
             ) : (
-              <>
-                <div>
-                  <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">{t.chatMcpName}</label>
+              <div className="kv-mcp-form">
+                <label className="kv-mcp-field">
+                  {t.chatMcpName}
                   <Input value={server.name} onChange={(name) => updateServer(server.id, { name })} />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">{t.chatMcpTransport}</label>
+                </label>
+                <div className="kv-mcp-field">
+                  {t.chatMcpTransport}
                   <Select
-                    value={server.transport === 'streamable_http' ? 'streamable_http' : 'stdio'}
+                    value={isHttp ? 'streamable_http' : 'stdio'}
                     onChange={(transport) => updateServer(server.id, { transport })}
+                    ariaLabel={t.chatMcpTransport}
                     options={[{ value: 'stdio', label: t.chatMcpTransportStdio }, { value: 'streamable_http', label: t.chatMcpTransportHttp }]}
                   />
                 </div>
                 {isHttp ? (
-                  <div>
-                    <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">URL</label>
-                    <Input mono value={server.url} onChange={(url) => updateServer(server.id, { url })} />
-                  </div>
+                  <>
+                    <label className="kv-mcp-field is-wide">
+                      URL
+                      <Input mono value={server.url} onChange={(url) => updateServer(server.id, { url })} placeholder="https://example.com/mcp" />
+                    </label>
+                    <label className="kv-mcp-field is-wide">
+                      {t.chatMcpHeadersLabel}
+                      <TextArea mono rows={2} maxRows={8} value={envToText(server.headers)} onChange={(text) => updateServer(server.id, { headers: textToEnv(text) })} />
+                    </label>
+                  </>
                 ) : (
                   <>
-                    <div>
-                      <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">{t.chatMcpCommand}</label>
+                    <label className="kv-mcp-field is-wide">
+                      {t.chatMcpCommand}
                       <Input mono value={server.command} onChange={(command) => updateServer(server.id, { command })} placeholder="npx" />
-                    </div>
-                    <div>
-                      <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">{t.chatMcpArgsLabel}</label>
-                      <textarea className={TEXTAREA_CLASS} rows={2} value={argsToText(server.args)} onChange={(e) => updateServer(server.id, { args: textToArgs(e.target.value) })} data-tauri-drag-region="false" />
-                    </div>
+                    </label>
+                    <label className="kv-mcp-field">
+                      {t.chatMcpArgsLabel}
+                      <TextArea mono rows={2} maxRows={8} value={argsToText(server.args)} onChange={(text) => updateServer(server.id, { args: textToArgs(text) })} />
+                    </label>
+                    <label className="kv-mcp-field">
+                      {t.chatMcpEnvLabel}
+                      <TextArea mono rows={2} maxRows={8} value={envToText(server.env)} onChange={(text) => updateServer(server.id, { env: textToEnv(text) })} />
+                    </label>
                   </>
                 )}
-                <div>
-                  <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">{t.chatMcpEnvLabel}</label>
-                  <textarea className={TEXTAREA_CLASS} rows={2} value={envToText(server.env)} onChange={(e) => updateServer(server.id, { env: textToEnv(e.target.value) })} data-tauri-drag-region="false" />
-                </div>
-                <div>
-                  <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">{t.chatMcpHeadersLabel}</label>
-                  <textarea className={TEXTAREA_CLASS} rows={2} value={envToText(server.headers)} onChange={(e) => updateServer(server.id, { headers: textToEnv(e.target.value) })} data-tauri-drag-region="false" />
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button size="sm" onClick={() => void handleTest(server)} disabled={testingId === server.id} data-tauri-drag-region="false">
-                    {testingId === server.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpTestConnection}
-                  </Button>
-                  {isHttp && (
-                    <Button size="sm" variant="ghost" onClick={() => void handleOauth(entry)} disabled={oauthId !== null} data-tauri-drag-region="false">
-                      {oauthId === server.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpOauthAuthorize}
-                    </Button>
-                  )}
-                </div>
-                {feedback && (
-                  <div className={`text-[12px] ${feedback.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}`}>{feedback.message}</div>
-                )}
+              </div>
+            )}
+            {isHttp && (
+              <>
+                {isBuiltinGithubOAuth(server.url) && <p className="kv-mcp-note">{t.chatMcpGithubBuiltin}</p>}
+                <details
+                  className="kv-mcp-oauth"
+                  open={oauthAppOpen[oauthKey] ?? false}
+                  onToggle={(event) => {
+                    const open = event.currentTarget.open
+                    setOauthAppOpen((prev) => prev[oauthKey] === open ? prev : { ...prev, [oauthKey]: open })
+                  }}
+                >
+                  <summary>{isBuiltinGithubOAuth(server.url) ? t.chatMcpOauthAdvancedApp : t.chatMcpOauthApp}</summary>
+                  <p className="kv-mcp-note mb-2.5">{t.chatMcpOauthAppHint}</p>
+                  <div className="kv-mcp-oauth-fields">
+                    {(['clientId', 'clientSecret', 'scopesText'] as const).map((field) => (
+                      <label key={field} className="kv-mcp-field">
+                        {field === 'clientId' ? 'Client ID' : field === 'clientSecret' ? 'Client Secret' : 'Scopes'}
+                        <Input
+                          type={field === 'clientSecret' ? 'password' : 'text'}
+                          autoComplete="off"
+                          disabled={oauthId === server.id}
+                          value={oauthClientFor(server)[field] ?? ''}
+                          placeholder={field === 'scopesText' ? t.chatMcpOauthScopes : field === 'clientSecret' ? t.chatMcpOauthOptional : ''}
+                          onChange={(text) => {
+                            setOauthClients((prev) => ({ ...prev, [oauthKey]: { ...oauthClientFor(server), [field]: text } }))
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </details>
               </>
             )}
+            {actions}
           </div>
         )}
       </div>
@@ -659,141 +683,193 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
     </div>
   )
 
+  const mcpOff = Boolean(settings) && !(chatTools?.enabled ?? false) && installedEntries.length > 0
+
+  const installedView = (
+    <div key="installed" className="chat-motion-tab-in">
+      {mcpOff && (
+        <div className="kv-center-banner">
+          <span>{t.chatMcpOffBanner}</span>
+          <Button size="sm" variant="primary" onClick={() => persistChatTools({ enabled: true })}>{t.chatMcpTurnOn}</Button>
+        </div>
+      )}
+      {installedEntries.length > 0 && (
+        <div className="kv-center-toolbar">
+          <label className="kv-center-search">
+            <Input value={query} onChange={setQuery} placeholder={t.chatMcpSearchPlaceholder} aria-label={t.chatMcpSearchPlaceholder} />
+          </label>
+        </div>
+      )}
+      {loading ? (
+        <div className="space-y-2" aria-busy="true">
+          {Array.from({ length: 3 }, (_, i) => <div key={i} className="kv-skeleton kv-market-skeleton" />)}
+        </div>
+      ) : installedEntries.length === 0 ? (
+        <CenterEmpty
+          icon={<McpIcon size={22} />}
+          title={t.chatMcpEmptyTitle}
+          description={t.chatMcpEmptyDesc}
+          actions={<>
+            <Button variant="primary" onClick={() => setView('store')}>{t.chatMcpBrowseStore}</Button>
+            <Button onClick={handleAddManual}><Plus size={14} />{t.chatMcpAddManual}</Button>
+            <Button variant="ghost" onClick={() => void handleImportJson()}>{t.chatMcpAddImportJson}</Button>
+          </>}
+        />
+      ) : listedEntries.length === 0 ? (
+        <div className="kv-market-empty">
+          <p>{t.chatMcpNoMatch}</p>
+          <Button size="sm" onClick={() => setQuery('')}>{t.chatSkillClearSearch}</Button>
+        </div>
+      ) : (
+        <div className="kv-center-sections">
+          {([
+            ['user', t.chatMcpSectionUser, t.chatMcpUserNote],
+            ['connector', t.chatMcpSectionConnector, t.chatMcpConnectorNote],
+            ['websearch', t.chatMcpSectionWebSearch, t.chatMcpWebSearchNote],
+            ['plugin', t.chatMcpSectionPlugin, t.chatMcpPluginNote],
+          ] as const).map(([kind, title, note]) => {
+            const rows = entriesOfKind(listedEntries, kind)
+            if (rows.length === 0) return null
+            const enabledCount = rows.filter((entry) => entry.server.enabled).length
+            return (
+              <CenterSection
+                key={kind}
+                title={title}
+                count={rows.length}
+                meta={t.chatSkillsEnabledCount.replace('{n}', String(enabledCount))}
+                note={note}
+              >
+                <div className="kv-mcp-list">
+                  {rows.map((entry, idx) => renderServerRow(entry, idx))}
+                </div>
+              </CenterSection>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+
+  const importView = (
+    <div key="import" className="chat-motion-tab-in kv-center-cards">
+      <section className="kv-center-card">
+        <div className="kv-center-card-head">
+          <span className="kv-market-icon" aria-hidden="true"><FileJson size={17} /></span>
+          <div>
+            <strong>{t.chatMcpImportJsonTitle}</strong>
+            <p>{t.chatMcpImportJsonDesc}</p>
+          </div>
+          <Button onClick={() => void handleImportJson()}>
+            <FolderOpen open size={14} />
+            {t.chatMcpImportJsonPick}
+          </Button>
+        </div>
+      </section>
+
+      <section className="kv-center-card">
+        <div className="kv-center-card-head">
+          <span className="kv-market-icon" aria-hidden="true"><Terminal size={17} /></span>
+          <div>
+            <strong>{t.chatMcpImportCliTitle}</strong>
+            <p>{t.chatMcpImportCliDesc}</p>
+          </div>
+          <Button onClick={() => void handleCliScan()} disabled={cliScanning}>
+            {cliScanning ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+            {t.chatMcpScan}
+          </Button>
+        </div>
+
+        {cliScan && (
+          <div className="kv-center-card-body">
+            {([['claude', 'Claude Code'], ['codex', 'Codex'], ['opencode', 'OpenCode'], ['pi', 'Pi']] as const).map(([key, label]) => {
+              const group = cliScan[key]
+              return (
+                <div key={key} className="kv-center-picklist-group">
+                  <div className="kv-center-picklist-title">
+                    {label}
+                    {!group.available ? <small>{t.chatMcpCliNotDetected}</small> : group.servers.length === 0 ? <small>{t.chatMcpCliNoServers}</small> : <small>{group.servers.length}</small>}
+                  </div>
+                  {group.available && group.servers.length > 0 && (
+                    <div className="kv-center-picklist">
+                      {group.servers.map((server) => {
+                        const isHttp = server.transport === 'streamable_http'
+                        return (
+                          <label key={server.id} data-tauri-drag-region="false">
+                            <input type="checkbox" checked={cliSelected.has(server.id)} onChange={() => toggleCliSelected(server.id)} />
+                            <span>
+                              <strong>{server.name}</strong>
+                              <small>{isHttp ? server.url : [server.command, ...server.args].filter(Boolean).join(' ')}</small>
+                            </span>
+                            <span className="kv-skill-chip flex-none">{isHttp ? 'HTTP' : 'stdio'}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            <div className="kv-mcp-actions mt-3">
+              <Button variant="primary" onClick={() => void handleCliImportSelected()} disabled={cliSelected.size === 0}>
+                {t.chatMcpCliImportSelected.replace('{n}', String(cliSelected.size))}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {cliImportDone && <div className="kv-center-done">{cliImportDone}</div>}
+      </section>
+    </div>
+  )
+
   return (
-    <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900">
+    <div className="assistant-center-root kv-market flex h-full min-h-0 flex-col" data-tauri-drag-region="false">
       <OAuthDeviceDialog prompt={devicePrompt} onCancel={cancelOAuth} lang={lang} />
 
-      <main className={heading ? "kv-market-scroll custom-scrollbar" : "custom-scrollbar min-h-0 flex-1 overflow-y-auto"}>
-        <div className={heading ? "flex h-full min-h-0 w-full flex-col pb-4" : "mx-auto flex h-full min-h-0 w-full max-w-[1040px] flex-col px-9 pb-10 pt-7"}>
-          <div className="border-b border-neutral-200 pb-5">
-            {heading ?? (<h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950">
-              <McpIcon size={24} className="text-neutral-500" />
-              MCP
-            </h1>)}
-            <div className="mt-3.5 flex min-w-0 items-center gap-4">
-              <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-                {t.chatMcpSubtitle}
-              </p>
-              <IconButton size="lg" label={t.chatMcpRefresh} onClick={() => void loadSettings()} data-tauri-drag-region="false">
-                <RefreshCw size={17} />
+      <main className={heading ? 'kv-market-scroll custom-scrollbar' : 'kv-market-scroll custom-scrollbar pt-7'}>
+        <div className="w-full pb-4">
+          <CenterHeader
+            heading={heading ?? (
+              <h1 className="flex items-center gap-2.5">
+                <McpIcon size={24} className="text-[var(--color-muted-foreground)]" />
+                MCP
+              </h1>
+            )}
+            subtitle={t.chatMcpSubtitle}
+            actions={<>
+              <IconButton size="md" label={t.chatMcpRefresh} onClick={() => void loadSettings()}>
+                <RefreshCw size={16} />
               </IconButton>
-            </div>
-          </div>
+              <AddMenuButton
+                label={t.chatCenterAdd}
+                items={[
+                  { key: 'store', label: t.chatMcpAddFromStore, icon: <Search size={14} />, onSelect: () => setView('store') },
+                  { key: 'manual', label: t.chatMcpAddManual, icon: <Plus size={14} />, onSelect: handleAddManual },
+                  { key: 'json', label: t.chatMcpAddImportJson, icon: <FileJson size={14} />, onSelect: () => void handleImportJson() },
+                  { key: 'cli', label: t.chatMcpAddFromCli, icon: <Terminal size={14} />, onSelect: handleStartCliImport },
+                ]}
+              />
+            </>}
+          />
 
-          <div className="mt-5 flex items-center gap-1 border-b border-neutral-200">
-            {([['installed', t.chatMcpTabInstalled], ['store', t.chatMcpTabStore], ['import', t.chatMcpTabImport], ['advanced', t.chatMcpTabAdvanced]] as const).map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setView(id)}
-                data-tauri-drag-region="false"
-                className={`relative px-3 py-2 text-[13px] font-medium transition-colors ${
-                  view === id ? 'text-neutral-900' : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
-                }`}
-              >
-                {label}
-                {id === 'installed' && installedEntries.length > 0 && (
-                  <span className="ml-1.5 text-[11px] tabular-nums text-neutral-400">{installedEntries.length}</span>
-                )}
-                {view === id && <span className="chat-motion-tab-underline absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-accent" />}
-              </button>
-            ))}
-          </div>
+          <CenterTabs
+            value={view}
+            onChange={setView}
+            tabs={[
+              { id: 'installed', label: t.chatMcpTabInstalled, count: installedEntries.length },
+              { id: 'store', label: t.chatMcpTabStore },
+              { id: 'import', label: t.chatMcpTabImport },
+              { id: 'advanced', label: t.chatMcpTabAdvanced },
+            ]}
+          />
 
-          {error && (
-            <ErrorNotice message={error} />
-          )}
+          {error && <ErrorNotice message={error} />}
 
           {view === 'store' ? (
-            <div key="store" className="chat-motion-tab-in mt-5 flex min-h-[420px] flex-col">
+            <div key="store" className="chat-motion-tab-in flex min-h-[420px] flex-col">
               <McpRegistryBrowser existingServers={servers} onInstall={handleInstall} />
             </div>
-          ) : view === 'import' ? (
-            <div key="import" className="chat-motion-tab-in mt-5 space-y-4">
-              <div className="rounded-md border border-neutral-200 p-3">
-                <div className="mb-1.5 text-[13px] font-medium text-neutral-800">{t.chatMcpImportJsonTitle}</div>
-                <p className="mb-2 text-[12px] text-neutral-500 dark:text-neutral-400">{t.chatMcpImportJsonDesc}</p>
-                <Button onClick={() => void handleImportJson()} data-tauri-drag-region="false">
-                  <FolderOpen open size={14} />
-                  {t.chatMcpImportJsonPick}
-                </Button>
-              </div>
-
-              <div className="rounded-md border border-neutral-200 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="mb-1.5 text-[13px] font-medium text-neutral-800">{t.chatMcpImportCliTitle}</div>
-                    <p className="text-[12px] text-neutral-500 dark:text-neutral-400">
-                      {t.chatMcpImportCliDesc}
-                    </p>
-                  </div>
-                  <Button onClick={() => void handleCliScan()} disabled={cliScanning} data-tauri-drag-region="false">
-                    {cliScanning ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
-                    {t.chatMcpScan}
-                  </Button>
-                </div>
-
-                {cliScan && (
-                  <div className="mt-3 space-y-3">
-                    {([['claude', 'Claude Code'], ['codex', 'Codex'], ['opencode', 'OpenCode'], ['pi', 'Pi']] as const).map(([key, label]) => {
-                      const group = cliScan[key]
-                      return (
-                        <div key={key}>
-                          <div className="mb-1.5 flex items-center gap-2 text-[12px] font-medium text-neutral-600">
-                            {label}
-                            {!group.available && <span className="text-[11px] font-normal text-neutral-400">{t.chatMcpCliNotDetected}</span>}
-                          </div>
-                          {group.available && (
-                            group.servers.length === 0 ? (
-                              <div className="rounded-md border border-dashed border-neutral-200 px-3 py-2 text-[11.5px] text-neutral-400">
-                                {t.chatMcpCliNoServers}
-                              </div>
-                            ) : (
-                              <div className="overflow-hidden rounded-md border border-neutral-200 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
-                                {group.servers.map((server) => {
-                                  const isHttp = server.transport === 'streamable_http'
-                                  return (
-                                    <label
-                                      key={server.id}
-                                      className="flex cursor-pointer items-center gap-2.5 px-3 py-2"
-                                      data-tauri-drag-region="false"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={cliSelected.has(server.id)}
-                                        onChange={() => toggleCliSelected(server.id)}
-                                        className="size-3.5 shrink-0 accent-[var(--accent)]"
-                                      />
-                                      <div className="min-w-0 flex-1">
-                                        <div className="flex items-center gap-2">
-                                          <span className="truncate text-[12.5px] font-medium text-neutral-800">{server.name}</span>
-                                          <span className="shrink-0 rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">{isHttp ? 'http' : 'stdio'}</span>
-                                        </div>
-                                        <div className="truncate font-mono text-[10.5px] text-neutral-400">
-                                          {isHttp ? server.url : [server.command, ...server.args].filter(Boolean).join(' ')}
-                                        </div>
-                                      </div>
-                                    </label>
-                                  )
-                                })}
-                              </div>
-                            )
-                          )}
-                        </div>
-                      )
-                    })}
-                    <Button onClick={() => void handleCliImportSelected()} disabled={cliSelected.size === 0} data-tauri-drag-region="false">
-                      {t.chatMcpCliImportSelected.replace('{n}', String(cliSelected.size))}
-                    </Button>
-                  </div>
-                )}
-
-                {cliImportDone && (
-                  <div className="mt-2 text-[12px] text-emerald-600 dark:text-emerald-400">{cliImportDone}</div>
-                )}
-              </div>
-            </div>
-          ) : view === 'advanced' ? (
+          ) : view === 'import' ? importView : view === 'advanced' ? (
             <div key="advanced" className="chat-motion-tab-in mt-5 space-y-6">
               <section>
                 <div className="mb-2 text-[13px] font-semibold text-neutral-800">{t.chatMcpNativeToolsTitle}</div>
@@ -895,63 +971,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
                 </div>
               </section>
             </div>
-          ) : (
-            <div key="installed" className="chat-motion-tab-in">
-              <div className="relative mt-6">
-                <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder={t.chatMcpSearchPlaceholder}
-                  className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 text-neutral-900"
-                  data-tauri-drag-region="false"
-                />
-              </div>
-              <div className="mt-6 space-y-5">
-              {loading ? (
-                <div className="space-y-2">
-                  {Array.from({ length: 3 }, (_, i) => (
-                    <div key={i} className="rounded-xl border border-neutral-200/80 px-4 py-3">
-                      <div className="kv-skeleton h-4 w-1/4 rounded" />
-                      <div className="kv-skeleton mt-2 h-3 w-1/2 rounded" />
-                    </div>
-                  ))}
-                </div>
-              ) : installedEntries.length === 0 ? (
-                <div className="grid min-h-[220px] place-items-center rounded-md border border-dashed border-neutral-200 px-6 text-center text-[13px] text-neutral-400">
-                  {t.chatMcpNoServers}
-                </div>
-              ) : listedEntries.length === 0 ? (
-                <div className="grid min-h-[120px] place-items-center rounded-md border border-dashed border-neutral-200 px-6 text-center text-[13px] text-neutral-400">
-                  {t.chatMcpNoMatch}
-                </div>
-              ) : (
-                ([
-                  ['user', t.chatMcpSectionUser, t.chatMcpUserNote],
-                  ['connector', t.chatMcpSectionConnector, t.chatMcpConnectorNote],
-                  ['websearch', t.chatMcpSectionWebSearch, t.chatMcpWebSearchNote],
-                  ['plugin', t.chatMcpSectionPlugin, t.chatMcpPluginNote],
-                ] as const).map(([kind, title, note]) => {
-                  const rows = entriesOfKind(listedEntries, kind)
-                  if (rows.length === 0) return null
-                  return (
-                    <section key={kind} className="space-y-2.5">
-                      <div className="flex min-w-0 items-center gap-3 px-1">
-                        <h3 className="text-[15px] font-semibold text-neutral-700">{title}</h3>
-                        <span className="text-[14px] font-medium text-neutral-400">{rows.length}</span>
-                        <span className="ml-auto truncate text-[12.5px] text-neutral-400">{note}</span>
-                      </div>
-                      <div className="space-y-2">
-                        {rows.map((entry, idx) => renderServerRow(entry, idx))}
-                      </div>
-                    </section>
-                  )
-                })
-              )}
-              </div>
-            </div>
-          )}
+          ) : installedView}
         </div>
       </main>
     </div>

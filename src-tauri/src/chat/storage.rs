@@ -74,10 +74,9 @@ use assistants::{assistant_is_available, retire_cua_mcp_server_ids};
 use conversations::{
     read_restart_goal, remove_conversation_side_artifacts, restart_goal_candidates_in_dir,
 };
+pub(crate) use index::conversation_file_ids_in_dir;
 #[cfg(test)]
-use index::{
-    conversation_file_ids_in_dir, index_covers_files, load_index_in_dir, load_index_or_scan_in_dir,
-};
+use index::{index_covers_files, load_index_in_dir, load_index_or_scan_in_dir};
 #[cfg(test)]
 use migration::has_non_empty_value;
 #[cfg(test)]
@@ -739,6 +738,16 @@ mod index_self_heal_tests {
         .unwrap();
         assert_eq!(conversation.revision, 0);
         assert_eq!(ConversationListItem::from(&conversation).revision, Some(0));
+    }
+
+    #[test]
+    fn index_scan_failure_is_not_an_empty_conversation_list() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("conversations");
+        fs::write(&dir, "not a directory").unwrap();
+
+        assert!(load_index_or_scan_in_dir(&dir).is_err());
+        assert_eq!(fs::read_to_string(&dir).unwrap(), "not a directory");
     }
 
     #[test]

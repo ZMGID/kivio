@@ -51,6 +51,41 @@ it('shows the sanitized server icon from a connected snapshot', async () => {
   await waitFor(() => expect(container.querySelector('img')).toHaveAttribute('src', src))
 })
 
+it('clears a search when adding a server, expands it for editing, and retains edits after collapse', async () => {
+  render(<LangContext.Provider value="zh"><McpCenter /></LangContext.Provider>)
+  const search = await screen.findByRole('textbox', { name: '搜索 MCP 服务器...' })
+  fireEvent.change(search, { target: { value: 'no-such-server' } })
+  expect(screen.queryByRole('button', { name: /github/ })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: '添加' }))
+  fireEvent.click(screen.getByRole('menuitem', { name: '手动添加' }))
+  const name = await screen.findByLabelText('名称')
+  expect(search).toHaveValue('')
+  fireEvent.change(name, { target: { value: 'Local Test' } })
+  await waitFor(() => expect(mocks.settings.chatTools.servers.some(server => server.name === 'Local Test')).toBe(true))
+  fireEvent.click(screen.getByRole('button', { name: /Local Test/ }))
+  expect(screen.queryByLabelText('名称')).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: /Local Test/ }))
+  expect(screen.getByLabelText('名称')).toHaveValue('Local Test')
+})
+
+it('keeps a server when deletion is cancelled and removes it only after confirmation', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  try {
+    render(<LangContext.Provider value="zh"><McpCenter /></LangContext.Provider>)
+    fireEvent.click(await screen.findByRole('button', { name: /github/ }))
+    fireEvent.click(screen.getByRole('button', { name: '删除 MCP 服务器' }))
+    await waitFor(() => expect(confirm).toHaveBeenCalledOnce())
+    expect(mocks.settings.chatTools.servers).toHaveLength(1)
+    expect(screen.getByLabelText('名称')).toBeVisible()
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: '删除 MCP 服务器' }))
+    await waitFor(() => expect(mocks.settings.chatTools.servers).toHaveLength(0))
+    expect(screen.queryByRole('button', { name: /github/ })).toBeNull()
+  } finally {
+    confirm.mockRestore()
+  }
+})
+
 it('ignores an icon snapshot that finishes after a disconnect event', async () => {
   let finish!: (status: McpServerStatus) => void
   let listener: ((payload: McpServerStatePayload) => void) | undefined

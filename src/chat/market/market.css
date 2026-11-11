@@ -97,3 +97,135 @@
 .kv-market-capability:last-child { border-bottom: 0; }
 .kv-market-capability .kv-market-component { min-width: 0; flex: 1; border: 0; }
 .kv-market-capability-icon { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 30px; height: 30px; border-radius: 8px; background: var(--color-muted); color: var(--color-muted-foreground); }
+
+/* ===== Skill / MCP 页（PluginCenterParts）=====
+   与插件页同一套语言：分组标题带细分隔线、两列紧凑行、浅色轨道分段控件。 */
+.kv-plugin-segment[aria-pressed="true"] { background: var(--bg-input); color: var(--text); box-shadow: var(--shadow-sm); }
+.kv-plugin-segment-count { margin-left: 4px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+
+.kv-center-tabs { display: flex; align-items: center; gap: 2px; margin-bottom: 16px; border-bottom: 1px solid var(--color-border); }
+.kv-center-tab { position: relative; display: inline-flex; align-items: center; padding: 8px 10px; border: 0; background: transparent; color: var(--color-muted-foreground); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; border-radius: 6px 6px 0 0; transition: color var(--kv-dur-fast) var(--kv-ease-out); }
+.kv-center-tab:hover, .kv-center-tab[aria-current="page"] { color: var(--text); }
+.kv-center-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.kv-center-tab-count { margin-left: 5px; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.kv-center-tab-underline { position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; border-radius: 999px; background: var(--accent); }
+
+.kv-center-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.kv-center-toolbar > .kv-center-search { flex: 1; min-width: 0; }
+@container (max-width: 520px) { .kv-center-toolbar { flex-wrap: wrap; } .kv-center-toolbar > .kv-center-search { flex-basis: 100%; } }
+
+.kv-center-sections { display: flex; flex-direction: column; gap: 20px; }
+.kv-center-section-head { display: flex; align-items: center; gap: 12px; min-width: 0; margin-bottom: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--color-border); }
+.kv-center-section.is-empty .kv-center-section-head { margin-bottom: 0; padding-bottom: 6px; border-bottom-color: transparent; }
+.kv-center-section-toggle { display: inline-flex; align-items: center; gap: 6px; flex: none; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: default; border-radius: 6px; }
+button.kv-center-section-toggle { cursor: pointer; }
+button.kv-center-section-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kv-center-section-toggle h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
+.kv-center-section.is-empty .kv-center-section-toggle h3 { font-weight: 500; color: var(--color-muted-foreground); }
+.kv-center-section-count { font-size: 12px; color: var(--color-muted-foreground); font-variant-numeric: tabular-nums; }
+.kv-center-section-meta { font-size: 12px; color: var(--text-faint); }
+.kv-center-section-note { flex: 1; min-width: 0; overflow: hidden; text-align: right; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-faint); }
+.kv-center-section-chevron { flex: none; color: var(--text-faint); transition: transform var(--kv-dur-fast) var(--kv-ease-standard); }
+.kv-center-section-chevron.is-open { transform: rotate(90deg); }
+.kv-center-section-empty { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 0 2px 2px; font-size: 12px; color: var(--text-faint); }
+
+.kv-center-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 56px 24px; text-align: center; }
+.kv-center-empty-icon { display: grid; place-items: center; width: 48px; height: 48px; margin-bottom: 6px; border-radius: 14px; background: var(--color-muted); color: var(--color-muted-foreground); }
+.kv-center-empty strong { font-size: 15px; font-weight: 600; color: var(--text); }
+.kv-center-empty p { max-width: 420px; margin: 0; font-size: 13px; line-height: 1.6; color: var(--color-muted-foreground); }
+.kv-center-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 12px; }
+
+/* 页内提醒（例如 MCP 总开关关闭） */
+.kv-center-banner { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 10px 12px; border-radius: 10px; background: var(--color-muted); font-size: 12.5px; color: var(--text); }
+.kv-center-banner > span { flex: 1; min-width: 0; }
+
+/* 导入页：一块一个来源 */
+.kv-center-cards { display: flex; flex-direction: column; gap: 12px; }
+.kv-center-card { padding: 14px 16px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--theme-surface); }
+.kv-center-card-head { display: flex; align-items: flex-start; gap: 12px; }
+.kv-center-card-head > div { flex: 1; min-width: 0; }
+.kv-center-card-head strong { display: block; font-size: 13.5px; font-weight: 600; }
+.kv-center-card-head p { margin: 3px 0 0; font-size: 12px; line-height: 1.6; color: var(--color-muted-foreground); }
+.kv-center-card-body { margin-top: 12px; }
+.kv-center-card-row { display: flex; align-items: center; gap: 8px; }
+.kv-center-picklist { overflow: hidden; border: 1px solid var(--color-border); border-radius: 10px; }
+.kv-center-picklist > label { display: flex; align-items: center; gap: 10px; padding: 8px 12px; cursor: pointer; transition: background-color var(--kv-dur-fast) var(--kv-ease-out); }
+.kv-center-picklist > label + label { border-top: 1px solid var(--color-border); }
+.kv-center-picklist > label:hover { background: var(--bg-hover); }
+.kv-center-picklist > label > span { min-width: 0; flex: 1; }
+.kv-center-picklist input[type="checkbox"] { width: 14px; height: 14px; flex: none; accent-color: var(--accent); }
+.kv-center-picklist strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 500; }
+.kv-center-picklist small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--text-faint); }
+.kv-center-picklist-group + .kv-center-picklist-group { margin-top: 12px; }
+.kv-center-picklist-title { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; font-weight: 500; color: var(--color-muted-foreground); }
+.kv-center-picklist-title small { font-weight: 400; color: var(--text-faint); }
+.kv-center-done { margin-top: 10px; font-size: 12px; color: var(--color-muted-foreground); }
+
+/* 技能行：左侧主体是打开详情的按钮，右侧开关独立，避免交互控件互相嵌套。 */
+.kv-skill-row { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 7px 6px 7px 4px; border-radius: 10px; transition: background-color var(--kv-dur-fast) var(--kv-ease-out); }
+.kv-skill-row:hover { background: var(--bg-hover); }
+.kv-skill-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: 8px; }
+.kv-skill-row-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.kv-skill-row-text { min-width: 0; }
+.kv-skill-row-text strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 600; }
+.kv-skill-row-text > span { display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--color-muted-foreground); }
+.kv-skill-row .kv-market-icon, .kv-skill-row-text strong { transition: opacity var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out); }
+.kv-skill-row.is-off .kv-market-icon { opacity: .5; }
+.kv-skill-row.is-off .kv-skill-row-text strong { color: var(--color-muted-foreground); }
+.kv-skill-row-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.kv-skill-row-reveal { opacity: 0; transition: opacity var(--kv-dur-fast) var(--kv-ease-out); }
+.kv-skill-row:hover .kv-skill-row-reveal, .kv-skill-row:focus-within .kv-skill-row-reveal { opacity: 1; }
+.kv-skill-row-state { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+
+/* 技能详情：沿用 kv-modal，只放宽尺寸。 */
+.kv-modal.kv-skill-detail { display: none; width: min(680px, calc(100vw - 48px)); max-width: 680px; max-height: min(84vh, 760px); padding: 18px 18px 14px; flex-direction: column; gap: 12px; }
+.kv-modal.kv-skill-detail[open] { display: flex; }
+.kv-skill-detail-head { display: flex; align-items: flex-start; gap: 12px; }
+.kv-skill-detail-head > div { flex: 1; min-width: 0; }
+.kv-skill-detail-head h2 { margin: 0; font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.kv-skill-detail-head p { margin: 4px 0 0; font-size: 13px; line-height: 1.6; color: var(--color-muted-foreground); }
+.kv-skill-detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; font-size: 12px; color: var(--color-muted-foreground); }
+.kv-skill-chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; background: var(--color-muted); font-size: 11.5px; line-height: 18px; color: var(--color-muted-foreground); white-space: nowrap; }
+.kv-skill-detail-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; color: var(--text-faint); }
+.kv-skill-detail-body { flex: 1; min-height: 120px; overflow-y: auto; padding: 4px 14px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--theme-surface-soft); }
+.kv-skill-detail-foot { display: flex; align-items: center; gap: 8px; }
+.kv-skill-detail-foot .kv-market-load { margin-left: auto; }
+
+/* MCP 服务器行：头部一行（图标 + 状态点、名称、地址、开关），展开后编辑。 */
+.kv-mcp-list { display: flex; flex-direction: column; gap: 6px; }
+.kv-mcp-row { border: 1px solid var(--color-border); border-radius: 12px; background: var(--theme-surface); transition: border-color var(--kv-dur-fast) var(--kv-ease-out), box-shadow var(--kv-dur-fast) var(--kv-ease-out); }
+.kv-mcp-row:hover, .kv-mcp-row.is-open { border-color: var(--theme-surface-border-strong); }
+.kv-mcp-row.is-open { box-shadow: var(--shadow-sm); }
+.kv-mcp-row-head { display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; }
+.kv-mcp-row-main { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: 8px; }
+.kv-mcp-row-main:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.kv-mcp-row-icon { position: relative; display: grid; place-items: center; flex: none; width: 36px; height: 36px; border-radius: 10px; background: var(--color-muted); color: var(--color-muted-foreground); }
+.kv-mcp-row-icon img { width: 24px; height: 24px; }
+.kv-mcp-row-dot { position: absolute; right: -3px; bottom: -3px; width: 10px; height: 10px; border: 2px solid var(--theme-surface); border-radius: 999px; }
+.kv-mcp-row-text { flex: 1; min-width: 0; }
+.kv-mcp-row-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.kv-mcp-row-title strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 600; }
+.kv-mcp-row-sub { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 2px; font-size: 12px; color: var(--color-muted-foreground); }
+.kv-mcp-row-sub code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; color: var(--text-faint); }
+.kv-mcp-row-status { flex: none; white-space: nowrap; }
+.kv-mcp-row-status.is-error { color: var(--danger); }
+.kv-mcp-row-chevron { flex: none; color: var(--text-faint); transition: transform var(--kv-dur-fast) var(--kv-ease-standard); }
+.kv-mcp-row.is-open .kv-mcp-row-chevron { transform: rotate(180deg); }
+.kv-mcp-row-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.kv-mcp-row-body { display: flex; flex-direction: column; gap: 14px; padding: 14px 16px 16px; border-top: 1px solid var(--color-border); }
+.kv-mcp-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+.kv-mcp-form .is-wide { grid-column: 1 / -1; }
+@container (max-width: 560px) { .kv-mcp-form { grid-template-columns: minmax(0, 1fr); } }
+.kv-mcp-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; font-weight: 500; color: var(--color-muted-foreground); }
+.kv-mcp-field small { font-weight: 400; color: var(--text-faint); }
+.kv-mcp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.kv-mcp-actions .is-end { margin-left: auto; }
+.kv-mcp-feedback { font-size: 12px; overflow-wrap: anywhere; }
+.kv-mcp-feedback.is-ok { color: var(--color-muted-foreground); }
+.kv-mcp-feedback.is-error { color: var(--danger); }
+.kv-mcp-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--color-muted-foreground); }
+.kv-mcp-oauth summary { cursor: pointer; font-size: 12px; color: var(--color-muted-foreground); }
+.kv-mcp-oauth summary:hover { color: var(--text); }
+.kv-mcp-oauth[open] summary { margin-bottom: 10px; }
+.kv-mcp-oauth-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+@container (max-width: 640px) { .kv-mcp-oauth-fields { grid-template-columns: minmax(0, 1fr); } }

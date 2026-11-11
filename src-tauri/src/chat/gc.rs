@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use tauri::{AppHandle, Manager};
 
-use super::storage::conversations_dir;
+use super::storage::{conversation_file_ids_in_dir, conversations_dir};
 
 /// 一次 GC 的统计（用于日志与单测断言）。
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -85,7 +85,13 @@ fn sweep_with_roots(app: &AppHandle) -> GcReport {
     let Ok(conversations) = conversations_dir(app) else {
         return report;
     };
-    let alive = alive_conversation_ids(&conversations);
+    let alive: HashSet<String> = match conversation_file_ids_in_dir(&conversations) {
+        Ok(ids) => ids.into_iter().collect(),
+        Err(error) => {
+            eprintln!("[chat-gc] skip cleanup: {error}");
+            return report;
+        }
+    };
 
     // ① + ② 工作区：Kivio 数据目录下的 chat-workspaces/，以及用户配置的内置 runtime 工作根。
     let mut workspace_roots: Vec<PathBuf> = Vec::new();
@@ -122,26 +128,6 @@ fn sweep_with_roots(app: &AppHandle) -> GcReport {
     sweep_attachment_dirs(&conversations, &alive, &mut report);
 
     report
-}
-
-/// 现存会话 id（只读文件名，不反序列化任何正文）。
-fn alive_conversation_ids(conversations_dir: &Path) -> HashSet<String> {
-    let mut alive = HashSet::new();
-    let Ok(entries) = fs::read_dir(conversations_dir) else {
-        return alive;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            if is_conversation_dir_name(stem) {
-                alive.insert(stem.to_string());
-            }
-        }
-    }
-    alive
 }
 
 /// 扫一个工作区根：仅删除会话已不存在的空目录。
@@ -558,7 +544,11 @@ mod tests {
     #[test]
     fn sweep_attachment_dirs_removes_only_dead_conversations() {
         let root = temp_root("att");
-        let alive: HashSet<String> = ["conv_alive".to_string()].into_iter().collect();
+        fs::write(root.join("conv_alive.json"), "{ unreadable history").unwrap();
+        let alive = conversation_file_ids_in_dir(&root)
+            .unwrap()
+            .into_iter()
+            .collect();
 
         let alive_dir = root.join("conv_alive_attachments");
         fs::create_dir_all(&alive_dir).unwrap();

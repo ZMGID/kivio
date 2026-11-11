@@ -79,7 +79,7 @@ fn merge_missing_conversations(
 
 pub(crate) fn load_index_or_scan(app: &AppHandle) -> Result<ConversationIndex, String> {
     let dir = conversations_dir(app)?;
-    let file_ids = conversation_file_ids_in_dir(&dir).unwrap_or_default();
+    let file_ids = conversation_file_ids_in_dir(&dir)?;
     let mut cache = conversation_index_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -110,7 +110,7 @@ pub(crate) fn load_index_or_scan(app: &AppHandle) -> Result<ConversationIndex, S
 /// / `repository::persist_locked` / `bulk_mutate_loaded` / `delete_conversation`）。这里顺手
 /// `save_index` 会绕开那把锁，和并发的持久化 lost update——刚存的会话会在侧栏短暂消失。
 pub(super) fn load_index_or_scan_in_dir(dir: &Path) -> Result<(ConversationIndex, bool), String> {
-    let file_ids = conversation_file_ids_in_dir(dir).unwrap_or_default();
+    let file_ids = conversation_file_ids_in_dir(dir)?;
     match load_index_in_dir(dir) {
         Ok(index) if index_covers_files(&index, &file_ids) => Ok((index, false)),
         Ok(index) => Ok((merge_missing_conversations(dir, index, &file_ids), true)),
@@ -133,10 +133,10 @@ pub(super) fn index_covers_files(index: &ConversationIndex, file_ids: &[String])
 
 /// 纯逻辑:扫描给定目录,收集有效对话 id(只看文件名,不读内容)。
 /// `validate_conversation_id` 要求 `conv_` 前缀 → 天然排除 index/projects/assistants.json。
-pub(super) fn conversation_file_ids_in_dir(dir: &Path) -> Result<Vec<String>, String> {
+pub(crate) fn conversation_file_ids_in_dir(dir: &Path) -> Result<Vec<String>, String> {
     let mut ids = Vec::new();
     for entry in fs::read_dir(dir).map_err(|e| format!("read conversations dir: {e}"))? {
-        let Ok(entry) = entry else { continue };
+        let entry = entry.map_err(|e| format!("read conversation directory entry: {e}"))?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;

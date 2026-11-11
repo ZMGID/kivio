@@ -889,6 +889,9 @@ export const Sidebar = memo(function Sidebar({
           for (const result of results) if (result.status === 'rejected') throw result.reason
         } catch (err) {
           console.error('Failed to load chat sidebar data:', err)
+          if (isCurrent() && !request.queued) {
+            notifyError(`${t.chatSidebarLoadFailed}\n${err instanceof Error ? err.message : String(err)}`)
+          }
         } finally {
           if (isCurrent()) setLoading(false)
         }
@@ -898,7 +901,7 @@ export const Sidebar = memo(function Sidebar({
       if (sidebarRequestRef.current === request) sidebarRequestRef.current = null
     })
     return request.promise
-  }, [])
+  }, [t.chatSidebarLoadFailed])
 
   useEffect(() => {
     // Initial state already shows the skeleton. Subsequent invalidations keep

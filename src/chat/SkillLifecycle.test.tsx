@@ -429,7 +429,7 @@ describe('skill import, enable, and delete lifetime', () => {
       gate.resolve()
     })
     render(<SkillCenter />)
-    expect(await screen.findByText('当前没有个人技能。')).toBeTruthy()
+    expect(await screen.findByText('还没有技能')).toBeTruthy()
     expect(screen.queryByText('Alpha Skill')).toBeNull()
   })
 
@@ -521,6 +521,48 @@ describe('store install marker follows the inventory skill', () => {
 })
 
 describe('skill preview ownership', () => {
+  it('filters skills, exposes matches in collapsed groups, and restores the group after clearing search', async () => {
+    installed = [
+      skill('alpha', { name: 'Alpha Pack' }),
+      skill('builtin', { name: 'Builtin Pack', source: 'builtin' }),
+    ]
+    currentSettings.chatTools.disabledSkillIds = ['alpha']
+    render(<SkillCenter />)
+    await screen.findByText('Alpha Pack')
+    expect(screen.queryByText('Builtin Pack')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^已停用/ }))
+    expect(screen.getByText('Alpha Pack')).toBeVisible()
+    expect(screen.queryByText('Builtin Pack')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^全部/ }))
+    const search = screen.getByRole('textbox', { name: '搜索技能...' })
+    fireEvent.change(search, { target: { value: 'builtin' } })
+    expect(screen.getByText('Builtin Pack')).toBeVisible()
+    // 搜索时强制展示匹配结果，不提供点了也无法收起的分组按钮。
+    expect(screen.queryByRole('button', { name: /^内置技能/ })).toBeNull()
+    fireEvent.change(search, { target: { value: 'no-such-skill' } })
+    fireEvent.click(screen.getByRole('button', { name: '清除搜索' }))
+    expect(search).toHaveValue('')
+    expect(screen.getByText('Alpha Pack')).toBeVisible()
+    expect(screen.queryByText('Builtin Pack')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^内置技能/ }))
+    expect(screen.getByText('Builtin Pack')).toBeVisible()
+  })
+
+  it('closes the skill detail on Escape and returns focus to its opener', async () => {
+    installed = [skill('alpha', { name: 'Alpha Pack' })]
+    vi.mocked(api.chatSkillsRead).mockResolvedValue({ success: true, skill: previewDetail('alpha', 'Alpha Pack') })
+    render(<SkillCenter />)
+    const opener = await screen.findByRole('button', { name: /^Alpha Pack/ })
+    opener.focus()
+    fireEvent.click(opener)
+    const dialog = await screen.findByRole('dialog', { name: 'Alpha Pack' })
+    expect(within(dialog).getByText('Alpha Pack body')).toBeVisible()
+    fireEvent(dialog, new Event('cancel', { cancelable: true }))
+    fireEvent.animationEnd(dialog)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(opener).toHaveFocus()
+  })
+
   it('ignores a preview failure after unmount and after newer feedback', async () => {
     installed = [skill('alpha', { name: 'Alpha Pack' })]
     const first = deferred<SkillReadResult>()

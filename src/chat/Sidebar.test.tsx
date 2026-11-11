@@ -7,6 +7,8 @@ import { chatApi } from './api'
 import { api, type UpdateInfo } from '../api/tauri'
 import * as dialogs from '../components/dialogQueue'
 import * as nativeDialog from '@tauri-apps/plugin-dialog'
+import { AppNoticeHost } from '../components/AppNotice'
+import { dismissNotice, getNotices } from '../components/appNoticeStore'
 import { Sidebar, type SidebarProps } from './Sidebar'
 import type { ChatProject, Conversation, ConversationListItem } from './types'
 
@@ -47,6 +49,7 @@ function conversation(id: string, title: string, project: ChatProject): Conversa
 
 afterEach(() => {
   vi.restoreAllMocks()
+  act(() => getNotices().forEach(notice => dismissNotice(notice.id)))
 })
 
 beforeEach(() => {
@@ -476,6 +479,25 @@ describe('Sidebar refresh lifecycle', () => {
     render(<StrictMode><Sidebar {...props} /></StrictMode>)
     expect(await screen.findByRole('button', { name: latest.title })).toBeInTheDocument()
     expect(screen.queryByLabelText('加载中')).not.toBeInTheDocument()
+  })
+
+  it('reports failed history reads, recovers on refresh, and keeps previously loaded chats', async () => {
+    const { reads, props } = setup()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    reads.mockRejectedValueOnce(new Error('read conversations dir: access denied'))
+    const view = render(<><Sidebar {...props} /><AppNoticeHost lang="zh" /></>)
+    expect(await screen.findByRole('alert')).toHaveTextContent('侧栏加载失败')
+    expect(screen.getByRole('alert')).toHaveTextContent('access denied')
+
+    const latest = { ...conversation('recovered', 'Recovered history', project1), project_id: undefined, folder: undefined }
+    reads.mockResolvedValue([latest])
+    view.rerender(<><Sidebar {...props} refreshKey={1} /><AppNoticeHost lang="zh" /></>)
+    expect(await screen.findByRole('button', { name: latest.title })).toBeInTheDocument()
+
+    reads.mockRejectedValueOnce('read conversations dir: temporarily unavailable')
+    view.rerender(<><Sidebar {...props} refreshKey={2} /><AppNoticeHost lang="zh" /></>)
+    expect(await screen.findByText(/temporarily unavailable/, { selector: '[role="alert"]' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: latest.title })).toBeInTheDocument()
   })
 
   it('coalesces refreshes during a slow read and publishes the final catalog', async () => {
