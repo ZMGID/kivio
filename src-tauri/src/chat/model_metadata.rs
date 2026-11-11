@@ -1228,10 +1228,10 @@ mod tests {
             ("hy3-preview", "hy3-preview"),
             ("grok-imagine-image", "grok-imagine-image"),
             ("grok-imagine-image-2.0", "grok-imagine-image-2.0"),
-            (
-                "grok-imagine-image-quality-draft",
-                "grok-imagine-image-quality",
-            ),
+            ("grok-imagine-image-2.0-draft", "grok-imagine-image-2.0"),
+            ("claude-fable-5.2", "claude-fable-5-2"),
+            ("gemini-4-carbon", "gemini-4-carbon"),
+            ("openai/gpt-image-2.6-flare", "openai/gpt-image-2.6-flare"),
             ("vendor-tag-gemma4:31b", "gemma4:31b"),
         ] {
             assert_eq!(
