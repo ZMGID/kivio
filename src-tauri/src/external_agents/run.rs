@@ -4720,8 +4720,15 @@ fn apply_unified_event(
             preview,
             steps,
         } => {
-            if let Some(record) = find_dsh_subagent_record(tool_calls, &task_id, None)
-                .filter(|record| status != "running" || matches!(record.status, ToolCallStatus::Pending | ToolCallStatus::Running)) {
+            if let Some(record) =
+                find_dsh_subagent_record(tool_calls, &task_id, None).filter(|record| {
+                    status != "running"
+                        || matches!(
+                            record.status,
+                            ToolCallStatus::Pending | ToolCallStatus::Running
+                        )
+                })
+            {
                 merge_subagent_progress(record, &preview, &steps, &status, &task_id);
                 emit_chat_tool_record(app, run_id, record);
                 crate::chat::protocol::emit_run_event(

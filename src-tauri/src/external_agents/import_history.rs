@@ -832,7 +832,10 @@ pub fn parse_acp_updates(updates: &[Value]) -> Vec<ImportedMessage> {
     let mut pending = Pending::default();
 
     for update in updates {
-        if update.as_object().is_some_and(super::session::acp::is_acp_child_update) {
+        if update
+            .as_object()
+            .is_some_and(super::session::acp::is_acp_child_update)
+        {
             continue;
         }
         let kind = update
