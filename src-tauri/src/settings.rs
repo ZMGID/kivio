@@ -3492,6 +3492,26 @@ fn read_settings_document(
         Err(error) => Err(format!("Cannot read settings JSON: {error}")),
     }
 }
+
+fn decode_stored_settings(value: serde_json::Value) -> Result<Settings, String> {
+    if let Ok(settings) = serde_json::from_value(value.clone()) {
+        return Ok(settings);
+    }
+    let fields = value.as_object().ok_or("Settings must be a JSON object")?;
+    let mut recovered = serde_json::Map::new();
+    // Isolate incompatible sections so an old preference cannot discard providers and other settings.
+    for (key, value) in fields {
+        let candidate = serde_json::json!({key: value});
+        if serde_json::from_value::<Settings>(candidate).is_ok() {
+            recovered.insert(key.clone(), value.clone());
+        } else {
+            eprintln!("[settings] using defaults for incompatible section: {key}");
+        }
+    }
+    serde_json::from_value(serde_json::Value::Object(recovered))
+        .map_err(|_| "Cannot recover settings; existing file preserved".into())
+}
+
 fn write_settings_document(
     path: &std::path::Path,
     document: &serde_json::Map<String, serde_json::Value>,
@@ -3509,10 +3529,23 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
         .map_err(|e| e.to_string())?
         .join(SETTINGS_STORE);
     let previous = read_settings_document(&path)?;
+    if previous
+        .get("settings")
+        .is_some_and(|value| serde_json::from_value::<Settings>(value.clone()).is_err())
+    {
+        let backup =
+            path.with_file_name(format!("settings-recovery-{}.json", uuid::Uuid::new_v4()));
+        write_settings_document(&backup, &previous)?;
+        eprintln!(
+            "[settings] preserved incompatible settings at {}",
+            backup.display()
+        );
+    }
     let previous_settings = previous
         .get("settings")
         .cloned()
-        .and_then(|value| serde_json::from_value(value).ok())
+        .map(decode_stored_settings)
+        .transpose()?
         .map(sanitize_settings)
         .unwrap_or_default();
     let mut next = previous.clone();
@@ -3643,9 +3676,14 @@ pub fn load_settings(app: &AppHandle) -> Settings {
         .path()
         .app_data_dir()
         .ok()
-        .and_then(|root| read_settings_document(&root.join(SETTINGS_STORE)).ok())
+        .and_then(|root| {
+            let path = root.join(SETTINGS_STORE);
+            read_settings_document(&path)
+                .map_err(|error| eprintln!("[settings] {}: {error}", path.display()))
+                .ok()
+        })
         .and_then(|mut document| document.remove("settings"))
-        .and_then(|value| serde_json::from_value(value).ok())
+        .and_then(|value| decode_stored_settings(value).ok())
         .unwrap_or_default();
     sanitize_settings(settings)
 }
@@ -3995,6 +4033,32 @@ mod tests {
         std::fs::write(&path, "invalid-json").unwrap();
         assert!(super::read_settings_document(&path).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid-json");
+        for settings in [
+            serde_json::Value::Null,
+            serde_json::json!({"providers": "invalid"}),
+        ] {
+            let incompatible =
+                serde_json::to_vec(&serde_json::json!({"settings": settings})).unwrap();
+            std::fs::write(&path, &incompatible).unwrap();
+            assert!(super::read_settings_document(&path).is_ok());
+            assert_eq!(std::fs::read(&path).unwrap(), incompatible);
+        }
+        let legacy = serde_json::json!({
+            "theme": null,
+            "uiFontScale": "old-format",
+            "targetLang": "ja",
+            "providers": [{"id": "saved", "name": "Saved", "baseUrl": "https://example.com", "apiKeys": ["saved-key"]}],
+            "futurePreference": true
+        });
+        let recovered = super::decode_stored_settings(legacy).unwrap();
+        assert_eq!(recovered.target_lang, "ja");
+        assert_eq!(recovered.providers.len(), 1);
+        assert_eq!(recovered.providers[0].api_keys, vec!["saved-key"]);
+        assert_eq!(
+            recovered.ui_font_scale,
+            super::Settings::default().ui_font_scale
+        );
+        assert!(super::decode_stored_settings(serde_json::Value::Null).is_err());
     }
     use std::cell::RefCell;
 
