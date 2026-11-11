@@ -19,7 +19,7 @@ describe('ComposerAddMenu', () => {
 
     fireEvent.click(screen.getByLabelText('添加'))
     expect(screen.getByText('添加附件')).toBeTruthy()
-    expect(screen.getByText('添加文件夹')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '添加参考目录' })).toBeTruthy()
     expect(screen.getByText('Biz')).toBeTruthy()
     expect(screen.queryByText('从其他项目添加')).toBeNull()
 
@@ -32,7 +32,7 @@ describe('ComposerAddMenu', () => {
 
     fireEvent.click(screen.getByLabelText('添加'))
     expect(screen.getByText('添加附件')).toBeTruthy()
-    expect(screen.queryByText('添加文件夹')).toBeNull()
+    expect(screen.queryByRole('button', { name: '添加参考目录' })).toBeNull()
   })
 
   it('nests sources under the plus menu', () => {
