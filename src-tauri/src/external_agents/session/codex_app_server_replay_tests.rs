@@ -21,6 +21,7 @@ async fn offline_replay_recorded_codex_turn_emits_text_usage_and_delivery() {
         emitted_tools: HashSet::new(),
         active_turn_id: None,
         seen_turn_ids: HashSet::new(),
+        subagent_replies: HashMap::new(),
         approval_policy: "never",
         sandbox_policy: json!({"type":"dangerFullAccess"}),
         plan_mode: false,

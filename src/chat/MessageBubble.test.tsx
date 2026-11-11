@@ -166,6 +166,39 @@ describe('assistant body visibility', () => {
     expect(screen.getByText('项目用途已了解，等待子代理。')).toBeVisible()
   })
 
+  it('shows Codex subagents as lifecycle rows with their replies', () => {
+    HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
+    HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open') }
+    const message: ChatMessage = {
+      id: 'codex-subagents', role: 'assistant', timestamp: 1, content: '都完成了。',
+      segments: [
+        { id: 'spawn-a', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'call_a' },
+        { id: 'spawn-b', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'call_b' },
+        { id: 'answer', kind: 'text', phase: 'synthesis', order: 3, text: '都完成了。' },
+      ],
+      tool_calls: [
+        {
+          id: 'call_a', name: 'subagent', source: 'external_cli', status: 'success', result_preview: '391',
+          arguments: JSON.stringify({ provider: 'codex', description: 'TestAlpha', prompt: '计算 17 × 23' }),
+          completed_at: 2,
+        },
+        {
+          id: 'call_b', name: 'subagent', source: 'external_cli', status: 'running',
+          arguments: JSON.stringify({ provider: 'codex', description: 'TestBeta', prompt: '排序' }),
+        },
+      ],
+    }
+    render(<MessageBubble message={message} conversationId="root" />)
+    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    const alphaStart = screen.getByRole('button', { name: 'TestAlpha 开始工作' })
+    expect(alphaStart.parentElement).toHaveTextContent('TestAlpha和TestBeta 开始工作')
+    expect(screen.queryByText('SUBAGENT')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'TestBeta 已完成' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'TestAlpha 已完成' }))
+    expect(screen.getByText('计算 17 × 23')).toBeInTheDocument()
+    expect(screen.getByText('391')).toBeInTheDocument()
+  })
+
   it('folds recorded subagent events under Worked without changing their order around the answer', () => {
     const before = '开始前 🔎'
     const between = '主助手继续查看文件。'

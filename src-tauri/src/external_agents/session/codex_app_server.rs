@@ -1,5 +1,5 @@
 use crate::external_agents::session::live::TurnDelivery;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1040,7 +1040,7 @@ fn emit_thread_item(
         Some("collabToolCall") | Some("collabAgentToolCall") => {
             emit_collab_tool_call(item, emitted_tools, sink, include_result);
         }
-        Some("subAgentActivity") => emit_subagent_activity(item, sink),
+        Some("subAgentActivity") => emit_subagent_activity(item, emitted_tools, sink),
         Some("contextCompaction") => {
             if include_result {
                 sink(UnifiedAgentEvent::CliCompacted {
@@ -1218,31 +1218,157 @@ fn emit_plan_update(params: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) {
     });
 }
 
+// ---- Codex 原生子代理 ----
+//
+// 一个子线程 = 一个子代理 = 一张 `subagent` 卡（卡上 `provider: "codex"`，前端画成子代理时间线行）。
+// 派出有两种上报：旧版 `collabAgentToolCall {tool:"spawnAgent", receiverThreadIds}`，
+// 新版 `subAgentActivity {kind:"started", agentThreadId, agentPath}`。两者按子线程 id 去重。
+// `wait` / `closeAgent` / `sendInput` 等调用不建卡，只把 `agentsStates[线程]` 的
+// `{status, message}` 写回对应子代理；`subAgentActivity` 的 completed / interrupted 同理。
+// 子代理的回答在子线程自己的 `agentMessage` 里，由 `run_turn` 收集后补进终态摘要。
+// 状态都记在 `emitted_tools` 里（按键前缀区分），重放 item/started + item/completed 时幂等。
+
+const CODEX_SUBAGENT_THREAD: &str = "codex-subagent-thread:";
+const CODEX_SUBAGENT_DONE: &str = "codex-subagent-done:";
+const CODEX_SUBAGENT_TITLE_CHARS: usize = 72;
+
+fn codex_subagent_known(emitted_tools: &HashSet<String>, thread_id: &str) -> bool {
+    emitted_tools.contains(&format!("{CODEX_SUBAGENT_THREAD}{thread_id}"))
+}
+
 fn collab_tool_kind(item: &serde_json::Map<String, Value>) -> String {
     item.get("tool")
         .and_then(Value::as_str)
         .unwrap_or("")
-        .replace('-', "_")
+        .replace(['-', '_'], "")
         .to_ascii_lowercase()
 }
 
-fn collab_child_id(item: &serde_json::Map<String, Value>) -> Option<String> {
-    map_str(item, "newThreadId")
-        .or_else(|| map_str(item, "receiverThreadId"))
+/// 本次调用涉及的子线程：新版 `receiverThreadIds`，旧版 `newThreadId` / `receiverThreadId`。
+fn collab_child_ids(item: &serde_json::Map<String, Value>) -> Vec<String> {
+    let mut ids: Vec<String> = item
+        .get("receiverThreadIds")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|id| id.as_str().map(str::trim).filter(|s| !s.is_empty()))
         .map(str::to_string)
-        .or_else(|| {
-            item.get("receiverThreadIds")
-                .and_then(Value::as_array)
-                .and_then(|ids| {
-                    ids.iter()
-                        .find_map(|id| id.as_str().map(str::trim).filter(|s| !s.is_empty()))
-                        .map(str::to_string)
-                })
-        })
+        .collect();
+    for key in ["newThreadId", "receiverThreadId"] {
+        if let Some(id) = map_str(item, key) {
+            if !ids.iter().any(|known| known == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
 }
 
-fn collab_is_spawn(kind: &str) -> bool {
-    matches!(kind, "spawn_agent" | "spawnagent")
+/// 卡片标题：代理路径的最后一段（`/root/say_hello` → `say_hello`），否则取任务前 72 个字符。
+fn codex_subagent_title(agent_path: Option<&str>, prompt: &str) -> String {
+    if let Some(name) = agent_path
+        .and_then(|path| path.trim_end_matches('/').rsplit('/').next())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return name.to_string();
+    }
+    let prompt = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
+    if prompt.chars().count() <= CODEX_SUBAGENT_TITLE_CHARS {
+        return prompt;
+    }
+    let mut title: String = prompt
+        .chars()
+        .take(CODEX_SUBAGENT_TITLE_CHARS - 1)
+        .collect();
+    title.push('…');
+    title
+}
+
+/// 登记一个子线程：首次见到时建卡（`card_id` 未建过才发 ToolUse），派出回执让卡保持运行
+/// 并绑定线程 id，后台任务面板同步登记。重复调用无副作用。
+fn register_codex_subagent(
+    card_id: &str,
+    thread_id: &str,
+    title: &str,
+    prompt: &str,
+    model: Option<&str>,
+    emitted_tools: &mut HashSet<String>,
+    sink: &mut dyn FnMut(UnifiedAgentEvent),
+) {
+    if emitted_tools.insert(card_id.to_string()) {
+        sink(UnifiedAgentEvent::ToolUse {
+            id: card_id.to_string(),
+            name: "subagent".to_string(),
+            input: json!({
+                "provider": "codex",
+                "description": title,
+                "prompt": prompt,
+                "model": model,
+                "receiverThreadId": thread_id,
+            }),
+        });
+    }
+    if !emitted_tools.insert(format!("{CODEX_SUBAGENT_THREAD}{thread_id}")) {
+        return;
+    }
+    sink(UnifiedAgentEvent::ToolResult {
+        tool_use_id: card_id.to_string(),
+        content: format!("started subagent {thread_id}"),
+        is_error: false,
+    });
+    sink(UnifiedAgentEvent::BackgroundTask {
+        task_id: thread_id.to_string(),
+        status: "running".to_string(),
+        kind: Some("local_agent".to_string()),
+        description: Some(if prompt.is_empty() { title } else { prompt }.to_string()),
+        summary: None,
+    });
+}
+
+/// 子代理状态变化。终态只落一次（之后的 `closeAgent` 回报 shutdown 不会把已完成改成中断）；
+/// 重新运行（`sendInput` / `resumeAgent`）清掉终态标记，下一次终态再写回结果。
+fn update_codex_subagent(
+    thread_id: &str,
+    status: &str,
+    message: Option<&str>,
+    emitted_tools: &mut HashSet<String>,
+    sink: &mut dyn FnMut(UnifiedAgentEvent),
+) {
+    if !codex_subagent_known(emitted_tools, thread_id) {
+        return;
+    }
+    let done_key = format!("{CODEX_SUBAGENT_DONE}{thread_id}");
+    let terminal = match status {
+        "completed" => "completed",
+        "errored" | "notFound" | "failed" => "failed",
+        "interrupted" | "shutdown" => "stopped",
+        _ => {
+            emitted_tools.remove(&done_key);
+            if let Some(preview) = message.filter(|text| !text.trim().is_empty()) {
+                sink(UnifiedAgentEvent::SubagentProgress {
+                    task_id: thread_id.to_string(),
+                    status: "running".to_string(),
+                    preview: preview.to_string(),
+                    steps: Vec::new(),
+                });
+            }
+            return;
+        }
+    };
+    if !emitted_tools.insert(done_key) {
+        return;
+    }
+    sink(UnifiedAgentEvent::BackgroundTask {
+        task_id: thread_id.to_string(),
+        status: terminal.to_string(),
+        kind: Some("local_agent".to_string()),
+        description: None,
+        summary: message
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string),
+    });
 }
 
 fn emit_collab_tool_call(
@@ -1254,92 +1380,120 @@ fn emit_collab_tool_call(
     let Some(id) = item_id(item) else {
         return;
     };
-    let kind = collab_tool_kind(item);
-    let child_id = collab_child_id(item);
-    let task_id = child_id.clone().unwrap_or_else(|| id.clone());
-    let prompt = map_str(item, "prompt").unwrap_or("");
-    if emitted_tools.insert(id.clone()) {
-        sink(UnifiedAgentEvent::ToolUse {
-            id: id.clone(),
-            name: "subagent".to_string(),
-            input: json!({
-                "tool": item.get("tool").cloned().unwrap_or(Value::Null),
-                "prompt": prompt,
-                "receiverThreadId": child_id,
-            }),
-        });
-        if collab_is_spawn(&kind) {
-            sink(UnifiedAgentEvent::BackgroundTask {
-                task_id: task_id.clone(),
-                status: "running".to_string(),
-                kind: Some("local_agent".to_string()),
-                description: (!prompt.is_empty()).then(|| prompt.to_string()),
-                summary: None,
-            });
+    if collab_tool_kind(item) == "spawnagent" {
+        let prompt = map_str(item, "prompt").unwrap_or("");
+        let title = codex_subagent_title(None, prompt);
+        let model = map_str(item, "model");
+        let children = collab_child_ids(item);
+        if children.is_empty() {
+            // 线程还没建好（item/started）先占卡；完成时仍没有线程就是派出失败。
+            if emitted_tools.insert(id.clone()) {
+                sink(UnifiedAgentEvent::ToolUse {
+                    id: id.clone(),
+                    name: "subagent".to_string(),
+                    input: json!({
+                        "provider": "codex",
+                        "description": title,
+                        "prompt": prompt,
+                        "model": model,
+                    }),
+                });
+            }
+            if include_result {
+                sink(UnifiedAgentEvent::ToolResult {
+                    tool_use_id: id,
+                    content: "Codex did not start a subagent thread.".to_string(),
+                    is_error: true,
+                });
+            }
+            return;
+        }
+        for (index, thread_id) in children.iter().enumerate() {
+            let card_id = if index == 0 {
+                id.clone()
+            } else {
+                format!("{id}:{thread_id}")
+            };
+            register_codex_subagent(
+                &card_id,
+                thread_id,
+                &title,
+                prompt,
+                model,
+                emitted_tools,
+                sink,
+            );
         }
     }
     if !include_result {
         return;
     }
-    let failed = item_failed(item);
-    let content = if collab_is_spawn(&kind) && !failed {
-        format!("started subagent {task_id}")
-    } else if let Some(status) = map_str(item, "agentStatus") {
-        status.to_string()
-    } else {
-        item.get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("completed")
-            .to_string()
+    let Some(states) = item.get("agentsStates").and_then(Value::as_object) else {
+        return;
     };
-    sink(UnifiedAgentEvent::ToolResult {
-        tool_use_id: id,
-        content,
-        is_error: failed,
-    });
-    let final_status = if failed {
-        "failed"
-    } else if matches!(kind.as_str(), "wait" | "close_agent" | "closeagent") {
-        "completed"
-    } else {
-        "running"
-    };
-    sink(UnifiedAgentEvent::BackgroundTask {
-        task_id: task_id.clone(),
-        status: final_status.to_string(),
-        kind: Some("local_agent".to_string()),
-        description: None,
-        summary: map_str(item, "agentStatus").map(str::to_string),
-    });
-    if !failed {
-        sink(UnifiedAgentEvent::SubagentProgress {
-            task_id,
-            status: final_status.to_string(),
-            preview: prompt.to_string(),
-            steps: Vec::new(),
-        });
+    for (thread_id, state) in states {
+        let status = json_str(state, "status").unwrap_or("");
+        update_codex_subagent(
+            thread_id,
+            status,
+            json_str(state, "message"),
+            emitted_tools,
+            sink,
+        );
     }
 }
 
 fn emit_subagent_activity(
     item: &serde_json::Map<String, Value>,
+    emitted_tools: &mut HashSet<String>,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) {
-    let task_id = collab_child_id(item)
-        .or_else(|| item_id(item))
-        .unwrap_or_else(|| "codex-subagent".to_string());
-    let preview = map_str(item, "text")
-        .or_else(|| map_str(item, "preview"))
-        .or_else(|| map_str(item, "message"))
-        .or_else(|| map_str(item, "activity"))
-        .unwrap_or("")
-        .to_string();
-    sink(UnifiedAgentEvent::SubagentProgress {
+    let Some(thread_id) = map_str(item, "agentThreadId") else {
+        return;
+    };
+    match map_str(item, "kind") {
+        Some("started") => {
+            let Some(id) = item_id(item) else {
+                return;
+            };
+            if codex_subagent_known(emitted_tools, thread_id) {
+                return;
+            }
+            let title = codex_subagent_title(map_str(item, "agentPath"), "");
+            register_codex_subagent(&id, thread_id, &title, "", None, emitted_tools, sink);
+        }
+        Some(kind @ ("completed" | "interrupted")) => {
+            update_codex_subagent(thread_id, kind, None, emitted_tools, sink);
+        }
+        _ => {}
+    }
+}
+
+/// 子线程的 `agentMessage` 完成：`(子线程 id, 正文)`。父线程 `run_turn` 用它记下子代理的最新回答，
+/// 终态 `BackgroundTask` 没带摘要时补上（新版协议的 `agentsStates` 常为空）。
+fn codex_child_reply(params: &Value) -> Option<(String, String)> {
+    let item = params.get("item")?;
+    if json_str(item, "type") != Some("agentMessage") {
+        return None;
+    }
+    let thread_id = json_str(params, "threadId")?;
+    let text = json_str(item, "text")?;
+    Some((thread_id.to_string(), text.to_string()))
+}
+
+/// 终态子代理没有摘要时，用子线程最后一条回答补上。
+fn fill_codex_subagent_summary(event: &mut UnifiedAgentEvent, replies: &HashMap<String, String>) {
+    if let UnifiedAgentEvent::BackgroundTask {
         task_id,
-        status: "running".to_string(),
-        preview,
-        steps: Vec::new(),
-    });
+        status,
+        summary,
+        ..
+    } = event
+    {
+        if status != "running" && summary.is_none() {
+            *summary = replies.get(task_id.as_str()).cloned();
+        }
+    }
 }
 
 /// A `commandExecution` ThreadItem (camelCase wire shape) maps to a Bash tool use / result.
@@ -1513,6 +1667,8 @@ pub struct CodexAppServerSession {
     /// `turn/steer` 的 `expectedTurnId` 前置条件要用它；轮末清空。
     active_turn_id: Option<String>,
     seen_turn_ids: HashSet<String>,
+    /// 子线程 id → 该子代理最后一条回答，补进子代理终态的结果摘要。
+    subagent_replies: HashMap<String, String>,
     /// Ring-buffered stderr tail (N1), joined on close / error for diagnostics.
     stderr_tail: tokio::task::JoinHandle<String>,
     /// `on-request` (workspace-write / read-only) asks the host; `never` (完全) auto-allows.
@@ -1719,6 +1875,7 @@ impl CodexAppServerSession {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
+                subagent_replies: HashMap::new(),
                 stderr_tail,
                 approval_policy,
                 sandbox_policy,
@@ -2078,13 +2235,28 @@ impl CodexAppServerSession {
                     .is_some_and(|t| t == self.thread_id);
                 // Child threads share this connection. Their text/usage/terminal events
                 // must not enter the root answer or complete its pending run_turn.
-                // The root collabAgentToolCall item already projects child activity.
+                // Only a child's finished agentMessage is kept, as that subagent's reply.
                 let connection_notice = params.get("threadId").is_none()
                     && matches!(
                         method,
                         "configWarning" | "deprecationNotice" | "account/rateLimits/updated"
                     );
                 if !own_thread && !connection_notice {
+                    if method == "item/completed" {
+                        if let Some((thread_id, text)) = codex_child_reply(&params) {
+                            if codex_subagent_known(&self.emitted_tools, &thread_id) {
+                                let _ = events
+                                    .send(UnifiedAgentEvent::SubagentProgress {
+                                        task_id: thread_id.clone(),
+                                        status: "running".to_string(),
+                                        preview: text.clone(),
+                                        steps: Vec::new(),
+                                    })
+                                    .await;
+                            }
+                            self.subagent_replies.insert(thread_id, text);
+                        }
+                    }
                     continue;
                 }
                 if method == "turn/completed"
@@ -2130,7 +2302,8 @@ impl CodexAppServerSession {
                     &mut turn_usage_base,
                     &mut |e| buf.push(e),
                 );
-                for e in buf {
+                for mut e in buf {
+                    fill_codex_subagent_summary(&mut e, &self.subagent_replies);
                     let _ = events.send(e).await;
                 }
                 match mapped {
@@ -3480,7 +3653,7 @@ mod tests {
                 stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
                 child, thread_id: "thread-1".into(), cwd: "/work".into(), cli_bin: exe,
                 next_id: 1, emitted_tools: HashSet::new(), active_turn_id: None,
-                seen_turn_ids: HashSet::new(), approval_policy: "never",
+                seen_turn_ids: HashSet::new(), subagent_replies: HashMap::new(), approval_policy: "never",
                 sandbox_policy: json!({"type":"dangerFullAccess"}), plan_mode: false,
                 thread_model: None, service_tier: None,
             };
@@ -3579,6 +3752,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
+                subagent_replies: HashMap::new(),
                 approval_policy: "never",
                 sandbox_policy: json!({"type":"dangerFullAccess"}),
                 plan_mode: false,
@@ -3755,6 +3929,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
+                subagent_replies: HashMap::new(),
                 approval_policy: "on-request",
                 sandbox_policy: json!({"type": "dangerFullAccess"}),
                 plan_mode: false,
@@ -4028,6 +4203,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
+                subagent_replies: HashMap::new(),
                 approval_policy: "on-request",
                 sandbox_policy: json!({"type":"workspaceWrite"}),
                 plan_mode: false,
@@ -6088,6 +6264,176 @@ mod tests {
             UnifiedAgentEvent::BackgroundTask { task_id, status, .. }
                 if task_id == "thr_child" && status == "running"
         )));
+    }
+
+    fn map_codex_frames(frames: &[(&str, Value)]) -> Vec<UnifiedAgentEvent> {
+        let mut events = Vec::new();
+        let mut tools = HashSet::new();
+        for (method, params) in frames {
+            map_codex_notification(method, params, &mut tools, &mut None, &mut |e| {
+                events.push(e)
+            });
+        }
+        events
+    }
+
+    fn subagent_cards(events: &[UnifiedAgentEvent]) -> Vec<&Value> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UnifiedAgentEvent::ToolUse { name, input, .. } if name == "subagent" => Some(input),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn finished_subagents(events: &[UnifiedAgentEvent]) -> Vec<(&str, &str, Option<&str>)> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                UnifiedAgentEvent::BackgroundTask {
+                    task_id,
+                    status,
+                    summary,
+                    ..
+                } if status != "running" => {
+                    Some((task_id.as_str(), status.as_str(), summary.as_deref()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    // Codex 0.16x multi-agent v2 wire shape (subAgentActivity + an empty wait).
+    #[test]
+    fn codex_v2_subagent_is_one_card_and_wait_adds_none() {
+        let activity = |kind: &str, id: &str| {
+            json!({"item": {"type": "subAgentActivity", "id": id, "kind": kind,
+                "agentThreadId": "thr_child", "agentPath": "/root/say_hello"}})
+        };
+        let wait = |status: &str| {
+            json!({"item": {"type": "collabAgentToolCall", "id": "call_wait", "tool": "wait",
+                "status": status, "senderThreadId": "thr_root", "receiverThreadIds": [],
+                "prompt": null, "model": null, "reasoningEffort": null, "agentsStates": {}}})
+        };
+        let events = map_codex_frames(&[
+            ("item/started", activity("started", "call_spawn")),
+            ("item/completed", activity("started", "call_spawn")),
+            ("item/started", wait("inProgress")),
+            ("item/started", activity("completed", "done-1")),
+            ("item/completed", activity("completed", "done-1")),
+            ("item/completed", wait("completed")),
+        ]);
+        let cards = subagent_cards(&events);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["provider"], "codex");
+        assert_eq!(cards[0]["description"], "say_hello");
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            UnifiedAgentEvent::ToolUse { id, .. } | UnifiedAgentEvent::ToolResult { tool_use_id: id, .. }
+                if id == "call_wait"
+        )));
+        assert_eq!(
+            finished_subagents(&events),
+            vec![("thr_child", "completed", None)]
+        );
+    }
+
+    #[test]
+    fn codex_spawn_result_comes_from_agent_states_and_close_keeps_it_done() {
+        let call = |id: &str, tool: &str, receivers: Value, states: Value| {
+            json!({"item": {"type": "collabAgentToolCall", "id": id, "tool": tool,
+                "status": "completed", "senderThreadId": "thr_root", "receiverThreadIds": receivers,
+                "prompt": "Compute 17 x 23", "model": "gpt-6.1-sol", "agentsStates": states}})
+        };
+        let events = map_codex_frames(&[
+            (
+                "item/started",
+                json!({"item": {"type": "collabAgentToolCall", "id": "call_spawn",
+                "tool": "spawnAgent", "status": "inProgress", "receiverThreadIds": [],
+                "prompt": "Compute 17 x 23", "agentsStates": {}}}),
+            ),
+            (
+                "item/completed",
+                call(
+                    "call_spawn",
+                    "spawnAgent",
+                    json!(["thr_a"]),
+                    json!({"thr_a": {"status": "pendingInit", "message": null}}),
+                ),
+            ),
+            (
+                "item/completed",
+                call(
+                    "call_wait",
+                    "wait",
+                    json!(["thr_a"]),
+                    json!({"thr_a": {"status": "completed", "message": "391"}}),
+                ),
+            ),
+            (
+                "item/completed",
+                call(
+                    "call_close",
+                    "closeAgent",
+                    json!(["thr_a"]),
+                    json!({"thr_a": {"status": "shutdown", "message": null}}),
+                ),
+            ),
+        ]);
+        let cards = subagent_cards(&events);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["prompt"], "Compute 17 x 23");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UnifiedAgentEvent::ToolResult { tool_use_id, content, is_error: false }
+                if tool_use_id == "call_spawn" && content == "started subagent thr_a"
+        )));
+        assert_eq!(
+            finished_subagents(&events),
+            vec![("thr_a", "completed", Some("391"))]
+        );
+    }
+
+    #[test]
+    fn codex_subagent_states_for_unknown_threads_are_ignored() {
+        let events = map_codex_frames(&[
+            (
+                "item/completed",
+                json!({"item": {"type": "subAgentActivity", "id": "x", "kind": "interacted",
+                "agentThreadId": "thr_root", "agentPath": "/root"}}),
+            ),
+            (
+                "item/completed",
+                json!({"item": {"type": "collabAgentToolCall", "id": "w", "tool": "wait",
+                "status": "completed", "receiverThreadIds": ["thr_old"],
+                "agentsStates": {"thr_old": {"status": "completed", "message": "late"}}}}),
+            ),
+        ]);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn codex_child_reply_fills_a_missing_subagent_summary() {
+        let reply = codex_child_reply(&json!({"threadId": "thr_child",
+            "item": {"type": "agentMessage", "id": "m", "text": "Hello."}}));
+        assert_eq!(reply, Some(("thr_child".to_string(), "Hello.".to_string())));
+        let replies = HashMap::from([reply.unwrap()]);
+        let finished = |summary: Option<&str>| UnifiedAgentEvent::BackgroundTask {
+            task_id: "thr_child".to_string(),
+            status: "completed".to_string(),
+            kind: None,
+            description: None,
+            summary: summary.map(str::to_string),
+        };
+        for (summary, expected) in [(None, "Hello."), (Some("from states"), "from states")] {
+            let mut event = finished(summary);
+            fill_codex_subagent_summary(&mut event, &replies);
+            assert!(
+                matches!(event, UnifiedAgentEvent::BackgroundTask { summary: Some(text), .. }
+                if text == expected)
+            );
+        }
     }
 }
 

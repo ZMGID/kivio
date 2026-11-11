@@ -222,6 +222,13 @@ export function isExternalSubagentToolCall(toolCall: ToolCallRecord): boolean {
     || name === 'ralph'
 }
 
+/** Codex 原生子代理（一个子线程一条记录，带 `provider: "codex"`）：画成子代理时间线行，不画工具卡。 */
+export function isCodexSubagentToolCall(toolCall: ToolCallRecord): boolean {
+  return toolCall.source === 'external_cli'
+    && foldedToolName(toolCall) === 'subagent'
+    && toolCallArgObject(toolCall)?.provider === 'codex'
+}
+
 export function isNativeTaskToolCall(toolCall: ToolCallRecord): boolean {
   return toolCall.source === 'native' && canonicalToolName(toolCall) === 'task'
 }

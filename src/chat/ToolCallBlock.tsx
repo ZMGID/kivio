@@ -2,14 +2,14 @@ import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { type ComponentType, type ReactNode, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { FileIcon } from '../components/FileIcon'
-import { SubagentTimelineEvents } from './SubagentTimelineEvents'
+import { CodexSubagentEvents, SubagentTimelineEvents } from './SubagentTimelineEvents'
 import { AlertCircle, Bot, Brain, CheckCircle2, ChevronDown, CircleSlash, Clock, Copy, Download, ExternalLink, Eye, Film, FileSearch, FolderInput, FolderPlus, ImageOff, ImagePlus, ListChecks, Loader2, MessageCircleQuestion, Plug, Save, ScrollText, Search, SquareTerminal, Trash2, Workflow, Wrench, XCircle } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessageSegment, ToolCallRecord, ToolCallStatus } from './types'
 import { normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { hasAskUserStructuredContent, isAskUserToolName } from './askUserTools'
-import { canonicalToolName, isExternalSubagentToolCall, isImageReadToolCall, isNativeTaskToolCall, isNativeWaitToolCall, imageReadCount, imageReadItems, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
+import { canonicalToolName, isCodexSubagentToolCall, isExternalSubagentToolCall, isImageReadToolCall, isNativeTaskToolCall, isNativeWaitToolCall, imageReadCount, imageReadItems, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
 import { requestDockDiffPreview, requestDockPreview } from './dock/dockPreview'
 import { DiffView } from './dock/DiffView'
 import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
@@ -2286,6 +2286,9 @@ function ToolCallBlockComponent(props: ToolCallBlockProps) {
   if (isNativeWaitToolCall(props.toolCall)) return null
   if (isNativeTaskToolCall(props.toolCall)) {
     return <SubagentTimelineEvents toolCall={props.toolCall} conversationId={props.conversationId} />
+  }
+  if (isCodexSubagentToolCall(props.toolCall)) {
+    return <CodexSubagentEvents toolCalls={[props.toolCall]} />
   }
   if (isAskUserTool(props.toolCall)) {
     return <AskUserBlock toolCall={props.toolCall} />

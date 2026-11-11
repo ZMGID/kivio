@@ -1,12 +1,15 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import { Ellipsis, Users } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { useLang } from '../components/i18n'
+import { ModelIcon } from '../components/ModelIcon'
 import { parsedRecord, record, text } from '../api/subagents'
 import { AgentProgress, AgentOutput, AgentStatus } from './AgentProgress'
 import { SubagentDialog } from './AgentHub'
 import { requestDockSubagent } from './dock/dockPreview'
 import { AgentAvatar } from './AgentAvatar'
+import { toolRecordId } from './segments'
+import { normalizeToolCallStatus } from './toolStatus'
 import type { SubagentTimelineEntry, SubagentTimelineStatus } from '../generated/chatProtocol'
 import type { ToolCallRecord } from './types'
 import './AgentHub.css'
@@ -21,30 +24,38 @@ const lifecycleLabels: Record<SubagentTimelineStatus, [string, string]> = {
   interrupted: ['已中断', 'was interrupted'],
 }
 
-export function SubagentLifecycleEvent({ event, parallel, conversationId, live = false }: {
+export function SubagentLifecycleEvent({ event, parallel, conversationId, live = false, avatar, onOpen }: {
   event: SubagentTimelineEntry
   parallel?: SubagentTimelineEntry[]
   conversationId?: string | null
   live?: boolean
+  /** 外部 CLI 子代理换成供应商图标；默认是内置子代理的形状头像。 */
+  avatar?: (agentId: string) => ReactNode
+  /** 外部 CLI 子代理不在内置注册表里，点击由调用方打开自己的详情。 */
+  onOpen?: (agentId: string) => void
 }) {
   const zh = useLang() === 'zh'
   const action = lifecycleLabels[event.status][zh ? 0 : 1]
   const label = `${event.name || event.agentId} ${action}`
   const className = `not-prose kv-agent-event${live ? ' chat-motion-bubble-in' : ''}`
+  const renderAvatar = avatar ?? ((agentId: string) => <AgentAvatar agentId={agentId} />)
+  const open = onOpen ?? (conversationId
+    ? (agentId: string) => requestDockSubagent({ conversationId, agentId })
+    : null)
   if (parallel?.length) {
     const agents = [event, ...parallel]
     return <div className={className}>
       <span className="flex max-w-[40%] shrink-0 flex-wrap items-center gap-1">
-        {agents.map(agent => <AgentAvatar key={agent.agentId} agentId={agent.agentId} />)}
+        {agents.map(agent => <Fragment key={agent.agentId}>{renderAvatar(agent.agentId)}</Fragment>)}
       </span>
       <span className="min-w-0 text-[13px] leading-5 text-[var(--text-muted)] [overflow-wrap:anywhere]">
         {agents.map((agent, index) => {
           const name = agent.name || agent.agentId
           return <Fragment key={agent.agentId}>
             {index > 0 && (index === agents.length - 1 ? (zh ? '和' : ' and ') : (zh ? '、' : ', '))}
-            {conversationId ? <button type="button" className="kv-agent-event-link max-w-full align-baseline"
+            {open ? <button type="button" className="kv-agent-event-link max-w-full align-baseline"
               aria-label={`${name} ${action}`}
-              onClick={() => requestDockSubagent({ conversationId, agentId: agent.agentId })}>{name}</button> : name}
+              onClick={() => open(agent.agentId)}>{name}</button> : name}
           </Fragment>
         })}
         {' '}{action}
@@ -52,14 +63,92 @@ export function SubagentLifecycleEvent({ event, parallel, conversationId, live =
     </div>
   }
   const content = <>
-    <AgentAvatar agentId={event.agentId} />
+    {renderAvatar(event.agentId)}
     <span>{label}</span>
   </>
   return <div className={className}>
-    {conversationId ? <button type="button" className="kv-agent-event-link" onClick={() => requestDockSubagent({ conversationId, agentId: event.agentId })}>
+    {open ? <button type="button" className="kv-agent-event-link" onClick={() => open(event.agentId)}>
       {content}
     </button> : <span className="kv-agent-event-link">{content}</span>}
   </div>
+}
+
+type CodexSubagentView = {
+  id: string
+  name: string
+  prompt: string
+  model: string
+  state: 'running' | 'completed' | 'failed' | 'cancelled'
+  finishedAt: number
+  preview: string
+  result: string
+  error: string
+}
+
+const codexFinish: Record<Exclude<CodexSubagentView['state'], 'running'>, SubagentTimelineStatus> = {
+  completed: 'completed',
+  failed: 'failed',
+  cancelled: 'interrupted',
+}
+
+function codexSubagentView(toolCall: ToolCallRecord, zh: boolean): CodexSubagentView {
+  const args = parsedRecord(toolCall.arguments ?? toolCall.args ?? toolCall.input)
+  const structured = record(toolCall.structured_content ?? toolCall.structuredContent)
+  const progress = record(structured.subagentProgress)
+  const resultPreview = text(toolCall.result_preview ?? toolCall.resultPreview)
+  // 派出回执只表示子线程已建好，子代理仍在运行。
+  const receipt = resultPreview.trim().startsWith('started subagent ')
+  const status = normalizeToolCallStatus(toolCall.status)
+  const state = receipt || status === 'running' || status === 'pending' ? 'running'
+    : status === 'error' ? 'failed'
+      : status === 'cancelled' ? 'cancelled' : 'completed'
+  return {
+    id: toolRecordId(toolCall),
+    name: text(args.description) || text(args.name) || (zh ? 'Codex 子代理' : 'Codex subagent'),
+    prompt: text(args.prompt),
+    model: text(args.model),
+    state,
+    finishedAt: toolCall.completed_at ?? toolCall.completedAt ?? 0,
+    preview: text(progress.preview),
+    result: receipt ? '' : resultPreview,
+    error: toolCall.error ?? '',
+  }
+}
+
+const openAiAvatar = () => <ModelIcon model="openai" size={18} className="shrink-0" />
+
+/** Codex 原生子代理：与内置子代理同一套时间线行。连续派出的合并成一行「A 和 B 开始工作」，
+ *  结束的按完成顺序各一行；点名字看任务与回答。 */
+export function CodexSubagentEvents({ toolCalls, live = false }: { toolCalls: ToolCallRecord[]; live?: boolean }) {
+  const zh = useLang() === 'zh'
+  const [openId, setOpenId] = useState<string | null>(null)
+  const agents = toolCalls.map(toolCall => codexSubagentView(toolCall, zh)).filter(agent => agent.id)
+  if (agents.length === 0) return null
+  const entry = (agent: CodexSubagentView, status: SubagentTimelineStatus): SubagentTimelineEntry => ({
+    agentId: agent.id, name: agent.name, status, parentToolCallId: '',
+    afterSegmentId: null, afterOrder: null, textChars: null,
+  })
+  const [first, ...rest] = agents.map(agent => entry(agent, 'started'))
+  const finished = agents.filter(agent => agent.state !== 'running')
+    .sort((left, right) => left.finishedAt - right.finishedAt)
+  const opened = agents.find(agent => agent.id === openId)
+  const output = opened?.result || (opened?.state === 'running' ? opened.preview : '')
+  return <>
+    <SubagentLifecycleEvent event={first} parallel={rest} live={live} avatar={openAiAvatar} onOpen={setOpenId} />
+    {finished.map(agent => agent.state !== 'running' && <SubagentLifecycleEvent key={agent.id}
+      event={entry(agent, codexFinish[agent.state])} live={live} avatar={openAiAvatar} onOpen={setOpenId} />)}
+    {opened && <SubagentDialog title={opened.name} onClose={() => setOpenId(null)}>
+      <div className="kv-agent-panel-scroll space-y-4 text-[13px] leading-6 custom-scrollbar">
+        <article className="kv-agent-answer">
+          <h4>{opened.name}<AgentStatus state={opened.state} zh={zh} /></h4>
+          {opened.model && <p className="break-words text-xs text-[var(--text-muted)]">{opened.model}</p>}
+          {opened.prompt && <div><span className="text-xs text-[var(--text-muted)]">{zh ? '任务' : 'Task'}</span><AgentOutput content={opened.prompt} /></div>}
+          {output && <div><span className="text-xs text-[var(--text-muted)]">{zh ? '回答' : 'Reply'}</span><AgentOutput content={output} /></div>}
+          {opened.error && <p role="alert" className="whitespace-pre-wrap break-words text-[var(--danger)]">{opened.error}</p>}
+        </article>
+      </div>
+    </SubagentDialog>}
+  </>
 }
 
 function taskRows(structured: Record<string, unknown>): AgentRow[] {
