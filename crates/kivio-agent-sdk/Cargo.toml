@@ -23,7 +23,7 @@ futures = { version = "0.3", default-features = false, features = ["std", "async
 base64 = { version = "0.22", optional = true }
 sha2 = { version = "0.10", optional = true }
 process-wrap = { version = "10.0.1", features = ["tokio1"], optional = true }
-rmcp = { version = "=3.5.1", default-features = false, optional = true, features = [
+rmcp = { version = "=3.9.0", default-features = false, optional = true, features = [
     "client", "client-side-sse", "reqwest", "transport-child-process",
     "transport-streamable-http-client", "transport-streamable-http-client-reqwest", "which-command",
 ] }
