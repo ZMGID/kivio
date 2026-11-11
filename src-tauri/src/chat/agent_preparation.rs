@@ -225,7 +225,7 @@ pub fn build_chat_prompt(
 }
 
 /// Chat vs Agent identity sources. Chat must not inherit the Agent system
-/// prompt or the Act/Plan/Orchestrate overlay — settings already keeps those
+/// prompt or the Act/Plan overlay — settings already keeps those
 /// fields separate (`chat.systemPrompt` vs `chat.chatMode.systemPrompt`).
 pub struct RuntimePromptSources {
     pub custom_system_prompt: String,
@@ -238,7 +238,7 @@ pub fn resolve_runtime_prompt_sources(
     agent_system_prompt: &str,
     chat_mode_system_prompt: &str,
     plan_state: &crate::chat::types::AgentPlanState,
-    task_available: bool,
+    delegation: Option<&str>,
 ) -> RuntimePromptSources {
     if chat_mode {
         RuntimePromptSources {
@@ -249,7 +249,7 @@ pub fn resolve_runtime_prompt_sources(
     } else {
         RuntimePromptSources {
             custom_system_prompt: agent_system_prompt.to_string(),
-            agent_plan_prompt: Some(crate::chat::plan::format_prompt(plan_state, task_available)),
+            agent_plan_prompt: Some(crate::chat::plan::format_prompt(plan_state, delegation)),
             is_chat_runtime: false,
         }
     }
@@ -1483,18 +1483,18 @@ mod tests {
     #[test]
     fn resolve_runtime_prompt_sources_keeps_chat_and_agent_apart() {
         let plan = crate::chat::types::AgentPlanState::default();
-        let chat = resolve_runtime_prompt_sources(true, "AGENT IDENTITY", "  ", &plan, false);
+        let chat = resolve_runtime_prompt_sources(true, "AGENT IDENTITY", "  ", &plan, None);
         assert!(chat.is_chat_runtime);
         assert!(chat.custom_system_prompt.is_empty());
         assert!(chat.agent_plan_prompt.is_none());
 
         let chat_custom =
-            resolve_runtime_prompt_sources(true, "AGENT IDENTITY", "only research", &plan, false);
+            resolve_runtime_prompt_sources(true, "AGENT IDENTITY", "only research", &plan, None);
         assert_eq!(chat_custom.custom_system_prompt, "only research");
         assert!(chat_custom.agent_plan_prompt.is_none());
 
         let agent =
-            resolve_runtime_prompt_sources(false, "AGENT IDENTITY", "only research", &plan, false);
+            resolve_runtime_prompt_sources(false, "AGENT IDENTITY", "only research", &plan, None);
         assert!(!agent.is_chat_runtime);
         assert_eq!(agent.custom_system_prompt, "AGENT IDENTITY");
         assert!(agent
@@ -1503,12 +1503,13 @@ mod tests {
     }
 
     #[test]
-    fn orchestrate_system_prompt_supports_main_work_and_targeted_followups() {
-        let state = crate::chat::plan::with_mode(
-            &crate::chat::types::AgentPlanState::default(),
-            crate::chat::types::AgentPlanMode::Orchestrate,
+    fn act_system_prompt_carries_the_model_delegation_section() {
+        let state = crate::chat::types::AgentPlanState::default();
+        let delegation = crate::chat::sub_agent::task::delegation_prompt(
+            "gpt-6.1-sol",
+            &crate::settings::ChatToolsConfig::default(),
         );
-        let sources = resolve_runtime_prompt_sources(false, "", "", &state, true);
+        let sources = resolve_runtime_prompt_sources(false, "", "", &state, Some(&delegation));
         let prompt = build_chat_prompt(
             "zh-CN",
             false,
@@ -1532,8 +1533,10 @@ mod tests {
             &[],
         );
         let prompt = format!("{}\n{}", prompt.system, prompt.context);
-        assert!(prompt.contains("fan substantial work to `task`"));
-        assert!(prompt.contains("Follow the task tool's handoff guidance when blocked"));
+        assert!(prompt.contains("Current mode: act."));
+        assert!(prompt.contains("# Delegation\nInline first."));
+        assert!(prompt.contains("## Delegation gates"));
+        assert!(!prompt.contains("fan substantial work to `task`"));
         assert!(!prompt.contains("To add a PERMANENT role"));
         assert!(!prompt.contains("There is no polling or collection tool"));
         assert!(!prompt.contains("Required flow"));

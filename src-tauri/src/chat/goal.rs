@@ -53,7 +53,7 @@ pub fn start(conversation: &mut Conversation, objective: &str) -> Result<GoalSta
     if objective.chars().count() > 4000 {
         return Err("Goal objective is limited to 4000 characters".into());
     }
-    // Goal owns the execution mode; entering it from Plan or Orchestrate uses Act.
+    // Goal owns the execution mode; entering it from Plan uses Act.
     conversation.agent_plan_state = crate::chat::plan::with_mode(
         &conversation.agent_plan_state,
         crate::chat::types::AgentPlanMode::Act,
@@ -831,6 +831,7 @@ mod tests {
     use super::*;
     #[test]
     fn starting_goal_switches_execution_modes_to_act_without_losing_saved_plan() {
+        // "orchestrate" is a removed mode that saved conversations may still carry.
         for mode in ["act", "plan", "orchestrate"] {
             let mut conversation: Conversation = serde_json::from_value(serde_json::json!({
                 "id":"goal-transition", "title":"Goal transition", "provider_id":"provider",

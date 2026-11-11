@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Code2, Eye, FilePen, Layers, ListChecks, Network, ShieldAlert, ShieldCheck, ShieldQuestion, Sparkles, Target, Terminal, Wand2, Zap } from 'lucide-react'
+import { Code2, Eye, FilePen, Layers, ShieldAlert, ShieldCheck, ShieldQuestion, Sparkles, Terminal, Wand2, Zap } from 'lucide-react'
 import { APPROVAL_POLICY_OPTIONS } from './approvalPolicies'
 import { chatApi, type DshAgentPresetOption } from './api'
-import type { AgentPlanMode, AgentRuntimeConfig, DetectedExternalAgent } from './types'
+import type { AgentRuntimeConfig, DetectedExternalAgent } from './types'
 
-/** 胶囊配色语义：Act=neutral、Plan=emerald、Orchestrate=violet；本地 CLI 档位统一 neutral。 */
+/** 胶囊配色语义：本地 CLI 档位统一 neutral；dsh 预设按各自语义着色。 */
 export type ModeTone = 'neutral' | 'emerald' | 'violet'
 
 export interface ModeOption {
@@ -26,30 +26,12 @@ export interface PermissionModesInput {
   agents?: DetectedExternalAgent[]
   /** 内置会话 + titlebar：工具审批策略当前值。 */
   approvalPolicy?: string | null
-  /** 内置 Agent 会话 + composer：Kivio 三档当前值。 */
-  agentPlanMode?: AgentPlanMode | null
-  /** An unfinished Goal selects the Goal entry without changing the persisted Act strategy. */
-  goalActive?: boolean
 }
 
 export interface PermissionModes {
   options: ModeOption[]
   current: string
 }
-
-/** Kivio Agent 模式 —— 仅内置 Agent 运行时显示；Kivio Chat 不显示此胶囊。 */
-export const AGENT_MODE_OPTIONS: ModeOption[] = [
-  { value: 'act', label: 'Act', description: '普通模式 · Normal', icon: Zap, tone: 'neutral' },
-  { value: 'goal', label: 'Goal', description: '持续执行一个目标 · Persistent execution', icon: Target, tone: 'violet' },
-  { value: 'plan', label: 'Plan', description: '生成计划文档 · Plan document', icon: ListChecks, tone: 'emerald' },
-  {
-    value: 'orchestrate',
-    label: 'Orchestrate',
-    description: '主代理统筹并行协作 · Parallel collaboration',
-    icon: Network,
-    tone: 'violet',
-  },
-]
 
 /** dsh 四档 Agent 模式 —— 仅 `externalAgentId === 'dsh'` 时显示，画在权限胶囊左边。 */
 export const DSH_PRESET_OPTIONS: ModeOption[] = [
@@ -183,15 +165,13 @@ function externalSandboxModes(
  *
  * - 本地 CLI 会话：档位在**顶栏**权限按钮里，底栏不再有胶囊；CLI 本身没有档位时返回空表。
  * - Kivio Chat 运行时：不是 Agent，没有档位。
- * - 内置 Agent 会话：底栏只保留 Shift+Tab / 斜杠命令切 Act / Goal / Plan / Orchestrate，顶栏是工具审批策略。
+ * - 内置 Agent 会话：底栏没有档位（计划与目标是 /plan、/goal 命令），顶栏是工具审批策略。
  */
 export function derivePermissionModes({
   target,
   agentRuntime,
   agents = [],
   approvalPolicy,
-  agentPlanMode,
-  goalActive = false,
 }: PermissionModesInput): PermissionModes {
   const usesExternal = agentRuntime.kind === 'external' && !!agentRuntime.externalAgentId
   const usesChat = agentRuntime.kind === 'chat'
@@ -201,18 +181,9 @@ export function derivePermissionModes({
     return externalSandboxModes(agentRuntime, agents)
   }
 
-  // Kivio Chat is a separate runtime (not an agent strategy mode).
-  if (usesChat) {
+  // Kivio Chat has no strategies; built-in Agent plan/goal are /plan and /goal commands.
+  if (usesChat || target === 'composer') {
     return { options: [], current: '' }
-  }
-
-  if (target === 'composer') {
-    const current = goalActive
-      ? 'goal'
-      : AGENT_MODE_OPTIONS.some((option) => option.value === agentPlanMode)
-      ? (agentPlanMode as string)
-      : AGENT_MODE_OPTIONS[0].value
-    return { options: AGENT_MODE_OPTIONS, current }
   }
 
   const options: ModeOption[] = APPROVAL_POLICY_OPTIONS.map((option) => ({

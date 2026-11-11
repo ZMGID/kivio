@@ -4,10 +4,6 @@ import { describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
 import { deriveDshPresetModes, derivePermissionModes } from './permissionModes'
 import type { AgentRuntimeConfig } from './types'
-import { useState } from 'react'
-import { setGoalDraftMode, useGoalDraft } from './goalPresentation'
-import { setComposerDraft } from './composerDraft'
-import type { AgentPlanMode } from './types'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({
@@ -36,20 +32,6 @@ function renderComposer(modes: { options: ReturnType<typeof derivePermissionMode
   return onModeChange
 }
 
-function GoalDraftComposer({ conversationId }: { conversationId: string }) {
-  const goalDraft = useGoalDraft(conversationId)
-  const [mode, setMode] = useState<AgentPlanMode>('act')
-  const modes = derivePermissionModes({
-    target: 'composer', agentRuntime: { kind: 'builtin' }, agentPlanMode: mode, goalActive: goalDraft,
-  })
-  return <InputBar conversationId={conversationId} onSend={() => {}}
-    modeOptions={modes.options} modeValue={modes.current}
-    onModeChange={value => {
-      setGoalDraftMode(conversationId, value === 'goal')
-      if (value !== 'goal') setMode(value as AgentPlanMode)
-    }} />
-}
-
 describe('InputBar 底栏模式胶囊', () => {
   it('keeps subagent management out of the composer', () => {
     render(<InputBar onSend={() => {}} conversationId="root" />)
@@ -63,14 +45,13 @@ describe('InputBar 底栏模式胶囊', () => {
     expect(selectSet).toHaveBeenCalledWith(null)
   })
 
-  it('selects Goal via Shift+Tab and leaves it without losing the objective', async () => {
-    const key = 'goal-keyboard'
-    setComposerDraft(key, { input: '检查商品', quotes: [], attachments: [] })
-    render(<GoalDraftComposer conversationId={key} />)
+  it('Shift+Tab no longer switches anything for the built-in agent', async () => {
+    const change = vi.fn()
+    render(<InputBar onSend={() => {}} agentPlanState={{ mode: 'act', status: 'empty', plan: null, updated_at: 0 }}
+      onAgentPlanModeChange={change} onModeChange={change}
+      modeOptions={derivePermissionModes({ target: 'composer', agentRuntime: { kind: 'builtin' } }).options} />)
     await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Tab', shiftKey: true }) })
-    expect(screen.getByRole('textbox')).toHaveValue('/goal 检查商品')
-    await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Tab', shiftKey: true }) })
-    expect(screen.getByRole('textbox')).toHaveValue('检查商品')
+    expect(change).not.toHaveBeenCalled()
   })
 
   it('Goal occupies the composer status row and replaces its Todo indicator', () => {
@@ -80,11 +61,10 @@ describe('InputBar 底栏模式胶囊', () => {
     expect(screen.queryByText('Todo')).not.toBeInTheDocument()
   })
 
-  it('内置模型会话不显示模式胶囊，模式靠 Shift+Tab 和斜杠命令切换', () => {
+  it('内置模型会话不显示模式胶囊，计划与目标走 /plan、/goal', () => {
     renderComposer(derivePermissionModes({
       target: 'composer',
       agentRuntime: { kind: 'builtin' },
-      agentPlanMode: 'act',
     }))
     expect(screen.queryByTitle('切换模式')).not.toBeInTheDocument()
   })

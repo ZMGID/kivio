@@ -337,9 +337,9 @@ impl From<&crate::chat::AgentTodoState> for ChatTodoStatePayload {
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
 pub enum ChatPlanMode {
+    #[serde(alias = "orchestrate")]
     Act,
     Plan,
-    Orchestrate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
@@ -370,7 +370,6 @@ impl From<&crate::chat::AgentPlanState> for ChatPlanStatePayload {
             mode: match state.mode {
                 crate::chat::AgentPlanMode::Act => ChatPlanMode::Act,
                 crate::chat::AgentPlanMode::Plan => ChatPlanMode::Plan,
-                crate::chat::AgentPlanMode::Orchestrate => ChatPlanMode::Orchestrate,
             },
             status: match state.status {
                 crate::chat::AgentPlanStatus::Empty => ChatPlanStatus::Empty,

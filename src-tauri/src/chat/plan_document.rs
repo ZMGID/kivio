@@ -225,7 +225,7 @@ pub(crate) fn prepare_execution_in(
     if content.trim().is_empty() {
         return Err("The plan document is empty".into());
     }
-    prepare_snapshot(&mut selected, &conversation.agent_plan_state.mode, &content);
+    prepare_snapshot(&mut selected, &content);
     if let Some(message) = conversation
         .messages
         .iter_mut()
@@ -237,12 +237,8 @@ pub(crate) fn prepare_execution_in(
     Ok(content)
 }
 
-fn prepare_snapshot(selected: &mut AgentPlanState, mode: &AgentPlanMode, content: &str) {
-    selected.mode = if *mode == AgentPlanMode::Orchestrate {
-        AgentPlanMode::Orchestrate
-    } else {
-        AgentPlanMode::Act
-    };
+fn prepare_snapshot(selected: &mut AgentPlanState, content: &str) {
+    selected.mode = AgentPlanMode::Act;
     selected.status = AgentPlanStatus::Draft;
     selected.plan = Some(content.to_string());
     selected.updated_at = chrono::Local::now().timestamp();
@@ -260,10 +256,10 @@ mod tests {
             ..Default::default()
         };
         let content = std::fs::read_to_string(&document.path).unwrap();
-        prepare_snapshot(&mut selected, &AgentPlanMode::Orchestrate, &content);
+        prepare_snapshot(&mut selected, &content);
         update_document(&document, "later edit", "current version").unwrap();
         assert_eq!(selected.plan.as_deref(), Some("current version"));
-        assert_eq!(selected.mode, AgentPlanMode::Orchestrate);
+        assert_eq!(selected.mode, AgentPlanMode::Act);
         assert_eq!(selected.status, AgentPlanStatus::Draft);
         let saved = serde_json::to_string(&selected).unwrap();
         let restored: AgentPlanState = serde_json::from_str(&saved).unwrap();

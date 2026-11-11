@@ -270,7 +270,7 @@
       <table>
         <thead><tr><th>能力</th><th>说明</th></tr></thead>
         <tbody>
-          <tr><td><a href="#/chat">智能体对话</a></td><td>规划 → 执行 → 综合的完整工具循环，支持 Act / Plan / Orchestrate 三种模式</td></tr>
+          <tr><td><a href="#/chat">智能体对话</a></td><td>规划 → 执行 → 综合的完整工具循环，支持 Act / Plan 两种模式</td></tr>
           <tr><td><a href="#/tools">内置工具</a></td><td>文件读写、Shell、网页抓取、Python 沙箱、记忆、待办清单</td></tr>
           <tr><td><a href="#/mcp">MCP 服务器</a></td><td>接入任意 Model Context Protocol 工具服务器</td></tr>
           <tr><td><a href="#/skills">Skills</a></td><td>Markdown 定义的可复用技能，运行中按需激活</td></tr>
@@ -320,7 +320,7 @@
       <h2 id="qs-key">第二步 · 完成首次引导</h2>
       <p>首次启动会依次引导你添加模型服务商、可选配置联网搜索、确认全局热键。Provider 可以从 DeepSeek、OpenRouter、SiliconFlow、GLM、Ollama 预设开始，也可以手动填写任意 OpenAI Chat Completions、Anthropic Messages、Gemini generateContent 或 OpenAI Responses 兼容服务商。粘贴 API Key 后获取模型列表，并明确勾选要启用的模型。详见 <a href="#/providers">模型服务商</a>。</p>
       <h2 id="qs-chat">第三步 · 发起第一次对话</h2>
-      <p>从托盘菜单选择「打开 AI 客户端」，在模型选择器里选中刚启用的模型，输入一个真实任务。默认 <b>Act</b> 模式会按需使用文件、Shell、网页、Python 等工具；<b>Plan</b> 只研究和制定方案；<b>Orchestrate</b> 会把可拆分工作并行派发给子智能体。</p>
+      <p>从托盘菜单选择「打开 AI 客户端」，在模型选择器里选中刚启用的模型，输入一个真实任务。默认 <b>Act</b> 模式会按需使用文件、Shell、网页、Python 等工具；<b>Plan</b> 只研究和制定方案。</p>
       <ul>
         <li>点击输入框旁的来源按钮，可以挂载知识库、启用 MCP 连接器或联网搜索。</li>
         <li>第一次使用文件或 Shell 工具时，应用会请求一次「允许本对话读写文件与执行命令」授权。</li>
@@ -344,14 +344,13 @@
         <li><b>综合</b> —— 不再有工具调用后，模型做最后一次不带工具的调用，生成自然语言总结。若这一步失败，Kivio Desktop 会分级降级：重试 → 换一次干净的追问 → 直接从工具调用记录里拼装一份确定性总结 —— 保证这一轮不会白跑。</li>
         <li><b>完成</b> —— 最终答案、推理过程、工具调用记录打包展示并保存。</li>
       </ol>
-      <p>默认每轮对话最多 20 次工具调用（<code>maxToolRounds</code>，可在设置中调整为 1–100）；<b>编排者模式</b>会把这个下限提高到 40，因为编排需要额外的轮次来做规划、派发和汇总。</p>
-      <h3 id="chat-modes">三种模式</h3>
+      <p>默认每轮对话最多 20 次工具调用（<code>maxToolRounds</code>，可在设置中调整为 1–100）。</p>
+      <h3 id="chat-modes">两种模式</h3>
       <table>
         <thead><tr><th>模式</th><th>行为差异</th></tr></thead>
         <tbody>
-          <tr><td><b>Act</b>（普通）</td><td>默认行为，无额外约束，所有已启用工具都可用。</td></tr>
+          <tr><td><b>Act</b>（普通）</td><td>默认行为，无额外约束，所有已启用工具都可用。是否把工作派给子智能体由模型按任务判断，派工力度随模型而定。</td></tr>
           <tr><td><b>Plan</b>（计划）</td><td>强制只读：只能研究/阅读/搜索，不能声称已编辑文件、执行命令；产出结构化的「## 发现」+「## 计划」回复，不直接动手实施。</td></tr>
-          <tr><td><b>Orchestrate</b>（编排者）</td><td>要求模型把可拆分的任务派发给子智能体（通过 <code>agent</code> 工具）而不是自己做；先写 <a href="#/tools">待办清单</a>，再逐项分配、并行派发、汇总结果。只有真正原子化的单步任务才允许直接执行。</td></tr>
         </tbody>
       </table>
       <h2 id="chat-context">上下文管理</h2>

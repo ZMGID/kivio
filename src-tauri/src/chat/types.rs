@@ -236,9 +236,10 @@ pub struct AgentTodoState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentPlanMode {
+    /// Saved conversations from the removed Orchestrate mode load as Act.
+    #[serde(alias = "orchestrate")]
     Act,
     Plan,
-    Orchestrate,
 }
 
 impl Default for AgentPlanMode {

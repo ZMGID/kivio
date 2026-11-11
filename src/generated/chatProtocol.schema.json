@@ -932,8 +932,7 @@
     "ChatPlanMode": {
       "enum": [
         "act",
-        "plan",
-        "orchestrate"
+        "plan"
       ],
       "type": "string"
     },

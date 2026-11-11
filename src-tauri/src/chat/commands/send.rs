@@ -724,14 +724,13 @@ async fn send_reserved(
 
     // 多模型一问多答（任务 06-30）：从会话级 reply_models 解析本次要并行的「臂」。
     // 0/1 个有效臂 → 单模型现状路径（行为完全不变，防回归 AC5）。≥2 → fan-out。
-    // 仅普通（Act）模式生效（R11）：plan / orchestrate 模式下不 fan-out。
+    // 仅普通（Act）模式生效（R11）：plan 模式下不 fan-out。
     let reply_arms = {
         let settings = state.settings_read();
         resolve_reply_arms(&settings, &conversation.reply_models)?
     };
-    let plan_or_orchestrate = crate::chat::plan::is_plan_mode(&conversation.agent_plan_state)
-        || crate::chat::plan::is_orchestrate_mode(&conversation.agent_plan_state);
-    let fan_out = reply_arms.len() >= 2 && !plan_or_orchestrate && selected_plan.is_none();
+    let plan_mode = crate::chat::plan::is_plan_mode(&conversation.agent_plan_state);
+    let fan_out = reply_arms.len() >= 2 && !plan_mode && selected_plan.is_none();
     // fan-out 时所有臂共享一个 group_id；用户消息也打上它，便于前端把这一问的 N 答聚成一组。
     let group_id = if fan_out {
         Some(format!("grp_{}", Uuid::new_v4()))

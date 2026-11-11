@@ -282,6 +282,73 @@ impl<'a> SpawnPolicy<'a> {
     }
 }
 
+/// How hard the main prompt pushes fan-out for a model lineage (OMP catalog
+/// `delegation-bias`). Unassigned lineages are `Eager`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DelegationBias {
+    /// Actively pushes fan-out.
+    Eager,
+    /// Keeps fan-out for genuinely parallel slices; forbids reflexive scouts and
+    /// single-agent delegation.
+    Restrained,
+    /// No subagents unless the user, AGENTS.md or a skill asks.
+    Gated,
+}
+
+impl DelegationBias {
+    /// OMP `rules/classes/openai.kdl`: GPT-5.6 was trained on "no subagents unless
+    /// asked" (gated); GPT-6+ over-delegates under Claude-calibrated prompts
+    /// (restrained). Matches the `gpt-<major>[.<minor>]` id, with or without a
+    /// provider prefix.
+    pub fn for_model(model: &str) -> Self {
+        let model = model.to_ascii_lowercase();
+        let Some(version) = model.match_indices("gpt-").find_map(|(at, tag)| {
+            let starts_word = model[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric());
+            starts_word.then(|| &model[at + tag.len()..])
+        }) else {
+            return Self::Eager;
+        };
+        let number = |text: &str| -> Option<u32> {
+            let end = text
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(text.len());
+            text[..end].parse().ok()
+        };
+        let Some(major) = number(version) else {
+            return Self::Eager;
+        };
+        let minor = version
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .strip_prefix('.')
+            .and_then(number);
+        match (major, minor) {
+            (6.., _) => Self::Restrained,
+            (5, Some(6)) => Self::Gated,
+            _ => Self::Eager,
+        }
+    }
+}
+
+/// Main-agent `# Delegation` section for Act mode (OMP system prompt), rendered
+/// for the model that runs this turn.
+pub fn delegation_prompt(model: &str, tools: &ChatToolsConfig) -> String {
+    let bias = DelegationBias::for_model(model);
+    let eager = bias == DelegationBias::Eager;
+    prompts::render(
+        prompts::DELEGATION,
+        &json!({
+            "eager": eager,
+            "restrained": bias == DelegationBias::Restrained,
+            "gated": bias == DelegationBias::Gated,
+            "eagerScout": eager && tools.ensure_subagent_role_enabled("scout").is_ok(),
+            "maxConcurrency": tools.task_max_concurrency,
+        }),
+    )
+}
+
 pub fn tool_definition(defs: &[AgentDefinition], settings: &Settings) -> ChatToolDefinition {
     tool_definition_with_policy(defs, settings, None, true)
 }
@@ -1424,6 +1491,54 @@ async fn replay_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegation_bias_follows_the_model_lineage() {
+        use DelegationBias::*;
+        for (model, bias) in [
+            ("gpt-6.1-sol", Restrained),
+            ("openai/gpt-6", Restrained),
+            ("GPT-7-mini", Restrained),
+            ("gpt-5.6", Gated),
+            ("gpt-5.6-codex", Gated),
+            ("gpt-5.5", Eager),
+            ("gpt-5", Eager),
+            ("chatgpt-4o-latest", Eager),
+            ("claude-opus-4-7", Eager),
+            ("", Eager),
+        ] {
+            assert_eq!(DelegationBias::for_model(model), bias, "{model}");
+        }
+    }
+
+    #[test]
+    fn delegation_section_renders_only_its_tier() {
+        let mut tools = ChatToolsConfig::default();
+        let restrained = delegation_prompt("gpt-6.1-sol", &tools);
+        assert!(restrained.starts_with("# Delegation\nInline first."));
+        assert!(restrained.contains("NEVER open with a scout"));
+        assert!(restrained.contains("NEVER delegate one slice"));
+        assert!(!restrained.contains("Map unknown code"));
+        assert!(!restrained.contains("one read-only scout while working allowed"));
+        assert!(restrained.contains("## Delegation gates"));
+        assert!(restrained.contains("Max 32 concurrent subagents"));
+
+        let gated = delegation_prompt("gpt-5.6", &tools);
+        assert!(gated.contains("No subagents unless user"));
+        assert!(!gated.contains("Inline first") && !gated.contains("Map unknown code"));
+
+        let eager = delegation_prompt("claude-opus-4-7", &tools);
+        assert!(eager.contains("Map unknown code via `task`"));
+        assert!(eager.contains("one read-only scout while working allowed"));
+        assert!(!eager.contains("Inline first") && !eager.contains("No subagents unless"));
+
+        tools.task_max_concurrency = 0;
+        tools.task_disabled_agents = vec!["scout".into()];
+        let unlimited = delegation_prompt("claude-opus-4-7", &tools);
+        assert!(!unlimited.contains("concurrent subagents"));
+        assert!(!unlimited.contains("one read-only scout while working allowed"));
+        assert!(!unlimited.contains("{{"), "{unlimited}");
+    }
 
     fn batch(items: Value) -> Value {
         json!({"context": "shared", "tasks": items})

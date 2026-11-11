@@ -12,7 +12,6 @@ import { isPluginManagedServer, preservePluginManagedServers } from '../../setti
 import { i18n, type Lang } from '../../components/i18n'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../api/chatTools'
 import { chatApi, type AgentRuntimeConfig } from '../api'
-import { setGoalDraftMode, useGoalDraft } from '../goalPresentation'
 import { keepNewerContextMeasurement, mergeContextMeasurement } from '../contextPanel'
 import { ContextIndicator } from '../ContextIndicator'
 import { useTauriEvent } from '../hooks/useTauriEvent'
@@ -163,21 +162,13 @@ export function usePopoutComposer({
   const [boundSet, setBoundSet] = useState<ChatSet | null>(null)
 
   const dshCustomPresets = useDshCustomPresets(runtime)
-  const activeAgentPlanMode = conversation?.agent_plan_state?.mode
-    ?? conversation?.agentPlanState?.mode
-    ?? 'act'
-  const currentGoal = conversation?.goal_state ?? conversation?.goalState
-  const goalActive = !!currentGoal && !['completed', 'cancelled'].includes(currentGoal.status)
-  const goalDraft = useGoalDraft(conversationId)
   const composerModes = useMemo(
     () => derivePermissionModes({
       target: 'composer',
       agentRuntime: runtime,
       agents: detectedExternalAgents,
-      agentPlanMode: activeAgentPlanMode,
-      goalActive: goalActive || goalDraft,
     }),
-    [runtime, detectedExternalAgents, activeAgentPlanMode, goalActive, goalDraft],
+    [runtime, detectedExternalAgents],
   )
   const composerPresets = useMemo(
     () => deriveDshPresetModes(runtime, dshCustomPresets),
@@ -531,19 +522,8 @@ export function usePopoutComposer({
         externalSandbox: value,
       })
       applyConversationMeta(setConversation, next)
-      return
     }
-    if (value === 'goal') {
-      if (!goalActive) setGoalDraftMode(conversationId, true)
-      return
-    }
-    if (goalActive) {
-      const paused = await chatApi.pauseGoal(conversationId)
-      setConversation(paused)
-    }
-    await handleAgentPlanModeChange(value as AgentPlanMode)
-    setGoalDraftMode(conversationId, false)
-  }, [conversationId, goalActive, handleAgentPlanModeChange, runtime, setConversation, usesExternalRuntime])
+  }, [conversationId, runtime, setConversation, usesExternalRuntime])
 
   const handleExternalPresetChange = useCallback(async (preset: string) => {
     const next = await chatApi.setAgentRuntime(conversationId, {

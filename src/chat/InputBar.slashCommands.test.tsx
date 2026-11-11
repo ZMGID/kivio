@@ -3,6 +3,8 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { InputBar } from './InputBar'
 import { getComposerDraft } from './composerDraft'
+import { useState } from 'react'
+import type { AgentPlanMode } from './types'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }))
 vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: () => Promise.resolve(() => {}) }) }))
@@ -23,7 +25,28 @@ function paste(text: string) {
   fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { files: [], getData: (type: string) => type === 'text/plain' ? text : '' } })
 }
 
+function PlanComposer({ onSend }: { onSend: () => void }) {
+  const [mode, setMode] = useState<AgentPlanMode>('act')
+  return <InputBar conversationId="plan-toggle" onSend={onSend}
+    agentPlanState={{ mode, status: 'empty', plan: null, updated_at: 0 }}
+    onAgentPlanModeChange={setMode} />
+}
+
 describe('InputBar with real command editor', () => {
+  it('/plan toggles planning on and off without sending a message', async () => {
+    const send = vi.fn()
+    render(<PlanComposer onSend={send} />)
+    const composer = () => screen.getByRole('textbox').closest('[data-chat-composer]')
+    for (const [on, status] of [[true, /已开启计划|Planning on/], [false, /已关闭计划|Planning off/]] as const) {
+      paste('/pla')
+      fireEvent.click(await screen.findByText('/plan'))
+      await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' }) })
+      expect(await screen.findByRole('status')).toHaveTextContent(status)
+      expect(composer()?.className.includes('border-emerald-500')).toBe(on)
+    }
+    expect(send).not.toHaveBeenCalled()
+  })
+
   it('opens slash search after Chinese, inserts the chosen skill and sends the whole task', async () => {
     const send = vi.fn().mockResolvedValue(true)
     render(<InputBar onSend={send} conversationId="inline-skill" enabledSkills={[{ id: 'review', name: 'Review', description: 'Review code' }]} />)

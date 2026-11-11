@@ -480,7 +480,7 @@ export interface AgentTodoState {
   updatedAt?: number
 }
 
-export type AgentPlanMode = 'act' | 'plan' | 'orchestrate'
+export type AgentPlanMode = 'act' | 'plan'
 export type AgentPlanStatus = 'empty' | 'draft' | 'approved'
 
 export interface AgentPlanState {

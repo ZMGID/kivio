@@ -69,7 +69,7 @@ export function updateComposerDraft(key: string, update: (draft: ComposerDraft) 
 /**
  * 新建会话落库拿到真 id 时，把占位键上的草稿**搬**到真 id 下。
  *
- * 切 plan/orchestrate 模式（以及任何需要先建会话的操作）会让 conversationId 从 undefined
+ * 切 plan 模式（以及任何需要先建会话的操作）会让 conversationId 从 undefined
  * 变成真 id，草稿键随之从 NEW_CHAT_KEY 变成该 id。调用方的回填逻辑若把这当成「切到了另一条
  * 会话」，就会把用户刚打的字清掉，且切回原模式也不还原（真 id 不会变回 undefined）。
  *

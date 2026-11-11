@@ -117,7 +117,7 @@ pub(crate) async fn run_chat_probe(
     if conversation.agent_runtime.is_external() {
         apply_external_runtime_overrides(&mut conversation.agent_runtime, req);
     }
-    // 可选运行模式（act/plan/orchestrate）：验证模式提示词用。非法值报错而非静默回落。
+    // 可选运行模式（act/plan）：验证模式提示词用。非法值报错而非静默回落。
     if let Some(mode) = req.mode.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
         let mode = crate::chat::plan::mode_from_str(mode).map_err(&fail)?;
         conversation.agent_plan_state =

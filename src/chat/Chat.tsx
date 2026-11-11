@@ -157,7 +157,7 @@ import { ChatConversationPane } from './ChatConversationPane'
 import { VoiceCallContext, useVoiceCall } from './voice/useVoiceCall'
 import { VoiceStage } from './voice/VoiceStage'
 import { GoalCard } from './GoalCard'
-import { composerGoal, setGoalDraftMode, useGoalDraft } from './goalPresentation'
+import { composerGoal, useGoalDraft } from './goalPresentation'
 import { PopoutOccupiedPlaceholder } from './popout/PopoutOccupiedPlaceholder'
 import { emptyPopoutConversation, stripConversationMessages } from './popout/conversationStub'
 import {
@@ -834,7 +834,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     applyConversationIfCurrent,
     setStreamErrorForConversation,
   })
-  // 底栏模式胶囊：内置 Agent = Act/Plan/Orchestrate；Kivio Chat 无此胶囊；本地 CLI = 沙盒档位。
+  // 底栏模式胶囊：内置 Agent = Act/Goal/Plan；Kivio Chat 无此胶囊；本地 CLI = 沙盒档位。
   // CLI 没有档位时返回空表 → 胶囊隐藏。
   const detectedExternalAgents = useDetectedExternalAgents(currentConversation?.id ?? null)
   const activeExternalAgent = detectedExternalAgents.find((agent) => agent.id === activeAgentRuntime.externalAgentId)
@@ -850,10 +850,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       target: 'composer',
       agentRuntime: activeAgentRuntime,
       agents: detectedExternalAgents,
-      agentPlanMode: activeAgentPlanMode,
-      goalActive: goalActive || goalDraft,
     }),
-    [activeAgentRuntime, detectedExternalAgents, activeAgentPlanMode, goalActive, goalDraft],
+    [activeAgentRuntime, detectedExternalAgents],
   )
   const dshCustomPresets = useDshCustomPresets(activeAgentRuntime)
   const composerPresets = useMemo(
@@ -2262,26 +2260,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     })
   }, [runCommands])
 
-  // 底栏胶囊选档：本地 CLI 写沙盒档位；内置 Agent 写 Act/Plan/Orchestrate；Chat 运行时无胶囊。
+  // 底栏档位只属于本地 CLI 沙盒；内置 Agent 的计划与目标走 /plan、/goal 命令。
   const handleComposerModeChange = useCallback(async (value: string) => {
-    if (usesExternalRuntime) {
-      await handleExternalSandboxChange(value)
-      return
-    }
-    if (value === 'goal') {
-      if (!goalActive) setGoalDraftMode(currentConversationIdRef.current, true)
-      return
-    }
-    if (goalActive) {
-      const conversationId = currentConversationIdRef.current
-      if (conversationId) {
-        const paused = await chatApi.pauseGoal(conversationId)
-        applyConversationIfCurrent(conversationId, paused)
-      }
-    }
-    await handleAgentPlanModeChange(value as AgentPlanMode)
-    setGoalDraftMode(currentConversationIdRef.current, false)
-  }, [applyConversationIfCurrent, goalActive, handleAgentPlanModeChange, handleExternalSandboxChange, usesExternalRuntime])
+    if (usesExternalRuntime) await handleExternalSandboxChange(value)
+  }, [handleExternalSandboxChange, usesExternalRuntime])
 
   const handleCancelStream = useCallback(async () => {
     const conversationId = currentConversationIdRef.current

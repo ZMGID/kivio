@@ -74,7 +74,7 @@ pub(crate) struct ProbeRequest {
     pub(crate) timeout_seconds: Option<u64>,
     #[serde(default)]
     pub(crate) skill_id: Option<String>,
-    /// agent 运行模式（act/plan/orchestrate），省略 = act。用于验证模式提示词。
+    /// agent 运行模式（act/plan），省略 = act。用于验证模式提示词。
     #[serde(default)]
     pub(crate) mode: Option<String>,
     /// 文件工具的根目录（read/glob/grep 相对路径从此解析）。省略则用进程 cwd

@@ -1059,7 +1059,7 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
                 );
                 assert_eq!(
                     native.plan_state.mode,
-                    crate::chat::types::AgentPlanMode::Orchestrate
+                    crate::chat::types::AgentPlanMode::Plan
                 );
                 assert_eq!(native.plan_state.plan.as_deref(), Some("approved snapshot"));
                 assert_eq!(native.mcp_tool_ids.len(), 1);
@@ -1078,7 +1078,7 @@ async fn tool_round_passes_parent_plan_and_mcp_authority_to_native_dispatch() {
         }
     }
     let plan = crate::chat::types::AgentPlanState {
-        mode: crate::chat::types::AgentPlanMode::Orchestrate,
+        mode: crate::chat::types::AgentPlanMode::Plan,
         plan: Some("approved snapshot".into()),
         ..Default::default()
     };

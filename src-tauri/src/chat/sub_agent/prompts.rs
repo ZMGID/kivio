@@ -411,6 +411,9 @@ mod tests {
 pub const TASK_TOOL: &str = include_str!("prompts/task.md");
 /// Async guidance: `waitTool` and `ircEnabled`.
 pub const TASK_ASYNC_CONTRACT: &str = include_str!("prompts/task-async-contract.md");
+/// Main-agent `# Delegation` section (OMP system prompt, by model delegation bias):
+/// exactly one of `eager`/`restrained`/`gated`, plus `eagerScout` and `maxConcurrency`.
+pub const DELEGATION: &str = include_str!("prompts/delegation.md");
 /// Spawn feedback: `mixed`, `count`, `singular`, `scheduleFailureSummary`,
 /// `singleCall`, `agentId`, `jobId`, `agentLabel`, `showListing`, and `started`
 /// (items have `agentId` and `jobId`).

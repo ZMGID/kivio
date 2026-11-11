@@ -1,5 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react'
-import { draftKey, getComposerDraft, subscribeComposerDraft, updateComposerDraft } from './composerDraft'
+import { draftKey, getComposerDraft, subscribeComposerDraft } from './composerDraft'
 import { findComposerCommands } from './slashCommands'
 import type { ChatMessage, GoalState } from './types'
 
@@ -13,16 +13,6 @@ export function useGoalDraft(conversationId?: string | null): boolean {
     [key],
   )
   return useSyncExternalStore(subscribeComposerDraft, snapshot)
-}
-
-export function setGoalDraftMode(conversationId: string | null | undefined, enabled: boolean): void {
-  updateComposerDraft(draftKey(conversationId), (draft) => {
-    let input = draft.input
-    for (const match of findComposerCommands(input, goalCommands).reverse()) {
-      input = input.slice(0, match.start) + input.slice(match.end).replace(/^[ \t]/, '')
-    }
-    return { ...draft, input: enabled ? `/goal ${input}` : input }
-  })
 }
 
 export function goalCompletedAt(goal: GoalState): number | undefined {

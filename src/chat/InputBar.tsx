@@ -137,9 +137,7 @@ function nextBlankProjectName(projects: ChatProject[], t: I18n): string {
 type SlashCommandId =
   | 'help'
   | 'goal'
-  | 'act'
   | 'plan'
-  | 'orchestrate'
   | 'new'
   | 'reload'
   | 'compact'
@@ -175,31 +173,13 @@ const LOCAL_SLASH_COMMANDS: LocalSlashCommand[] = [
     keywords: ['goal', 'objective', '目标', '持续执行'],
   },
   {
-    id: 'act',
-    slash: '/act',
-    title: '/act',
-    description: 'Back to act mode',
-    category: 'Local',
-    kind: 'action',
-    keywords: ['act', 'mode', '普通', '模式', '切换'],
-  },
-  {
     id: 'plan',
     slash: '/plan',
     title: '/plan',
-    description: 'Enter plan mode',
+    description: 'Toggle planning: investigate and write a plan document before executing',
     category: 'Local',
     kind: 'action',
-    keywords: ['plan', 'act', 'mode', '计划', '模式', '切换'],
-  },
-  {
-    id: 'orchestrate',
-    slash: '/orchestrate',
-    title: '/orchestrate',
-    description: 'Enter orchestrate mode (lead parallel collaboration)',
-    category: 'Local',
-    kind: 'action',
-    keywords: ['orchestrate', 'agent', 'subagent', 'fanout', 'mode', '编排', 'subagents', '子代理', '模式', '切换'],
+    keywords: ['plan', '计划', '规划', '方案'],
   },
   {
     id: 'new',
@@ -367,7 +347,7 @@ export interface InputBarProps {
   appearance?: 'default' | 'embedded'
   /** 外部 CLI 模式：斜杠命令直通 Agent，不展示 Kivio 弹层 */
   usesExternalRuntime?: boolean
-  /** Kivio Chat：不提供 /plan /orchestrate / 技能斜杠（那些是 Agent 能力） */
+  /** Kivio Chat：不提供 /plan / 技能斜杠（那些是 Agent 能力） */
   usesChatRuntime?: boolean
   externalAgentName?: string | null
   conversationId?: string | null
@@ -601,7 +581,6 @@ export const InputBar = memo(function InputBar({
   }, [optimizeMotion])
   const agentPlanMode = agentPlanState?.mode ?? 'act'
   const agentPlanActive = agentPlanMode === 'plan'
-  const agentOrchestrateActive = agentPlanMode === 'orchestrate'
   const projectEntryEnabled = Boolean(showProjectEntry && onSelectProject)
   // 项目按钮的显示态：优先导航选中的项目；否则回退到当前会话自身的项目（有名才算），
   // 这样从「最近」打开一条属于项目的对话时，按钮仍能显示该项目。
@@ -816,7 +795,7 @@ export const InputBar = memo(function InputBar({
         return [...buildSlashCommands(reload, []), ...externalCliSlashCommands]
       }
       const local = usesChatRuntime
-        ? LOCAL_SLASH_COMMANDS.filter((command) => command.id !== 'act' && command.id !== 'plan' && command.id !== 'orchestrate')
+        ? LOCAL_SLASH_COMMANDS.filter((command) => command.id !== 'plan')
         : LOCAL_SLASH_COMMANDS
       return buildSlashCommands(local.map(command => command.id === 'reload'
         ? { ...command, description: t.chatSkillReloadDescription } : command), usesChatRuntime ? [] : enabledSkills)
@@ -1055,14 +1034,9 @@ export const InputBar = memo(function InputBar({
         editorRef.current?.replaceText(start, start, '/')
         syncSlashToken(editorRef.current?.value ?? '/', start + 1)
         return
-      case 'act':
-        await pickMode('act')
-        return
       case 'plan':
-        await setAgentPlanMode('plan')
-        return
-      case 'orchestrate':
-        await setAgentPlanMode('orchestrate')
+        await setAgentPlanMode(agentPlanActive ? 'act' : 'plan')
+        setCommandStatus(agentPlanActive ? t.chatPlanOff : t.chatPlanOn)
         return
       case 'new':
         setInput('')
@@ -2019,11 +1993,9 @@ export const InputBar = memo(function InputBar({
               ? 'border-accent shadow-[0_2px_12px_rgba(0,0,0,0.06)] ring-2 ring-[var(--accent)]/25 dark:shadow-none'
               : agentPlanActive
                 ? 'border-emerald-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-emerald-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(16,185,129,0.22)] dark:border-emerald-400 dark:shadow-none dark:focus-within:border-emerald-400'
-                : agentOrchestrateActive
-                  ? 'border-violet-500 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_10px_-4px_rgba(0,0,0,0.06),0_12px_32px_-14px_rgba(0,0,0,0.14)] focus-within:border-violet-500 focus-within:shadow-[0_1px_3px_rgba(0,0,0,0.05),0_6px_14px_-6px_rgba(0,0,0,0.07),0_18px_44px_-16px_rgba(139,92,246,0.22)] dark:border-violet-400 dark:shadow-none dark:focus-within:border-violet-400'
-                  : appearance === 'embedded'
-                    ? 'border-[var(--theme-surface-border)] shadow-none focus-within:border-[var(--accent)]'
-                    : 'border-black/[0.08] shadow-[0_1px_2px_rgba(0,0,0,0.05)] dark:border-white/[0.06] dark:shadow-none'
+                : appearance === 'embedded'
+                  ? 'border-[var(--theme-surface-border)] shadow-none focus-within:border-[var(--accent)]'
+                  : 'border-black/[0.08] shadow-[0_1px_2px_rgba(0,0,0,0.05)] dark:border-white/[0.06] dark:shadow-none'
           }`}
         >
           {dragActive && (

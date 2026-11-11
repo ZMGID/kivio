@@ -87,7 +87,7 @@ export type ChatTodoItemPayload = { id: string, content: string, description: st
 
 export type ChatTodoStatePayload = { items: Array<ChatTodoItemPayload>, updatedAt: number, };
 
-export type ChatPlanMode = "act" | "plan" | "orchestrate";
+export type ChatPlanMode = "act" | "plan";
 
 export type ChatPlanStatus = "empty" | "draft" | "approved";
 

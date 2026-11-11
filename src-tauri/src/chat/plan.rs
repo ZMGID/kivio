@@ -4,17 +4,12 @@ pub fn mode_from_str(value: &str) -> Result<AgentPlanMode, String> {
     match value.trim().to_ascii_lowercase().as_str() {
         "act" => Ok(AgentPlanMode::Act),
         "plan" => Ok(AgentPlanMode::Plan),
-        "orchestrate" => Ok(AgentPlanMode::Orchestrate),
         other => Err(format!("Unknown agent plan mode: {other}")),
     }
 }
 
 pub fn is_plan_mode(state: &AgentPlanState) -> bool {
     state.mode == AgentPlanMode::Plan
-}
-
-pub fn is_orchestrate_mode(state: &AgentPlanState) -> bool {
-    state.mode == AgentPlanMode::Orchestrate
 }
 
 /// Built-in Chat system text shown in Settings as the empty-state preview.
@@ -39,12 +34,18 @@ pub fn with_mode(current: &AgentPlanState, mode: AgentPlanMode) -> AgentPlanStat
     next
 }
 
-pub fn format_prompt(state: &AgentPlanState, task_available: bool) -> String {
+/// `delegation` is the main agent's rendered `# Delegation` section, present only
+/// when this turn exposes `task`; Act mode carries it, Plan mode keeps its own text.
+pub fn format_prompt(state: &AgentPlanState, delegation: Option<&str>) -> String {
+    let task_available = delegation.is_some();
+    let act_delegation = delegation
+        .map(|section| format!("\n\n{}", section.trim()))
+        .unwrap_or_default();
     if state.mode == AgentPlanMode::Act
         && state.document.is_none()
         && current_plan_text(state).is_none()
     {
-        return "Current mode: act.".into();
+        return format!("Current mode: act.{act_delegation}");
     }
     let status = status_name(&state.status);
     let current_plan = if let Some(document) = &state.document {
@@ -74,20 +75,11 @@ pub fn format_prompt(state: &AgentPlanState, task_available: bool) -> String {
             ""
         };
         format!(
-            "Plan mode: investigate the relevant code and constraints; look up external facts or ask about important choices when needed.{delegation} Save the proposed plan as a Markdown document with save_plan, then briefly explain the key decisions and link the document; if save_plan is unavailable, write the plan in your reply. Update the same document when the user revises the plan. Only investigate and edit the plan document in this mode; implementation belongs in Act or Orchestrate when the user asks to begin.\n\nCurrent plan context:\n{current_plan}"
-        )
-    } else if state.mode == AgentPlanMode::Orchestrate {
-        let delegation = if task_available {
-            "Delegation preferred. Once design settles, SHOULD fan substantial work to `task`; multi-file changes, refactors, features, tests, investigations strong candidates. Judge small single-file/interactive work. Fan genuine slices in one `tasks[]` batch. NEVER pad or serialize independent work. Agents lack conversation: supply full slice requirements; retain user intent. NEVER babysit. Continue independent work and read auto-delivered results. Follow the task tool's handoff guidance when blocked. Use their actual outputs as information, distinguish sources and uncertainties, and decide the next steps and final answer yourself."
-        } else {
-            "Work directly with the available tools."
-        };
-        format!(
-            "Agent orchestrate mode: {delegation} Follow the user's latest request; use the saved plan as context when relevant.\n\nCurrent saved plan:\n{current_plan}"
+            "Plan mode: investigate the relevant code and constraints; look up external facts or ask about important choices when needed.{delegation} Save the proposed plan as a Markdown document with save_plan, then briefly explain the key decisions and link the document; if save_plan is unavailable, write the plan in your reply. Update the same document when the user revises the plan. Only investigate and edit the plan document in this mode; implementation starts after the user runs the plan or turns planning off with /plan.\n\nCurrent plan context:\n{current_plan}"
         )
     } else {
         format!(
-            "Current mode: act. Saved plan status: {status}. Use the saved plan as context when relevant, following the user's latest request.\n\nCurrent saved plan:\n{current_plan}"
+            "Current mode: act. Saved plan status: {status}. Use the saved plan as context when relevant, following the user's latest request.{act_delegation}\n\nCurrent saved plan:\n{current_plan}"
         )
     }
 }
@@ -112,6 +104,8 @@ fn status_name(status: &AgentPlanStatus) -> &'static str {
 mod tests {
     use super::*;
 
+    const SECTION: &str = "# Delegation\nInline first.";
+
     #[test]
     fn old_state_defaults_to_act_empty() {
         let state: AgentPlanState = serde_json::from_value(serde_json::json!({})).unwrap();
@@ -121,48 +115,33 @@ mod tests {
     }
 
     #[test]
-    fn mode_from_str_accepts_orchestrate() {
-        assert_eq!(
-            mode_from_str("orchestrate").unwrap(),
-            AgentPlanMode::Orchestrate
-        );
-        assert_eq!(
-            mode_from_str("Orchestrate").unwrap(),
-            AgentPlanMode::Orchestrate
-        );
+    fn removed_orchestrate_mode_is_rejected_and_saved_state_loads_as_act() {
         assert_eq!(mode_from_str("act").unwrap(), AgentPlanMode::Act);
-        assert_eq!(mode_from_str("plan").unwrap(), AgentPlanMode::Plan);
+        assert_eq!(mode_from_str("Plan").unwrap(), AgentPlanMode::Plan);
+        assert!(mode_from_str("orchestrate").is_err());
         assert!(mode_from_str("bogus").is_err());
+        let saved: AgentPlanState =
+            serde_json::from_value(serde_json::json!({"mode": "orchestrate", "plan": "p"}))
+                .unwrap();
+        assert_eq!(saved.mode, AgentPlanMode::Act);
+        assert!(!is_plan_mode(&saved));
+        assert_eq!(serde_json::to_value(&saved.mode).unwrap(), "act");
     }
 
     #[test]
-    fn is_orchestrate_mode_detects_mode() {
-        let mut state = AgentPlanState::default();
-        assert!(!is_orchestrate_mode(&state));
-        state.mode = AgentPlanMode::Orchestrate;
-        assert!(is_orchestrate_mode(&state));
-        assert!(!is_plan_mode(&state));
-    }
-
-    #[test]
-    fn orchestrate_keeps_saved_plan_as_context_without_plan_mode_restrictions() {
+    fn act_keeps_saved_plan_as_context_without_plan_mode_restrictions() {
         let draft = AgentPlanState {
             mode: AgentPlanMode::Plan,
             plan: Some("An existing saved plan".into()),
             ..Default::default()
         };
-        let state = with_mode(&draft, AgentPlanMode::Orchestrate);
+        let state = with_mode(&draft, AgentPlanMode::Act);
         assert_eq!(state.plan, draft.plan);
-        let prompt = format_prompt(&state, true);
+        let prompt = format_prompt(&state, Some(SECTION));
         assert!(prompt.contains(current_plan_text(&draft).unwrap()));
-        assert!(prompt.contains("fan substantial work to `task`"));
-        assert!(prompt.contains("Follow the task tool's handoff guidance when blocked"));
-        assert!(prompt.contains("Agents lack conversation"));
-        assert!(!prompt.contains("Plan mode is read-only"));
-        assert!(!prompt.contains("Required flow"));
-        assert!(!prompt.contains("todo_write"));
-        assert!(!prompt.contains("must be delegated"));
-        assert_eq!(with_mode(&state, AgentPlanMode::Act).plan, draft.plan);
+        assert!(prompt.contains(SECTION));
+        assert!(!prompt.contains("Plan mode"));
+        assert!(!prompt.contains("orchestrate"));
     }
 
     #[test]
@@ -172,14 +151,18 @@ mod tests {
                 plan,
                 ..Default::default()
             };
-            assert_eq!(format_prompt(&state, true), "Current mode: act.");
+            assert_eq!(format_prompt(&state, None), "Current mode: act.");
+            assert_eq!(
+                format_prompt(&state, Some(SECTION)),
+                format!("Current mode: act.\n\n{SECTION}")
+            );
         }
         let state = AgentPlanState {
             plan: Some("Inspect markdown, then fix rendering.".into()),
             status: AgentPlanStatus::Approved,
             ..Default::default()
         };
-        let prompt = format_prompt(&state, true);
+        let prompt = format_prompt(&state, Some(SECTION));
         assert!(prompt.contains("approved"));
         assert!(prompt.contains(state.plan.as_deref().unwrap()));
         assert!(!prompt.contains("reminders"));
@@ -191,11 +174,13 @@ mod tests {
             mode: AgentPlanMode::Plan,
             ..Default::default()
         };
-        assert!(format_prompt(&state, true).contains("read-only planning investigations"));
-        assert!(!format_prompt(&state, false).contains("use task"));
-        state.mode = AgentPlanMode::Orchestrate;
-        assert!(format_prompt(&state, true).contains("fan substantial work to `task`"));
-        assert!(!format_prompt(&state, false).contains("`task`"));
+        assert!(format_prompt(&state, Some(SECTION)).contains("read-only planning investigations"));
+        assert!(!format_prompt(&state, None).contains("use task"));
+        assert!(!format_prompt(&state, Some(SECTION)).contains("Inline first"));
+        state.mode = AgentPlanMode::Act;
+        state.plan = Some("saved".into());
+        assert!(format_prompt(&state, Some(SECTION)).contains("Inline first"));
+        assert!(!format_prompt(&state, None).contains("# Delegation"));
     }
 
     #[test]

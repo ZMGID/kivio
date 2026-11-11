@@ -384,11 +384,9 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             1
         };
         let chat_mode = conversation.agent_runtime.is_chat();
-        // Plan/Orchestrate only apply to the full Kivio Agent runtime, not Chat.
+        // Plan only applies to the full Kivio Agent runtime, not Chat.
         let plan_mode =
             !chat_mode && crate::chat::plan::is_plan_mode(&conversation.agent_plan_state);
-        let orchestrate_mode =
-            !chat_mode && crate::chat::plan::is_orchestrate_mode(&conversation.agent_plan_state);
         let direct_image_model =
             !plan_mode && model_can_generate_images_directly(&provider, &resolved_model);
         if direct_image_model
@@ -773,8 +771,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         {
             crate::scheduled_tasks::tools::append_tools(app, &conversation.id, &mut tools);
         }
-        let goal_tools_available = if !chat_mode && !plan_mode && !orchestrate_mode && arm.is_none()
-        {
+        let goal_tools_available = if !chat_mode && !plan_mode && arm.is_none() {
             append_goal_tools(&mut tools, conversation.goal_state.as_ref())
         } else {
             false
@@ -790,12 +787,15 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             tool.source == "native" && tool.name == crate::chat::sub_agent::TASK_TOOL_NAME
         });
         let agent_ask_user_prompt = crate::chat::ask_user::format_prompt(ask_user_tools_available);
+        let delegation = task_available.then(|| {
+            crate::chat::sub_agent::task::delegation_prompt(&resolved_model, &effective_chat_tools)
+        });
         let runtime_prompts = agent_prepare::resolve_runtime_prompt_sources(
             chat_mode,
             settings.chat.system_prompt.as_str(),
             settings.chat.chat_mode.system_prompt.as_str(),
             &conversation.agent_plan_state,
-            task_available,
+            delegation.as_deref(),
         );
         // Default workbench surfaced to the model. It is an ergonomic default, not
         // a sandbox; explicit user paths continue to take precedence.
@@ -902,7 +902,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             fallback_chat_tools.skill_fallback_mode = "skill_md_only".to_string();
         }
         let fallback_plan_prompt = (!chat_mode)
-            .then(|| crate::chat::plan::format_prompt(&conversation.agent_plan_state, false));
+            .then(|| crate::chat::plan::format_prompt(&conversation.agent_plan_state, None));
         let mut provider_tools_fallback_prompt = agent_prepare::build_chat_prompt(
             &language,
             !main_image_paths.is_empty(),
@@ -1586,7 +1586,7 @@ mod tests {
             assert_eq!(task, expected_task);
             assert_eq!(wait, expected_wait);
             assert_eq!(
-                crate::chat::plan::format_prompt(&plan, task)
+                crate::chat::plan::format_prompt(&plan, task.then_some("# Delegation"))
                     .contains("read-only planning investigations"),
                 expected_task,
             );

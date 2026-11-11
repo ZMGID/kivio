@@ -179,10 +179,8 @@ pub(super) fn prepare_reply_with_model(
     if conversation.agent_runtime.is_external() {
         return Err("换模型回答仅支持 Kivio Agent 和 Kivio Chat".to_string());
     }
-    if crate::chat::plan::is_plan_mode(&conversation.agent_plan_state)
-        || crate::chat::plan::is_orchestrate_mode(&conversation.agent_plan_state)
-    {
-        return Err("Plan 或 Orchestrate 模式下无法换模型回答".to_string());
+    if crate::chat::plan::is_plan_mode(&conversation.agent_plan_state) {
+        return Err("Plan 模式下无法换模型回答".to_string());
     }
     let provider_id = provider_id.trim();
     let model = model.trim();

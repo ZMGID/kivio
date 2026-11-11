@@ -28,3 +28,9 @@ supersedes: 0005
 代理状态、单次运行状态、后台作业状态、task 调用聚合状态与投递消费标记分别表达，不得合并。提示词使用 OMP 模板及能力开关渲染，不能把不存在的工具写进静态文案。
 
 允许符合 spawns 与深度限制的递归派工，替代旧实现“子代理永不递归”；默认 maxRecursionDepth=2。内置角色和旧工具名直接切换，不保留兼容别名；现行插件层、资源快照与外部 CLI 集成不因此删除。
+
+2026-11-11 补充（用户确认）：
+
+- 主代理 Act 模式按 OMP 系统提示词的 `# Delegation` 节渲染派工说明，力度取自 OMP 目录的模型 `delegation-bias`（`rules/classes/openai.kdl`）：GPT-6 及以上为 restrained（先自己做、不开局派侦察、不派单个切片），GPT-5.6 为 gated（未经要求不派子代理），其余为 eager。模板在 `sub_agent/prompts/delegation.md`，按本轮模型判定档位。不在 `task` 工具说明里另加文字。
+- 删除 Orchestrate 模式。OMP 没有常驻的编排模式，派工力度由上述档位决定；模式只保留 Act 与 Plan。已保存为 `orchestrate` 的会话读取为 Act。
+- 子代理的开始与结束事件都显示在派工所在的回复中，不并入之后无关的回合。
