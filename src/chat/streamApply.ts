@@ -398,7 +398,7 @@ export function mergeSubagentProgress(
     status: terminal
       ? payload.status === 'failed'
         ? 'error'
-        : payload.status === 'cancelled' || payload.status === 'aborted'
+        : payload.status === 'cancelled' || payload.status === 'aborted' || payload.status === 'stopped'
           ? 'cancelled'
           : 'success'
       : tool.status,

@@ -2528,6 +2528,7 @@ fn map_tool_jobs_notice(data: &Value) -> Option<UnifiedAgentEvent> {
         kind: None,
         description: None,
         summary: text.lines().next().map(str::to_string),
+        tool_use_id: None,
     })
 }
 
@@ -2562,6 +2563,7 @@ fn map_subagent_notification(method: &str, params: &Value) -> Option<UnifiedAgen
             kind: Some("local_agent".to_string()),
             description: None,
             summary: None,
+            tool_use_id: None,
         }),
         "subagent.finished" => {
             let ok = params.get("status").and_then(Value::as_str) == Some("ok");
@@ -2572,6 +2574,7 @@ fn map_subagent_notification(method: &str, params: &Value) -> Option<UnifiedAgen
                 kind: None,
                 description: None,
                 summary: (!summary.is_empty()).then_some(summary),
+                tool_use_id: None,
             })
         }
         _ => None,
@@ -2951,6 +2954,7 @@ fn map_tool_results(
                     kind: Some(background_task_kind(&pending.name)),
                     description: pending.description,
                     summary: None,
+                    tool_use_id: None,
                 });
             }
         }

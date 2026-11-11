@@ -1295,6 +1295,10 @@ fn apply_acp_session_update_ex(
             };
             if emitted_tool_ids.insert(id.clone())
                 || update.get("rawInput").is_some_and(|input| !input.is_null())
+                || update
+                    .get("rawOutput")
+                    .and_then(|output| output.get("metadata"))
+                    .is_some()
                 || ["title", "toolName", "name"].iter().any(|key| {
                     update
                         .get(*key)
@@ -3951,6 +3955,34 @@ mod tests {
             UnifiedAgentEvent::ToolUse { name, input, .. },
             UnifiedAgentEvent::ToolResult { is_error: false, .. }
         ] if name == "Call html_render" && input["rawInput"]["title"] == "Chart"));
+    }
+
+    #[test]
+    fn acp_subagent_receipt_forwards_metadata_before_result() {
+        let mut emitted = HashSet::new();
+        let mut events = Vec::new();
+        for update in [
+            json!({"sessionUpdate": "tool_call", "toolCallId": "worker", "name": "subagent",
+                "title": "subagent", "kind": "think", "rawInput": {}}),
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "worker", "kind": "think",
+                "rawInput": {"description": "Inspect source", "prompt": "Read code", "agent": "explore"}}),
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "worker", "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "Background receipt"}}],
+                "rawOutput": {"metadata": {"sessionID": "child", "status": "running"}}}),
+        ] {
+            apply_acp_session_update(update.as_object().unwrap(), &mut emitted, &mut |event| {
+                events.push(event)
+            });
+        }
+        assert!(matches!(events.as_slice(), [
+            UnifiedAgentEvent::ToolUse { id, .. },
+            UnifiedAgentEvent::ToolUse { input, .. },
+            UnifiedAgentEvent::ToolUse { input: receipt, .. },
+            UnifiedAgentEvent::ToolResult { tool_use_id, content, is_error: false },
+        ] if id == "worker" && tool_use_id == id
+            && input["rawInput"]["agent"] == "explore"
+            && receipt["rawOutput"]["metadata"]["status"] == "running"
+            && content == "Background receipt"));
     }
 
     #[test]

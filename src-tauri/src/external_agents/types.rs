@@ -717,6 +717,10 @@ pub enum UnifiedAgentEvent {
         description: Option<String>,
         /// 终态摘要（notification 帧的 `summary`：命令退出码文案 / 子代理最终回复）。
         summary: Option<String>,
+        /// 派出该任务的那次工具调用（claude 任务帧的 `tool_use_id`）。有值时子代理卡只按它
+        /// 精确对应，不按「唯一一张运行中的卡」猜；dsh / codex 没有这层关系，为 `None`。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
     },
     /// dsh `todo_write` 校验通过后写入会话日志的整表快照（`todo/write`）。
     ///

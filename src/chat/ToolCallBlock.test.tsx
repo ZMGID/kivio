@@ -475,25 +475,33 @@ describe('ToolCallBlock', () => {
     expect(within(button).queryByText(/exit_code/)).not.toBeInTheDocument()
   })
 
-  it('updates an external CLI Task card from live subagent events through completion', async () => {
+  it('updates a Claude Code Task row from live subagent events through completion', async () => {
+    HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
+    HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open') }
     const user = userEvent.setup()
     const call = buildToolCall({ toolName: 'Task', source: 'external_cli', status: 'running', result_preview: '', arguments: { description: 'Inspect source', prompt: 'Read the code' } })
     const event = { parentConversationId: 'conv', parentRunId: 'run', parentToolCallId: call.id, taskId: 'child', name: 'Worker', depth: 1 }
     const { rerender } = render(<ToolCallBlock toolCall={call} />)
-    expect(screen.getByText('SUBAGENT')).toBeInTheDocument()
+    expect(screen.queryByText('SUBAGENT')).not.toBeInTheDocument()
     const running = mergeSubagentProgress(call, { ...event, status: 'running', preview: 'Inspecting', steps: ['read source'] })
     rerender(<ToolCallBlock toolCall={running} />)
-    expect(screen.getByText('read source')).toBeVisible()
-    await user.click(screen.getByRole('button'))
+    await user.click(screen.getByRole('button', { name: 'Inspect source 开始工作' }))
     expect(screen.getByText('Inspecting')).toBeVisible()
+    expect(screen.queryByRole('button', { name: /^Inspect source 已/ })).not.toBeInTheDocument()
     const completed = mergeSubagentProgress(running, { ...event, status: 'completed', preview: 'Finished result' })
     rerender(<ToolCallBlock toolCall={completed} />)
+    expect(screen.getByRole('button', { name: 'Inspect source 已完成' })).toBeInTheDocument()
     expect(screen.getByText('Finished result')).toBeVisible()
+    // claude 停掉的后台子代理报 `stopped`。
+    const stopped = mergeSubagentProgress(running, { ...event, status: 'stopped', preview: 'Inspect source' })
+    rerender(<ToolCallBlock toolCall={stopped} />)
+    expect(screen.getByRole('button', { name: 'Inspect source 已中断' })).toBeInTheDocument()
   })
 
-  // 外部 CLI（claude）的子代理调用没有 structured content：按 source+名字认进同一张
-  // SUBAGENT 卡，description 当人话任务名，终态结果从 result_preview 兜底。
-  it('renders an external CLI Agent call as a SUBAGENT consult card', async () => {
+  // Claude Code 的 `Agent` 与 Codex 子代理同样画成「开始工作 / 已完成」行，点名字看任务与回答。
+  it('renders a Claude Code Agent call as subagent lifecycle rows', async () => {
+    HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
+    HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open') }
     const user = userEvent.setup()
     render(
       <ToolCallBlock
@@ -510,10 +518,9 @@ describe('ToolCallBlock', () => {
         })}
       />,
     )
-    expect(screen.getByText('SUBAGENT')).toBeInTheDocument()
-    expect(screen.getByText('general-purpose')).toBeInTheDocument()
-    expect(screen.getByText('搜索最近 AI 资讯')).toBeInTheDocument()
-    await user.click(screen.getByRole('button'))
+    expect(screen.queryByText('SUBAGENT')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '搜索最近 AI 资讯 开始工作' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '搜索最近 AI 资讯 已完成' }))
     expect(screen.getByText('用 WebSearch 搜索最近两周的 AI 资讯')).toBeInTheDocument()
     expect(screen.getByText('搜到 8 条本周 AI 资讯。')).toBeInTheDocument()
   })

@@ -2665,6 +2665,7 @@ where
                 ref kind,
                 ref description,
                 ref summary,
+                ..
             } => state
                 .external_background_tasks()
                 .upsert_external_background_task(
@@ -3121,6 +3122,7 @@ fn background_task_sink(
                     kind,
                     description,
                     summary,
+                    tool_use_id,
                 }) => {
                     app.state::<AppState>()
                         .external_background_tasks()
@@ -3133,6 +3135,17 @@ fn background_task_sink(
                             description.as_deref(),
                             summary.as_deref(),
                         );
+                    // 后台子代理常在派出它的那轮结束后才跑完：把结果写回那张卡。
+                    if let Some(tool_use_id) = tool_use_id {
+                        update_subagent_card_between_turns(
+                            &app,
+                            &conversation_id,
+                            &identity,
+                            SubagentCardKey::LaunchedBy(tool_use_id),
+                            status,
+                            summary,
+                        );
+                    }
                 }
                 IdleSideEffect::Task(_) => {}
                 // sink 是同步闭包，持久化是 async —— 甩给运行时，失败只打日志（唤醒消息
@@ -3405,6 +3418,7 @@ fn apply_idle_dsh_event(
             kind,
             description,
             summary,
+            tool_use_id: _,
         } => {
             app.state::<AppState>()
                 .external_background_tasks()
@@ -3417,28 +3431,13 @@ fn apply_idle_dsh_event(
                     description.as_deref(),
                     summary.as_deref(),
                 );
-            if status == "running" && summary.is_none() {
-                return;
-            }
-            let preview = summary.clone().unwrap_or_default();
-            emit_live_subagent_progress(
+            update_subagent_card_between_turns(
                 app,
                 conversation_id,
-                actor_id,
-                &task_id,
-                &status,
-                preview.clone(),
-                Vec::new(),
-            );
-            persist_dsh_subagent_card(
-                app.clone(),
-                conversation_id.to_string(),
-                task_id,
+                identity,
+                SubagentCardKey::Task(task_id),
                 status,
-                preview,
-                Vec::new(),
                 summary,
-                identity.clone(),
             );
         }
         UnifiedAgentEvent::SubagentProgress {
@@ -3451,15 +3450,15 @@ fn apply_idle_dsh_event(
                 app,
                 conversation_id,
                 actor_id,
-                &task_id,
+                &SubagentCardKey::Task(task_id.clone()),
                 &status,
                 preview.clone(),
                 steps.clone(),
             );
-            persist_dsh_subagent_card(
+            persist_subagent_card(
                 app.clone(),
                 conversation_id.to_string(),
-                task_id,
+                SubagentCardKey::Task(task_id),
                 status,
                 preview,
                 steps,
@@ -3482,22 +3481,92 @@ fn apply_idle_dsh_event(
     }
 }
 
+/// 轮间到达的子代理卡更新怎么对应到卡。
+enum SubagentCardKey {
+    /// dsh：只有任务 / 子会话 id，对不上时可以归到唯一一张运行中的卡。
+    Task(String),
+    /// claude：任务帧直接带派出它的 `tool_use_id`，只认这一张卡。
+    LaunchedBy(String),
+}
+
+impl SubagentCardKey {
+    fn id(&self) -> &str {
+        match self {
+            Self::Task(id) | Self::LaunchedBy(id) => id,
+        }
+    }
+
+    fn find<'a>(
+        &self,
+        tool_calls: &'a mut [ToolCallRecord],
+        actor_id: Option<&str>,
+    ) -> Option<&'a mut ToolCallRecord> {
+        match self {
+            Self::Task(task_id) => find_dsh_subagent_record(tool_calls, task_id, actor_id),
+            Self::LaunchedBy(tool_use_id) => find_launched_subagent_record(tool_calls, tool_use_id),
+        }
+    }
+}
+
+/// 轮间（没有进行中的 run）到达的子代理状态：实时推给打开的窗口，并写回所在消息的卡。
+/// 只有「运行中」且没有进度文字的更新不动卡。
+fn update_subagent_card_between_turns(
+    app: &AppHandle,
+    conversation_id: &str,
+    identity: &crate::external_agents::session::live::SessionIdentity,
+    key: SubagentCardKey,
+    status: String,
+    summary: Option<String>,
+) {
+    let Some(actor_id) = identity.instance_id() else {
+        return;
+    };
+    if status == "running" && summary.is_none() {
+        return;
+    }
+    let preview = summary.clone().unwrap_or_default();
+    emit_live_subagent_progress(
+        app,
+        conversation_id,
+        actor_id,
+        &key,
+        &status,
+        preview.clone(),
+        Vec::new(),
+    );
+    persist_subagent_card(
+        app.clone(),
+        conversation_id.to_string(),
+        key,
+        status,
+        preview,
+        Vec::new(),
+        summary,
+        identity.clone(),
+    );
+}
+
 fn emit_live_subagent_progress(
     app: &AppHandle,
     conversation_id: &str,
     actor_id: Uuid,
-    task_id: &str,
+    key: &SubagentCardKey,
     status: &str,
     preview: String,
     steps: Vec<String>,
 ) {
+    // 带派出工具 id 时前端按工具 id 精确更新；否则按会话 + 任务 id 对卡。
+    let (parent_tool_call_id, external_session_id) = match key {
+        SubagentCardKey::LaunchedBy(id) => (id.clone(), None),
+        SubagentCardKey::Task(_) => (String::new(), Some(actor_id.to_string())),
+    };
     crate::chat::protocol::emit_live_run_event(
         app,
         conversation_id,
         crate::chat::protocol::ChatRunEvent::SubagentUpdated {
-            parent_tool_call_id: String::new(),
-            external_session_id: Some(actor_id.to_string()),
-            task_id: task_id.to_string(),
+            parent_tool_call_id,
+            external_session_id,
+            task_id: key.id().to_string(),
             name: "subagent".to_string(),
             model: None,
             generation: None,
@@ -3511,10 +3580,10 @@ fn emit_live_subagent_progress(
     );
 }
 
-fn persist_dsh_subagent_card(
+fn persist_subagent_card(
     app: AppHandle,
     conversation_id: String,
-    task_id: String,
+    key: SubagentCardKey,
     status: String,
     preview: String,
     steps: Vec<String>,
@@ -3533,19 +3602,20 @@ fn persist_dsh_subagent_card(
                     .external_live_sessions()
                     .with_current(&conversation.id.clone(), &identity, || {
                         for message in conversation.messages.iter_mut().rev() {
-                            let Some(record) = find_dsh_subagent_record(
-                                &mut message.tool_calls,
-                                &task_id,
-                                Some(&actor_id),
-                            ) else {
+                            let Some(record) = key.find(&mut message.tool_calls, Some(&actor_id))
+                            else {
                                 continue;
                             };
                             if !steps.is_empty() || !preview.is_empty() {
                                 merge_subagent_progress(
-                                    record, &preview, &steps, &status, &task_id,
+                                    record,
+                                    &preview,
+                                    &steps,
+                                    &status,
+                                    key.id(),
                                 );
                             } else {
-                                attach_child_session_id(record, &task_id);
+                                attach_child_session_id(record, key.id());
                             }
                             if status != "running" {
                                 record.status = match status.as_str() {
@@ -4515,12 +4585,17 @@ fn apply_unified_event(
             task_id,
             status,
             summary,
+            tool_use_id,
             ..
         } => {
-            // dsh 后台子代理的 tool/result 只是派出回执。终态走 BackgroundTask，
-            // 同一轮里把对应工具卡从 Running 收掉（跨轮要靠空闲读，目前 dsh 没有）。
+            // dsh 后台子代理的 tool/result 只是派出回执；claude 的后台子代理同理，前台子代理的
+            // 终态先于它的 tool_result 到。终态走 BackgroundTask，同一轮里把对应工具卡收掉。
             if status != "running" {
-                if let Some(record) = find_dsh_subagent_record(tool_calls, &task_id, None) {
+                let key = match tool_use_id {
+                    Some(id) => SubagentCardKey::LaunchedBy(id),
+                    None => SubagentCardKey::Task(task_id),
+                };
+                if let Some(record) = key.find(tool_calls, None) {
                     record.status = match status.as_str() {
                         "failed" => ToolCallStatus::Error,
                         "stopped" => ToolCallStatus::Cancelled,
@@ -4633,11 +4708,18 @@ fn update_existing_acp_tool(
         .and_then(serde_json::Value::as_object_mut)
     {
         let mut changed = false;
-        for key in ["rawInput", "name", "toolName"] {
+        for key in ["rawInput", "name", "toolName", "kind"] {
             if let Some(value) = input.get(key).filter(|value| !value.is_null()) {
                 payload.insert(key.to_string(), value.clone());
                 changed = true;
             }
+        }
+        if let Some(metadata) = input.pointer("/rawOutput/metadata") {
+            payload.insert(
+                "rawOutput".to_string(),
+                serde_json::json!({"metadata": metadata}),
+            );
+            changed = true;
         }
         if changed {
             record.arguments = serde_json::to_string(payload).expect("ACP JSON input serializes");
@@ -4756,14 +4838,26 @@ fn apply_external_tool_result(
     now: i64,
 ) {
     if !is_error {
-        if let Some(task_id) = crate::external_agents::session::dsh_jsonrpc::subagent_launch_task_id(
+        let dsh_task_id = crate::external_agents::session::dsh_jsonrpc::subagent_launch_task_id(
             &record.name,
             result_content,
-        ) {
-            record.status = ToolCallStatus::Running;
-            record.completed_at = None;
-            record.result_preview = None;
-            attach_background_task_id(record, &task_id);
+        );
+        let claude_launch =
+            crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&record.name)
+                && crate::external_agents::stream::claude::is_subagent_launch_ack(result_content);
+        if dsh_task_id.is_some() || claude_launch {
+            // 派出回执只表示子代理开始跑。终态要是先到（子代理很快跑完），别拿回执盖掉它。
+            if matches!(
+                record.status,
+                ToolCallStatus::Pending | ToolCallStatus::Running
+            ) {
+                record.status = ToolCallStatus::Running;
+                record.completed_at = None;
+                record.result_preview = None;
+                if let Some(task_id) = dsh_task_id {
+                    attach_background_task_id(record, &task_id);
+                }
+            }
             return;
         }
     }
@@ -4860,6 +4954,18 @@ fn attach_child_session_id(record: &mut ToolCallRecord, task_id: &str) {
         );
     }
     record.structured_content = Some(payload);
+}
+
+/// claude 任务帧带的 `tool_use_id` 就是子代理卡的 id。只认子代理工具：后台 Bash 也带
+/// `tool_use_id`，它的卡不归这里管。
+fn find_launched_subagent_record<'a>(
+    tool_calls: &'a mut [ToolCallRecord],
+    tool_use_id: &str,
+) -> Option<&'a mut ToolCallRecord> {
+    tool_calls.iter_mut().rev().find(|record| {
+        record.id == tool_use_id
+            && crate::external_agents::session::dsh_jsonrpc::is_subagent_tool_name(&record.name)
+    })
 }
 
 /// 派出回执是 `jobs` 的 `jobId`（`subagent-1`），子会话 `session.event` 是另一个
@@ -5236,6 +5342,33 @@ mod tests {
             let id = reference["attachmentId"].as_str().unwrap();
             let pending = crate::html_render::take_pending_render(&conversation, id).unwrap();
             assert_eq!(serde_json::to_value(pending).unwrap(), reference);
+        }
+    }
+
+    #[test]
+    fn acp_subagent_metadata_updates_preserve_launch_arguments() {
+        let mut record = render_test_record(
+            "subagent",
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "name": "subagent", "kind": "think", "rawInput": {
+                    "description": "Inspect source", "prompt": "Read code", "agent": "explore"
+                }
+            }),
+        );
+        for status in ["running", "completed"] {
+            assert!(update_existing_acp_tool(
+                &mut record,
+                "tool",
+                &serde_json::json!({
+                    "sessionUpdate": "tool_call_update", "rawInput": null,
+                    "rawOutput": {"metadata": {"sessionID": "child", "status": status}}
+                })
+            ));
+            let args: serde_json::Value = serde_json::from_str(&record.arguments).unwrap();
+            assert_eq!(record.name, "subagent");
+            assert_eq!(args["rawInput"]["description"], "Inspect source");
+            assert_eq!(args["rawOutput"]["metadata"]["status"], status);
+            assert_eq!(record.structured_content.as_ref(), Some(&args));
         }
     }
 
@@ -5633,6 +5766,53 @@ mod tests {
             "子 agent A，先读一下文件。"
         );
         assert_eq!(payload["subagentProgress"]["steps"][0], "Read a.txt");
+    }
+
+    #[test]
+    fn claude_subagent_cards_follow_their_launching_tool_use() {
+        let card = |id: &str, name: &str| ToolCallRecord {
+            id: id.into(),
+            name: name.into(),
+            source: "external_cli".into(),
+            server_id: None,
+            arguments: "{}".into(),
+            status: ToolCallStatus::Running,
+            result_preview: None,
+            error: None,
+            duration_ms: None,
+            started_at: Some(1),
+            completed_at: None,
+            round: 1,
+            sensitive: false,
+            artifacts: vec![],
+            trace_id: None,
+            span_id: None,
+            structured_content: Some(serde_json::json!({ "description": "Agent A" })),
+        };
+        let mut tools = vec![card("toolu-agent", "Agent"), card("toolu-bash", "Bash")];
+        let ack = "Async agent launched successfully. (internal)\nagentId: a1a715b7d0bdfefea";
+
+        // 后台派出回执不是跑完。
+        apply_external_tool_result(&mut tools[0], ack, false, 5);
+        assert_eq!(tools[0].status, ToolCallStatus::Running);
+        assert_eq!(tools[0].result_preview, None);
+
+        // 后台 Bash 的任务帧也带 tool_use_id：不能落到任何子代理卡上，也不能猜到唯一的运行中卡。
+        assert!(SubagentCardKey::LaunchedBy("toolu-bash".into())
+            .find(&mut tools, None)
+            .is_none());
+
+        let record = SubagentCardKey::LaunchedBy("toolu-agent".into())
+            .find(&mut tools, None)
+            .expect("agent card");
+        record.status = ToolCallStatus::Success;
+        record.result_preview = Some("A_FIRST".into());
+        record.completed_at = Some(6);
+
+        // 子代理快到终态先到时，迟到的回执不能把卡改回运行中。
+        apply_external_tool_result(&mut tools[0], ack, false, 7);
+        assert_eq!(tools[0].status, ToolCallStatus::Success);
+        assert_eq!(tools[0].result_preview.as_deref(), Some("A_FIRST"));
     }
 
     #[test]

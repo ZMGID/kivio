@@ -474,14 +474,16 @@ pub fn background_task_event(value: &Value) -> Option<UnifiedAgentEvent> {
             description: nonempty_str(obj, "description")
                 .or_else(|| nonempty_str(obj, "subagent_type")),
             summary: None,
+            tool_use_id: nonempty_str(obj, "tool_use_id"),
         }),
-        // 后台任务终态（官方 `SDKTaskNotificationMessage`）。
+        // 后台任务终态（官方 `SDKTaskNotificationMessage`）。前台子代理也发，先于它的 tool_result。
         Some("task_notification") => Some(UnifiedAgentEvent::BackgroundTask {
             task_id: nonempty_str(obj, "task_id")?,
             status: nonempty_str(obj, "status").unwrap_or_else(|| "completed".to_string()),
             kind: None,
             description: None,
             summary: nonempty_str(obj, "summary"),
+            tool_use_id: nonempty_str(obj, "tool_use_id"),
         }),
         // 周期性进度（官方 `SDKTaskProgressMessage`，实测只有后台子代理发）：
         // token / 工具计数 + 最近工具，拼成面板 Running 行的进度尾巴。借 `summary`
@@ -492,6 +494,7 @@ pub fn background_task_event(value: &Value) -> Option<UnifiedAgentEvent> {
             kind: None,
             description: nonempty_str(obj, "description"),
             summary: task_progress_line(obj),
+            tool_use_id: nonempty_str(obj, "tool_use_id"),
         }),
         _ => None,
     }
@@ -716,6 +719,83 @@ fn is_claude_spawn_tool(name: &str) -> bool {
     matches!(name, "Task" | "Agent")
 }
 
+const SUBAGENT_LAUNCH_ACK: &str = "Async agent launched successfully.";
+const SUBAGENT_HAND_BACK: &str = "[Subagent hand-back]";
+const SUBAGENT_REPORT_FOLLOWS: &str = "The report follows:\n";
+
+/// 后台子代理的派出回执：子代理刚开始跑，结果要等同一任务的 `task_notification`。
+/// `content` 是本解析器为子代理工具发出的 `ToolResult.content`。
+pub fn is_subagent_launch_ack(content: &str) -> bool {
+    content.trim_start().starts_with(SUBAGENT_LAUNCH_ACK)
+}
+
+/// 主线 `Agent` / `Task` 的 tool_result → 子代理自己的回答。
+///
+/// **协议事实**（真实录制）：`content` 是 text 块数组。前台子代理的回报包在交接框里：
+/// `[Subagent hand-back] … The report follows:\n  <逐行缩进两格的回报>\nagentId: …\n<usage>…</usage>`；
+/// 旧版没有交接框，只在末尾附 `agentId:` 与 `<usage>`。后台子代理先回
+/// `Async agent launched successfully. …`（帧顶层 `tool_use_result.status` 为
+/// `async_launched`），这种保持以 `SUBAGENT_LAUNCH_ACK` 开头，交给调用方认成回执。
+fn subagent_result_text(content: Option<&Value>, tool_use_result: Option<&Value>) -> String {
+    let text = match content {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    };
+    let async_launched = tool_use_result.is_some_and(|result| {
+        result.get("status").and_then(Value::as_str) == Some("async_launched")
+            || result.get("isAsync").and_then(Value::as_bool) == Some(true)
+    });
+    if is_subagent_launch_ack(&text) {
+        return text;
+    }
+    if async_launched {
+        return format!("{SUBAGENT_LAUNCH_ACK}\n{text}");
+    }
+    let report = text
+        .strip_prefix(SUBAGENT_HAND_BACK)
+        .and_then(|rest| rest.split_once(SUBAGENT_REPORT_FOLLOWS))
+        .map(|(_, body)| {
+            body.lines()
+                .take_while(|line| line.is_empty() || line.starts_with("  "))
+                .map(|line| line.strip_prefix("  ").unwrap_or(line))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|report| !report.trim().is_empty())
+        .unwrap_or_else(|| strip_subagent_trailer(&text).to_string());
+    let report = report.trim();
+    if report.is_empty() {
+        text
+    } else {
+        report.to_string()
+    }
+}
+
+/// 去掉回报末尾给模型看的 `agentId: …` 行与 `<usage>…</usage>` 块。
+fn strip_subagent_trailer(text: &str) -> &str {
+    let mut head = text.trim_end();
+    if head.ends_with("</usage>") {
+        if let Some(start) = head.rfind("<usage>") {
+            head = head[..start].trim_end();
+        }
+    }
+    match head.rfind("agentId: ") {
+        Some(start)
+            if (start == 0 || head[..start].ends_with('\n')) && !head[start..].contains('\n') =>
+        {
+            head[..start].trim_end()
+        }
+        _ => head,
+    }
+}
+
 fn clip_sidechain_chars(text: &str, max: usize) -> String {
     let count = text.chars().count();
     if count <= max {
@@ -932,6 +1012,8 @@ pub struct ClaudeStreamState {
     reported_assistant_errors: HashSet<String>,
     retry_status_seen: bool,
     streamed_tool_use_ids: HashSet<String>,
+    /// 主线上还没收到 tool_result 的 `Agent` / `Task` 调用。它们的结果要整理成子代理的回答。
+    spawn_tool_use_ids: HashSet<String>,
     /// 嵌套子代理的 tool_use id → 主线 Task/Agent id。depth-2+ 的
     /// `parent_tool_use_id` 指向中间那次 Agent 调用，折到顶层卡片上。
     sidechain_root: HashMap<String, String>,
@@ -1380,13 +1462,17 @@ impl ClaudeStreamState {
                                         continue;
                                     }
                                     self.streamed_tool_use_ids.insert(id.clone());
+                                    let name = block
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool")
+                                        .to_string();
+                                    if is_claude_spawn_tool(&name) {
+                                        self.spawn_tool_use_ids.insert(id.clone());
+                                    }
                                     sink(UnifiedAgentEvent::ToolUse {
                                         id,
-                                        name: block
-                                            .get("name")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("tool")
-                                            .to_string(),
+                                        name,
                                         input: block.get("input").cloned().unwrap_or(Value::Null),
                                     });
                                 }
@@ -1408,13 +1494,18 @@ impl ClaudeStreamState {
                                 None => continue,
                             };
                             if block.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
-                                sink(UnifiedAgentEvent::ToolResult {
-                                    tool_use_id: block
-                                        .get("tool_use_id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string(),
-                                    content: block
+                                let tool_use_id = block
+                                    .get("tool_use_id")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let content = if self.spawn_tool_use_ids.remove(&tool_use_id) {
+                                    subagent_result_text(
+                                        block.get("content"),
+                                        obj.get("tool_use_result"),
+                                    )
+                                } else {
+                                    block
                                         .get("content")
                                         .map(|v| {
                                             if let Some(s) = v.as_str() {
@@ -1423,7 +1514,11 @@ impl ClaudeStreamState {
                                                 v.to_string()
                                             }
                                         })
-                                        .unwrap_or_default(),
+                                        .unwrap_or_default()
+                                };
+                                sink(UnifiedAgentEvent::ToolResult {
+                                    tool_use_id,
+                                    content,
                                     is_error: block
                                         .get("is_error")
                                         .and_then(|v| v.as_bool())
@@ -1741,6 +1836,9 @@ impl ClaudeStreamState {
                     return;
                 }
                 self.streamed_tool_use_ids.insert(id.clone());
+                if is_claude_spawn_tool(&name) {
+                    self.spawn_tool_use_ids.insert(id.clone());
+                }
                 sink(UnifiedAgentEvent::ToolUse { id, name, input });
             }
             _ => {}
@@ -1858,6 +1956,83 @@ mod tests {
                 if task_id == "bfkppe2gd" && status == "running"
                     && kind == "local_bash" && description == "Sleep 8 seconds then print BGDONE"
         )));
+    }
+
+    /// 子代理的任务帧带着派出它的 `tool_use_id`（真实录制的后台子代理帧）。
+    #[test]
+    fn subagent_task_frames_name_the_launching_tool_use() {
+        let events = run(&[
+            r#"{"type":"system","subtype":"task_started","task_id":"a1a715b7d0bdfefea","tool_use_id":"toolu_01Ps","description":"Agent A","subagent_type":"general-purpose","is_backgrounded":true,"task_type":"local_agent","prompt":"Reply with exactly: A_FIRST"}"#,
+            r#"{"type":"system","subtype":"task_notification","task_id":"a1a715b7d0bdfefea","tool_use_id":"toolu_01Ps","status":"completed","summary":"A_FIRST"}"#,
+        ]);
+        let launched_by: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                UnifiedAgentEvent::BackgroundTask {
+                    tool_use_id,
+                    status,
+                    ..
+                } => Some((tool_use_id.as_deref(), status.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            launched_by,
+            [(Some("toolu_01Ps"), "running"), (Some("toolu_01Ps"), "completed")]
+        );
+    }
+
+    fn spawn_result(result_frame: &str) -> String {
+        let events = run(&[
+            r#"{"type":"assistant","parent_tool_use_id":null,"message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_agent","name":"Agent","input":{"description":"Nested","prompt":"go"}}]}}"#,
+            result_frame,
+        ]);
+        events
+            .into_iter()
+            .find_map(|event| match event {
+                UnifiedAgentEvent::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } if tool_use_id == "toolu_agent" => Some(content),
+                _ => None,
+            })
+            .expect("agent result")
+    }
+
+    #[test]
+    fn foreground_subagent_result_keeps_only_the_report() {
+        // claude 2.1.2xx 的交接框（真实录制）：回报逐行缩进，末尾附 agentId 与用量。
+        let framed = spawn_result(
+            r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"tool_use_id":"toolu_agent","type":"tool_result","content":[{"type":"text","text":"[Subagent hand-back] The text below is the final report of a subagent. The report follows:\n  第一行\n\n  - 第二行\nagentId: a457ca677bc1ecd82 (use SendMessage with to: 'a457ca677bc1ecd82' to continue this agent)\n<usage>subagent_tokens: 29420\ntool_uses: 1\nduration_ms: 7600</usage>"}]}]},"tool_use_result":{"status":"completed","agentId":"a457ca677bc1ecd82"}}"#,
+        );
+        assert_eq!(framed, "第一行\n\n- 第二行");
+        // 旧版没有交接框，只在末尾附 agentId / usage。
+        let plain = spawn_result(
+            r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"tool_use_id":"toolu_agent","type":"tool_result","content":[{"type":"text","text":"NESTED_LEAF_OK"},{"type":"text","text":"agentId: a457 (use SendMessage)\n<usage>total_tokens: 9</usage>"}]}]}}"#,
+        );
+        assert_eq!(plain, "NESTED_LEAF_OK");
+    }
+
+    #[test]
+    fn background_subagent_launch_is_reported_as_a_receipt() {
+        let ack = spawn_result(
+            r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"tool_use_id":"toolu_agent","type":"tool_result","content":[{"type":"text","text":"Async agent launched successfully. (internal metadata)\nagentId: a1a715b7d0bdfefea"}]}]}}"#,
+        );
+        assert!(is_subagent_launch_ack(&ack), "{ack}");
+        // 文案变了也认结构化的 `async_launched`。
+        let reworded = spawn_result(
+            r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"tool_use_id":"toolu_agent","type":"tool_result","content":[{"type":"text","text":"Agent started in the background."}]}]},"tool_use_result":{"status":"async_launched","agentId":"a1"}}"#,
+        );
+        assert!(is_subagent_launch_ack(&reworded), "{reworded}");
+        // 普通工具的结果不动。
+        let events = run(&[
+            r#"{"type":"user","parent_tool_use_id":null,"message":{"role":"user","content":[{"tool_use_id":"toolu_read","type":"tool_result","content":[{"type":"text","text":"Async agent launched successfully."}]}]}}"#,
+        ]);
+        assert!(matches!(
+            &events[..],
+            [UnifiedAgentEvent::ToolResult { content, .. }] if content.starts_with("[{")
+        ));
     }
 
     /// `task_notification`（completed）→ 终态条目，且**不**发气泡提示

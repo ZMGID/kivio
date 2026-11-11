@@ -222,11 +222,25 @@ export function isExternalSubagentToolCall(toolCall: ToolCallRecord): boolean {
     || name === 'ralph'
 }
 
-/** Codex 原生子代理（一个子线程一条记录，带 `provider: "codex"`）：画成子代理时间线行，不画工具卡。 */
-export function isCodexSubagentToolCall(toolCall: ToolCallRecord): boolean {
-  return toolCall.source === 'external_cli'
-    && foldedToolName(toolCall) === 'subagent'
-    && toolCallArgObject(toolCall)?.provider === 'codex'
+/** 画成子代理时间线行（不画工具卡）的外部 CLI 子代理：Codex 一个子线程一条记录（带
+ *  `provider: "codex"`）；Claude Code 的 `Agent` / 旧版 `Task`，入参必有 `description` 与 `prompt`
+ *  （Pi 的 BTW 也叫 `Agent`，但没有 `description`）；OpenCode 的 ACP 派工参数在 rawInput。 */
+export type LifecycleSubagentProvider = 'codex' | 'claude' | 'opencode'
+
+export function lifecycleSubagentProvider(toolCall: ToolCallRecord): LifecycleSubagentProvider | null {
+  if (toolCall.source !== 'external_cli') return null
+  const name = foldedToolName(toolCall)
+  const args = toolCallArgObject(toolCall)
+  if (name === 'subagent' && args?.provider === 'codex') return 'codex'
+  if (args?.sessionUpdate === 'tool_call' || args?.sessionUpdate === 'tool_call_update') {
+    if (recordObject(args._meta)?.['opencode/child-session']) return null
+    const tool = recordString(args.name) || recordString(args.toolName) || name
+    if (args.kind === 'think' && tool === 'subagent') return 'opencode'
+    return null
+  }
+  if ((name === 'agent' || name === 'task')
+    && typeof args?.description === 'string' && typeof args.prompt === 'string') return 'claude'
+  return null
 }
 
 export function isNativeTaskToolCall(toolCall: ToolCallRecord): boolean {

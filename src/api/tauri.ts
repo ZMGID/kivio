@@ -332,7 +332,7 @@ export type ChatSubagentPayload = {
   /** 子代理实际运行的模型（含全局 Subagent 模型覆盖后的结果）。 */
   model?: string
   depth: number
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'aborted'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'aborted' | 'stopped'
   preview?: string
   steps?: string[]
   generation?: number | null

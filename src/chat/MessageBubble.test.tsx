@@ -199,6 +199,47 @@ describe('assistant body visibility', () => {
     expect(screen.getByText('391')).toBeInTheDocument()
   })
 
+  it('shows Claude Code subagents as lifecycle rows and keeps background ones running until they report', () => {
+    HTMLDialogElement.prototype.showModal ??= function () { this.setAttribute('open', '') }
+    HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open') }
+    const message: ChatMessage = {
+      id: 'claude-subagents', role: 'assistant', timestamp: 1, content: '完成。',
+      segments: [
+        { id: 'agent-a', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'toolu_a' },
+        { id: 'agent-b', kind: 'tool', phase: 'tool_loop', order: 2, tool_call_id: 'toolu_b' },
+        { id: 'btw', kind: 'tool', phase: 'tool_loop', order: 3, tool_call_id: 'pi_btw' },
+        { id: 'answer', kind: 'text', phase: 'synthesis', order: 4, text: '完成。' },
+      ],
+      tool_calls: [
+        {
+          id: 'toolu_a', name: 'Agent', source: 'external_cli', status: 'success', result_preview: 'A_FIRST',
+          arguments: JSON.stringify({ description: 'Agent A', prompt: 'Reply with exactly: A_FIRST', model: 'haiku' }),
+          completed_at: 2,
+        },
+        {
+          // 旧记录：后台派出回执当成了结果。
+          id: 'toolu_b', name: 'Task', source: 'external_cli', status: 'success',
+          result_preview: '[{"type":"text","text":"Async agent launched successfully.\\nagentId: af44"}]',
+          arguments: JSON.stringify({ description: 'Agent B', prompt: 'wait', run_in_background: true }),
+        },
+        {
+          id: 'pi_btw', name: 'Agent', source: 'external_cli', status: 'success', result_preview: '答案',
+          arguments: JSON.stringify({ type: 'subagent', agentType: 'btw', name: 'BTW', prompt: '问题' }),
+        },
+      ],
+    }
+    render(<MessageBubble message={message} conversationId="root" />)
+    fireEvent.click(screen.getByRole('button', { name: /^Worked/ }))
+    expect(screen.getByRole('button', { name: 'Agent A 开始工作' }).parentElement)
+      .toHaveTextContent('Agent A和Agent B 开始工作')
+    expect(screen.queryByRole('button', { name: 'Agent B 已完成' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^BTW / })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Agent A 已完成' }))
+    expect(screen.getByText('Reply with exactly: A_FIRST')).toBeInTheDocument()
+    expect(screen.getByText('A_FIRST')).toBeInTheDocument()
+    expect(screen.getByText('haiku')).toBeInTheDocument()
+  })
+
   it('folds recorded subagent events under Worked without changing their order around the answer', () => {
     const before = '开始前 🔎'
     const between = '主助手继续查看文件。'

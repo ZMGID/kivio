@@ -35,7 +35,7 @@ import { openChatImageViewer } from './imageViewer'
 import { ChatInlineImage, CHAT_IMAGE_TILE_MAX_PX } from './ChatInlineImage'
 import { ReasoningBlock } from './ReasoningBlock'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
-import { SubagentLifecycleEvent, CodexSubagentEvents } from './SubagentTimelineEvents'
+import { SubagentLifecycleEvent, ExternalSubagentEvents } from './SubagentTimelineEvents'
 import { ModelIcon } from '../components/ModelIcon'
 import { ToolCallBlock, ToolCallCluster, ImageReadCluster } from './ToolCallBlock'
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
@@ -49,7 +49,7 @@ import {
   groupTimelineSegments,
   groupWorkDurationMs,
   isExternalSubagentToolCall,
-  isCodexSubagentToolCall,
+  lifecycleSubagentProvider,
   isImageReadToolCall,
   isNativeTaskToolCall,
   isNativeIrcToolCall,
@@ -768,23 +768,23 @@ function renderProcessSegments({
         conversationId={conversationId} live={messageStreaming} />)
       continue
     }
-    const codexSubagent = (item: ChatMessageSegment) => {
+    const lifecycleSubagent = (item: ChatMessageSegment) => {
       if (item.kind !== 'tool') return null
       const tool = toolCallById.get(segmentToolCallId(item))
-      return tool && isCodexSubagentToolCall(tool) ? tool : null
+      return tool && lifecycleSubagentProvider(tool) ? tool : null
     }
-    const firstCodexSubagent = codexSubagent(segment)
-    if (firstCodexSubagent) {
-      // 连续派出的 Codex 子代理合并成一行「A 和 B 开始工作」。
-      const batch = [firstCodexSubagent]
+    const firstLifecycleSubagent = lifecycleSubagent(segment)
+    if (firstLifecycleSubagent) {
+      // 连续派出的外部 CLI 子代理合并成一行「A 和 B 开始工作」。
+      const batch = [firstLifecycleSubagent]
       index += 1
       while (index < segments.length) {
-        const next = codexSubagent(segments[index])
+        const next = lifecycleSubagent(segments[index])
         if (!next) break
         batch.push(next)
         index += 1
       }
-      nodes.push(<CodexSubagentEvents key={segment.id} toolCalls={batch} live={messageStreaming} />)
+      nodes.push(<ExternalSubagentEvents key={segment.id} toolCalls={batch} live={messageStreaming} />)
       continue
     }
     if (!canGroup(segment)) {

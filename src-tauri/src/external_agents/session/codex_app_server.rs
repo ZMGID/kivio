@@ -1231,6 +1231,8 @@ fn emit_plan_update(params: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) {
 const CODEX_SUBAGENT_THREAD: &str = "codex-subagent-thread:";
 const CODEX_SUBAGENT_DONE: &str = "codex-subagent-done:";
 const CODEX_SUBAGENT_TITLE_CHARS: usize = 72;
+/// 后台任务面板用它认出 Codex 子代理（OpenAI 图标、显示名而不是整段任务）。
+const CODEX_SUBAGENT_TASK_KIND: &str = "codex_agent";
 
 fn codex_subagent_known(emitted_tools: &HashSet<String>, thread_id: &str) -> bool {
     emitted_tools.contains(&format!("{CODEX_SUBAGENT_THREAD}{thread_id}"))
@@ -1320,9 +1322,10 @@ fn register_codex_subagent(
     sink(UnifiedAgentEvent::BackgroundTask {
         task_id: thread_id.to_string(),
         status: "running".to_string(),
-        kind: Some("local_agent".to_string()),
-        description: Some(if prompt.is_empty() { title } else { prompt }.to_string()),
+        kind: Some(CODEX_SUBAGENT_TASK_KIND.to_string()),
+        description: Some(title.to_string()),
         summary: None,
+        tool_use_id: None,
     });
 }
 
@@ -1362,12 +1365,13 @@ fn update_codex_subagent(
     sink(UnifiedAgentEvent::BackgroundTask {
         task_id: thread_id.to_string(),
         status: terminal.to_string(),
-        kind: Some("local_agent".to_string()),
+        kind: Some(CODEX_SUBAGENT_TASK_KIND.to_string()),
         description: None,
         summary: message
             .map(str::trim)
             .filter(|text| !text.is_empty())
             .map(str::to_string),
+        tool_use_id: None,
     });
 }
 
@@ -1469,29 +1473,61 @@ fn emit_subagent_activity(
     }
 }
 
-/// 子线程的 `agentMessage` 完成：`(子线程 id, 正文)`。父线程 `run_turn` 用它记下子代理的最新回答，
-/// 终态 `BackgroundTask` 没带摘要时补上（新版协议的 `agentsStates` 常为空）。
-fn codex_child_reply(params: &Value) -> Option<(String, String)> {
-    let item = params.get("item")?;
-    if json_str(item, "type") != Some("agentMessage") {
-        return None;
-    }
-    let thread_id = json_str(params, "threadId")?;
-    let text = json_str(item, "text")?;
-    Some((thread_id.to_string(), text.to_string()))
+/// 子线程（子代理）在这条连接上的状态。子线程的通知不进父回答，只取两样：
+/// 最新一条回答（子代理终态没带摘要时补上，新版协议的 `agentsStates` 常为空），
+/// 以及在跑的 turn（后台任务面板「停止」时打断它）。
+#[derive(Default)]
+struct CodexChildThreads {
+    replies: HashMap<String, String>,
+    turns: HashMap<String, String>,
 }
 
-/// 终态子代理没有摘要时，用子线程最后一条回答补上。
-fn fill_codex_subagent_summary(event: &mut UnifiedAgentEvent, replies: &HashMap<String, String>) {
-    if let UnifiedAgentEvent::BackgroundTask {
-        task_id,
-        status,
-        summary,
-        ..
-    } = event
-    {
-        if status != "running" && summary.is_none() {
-            *summary = replies.get(task_id.as_str()).cloned();
+impl CodexChildThreads {
+    /// 记下一条子线程通知；子线程的一条回答完成时返回 `(子线程 id, 正文)`。
+    fn observe(&mut self, method: &str, params: &Value) -> Option<(String, String)> {
+        let thread_id = json_str(params, "threadId")?.to_string();
+        match method {
+            "turn/started" => {
+                if let Some(turn) = params.pointer("/turn/id").and_then(Value::as_str) {
+                    self.turns.insert(thread_id, turn.to_string());
+                }
+                None
+            }
+            "turn/completed" => {
+                self.turns.remove(&thread_id);
+                None
+            }
+            "item/completed" => {
+                let item = params.get("item")?;
+                if json_str(item, "type") != Some("agentMessage") {
+                    return None;
+                }
+                let text = json_str(item, "text")?.to_string();
+                self.replies.insert(thread_id.clone(), text.clone());
+                Some((thread_id, text))
+            }
+            _ => None,
+        }
+    }
+
+    /// 打断子线程当前这一轮；子线程没在跑就没有可打断的。
+    fn interrupt_params(&self, thread_id: &str) -> Option<Value> {
+        let turn = self.turns.get(thread_id)?;
+        Some(turn_interrupt_params(thread_id, Some(turn)))
+    }
+
+    /// 终态子代理没有摘要时，用子线程最后一条回答补上。
+    fn fill_summary(&self, event: &mut UnifiedAgentEvent) {
+        if let UnifiedAgentEvent::BackgroundTask {
+            task_id,
+            status,
+            summary,
+            ..
+        } = event
+        {
+            if status != "running" && summary.is_none() {
+                *summary = self.replies.get(task_id.as_str()).cloned();
+            }
         }
     }
 }
@@ -1667,8 +1703,8 @@ pub struct CodexAppServerSession {
     /// `turn/steer` 的 `expectedTurnId` 前置条件要用它；轮末清空。
     active_turn_id: Option<String>,
     seen_turn_ids: HashSet<String>,
-    /// 子线程 id → 该子代理最后一条回答，补进子代理终态的结果摘要。
-    subagent_replies: HashMap<String, String>,
+    /// Codex 子代理（子线程）的回答与在跑的 turn。
+    child_threads: CodexChildThreads,
     /// Ring-buffered stderr tail (N1), joined on close / error for diagnostics.
     stderr_tail: tokio::task::JoinHandle<String>,
     /// `on-request` (workspace-write / read-only) asks the host; `never` (完全) auto-allows.
@@ -1875,7 +1911,7 @@ impl CodexAppServerSession {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
-                subagent_replies: HashMap::new(),
+                child_threads: CodexChildThreads::default(),
                 stderr_tail,
                 approval_policy,
                 sandbox_policy,
@@ -2127,8 +2163,14 @@ impl CodexAppServerSession {
                 Ok(SessionCommand::RunTurn { done, .. }) => {
                     let _ = done.send(Err("session busy".to_string()));
                 }
-                // codex 无后台任务协议（stop_task 是 claude 专属），忽略。
-                Ok(SessionCommand::StopTask { .. }) => {}
+                // 后台任务面板停止 Codex 子代理：打断该子线程正在跑的一轮。
+                Ok(SessionCommand::StopTask { task_id }) => {
+                    if let Some(params) = self.child_threads.interrupt_params(&task_id) {
+                        let iid = self.next_id;
+                        self.next_id += 1;
+                        let _ = write_rpc(&mut self.stdin, iid, "turn/interrupt", params).await;
+                    }
+                }
                 Err(mpsc::error::TryRecvError::Empty) => {}
                 Err(mpsc::error::TryRecvError::Disconnected) => {
                     return Err("control channel closed".to_string())
@@ -2242,19 +2284,16 @@ impl CodexAppServerSession {
                         "configWarning" | "deprecationNotice" | "account/rateLimits/updated"
                     );
                 if !own_thread && !connection_notice {
-                    if method == "item/completed" {
-                        if let Some((thread_id, text)) = codex_child_reply(&params) {
-                            if codex_subagent_known(&self.emitted_tools, &thread_id) {
-                                let _ = events
-                                    .send(UnifiedAgentEvent::SubagentProgress {
-                                        task_id: thread_id.clone(),
-                                        status: "running".to_string(),
-                                        preview: text.clone(),
-                                        steps: Vec::new(),
-                                    })
-                                    .await;
-                            }
-                            self.subagent_replies.insert(thread_id, text);
+                    if let Some((thread_id, text)) = self.child_threads.observe(method, &params) {
+                        if codex_subagent_known(&self.emitted_tools, &thread_id) {
+                            let _ = events
+                                .send(UnifiedAgentEvent::SubagentProgress {
+                                    task_id: thread_id,
+                                    status: "running".to_string(),
+                                    preview: text,
+                                    steps: Vec::new(),
+                                })
+                                .await;
                         }
                     }
                     continue;
@@ -2303,7 +2342,7 @@ impl CodexAppServerSession {
                     &mut |e| buf.push(e),
                 );
                 for mut e in buf {
-                    fill_codex_subagent_summary(&mut e, &self.subagent_replies);
+                    self.child_threads.fill_summary(&mut e);
                     let _ = events.send(e).await;
                 }
                 match mapped {
@@ -3653,7 +3692,7 @@ mod tests {
                 stderr_tail: crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take()),
                 child, thread_id: "thread-1".into(), cwd: "/work".into(), cli_bin: exe,
                 next_id: 1, emitted_tools: HashSet::new(), active_turn_id: None,
-                seen_turn_ids: HashSet::new(), subagent_replies: HashMap::new(), approval_policy: "never",
+                seen_turn_ids: HashSet::new(), child_threads: CodexChildThreads::default(), approval_policy: "never",
                 sandbox_policy: json!({"type":"dangerFullAccess"}), plan_mode: false,
                 thread_model: None, service_tier: None,
             };
@@ -3752,7 +3791,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
-                subagent_replies: HashMap::new(),
+                child_threads: CodexChildThreads::default(),
                 approval_policy: "never",
                 sandbox_policy: json!({"type":"dangerFullAccess"}),
                 plan_mode: false,
@@ -3929,7 +3968,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
-                subagent_replies: HashMap::new(),
+                child_threads: CodexChildThreads::default(),
                 approval_policy: "on-request",
                 sandbox_policy: json!({"type": "dangerFullAccess"}),
                 plan_mode: false,
@@ -4203,7 +4242,7 @@ mod tests {
                 emitted_tools: HashSet::new(),
                 active_turn_id: None,
                 seen_turn_ids: HashSet::new(),
-                subagent_replies: HashMap::new(),
+                child_threads: CodexChildThreads::default(),
                 approval_policy: "on-request",
                 sandbox_policy: json!({"type":"workspaceWrite"}),
                 plan_mode: false,
@@ -6328,6 +6367,11 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!(cards[0]["provider"], "codex");
         assert_eq!(cards[0]["description"], "say_hello");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            UnifiedAgentEvent::BackgroundTask { status, kind: Some(kind), description: Some(title), .. }
+                if status == "running" && kind == "codex_agent" && title == "say_hello"
+        )));
         assert!(!events.iter().any(|event| matches!(
             event,
             UnifiedAgentEvent::ToolUse { id, .. } | UnifiedAgentEvent::ToolResult { tool_use_id: id, .. }
@@ -6414,21 +6458,41 @@ mod tests {
     }
 
     #[test]
-    fn codex_child_reply_fills_a_missing_subagent_summary() {
-        let reply = codex_child_reply(&json!({"threadId": "thr_child",
-            "item": {"type": "agentMessage", "id": "m", "text": "Hello."}}));
+    fn codex_child_threads_keep_replies_and_interrupt_only_running_turns() {
+        let mut children = CodexChildThreads::default();
+        let child = |extra: Value| {
+            let mut params = json!({"threadId": "thr_child"});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            params
+        };
+        assert_eq!(children.interrupt_params("thr_child"), None);
+        children.observe("turn/started", &child(json!({"turn": {"id": "turn_c"}})));
+        assert_eq!(
+            children.interrupt_params("thr_child"),
+            Some(json!({"threadId": "thr_child", "turnId": "turn_c"}))
+        );
+        let reply = children.observe(
+            "item/completed",
+            &child(json!({"item": {"type": "agentMessage", "id": "m", "text": "Hello."}})),
+        );
         assert_eq!(reply, Some(("thr_child".to_string(), "Hello.".to_string())));
-        let replies = HashMap::from([reply.unwrap()]);
+        children.observe("turn/completed", &child(json!({"turn": {"id": "turn_c"}})));
+        assert_eq!(children.interrupt_params("thr_child"), None);
+
         let finished = |summary: Option<&str>| UnifiedAgentEvent::BackgroundTask {
             task_id: "thr_child".to_string(),
             status: "completed".to_string(),
             kind: None,
             description: None,
             summary: summary.map(str::to_string),
+            tool_use_id: None,
         };
         for (summary, expected) in [(None, "Hello."), (Some("from states"), "from states")] {
             let mut event = finished(summary);
-            fill_codex_subagent_summary(&mut event, &replies);
+            children.fill_summary(&mut event);
             assert!(
                 matches!(event, UnifiedAgentEvent::BackgroundTask { summary: Some(text), .. }
                 if text == expected)
