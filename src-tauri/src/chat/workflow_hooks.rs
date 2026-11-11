@@ -657,8 +657,10 @@ mod tests {
     }
     #[tokio::test]
     async fn dropping_a_hook_future_terminates_its_process() {
+        use crate::proc::NoConsoleWindow;
+
         let dir = tempfile::tempdir().unwrap();
-        let runtime = node_hook(dir.path(), "const fs=require('fs');fs.writeFileSync('started','1');setTimeout(()=>fs.writeFileSync('finished','1'),1000);process.stdin.resume()", PROCESS_TEST_TIMEOUT);
+        let runtime = node_hook(dir.path(), "const fs=require('fs');fs.writeFileSync('started',String(process.pid));setInterval(()=>{},1000);process.stdin.resume()", PROCESS_TEST_TIMEOUT);
         let task = tokio::spawn(async move {
             runtime
                 .run("SessionStart", runtime.input("SessionStart", "s"))
@@ -685,10 +687,21 @@ mod tests {
                 .is_cancelled(),
             "the test must cancel the hook before its own timeout"
         );
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let pid = std::fs::read_to_string(dir.path().join("started")).unwrap();
+        let status = tokio::process::Command::new("node")
+            .args([
+                "-e",
+                "try { process.kill(Number(process.argv[1]),0); process.exit(1) } catch (error) { process.exit(error.code === 'ESRCH' ? 0 : 2) }",
+                &pid,
+            ])
+            .kill_on_drop(true)
+            .no_console_window()
+            .status()
+            .await
+            .unwrap();
         assert!(
-            !dir.path().join("finished").exists(),
-            "cancelled hook must not keep running"
+            status.success(),
+            "cancelled hook process must exit: {status}"
         );
     }
     #[tokio::test]
