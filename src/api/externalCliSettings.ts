@@ -29,6 +29,30 @@ export interface DetectedExternalAgent {
   capabilities: ProviderCapabilities
 }
 
+export interface ExternalAgentModels {
+  models: DetectedExternalAgent['models']
+  reasoningOptions: NonNullable<DetectedExternalAgent['reasoningOptions']>
+  reasoningByModel: Record<string, NonNullable<DetectedExternalAgent['reasoningOptions']>>
+  source: 'probed' | 'fallback'
+  probeError?: string
+  currentModel?: string | null
+  currentReasoning?: string | null
+  refreshing?: boolean
+}
+
+function modelResult(result: Partial<ExternalAgentModels>): ExternalAgentModels {
+  return {
+    models: result.models ?? [],
+    reasoningOptions: result.reasoningOptions ?? [],
+    reasoningByModel: result.reasoningByModel ?? {},
+    source: result.source ?? 'probed',
+    probeError: result.probeError,
+    currentModel: result.currentModel ?? null,
+    currentReasoning: result.currentReasoning ?? null,
+    ...(result.refreshing !== undefined ? { refreshing: result.refreshing } : {}),
+  }
+}
+
 /** `chat_external_cli_scan_cc_switch` response; secret keys are never returned. */
 export interface CcSwitchProvider {
   agentId: string
@@ -235,37 +259,20 @@ export const externalCliSettingsApi = {
     return result.agents ?? []
   },
 
-  async detectExternalAgentModels(agentId: string, conversationId?: string | null, force = false): Promise<{
-    models: DetectedExternalAgent['models']
-    reasoningOptions: NonNullable<DetectedExternalAgent['reasoningOptions']>
-    reasoningByModel: Record<string, NonNullable<DetectedExternalAgent['reasoningOptions']>>
-    source: 'probed' | 'fallback'
-    probeError?: string
-    currentModel?: string | null
-    currentReasoning?: string | null
-  }> {
+  async detectExternalAgentModels(agentId: string, conversationId?: string | null, force = false, onSnapshot?: (result: ExternalAgentModels) => void): Promise<ExternalAgentModels> {
     if (!isTauriRuntime()) {
       return { models: [], reasoningOptions: [], reasoningByModel: {}, source: 'probed' }
     }
-    const result = await invoke<{
-      success: boolean
-      models?: DetectedExternalAgent['models']
-      reasoningOptions?: NonNullable<DetectedExternalAgent['reasoningOptions']>
-      reasoningByModel?: Record<string, NonNullable<DetectedExternalAgent['reasoningOptions']>>
-      source?: 'probed' | 'fallback'
-      probeError?: string
-      currentModel?: string | null
-      currentReasoning?: string | null
-    }>('chat_detect_external_agent_models', { agentId, conversationId, force })
-    return {
-      models: result.models ?? [],
-      reasoningOptions: result.reasoningOptions ?? [],
-      reasoningByModel: result.reasoningByModel ?? {},
-      source: result.source ?? 'probed',
-      probeError: result.probeError,
-      currentModel: result.currentModel ?? null,
-      currentReasoning: result.currentReasoning ?? null,
+    if (onSnapshot) {
+      const snapshot = modelResult(await invoke<Partial<ExternalAgentModels>>(
+        'chat_detect_external_agent_models', { agentId, conversationId, force, snapshotOnly: true },
+      ))
+      if (!snapshot.refreshing) return snapshot
+      onSnapshot(snapshot)
     }
+    return modelResult(await invoke<Partial<ExternalAgentModels>>(
+      'chat_detect_external_agent_models', { agentId, conversationId, force },
+    ))
   },
 
   async externalCliInstallInfo(agentId: string): Promise<ExternalCliInstallInfo | null> {

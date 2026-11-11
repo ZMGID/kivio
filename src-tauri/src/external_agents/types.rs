@@ -409,7 +409,7 @@ impl ModelSource {
 /// `reasoning_options` 必须一起缓存：kimi 等 ACP CLI 的档位来自探测（`configOptions`），
 /// `acp_def` 静态表是空的。若缓存只存 models 而命中时回落 def 表，effort 胶囊会在第二次
 /// 打开时消失（bac8f53 修了探测路径，但漏了这一步）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedAgentModels {
     pub models: Vec<RuntimeModelOption>,
     pub source: ModelSource,
@@ -422,6 +422,8 @@ pub struct CachedAgentModels {
     pub current_model: Option<String>,
     /// CLI 当前配置的推理等级 id（codex model_reasoning_effort / ACP default reasoning effort）。
     pub current_reasoning: Option<String>,
+    #[serde(default)]
+    pub probe_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

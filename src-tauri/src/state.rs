@@ -677,7 +677,7 @@ mod tests {
         };
 
         // probed 条目在长 TTL 内命中，短 fallback TTL 不影响它。
-        st.external_discovery().set_cached_external_agent_models(
+        st.external_discovery().set_models_if_current(
             "claude:/p".to_string(),
             CachedAgentModels {
                 models: vec![one("gpt-5")],
@@ -686,7 +686,9 @@ mod tests {
                 reasoning_by_model: Default::default(),
                 current_model: None,
                 current_reasoning: None,
+                probe_error: None,
             },
+            st.external_discovery().model_generation(),
         );
         assert!(st
             .external_discovery()
@@ -694,7 +696,7 @@ mod tests {
             .is_some());
 
         // fallback 条目按短 TTL 裁定：TTL=0 立即视为过期（负缓存到点即重探）。
-        st.external_discovery().set_cached_external_agent_models(
+        st.external_discovery().set_models_if_current(
             "codex:/p".to_string(),
             CachedAgentModels {
                 models: vec![one("default")],
@@ -703,14 +705,16 @@ mod tests {
                 reasoning_by_model: Default::default(),
                 current_model: None,
                 current_reasoning: None,
+                probe_error: None,
             },
+            st.external_discovery().model_generation(),
         );
         assert!(st
             .external_discovery()
             .get_cached_external_agent_models("codex:/p", Duration::from_secs(300), Duration::ZERO)
             .is_none());
         // 同一 fallback 条目在足够长的 fallback TTL 内仍命中。
-        st.external_discovery().set_cached_external_agent_models(
+        st.external_discovery().set_models_if_current(
             "codex:/p".to_string(),
             CachedAgentModels {
                 models: vec![one("default")],
@@ -719,7 +723,9 @@ mod tests {
                 reasoning_by_model: Default::default(),
                 current_model: None,
                 current_reasoning: None,
+                probe_error: None,
             },
+            st.external_discovery().model_generation(),
         );
         let hit = st.external_discovery().get_cached_external_agent_models(
             "codex:/p",

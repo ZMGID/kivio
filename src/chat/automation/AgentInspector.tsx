@@ -124,11 +124,14 @@ export function AgentInspector({
       return
     }
     let cancelled = false
-    void chatApi.detectExternalAgentModels(agent.externalAgentId).then((result) => {
+    const applyModels = (result: Awaited<ReturnType<typeof chatApi.detectExternalAgentModels>>) => {
       if (cancelled) return
       setCliModels(result.models ?? [])
       setCliCurrentModel(result.currentModel ?? null)
-    }).catch(() => {})
+    }
+    setCliModels([])
+    setCliCurrentModel(null)
+    void chatApi.detectExternalAgentModels(agent.externalAgentId, undefined, false, applyModels).then(applyModels).catch(() => {})
     return () => { cancelled = true }
   }, [agent.runtimeKind, agent.externalAgentId])
 

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ExternalModelSelector, RuntimePicker } from './RuntimePicker'
 import { LAST_AGENT_RUNTIME_KEY } from './lastAgentRuntime'
 import type { AgentRuntimeConfig } from './types'
+import type { ExternalAgentModels } from '../api/externalCliSettings'
 
 const detectModels = vi.fn()
 const detectAgents = vi.fn()
@@ -22,6 +23,59 @@ const runtime: AgentRuntimeConfig = {
 }
 
 describe('ExternalModelSelector', () => {
+  it('shows saved models during refresh without restoring a stale selection or overwriting a user choice', async () => {
+    const onModelChange = vi.fn()
+    let finish: (value: ExternalAgentModels) => void = () => {}
+    detectModels.mockImplementation((_agent, _conversation, _force, onSnapshot) => {
+      onSnapshot({ models: [{ id: 'saved', label: 'Saved' }], reasoningOptions: [], source: 'probed', currentModel: 'saved', refreshing: true })
+      return new Promise<ExternalAgentModels>((resolve) => { finish = resolve })
+    })
+    render(<ExternalModelSelector agentRuntime={runtime} onModelChange={onModelChange} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Saved' }))
+    expect(screen.queryByText('正在探测模型…')).not.toBeInTheDocument()
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    expect(onModelChange).not.toHaveBeenCalled()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Saved' }).at(-1)!)
+    expect(onModelChange).toHaveBeenCalledWith('saved', null)
+    await act(async () => finish({ models: [{ id: 'new', label: 'New' }], reasoningOptions: [], reasoningByModel: {}, source: 'probed', currentModel: 'new' }))
+    expect(onModelChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('discards both snapshot and refresh callbacks after unmount', async () => {
+    const onModelChange = vi.fn()
+    let snapshot: (value: ExternalAgentModels) => void = () => {}
+    let finish: (value: ExternalAgentModels) => void = () => {}
+    detectModels.mockImplementation((_agent, _conversation, _force, onSnapshot) => {
+      snapshot = onSnapshot
+      return new Promise<ExternalAgentModels>((resolve) => { finish = resolve })
+    })
+    const view = render(<ExternalModelSelector agentRuntime={runtime} onModelChange={onModelChange} />)
+    view.unmount()
+    const result: ExternalAgentModels = { models: [{ id: 'late', label: 'Late' }], reasoningOptions: [], reasoningByModel: {}, source: 'probed', currentModel: 'late' }
+    await act(async () => { snapshot({ ...result, refreshing: true }); finish(result) })
+    expect(onModelChange).not.toHaveBeenCalled()
+  })
+
+  it('clears the old catalog when changing conversations and ignores its late refresh', async () => {
+    const onModelChange = vi.fn()
+    let finishOld: (value: ExternalAgentModels) => void = () => {}
+    detectModels.mockImplementation((_agent, conversation, _force, onSnapshot) => {
+      if (conversation === 'old') {
+        onSnapshot({ models: [{ id: 'old', label: 'Old project' }], reasoningOptions: [], source: 'probed', currentModel: 'old', refreshing: true })
+        return new Promise<ExternalAgentModels>((resolve) => { finishOld = resolve })
+      }
+      return new Promise<ExternalAgentModels>(() => {})
+    })
+    const view = render(<ExternalModelSelector agentRuntime={runtime} conversationId="old" onModelChange={onModelChange} />)
+    await screen.findByRole('button', { name: 'Old project' })
+    view.rerender(<ExternalModelSelector agentRuntime={runtime} conversationId="new" onModelChange={onModelChange} />)
+    fireEvent.click(screen.getByRole('button'))
+    expect(screen.queryByText('Old project')).not.toBeInTheDocument()
+    await act(async () => finishOld({ models: [{ id: 'late', label: 'Late' }], reasoningOptions: [], reasoningByModel: {}, source: 'probed', currentModel: 'late' }))
+    expect(screen.queryByText('Late')).not.toBeInTheDocument()
+    expect(onModelChange).not.toHaveBeenCalled()
+  })
+
   it('toggles the catalog fast tier with a bolt button without changing model or effort', async () => {
     const onModelChange = vi.fn()
     detectModels.mockResolvedValue({ models: [{ id: 'gpt-test', label: 'Test model', capabilities: { serviceTiers: [{ id: 'priority', label: 'Fast' }] } }],
@@ -100,7 +154,7 @@ describe('ExternalModelSelector', () => {
     act(() => {
       fireEvent.click(screen.getByRole('button'))
     })
-    expect(screen.getByText('探测失败，显示默认列表')).toBeInTheDocument()
+    expect(screen.getByText('刷新失败，保留当前列表')).toBeInTheDocument()
     expect(screen.getByRole('status')).toHaveTextContent('boom')
 
     // 点重试 → 以 force=true 重探。
@@ -130,7 +184,7 @@ describe('ExternalModelSelector', () => {
     act(() => {
       fireEvent.click(screen.getByRole('button'))
     })
-    expect(screen.queryByText('探测失败，显示默认列表')).not.toBeInTheDocument()
+    expect(screen.queryByText('刷新失败，保留当前列表')).not.toBeInTheDocument()
     expect(screen.getByText('gpt-5')).toBeInTheDocument()
   })
 

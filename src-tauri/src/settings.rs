@@ -3554,12 +3554,14 @@ pub fn persist_settings(app: &AppHandle, settings: &Settings) -> Result<(), Stri
     result?;
     crate::external_agents::overrides::sync_from_settings(&canonical);
 
-    // 供应商可能变了：模型列表（300s）与可用性（600s）两个探测缓存都得作废。
-    if let Some(state) = app.try_state::<crate::state::AppState>() {
-        state
-            .external_discovery()
-            .clear_all_external_agent_models_cache();
-        state.external_discovery().clear_detected_agents_cache();
+    // Only CLI configuration changes invalidate discovery; unrelated preferences keep the cache warm.
+    if external_agents_changed {
+        if let Some(state) = app.try_state::<crate::state::AppState>() {
+            state
+                .external_discovery()
+                .clear_all_external_agent_models_cache();
+            state.external_discovery().clear_detected_agents_cache();
+        }
     }
     Ok(())
 }

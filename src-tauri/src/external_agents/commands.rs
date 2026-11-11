@@ -189,8 +189,14 @@ fn merge_custom_models(
     merged
 }
 
-/// 懒查：只探一个指定 agent 的模型（cwd-scoped），single-flight + 缓存。前端在选中该 agent /
-/// 打开其模型下拉时调用，避免列表阶段对所有 CLI 跑昂贵的模型探测（claude 达 25s）。
+fn model_snapshot_key(agent_id: &str, cwd_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    // Configurations may contain secrets; persist only their digest, never the configuration.
+    let identity = serde_json::json!([agent_id, cwd_key, super::overrides::agent_config(agent_id)]);
+    format!("{:x}", Sha256::digest(identity.to_string().as_bytes()))
+}
+
+/// Read a display snapshot without spawning a CLI; the same command owns the subsequent refresh.
 #[tauri::command]
 pub async fn chat_detect_external_agent_models(
     app: AppHandle,
@@ -198,12 +204,20 @@ pub async fn chat_detect_external_agent_models(
     agent_id: String,
     conversation_id: Option<String>,
     force: Option<bool>,
+    snapshot_only: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    let started = std::time::Instant::now();
     let force = force.unwrap_or(false);
     let def = get_agent_def(&agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
     let cwd = resolve_detection_cwd(&app, conversation_id.as_deref())?;
     let cwd_key = cwd.to_string_lossy().into_owned();
     let key = cache_key(&agent_id, &cwd_key);
+    let discovery = state.external_discovery();
+    let generation = discovery.model_generation();
+    let launch_revision = super::overrides::launch_revision(&agent_id)
+        .ok_or_else(|| "CLI 配置正在更新，请重试".to_string())?;
+    let snapshot_key = model_snapshot_key(&agent_id, &cwd_key);
+    let snapshot_path = state.usage_dir.join("external-agent-models.json");
 
     if !force {
         if let Some(cached) = state.external_discovery().get_cached_external_agent_models(
@@ -211,11 +225,39 @@ pub async fn chat_detect_external_agent_models(
             EXTERNAL_AGENT_MODELS_CACHE_TTL,
             EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
         ) {
-            return Ok(cached_models_payload(def, &cached, true));
+            let mut payload = cached_models_payload(def, &cached, true);
+            payload["refreshing"] = false.into();
+            return Ok(payload);
         }
     }
 
+    let previous = discovery.load_model_snapshot(&snapshot_path, &snapshot_key);
+    if snapshot_only.unwrap_or(false) {
+        let cached = previous.unwrap_or_else(|| CachedAgentModels {
+            models: crate::external_agents::types::fallback_models_from_pairs(def.fallback_models),
+            source: ModelSource::Fallback,
+            reasoning_options: crate::external_agents::types::reasoning_options_from_pairs(
+                def.reasoning_options,
+            ),
+            reasoning_by_model: Default::default(),
+            current_model: None,
+            current_reasoning: None,
+            probe_error: None,
+        });
+        let mut payload = cached_models_payload(def, &cached, true);
+        payload["refreshing"] = true.into();
+        return Ok(payload);
+    }
+
     let _guard = state.external_discovery().acquire_model_probe(&key).await;
+    if discovery.model_generation() != generation
+        || super::overrides::launch_revision(&agent_id) != Some(launch_revision)
+    {
+        return Err("CLI 配置已变更，请重新获取模型".into());
+    }
+    if let Some(cached) = discovery.models_completed_since(&key, started) {
+        return Ok(cached_models_payload(def, &cached, true));
+    }
     if !force {
         if let Some(cached) = state.external_discovery().get_cached_external_agent_models(
             &key,
@@ -226,31 +268,34 @@ pub async fn chat_detect_external_agent_models(
         }
     }
     let probe = detect_agent_models(def, &cwd).await;
-    if !probe.models.is_empty() {
-        // probed 长 TTL，fallback 短 TTL 负缓存——由 get 侧按 source 分别裁定过期。
-        // reasoning_options 必须一并写入：ACP/kimi 档位只来自探测，def 静态表为空。
-        state.external_discovery().set_cached_external_agent_models(
-            key,
-            CachedAgentModels {
-                models: probe.models.clone(),
-                source: probe.source,
-                reasoning_options: probe.reasoning_options.clone(),
-                reasoning_by_model: probe.reasoning_by_model.clone(),
-                current_model: probe.current_model.clone(),
-                current_reasoning: probe.current_reasoning.clone(),
-            },
-        );
+    if super::overrides::launch_revision(&agent_id) != Some(launch_revision) {
+        return Err("CLI 配置已变更，请重新获取模型".into());
     }
-    Ok(models_payload(
-        &merge_custom_models(&agent_id, &probe.models),
-        &probe.reasoning_options,
-        &probe.reasoning_by_model,
-        probe.source,
-        probe.current_model.as_deref(),
-        probe.current_reasoning.as_deref(),
-        false,
-        probe.probe_error.as_deref(),
-    ))
+    let mut cached = CachedAgentModels {
+        models: probe.models,
+        source: probe.source,
+        reasoning_options: probe.reasoning_options,
+        reasoning_by_model: probe.reasoning_by_model,
+        current_model: probe.current_model,
+        current_reasoning: probe.current_reasoning,
+        probe_error: probe.probe_error,
+    };
+    if cached.source == ModelSource::Fallback {
+        if let Some(previous) = previous {
+            cached = CachedAgentModels {
+                source: ModelSource::Fallback,
+                probe_error: cached.probe_error,
+                ..previous
+            };
+        }
+    }
+    if !discovery.set_models_if_current(key, cached.clone(), generation) {
+        return Err("CLI 配置已变更，请重新获取模型".into());
+    }
+    if cached.source == ModelSource::Probed {
+        discovery.save_model_snapshot(&snapshot_path, snapshot_key, cached.clone());
+    }
+    Ok(cached_models_payload(def, &cached, false))
 }
 
 fn models_payload(
@@ -308,7 +353,7 @@ fn cached_models_payload(
         cached.current_model.as_deref(),
         cached.current_reasoning.as_deref(),
         cached_flag,
-        None,
+        cached.probe_error.as_deref(),
     )
 }
 
@@ -518,6 +563,7 @@ mod tests {
             reasoning_by_model: Default::default(),
             current_model: Some("kimi-code/kimi-for-coding".into()),
             current_reasoning: Some("high".into()),
+            probe_error: None,
         };
 
         let payload = cached_models_payload(def, &cached, true);

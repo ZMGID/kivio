@@ -3,6 +3,96 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn models() -> CachedAgentModels {
+        CachedAgentModels {
+            models: vec![crate::external_agents::types::default_model_option()],
+            source: crate::external_agents::types::ModelSource::Probed,
+            reasoning_options: Vec::new(),
+            reasoning_by_model: Default::default(),
+            current_model: Some("configured".into()),
+            current_reasoning: Some("high".into()),
+            probe_error: None,
+        }
+    }
+
+    #[test]
+    fn model_snapshots_survive_restart_and_isolate_configurations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        let state = ExternalDiscoveryState::default();
+        state.save_model_snapshot(&path, "cli:project:config-a".into(), models());
+        let restarted = ExternalDiscoveryState::default();
+        assert_eq!(
+            restarted
+                .load_model_snapshot(&path, "cli:project:config-a")
+                .unwrap()
+                .current_reasoning
+                .as_deref(),
+            Some("high")
+        );
+        assert!(restarted
+            .load_model_snapshot(&path, "cli:project:config-b")
+            .is_none());
+        assert!(restarted
+            .get_cached_external_agent_models(
+                "cli:project:config-a",
+                Duration::from_secs(300),
+                Duration::from_secs(30)
+            )
+            .is_none());
+        std::fs::write(&path, "broken").unwrap();
+        assert!(restarted
+            .load_model_snapshot(&path, "cli:project:config-a")
+            .is_none());
+        restarted.save_model_snapshot(&path, "repaired".into(), models());
+        assert!(restarted.load_model_snapshot(&path, "repaired").is_some());
+    }
+
+    #[test]
+    fn model_snapshots_are_bounded_and_updates_replace_the_previous_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("models.json");
+        let state = ExternalDiscoveryState::default();
+        for index in 0..=EXTERNAL_DISCOVERY_CACHE_CAPACITY {
+            state.save_model_snapshot(&path, index.to_string(), models());
+        }
+        assert!(state.load_model_snapshot(&path, "0").is_none());
+        let mut updated = models();
+        updated.current_model = Some("updated".into());
+        state.save_model_snapshot(&path, "1".into(), updated);
+        assert_eq!(
+            read_model_snapshots(&path).len(),
+            EXTERNAL_DISCOVERY_CACHE_CAPACITY
+        );
+        assert_eq!(
+            state
+                .load_model_snapshot(&path, "1")
+                .unwrap()
+                .current_model
+                .as_deref(),
+            Some("updated")
+        );
+    }
+
+    #[tokio::test]
+    async fn invalidation_rejects_late_probes_and_concurrent_waiters_reuse_completion() {
+        let state = ExternalDiscoveryState::default();
+        let generation = state.model_generation();
+        let permit = state.acquire_model_probe("cli:project").await;
+        let waiting_since = Instant::now();
+        assert!(state.set_models_if_current("cli:project".into(), models(), generation));
+        drop(permit);
+        let _waiter = state.acquire_model_probe("cli:project").await;
+        assert!(state
+            .models_completed_since("cli:project", waiting_since)
+            .is_some());
+        state.clear_all_external_agent_models_cache();
+        assert!(!state.set_models_if_current("cli:project".into(), models(), generation));
+        assert!(state
+            .models_completed_since("cli:project", waiting_since)
+            .is_none());
+    }
+
     #[test]
     fn bounded_cache_sweeps_all_expired_entries_on_read() {
         let cache = Mutex::new(HashMap::from([
@@ -84,11 +174,27 @@ mod tests {
     }
 }
 // Map locks never span awaits. Probe permit precedes the cache recheck.
+use crate::external_agents::types::CachedAgentModels;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ModelSnapshot {
+    key: String,
+    models: CachedAgentModels,
+}
+
+fn read_model_snapshots(path: &Path) -> Vec<ModelSnapshot> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
 #[derive(Debug)]
 struct TimedCacheEntry<V> {
     created_at: Instant,
@@ -121,6 +227,17 @@ fn set_cached<V>(
 ) {
     let now = Instant::now();
     let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+    insert_cached(&mut cache, key, value, retention, capacity, now);
+}
+
+fn insert_cached<V>(
+    cache: &mut HashMap<String, TimedCacheEntry<V>>,
+    key: String,
+    value: V,
+    retention: Duration,
+    capacity: usize,
+    now: Instant,
+) {
     cache.retain(|_, entry| entry.created_at.elapsed() <= retention);
     cache.insert(
         key,
@@ -162,8 +279,83 @@ pub(crate) struct ExternalDiscoveryState {
         Mutex<HashMap<String, TimedCacheEntry<Vec<crate::external_agents::types::DetectedAgent>>>>,
     availability_probe_lock: tokio::sync::Mutex<()>,
     model_probe_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    model_generation: AtomicU64,
+    model_snapshot_lock: Mutex<()>,
 }
 impl ExternalDiscoveryState {
+    pub(crate) fn model_generation(&self) -> u64 {
+        self.model_generation.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn load_model_snapshot(&self, path: &Path, key: &str) -> Option<CachedAgentModels> {
+        let _guard = self
+            .model_snapshot_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        read_model_snapshots(path)
+            .into_iter()
+            .find(|s| s.key == key)
+            .map(|s| s.models)
+    }
+
+    pub(crate) fn save_model_snapshot(&self, path: &Path, key: String, models: CachedAgentModels) {
+        let _guard = self
+            .model_snapshot_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut snapshots = read_model_snapshots(path);
+        snapshots.retain(|s| s.key != key);
+        snapshots.push(ModelSnapshot { key, models });
+        let excess = snapshots
+            .len()
+            .saturating_sub(EXTERNAL_DISCOVERY_CACHE_CAPACITY);
+        snapshots.drain(..excess);
+        let result = serde_json::to_string(&snapshots)
+            .map_err(|e| e.to_string())
+            .and_then(|text| crate::chat::storage::atomic_write(path, &text, "外部 CLI 模型快照"));
+        if let Err(error) = result {
+            eprintln!("[external-agent] 保存模型快照失败: {error}");
+        }
+    }
+
+    pub(crate) fn set_models_if_current(
+        &self,
+        key: String,
+        models: CachedAgentModels,
+        generation: u64,
+    ) -> bool {
+        let mut cache = self
+            .external_agent_models_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self.model_generation() != generation {
+            return false;
+        }
+        insert_cached(
+            &mut cache,
+            key,
+            models,
+            EXTERNAL_DISCOVERY_CACHE_RETENTION,
+            EXTERNAL_DISCOVERY_CACHE_CAPACITY,
+            Instant::now(),
+        );
+        true
+    }
+
+    pub(crate) fn models_completed_since(
+        &self,
+        key: &str,
+        started: Instant,
+    ) -> Option<CachedAgentModels> {
+        let cache = self
+            .external_agent_models_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        cache
+            .get(key)
+            .filter(|entry| entry.created_at >= started)
+            .map(|entry| entry.value.clone())
+    }
     pub(crate) async fn acquire_availability_probe(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.availability_probe_lock.lock().await
     }
@@ -237,33 +429,23 @@ impl ExternalDiscoveryState {
         Some(entry.value.clone())
     }
 
-    pub fn set_cached_external_agent_models(
-        &self,
-        cache_key: String,
-        models: crate::external_agents::types::CachedAgentModels,
-    ) {
-        set_cached(
-            &self.external_agent_models_cache,
-            cache_key,
-            models,
-            EXTERNAL_DISCOVERY_CACHE_RETENTION,
-            EXTERNAL_DISCOVERY_CACHE_CAPACITY,
-        );
-    }
-
     pub fn clear_external_agent_models_cache(&self, agent_id: &str) {
         let prefix = format!("{agent_id}:");
-        self.external_agent_models_cache
+        let mut cache = self
+            .external_agent_models_cache
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|key, _| !key.starts_with(&prefix));
+            .unwrap_or_else(|e| e.into_inner());
+        self.model_generation.fetch_add(1, Ordering::SeqCst);
+        cache.retain(|key, _| !key.starts_with(&prefix));
     }
 
     pub fn clear_all_external_agent_models_cache(&self) {
-        self.external_agent_models_cache
+        let mut cache = self
+            .external_agent_models_cache
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
+            .unwrap_or_else(|e| e.into_inner());
+        self.model_generation.fetch_add(1, Ordering::SeqCst);
+        cache.clear();
     }
 
     pub fn clear_detected_agents_cache(&self) {

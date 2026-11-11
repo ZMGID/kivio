@@ -10,6 +10,7 @@ import { usePopoverMenu } from './usePopoverMenu'
 import type { AgentRuntimeConfig } from './types'
 import { rememberedExternalRuntime } from './lastAgentRuntime'
 import { modelIncludesEffort } from './externalModelEffort'
+import type { ExternalAgentModels } from '../api/externalCliSettings'
 import './runtimePicker.css'
 
 const KIVIO_LOGO_SRC = '/logo-mark.png'
@@ -321,6 +322,7 @@ function ExternalModelSelectorBase({
     Record<string, NonNullable<DetectedExternalAgent['reasoningOptions']>>
   >({})
   const [loading, setLoading] = useState(false)
+  const initialLoading = loading && models.length === 0
   // source: probed=真实探测 / fallback=探测失败降级静态表（显示"默认列表"角标 + 重试）。
   const [source, setSource] = useState<'probed' | 'fallback'>('probed')
   const [probeError, setProbeError] = useState<string | null>(null)
@@ -330,8 +332,8 @@ function ExternalModelSelectorBase({
   const [currentReasoning, setCurrentReasoning] = useState<string | null>(null)
   // 请求代际：agent 切换/卸载时使在途请求失效，防止旧结果覆盖新 agent 或卸载后 setState。
   const modelsReqIdRef = useRef(0)
-  // 上次探测的 agent：仅在真正切换 agent 时清空 currentModel。模型列表刻意跨请求保留（防闪），
-  // 但 currentModel 驱动胶囊主文案——若不清，新 agent 探测期间/失败后会一直显示上个 CLI 的模型名。
+  const modelSelectionRef = useRef(0)
+  // Only retain the displayed catalog while refreshing the same CLI and conversation.
   const lastAgentIdRef = useRef<string | null>(null)
   // 用 ref 读最新 runtime / onModelChange，避免把它们塞进 loadModels 依赖导致每次选模型重探。
   const runtimeRef = useRef(agentRuntime)
@@ -342,10 +344,9 @@ function ExternalModelSelectorBase({
   const loadModels = useCallback(
     (agentId: string, force?: boolean) => {
       const reqId = ++modelsReqIdRef.current
+      const selection = modelSelectionRef.current
       setLoading(true)
-      return chatApi
-        .detectExternalAgentModels(agentId, conversationId, force)
-        .then((result) => {
+      const applyResult = (result: ExternalAgentModels) => {
           if (modelsReqIdRef.current !== reqId) return
           setModels(result.models)
           setReasoningOptions(result.reasoningOptions)
@@ -354,6 +355,8 @@ function ExternalModelSelectorBase({
           setProbeError(result.probeError ?? null)
           setCurrentModel(result.currentModel ?? null)
           setCurrentReasoning(result.currentReasoning ?? null)
+          // A saved catalog may be displayed, but cannot change the conversation's configuration.
+          if (result.refreshing || result.source === 'fallback' || selection !== modelSelectionRef.current) return
           // 自动同步 CLI 当前配置：仅当用户未显式选择（externalModel 空 / 'default'）时。
           const rt = runtimeRef.current
           const explicitModel = !!rt.externalModel && rt.externalModel !== 'default'
@@ -392,7 +395,10 @@ function ExternalModelSelectorBase({
             if (rt.externalServiceTier) onModelChangeRef.current(nextModel, nextReasoning, rt.externalServiceTier)
             else onModelChangeRef.current(nextModel, nextReasoning)
           }
-        })
+        }
+      return chatApi
+        .detectExternalAgentModels(agentId, conversationId, force, applyResult)
+        .then(applyResult)
         .catch((error: unknown) => {
           if (modelsReqIdRef.current !== reqId) return
           // 不再静默吞错：置为降级态，展示重试。保留上次模型列表不清空。
@@ -408,13 +414,16 @@ function ExternalModelSelectorBase({
 
   useEffect(() => {
     const agentId = agentRuntime.externalAgentId ?? null
-    if (lastAgentIdRef.current !== agentId) {
-      lastAgentIdRef.current = agentId
+    const scope = `${agentId}:${conversationId ?? ''}`
+    if (lastAgentIdRef.current !== scope) {
+      lastAgentIdRef.current = scope
       // 换 agent：旧 CLI 的 currentModel 立刻失效（探测中显示「获取中…」而非上个 CLI 的模型名）。
       setCurrentModel(null)
       setProbeError(null)
       setCurrentReasoning(null)
       setReasoningByModel({})
+      setModels([])
+      setReasoningOptions([])
     }
     if (!agentId) {
       // 失效在途请求，防止旧结果落到已清空的状态上。
@@ -427,7 +436,9 @@ function ExternalModelSelectorBase({
     }
     // loadModels 自身先 ++reqId 使旧在途请求失效（agent/conversation 变更时 effect 重跑即覆盖）。
     void loadModels(agentId)
-  }, [agentRuntime.externalAgentId, loadModels])
+    const pendingRequests = modelsReqIdRef
+    return () => { pendingRequests.current++ }
+  }, [agentRuntime.externalAgentId, conversationId, loadModels])
 
   // 当前展示用的 effort 列表：优先按所选/当前模型从 reasoningByModel 取（kimi 按模型变档）。
   const activeReasoningOptions = useMemo(() => {
@@ -493,7 +504,7 @@ function ExternalModelSelectorBase({
       const inList = models.find((item) => item.id === currentModel)
       return formatLabel(inList?.label ?? currentModel)
     }
-    if (loading) return t.chatRuntimeFetching
+    if (loading && models.length === 0) return t.chatRuntimeFetching
     return 'Auto'
   }, [agentRuntime.externalAgentId, agentRuntime.externalModel, models, currentModel, loading, t])
 
@@ -506,28 +517,30 @@ function ExternalModelSelectorBase({
       <div className="relative min-w-0" data-tauri-drag-region="false">
         <button
           type="button"
-          onClick={() => setOpen(!open)}
+          onClick={() => {
+            setOpen(!open)
+            if (!open && !loading && source === 'probed' && agentRuntime.externalAgentId) void loadModels(agentRuntime.externalAgentId)
+          }}
           aria-haspopup="menu"
           aria-expanded={open}
           className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
           title={displayName}
         >
-          {/* ponytail: 探测中复用已有的 shimmer 文字动画，不再转圈；chevron 常驻避免宽度跳动 */}
           <span
-            className={`${agentRuntime.externalAgentId === 'antigravity' ? 'max-w-[240px]' : 'max-w-[140px]'} truncate font-medium ${loading ? 'reasoning-shimmer-text' : 'text-neutral-800'}`}
+            className={`${agentRuntime.externalAgentId === 'antigravity' ? 'max-w-[240px]' : 'max-w-[140px]'} truncate font-medium ${initialLoading ? 'reasoning-shimmer-text' : 'text-neutral-800'}`}
           >
             {displayName}
           </span>
           <ChevronDown
             size={15}
-            className={`shrink-0 transition-transform ${loading ? 'text-neutral-300 dark:text-neutral-600' : 'text-neutral-400'} ${open ? 'rotate-180' : ''}`}
+            className={`shrink-0 transition-transform ${initialLoading ? 'text-neutral-300 dark:text-neutral-600' : 'text-neutral-400'} ${open ? 'rotate-180' : ''}`}
           />
         </button>
         {open && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} aria-hidden />
-            <div ref={modelMenuRef} style={{ maxHeight: modelMenuMaxH }} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[200px] overflow-y-auto kv-menu">
-              {source === 'fallback' && (
+            <div ref={modelMenuRef} style={{ maxHeight: modelMenuMaxH }} className="chat-model-selector-menu chat-motion-popover absolute left-0 top-full z-20 mt-2 min-w-[200px] overflow-y-auto custom-scrollbar kv-menu">
+              {source === 'fallback' && !loading && (
                 <div className="kv-runtime-picker__fallback mx-1 my-1">
                   <span>{t.chatRuntimeProbeFailed}</span>
                   <button
@@ -543,7 +556,7 @@ function ExternalModelSelectorBase({
                   </button>
                 </div>
               )}
-              {source === 'fallback' && probeError && (
+              {source === 'fallback' && !loading && probeError && (
                 <p className="mx-2 mb-2 max-w-[300px] break-words text-xs text-neutral-500" role="status">
                   {probeError}
                 </p>
@@ -576,6 +589,7 @@ function ExternalModelSelectorBase({
                       }
                       if (efforts && efforts.length === 0) nextReasoning = null
                       if (modelIncludesEffort(agentRuntime.externalAgentId, model.id, model.label)) nextReasoning = null
+                      modelSelectionRef.current++
                       onModelChange(model.id, nextReasoning)
                       setOpen(false)
                     }}
@@ -631,6 +645,7 @@ function ExternalModelSelectorBase({
                       aria-checked={active}
                       type="button"
                       onClick={() => {
+                        modelSelectionRef.current++
                         onModelChange(agentRuntime.externalModel ?? 'default', option.id)
                         setReasoningOpen(false)
                       }}
@@ -660,7 +675,10 @@ function ExternalModelSelectorBase({
           aria-pressed={fastOn}
           aria-label={zh ? '快速模式' : 'Fast mode'}
           title={zh ? `${fastTier.label}：由当前模型提供，计费与可用性取决于 CLI 账号` : `${fastTier.label}: provided by the model catalog; pricing and availability depend on the CLI account`}
-          onClick={() => onModelChange(agentRuntime.externalModel ?? 'default', undefined, fastOn ? null : fastTier.id)}
+          onClick={() => {
+            modelSelectionRef.current++
+            onModelChange(agentRuntime.externalModel ?? 'default', undefined, fastOn ? null : fastTier.id)
+          }}
           data-tauri-drag-region="false"
           className={`grid size-7 shrink-0 place-items-center rounded-full transition-colors hover:bg-neutral-100 ${fastOn ? 'text-[var(--accent)]' : 'text-neutral-500 dark:text-neutral-400'}`}
         >

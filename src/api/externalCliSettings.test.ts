@@ -38,6 +38,24 @@ describe('external CLI settings transport', () => {
     expect(invoke).toHaveBeenCalledWith('chat_detect_external_agent_models', expect.objectContaining({ force: false }))
   })
 
+  it('shows the snapshot before a slow refresh finishes', async () => {
+    const snapshot = { models: [{ id: 'saved', label: 'Saved' }], refreshing: true }
+    let finish: (value: unknown) => void = () => {}
+    vi.mocked(invoke).mockResolvedValueOnce(snapshot).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve }))
+    const onSnapshot = vi.fn()
+    const result = externalCliSettingsApi.detectExternalAgentModels('codex', 'project', false, onSnapshot)
+    await vi.waitFor(() => expect(onSnapshot).toHaveBeenCalledWith(expect.objectContaining(snapshot)))
+    expect(invoke).toHaveBeenNthCalledWith(1, 'chat_detect_external_agent_models', expect.objectContaining({ snapshotOnly: true }))
+    finish({ models: [{ id: 'new', label: 'New' }], source: 'probed' })
+    expect((await result).models[0].id).toBe('new')
+  })
+
+  it('does not probe again when the snapshot is fresh', async () => {
+    vi.mocked(invoke).mockResolvedValue({ models: [{ id: 'cached', label: 'Cached' }], refreshing: false })
+    expect((await externalCliSettingsApi.detectExternalAgentModels('codex', null, false, vi.fn())).models[0].id).toBe('cached')
+    expect(invoke).toHaveBeenCalledTimes(1)
+  })
+
   it('executes the displayed plan and reads only selected cc-switch records', async () => {
     await externalCliSettingsApi.externalCliInstall('claude', 'displayed-plan')
     expect(invoke).toHaveBeenCalledWith('chat_external_cli_install', {

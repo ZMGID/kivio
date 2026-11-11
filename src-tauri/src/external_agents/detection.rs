@@ -193,7 +193,13 @@ pub async fn detect_agent_models(def: &RuntimeAgentDef, cwd: &Path) -> AgentMode
         }
         Err(err) => {
             eprintln!("[external-agent] {} model probe failed: {err}", def.id);
-            let models = fallback_models_from_pairs(def.fallback_models);
+            let models = if matches!(def.model_probe, Some(ModelProbeStrategy::CodexAppServer)) {
+                let (configured, _) = read_codex_current_config();
+                merge_codex_model_catalog(codex_static_fallback_probe(), configured.as_deref())
+                    .models
+            } else {
+                fallback_models_from_pairs(def.fallback_models)
+            };
             // codex fallback：给每个真实模型挂上静态 effort，前端换模型时仍有档位可选。
             let reasoning_by_model = if matches!(def.current_config, CurrentConfigStrategy::Codex) {
                 models
@@ -1120,7 +1126,7 @@ async fn probe_models(
         }
     }
 
-    // Codex：live model/list 为准；list/debug 都失败时仍 Ok(静态兜底)——下拉永不空。
+    // Report failed discovery so a temporary outage cannot replace the last successful catalog.
     if matches!(def.model_probe, Some(ModelProbeStrategy::CodexAppServer)) {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(20);
         let (config_model, _) = read_codex_current_config();
@@ -1129,7 +1135,9 @@ async fn probe_models(
         } else {
             probe_codex_debug_models(def, bin, cwd, timeout_secs).await
         };
-        let base = runtime.unwrap_or_else(codex_static_fallback_probe);
+        let base = runtime.ok_or_else(|| {
+            "Codex 模型探测失败（model/list 与 debug models 均未返回模型）".to_string()
+        })?;
         let merged = merge_codex_model_catalog(base, config_model.as_deref());
         return Ok(probe_ok(
             merged.models,
@@ -1450,6 +1458,16 @@ fn parse_models_list(stdout: &str) -> Option<Vec<RuntimeModelOption>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn codex_failed_discovery_is_not_a_successful_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing_binary = dir.path().join("missing-codex.exe");
+        let def = crate::external_agents::registry::get_agent_def("codex").unwrap();
+        assert!(probe_models(def, Some(&missing_binary), dir.path())
+            .await
+            .is_err());
+    }
 
     #[test]
     fn sandbox_picker_options_are_materialized_from_registered_capabilities() {

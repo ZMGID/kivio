@@ -297,6 +297,7 @@ pub async fn run_probe_watcher(app: AppHandle) {
                 req.external_agent_id.clone().unwrap_or_default(),
                 req.conversation_id.clone(),
                 Some(true),
+                Some(false),
             )
             .await;
             let value = match result {
