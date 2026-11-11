@@ -3,7 +3,7 @@ import { useModelDatabase } from '../data/useModelDatabase'
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { createWindowStore, useWindowStore } from '../utils/windowStore'
-import { ArrowLeft, Check, Circle, Download, History, ImagePlus, Images, LoaderCircle, Play, RefreshCw, Search, Settings2, Sparkles, Trash2, X } from 'lucide-react'
+import { Check, Circle, Film, ImagePlus, Images, Info, LoaderCircle, Play, RefreshCw, Search, Sparkles, Timer, Trash2, X } from 'lucide-react'
 import { mediaStationApi, type MediaJob, type MediaKind, type MediaRequest } from '../api/mediaStation'
 import { getSettingsCached } from '../api/settingsCache'
 import { isTauriRuntime, type ModelProvider } from '../api/tauri'
@@ -12,7 +12,13 @@ import { confirmDialog } from '../components/dialogQueue'
 import { Input, Select, TextArea } from '../settings/public/controls'
 import { useLang } from '../components/i18n'
 import { resolveModelInfo } from '../data/modelMatching'
-import { IdeaArt, type IdeaArtName } from './MediaIdeaArt'
+import { IdeaArt } from './MediaIdeaArt'
+import { CanvasViewfinder, MediaCanvas, RatioGlyph, jobCanvas, type Text } from './MediaCanvas'
+import { JobDetails, MediaDetail, MediaResultActions, type ResultActions } from './MediaJobViews'
+import { dayLabel, promptHasTerm, ratioOf, timeLabel, togglePromptTerm } from './mediaFormat'
+import { FACETS, IDEAS, IDEAS_PER_PAGE, type Idea } from './mediaIdeas'
+import { CenterHeader, CenterTabs } from './market/PluginCenterParts'
+import { MediaIcon } from '../settings/public/icons'
 import './market/market.css'
 import './MediaStation.css'
 
@@ -93,162 +99,15 @@ export function resetMediaWindowForTests() {
   mediaWindow.setState(initialMediaWindow())
 }
 
-type Idea = { art: IdeaArtName; ratio: string; title: readonly [string, string]; prompt: readonly [string, string] }
-
-/** Starter prompts per media kind, each with its own line drawing and a fitting aspect ratio. */
-const IDEAS: Record<MediaKind, readonly Idea[]> = {
-  image: [
-    { art: 'vase', ratio: '1:1', title: ['产品摄影', 'Product photo'], prompt: ['晨光中的玻璃花瓶，简洁背景，柔和阴影，产品摄影。', 'A glass vase in morning light, minimal background, soft shadows, product photography.'] },
-    { art: 'coast', ratio: '16:9', title: ['电影感场景', 'Cinematic scene'], prompt: ['夕阳下的海岸，暖金色光线，宽阔构图，电影质感。', 'A coastline at sunset, warm golden light, wide composition, cinematic atmosphere.'] },
-    { art: 'poster', ratio: '3:4', title: ['插画海报', 'Illustrated poster'], prompt: ['以森林与月亮为主题的插画海报，深蓝与银白配色，留出标题空间。', 'An illustrated forest and moon poster in midnight blue and silver, with room for a title.'] },
-    { art: 'portrait', ratio: '3:4', title: ['人像写真', 'Portrait'], prompt: ['窗边自然光下的人像特写，浅景深，胶片质感，温柔色调。', 'A close-up portrait by a window in natural light, shallow depth of field, film look, soft tones.'] },
-    { art: 'coffee', ratio: '1:1', title: ['美食摄影', 'Food photo'], prompt: ['俯拍木桌上的拿铁，心形拉花，晨光斜照，温暖色调。', 'A top-down latte with heart latte art on a wooden table, slanted morning light, warm tones.'] },
-    { art: 'arches', ratio: '4:3', title: ['建筑光影', 'Architecture'], prompt: ['极简混凝土拱廊，强烈的光影，一个人走过，建筑摄影。', 'A minimal concrete arcade with strong light and shadow, a lone figure walking through, architectural photography.'] },
-    { art: 'room', ratio: '1:1', title: ['等距小屋', 'Isometric room'], prompt: ['等距视角的温馨小书房，柔和光照，3D 渲染。', 'A cozy isometric study room, soft lighting, 3D render.'] },
-    { art: 'shanshui', ratio: '16:9', title: ['水墨山水', 'Ink landscape'], prompt: ['水墨山水，远山与云雾，一叶扁舟，大面积留白。', 'An ink-wash landscape with distant mountains, mist and a small boat, generous negative space.'] },
-    { art: 'interior', ratio: '4:3', title: ['室内设计', 'Interior'], prompt: ['北欧风客厅，浅色沙发，落地灯，绿植，自然光，室内效果图。', 'A Scandinavian living room with a light sofa, floor lamp and plants in natural light, interior render.'] },
-    { art: 'cat', ratio: '1:1', title: ['宠物写真', 'Pet portrait'], prompt: ['一只蜷在毛毯上睡觉的橘猫，午后阳光，柔焦。', 'An orange cat curled up asleep on a blanket in afternoon sun, soft focus.'] },
-    { art: 'leaf', ratio: '3:4', title: ['植物图鉴', 'Botanical plate'], prompt: ['龟背竹叶片的植物图鉴，复古科学插画风格，米色纸张。', 'A botanical plate of a monstera leaf, vintage scientific illustration on cream paper.'] },
-    { art: 'street', ratio: '9:16', title: ['雨夜街头', 'Rainy street'], prompt: ['雨夜的街头，霓虹倒映在积水里，撑伞的行人，赛博朋克。', 'A rainy street at night, neon reflected in puddles, a pedestrian with an umbrella, cyberpunk.'] },
-  ],
-  video: [
-    { art: 'skyline', ratio: '16:9', title: ['航拍推进', 'Aerial push-in'], prompt: ['黄昏的城市天际线，无人机缓慢向前推进，灯光逐渐亮起。', 'A city skyline at dusk, a drone slowly pushes forward as the lights come on.'] },
-    { art: 'turntable', ratio: '1:1', title: ['产品旋转', 'Product turntable'], prompt: ['白色背景上的运动鞋缓慢 360 度旋转，柔和棚拍光。', 'A sneaker slowly rotates 360 degrees on a white background in soft studio light.'] },
-    { art: 'peaks', ratio: '16:9', title: ['自然延时', 'Nature time-lapse'], prompt: ['云海在雪山间流动的延时摄影，日出时分，金色光线。', 'A time-lapse of clouds flowing between snowy peaks at sunrise, golden light.'] },
-    { art: 'fox', ratio: '16:9', title: ['动画角色', 'Animated character'], prompt: ['一只小狐狸在森林边蹦跳，手绘动画风格，镜头跟随。', 'A small fox hops at the edge of a forest in a hand-drawn animation style, the camera follows.'] },
-    { art: 'waves', ratio: '16:9', title: ['海浪慢镜', 'Slow-mo wave'], prompt: ['巨浪卷起的慢动作，阳光穿透浪尖，水花飞溅。', 'A huge wave curling in slow motion, sunlight through the crest, spray flying.'] },
-    { art: 'road', ratio: '16:9', title: ['公路追车', 'Road chase'], prompt: ['跑车在沙漠公路上疾驰，低机位跟拍，黄昏逆光。', 'A sports car speeds down a desert highway, low tracking shot, backlit at dusk.'] },
-    { art: 'pour', ratio: '9:16', title: ['液体慢镜', 'Pour shot'], prompt: ['冰饮倒入玻璃杯的慢镜头，冰块翻滚，气泡上升。', 'Slow motion of a cold drink poured into a glass, ice tumbling, bubbles rising.'] },
-    { art: 'blossom', ratio: '9:16', title: ['花开延时', 'Blooming'], prompt: ['一朵花从花苞到盛开的延时摄影，黑色背景，微距。', 'A time-lapse of a flower opening from bud to full bloom, black background, macro.'] },
-    { art: 'walk', ratio: '9:16', title: ['人物跟拍', 'Tracking shot'], prompt: ['女孩走在秋天的林荫道上，侧面跟拍，落叶飘下。', 'A girl walks along an autumn avenue, side tracking shot, leaves falling.'] },
-    { art: 'rainwin', ratio: '16:9', title: ['雨窗氛围', 'Rainy window'], prompt: ['雨滴顺着窗玻璃滑落，窗外城市灯光虚化，浅景深。', 'Raindrops run down a window, city lights blurred outside, shallow depth of field.'] },
-    { art: 'fireworks', ratio: '16:9', title: ['烟花夜景', 'Fireworks'], prompt: ['夜空中绽放的烟花，城市剪影，镜头缓慢上摇。', 'Fireworks bursting over a city skyline at night, the camera slowly tilts up.'] },
-    { art: 'plane', ratio: '16:9', title: ['纸飞机', 'Paper plane'], prompt: ['一架纸飞机穿过云层飞行，镜头跟随，绘本风格。', 'A paper plane glides through clouds, the camera follows, storybook style.'] },
-  ],
-}
-const IDEAS_PER_PAGE = 4
 /** Rotates across visits in this window so the page doesn't open on the same four every time. */
 let ideaOffset = Math.floor(Math.random() * 3) * IDEAS_PER_PAGE
-
-function OutputPreview({ job, index }: { job: MediaJob; index: number }) {
-  const [url, setUrl] = useState('')
-  const [error, setError] = useState('')
-  const output = job.outputs[index]
-  useEffect(() => {
-    let active = true
-    let objectUrl = ''
-    setUrl(''); setError('')
-    mediaStationApi.read(job.id, index).then((bytes) => {
-      if (!active) return
-      objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: output.mimeType }))
-      setUrl(objectUrl)
-    }).catch((e) => { if (active) setError(String(e)) })
-    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [job.id, index, output.mimeType])
-  if (error) return <p role="alert">{error}</p>
-  if (!url) return <LoaderCircle className="animate-spin" aria-label="Loading" />
-  return output.mimeType.startsWith('video/')
-    ? <video src={url} controls preload="auto" onLoadedMetadata={(event) => {
-      // WebKit can leave an unplayed video blank until a seek decodes its first frame.
-      const video = event.currentTarget
-      if (video.currentTime === 0 && video.duration > 0) video.currentTime = Math.min(0.001, video.duration / 2)
-    }} />
-    : <img src={url} alt={job.request.prompt} />
-}
-
-type DetailActions = {
-  text: (cn: string, en: string) => string
-  statusLabel: string
-  onClose: () => void
-  onCancel: () => void
-  onResume: () => void
-  onExport: (index: number) => void
-  onFirstFrame: (index: number) => void
-  onReuse: () => void
-  onEdit: (index: number) => void
-  onDelete: () => void
-  deleting: boolean
-  resuming: boolean
-  exporting: (index: number) => boolean
-}
-
-function jobMeta(job: MediaJob, statusLabel: string) {
-  return [statusLabel, job.request.model, job.request.aspectRatio, job.request.kind === 'video' ? `${job.request.duration}s` : ''].filter(Boolean).join(' · ')
-}
-
-/** Running state: a canvas in the requested aspect ratio with a soft sheen, plus elapsed time and the stop action. */
-function MediaPending({ job, text, onCancel, busy }: { job: MediaJob; text: DetailActions['text']; onCancel: () => void; busy: boolean }) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
-  const seconds = Math.max(0, Math.floor((now - job.createdAt) / 1000))
-  const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
-  const [w, h] = job.request.aspectRatio.split(':').map(Number)
-  const ratio = w > 0 && h > 0 ? w / h : 1
-  return <div className="kv-media-pending" style={{ '--kv-media-ratio': ratio } as CSSProperties}>
-    <div className="kv-media-pending-canvas" aria-hidden="true">
-      {job.request.kind === 'video' ? <Play size={22} strokeWidth={1.5} /> : <Images size={22} strokeWidth={1.5} />}
-      <span className="kv-media-pending-ratio">{job.request.aspectRatio}</span>
-    </div>
-    <div className="kv-media-pending-status" aria-live="polite">
-      <div>
-        <p>{text('正在生成，稍后回来也可以。', 'Generating. You can come back later.')}</p>
-        <small>{text(`已等待 ${elapsed} · 供应商可能继续生成并计费`, `${elapsed} elapsed · The provider may continue and charge`)}</small>
-      </div>
-      <Button size="sm" onClick={onCancel} disabled={busy}>{text('停止等待', 'Stop waiting')}</Button>
-    </div>
-  </div>
-}
-
-/** Preview, status and prompt of one creation; shared by the latest result and the history dialog. */
-function MediaResultBody({ job, text, onCancel, cancelling }: { job: MediaJob; text: DetailActions['text']; onCancel: () => void; cancelling: boolean }) {
-  return <>
-    {job.status === 'running' && <MediaPending job={job} text={text} onCancel={onCancel} busy={cancelling} />}
-    {job.error && <p role="status" className="kv-panel warn kv-media-job-error">{job.error}</p>}
-    {job.outputs.map((output, index) => <div key={output.name} className="kv-media-preview"><OutputPreview job={job} index={index} /></div>)}
-    <p className="kv-media-prompt">{job.request.prompt}</p>
-  </>
-}
-
-function MediaResultActions({ job, text, onResume, onExport, onFirstFrame, onReuse, onEdit, onDelete, deleting, resuming, exporting }: { job: MediaJob } & Omit<DetailActions, 'statusLabel' | 'onClose' | 'onCancel'>) {
-  return <>
-    <Button size="sm" variant="ghost" onClick={onReuse}><RefreshCw size={14} />{job.request.kind === 'video' ? text('修改参数 / 重新生成', 'Change settings / regenerate') : text('复用参数', 'Reuse settings')}</Button>
-    <Button size="sm" variant="danger" onClick={onDelete} disabled={deleting || job.status === 'running'} title={job.status === 'running' ? text('请先停止等待，再删除记录和源文件。', 'Stop waiting before deleting the record and source files.') : undefined}><Trash2 size={14} />{text('删除', 'Delete')}</Button>
-    {job.status === 'running' && <small className="kv-field-hint">{text('请先停止等待再删除', 'Stop waiting before deleting')}</small>}
-    <span className="kv-media-detail-spacer" />
-    {job.providerTaskId && job.status !== 'running' && job.status !== 'completed' && <Button size="sm" onClick={onResume} disabled={resuming}><RefreshCw size={14} />{text('继续获取结果', 'Fetch result again')}</Button>}
-    {job.request.kind === 'image' && job.outputs.map((output, index) => <Button key={`edit-${output.name}`} size="sm" onClick={() => onEdit(index)}><ImagePlus size={14} />{text('继续编辑', 'Continue editing')}{job.outputs.length > 1 && ` ${index + 1}`}</Button>)}
-    {job.request.kind === 'image' && job.outputs.map((output, index) => <Button key={`frame-${output.name}`} size="sm" onClick={() => onFirstFrame(index)}><Play size={14} />{text('用作视频首帧', 'Use as first frame')}</Button>)}
-    {job.outputs.map((output, index) => <Button key={`save-${output.name}`} size="sm" variant="primary" disabled={exporting(index)} onClick={() => onExport(index)}><Download size={14} />{text('另存为', 'Save as')}</Button>)}
-  </>
-}
-
-/** A creation opened from the history grid, shown as a modal over the history view. */
-function MediaDetail({ job, errorMessage, cancelling, ...actions }: { job: MediaJob; errorMessage: string; cancelling: boolean } & DetailActions) {
-  const dialog = useRef<HTMLDialogElement>(null)
-  useEffect(() => {
-    const node = dialog.current
-    if (node && !node.open) node.showModal()
-    return () => node?.close()
-  }, [])
-  const { text, statusLabel, onClose, onCancel } = actions
-  return <dialog ref={dialog} className="kv-modal kv-media-detail" aria-label={text('作品详情', 'Creation details')}
-    onCancel={(e) => { e.preventDefault(); onClose() }} onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
-    <header className="kv-media-detail-header">
-      <span>{jobMeta(job, statusLabel)}</span>
-      <IconButton size="sm" variant="ghost" label={text('关闭', 'Close')} onClick={onClose}><X size={15} /></IconButton>
-    </header>
-    <div className="kv-media-detail-body custom-scrollbar">{errorMessage && <p role="alert" className="kv-panel warn">{errorMessage}</p>}<MediaResultBody job={job} text={text} onCancel={onCancel} cancelling={cancelling} /></div>
-    <footer className="kv-media-detail-actions"><MediaResultActions job={job} {...actions} /></footer>
-  </dialog>
-}
+const RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4']
+const PROMPT_LIMIT = 8000
 
 export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void }) {
   useModelDatabase()
   const zh = useLang() === 'zh'
-  const text = (cn: string, en: string) => zh ? cn : en
+  const text: Text = (cn, en) => zh ? cn : en
   const desktop = isTauriRuntime()
   const [media, setMedia] = useWindowStore(mediaWindow)
   const form = media.draft
@@ -259,13 +118,19 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
   const submitting = media.pending.includes('start')
   const deleting = media.pending.some((key) => key.startsWith('delete:'))
   const [providers, setProviders] = useState<ModelProvider[]>([])
+  const [providersLoaded, setProvidersLoaded] = useState(false)
   const [listedJobs, setListedJobs] = useState<MediaJob[]>([])
   // 「创作」是默认视图，只展示本次生成；完整历史在单独的「创作记录」视图里。
   const view = media.view
   const [ideaStart, setIdeaStart] = useState(() => ideaOffset)
-  const [filter, setFilter] = useState('all')
+  const [shuffles, setShuffles] = useState(0)
+  const [previewIdea, setPreviewIdea] = useState<Idea | null>(null)
+  const [fillPulse, setFillPulse] = useState(0)
+  const [measured, setMeasured] = useState<{ id: string; ratio: number } | null>(null)
+  const [filter, setFilter] = useState<'all' | MediaKind>('all')
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(desktop)
+  const composerRef = useRef<HTMLFormElement>(null)
   const jobs = listedJobs.filter((job) => !media.deletedIds.includes(job.id))
   const selected = jobs.find((j) => j.id === selectedId)
   // 只列出能生成当前类型的供应商和模型。
@@ -273,7 +138,8 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
   const provider = capableProviders.find((p) => p.id === form.providerId)
   const modelChoices = provider ? mediaModels(provider, form.kind) : []
   const running = jobs.filter((j) => j.status === 'running').length
-  const visible = jobs.filter((j) => (filter === 'all' || j.request.kind === filter) && j.request.prompt.toLowerCase().includes(query.toLowerCase()))
+  const matching = jobs.filter((j) => j.request.prompt.toLowerCase().includes(query.toLowerCase()))
+  const visible = matching.filter((j) => filter === 'all' || j.request.kind === filter).sort((a, b) => b.createdAt - a.createdAt)
   const deletableVisible = visible.filter((job) => job.status !== 'running')
   const statusLabel = (job: MediaJob) => ({ running: text('生成中', 'Generating'), completed: text('已完成', 'Completed'), failed: text('失败', 'Failed'), cancelled: text('已停止等待', 'Stopped waiting'), interrupted: text('已中断', 'Interrupted') })[job.status]
 
@@ -287,6 +153,7 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
     getSettingsCached().then((settings) => {
       if (!active) return
       setProviders(settings.providers.filter((p) => p.enabled))
+      setProvidersLoaded(true)
       const current = mediaWindow.getSnapshot().draft
       if (!current.providerId) {
         const initial = settings.defaultModels.imageGeneration
@@ -324,6 +191,7 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
   }, [fallbackProvider, fallbackModel, form.providerId, form.model, setMedia])
 
   function changeKind(kind: MediaKind) {
+    setPreviewIdea(null)
     update({ kind, model: '', referencePaths: [], aspectRatio: kind === 'image' ? '1:1' : '16:9' })
   }
   function updateLatestResult(kind: MediaKind, id: string) {
@@ -477,10 +345,23 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
   const latest = jobs.find((j) => j.id === latestIds[form.kind] && j.request.kind === form.kind)
   const ideaPool = IDEAS[form.kind]
   const shownIdeas = Array.from({ length: IDEAS_PER_PAGE }, (_, i) => ideaPool[(ideaStart + i) % ideaPool.length])
-  const nextIdeas = () => setIdeaStart((start) => (ideaOffset = (start + IDEAS_PER_PAGE) % ideaPool.length))
+  const nextIdeas = () => { setShuffles((n) => n + 1); setIdeaStart((start) => (ideaOffset = (start + IDEAS_PER_PAGE) % ideaPool.length)) }
   useEffect(() => () => { ideaOffset = (ideaOffset + IDEAS_PER_PAGE) % IDEAS.image.length }, [])
+  const ideaText = (idea: Idea) => text(idea.prompt[0], idea.prompt[1])
+  const hovered = previewIdea && shownIdeas.includes(previewIdea) ? previewIdea : undefined
+  // A scene stays marked while modifiers are layered onto it.
+  const picked = ideaPool.find((idea) => form.prompt.startsWith(ideaText(idea).replace(/[。.]$/, '')))
+  function applyIdea(idea: Idea) {
+    update({ prompt: ideaText(idea), aspectRatio: idea.ratio })
+    setFillPulse((n) => n + 1)
+    composerRef.current?.querySelector('textarea')?.focus()
+  }
+  function toggleTerm(term: string) {
+    update({ prompt: togglePromptTerm(mediaWindow.getSnapshot().draft.prompt, term, zh) })
+    setFillPulse((n) => n + 1)
+  }
   /** Actions on a result; reusing it brings the parameters back to the create view. */
-  const resultActions = (job: MediaJob) => ({
+  const resultActions = (job: MediaJob): ResultActions => ({
     text,
     onResume: () => resume(job.id),
     onExport: (index: number) => exportOutput(job, index),
@@ -502,119 +383,200 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
     },
   })
 
-  const canGenerate = desktop && !submitting && Boolean(provider) && Boolean(form.model.trim()) && Boolean(form.prompt.trim()) && form.prompt.length <= 8000 && running < 3
+  const blocker = !desktop ? text('请在桌面端生成', 'Generate in the desktop app')
+    : !provider || !form.model.trim() ? text('先选择支持该类型的供应商和模型', 'Choose a capable provider and model first')
+    : !form.prompt.trim() ? text('先描述想要的画面', 'Describe what you want first')
+    : form.prompt.length > PROMPT_LIMIT ? text(`描述不能超过 ${PROMPT_LIMIT} 字`, `Keep the prompt within ${PROMPT_LIMIT} characters`)
+    : running >= 3 ? text('最多同时生成 3 个，请等待其中一个完成', 'Up to 3 generations run at once')
+    : ''
+  const canGenerate = !submitting && !blocker
+  const modKey = typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac') ? '⌘' : 'Ctrl'
+
+  // The create stage keeps one canvas mounted: idle viewfinder, or the latest creation's state.
+  const stageCanvas = latest
+    ? jobCanvas(latest, statusLabel(latest), measured?.id === latest.id ? measured.ratio : undefined, (ratio) => setMeasured({ id: latest.id, ratio }))
+    : {
+      state: 'idle' as const,
+      ratio: ratioOf(hovered?.ratio ?? form.aspectRatio),
+      content: <CanvasViewfinder kind={form.kind} ratio={hovered?.ratio ?? form.aspectRatio} duration={form.duration} art={(hovered ?? picked)?.art} prompt={form.prompt} text={text} />,
+    }
+
+  const ordered = visible
+  const selectedIndex = selected ? ordered.findIndex((job) => job.id === selected.id) : -1
+  const openJob = (id: string) => setMedia((state) => ({ ...state, selectedId: id }))
+  const groups: { label: string; jobs: MediaJob[] }[] = []
+  for (const job of visible) {
+    const label = dayLabel(job.createdAt, zh)
+    if (groups.at(-1)?.label === label) groups.at(-1)!.jobs.push(job)
+    else groups.push({ label, jobs: [job] })
+  }
+  const kindCount = (kind: 'all' | MediaKind) => kind === 'all' ? matching.length : matching.filter((job) => job.request.kind === kind).length
+  const filters = [['all', text('全部', 'All')], ['image', text('图片', 'Images')], ['video', text('视频', 'Videos')]] as const
+  let cardIndex = 0
 
   return <section className="kv kv-content kv-media">
-    <header className="kv-page-header kv-media-header">
-      <div className="kv-media-title">
-        <h1 className="kv-page-title">{text('媒体站', 'Media studio')}</h1>
-        <div className="kv-plugin-segments" role="group" aria-label={text('生成类型', 'Media type')}>
-          {([['image', text('生图', 'Image')], ['video', text('生视频', 'Video')]] as const).map(([kind, label]) =>
-            <button key={kind} type="button" className="kv-plugin-segment" aria-pressed={form.kind === kind} aria-current={form.kind === kind ? 'page' : undefined} onClick={() => changeKind(kind)}>{label}</button>)}
-        </div>
-      </div>
-      <div className="kv-media-header-actions">
-        <Button size="sm" variant="ghost" aria-pressed={view === 'history'} onClick={() => setMediaView(view === 'history' ? 'create' : 'history')}>
-          {view === 'history' ? <><ArrowLeft size={15} />{text('返回创作', 'Back to create')}</> : <><History size={15} />{text('创作记录', 'Creations')}{jobs.length > 0 && <span className="kv-media-count">{jobs.length}</span>}</>}
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onOpenSettings}><Settings2 size={15} />{text('模型设置', 'Model settings')}</Button>
-      </div>
-    </header>
+    <div className="kv-media-top">
+      <CenterHeader
+        heading={<h1 className="flex items-center gap-2.5"><MediaIcon size={24} className="text-[var(--color-muted-foreground)]" />{text('媒体站', 'Media studio')}</h1>}
+        subtitle={text('用你配置的供应商生成图片与视频，作品只保存在本机。', 'Generate images and video with your own providers. Creations stay on this device.')}
+        actions={running > 0 ? <button type="button" className="kv-media-running" onClick={() => setMediaView('history')} data-tauri-drag-region="false">
+          <span className="kv-media-live" aria-hidden="true" />{text(`${running} 个生成中`, `${running} generating`)}
+        </button> : null}
+      />
+      <CenterTabs<'image' | 'video' | 'history'>
+        value={view === 'history' ? 'history' : form.kind}
+        onChange={(tab) => {
+          if (tab === 'history') { setMediaView('history'); return }
+          setMediaView('create')
+          if (tab !== form.kind) changeKind(tab)
+        }}
+        tabs={[
+          { id: 'image', label: text('生图', 'Image') },
+          { id: 'video', label: text('生视频', 'Video') },
+          { id: 'history', label: text('创作记录', 'Creations'), count: jobs.length },
+        ]}
+      />
+    </div>
     {error && !(view === 'history' && selected) && <ErrorNotice message={error} />}
-    {view === 'create' ? <div className="kv-scroll custom-scrollbar kv-media-workspace">
-      {latest ? <article className="kv-media-latest" aria-label={text('本次生成', 'Latest result')}>
-        <header className="kv-media-result-header">
-          <span>{jobMeta(latest, statusLabel(latest))}</span>
-          <IconButton size="sm" variant="ghost" label={text('收起', 'Dismiss')} onClick={() => updateLatestResult(form.kind, '')}><X size={15} /></IconButton>
-        </header>
-        <div className="kv-media-result-body"><MediaResultBody job={latest} text={text} onCancel={() => cancel(latest.id)} cancelling={media.pending.includes(`cancel:${latest.id}`)} /></div>
-        <footer className="kv-media-result-actions"><MediaResultActions job={latest} {...resultActions(latest)} /></footer>
-      </article> : <div className="kv-media-hero">
-        <div className="kv-media-hero-head">
-          <div>
-            <h3>{form.kind === 'image' ? text('想画点什么', 'What would you like to make') : text('想让什么动起来', 'What should move')}</h3>
-            <p>{form.kind === 'image' ? text('选一个方向，会填好描述和画幅；也可以直接在下面写', 'Pick a direction to fill in the prompt and ratio, or just write below') : text('选一个镜头，会填好描述和画幅；也可以直接在下面写', 'Pick a shot to fill in the prompt and ratio, or just write below')}</p>
-          </div>
-          <Button size="sm" variant="ghost" onClick={nextIdeas}><RefreshCw size={14} />{text('换一批', 'Shuffle')}</Button>
+    {view === 'create' ? <div key="create" className="kv-scroll custom-scrollbar kv-media-workspace">
+      <div className={`kv-media-stage is-${latest ? 'job' : 'idle'}`} role={latest ? 'article' : undefined} aria-label={latest ? text('本次生成', 'Latest result') : undefined}>
+        <div className="kv-media-brief">
+          {latest ? <div key={`job-${latest.id}`} className="kv-media-brief-inner">
+            <JobDetails job={latest} text={text} zh={zh} statusLabel={statusLabel(latest)} onCancel={() => cancel(latest.id)} cancelling={media.pending.includes(`cancel:${latest.id}`)}
+              headerEnd={<IconButton size="sm" variant="ghost" label={text('收起', 'Dismiss')} onClick={() => updateLatestResult(form.kind, '')}><X size={15} /></IconButton>} />
+            <MediaResultActions job={latest} {...resultActions(latest)} />
+          </div> : <div key={`idle-${form.kind}`} className="kv-media-brief-inner kv-media-recipe">
+            <div className="kv-media-recipe-head">
+              <h2>{form.kind === 'image' ? text('想画点什么', 'What would you like to make') : text('想让什么动起来', 'What should move')}</h2>
+              <Button size="sm" variant="ghost" onClick={nextIdeas}><RefreshCw key={shuffles} size={13} className={shuffles ? 'kv-media-spin-once' : undefined} />{text('换一批', 'Shuffle')}</Button>
+            </div>
+            <p className="kv-media-recipe-lede">{form.kind === 'image' ? text('选一个场景起笔，再叠加风格、光线和构图。', 'Start from a scene, then layer style, light and framing.') : text('选一个镜头起笔，再叠加运镜、节奏和风格。', 'Start from a shot, then layer camera, pace and style.')}</p>
+            <div className="kv-media-scenes" key={`${form.kind}-${ideaStart}`} onMouseLeave={() => setPreviewIdea(null)}>
+              {shownIdeas.map((idea, i) => <button key={idea.art} type="button" className="kv-media-idea" aria-pressed={picked === idea}
+                style={{ '--kv-idea-delay': `${i * 35}ms` } as CSSProperties} title={ideaText(idea)}
+                onMouseEnter={() => setPreviewIdea(idea)} onFocus={() => setPreviewIdea(idea)} onBlur={() => setPreviewIdea(null)} onClick={() => applyIdea(idea)}>
+                <span className="kv-media-idea-art"><IdeaArt name={idea.art} /><span className="kv-media-idea-ratio"><RatioGlyph ratio={idea.ratio} size={10} />{idea.ratio}</span></span>
+                <strong>{text(idea.title[0], idea.title[1])}</strong>
+              </button>)}
+            </div>
+            {FACETS[form.kind].map((facet) => <div key={facet.label[1]} className="kv-media-facet" role="group" aria-label={text(facet.label[0], facet.label[1])}>
+              <span className="kv-media-facet-label">{text(facet.label[0], facet.label[1])}</span>
+              <div className="kv-media-chips">{facet.terms.map((pair) => {
+                const term = text(pair[0], pair[1])
+                const on = promptHasTerm(form.prompt, term)
+                return <button key={pair[1]} type="button" className="kv-media-chip" aria-pressed={on} onClick={() => toggleTerm(term)}>
+                  {on && <Check size={11} strokeWidth={2.5} aria-hidden="true" />}{term}
+                </button>
+              })}</div>
+            </div>)}
+          </div>}
         </div>
-        <div className="kv-media-ideas" key={`${form.kind}-${ideaStart}`}>
-          {shownIdeas.map(({ art, ratio, title, prompt }, i) =>
-            <button key={art} type="button" className="kv-media-idea" style={{ '--kv-idea-delay': `${i * 40}ms` } as CSSProperties}
-              title={text(prompt[0], prompt[1])} onClick={() => update({ prompt: text(prompt[0], prompt[1]), aspectRatio: ratio })}>
-              <span className="kv-media-idea-art"><IdeaArt name={art} /><span className="kv-media-idea-ratio">{ratio}</span></span>
-              <strong>{text(title[0], title[1])}</strong>
-              <span className="kv-media-idea-prompt">{text(prompt[0], prompt[1])}</span>
+        <MediaCanvas ratio={stageCanvas.ratio} state={stageCanvas.state}>{stageCanvas.content}</MediaCanvas>
+      </div>
+    </div> : <div key="history" className={`kv-scroll custom-scrollbar kv-media-workspace kv-media-library${selection.size ? ' is-selecting' : ''}`}>
+      <div className="kv-media-library-bar">
+        <div className="kv-media-chips" role="group" aria-label={text('筛选类型', 'Filter type')}>
+          {filters.map(([value, label]) =>
+            <button key={value} type="button" className="kv-media-chip is-filter" aria-pressed={filter === value} onClick={() => setFilter(value)}>
+              {label}<span className="kv-media-chip-count" aria-hidden="true">{kindCount(value)}</span>
             </button>)}
         </div>
-      </div>}
-    </div> : <div className="kv-scroll custom-scrollbar kv-media-workspace">
-      <div className="kv-media-library">
-        <div className="kv-media-library-heading">
-          <div className="kv-plugin-segments" role="group" aria-label={text('筛选类型', 'Filter type')}>
-            {([['all', text('全部', 'All')], ['image', text('图片', 'Images')], ['video', text('视频', 'Videos')]] as const).map(([value, label]) =>
-              <button key={value} type="button" className="kv-plugin-segment" aria-pressed={filter === value} aria-current={filter === value ? 'page' : undefined} onClick={() => setFilter(value)}>{label}</button>)}
-          </div>
-          <div className="kv-media-library-tools">
-            <label className="kv-media-search">
-              <Search size={14} aria-hidden="true" />
-              <Input aria-label={text('搜索描述', 'Search prompts')} value={query} onChange={setQuery} placeholder={text('搜索创作描述…', 'Search prompts…')} />
-            </label>
-            <IconButton size="sm" variant="ghost" label={text('刷新记录', 'Refresh')} onClick={refreshHistory} disabled={!desktop}><RefreshCw size={15} /></IconButton>
-          </div>
-          <Button size="sm" disabled={deleting || !deletableVisible.length} onClick={() => setMedia((state) => ({ ...state, selection: [...new Set([...state.selection, ...deletableVisible.map((job) => job.id)])] }))}>{text('全选当前结果', 'Select all filtered results')}</Button>
-        </div>
-        {selection.size > 0 && <div className="kv-media-selection-toolbar" aria-label={text('记录选择', 'Record selection')}>
-          <span role="status">{text(`已选择 ${selection.size} 条`, `${selection.size} selected`)}</span>
-          <Button size="sm" variant="danger" disabled={deleting || !selection.size} onClick={() => void deleteJobs([...selection])}><Trash2 size={14} />{text('删除所选', 'Delete selected')}</Button>
-          <small className="kv-field-hint">{text('生成中的记录请先打开详情停止等待，再删除。', 'Open running records and stop waiting before deleting.')}</small>
-        </div>}
-        {loading ? <p role="status" className="kv-field-hint">{text('正在读取记录…', 'Loading history…')}</p> : visible.length === 0 ? <div className="kv-media-empty">
-          <span className="kv-media-empty-icon"><Images size={22} strokeWidth={1.5} /></span>
-          <h3>{jobs.length ? text('没有匹配的作品', 'No matching creations') : text('还没有作品', 'No creations yet')}</h3>
-          <p>{jobs.length ? text('试试其他关键词或类型。', 'Try another keyword or type.') : text('回到创作页生成第一张吧。', 'Go back and create your first one.')}</p>
-        </div> : <div className="kv-media-grid">{visible.map((job) => <div key={job.id} className={`kv-media-card-wrap${selection.has(job.id) ? ' is-selected' : ''}`}>
-          <button type="button" className="kv-media-card" aria-haspopup="dialog" onClick={() => setMedia((state) => ({ ...state, selectedId: job.id }))}>
-            <div className="kv-media-cover">{job.outputs[0]?.preview ? <img src={job.outputs[0].preview} alt="" loading="lazy" /> : job.status === 'running' ? <LoaderCircle className="animate-spin" size={25} /> : job.request.kind === 'image' ? <Images size={28} /> : <Play size={28} />}
-              {job.status !== 'completed' && <span className={`kv-media-badge is-${job.status}`}>{statusLabel(job)}</span>}
-            </div><strong>{job.request.prompt}</strong><small>{job.request.aspectRatio} · {new Date(job.createdAt).toLocaleString(zh ? 'zh-CN' : 'en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
-          </button>
-          <span className="kv-media-selection-mark">
-            <IconButton size="sm" shape="circle" role="checkbox" aria-checked={selection.has(job.id)}
-              label={text(`选择记录：${job.request.prompt}`, `Select creation: ${job.request.prompt}`)}
-              disabled={deleting || job.status === 'running'}
-              title={job.status === 'running' ? text('打开详情并停止等待后再删除', 'Open details and stop waiting before deleting') : undefined}
-              onClick={() => toggleSelection(job.id)}>{selection.has(job.id) ? <Check size={16} /> : <Circle size={16} />}</IconButton>
-          </span>
-        </div>)}</div>}
-      </div>
-    </div>}
-    {view === 'history' && selected && <MediaDetail key={selected.id} job={selected} errorMessage={error} cancelling={media.pending.includes(`cancel:${selected.id}`)} statusLabel={statusLabel(selected)}
-      onClose={() => setMedia((state) => ({ ...state, selectedId: '' }))} onCancel={() => cancel(selected.id)} {...resultActions(selected)} />}
-    {view === 'create' && <div className="kv-media-dock">
-      {media.editHint && <p role="status" className="kv-field-hint kv-media-edit-hint">{media.editHint}</p>}
-      <form className="kv-media-composer" onSubmit={(e) => { e.preventDefault(); if (canGenerate) void generate() }}>
-        <label className="kv-media-prompt-field">
-          <span className="sr-only">{text('创作描述', 'Prompt')}</span>
-          <TextArea variant="plain" value={form.prompt} onChange={(prompt) => update({ prompt })} rows={3} maxRows={10} className="kv-media-prompt-input"
-            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
-            placeholder={form.kind === 'image' ? text('你想看见怎样的画面？描述主体、光线、风格，或从一张参考图开始…', 'What would you like to see? Describe the subject, light and style…') : text('让画面如何运动？描述动作、镜头与节奏，或添加一张首帧…', 'Describe the motion, camera and rhythm, or add a first frame…')} />
+        <span className="kv-media-bar-fill" />
+        <label className="kv-media-search">
+          <Search size={14} aria-hidden="true" />
+          <Input aria-label={text('搜索描述', 'Search prompts')} value={query} onChange={setQuery} placeholder={text('搜索创作描述…', 'Search prompts…')} />
         </label>
+        <IconButton size="sm" variant="ghost" label={text('刷新记录', 'Refresh')} onClick={refreshHistory} disabled={!desktop}><RefreshCw size={15} /></IconButton>
+        <Button size="sm" variant="ghost" disabled={deleting || !deletableVisible.length} onClick={() => setMedia((state) => ({ ...state, selection: [...new Set([...state.selection, ...deletableVisible.map((job) => job.id)])] }))}>{text('全选当前结果', 'Select all filtered results')}</Button>
+      </div>
+      {loading ? <div className="kv-media-wall is-loading" aria-hidden="true">
+        <p role="status" className="sr-only">{text('正在读取记录…', 'Loading history…')}</p>
+        {[1, 1.78, 0.75, 1, 1.33, 0.56, 1.78, 1].map((ratio, i) => <span key={i} className="kv-media-skeleton kv-skeleton" style={{ '--kv-card-ratio': ratio } as CSSProperties} />)}
+      </div> : visible.length === 0 ? <div className="kv-media-empty">
+        <span className="kv-media-empty-art" aria-hidden="true"><i /><i /><i /></span>
+        <h3>{jobs.length ? text('没有匹配的作品', 'No matching creations') : text('还没有作品', 'No creations yet')}</h3>
+        <p>{jobs.length ? text('试试其他关键词或类型。', 'Try another keyword or type.') : text('生成的图片和视频都会收在这里。', 'Every image and video you generate lands here.')}</p>
+        {!jobs.length && <Button size="sm" onClick={() => setMediaView('create')}><Sparkles size={14} />{text('去创作', 'Start creating')}</Button>}
+      </div> : groups.map((group) => <section key={group.label} className="kv-media-day" aria-label={group.label}>
+        <h3 className="kv-media-day-title">{group.label}<span>{group.jobs.length}</span></h3>
+        <div className="kv-media-wall">{group.jobs.map((job) => {
+          const preview = job.outputs[0]?.preview
+          const checked = selection.has(job.id)
+          return <div key={job.id} className={`kv-media-card-wrap${checked ? ' is-selected' : ''}${preview ? '' : ' is-textual'}`}
+            style={{ '--kv-card-ratio': ratioOf(job.request.aspectRatio), '--kv-card-delay': `${Math.min(cardIndex++, 14) * 28}ms` } as CSSProperties}>
+            <button type="button" className="kv-media-card" aria-haspopup="dialog" onClick={() => openJob(job.id)}>
+              <div className="kv-media-cover">
+                {preview ? <img src={preview} alt="" loading="lazy" />
+                  : job.status === 'running' ? <span className="kv-media-cover-develop" aria-hidden="true" />
+                    : job.request.kind === 'image' ? <Images size={22} strokeWidth={1.4} aria-hidden="true" /> : <Film size={22} strokeWidth={1.4} aria-hidden="true" />}
+                {job.request.kind === 'video' && preview && <span className="kv-media-cover-kind" aria-hidden="true"><Play size={11} /></span>}
+                {job.status !== 'completed' && <span className={`kv-media-badge is-${job.status}`}>{statusLabel(job)}</span>}
+              </div>
+              <div className="kv-media-caption"><strong>{job.request.prompt}</strong><small>{timeLabel(job.createdAt, zh)} · {job.request.aspectRatio}</small></div>
+            </button>
+            <span className="kv-media-selection-mark">
+              <IconButton size="sm" shape="circle" role="checkbox" aria-checked={checked}
+                label={text(`选择记录：${job.request.prompt}`, `Select creation: ${job.request.prompt}`)}
+                disabled={deleting || job.status === 'running'}
+                title={job.status === 'running' ? text('打开详情并停止等待后再删除', 'Open details and stop waiting before deleting') : undefined}
+                onClick={() => toggleSelection(job.id)}>{checked ? <Check size={14} /> : <Circle size={14} />}</IconButton>
+            </span>
+          </div>
+        })}</div>
+      </section>)}
+      {selection.size > 0 && <div className="kv-media-selection-bar" aria-label={text('记录选择', 'Record selection')}>
+        <span role="status">{text(`已选择 ${selection.size} 条`, `${selection.size} selected`)}</span>
+        <Button size="sm" variant="ghost" onClick={() => setMedia((state) => ({ ...state, selection: [] }))}>{text('取消选择', 'Clear')}</Button>
+        <Button size="sm" variant="danger" disabled={deleting || !selection.size} onClick={() => void deleteJobs([...selection])}><Trash2 size={14} />{text('删除所选', 'Delete selected')}</Button>
+      </div>}
+    </div>}
+    {view === 'history' && selected && <MediaDetail job={selected} zh={zh} errorMessage={error} cancelling={media.pending.includes(`cancel:${selected.id}`)} statusLabel={statusLabel(selected)}
+      position={selectedIndex >= 0 ? `${selectedIndex + 1} / ${ordered.length}` : ''}
+      onPrev={selectedIndex > 0 ? () => openJob(ordered[selectedIndex - 1].id) : undefined}
+      onNext={selectedIndex >= 0 && selectedIndex < ordered.length - 1 ? () => openJob(ordered[selectedIndex + 1].id) : undefined}
+      onClose={() => setMedia((state) => ({ ...state, selectedId: '' }))} onCancel={() => cancel(selected.id)} actions={resultActions(selected)} />}
+    {view === 'create' && <div className="kv-media-dock">
+      {media.editHint && <div className="kv-media-edit-hint">
+        <Info size={14} aria-hidden="true" /><p role="status">{media.editHint}</p>
+        <IconButton size="xs" variant="ghost" label={text('关闭提示', 'Dismiss hint')} onClick={() => setMedia((state) => ({ ...state, editHint: '' }))}><X size={12} /></IconButton>
+      </div>}
+      {desktop && providersLoaded && capableProviders.length === 0 && <div className="kv-media-setup-hint">
+        <Info size={14} aria-hidden="true" />
+        <p>{form.kind === 'image' ? text('还没有启用支持生图的模型。', 'No enabled model can generate images yet.') : text('还没有启用支持生视频的模型。', 'No enabled model can generate video yet.')}</p>
+        <Button size="sm" variant="ghost" onClick={onOpenSettings}>{text('去设置', 'Open settings')}</Button>
+      </div>}
+      <form ref={composerRef} className="kv-media-composer" onSubmit={(e) => { e.preventDefault(); if (canGenerate) void generate() }}>
+        {fillPulse > 0 && <span key={fillPulse} className="kv-media-composer-flash" aria-hidden="true" />}
         {form.referencePaths.length > 0 && <div className="kv-media-references">
           {form.referencePaths.map((path) => <div className="kv-chip kv-media-reference-file" key={path}>
-            <ImagePlus size={13} /><span title={path}>{path.split(/[\\/]/).pop()}</span>
+            <ImagePlus size={13} aria-hidden="true" /><span title={path}>{path.split(/[\\/]/).pop()}</span>
             <IconButton size="xs" label={text('移除参考图', 'Remove reference')} onClick={() => update({ referencePaths: form.referencePaths.filter((p) => p !== path) })}><X size={12} /></IconButton>
           </div>)}
         </div>}
+        <label className="kv-media-prompt-field">
+          <span className="sr-only">{text('创作描述', 'Prompt')}</span>
+          <TextArea variant="plain" value={form.prompt} onChange={(prompt) => update({ prompt })} rows={2} maxRows={10} className="kv-media-prompt-input"
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.form?.requestSubmit() } }}
+            placeholder={form.kind === 'image' ? text('你想看见怎样的画面？描述主体、光线、风格，或从一张参考图开始…', 'What would you like to see? Describe the subject, light and style…') : text('让画面如何运动？描述动作、镜头与节奏，或添加一张首帧…', 'Describe the motion, camera and rhythm, or add a first frame…')} />
+        </label>
         <div className="kv-media-toolbar">
           <IconButton size="sm" variant="ghost" label={form.kind === 'image' ? text('添加参考图（最多 4 张）', 'Add references (up to 4)') : text('添加首帧图片', 'Add first frame')} onClick={() => void pickReferences()} disabled={!desktop}><ImagePlus size={16} /></IconButton>
+          <span className="kv-media-toolbar-sep" aria-hidden="true" />
           <Select className="kv-media-provider" size="sm" triggerLabel={capableProviders.find((p) => p.id === form.providerId)?.name ?? text('供应商', 'Provider')} ariaLabel={text('供应商', 'Provider')} value={form.providerId} options={capableProviders.map((p) => ({ value: p.id, label: p.name }))} onChange={(providerId) => update({ providerId, model: '' })} />
           <Select className="kv-media-model" size="sm" triggerLabel={form.model || text('模型', 'Model')} ariaLabel={text('模型', 'Model')} value={form.model} onChange={(model) => update({ model })}
             options={modelChoices.map((model) => ({ value: model, label: model }))} />
-          <Select className="kv-media-ratio" size="sm" triggerLabel={form.aspectRatio} ariaLabel={text('画幅', 'Aspect ratio')} value={form.aspectRatio} onChange={(aspectRatio) => update({ aspectRatio })} options={['1:1', '16:9', '9:16', '4:3', '3:4'].map((value) => ({ value, label: value }))} />
-          {form.kind === 'video' && <Select className="kv-media-duration" size="sm" triggerLabel={`${form.duration} ${text('秒', 'sec')}`} ariaLabel={text('时长', 'Duration')} value={String(form.duration)} onChange={(duration) => update({ duration: Number(duration) })} options={[5, 10, 15].map((n) => ({ value: String(n), label: `${n} ${text('秒', 'sec')}` }))} />}
-          <Button className="kv-media-generate" size="sm" variant="primary" type="submit" disabled={!canGenerate}>
-            {submitting ? <LoaderCircle size={15} className="animate-spin" /> : <Sparkles size={15} />}{text('开始生成', 'Generate')}
-          </Button>
+          <span className="kv-media-toolbar-sep" aria-hidden="true" />
+          <Select className="kv-media-ratio" size="sm" triggerIcon={<RatioGlyph ratio={form.aspectRatio} />} triggerLabel={form.aspectRatio} ariaLabel={text('画幅', 'Aspect ratio')} value={form.aspectRatio} onChange={(aspectRatio) => update({ aspectRatio })} options={RATIOS.map((value) => ({ value, label: value }))} />
+          {form.kind === 'video' && <Select className="kv-media-duration" size="sm" triggerIcon={<Timer size={14} />} triggerLabel={`${form.duration} ${text('秒', 'sec')}`} ariaLabel={text('时长', 'Duration')} value={String(form.duration)} onChange={(duration) => update({ duration: Number(duration) })} options={[5, 10, 15].map((n) => ({ value: String(n), label: `${n} ${text('秒', 'sec')}` }))} />}
+          <span className="kv-media-toolbar-fill" />
+          {form.prompt.length > PROMPT_LIMIT - 1000 && <span className={`kv-media-counter${form.prompt.length > PROMPT_LIMIT ? ' is-over' : ''}`}>{form.prompt.length} / {PROMPT_LIMIT}</span>}
+          {/* Like the chat composer's send key, generating is the composer's own control rather than a shared action button. */}
+          <span className="kv-media-generate-wrap" title={submitting ? undefined : blocker || undefined}>
+            <button type="submit" className={`kv-media-generate${canGenerate ? ' is-ready' : ''}${submitting ? ' is-busy' : ''}`} disabled={!canGenerate} data-tauri-drag-region="false">
+              {submitting ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
+              <span>{text('开始生成', 'Generate')}</span>
+            </button>
+          </span>
         </div>
       </form>
       <p className="kv-field-hint kv-media-composer-caption">
@@ -623,6 +585,7 @@ export function MediaStation({ onOpenSettings }: { onOpenSettings: () => void })
           form.kind === 'video' ? text('每次生成 1 段 · 按供应商计费', 'One video per request · Provider charges apply') : text('每次生成 1 张 · 按供应商计费', 'One image per request · Provider charges apply'),
           text('结果自动保存在本机', 'Saved to your device'),
         ].filter(Boolean).join(' · ')}
+        <kbd>{modKey} ↵</kbd>{text('生成', 'to generate')}
       </p>
     </div>}
   </section>
