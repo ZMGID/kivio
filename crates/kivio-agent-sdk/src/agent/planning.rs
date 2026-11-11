@@ -33,6 +33,10 @@ pub(crate) enum PlanningStepOutcome {
     /// flaky gateways do this intermittently. Retried once via the skeleton's
     /// `continue`; a second consecutive empty enters the recovery ladder.
     RetryEmptyResponse,
+    /// Planning returned empty after a complete answer followed only by harness
+    /// notices (sub-agent reports, agent messages): the model has nothing to add,
+    /// so the turn ends with what it already said instead of retrying or failing.
+    NothingToAdd,
     /// Provider rejected tools; `state.provider_tools_unsupported` was set and a
     /// step was pushed. The skeleton breaks out of the tool loop.
     ToolsUnsupported,
@@ -251,6 +255,10 @@ pub(crate) async fn planning_step(
                         block_ids,
                         tool_ids,
                     );
+                    if only_notices_since_answer(state.history.context()) {
+                        eprintln!("Chat tools planning returned empty after a delivered notice; nothing to add");
+                        return Ok(PlanningStepOutcome::NothingToAdd);
+                    }
                     if !state.planning_empty_retried {
                         state.planning_empty_retried = true;
                         eprintln!("Chat tools planning returned an empty response; retrying once");
@@ -439,6 +447,27 @@ pub(crate) async fn planning_step(
         tool_calls,
         drafts: planning_tool_drafts,
     }))
+}
+
+/// True when everything after the latest complete assistant answer is a harness
+/// notice (developer role). User input or tool results still require a reply.
+fn only_notices_since_answer(history: &[super::history::RuntimeMessage]) -> bool {
+    use crate::model::{MessagePart, ModelRole};
+    let mut notices = 0usize;
+    for message in history.iter().rev() {
+        match message.model_message() {
+            Some(model) if model.role == ModelRole::Developer => notices += 1,
+            Some(model) if model.role == ModelRole::Assistant => {
+                let answered = !model
+                    .content
+                    .iter()
+                    .any(|part| matches!(part, MessagePart::ToolCall { .. }));
+                return answered && notices > 0;
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 #[allow(clippy::too_many_arguments)]

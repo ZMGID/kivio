@@ -378,3 +378,96 @@ async fn empty_retry_withdraws_streamed_reasoning_and_tool_drafts() {
         "{discarded:?}"
     );
 }
+
+/// Delivers one message after the first complete answer, like a sub-agent report.
+struct NoticeAfterAnswer {
+    role: kivio_agent_sdk::model::ModelRole,
+    sent: bool,
+}
+impl kivio_agent_sdk::agent::InjectionSource for NoticeAfterAnswer {
+    fn collect<'a>(
+        &'a mut self,
+        context: kivio_agent_sdk::agent::InjectionContext<'a>,
+        admission: &'a mut kivio_agent_sdk::agent::InjectionAdmission,
+    ) -> kivio_agent_sdk::agent::InjectionFuture<
+        'a,
+        Result<(), kivio_agent_sdk::agent::InjectionError>,
+    > {
+        Box::pin(async move {
+            if self.sent
+                || context.boundary != kivio_agent_sdk::agent::InjectionBoundary::BeforeFinish
+            {
+                return Ok(());
+            }
+            self.sent = true;
+            admission.pending(kivio_agent_sdk::agent::InjectionBatch::new(vec![
+                kivio_agent_sdk::agent::host::SessionInput::append(
+                    kivio_agent_sdk::agent::RuntimeMessage::text(self.role, "Background job done."),
+                ),
+            ]));
+            Ok(())
+        })
+    }
+}
+
+async fn run_with_notice(
+    model: &Model,
+    role: kivio_agent_sdk::model::ModelRole,
+    policy: &mut Recovery,
+) -> AgentRunResult {
+    let control = Arc::new(support::Control::default());
+    run_agent_loop(
+        support::config(model, support::initial_history()),
+        &support::Host,
+        Arc::new(support::EchoTool::new(true)),
+        policy,
+        &mut InjectionSources::new().with(NoticeAfterAnswer { role, sent: false }),
+        &|_: &AgentEvent<'_>| EventDelivery::Accepted,
+        support::handle(&control),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn empty_reply_to_a_delivered_notice_keeps_the_answer_without_error() {
+    let model = Model::new(vec![Ok(tool()), Ok(text("final answer")), Ok(text(""))]);
+    let mut policy = Recovery::default();
+    let result = run_with_notice(
+        &model,
+        kivio_agent_sdk::model::ModelRole::Developer,
+        &mut policy,
+    )
+    .await;
+    assert_eq!(
+        model.calls.load(Ordering::SeqCst),
+        3,
+        "no retry for nothing-to-add"
+    );
+    assert_eq!(result.status, AgentRunStatus::Completed);
+    assert!(policy.errors.is_empty(), "{:?}", policy.errors);
+    assert_eq!(result.tool_records.len(), 1);
+    let texts: Vec<_> = result
+        .segments
+        .iter()
+        .filter(|s| s.kind == ContentKind::Text)
+        .filter_map(|s| s.text.as_deref())
+        .collect();
+    assert_eq!(texts, ["final answer"]);
+}
+
+#[tokio::test]
+async fn empty_reply_to_user_input_still_retries() {
+    let model = Model::new(vec![
+        Ok(tool()),
+        Ok(text("final answer")),
+        Ok(text("")),
+        Ok(text("follow-up answer")),
+    ]);
+    let mut policy = Recovery::default();
+    let result =
+        run_with_notice(&model, kivio_agent_sdk::model::ModelRole::User, &mut policy).await;
+    assert_eq!(model.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(result.status, AgentRunStatus::Completed);
+    assert_eq!(result.content, "follow-up answer");
+}

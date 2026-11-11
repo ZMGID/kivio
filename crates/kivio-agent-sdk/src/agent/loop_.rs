@@ -879,6 +879,12 @@ async fn run_agent_loop_inner(
                     PlanningStepOutcome::ToolsUnsupported => break None,
                     PlanningStepOutcome::RetryWithTools => continue,
                     PlanningStepOutcome::RetryEmptyResponse => continue,
+                    PlanningStepOutcome::NothingToAdd => {
+                        // The answer already in history and segments stays the final reply.
+                        let mut result = cancelled_run_result_from_state(&mut state);
+                        result.status = super::types::AgentRunStatus::Completed;
+                        return Ok(result);
+                    }
                     PlanningStepOutcome::DraftFailed(mut result) => {
                         let mut records = std::mem::take(&mut state.tool_records);
                         records.append(&mut result.tool_records);
