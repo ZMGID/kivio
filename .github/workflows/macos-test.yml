@@ -35,7 +35,7 @@ jobs:
         run: npm run models:check
 
       - name: Test desktop packaging checks
-        run: npm run test:packaging
+        run: npm run package:check && npm run test:packaging
 
       - name: Build macOS DMG with the current app version
         run: npm run build -- --bundles dmg
