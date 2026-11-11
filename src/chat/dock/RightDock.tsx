@@ -188,7 +188,12 @@ export const RightDock = memo(function RightDock({
     return () => window.removeEventListener('keydown', onKey)
   }, [open, showLauncher, chooseEntry])
   const toolbar = (
-      <div className="flex min-h-10 shrink-0 items-center gap-1 px-2 py-1" data-tauri-drag-region>
+      /* 原生标题栏（macOS）下工具栏留在 Dock 内，与主区 52px 顶栏同高、同右缩进，
+         开合按钮从主区顶栏移到这里时位置不变。并入标题栏带时沿用带的高度。 */
+      <div
+        className={`flex shrink-0 items-center gap-1 ${toolbarHost ? 'min-h-10 px-2 py-1' : 'h-[52px] pl-2 pr-3'}`}
+        data-tauri-drag-region
+      >
         <IconButton label={t.dockNewTab} size="sm" variant="ghost" onClick={() => setLauncher(true)}>
           <Plus size={14} />
         </IconButton>

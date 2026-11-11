@@ -156,7 +156,8 @@ export const ChatConversationPane = memo(function ChatConversationPane({
           className={`chat-titlebar-row ${titlebarRowClass} min-w-0 gap-2 ${
             sidebarCollapsed
               ? `${titlebarMacInsetClass} chat-titlebar-row--collapsed-mac pr-3`
-              : 'px-6'
+              /* 右缩进与收起态和 Dock 工具栏一致（pr-3），Dock 开合按钮在各状态下位置不跳。 */
+              : 'pl-6 pr-3'
           }`}
           data-tauri-drag-region
         >
