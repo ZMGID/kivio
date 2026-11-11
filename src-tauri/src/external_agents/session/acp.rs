@@ -2043,7 +2043,8 @@ impl AcpSession {
 
             terminals.set_session_id(session_id.clone());
 
-            let (model_config_id, reasoning_config_id) = find_config_ids(&result);
+            let (mut model_config_id, mut reasoning_config_id) = find_config_ids(&result);
+            let mut current_reasoning = normalize_opt(extract_acp_reasoning(&result).1.as_deref());
 
             // Optional model selection (set_config_option / set_model), mirroring run_acp_session.
             let chosen_model = normalize_opt(model);
@@ -2053,22 +2054,27 @@ impl AcpSession {
                 write_rpc(&mut stdin, next_id, set_method, set_params)
                     .await
                     .map_err(|e| format!("session-new: {e}"))?;
-                // Best-effort: wait for the ack but don't fail the session if the agent ignores it.
-                let _ = acp_read_until_id(
+                let selected = acp_read_until_id(
                     &mut reader,
                     &mut stdin,
                     Some(&mut terminals),
                     next_id,
                     Duration::from_secs(10),
                 )
-                .await?;
+                .await?
+                .into_result()?;
+                if selected.get("configOptions").is_some() {
+                    (model_config_id, reasoning_config_id) = find_config_ids(&selected);
+                    current_reasoning =
+                        normalize_opt(extract_acp_reasoning(&selected).1.as_deref());
+                }
                 next_id += 1;
             }
             if let Some((set_method, set_params)) = mode_set_rpc(&session_id, &result, mode) {
                 write_rpc(&mut stdin, next_id, set_method, set_params)
                     .await
                     .map_err(|e| format!("session-new: {e}"))?;
-                // Best-effort like the model switch: an ignored mode keeps the CLI default.
+                // An ignored mode keeps the CLI default.
                 let _ = acp_read_until_id(
                     &mut reader,
                     &mut stdin,
@@ -2086,17 +2092,23 @@ impl AcpSession {
                 model_config_id,
                 reasoning_config_id,
                 chosen_model,
+                current_reasoning,
             ))
         }
         .await;
 
         match handshake {
-            Ok((session_id, next_id, model_config_id, reasoning_config_id, current_model)) => {
-                // In-session effort config (OpenCode / kimi): start as "not yet applied" so the
-                // first `run_turn` sends the chosen level. Launch-flag effort (grok) is already
-                // in argv, so it counts as applied.
+            Ok((
+                session_id,
+                next_id,
+                model_config_id,
+                reasoning_config_id,
+                current_model,
+                current_reasoning,
+            )) => {
+                // Config options report the applied level; launch-flag effort is already in argv.
                 let current_reasoning = if reasoning_config_id.is_some() {
-                    None
+                    current_reasoning
                 } else {
                     normalize_opt(reasoning)
                 };
@@ -2153,6 +2165,32 @@ impl AcpSession {
     ) -> Result<(), String> {
         self.terminals.set_extra_roots(extra_writable_roots);
         // Apply mid-session config changes before sending the prompt (N3).
+        let desired_model = normalize_opt(model);
+        if desired_model != self.current_model {
+            if let Some(chosen) = desired_model.as_deref() {
+                let id = self.next_id;
+                self.next_id += 1;
+                let (method, params) =
+                    model_set_rpc(&self.session_id, self.model_config_id.as_deref(), chosen);
+                write_rpc(&mut self.stdin, id, method, params).await?;
+                let selected = acp_read_until_id(
+                    &mut self.reader,
+                    &mut self.stdin,
+                    Some(&mut self.terminals),
+                    id,
+                    Duration::from_secs(10),
+                )
+                .await?
+                .into_result()?;
+                if selected.get("configOptions").is_some() {
+                    (self.model_config_id, self.reasoning_config_id) = find_config_ids(&selected);
+                    self.current_reasoning =
+                        normalize_opt(extract_acp_reasoning(&selected).1.as_deref());
+                }
+            }
+            self.current_model = desired_model;
+        }
+
         let desired_reasoning = normalize_opt(reasoning);
         match reasoning_action(
             &self.current_reasoning,
@@ -2170,38 +2208,19 @@ impl AcpSession {
                     json!({ "sessionId": self.session_id, "configId": config_id, "value": value }),
                 )
                 .await?;
-                let _ = acp_read_until_id(
+                acp_read_until_id(
                     &mut self.reader,
                     &mut self.stdin,
                     Some(&mut self.terminals),
                     id,
                     Duration::from_secs(10),
                 )
-                .await?;
+                .await?
+                .into_result()?;
                 self.current_reasoning = desired_reasoning;
             }
             // Reasoning is a launch flag (grok) — only a relaunch with new args applies it.
             ReasoningAction::Reconnect => return Err(NEEDS_RECONNECT.to_string()),
-        }
-
-        let desired_model = normalize_opt(model);
-        if desired_model != self.current_model {
-            if let Some(chosen) = desired_model.as_deref() {
-                let id = self.next_id;
-                self.next_id += 1;
-                let (method, params) =
-                    model_set_rpc(&self.session_id, self.model_config_id.as_deref(), chosen);
-                write_rpc(&mut self.stdin, id, method, params).await?;
-                let _ = acp_read_until_id(
-                    &mut self.reader,
-                    &mut self.stdin,
-                    Some(&mut self.terminals),
-                    id,
-                    Duration::from_secs(10),
-                )
-                .await?;
-            }
-            self.current_model = desired_model;
         }
 
         if turn_cancelled.is_some_and(|token| token.is_cancelled()) {

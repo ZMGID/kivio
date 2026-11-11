@@ -23,6 +23,32 @@ const runtime: AgentRuntimeConfig = {
 }
 
 describe('ExternalModelSelector', () => {
+  it('OpenCode exposes each model’s variants, supports Auto, and clears effort for models without variants', async () => {
+    const onModelChange = vi.fn()
+    const selected: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'opencode', externalModel: 'custom/reasoner', externalReasoning: 'low' }
+    detectModels.mockResolvedValue({
+      models: [{ id: 'custom/reasoner', label: 'custom/reasoner' }, { id: 'custom/plain', label: 'custom/plain' }],
+      source: 'probed', reasoningOptions: [],
+      reasoningByModel: {
+        'custom/reasoner': [{ id: 'default', label: 'Default' }, { id: 'low', label: 'Low' }, { id: 'custom-budget', label: 'Custom budget' }],
+        'custom/plain': [],
+      },
+    })
+    const view = render(<ExternalModelSelector agentRuntime={selected} onModelChange={onModelChange} />)
+    fireEvent.click(await screen.findByRole('button', { name: /思考等级/ }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Custom budget' }))
+    expect(onModelChange).toHaveBeenLastCalledWith('custom/reasoner', 'custom-budget')
+    view.rerender(<ExternalModelSelector agentRuntime={{ ...selected, externalReasoning: 'custom-budget' }} onModelChange={onModelChange} />)
+    fireEvent.click(screen.getByRole('button', { name: /思考等级/ }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /CLI 默认/ }))
+    expect(onModelChange).toHaveBeenLastCalledWith('custom/reasoner', 'default')
+    fireEvent.click(screen.getByRole('button', { name: 'reasoner' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'custom/plain' }))
+    expect(onModelChange).toHaveBeenLastCalledWith('custom/plain', null)
+    view.rerender(<ExternalModelSelector agentRuntime={{ ...selected, externalModel: 'custom/plain', externalReasoning: null }} onModelChange={onModelChange} />)
+    expect(screen.queryByRole('button', { name: /思考等级/ })).not.toBeInTheDocument()
+  })
+
   it('shows saved models during refresh without restoring a stale selection or overwriting a user choice', async () => {
     const onModelChange = vi.fn()
     let finish: (value: ExternalAgentModels) => void = () => {}

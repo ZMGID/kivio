@@ -1121,8 +1121,8 @@ async fn probe_models(
     // Older versions without `models` fall through to ACP, then the static definition fallback.
     if matches!(def.model_probe, Some(ModelProbeStrategy::OpenCodeThenAcp)) {
         let timeout_secs = def.list_models_timeout_secs.unwrap_or(15);
-        if let Some(models) = probe_opencode_models(def, bin, cwd, timeout_secs).await {
-            return Ok(probe_ok(models, None, None, Vec::new(), HashMap::new()));
+        if let Some(probe) = probe_opencode_models(def, bin, cwd, timeout_secs).await {
+            return Ok(probe);
         }
     }
 
@@ -1379,7 +1379,30 @@ async fn probe_opencode_models(
     bin: &Path,
     cwd: &Path,
     timeout_secs: u64,
-) -> Option<Vec<RuntimeModelOption>> {
+) -> Option<ProbeModelsOutput> {
+    // OpenCode 2 exposes the merged catalog, including per-model variants, through its CLI API.
+    let directory = format!(
+        "location[directory]={}",
+        super::wsl::path_for_cli(bin, cwd).display()
+    );
+    let catalog = tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        crate::external_agents::spawn::agent_probe_command(def, bin)
+            .args(["api", "model.list", "--param", &directory])
+            .current_dir(cwd)
+            .no_console_window()
+            .group_output(),
+    )
+    .await;
+    if let Ok(Ok(output)) = catalog {
+        if output.status.success() {
+            if let Some(probe) = parse_opencode_catalog(&String::from_utf8_lossy(&output.stdout)) {
+                return Some(probe);
+            }
+        }
+    }
+
+    // Older CLIs retain their model list; never invent effort levels from model names.
     let output = tokio::time::timeout(
         Duration::from_secs(timeout_secs),
         crate::external_agents::spawn::agent_probe_command(def, bin)
@@ -1395,6 +1418,64 @@ async fn probe_opencode_models(
         return None;
     }
     parse_opencode_models(String::from_utf8_lossy(&output.stdout).as_ref())
+        .map(|models| probe_ok(models, None, None, Vec::new(), HashMap::new()))
+}
+
+fn parse_opencode_catalog(stdout: &str) -> Option<ProbeModelsOutput> {
+    #[derive(Deserialize)]
+    struct Variant {
+        id: String,
+    }
+    #[derive(Deserialize)]
+    struct Model {
+        id: String,
+        #[serde(rename = "providerID")]
+        provider_id: String,
+        variants: Vec<Variant>,
+    }
+    #[derive(Deserialize)]
+    struct Catalog {
+        data: Vec<Model>,
+    }
+    let catalog: Catalog = serde_json::from_str(stdout).ok()?;
+    let mut models = vec![default_model_option()];
+    let mut reasoning_by_model = HashMap::new();
+    for model in catalog.data {
+        if model.id.trim().is_empty() || model.provider_id.trim().is_empty() {
+            continue;
+        }
+        let id = format!("{}/{}", model.provider_id, model.id);
+        if reasoning_by_model.contains_key(&id) {
+            continue;
+        }
+        let mut seen = HashSet::new();
+        let mut options: Vec<_> = model
+            .variants
+            .into_iter()
+            .filter(|variant| {
+                !variant.id.trim().is_empty()
+                    && variant.id != "default"
+                    && seen.insert(variant.id.clone())
+            })
+            .map(|variant| RuntimeModelOption {
+                label: variant.id.clone(),
+                id: variant.id,
+                capabilities: None,
+                context_window_tokens: None,
+            })
+            .collect();
+        if !options.is_empty() {
+            options.insert(0, default_model_option());
+        }
+        reasoning_by_model.insert(id.clone(), options);
+        models.push(RuntimeModelOption {
+            label: id.clone(),
+            id,
+            capabilities: None,
+            context_window_tokens: None,
+        });
+    }
+    (models.len() > 1).then(|| probe_ok(models, None, None, Vec::new(), reasoning_by_model))
 }
 
 fn parse_opencode_models(stdout: &str) -> Option<Vec<RuntimeModelOption>> {
@@ -1554,6 +1635,43 @@ mod tests {
         assert!(efforts.iter().any(|e| e.id == "low"));
         assert!(efforts.iter().any(|e| e.id == "high"));
         assert!(probe.reasoning_options.iter().any(|e| e.id == "medium"));
+    }
+
+    #[test]
+    fn opencode_catalog_preserves_model_specific_variants() {
+        let probe = parse_opencode_catalog(r#"{"data":[
+            {"providerID":"custom","id":"deep/model","variants":[{"id":"low"},{"id":"high"},{"id":"custom-budget"},{"id":"high"},{"id":""}]},
+            {"providerID":"other","id":"deep/model","variants":[{"id":"max"}]},
+            {"providerID":"custom","id":"plain","variants":[]},
+            {"providerID":"custom","id":"deep/model","variants":[]}
+        ]}"#).unwrap();
+        assert_eq!(probe.models.len(), 4);
+        let ids = |model: &str| {
+            probe.reasoning_by_model[model]
+                .iter()
+                .map(|o| o.id.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids("custom/deep/model"),
+            ["default", "low", "high", "custom-budget"]
+        );
+        assert_eq!(ids("other/deep/model"), ["default", "max"]);
+        assert!(ids("custom/plain").is_empty());
+        assert!(probe.reasoning_options.is_empty());
+    }
+
+    #[test]
+    fn opencode_catalog_rejects_missing_or_invalid_variant_metadata() {
+        for text in [
+            "",
+            "help text",
+            r#"{"data":[]}"#,
+            r#"{"data":[{"providerID":"p","id":"m"}]}"#,
+            r#"{"data":[{"providerID":"","id":"m","variants":[]}]}"#,
+        ] {
+            assert!(parse_opencode_catalog(text).is_none());
+        }
     }
 
     #[test]
