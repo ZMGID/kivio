@@ -238,7 +238,7 @@ const PROVIDERS: ProviderDef[] = [
     id: 'specstream',
     name: 'SpecStream',
     site: 'https://specstream.ai/search-api',
-    apiKeyUrl: 'https://specstream.ai',
+    apiKeyUrl: 'https://specstream.ai/signup?src=kivio',
     keyField: 'specstreamApiKey',
     keyPlaceholder: 'specstream key',
     baseUrlField: 'specstreamBaseUrl',
