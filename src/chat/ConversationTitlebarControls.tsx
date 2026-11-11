@@ -38,15 +38,13 @@ export interface ConversationTitlebarControlsProps {
   busy: boolean
   onOpenPopout: (conversationId: string) => void
   onToggleDock: () => void
-  /** 关联项目且有工作目录的会话显示工作区面板。 */
+  /** 会话工作目录；无项目对话也可能有（Git 仍只给项目对话）。 */
   workdir: string
   /** 关联项目名；无项目对话不显示 Git。 */
   projectName: string | null
   onOpenGitPanel: () => void
   onOpenTasks: () => void
   historyBranches?: HistoryBranchActions | null
-  /** 空白新对话：工作区面板默认收起。 */
-  workspaceBlank?: boolean
   environment?: WorkspaceEnvironment | null
   usage?: WorkspaceUsageSource | null
   contextState?: ConversationContextState | null
@@ -80,12 +78,12 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   onOpenGitPanel,
   onOpenTasks,
   historyBranches,
-  workspaceBlank,
   environment,
   usage,
   contextState,
 }: ConversationTitlebarControlsProps) {
-  const showWorkspace = !usesChatRuntime && Boolean(projectName && workdir)
+  // 工作区面板对所有 agent 对话可用；无项目对话里不含 Git，且默认收起（见 WorkspaceActionsMenu）。
+  const showWorkspace = !usesChatRuntime
   return (
     <>
       <div className="flex min-w-0 items-center gap-1">
@@ -156,7 +154,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
           <ConversationHistoryBranches conversationId={conversationId} lang={uiLang} {...historyBranches} />
         )}
         {showWorkspace && (
-          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} blank={workspaceBlank} environment={environment} usage={usage} contextState={contextState} />
+          <WorkspaceActionsMenu workdir={workdir} projectName={projectName} conversationId={conversationId} dockOpen={dockOpen} lang={uiLang} onOpenGitPanel={onOpenGitPanel} onOpenTasks={onOpenTasks} historyBranches={historyBranches} environment={environment} usage={usage} contextState={contextState} />
         )}
         {usesNativeTitlebar && !usesChatRuntime && !dockOpen && (
           <div className="shrink-0" data-tauri-drag-region="false">

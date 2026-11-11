@@ -59,7 +59,7 @@ function TitlebarPills({
   const providerId = conversation?.provider_id ?? ''
   const model = conversation?.model ?? ''
   const locked = conversationRuntimeLocked(conversation)
-  const showWorkspace = runtime.kind !== 'chat' && Boolean(projectName && workdir)
+  const showWorkspace = runtime.kind !== 'chat'
 
   return (
     <>

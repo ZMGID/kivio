@@ -47,15 +47,15 @@ const base = {
 }
 
 describe('ConversationTitlebarControls', () => {
-  it.each([false, true])('keeps history navigation available without project Git controls (Chat runtime: %s)', async (usesChatRuntime) => {
+  it('keeps history navigation available for the Chat runtime without a workspace panel', async () => {
     vi.mocked(chatApi.getBranches).mockResolvedValue([
       { id: 'b1', label: 'Original', active: true },
       { id: 'b2', label: 'Earlier answer', active: false },
     ])
     const onSwitch = vi.fn().mockResolvedValue(true)
     const { queryByTestId } = render(<ConversationTitlebarControls {...base}
-      activeAgentRuntime={{ kind: usesChatRuntime ? 'chat' : 'builtin' }}
-      usesExternalRuntime={false} usesChatRuntime={usesChatRuntime}
+      activeAgentRuntime={{ kind: 'chat' }}
+      usesExternalRuntime={false} usesChatRuntime
       historyBranches={{ disabled: false, onSwitch }} />)
     fireEvent.click(await screen.findByRole('button', { name: '历史分支' }))
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Earlier answer' }))
@@ -63,7 +63,7 @@ describe('ConversationTitlebarControls', () => {
     expect(queryByTestId('workspace-panel')).toBeNull()
   })
 
-  it('hides the workspace panel when switching to a conversation without a project, even with a working directory', () => {
+  it('shows the workspace panel for agent chats with or without a project', () => {
     const props = {
       ...base,
       activeAgentRuntime: { kind: 'builtin' },
@@ -76,7 +76,9 @@ describe('ConversationTitlebarControls', () => {
     expect(queryByTestId('workspace-panel')).not.toBeNull()
 
     rerender(<ConversationTitlebarControls {...props} conversationId="no-project" projectName={null} />)
-    expect(queryByTestId('workspace-panel')).toBeNull()
+    expect(queryByTestId('workspace-panel')).not.toBeNull()
+    rerender(<ConversationTitlebarControls {...props} conversationId={null} projectName={null} workdir="" />)
+    expect(queryByTestId('workspace-panel')).not.toBeNull()
   })
 
   it('renders the external model picker for a CLI runtime', () => {

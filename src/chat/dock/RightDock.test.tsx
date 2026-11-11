@@ -180,7 +180,7 @@ describe('RightDock tabs', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)
     try {
-      const props = dockProps({ toolbarHost: host })
+      const props = dockProps({ toolbarInTitlebar: true, toolbarHost: host })
       const view = render(<RightDock {...props} />)
       expect(host.querySelector('[aria-expanded]')).toBeNull()
       fireEvent.click(screen.getByText('文件'))
@@ -191,6 +191,10 @@ describe('RightDock tabs', () => {
       expect(host.querySelector('button')).toBeNull()
       view.rerender(<RightDock {...props} open />)
       expect(host.querySelector('[aria-label="打开面板"]')).not.toBeNull()
+      // 标题栏收起时卸载宿主：工具栏不得回退到 Dock 内联（否则「+」和开合按钮会掉到下一行）。
+      view.rerender(<RightDock {...props} open={false} toolbarHost={null} />)
+      expect(view.container.querySelector('[aria-label="打开面板"]')).toBeNull()
+      expect(view.container.querySelector('[aria-label="关闭面板"][aria-expanded]')).toBeNull()
     } finally {
       host.remove()
     }

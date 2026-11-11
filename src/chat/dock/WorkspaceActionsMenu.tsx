@@ -49,7 +49,7 @@ export type WorkspaceEnvironment = {
 
 type WorkspaceActionsMenuProps = {
   workdir: string
-  /** 关联项目名；为空表示无项目对话，按领域规则不显示 Git。 */
+  /** 关联项目名；为空表示无项目对话：按领域规则不显示 Git，内联面板默认收起。 */
   projectName: string | null
   conversationId: string | null
   dockOpen: boolean
@@ -59,8 +59,6 @@ type WorkspaceActionsMenuProps = {
   onOpenGitPanel?: () => void
   onOpenTasks?: () => void
   historyBranches?: HistoryBranchActions | null
-  /** 空白新对话：内联常驻默认不展开，用户点开后才显示。 */
-  blank?: boolean
   environment?: WorkspaceEnvironment | null
   usage?: WorkspaceUsageSource | null
   contextState?: ConversationContextState | null
@@ -124,6 +122,32 @@ const PANEL_EDGE = 8
 const MIN_CHAT_WIDTH = 600
 const MIN_INLINE_HEIGHT = 240
 
+/**
+ * 元素在布局落定后的位置：扣掉祖先上正在播放的平移动画。
+ *
+ * 侧栏 / Dock 开合时主区由 usePanelShiftMotion 从旧位置平移到新位置，回到会话页时主区还有入场位移；
+ * 这些动画开始的那一帧恰好是尺寸变化、触发测量的时刻，直接读 getBoundingClientRect 会把面板钉在
+ * 动画起点，动画播完也不再更新（只动 transform 不触发 ResizeObserver）。
+ */
+function settledRect(element: Element): { top: number; right: number; bottom: number } {
+  const rect = element.getBoundingClientRect()
+  let dx = 0
+  let dy = 0
+  for (let node: Element | null = element; node; node = node.parentElement) {
+    if (typeof node.getAnimations !== 'function' || node.getAnimations().length === 0) continue
+    const transform = getComputedStyle(node).transform
+    if (!transform || transform === 'none') continue
+    try {
+      const matrix = new DOMMatrixReadOnly(transform)
+      dx += matrix.m41
+      dy += matrix.m42
+    } catch {
+      // 无法解析时按未变换处理。
+    }
+  }
+  return { top: rect.top - dy, right: rect.right - dx, bottom: rect.bottom - dy }
+}
+
 /** 依据对话主区实际宽度（已扣除侧栏）判断能否内联常驻。 */
 function useInlineRoom(enabled: boolean, dockOpen: boolean) {
   const [room, setRoom] = useState(false)
@@ -165,7 +189,6 @@ function WorkspaceActionsPanel({
   onOpenGitPanel,
   onOpenTasks,
   historyBranches,
-  blank = false,
   environment,
   usage,
   contextState,
@@ -180,7 +203,8 @@ function WorkspaceActionsPanel({
       if (conversationId) rememberWorkspacePanelOpen(conversationId, next)
     } else setPopoverOpen(next)
   }, [conversationId, inline])
-  const open = inline ? (inlineChoice ?? (Boolean(conversationId) && !blank)) : popoverOpen
+  // 项目对话（含还没开始的新对话）默认展开；无项目对话默认收起，点开后按对话记住。
+  const open = inline ? (inlineChoice ?? Boolean(projectName)) : popoverOpen
   const presence = usePresence(open)
   const setOpen = (next: boolean) => { if (next || !inline) setChoice(next) }
   const showGit = Boolean(projectName)
@@ -223,9 +247,9 @@ function WorkspaceActionsPanel({
     if (!presence.present) return
     const pane = document.querySelector<HTMLElement>('.chat-main-pane')
     const measure = () => {
-      const button = wrapRef.current?.getBoundingClientRect()
+      const button = wrapRef.current ? settledRect(wrapRef.current) : null
       if (!button) return
-      const bounds = pane?.getBoundingClientRect()
+      const bounds = pane ? settledRect(pane) : null
       const width = Math.max(0, Math.min(PANEL_WIDTH, window.innerWidth - PANEL_EDGE * 2))
       const right = bounds ? window.innerWidth - bounds.right + PANEL_EDGE : window.innerWidth - button.right
       const top = Math.max(PANEL_EDGE, button.bottom + 6, bounds ? bounds.top + PANEL_EDGE : 0)
@@ -552,8 +576,8 @@ function WorkspaceActionsPanel({
               </PanelRow>
             </PanelSection>
           )}
-          {(show.openIn || show.project || (show.environment && environment && showGit)) && <PanelSection>
-            {show.project && <PanelRow
+          {((workdir && (show.openIn || show.project)) || (show.environment && environment && showGit)) && <PanelSection>
+            {show.project && workdir && <PanelRow
               icon={<Monitor className={PANEL_ICON} />}
               title={workdir}
               trailing={<FolderOpen open className={PANEL_ICON} />}
@@ -561,7 +585,7 @@ function WorkspaceActionsPanel({
             >
               <span className="min-w-0 flex-1 truncate">{name}</span>
             </PanelRow>}
-            {show.openIn && <SplitRow
+            {show.openIn && workdir && <SplitRow
               icon={<OpenTargetIcon id={preferred} />}
               label={t.workspaceOpenIn.replace('{editor}', targetName(preferred))}
               onPrimary={() => openInTarget(preferred)}

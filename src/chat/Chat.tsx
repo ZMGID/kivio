@@ -2631,7 +2631,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         disabled: isCurrentConversationBusy() || streamCoarse.streaming || streamCoarse.streamFrozen || streamCoarse.cancelling || conversationOccupied,
         onSwitch: handleSwitchBranch,
       } : null}
-      workspaceBlank={!currentConversation || currentConversationIsBlank}
       environment={(() => {
         const worktree = currentConversation?.worktree ?? null
         const started = Boolean(currentConversation && !currentConversationIsBlank)
@@ -3180,6 +3179,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         {showConversationDock && (
           <RightDock
             open={dockOpen}
+            toolbarInTitlebar={!usesNativeTitlebar}
             toolbarHost={usesNativeTitlebar ? null : dockToolbarHost}
             width={dock.width}
             activeTab={dock.tab}

@@ -415,14 +415,22 @@ describe('WorkspaceActionsMenu', () => {
     expect(within(panel).queryByText('后台任务')).not.toBeInTheDocument()
   })
 
-  it('stays collapsed for a blank conversation and remembers the choice per conversation', () => {
-    const props = { workdir: '/repo', projectName: 'Repo', dockOpen: false, lang: 'zh' as const }
-    const view = render(<WorkspaceActionsMenu {...props} conversationId="new" blank />)
-    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
-    view.rerender(<WorkspaceActionsMenu {...props} conversationId="old" />)
+  it('opens by default for project chats, including a new one, and stays collapsed without a project', () => {
+    const props = { workdir: '/repo', dockOpen: false, lang: 'zh' as const }
+    const view = render(<WorkspaceActionsMenu {...props} projectName="Repo" conversationId={null} />)
     expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
+    view.rerender(<WorkspaceActionsMenu {...props} projectName={null} conversationId="loose" />)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    expect(mocks.panelChoice.get('loose')).toBe(true)
+    view.rerender(<WorkspaceActionsMenu {...props} projectName="Repo" conversationId="old" />)
     fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
     expect(mocks.panelChoice.get('old')).toBe(false)
+  })
+
+  it('omits folder rows for a chat without a working directory', () => {
+    const panel = openPanel({ projectName: null, workdir: '' })
+    expect(within(panel).queryByRole('button', { name: /打开/ })).not.toBeInTheDocument()
   })
 
   it('never restores an inline preference as an automatic popover on another conversation', () => {
@@ -452,8 +460,8 @@ describe('WorkspaceActionsMenu', () => {
     expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
   })
 
-  it('restores an explicitly opened blank panel after narrowing and widening the window', () => {
-    render(<WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="new" dockOpen={false} blank lang="zh" />)
+  it('restores an explicitly opened no-project panel after narrowing and widening the window', () => {
+    render(<WorkspaceActionsMenu workdir="/repo" projectName={null} conversationId="new" dockOpen={false} lang="zh" />)
     fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
     expect(mocks.panelChoice.get('new')).toBe(true)
     act(() => { vi.stubGlobal('innerWidth', 800); fireEvent(window, new Event('resize')) })
@@ -485,15 +493,13 @@ describe('WorkspaceActionsMenu', () => {
     expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
   })
 
-  it('shows the default inline panel after the first message, but respects a manual collapse', () => {
+  it('keeps a manual collapse of a project chat across remounts', () => {
     const props = { workdir: '/repo', projectName: 'Repo', conversationId: 'new', dockOpen: false, lang: 'zh' as const }
-    const view = render(<WorkspaceActionsMenu {...props} blank />)
-    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
-    view.rerender(<WorkspaceActionsMenu {...props} blank={false} />)
+    const view = render(<WorkspaceActionsMenu {...props} />)
     expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
     view.unmount()
-    render(<WorkspaceActionsMenu {...props} blank={false} />)
+    render(<WorkspaceActionsMenu {...props} />)
     expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
   })
 
@@ -554,6 +560,27 @@ describe('WorkspaceActionsMenu', () => {
       expect(panel.style.right).toBe('408px')
       paneRect = new DOMRect(240, 44, 1360, 856)
       view.rerender(<WorkspaceActionsMenu {...props} dockOpen={false} />)
+      layoutChanged()
+      expect(panel.style.right).toBe('8px')
+    })
+
+    it('aligns with the settled chat edge while the pane is still sliding into place', () => {
+      vi.stubGlobal('DOMMatrixReadOnly', class {
+        m41: number
+        m42: number
+        constructor(transform: string) {
+          const [x = 0, y = 0] = (transform.match(/-?\d+(\.\d+)?/g) ?? []).map(Number)
+          this.m41 = x
+          this.m42 = y
+        }
+      })
+      const props = { workdir: '/repo', projectName: 'Repo', conversationId: 'c1', lang: 'zh' as const }
+      render(<WorkspaceActionsMenu {...props} dockOpen={false} />)
+      const panel = screen.getByRole('complementary', { name: '工作区' })
+      // 侧栏收起的第一帧：主区已变宽到窗口右缘，却仍被平移动画向左拉回 240px。
+      pane.style.transform = 'translate(-240px, 0px)'
+      Object.assign(pane, { getAnimations: () => [{}] })
+      paneRect = new DOMRect(-240, 44, 1600, 856)
       layoutChanged()
       expect(panel.style.right).toBe('8px')
     })

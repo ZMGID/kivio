@@ -45,6 +45,11 @@ export type DockPreviewRequest =
 
 type RightDockProps = {
   open: boolean
+  /**
+   * 工具栏并入窗口标题栏带（Windows / Linux）。为 true 时只往 `toolbarHost` 里 portal，绝不回退到 Dock 内联；
+   * 标题栏在 Dock 收起时会卸载宿主节点，若按「宿主为空」判断会在淡出中的面板里冒出一行内联工具栏。
+   */
+  toolbarInTitlebar?: boolean
   toolbarHost?: HTMLDivElement | null
   width: number
   activeTab: DockTab
@@ -69,6 +74,7 @@ type RightDockProps = {
 
 export const RightDock = memo(function RightDock({
   open,
+  toolbarInTitlebar = false,
   toolbarHost,
   width,
   activeTab,
@@ -194,7 +200,7 @@ export const RightDock = memo(function RightDock({
       /* 原生标题栏（macOS）下工具栏留在 Dock 内，与主区 52px 顶栏同高、同右缩进，
          开合按钮从主区顶栏移到这里时位置不变。并入标题栏带时沿用带的高度。 */
       <div
-        className={`flex shrink-0 items-center gap-1 ${toolbarHost ? 'min-h-10 px-2 py-1' : 'h-[52px] pl-2 pr-3'}`}
+        className={`flex shrink-0 items-center gap-1 ${toolbarInTitlebar ? 'min-h-10 px-2 py-1' : 'h-[52px] pl-2 pr-3'}`}
         data-tauri-drag-region
       >
         <IconButton label={t.dockNewTab} size="sm" variant="ghost" onClick={() => setLauncher(true)}>
@@ -229,7 +235,7 @@ export const RightDock = memo(function RightDock({
           )
         })}
         </div>
-        {!toolbarHost && <IconButton label={t.dockClose} size="sm" variant="ghost" className="group" aria-expanded={open} onClick={onClose}>
+        {!toolbarInTitlebar && <IconButton label={t.dockClose} size="sm" variant="ghost" className="group" aria-expanded={open} onClick={onClose}>
           <SidebarToggleIcon side="right" open={open} />
         </IconButton>}
       </div>
@@ -247,7 +253,7 @@ export const RightDock = memo(function RightDock({
         onPointerDown={handleResizeStart}
       />
 
-      {toolbarHost ? (open && createPortal(toolbar, toolbarHost)) : toolbar}
+      {toolbarInTitlebar ? (open && toolbarHost && createPortal(toolbar, toolbarHost)) : toolbar}
 
       {showLauncher && (
         <div className="chat-dock-launcher custom-scrollbar">

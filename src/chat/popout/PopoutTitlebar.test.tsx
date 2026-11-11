@@ -61,10 +61,10 @@ describe('PopoutTitlebar', () => {
     expect(title?.textContent).toBe('商品图片批量生成工作流搭建')
     expect(title).toHaveAttribute('data-tauri-drag-region')
     expect(Boolean(pills && title && (pills.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true)
-    expect(container.querySelector('[data-testid="workspace-panel"]')).toBeNull()
+    expect(container.querySelector('[data-testid="workspace-panel"]')).not.toBeNull()
   })
 
-  it.each([null, 'Repo'])('only offers the workspace popover for a project conversation (project: %s)', (projectName) => {
+  it.each([null, 'Repo'])('offers the workspace popover with or without a project (project: %s)', (projectName) => {
     const { queryByTestId } = render(
       <LangContext.Provider value="zh">
         <PopoutTitlebar
@@ -85,10 +85,6 @@ describe('PopoutTitlebar', () => {
         />
       </LangContext.Provider>,
     )
-    if (projectName) {
-      expect(queryByTestId('workspace-panel')).toHaveAttribute('data-inline', 'false')
-    } else {
-      expect(queryByTestId('workspace-panel')).toBeNull()
-    }
+    expect(queryByTestId('workspace-panel')).toHaveAttribute('data-inline', 'false')
   })
 })
