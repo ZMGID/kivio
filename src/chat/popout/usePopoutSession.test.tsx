@@ -355,14 +355,19 @@ describe('usePopoutSession run settle', () => {
     await flush()
   })
 
-  it('keeps the idle external CLI fallback when progress has no parent tool id', async () => {
+  it('matches idle external CLI progress by child identity when the parent tool id is absent', async () => {
     mockGetConversation.mockResolvedValueOnce(conversationWith([
       { id: TWIN_ID, role: 'assistant', content: '', timestamp: 1, toolCalls: [
-        { id: 'external-parent', name: 'Agent', source: 'external_cli', status: 'running' },
+        { id: 'external-parent', name: 'Agent', source: 'external_cli', status: 'running', structuredContent: { backgroundTaskId: 'external-worker' } },
       ] },
     ]))
     const rendered = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
     await flush()
+    const before = rendered.result.current.conversation
+    await act(async () => {
+      handlers.get('subagent')?.(subagentProgress({ parentRunId: '', parentToolCallId: '', taskId: 'unrelated-worker' }))
+    })
+    expect(rendered.result.current.conversation).toBe(before)
     await act(async () => {
       handlers.get('subagent')?.(subagentProgress({ parentRunId: '', parentToolCallId: '', taskId: 'external-worker' }))
     })
