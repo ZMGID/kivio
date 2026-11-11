@@ -1,0 +1,60 @@
+name: macOS test installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-workspace-crates: false
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate bundled model database
+        run: npm run models:check
+
+      - name: Test desktop packaging checks
+        run: npm run test:packaging
+
+      - name: Build macOS DMG with the current app version
+        run: npm run build -- --bundles dmg
+
+      - name: Verify bundled resources in macOS DMG
+        run: |
+          set -euo pipefail
+          mount_dir=$(mktemp -d)
+          dmg=$(find src-tauri/target/release/bundle/dmg -name '*.dmg' -print -quit)
+          test -n "$dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg"
+          trap 'hdiutil detach "$mount_dir"; rmdir "$mount_dir"' EXIT
+          resources="$mount_dir/Kivio Desktop.app/Contents/Resources"
+          node scripts/check-desktop-package.mjs --resources-dir "$resources"
+
+      - name: Upload macOS test installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-test-${{ github.run_number }}
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 7
