@@ -4,7 +4,7 @@ import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 // 段三 = 历史分支；段四 = 后台任务 / 子代理。
 // Git 数据来自 useGitBadge（只在面板可见时订阅），主操作规则见 workspaceGitAction。
 // 位置：面板贴对话区右缘；内联常驻时通过 --chat-details-inset 让出内容宽度。
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import CursorIcon from '@lobehub/icons/es/Cursor/components/Mono'
 import WindsurfIcon from '@lobehub/icons/es/Windsurf/components/Mono'
@@ -16,6 +16,7 @@ import type { GitBranchesResult } from '../../api/dockContracts'
 import type { BackgroundTaskInfo } from '../../api/tauri'
 import { getRememberedEditor, getWorkspaceItemOverrides, getWorkspacePanelOpen, rememberEditor, rememberWorkspaceItemOverrides, rememberWorkspacePanelOpen } from '../persistence'
 import { chatApi } from '../api'
+import { ChatRouteActiveContext } from '../chatRouteActiveContext'
 import { ConversationHistoryBranches, type HistoryBranchActions } from '../ConversationHistoryBranches'
 import type { ConversationContextState } from '../types'
 import { dockApi } from './api'
@@ -149,8 +150,9 @@ function useInlineRoom(enabled: boolean, dockOpen: boolean) {
 }
 
 export function WorkspaceActionsMenu(props: WorkspaceActionsMenuProps) {
+  const active = useContext(ChatRouteActiveContext)
   // 对话或工作目录切换时，卸载旧面板及其浮层、子菜单和订阅。
-  return <WorkspaceActionsPanel key={`${props.conversationId ?? 'draft'}:${props.workdir}`} {...props} />
+  return active ? <WorkspaceActionsPanel key={`${props.conversationId ?? 'draft'}:${props.workdir}`} {...props} /> : null
 }
 
 function WorkspaceActionsPanel({

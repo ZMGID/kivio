@@ -1,4 +1,5 @@
 import { useRef, type ReactNode } from 'react'
+import { ChatRouteActiveContext } from './chatRouteActiveContext'
 
 interface ChatRouteKeepAliveProps {
   activeKey: string
@@ -34,7 +35,7 @@ export function ChatRouteKeepAlive({ activeKey, children }: ChatRouteKeepAlivePr
             aria-hidden={active ? undefined : true}
             {...(active ? {} : { inert: '' })}
           >
-            {node}
+            <ChatRouteActiveContext.Provider value={active}>{node}</ChatRouteActiveContext.Provider>
           </div>
         )
       })}

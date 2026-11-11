@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GitRepoState } from '../../api/dockContracts'
 import { WorkspaceActionsMenu } from './WorkspaceActionsMenu'
+import { ChatRouteKeepAlive } from '../ChatRouteKeepAlive'
 import { getNotices } from '../../components/appNoticeStore'
 import type { SubagentRoster } from '../../api/subagents'
 import type { BackgroundTaskInfo } from '../../api/tauri'
@@ -114,6 +115,39 @@ afterEach(() => {
 })
 
 describe('WorkspaceActionsMenu', () => {
+  it.each(['center', 'settings'])('removes the inline panel and its menus on %s, restoring the saved choice on return', async (route) => {
+    const panel = <WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen={false} lang="zh" />
+    const view = render(<ChatRouteKeepAlive activeKey="conversation">{panel}</ChatRouteKeepAlive>)
+    const workspace = screen.getByRole('complementary', { name: '工作区' })
+    fireEvent.click(await within(workspace).findByRole('button', { name: '选择打开方式' }))
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(document.documentElement.style.getPropertyValue('--chat-details-inset')).toBe('316px')
+
+    view.rerender(<ChatRouteKeepAlive activeKey={route}><main>{route}</main></ChatRouteKeepAlive>)
+    expect(workspace).not.toBeInTheDocument()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(document.documentElement.style.getPropertyValue('--chat-details-inset')).toBe('')
+
+    view.rerender(<ChatRouteKeepAlive activeKey="conversation">{panel}</ChatRouteKeepAlive>)
+    expect(screen.getByRole('complementary', { name: '工作区' })).toBeInTheDocument()
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    view.rerender(<ChatRouteKeepAlive activeKey={route}><main>{route}</main></ChatRouteKeepAlive>)
+    view.rerender(<ChatRouteKeepAlive activeKey="conversation">{panel}</ChatRouteKeepAlive>)
+    expect(screen.queryByRole('complementary', { name: '工作区' })).not.toBeInTheDocument()
+  })
+
+  it('closes a temporary popover when the conversation is cached and leaves it closed on return', () => {
+    const panel = <WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen={false} inlineAllowed={false} lang="zh" />
+    const view = render(<ChatRouteKeepAlive activeKey="conversation">{panel}</ChatRouteKeepAlive>)
+    fireEvent.click(screen.getByRole('button', { name: /^工作区/ }))
+    const popover = screen.getByRole('dialog', { name: '工作区' })
+    view.rerender(<ChatRouteKeepAlive activeKey="center"><main>market</main></ChatRouteKeepAlive>)
+    expect(popover).not.toBeInTheDocument()
+    view.rerender(<ChatRouteKeepAlive activeKey="conversation">{panel}</ChatRouteKeepAlive>)
+    expect(screen.queryByRole('dialog', { name: '工作区' })).not.toBeInTheDocument()
+  })
+
   it('keeps running subagents visible while folding finished ones', () => {
     const baseAgent = { parentId: 'main', generation: 1, agentType: 'scout', depth: 1, lastActivity: 0,
       activity: null, model: null, progress: null, revivable: true, reviveError: null }
