@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { PullRequestsPanel } from './PullRequestsPanel'
+import { resetPullRequestCache, writeCache } from './pullRequestCache'
 import type { PullRequestDetail, PullRequestItem, PullRequestList } from '../../api/dockContracts'
 
 const mocks = vi.hoisted(() => ({
@@ -55,9 +56,11 @@ const detail: PullRequestDetail = {
 
 let dir = 0
 const nextWorkdir = () => `/repo-${++dir}`
+const openCalls = () => mocks.pullRequests.mock.calls.filter((call) => call[1] === 'open').length
 
 beforeEach(() => {
   vi.resetAllMocks()
+  resetPullRequestCache()
   mocks.openExternal.mockResolvedValue(undefined)
   mocks.gitLog.mockResolvedValue({ commits: [{ subject: 'feat: last commit' }], hasMore: false })
   mocks.gitBranches.mockResolvedValue({ branches: [], remotes: ['origin'], remoteBranches: [{ name: 'origin/develop', remote: 'origin' }], defaultBranch: 'main' })
@@ -91,31 +94,67 @@ it('groups pull requests and narrows them with search qualifiers', async () => {
   expect(screen.getByText('bootstrap Linux AppImage')).toBeInTheDocument()
 })
 
-it('switches state filters without letting a late result overwrite the new view', async () => {
+it('keeps controls during the first load and switches states instantly after prefetch', async () => {
   const open = deferred<PullRequestList>()
   mocks.pullRequests.mockImplementation((_dir: string, state: string) =>
-    state === 'open' ? open.promise : Promise.resolve(list({ totalCount: 1, items: [pr({ number: 5, title: 'Merged work', state: 'merged' })] })))
+    state === 'open' ? open.promise : Promise.resolve(list({ totalCount: 1, items: [pr({ number: 5, title: `${state} work`, state: state === 'all' ? 'open' : state as PullRequestItem['state'] })] })))
   render(<PullRequestsPanel workdir={nextWorkdir()} active lang="en" />)
   await act(async () => {})
 
-  // 首屏骨架期间状态分段不可见，先让 open 完成再切换。
+  // 首页未到：搜索框与状态分段已经在页面上，只有列表区域是骨架。
+  expect(screen.getByRole('textbox', { name: /Search pull requests/ })).toBeInTheDocument()
+  expect(screen.getByRole('radio', { name: /Merged/ })).toBeInTheDocument()
+  expect(mocks.pullRequests).toHaveBeenCalledTimes(1)
+
   open.resolve(list({ totalCount: 1, items: [pr({ number: 9, title: 'Open work' })] }))
   expect(await screen.findByText('Open work')).toBeInTheDocument()
+  // 首页到达后在后台预取其余三个状态。
+  await waitFor(() => expect(mocks.pullRequests).toHaveBeenCalledTimes(4))
+  expect(mocks.pullRequests.mock.calls.map((call) => call[1]).sort()).toEqual(['all', 'closed', 'merged', 'open'])
 
-  const late = deferred<PullRequestList>()
-  mocks.pullRequests.mockImplementation((_dir: string, state: string) =>
-    state === 'open' ? late.promise : Promise.resolve(list({ totalCount: 1, items: [pr({ number: 5, title: 'Merged work', state: 'merged' })] })))
   fireEvent.click(screen.getByRole('radio', { name: /Merged/ }))
-  expect(await screen.findByText('Merged work')).toBeInTheDocument()
-  expect(mocks.pullRequests).toHaveBeenLastCalledWith(expect.any(String), 'merged')
-
-  // 回到 open：缓存仍新鲜，不再请求；迟到的旧结果也不会出现。
+  expect(screen.getByText('merged work')).toBeInTheDocument()
   fireEvent.click(screen.getByRole('radio', { name: /Open/ }))
   expect(screen.getByText('Open work')).toBeInTheDocument()
-  expect(mocks.pullRequests).toHaveBeenCalledTimes(2)
-  late.resolve(list({ items: [pr({ title: 'Stale' })] }))
-  await act(async () => {})
-  expect(screen.queryByText('Stale')).toBeNull()
+  expect(mocks.pullRequests).toHaveBeenCalledTimes(4)
+})
+
+it('shows a dimmed placeholder from other cached states while a state is still loading', async () => {
+  const merged = deferred<PullRequestList>()
+  mocks.pullRequests.mockImplementation((_dir: string, state: string) => {
+    if (state === 'merged') return merged.promise
+    if (state === 'all') return Promise.resolve(list({ totalCount: 2, items: [pr({ number: 9, title: 'Open work' }), pr({ number: 5, title: 'Merged work', state: 'merged' })] }))
+    return Promise.resolve(list({ totalCount: 1, items: [pr({ number: 9, title: 'Open work' })] }))
+  })
+  render(<PullRequestsPanel workdir={nextWorkdir()} active lang="en" />)
+  expect(await screen.findByText('Open work')).toBeInTheDocument()
+  await waitFor(() => expect(mocks.pullRequests).toHaveBeenCalledTimes(4))
+
+  fireEvent.click(screen.getByRole('radio', { name: /Merged/ }))
+  expect(screen.getByText('Merged work')).toBeInTheDocument()
+  expect(screen.queryByText('Open work')).toBeNull()
+  expect(screen.getByText('Merged work').closest('[aria-busy]')).not.toBeNull()
+
+  // 真实结果到达后替换占位；切换过程中没有重复请求（复用在途的预取）。
+  merged.resolve(list({ totalCount: 1, items: [pr({ number: 5, title: 'Merged work (fresh)', state: 'merged' })] }))
+  expect(await screen.findByText('Merged work (fresh)')).toBeInTheDocument()
+  expect(screen.getByText('Merged work (fresh)').closest('[aria-busy]')).toBeNull()
+  expect(mocks.pullRequests).toHaveBeenCalledTimes(4)
+})
+
+it('paints the persisted list immediately after a restart and refreshes stale data in the background', async () => {
+  const workdir = nextWorkdir()
+  writeCache(`${workdir}\nopen`, list({ totalCount: 1, items: [pr({ title: 'From last session' })] }), Date.now() - 5 * 60_000)
+  resetPullRequestCache({ keepStorage: true })
+  const fresh = deferred<PullRequestList>()
+  mocks.pullRequests.mockImplementation((_dir: string, state: string) => (state === 'open' ? fresh.promise : Promise.resolve(list())))
+
+  render(<PullRequestsPanel workdir={workdir} active lang="en" />)
+  expect(screen.getByText('From last session')).toBeInTheDocument()
+  expect(mocks.pullRequests).toHaveBeenCalledWith(workdir, 'open')
+
+  fresh.resolve(list({ totalCount: 1, items: [pr({ title: 'Fresh from GitHub' })] }))
+  expect(await screen.findByText('Fresh from GitHub')).toBeInTheDocument()
 })
 
 it('shows GitHub CLI guidance and retries', async () => {
@@ -139,6 +178,7 @@ it('does not request while hidden', async () => {
   expect(mocks.pullRequests).not.toHaveBeenCalled()
   view.rerender(<PullRequestsPanel workdir={workdir} active lang="en" />)
   await waitFor(() => expect(mocks.pullRequests).toHaveBeenCalledTimes(1))
+  expect(mocks.pullRequests).toHaveBeenCalledWith(workdir, 'open')
 })
 
 it('expands a pull request, loads its detail once, and checks it out', async () => {
@@ -167,7 +207,7 @@ it('expands a pull request, loads its detail once, and checks it out', async () 
 
   fireEvent.click(screen.getByRole('button', { name: /Check out/ }))
   await waitFor(() => expect(mocks.pullRequestCheckout).toHaveBeenCalledWith(expect.any(String), 70))
-  await waitFor(() => expect(mocks.pullRequests).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(openCalls()).toBe(2))
 })
 
 it('creates a pull request for the current branch', async () => {
@@ -187,7 +227,7 @@ it('creates a pull request for the current branch', async () => {
   await waitFor(() => expect(mocks.pullRequestCreate).toHaveBeenCalledWith(workdir, {
     title: 'feat: new panel', body: '', base: 'main', draft: true,
   }))
-  await waitFor(() => expect(mocks.pullRequests).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(openCalls()).toBe(2))
 })
 
 it('hides the branch card on the default branch without a pull request', async () => {

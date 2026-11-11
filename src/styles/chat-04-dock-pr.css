@@ -183,6 +183,15 @@
   animation: chat-pr-progress 1.1s var(--kv-ease-inout) infinite;
 }
 
+/* 占位列表（由其他状态的缓存拼出）：变淡等待真实结果，到达后淡入。 */
+.chat-pr-list {
+  transition: opacity var(--kv-dur-normal) var(--kv-ease-out);
+}
+
+.chat-pr-list.is-pending {
+  opacity: 0.55;
+}
+
 /* ---------- 当前分支卡片 ---------- */
 
 .chat-pr-branch-card {
