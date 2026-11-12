@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { requestDockPreview } from './dock/dockPreview'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertCircle,
   Check,
@@ -1167,6 +1167,31 @@ function TimelineSegments({
   )
 }
 
+function UserMessageText({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const bodyId = useId()
+  const displayText = asyncReplyDisplayText(text) ?? text
+  const visibleText = displayText.replace(/\[([^\]\n]+)\]\(#[^\s)]+\)/g, '$1')
+  const collapsible = visibleText.length > 600 || visibleText.split('\n').length > 8
+  return (
+    <div className="chat-user-bubble min-w-0 max-w-full rounded-[20px] px-4 py-2.5 text-neutral-900">
+      <div id={bodyId} className={`chat-user-message-text whitespace-pre-wrap [overflow-wrap:anywhere] text-[15px] leading-relaxed${collapsible && !expanded ? ' is-collapsed' : ''}`}>
+        {displayText.split(/(\[[^\]\n]+\]\(#[^\s)]+\))/g).map((part, index) => {
+          const link = /^\[([^\]]+)\]\((#[^\s)]+)\)$/.exec(part)
+          return link ? <a key={index} href={link[2]} className="underline underline-offset-2" onFocus={() => setExpanded(true)}>{link[1]}</a> : part
+        })}
+      </div>
+      {collapsible && (
+        <div className="mt-1.5 flex justify-end">
+          <Button size="sm" variant="ghost" aria-expanded={expanded} aria-controls={bodyId} onClick={() => setExpanded(value => !value)}>
+            {expanded ? '收起' : '展开全文'}
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function MessageBubbleComponent({
   readOnly = false,
   message,
@@ -1446,14 +1471,7 @@ function MessageBubbleComponent({
             />
           )}
           {hasText && (
-            <div className="chat-user-bubble rounded-[20px] px-4 py-2.5 text-neutral-900">
-              <div className="whitespace-pre-wrap [overflow-wrap:anywhere] text-[15px] leading-relaxed">
-                {(asyncReplyDisplayText(message.content) ?? message.content).split(/(\[[^\]\n]+\]\(#[^\s)]+\))/g).map((part, index) => {
-                  const link = /^\[([^\]]+)\]\((#[^\s)]+)\)$/.exec(part)
-                  return link ? <a key={index} href={link[2]} className="underline underline-offset-2">{link[1]}</a> : part
-                })}
-              </div>
-            </div>
+            <UserMessageText key={message.id} text={message.content} />
           )}
           {hasText && (
             <div

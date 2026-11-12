@@ -8,6 +8,45 @@ function openActivity(container: HTMLElement) {
   fireEvent.click(container.querySelector<HTMLButtonElement>('[data-tool-call-cluster] > button')!)
 }
 
+describe('long user messages', () => {
+  const userMessage = (content: string): ChatMessage => ({ id: 'long-user', role: 'user', timestamp: 1, content })
+
+  it.each(['简短提问', '字'.repeat(600), Array(8).fill('一行').join('\n')])('leaves short messages fully visible', content => {
+    render(<MessageBubble message={userMessage(content)} />)
+    expect(screen.queryByRole('button', { name: '展开全文' })).not.toBeInTheDocument()
+  })
+
+  it.each(['字'.repeat(601), Array(9).fill('一行').join('\n')])('collapses long messages and lets the user expand and collapse them', content => {
+    const { container } = render(<MessageBubble message={userMessage(content)} />)
+    const toggle = screen.getByRole('button', { name: '展开全文' })
+    const body = document.getElementById(toggle.getAttribute('aria-controls')!)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(body).toHaveClass('is-collapsed')
+    expect(body).toHaveTextContent(content.replaceAll('\n', ' '))
+    fireEvent.click(toggle)
+    expect(screen.getByRole('button', { name: '收起' })).toHaveAttribute('aria-expanded', 'true')
+    expect(body).not.toHaveClass('is-collapsed')
+    fireEvent.click(screen.getByRole('button', { name: '收起' }))
+    expect(body).toHaveClass('is-collapsed')
+    expect(container.querySelectorAll('.chat-user-bubble')).toHaveLength(1)
+  })
+
+  it('counts visible reference labels rather than hidden destinations', () => {
+    render(<MessageBubble message={userMessage(`[引用](#${'a'.repeat(700)}) 请解释一下。`)} />)
+    expect(screen.getByRole('link', { name: '引用' })).toHaveAttribute('href', `#${'a'.repeat(700)}`)
+    expect(screen.queryByRole('button', { name: '展开全文' })).not.toBeInTheDocument()
+  })
+
+  it('copies the complete original message while collapsed', async () => {
+    const user = userEvent.setup()
+    const content = '完整原文\n'.repeat(25)
+    render(<MessageBubble message={userMessage(content)} />)
+    expect(screen.getByRole('button', { name: '展开全文' })).toHaveAttribute('aria-expanded', 'false')
+    await user.click(screen.getByRole('button', { name: '复制' }))
+    expect(await navigator.clipboard.readText()).toBe(content)
+  })
+})
+
 describe('assistant body visibility', () => {
   it('keeps every live step reachable without a 显示更早的过程 pager', () => {
     const make = (count: number, answer?: string): ChatMessage => ({

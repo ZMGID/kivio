@@ -182,6 +182,13 @@
   background: var(--theme-surface-hover);
 }
 
+.chat-user-message-text.is-collapsed {
+  max-height: 11rem;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 1.75rem), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 1.75rem), transparent);
+}
+
 
 /* Markdown 纯图片段落拆掉 <p> 盒，磁贴在正文流里并排换行。 */
 .chat-markdown p:has(> [data-chat-md-image]):not(:has(> :not([data-chat-md-image]):not(br))) {
