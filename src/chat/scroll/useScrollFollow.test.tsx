@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useScrollFollow } from './useScrollFollow'
+import { AskUserBlock } from '../AskUserBlock'
+import { api } from '../../api/tauri'
 
 type ResizeObserverHarness = {
   callback: ResizeObserverCallback
@@ -14,7 +16,7 @@ function Harness() {
   const [contentVersion, setContentVersion] = useState(0)
   const [viewport, setViewport] = useState<HTMLDivElement | null>(null)
   const [content, setContent] = useState<HTMLDivElement | null>(null)
-  const { handle, following, showJumpButton } = useScrollFollow({ viewport, content })
+  const { handle, following, showJumpButton } = useScrollFollow({ viewport, content, trackKeys: true })
   return (
     <>
       <output data-testid="following">{String(following)}</output>
@@ -82,6 +84,60 @@ describe('useScrollFollow scroll source timing', () => {
     })
     return viewport
   }
+
+  it.each([false, true])('preserves follow intent after answering a docked question (reading history: %s)', async (readingHistory) => {
+    const viewport = mount()
+    let scrollHeight = 1000
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, get: () => scrollHeight })
+    if (readingHistory) fireEvent.wheel(viewport, { deltaY: -40 })
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
+    const resolved = vi.fn()
+    const question = render(<AskUserBlock variant="docked" interactionId="interaction-1" onResolved={resolved} toolCall={{
+      id: 'question-1', toolName: 'AskUserQuestion', status: 'running',
+      structured_content: { askUser: { phase: 'awaiting', questions: [{
+        id: 'choice', prompt: 'How should we continue?', allow_custom: false,
+        options: [{ id: 'yes', label: 'Continue' }, { id: 'no', label: 'Stop' }],
+      }], answers: {} } },
+    }} />)
+    const options = screen.getByRole('listbox')
+    fireEvent.keyDown(options, { key: 'ArrowDown' })
+    fireEvent.keyDown(options, { key: 'ArrowUp' })
+    await act(async () => { fireEvent.keyDown(options, { key: 'Enter' }) })
+    expect(submit).toHaveBeenCalledWith('interaction-1', { choice: { selected_option_ids: ['yes'], custom_text: null } }, false)
+    expect(resolved).toHaveBeenCalledOnce()
+    question.unmount()
+    const beforeGrowth = viewport.scrollTop
+    scrollHeight += 200
+    act(() => { observers[0].callback([], {} as ResizeObserver) })
+    expect(screen.getByTestId('following')).toHaveTextContent(String(!readingHistory))
+    expect(viewport.scrollTop).toBe(readingHistory ? beforeGrowth : scrollHeight)
+  })
+
+  it('ignores scroll keys consumed by a control inside the timeline', () => {
+    const viewport = mount()
+    const control = viewport.firstElementChild!
+    control.addEventListener('keydown', event => event.preventDefault())
+    fireEvent.keyDown(control, { key: 'ArrowUp' })
+    expect(screen.getByTestId('following')).toHaveTextContent('true')
+  })
+
+  it('ignores scroll keys from controls outside the timeline', () => {
+    mount()
+    fireEvent.keyDown(screen.getByText('replace-content'), { key: 'Home' })
+    expect(screen.getByTestId('following')).toHaveTextContent('true')
+  })
+
+  it.each([{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { isComposing: true }])('ignores modified or composing navigation keys: %j', modifiers => {
+    const viewport = mount()
+    fireEvent.keyDown(viewport, { key: 'ArrowUp', ...modifiers })
+    expect(screen.getByTestId('following')).toHaveTextContent('true')
+  })
+
+  it.each(['viewport', 'body'])('still releases follow for unhandled history navigation on %s', target => {
+    const viewport = mount()
+    fireEvent.keyDown(target === 'viewport' ? viewport : document.body, { key: 'PageUp' })
+    expect(screen.getByTestId('following')).toHaveTextContent('false')
+  })
 
   it('classifies an ordinary wheel-up as user detach', () => {
     const viewport = mount()

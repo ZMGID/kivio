@@ -34,6 +34,57 @@ const RETRY_QUESTION = {
 
 describe('AskUserBlock', () => {
   afterEach(() => vi.restoreAllMocks())
+  it('locks the submitted draft until a failed answer can be retried', async () => {
+    let rejectSubmission: (error: Error) => void = () => {}
+    const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockImplementationOnce(() => new Promise((_, reject) => {
+      rejectSubmission = reject
+    })).mockResolvedValue(undefined)
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
+      phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
+    })} />)
+    const [first, second] = screen.getAllByRole('option')
+    act(() => {
+      fireEvent.click(first)
+      fireEvent.click(second)
+    })
+    expect(submit).toHaveBeenCalledOnce()
+    expect(first).toHaveAttribute('aria-selected', 'true')
+    expect(second).toHaveAttribute('aria-selected', 'false')
+    expect(second).toBeDisabled()
+    expect(screen.getByPlaceholderText('自己写一个…')).toBeDisabled()
+    await act(async () => { rejectSubmission(new Error('请重试')) })
+    expect(second).toBeEnabled()
+    expect(screen.getByPlaceholderText('自己写一个…')).toBeEnabled()
+    fireEvent.click(second)
+    await waitFor(() => expect(submit).toHaveBeenLastCalledWith('interaction-1', {
+      '0': { selected_option_ids: ['1'], custom_text: null },
+    }, false))
+  })
+
+  it('starts each question at the top of its scrollable options', () => {
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
+      phase: 'awaiting', answers: {},
+      questions: [RETRY_QUESTION, { ...RETRY_QUESTION, id: '1', prompt: '下一题' }],
+    })} />)
+    screen.getByRole('listbox').scrollTop = 160
+    fireEvent.click(screen.getAllByRole('option')[0])
+    expect(screen.getByRole('listbox', { name: '下一题' }).scrollTop).toBe(0)
+  })
+
+  it('keeps the keyboard-highlighted option inside the options viewport', () => {
+    render(<AskUserBlock variant="docked" interactionId="interaction-1" toolCall={askUserCall({
+      phase: 'awaiting', questions: [RETRY_QUESTION], answers: {},
+    })} />)
+    const list = screen.getByRole('listbox')
+    vi.spyOn(list, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 200, 100))
+    screen.getAllByRole('option').forEach((option, index) => {
+      vi.spyOn(option, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, index * 40, 200, 40))
+    })
+    fireEvent.keyDown(list, { key: 'ArrowDown' })
+    fireEvent.keyDown(list, { key: 'ArrowDown' })
+    expect(list.scrollTop).toBe(20)
+  })
+
   it('submits an unchanged camelCase prefill from the user prompt event verbatim', async () => {
     const submit = vi.spyOn(api, 'chatSubmitUserChoice').mockResolvedValue(undefined)
     const toolCall = userPromptEventToRecord({

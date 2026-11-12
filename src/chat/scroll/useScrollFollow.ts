@@ -444,6 +444,9 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return
+      const target = event.target
+      if (!(target instanceof Node) || (target !== document.body && target !== document.documentElement && !root.contains(target))) return
       if (isHistoryScrollKey(event)) {
         dispatch({ type: 'historyKey', hasOverflow: hasOverflow(), now: Date.now() })
       } else if (isFollowScrollKey(event)) {
@@ -467,7 +470,7 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
     window.addEventListener('pointermove', handlePointerMove, { passive: true })
     window.addEventListener('blur', handlePointerRelease)
     if (trackKeys) {
-      window.addEventListener('keydown', handleKeyDown, { capture: true })
+      window.addEventListener('keydown', handleKeyDown)
     }
     document.addEventListener('visibilitychange', handleVisibilityChange)
 
@@ -498,7 +501,7 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
       window.removeEventListener('pointermove', handlePointerMove)
       window.removeEventListener('blur', handlePointerRelease)
       if (trackKeys) {
-        window.removeEventListener('keydown', handleKeyDown, { capture: true })
+        window.removeEventListener('keydown', handleKeyDown)
       }
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       resizeObserver?.disconnect()

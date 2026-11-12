@@ -306,7 +306,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   parsedRef.current = parsed
   const docked = variant === 'docked'
   const signature = promptSignature(parsed)
-  const optionsScrollRef = useRef<HTMLDivElement>(null)
+  const optionsRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const customInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
   const [draft, setDraft] = useState<Record<string, DraftAnswer>>(() => createDraft(parsed))
@@ -337,7 +337,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   }, [toolCall.id, signature])
 
   useLayoutEffect(() => {
-    const el = optionsScrollRef.current
+    const el = listRef.current
     if (el) el.scrollTop = 0
     setActiveIndex(0)
     // 换题会重建整个选项区：在自定义框里按 Enter 翻页时，输入框随之卸载、焦点掉到 body，
@@ -421,6 +421,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
 
   /** 点一行选项。单题单选时**直接落答案**（把新草稿同步传下去），不用再点提交。 */
   const pickOption = (question: AskUserQuestion, optionId: string) => {
+    if (submittingRef.current) return
     const next = draftWithSelection(draftRef.current, question, optionId)
     draftRef.current = next
     setDraft(next)
@@ -438,11 +439,16 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
       const delta = event.key === 'ArrowDown' ? 1 : -1
-      setActiveIndex((index) => {
-        const next = Math.min(rowCount - 1, Math.max(0, index + delta))
-        if (next === optionCount) customInputRef.current?.focus()
-        return next
-      })
+      const next = Math.min(rowCount - 1, Math.max(0, activeIndex + delta))
+      setActiveIndex(next)
+      if (next === optionCount) customInputRef.current?.focus({ preventScroll: true })
+      const row = optionsRef.current?.children[next]
+      if (row instanceof HTMLElement) {
+        const bounds = event.currentTarget.getBoundingClientRect()
+        const option = row.getBoundingClientRect()
+        if (option.top < bounds.top) event.currentTarget.scrollTop -= bounds.top - option.top
+        else if (option.bottom > bounds.bottom) event.currentTarget.scrollTop += option.bottom - bounds.bottom
+      }
       return
     }
     if (event.key === 'Enter') {
@@ -462,6 +468,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   }
 
   const setCustomText = (questionId: string, customText: string) => {
+    if (submittingRef.current) return
     const question = parsed.questions.find((item) => item.id === questionId)
     const exclusive = Boolean(question)
       && !allowMultiple(question!)
@@ -538,7 +545,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   submitRef.current = (skipped, draftOverride) => { void submit(skipped, draftOverride) }
 
   return (
-    <div className={`not-prose w-full overflow-hidden rounded-2xl border border-neutral-200/70 bg-[var(--theme-surface)]/95 text-[12px] leading-5 text-neutral-700 ${
+    <div aria-busy={submitting} className={`not-prose w-full overflow-hidden rounded-2xl border border-neutral-200/70 bg-[var(--theme-surface)]/95 text-[12px] leading-5 text-neutral-700 ${
       // 只有吊在输入框上方那张才有投影（它是浮在对话之上的层）。消息流里的那块是**内容**，
       // 带投影会在浅灰底上糊出一条脏影子 —— 与旁边其它工具卡（无投影）也不是一套。
       docked
@@ -596,7 +603,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
               onMouseDown={preventMouseFocus}
               onClick={() => void submit(true)}
             >
-              <X size={14} strokeWidth={2} />
+              {submitting ? <Loader2 size={14} className="animate-spin" /> : <X size={14} strokeWidth={2} />}
             </IconButton>
           ) : (
             <span className={`text-[11px] ${phaseTone(parsed.phase)}`}>{parsed.async ? '已收起' : phaseLabel(parsed.phase)}</span>
@@ -616,7 +623,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
             onKeyDown={handleListKeyDown}
             className="chat-popover-scroll max-h-[17rem] overflow-y-auto px-2 pb-1 outline-none"
           >
-            <div ref={optionsScrollRef} key={visibleIndex} className="chat-motion-fade">
+            <div ref={optionsRef} key={visibleIndex} className="chat-motion-fade">
               {currentQuestion.options.map((option, index) => {
                 const selected = currentAnswer.selectedOptionIds.includes(option.id)
                 const active = index === activeIndex
@@ -626,6 +633,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                     type="button"
                     role="option"
                     aria-selected={selected}
+                    disabled={submitting}
                     onMouseDown={preventMouseFocus}
                     onMouseEnter={() => setActiveIndex(index)}
                     onClick={() => pickOption(currentQuestion, option.id)}
@@ -683,6 +691,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                   <CustomInput
                     ref={(element: HTMLInputElement | HTMLTextAreaElement | null) => { customInputRef.current = element }}
                     value={currentAnswer.customText}
+                    disabled={submitting}
                     rows={multiline ? 4 : undefined}
                     autoCapitalize="off"
                     autoCorrect="off"
