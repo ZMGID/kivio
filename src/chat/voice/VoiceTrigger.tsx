@@ -36,7 +36,7 @@ export function VoiceComposerOrb({ lang, conversationId }: { lang: Lang; convers
   if (!call || !conversationId || call.conversationId !== conversationId) return null
   if (call.state !== 'active' && call.state !== 'connecting') return null
   return (
-    <div className="flex shrink-0 justify-center pb-1">
+    <div className="chat-content-inset flex shrink-0 justify-center pb-1">
       <IconButton size="lg" shape="circle" variant="ghost" label={i18n[lang].voiceOpenStage} onClick={() => call.setStageOpen(true)}>
         <VoiceOrb state={voiceOrbState(call.state, call.muted, call.working)} levelsRef={call.levelsRef} size={32} />
       </IconButton>

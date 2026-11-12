@@ -17,7 +17,7 @@ export const ConversationLoadingState = memo(function ConversationLoadingState()
   if (!visible) return null
   return (
     <div
-      className="chat-conversation-loading absolute inset-0 z-30 flex items-center justify-center"
+      className="chat-content-inset chat-conversation-loading absolute inset-0 z-30 flex items-center justify-center"
       role="status"
       aria-label="正在加载对话"
     >

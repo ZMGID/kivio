@@ -2699,7 +2699,7 @@ function MessageListBase({
   )
 
   return (
-    <div data-chat-density={density} className={`relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS ? 'has-message-navigator' : ''} ${activeOutlineItems.length >= 2 ? 'has-heading-navigator' : ''}`}>
+    <div data-chat-density={density} className={`chat-message-list chat-content-inset relative flex min-h-0 flex-1 flex-col ${navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS ? 'has-message-navigator' : ''} ${activeOutlineItems.length >= 2 ? 'has-heading-navigator' : ''}`}>
       {activeOutlineOwnerId && activeOutlineItems.length >= 2 && (
         <ChatHeadingOutline
           conversationId={conversationId}

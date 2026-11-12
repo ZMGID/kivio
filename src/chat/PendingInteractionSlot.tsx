@@ -50,7 +50,7 @@ export const PendingInteractionSlot = memo(function PendingInteractionSlot({
   if (!toolConfirm && !sessionConsent && !userPrompt) return null
 
   return (
-    <div className="shrink-0 px-6">
+    <div className="chat-content-inset shrink-0 px-6">
       <div className="mx-auto w-full max-w-4xl">
         {userPrompt && userPromptRecord && (
           <AskUserBlock

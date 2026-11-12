@@ -26,7 +26,7 @@ const MessageList = lazy(() => import('./MessageList').then((module) => ({
 
 function MessageListLoading() {
   return (
-    <div className="chat-themed-surface flex flex-1 items-center justify-center">
+    <div className="chat-content-inset chat-themed-surface flex flex-1 items-center justify-center">
       <div className="h-5 w-5 animate-spin rounded-full border-2 border-neutral-300 border-t-neutral-800 dark:border-t-neutral-200" />
     </div>
   )
@@ -184,7 +184,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
 
       <div className="relative flex min-h-0 flex-1 flex-col">
         {showEmptyHero ? (
-          <div data-momo-region className="chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-10">
+          <div data-momo-region className="chat-content-inset chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-10">
             <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl">
               <EmptyHeroHeading
                 lang={lang}
@@ -202,7 +202,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
         ) : (
           <>
             {hookWarning && hookWarning.conversationId === currentConversationId && (
-              <div className="flex items-start gap-2 px-4 pt-2">
+              <div className="chat-content-inset flex items-start gap-2 px-4 pt-2">
                 <div className="flex min-w-0 flex-1 items-start gap-2 rounded-md bg-amber-50 px-2.5 py-1.5 text-[11px] leading-4 text-amber-700 dark:bg-amber-400/10 dark:text-amber-200">
                   <span className="min-w-0 flex-1">
                     {i18n[lang].chatHookFailed
@@ -223,7 +223,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             )}
 
             {forkOrigin && (
-              <div className="flex justify-center px-4 pt-2">
+              <div className="chat-content-inset flex justify-center px-4 pt-2">
                 <button
                   type="button"
                   onClick={() => onSelectConversation(forkOrigin.sourceId)}
@@ -237,7 +237,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             )}
 
             {importedHistoryStale && (
-              <div className="flex justify-center px-4 pt-2">
+              <div className="chat-content-inset flex justify-center px-4 pt-2">
                 <span
                   className="inline-flex max-w-full items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] text-amber-700 dark:bg-amber-500/15 dark:text-amber-400"
                   title="这条会话在 CLI 那边继续聊过。Kivio 里的历史是导入时的快照，不会自动同步；续聊时 CLI 用的仍是它自己那份完整上下文。"
@@ -257,7 +257,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             {pendingSlot}
 
             {queuedMessages.length > 0 && (
-              <div className="shrink-0 px-6">
+              <div className="chat-content-inset shrink-0 px-6">
                 <div className="mx-auto w-full max-w-4xl">
                   <QueuedMessages
                     messages={queuedMessages}

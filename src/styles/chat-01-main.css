@@ -100,14 +100,22 @@
 
 /* 工作区面板内联展开时由它写入 --chat-details-inset：只让内容让位，滚动条仍贴窗口右缘。
    让位与收回随面板入场/退场一起平滑过渡。 */
-.chat-main-pane .chat-scroll-viewport {
-  padding-right: var(--chat-details-inset, 0px);
-  transition: padding-right var(--kv-dur-normal) var(--kv-ease-standard);
+.chat-main-pane .chat-content-inset,
+.chat-main-pane .chat-composer-footer {
+  margin-right: var(--chat-details-inset, 0px);
+  transition: margin-right var(--kv-dur-normal) var(--kv-ease-standard);
 }
 
-.chat-main-pane .chat-composer-footer {
-  padding-right: calc(1.5rem + var(--chat-details-inset, 0px));
-  transition: padding-right var(--kv-dur-normal) var(--kv-ease-standard);
+.chat-main-pane .chat-scroll-viewport {
+  margin-right: calc(0px - var(--chat-details-inset, 0px));
+  padding-right: var(--chat-details-inset, 0px);
+  transition: margin-right var(--kv-dur-normal) var(--kv-ease-standard),
+    padding-right var(--kv-dur-normal) var(--kv-ease-standard);
+}
+
+.chat-message-list {
+  container-type: inline-size;
+  container-name: chat-reading;
 }
 
 /* 弹出窗同样铺满窗口。 */
@@ -673,7 +681,7 @@ button.chat-composer-status-item:hover {
   position: absolute;
   top: 16px;
   bottom: 16px;
-  right: calc(12px + var(--chat-details-inset, 0px));
+  right: 12px;
   z-index: 12;
   width: 26px;
   pointer-events: none;
@@ -967,7 +975,7 @@ button.chat-composer-status-item:hover {
 }
 
 
-@container chat-main (max-width: 719px) {
+@container chat-reading (max-width: 719px) {
   .chat-message-navigator {
     display: none;
   }
@@ -975,7 +983,7 @@ button.chat-composer-status-item:hover {
 
 /* 标题目录随滚动在不同回答间出现 / 消失，不能靠给正文加内边距让位，否则正文会反复重排。
    消息列（max-w-4xl）左侧留白不够放下目录时直接隐藏。 */
-@container chat-main (max-width: 959px) {
+@container chat-reading (max-width: 959px) {
   .chat-heading-navigator {
     display: none;
   }
@@ -983,7 +991,7 @@ button.chat-composer-status-item:hover {
 
 /* 720–999px 时消息列几乎占满容器，右侧没有足够留白；为贴滚动条的轨道预留安全区，
    避免刻度与 Markdown 正文右缘重叠。更宽时消息列居中，轨道自然落在其右侧外。 */
-@container chat-main (min-width: 720px) and (max-width: 999px) {
+@container chat-reading (min-width: 720px) and (max-width: 999px) {
   .has-message-navigator .chat-message-list-inner {
     padding-right: 3.25rem;
   }
@@ -991,7 +999,7 @@ button.chat-composer-status-item:hover {
 
 /* 并排区域在宽屏也会延伸到边缘，为两侧导航器保留空间。左侧标题目录随滚动出现 / 消失，
    固定预留，不跟着 has-heading-navigator 切换，免得正文重排。 */
-@container chat-main (min-width: 1000px) {
+@container chat-reading (min-width: 1000px) {
   .has-message-navigator .chat-message-list-inner--wide {
     padding-right: 3.25rem;
   }
