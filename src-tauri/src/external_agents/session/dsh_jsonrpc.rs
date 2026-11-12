@@ -2923,6 +2923,7 @@ fn parse_usage(value: Option<&Value>, context_window: Option<u64>) -> Option<Mod
         total_tokens: Some(total),
         cached_input_tokens: (cache_read > 0).then_some(cache_read),
         cache_creation_input_tokens: (cache_write > 0).then_some(cache_write),
+        cache_creation_input_tokens_long: None,
         reasoning_tokens: (reasoning > 0).then_some(reasoning),
         context_window_tokens: context_window,
         context_tokens: Some(total),

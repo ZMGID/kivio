@@ -624,6 +624,7 @@ mod tests {
             total_tokens: Some(3),
             cached_input_tokens: Some(4),
             cache_creation_input_tokens: Some(5),
+            cache_creation_input_tokens_long: None,
             reasoning_tokens: Some(6),
             context_window_tokens: Some(1_000_000),
             context_tokens: None,

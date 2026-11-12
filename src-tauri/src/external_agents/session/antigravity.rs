@@ -88,6 +88,7 @@ impl Usage {
             reasoning_tokens: Some(self.thinking),
             cached_input_tokens: Some(self.cache),
             cache_creation_input_tokens: None,
+            cache_creation_input_tokens_long: None,
             context_window_tokens: None,
             context_tokens: None,
         }

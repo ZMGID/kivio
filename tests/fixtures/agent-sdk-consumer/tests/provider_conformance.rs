@@ -461,7 +461,7 @@ async fn streamed_collected_and_buffered_results_share_the_public_contract() {
             assert_eq!(
                 (usage.input_tokens, usage.output_tokens, usage.total_tokens),
                 match case {
-                    ProtocolCase::Gemini => (Some(12), Some(5), Some(19)),
+                    ProtocolCase::Gemini => (Some(12), Some(7), Some(19)),
                     _ => (Some(12), Some(5), Some(17)),
                 },
                 "{case:?}"
@@ -520,6 +520,218 @@ async fn responses_buffered_generation_accepts_sse_only_endpoints() {
     assert_eq!(output.text, "answer");
     assert_eq!(output.reasoning.as_deref(), Some("considered"));
     assert_eq!(output.usage.unwrap().input_tokens, Some(12));
+}
+
+#[tokio::test]
+async fn chat_reasoning_aliases_reach_stream_events_and_buffered_output() {
+    for fields in [
+        json!({"reasoning_content":null,"reasoning":"considered"}),
+        json!({"reasoning_content":"","reasoning":"considered"}),
+        json!({"reasoning_content":false,"reasoning":null,"reasoning_text":"considered"}),
+        json!({"reasoning_content":"considered","reasoning":"considered","reasoning_text":"considered"}),
+        json!({"reasoning_content":"considered","thinking_blocks":[
+            {"type":"thinking","thinking":"considered","signature":"opaque"}
+        ]}),
+        json!({"thinking_blocks":[{"type":"thinking","thinking":"considered","signature":"opaque"}]}),
+        json!({"thinking_blocks":[],"provider_specific_fields":{"thinking_blocks":[
+            {"type":"thinking","thinking":"considered","signature":"opaque"}
+        ]}}),
+        json!({"reasoning_details":[{"type":"reasoning.text","summary":null,"text":"considered"}]}),
+    ] {
+        let mut message = fields.clone();
+        message["role"] = json!("assistant");
+        message["content"] = json!("answer");
+        let stream = format!(
+            "{}{}{}data: [DONE]\n\n",
+            event(json!({"choices":[{"delta":fields}]})),
+            event(json!({"choices":[{"delta":{"content":"answer"}}]})),
+            event(json!({"choices":[{"delta":{},"finish_reason":"stop"}]})),
+        );
+        let server = ProtocolCase::Chat
+            .server(
+                "/reasoning",
+                vec![
+                    Response::Sse(stream),
+                    Response::Json(json!({"choices":[{"message":message,"finish_reason":"stop"}]})),
+                ],
+            )
+            .await;
+        let provider = ProtocolCase::Chat.provider(&server);
+        let mut sink = Sink::default();
+        let streamed = LanguageModelProvider::stream(provider.as_ref(), request(), &mut sink)
+            .await
+            .unwrap();
+        let buffered = LanguageModelProvider::generate(provider.as_ref(), request())
+            .await
+            .unwrap();
+        for output in [streamed, buffered] {
+            assert_eq!(output.text, "answer");
+            assert_eq!(output.reasoning.as_deref(), Some("considered"), "{fields}");
+        }
+        let visible: String = sink
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                StreamPart::ReasoningDelta { delta } => Some(delta.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(visible, "considered", "{fields}");
+    }
+}
+
+#[tokio::test]
+async fn chat_thinking_blocks_stream_text_without_exposing_signatures_or_redactions() {
+    let chunks = [
+        json!({"thinking_blocks":[{"type":"thinking","thinking":"con"}]}),
+        json!({"provider_specific_fields":{"thinking_blocks":[{"type":"thinking","thinking":"sidered"}]}}),
+        json!({"reasoning_content":"considered","thinking_blocks":[{"type":"thinking","signature":"opaque-signature"}]}),
+        json!({"reasoning_content":"[REDACTED]","thinking_blocks":[{"type":"redacted_thinking","data":"opaque-redaction"}]}),
+    ];
+    let mut stream: String = chunks
+        .into_iter()
+        .map(|delta| event(json!({"choices":[{"delta":delta}]})))
+        .collect();
+    stream.push_str(&event(
+        json!({"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}),
+    ));
+    let server = ProtocolCase::Chat
+        .server("/thinking-blocks", vec![Response::Sse(stream)])
+        .await;
+    let provider = ProtocolCase::Chat.provider(&server);
+    let mut sink = Sink::default();
+    let output = LanguageModelProvider::stream(provider.as_ref(), request(), &mut sink)
+        .await
+        .unwrap();
+    assert_eq!(output.reasoning.as_deref(), Some("considered"));
+    assert_eq!(output.text, "answer");
+    let visible: String = sink
+        .parts
+        .iter()
+        .filter_map(|part| match part {
+            StreamPart::ReasoningDelta { delta } => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(visible, "considered");
+}
+
+#[tokio::test]
+async fn chat_signed_thinking_survives_tool_rounds_and_history_storage() {
+    let blocks = json!([
+        {"type":"thinking","thinking":"considered","signature":"sig-one"},
+        {"type":"redacted_thinking","data":"redacted-data"}
+    ]);
+    let tool_calls = json!([{"id":"call-1","type":"function","function":{"name":"echo","arguments":"{\"text\":\"hello\"}"}}]);
+    for streamed in [false, true] {
+        let first = if streamed {
+            let mut stream = String::new();
+            for block in [
+                json!({"type":"thinking","thinking":"con"}),
+                json!({"type":"thinking","thinking":"sidered"}),
+                json!({"type":"thinking","signature":"sig-"}),
+                json!({"type":"thinking","signature":"one"}),
+                blocks[1].clone(),
+            ] {
+                stream.push_str(&event(json!({"choices":[{"delta":{"provider_specific_fields":{"thinking_blocks":[block]}}}]})));
+            }
+            let mut calls = tool_calls.clone();
+            calls[0]["index"] = json!(0);
+            stream.push_str(&event(
+                json!({"choices":[{"delta":{"tool_calls":calls},"finish_reason":"tool_calls"}]}),
+            ));
+            Response::Sse(stream)
+        } else {
+            Response::Json(
+                json!({"choices":[{"message":{"role":"assistant","thinking_blocks":blocks,"tool_calls":tool_calls},"finish_reason":"tool_calls"}]}),
+            )
+        };
+        let server = ProtocolCase::Chat
+            .server(
+                "/signed-thinking",
+                vec![first, ProtocolCase::Chat.buffered("answer")],
+            )
+            .await;
+        let provider = ProtocolCase::Chat.provider(&server);
+        let mut call = request();
+        call.options.thinking_level = Some("high".into());
+        let output = if streamed {
+            LanguageModelProvider::stream(provider.as_ref(), call.clone(), &mut Sink::default())
+                .await
+                .unwrap()
+        } else {
+            LanguageModelProvider::generate(provider.as_ref(), call.clone())
+                .await
+                .unwrap()
+        };
+        assert_eq!(output.reasoning.as_deref(), Some("considered"));
+        let stored =
+            kivio_agent_sdk::model::openai_messages_from_model_messages(&[output.replay_message()]);
+        call.messages
+            .extend(kivio_agent_sdk::model::model_messages_from_openai_messages(
+                stored,
+            ));
+        call.messages.push(ModelMessage {
+            role: kivio_agent_sdk::model::ModelRole::Tool,
+            content: vec![MessagePart::ToolResult {
+                tool_call_id: "call-1".into(),
+                content: "hello".into(),
+                is_error: false,
+                artifacts: vec![],
+            }],
+        });
+        let mut replay_options = kivio_agent_sdk::model::openai::OpenAiChatOptions {
+            provider_id: Some(server.endpoint.to_string()),
+            ..Default::default()
+        };
+        for changed_model in [false, true] {
+            let mut switched = call.clone();
+            if changed_model {
+                switched.model = "another-model".into();
+                replay_options.provider_id = Some(server.endpoint.to_string());
+            } else {
+                replay_options.provider_id = Some("another-provider".into());
+            }
+            let body =
+                kivio_agent_sdk::model::openai::request_body(&switched, false, &replay_options);
+            let encoded = serde_json::to_string(&body).unwrap();
+            assert!(!encoded.contains("sig-one") && !encoded.contains("redacted-data"));
+            assert!(encoded.contains("considered"));
+        }
+        for case in [
+            ProtocolCase::Responses,
+            ProtocolCase::Anthropic,
+            ProtocolCase::Gemini,
+        ] {
+            let other_server = case
+                .server("/other-protocol", vec![case.buffered("answer")])
+                .await;
+            let other_provider = case.provider(&other_server);
+            LanguageModelProvider::generate(other_provider.as_ref(), call.clone())
+                .await
+                .unwrap();
+            let requests = other_server.requests.lock().unwrap();
+            let encoded = serde_json::to_string(&requests[0].body).unwrap();
+            assert!(
+                !encoded.contains("sig-one") && !encoded.contains("redacted-data"),
+                "{case:?}"
+            );
+            assert!(!encoded.contains("chat_content"), "{case:?}");
+        }
+        LanguageModelProvider::generate(provider.as_ref(), call)
+            .await
+            .unwrap();
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests[0].body["reasoning_effort"], "high");
+        let assistant = requests[1].body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["thinking_blocks"], blocks);
+        assert!(assistant.get("chat_content").is_none());
+    }
 }
 
 #[tokio::test]

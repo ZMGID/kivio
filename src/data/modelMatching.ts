@@ -24,6 +24,8 @@ type DbEntry = {
     input: number
     output: number
     cachedInput?: number
+    cacheWrite?: number
+    cacheWriteLong?: number
   }
 }
 
@@ -214,6 +216,8 @@ export function resolveModelInfo(
       input: override.pricing?.input ?? defaults.pricing?.input,
       output: override.pricing?.output ?? defaults.pricing?.output,
       cachedInput: override.pricing?.cachedInput ?? defaults.pricing?.cachedInput,
+      cacheWrite: override.pricing?.cacheWrite ?? defaults.pricing?.cacheWrite,
+      cacheWriteLong: override.pricing?.cacheWriteLong ?? defaults.pricing?.cacheWriteLong,
     },
     reasoningEfforts: override.reasoningEfforts ?? defaults.reasoningEfforts,
     // extraBody 只来自用户 override（模型库无此字段）。
@@ -245,6 +249,8 @@ function toModelInfo(entry: DbEntry): ModelInfo {
       input: entry.pricing?.input,
       output: entry.pricing?.output,
       cachedInput: entry.pricing?.cachedInput,
+      cacheWrite: entry.pricing?.cacheWrite,
+      cacheWriteLong: entry.pricing?.cacheWriteLong,
     },
   }
 }

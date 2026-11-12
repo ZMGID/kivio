@@ -2,10 +2,9 @@
 use super::error::provider_error_code;
 use super::usage::model_usage_from_openai_value;
 use super::{
-    openai_messages_from_generate_request, pending_tool_calls_from_openai_message,
-    stream_read_error, FinishReason, GenerateOutput, GenerateRequest, GeneratedImageData,
-    LanguageModelProvider, ModelError, ModelFuture, ModelUsage, PendingToolCall, StreamPart,
-    StreamSink,
+    pending_tool_calls_from_openai_message, stream_read_error, FinishReason, GenerateOutput,
+    GenerateRequest, GeneratedImageData, LanguageModelProvider, ModelError, ModelFuture,
+    ModelUsage, PendingToolCall, StreamPart, StreamSink,
 };
 use serde_json::Value;
 
@@ -18,7 +17,84 @@ pub struct OpenAiChatOptions {
     pub extra_body: Value,
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<String>,
+    /// Endpoint for known protocol capabilities; unknown gateways retain legacy fields.
+    pub endpoint: Option<reqwest::Url>,
+    pub cache_retention: Option<CacheRetention>,
     pub native_thinking_switch: bool,
+    /// Identity used to restrict signed thinking replay. The HTTP provider defaults to its endpoint.
+    pub provider_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheRetention {
+    None,
+    Short,
+    Long,
+}
+
+/// GPT-5.6 and later expose paid cache writes and explicit prompt cache mode.
+pub fn supports_explicit_prompt_cache(model: &str) -> bool {
+    let Some(version) = model.strip_prefix("gpt-") else {
+        return false;
+    };
+    let version = version.split('-').next().unwrap_or(version);
+    let mut parts = version.split('.');
+    let major = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
+    major > 5 || (major == 5 && minor >= 6)
+}
+
+pub(crate) fn apply_request_capabilities(
+    body: &mut Value,
+    model: &str,
+    endpoint: Option<&reqwest::Url>,
+    retention: Option<CacheRetention>,
+    responses: bool,
+) {
+    let host = endpoint.and_then(reqwest::Url::host_str);
+    if host == Some("api.openai.com") {
+        if !responses
+            && ["o1", "o3", "o4"]
+                .iter()
+                .any(|prefix| model == *prefix || model.starts_with(&format!("{prefix}-")))
+        {
+            if let Some(limit) = body.as_object_mut().unwrap().remove("max_tokens") {
+                body["max_completion_tokens"] = limit;
+            }
+        }
+        if supports_explicit_prompt_cache(model) {
+            body.as_object_mut()
+                .unwrap()
+                .remove("prompt_cache_retention");
+            if let Some(retention) = retention {
+                body["prompt_cache_options"] = match retention {
+                    CacheRetention::None => serde_json::json!({"mode":"explicit"}),
+                    CacheRetention::Long if responses => serde_json::json!({"ttl":"12h"}),
+                    _ => serde_json::json!({"ttl":"30m"}),
+                };
+            }
+        }
+    } else if host == Some("openrouter.ai")
+        && model
+            .trim_start_matches('~')
+            .starts_with("anthropic/claude-")
+    {
+        body.as_object_mut()
+            .unwrap()
+            .remove("prompt_cache_retention");
+        if let Some(retention @ (CacheRetention::Short | CacheRetention::Long)) = retention {
+            body["cache_control"] = serde_json::json!({"type":"ephemeral"});
+            if retention == CacheRetention::Long {
+                body["cache_control"]["ttl"] = Value::String("1h".into());
+            }
+        }
+    }
 }
 
 /// Explicit transport configuration. The endpoint is the complete Chat Completions URL.
@@ -57,12 +133,25 @@ impl OpenAiChatProvider {
         Self { client, config }
     }
 
+    fn provider_id(&self) -> String {
+        self.config.options.provider_id.clone().unwrap_or_else(|| {
+            // URLs can contain credentials; replay identity must not persist those in history.
+            format!(
+                "{}{}",
+                self.config.endpoint.origin().ascii_serialization(),
+                self.config.endpoint.path()
+            )
+        })
+    }
+
     async fn post(
         &self,
         request: &GenerateRequest,
         stream: bool,
     ) -> Result<reqwest::Response, ModelError> {
         let options = OpenAiChatOptions {
+            endpoint: Some(self.config.endpoint.clone()),
+            provider_id: Some(self.provider_id()),
             temperature: request
                 .options
                 .temperature
@@ -97,7 +186,9 @@ impl LanguageModelProvider for OpenAiChatProvider {
                 .await
                 .map_err(|error| stream_read_error(&label, &error))?;
             let value = serde_json::from_str(&raw).map_err(|_| invalid_response(&label, &raw))?;
-            output_from_chat_completion(&value, &raw, &label)
+            let mut output = output_from_chat_completion(&value, &raw, &label)?;
+            bind_output_provenance(&mut output, &request.model, Some(&self.provider_id()));
+            Ok(output)
         })
     }
 
@@ -108,7 +199,10 @@ impl LanguageModelProvider for OpenAiChatProvider {
     ) -> ModelFuture<'a, GenerateOutput> {
         Box::pin(async move {
             let label = request_label(&request, "Chat stream");
-            decode_chat_stream(self.post(&request, true).await?, sink, &label).await
+            let mut output =
+                decode_chat_stream(self.post(&request, true).await?, sink, &label).await?;
+            bind_output_provenance(&mut output, &request.model, Some(&self.provider_id()));
+            Ok(output)
         })
     }
 }
@@ -129,7 +223,7 @@ impl crate::agent::provider_runtime::ModelRuntime for OpenAiChatProvider {
 pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiChatOptions) -> Value {
     let mut body = serde_json::json!({
         "model": request.model,
-        "messages": openai_messages_from_generate_request(request),
+        "messages": super::types::openai_messages_with_provider(request, options.provider_id.as_deref()),
     });
     if stream {
         body["stream"] = Value::Bool(true);
@@ -188,6 +282,13 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
     if let Some(effort) = request.options.thinking_level.as_deref() {
         body["reasoning_effort"] = Value::String(effort.to_string());
     }
+    apply_request_capabilities(
+        &mut body,
+        &request.model,
+        options.endpoint.as_ref(),
+        options.cache_retention,
+        false,
+    );
     if let Some(overrides) = request.options.provider_options.as_object() {
         for (key, value) in overrides {
             body[key] = value.clone();
@@ -214,6 +315,7 @@ pub async fn decode_chat_stream(
     let mut finish_reason = None;
     let mut usage: Option<ModelUsage> = None;
     let mut last_reasoning_summary_index: Option<u64> = None;
+    let mut thinking = ChatReasoning::default();
     // 代理仿 OpenRouter 出图：流式 chunk 的 `delta.images` 逐帧累积，finish 后并入 output。
     let mut images: Vec<GeneratedImageData> = Vec::new();
 
@@ -256,6 +358,9 @@ pub async fn decode_chat_stream(
                 current.cache_creation_input_tokens = next
                     .cache_creation_input_tokens
                     .or(current.cache_creation_input_tokens);
+                current.cache_creation_input_tokens_long = next
+                    .cache_creation_input_tokens_long
+                    .or(current.cache_creation_input_tokens_long);
                 current.reasoning_tokens = next.reasoning_tokens.or(current.reasoning_tokens);
                 current.total_tokens = next
                     .total_tokens
@@ -277,6 +382,7 @@ pub async fn decode_chat_stream(
                 finish_reason = Some(FinishReason::from_openai(reason));
             }
             handle_openai_stream_tool_calls(&value, &mut tool_partials, sink)?;
+            thinking.push(&value);
             for fragment in collect_chat_reasoning_fragments(&value) {
                 if let Some(delta) = append_chat_stream_reasoning(
                     &mut reasoning_full,
@@ -307,7 +413,7 @@ pub async fn decode_chat_stream(
         reason: reason.clone(),
         full: full.clone(),
     })?;
-    let output = GenerateOutput {
+    let mut output = GenerateOutput {
         text: full,
         reasoning: non_empty(reasoning_full),
         tool_calls,
@@ -321,6 +427,7 @@ pub async fn decode_chat_stream(
         billing_usage: None,
     };
 
+    preserve_thinking_blocks(&mut output, thinking.blocks, thinking.details);
     Ok(output)
 }
 
@@ -357,7 +464,7 @@ pub fn output_from_chat_completion(
         .map(generated_images_from_openai_images)
         .unwrap_or_default();
 
-    Ok(GenerateOutput {
+    let mut output = GenerateOutput {
         text,
         reasoning,
         tool_calls,
@@ -369,7 +476,217 @@ pub fn output_from_chat_completion(
         reasoning_items: Vec::new(),
         canonical_message: None,
         billing_usage: None,
-    })
+    };
+    preserve_thinking_blocks(
+        &mut output,
+        thinking_blocks(message)
+            .unwrap_or_default()
+            .iter()
+            .filter(|block| valid_thinking_block(block))
+            .cloned()
+            .collect(),
+        message
+            .get("reasoning_details")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    );
+    Ok(output)
+}
+
+/// Hosts using the raw decoders bind replay data to the request's model and provider identity.
+pub fn bind_output_provenance(output: &mut GenerateOutput, model: &str, provider_id: Option<&str>) {
+    if let Some(message) = &mut output.canonical_message {
+        for part in &mut message.content {
+            if let super::MessagePart::ChatReasoning {
+                source_model,
+                source_provider_id,
+                ..
+            } = part
+            {
+                *source_model = Some(model.into());
+                *source_provider_id = provider_id.map(str::to_string);
+            }
+        }
+    }
+}
+
+fn preserve_thinking_blocks(
+    output: &mut GenerateOutput,
+    mut blocks: Vec<Value>,
+    details: Vec<Value>,
+) {
+    blocks.retain_mut(|block| {
+        if block["type"] != "thinking" {
+            return true;
+        }
+        if !block
+            .get("signature")
+            .and_then(Value::as_str)
+            .is_some_and(|signature| !signature.is_empty())
+        {
+            return false;
+        }
+        if block.get("thinking").is_none() {
+            block["thinking"] = Value::String(String::new());
+        }
+        block["thinking"].is_string()
+    });
+    if blocks.is_empty() && details.is_empty() {
+        return;
+    }
+    let mut message = output.replay_message();
+    message.content.insert(
+        0,
+        super::MessagePart::ChatReasoning {
+            blocks,
+            details,
+            source_model: None,
+            source_provider_id: None,
+        },
+    );
+    output.canonical_message = Some(message);
+}
+
+fn valid_thinking_block(block: &Value) -> bool {
+    match block.get("type").and_then(Value::as_str) {
+        Some("thinking") => ["thinking", "signature"].iter().any(|field| {
+            block
+                .get(field)
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
+        }),
+        Some("redacted_thinking") => block
+            .get("data")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        _ => false,
+    }
+}
+
+#[derive(Default)]
+struct ChatReasoning {
+    blocks: Vec<Value>,
+    details: Vec<Value>,
+    active: Option<usize>,
+}
+
+impl ChatReasoning {
+    fn push(&mut self, value: &Value) {
+        let Some(choice) = value.get("choices").and_then(|choices| choices.get(0)) else {
+            return;
+        };
+        if let Some(snapshot) = choice
+            .get("message")
+            .and_then(|m| m.get("reasoning_details"))
+            .and_then(Value::as_array)
+        {
+            self.details = snapshot.clone();
+        }
+        if let Some(delta) = choice.get("delta") {
+            for detail in delta
+                .get("reasoning_details")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if !detail.is_object() {
+                    continue;
+                }
+                // Encrypted entries are complete opaque blocks, never concatenate their ciphertext.
+                let previous = if detail["type"] == "reasoning.encrypted" {
+                    None
+                } else if detail.get("index").is_none_or(Value::is_null)
+                    && detail.get("id").is_none_or(Value::is_null)
+                {
+                    self.details
+                        .last_mut()
+                        .filter(|previous| previous["type"] == detail["type"])
+                } else {
+                    self.details.iter_mut().rev().find(|previous| {
+                        previous["type"] == detail["type"]
+                            && ["index", "id"].iter().all(|key| {
+                                previous.get(*key).is_none_or(Value::is_null)
+                                    || detail.get(*key).is_none_or(Value::is_null)
+                                    || previous[*key] == detail[*key]
+                            })
+                    })
+                };
+                if let Some(previous) = previous {
+                    for (key, value) in detail.as_object().unwrap() {
+                        if matches!(key.as_str(), "text" | "summary") && value.is_string() {
+                            previous[key] = Value::String(format!(
+                                "{}{}",
+                                previous[key].as_str().unwrap_or_default(),
+                                value.as_str().unwrap()
+                            ));
+                        } else if previous.get(key).is_none_or(Value::is_null) {
+                            previous[key] = value.clone();
+                        }
+                    }
+                } else {
+                    self.details.push(detail.clone());
+                }
+            }
+            for block in thinking_blocks(delta)
+                .unwrap_or_default()
+                .iter()
+                .filter(|block| valid_thinking_block(block))
+            {
+                if block["type"] == "redacted_thinking" {
+                    self.blocks.push(block.clone());
+                    self.active = None;
+                    continue;
+                }
+                let text = block
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if self.active.is_some_and(|index| {
+                    !text.is_empty()
+                        && self.blocks[index]
+                            .get("signature")
+                            .and_then(Value::as_str)
+                            .is_some_and(|signature| !signature.is_empty())
+                }) {
+                    self.active = None;
+                }
+                if let Some(index) = self.active {
+                    for field in ["thinking", "signature"] {
+                        if let Some(fragment) = block.get(field).and_then(Value::as_str) {
+                            let previous = self.blocks[index]
+                                .get(field)
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            self.blocks[index][field] =
+                                Value::String(format!("{previous}{fragment}"));
+                        }
+                    }
+                } else {
+                    self.active = Some(self.blocks.len());
+                    self.blocks.push(block.clone());
+                }
+            }
+            if delta
+                .get("content")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty())
+                || delta
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .is_some_and(|calls| !calls.is_empty())
+            {
+                self.active = None;
+            }
+        } else if let Some(blocks) = choice.get("message").and_then(thinking_blocks) {
+            self.blocks = blocks
+                .iter()
+                .filter(|block| valid_thinking_block(block))
+                .cloned()
+                .collect();
+            self.active = None;
+        }
+    }
 }
 
 fn invalid_response(label: &str, raw: &str) -> ModelError {
@@ -401,18 +718,55 @@ fn reasoning_from_openai_message(message: &Value) -> Option<String> {
     if let Some(joined) = join_reasoning_details(message.get("reasoning_details")) {
         return Some(joined);
     }
-    reasoning_string_field(message)
-        .map(str::trim)
+    reasoning_text_field(message)
+        .map(|text| text.trim().to_string())
         .filter(|value| !value.is_empty())
-        .map(str::to_string)
 }
 
 fn reasoning_string_field(value: &Value) -> Option<&str> {
+    ["reasoning_content", "reasoning", "reasoning_text"]
+        .into_iter()
+        .find_map(|field| {
+            value
+                .get(field)
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+        })
+}
+
+fn thinking_blocks(value: &Value) -> Option<&[Value]> {
     value
-        .get("reasoning_content")
-        .or_else(|| value.get("reasoning"))
-        .and_then(Value::as_str)
-        .filter(|content| !content.is_empty())
+        .get("thinking_blocks")
+        .and_then(Value::as_array)
+        .filter(|blocks| !blocks.is_empty())
+        .or_else(|| {
+            value
+                .get("provider_specific_fields")?
+                .get("thinking_blocks")?
+                .as_array()
+                .filter(|blocks| !blocks.is_empty())
+        })
+        .map(Vec::as_slice)
+}
+
+fn reasoning_text_field(value: &Value) -> Option<String> {
+    let Some(blocks) = thinking_blocks(value) else {
+        return reasoning_string_field(value).map(str::to_string);
+    };
+    // Gateways mirror blocks into aliases, including on signature-only frames.
+    let texts: Vec<_> = blocks
+        .iter()
+        .filter_map(|block| {
+            if block.get("type").and_then(Value::as_str) != Some("thinking") {
+                return None;
+            }
+            block
+                .get("thinking")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+        })
+        .collect();
+    (!texts.is_empty()).then(|| texts.join("\n\n"))
 }
 
 fn summary_index_in(value: &Value) -> Option<u64> {
@@ -424,10 +778,11 @@ fn reasoning_detail_text(item: &Value) -> Option<&str> {
     if kind.contains("encrypted") {
         return None;
     }
-    item.get("summary")
-        .or_else(|| item.get("text"))
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty() && *text != "[REDACTED]")
+    ["summary", "text"].into_iter().find_map(|field| {
+        item.get(field)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty() && *text != "[REDACTED]")
+    })
 }
 
 fn join_reasoning_details(details: Option<&Value>) -> Option<String> {
@@ -520,9 +875,9 @@ fn collect_chat_reasoning_fragments(value: &Value) -> Vec<ChatReasoningFragment>
             ChatStreamTextMode::Delta,
         );
         if parts.is_empty() {
-            if let Some(text) = reasoning_string_field(delta) {
+            if let Some(text) = reasoning_text_field(delta) {
                 parts.push(ChatReasoningFragment {
-                    text: text.to_string(),
+                    text,
                     mode: ChatStreamTextMode::Delta,
                     summary_index: summary_index_in(delta)
                         .or_else(|| summary_index_in(choice))
@@ -538,9 +893,9 @@ fn collect_chat_reasoning_fragments(value: &Value) -> Vec<ChatReasoningFragment>
             ChatStreamTextMode::Snapshot,
         );
         if parts.is_empty() {
-            if let Some(text) = reasoning_string_field(message) {
+            if let Some(text) = reasoning_text_field(message) {
                 parts.push(ChatReasoningFragment {
-                    text: text.to_string(),
+                    text,
                     mode: ChatStreamTextMode::Snapshot,
                     summary_index: summary_index_in(message)
                         .or_else(|| summary_index_in(choice))
@@ -1027,6 +1382,56 @@ mod tests {
         assert_eq!(
             output.finish_reason.as_ref().map(FinishReason::legacy_name),
             Some("tool_calls")
+        );
+    }
+
+    #[test]
+    fn unsigned_thinking_is_display_only() {
+        let value = serde_json::json!({"choices":[{"message":{"thinking_blocks":[
+            {"type":"thinking","thinking":"considered"}
+        ]},"finish_reason":"stop"}]});
+        let output = output_from_chat_completion(&value, "{}", "test").unwrap();
+        assert_eq!(output.reasoning.as_deref(), Some("considered"));
+        assert!(output.canonical_message.is_none());
+    }
+
+    #[test]
+    fn signed_thinking_keeps_block_boundaries_and_accepts_final_snapshots() {
+        let mut state = ChatReasoning::default();
+        for block in [
+            serde_json::json!({"type":"thinking","thinking":"first"}),
+            serde_json::json!({"type":"thinking","signature":"sig-one"}),
+            serde_json::json!({"type":"thinking","thinking":"second","signature":"sig-two"}),
+            serde_json::json!({"type":"redacted_thinking","data":"opaque"}),
+            serde_json::json!({"type":"unknown","thinking":"invalid"}),
+        ] {
+            state.push(&serde_json::json!({"choices":[{"delta":{"thinking_blocks":[block]}}]}));
+        }
+        assert_eq!(
+            state.blocks,
+            vec![
+                serde_json::json!({"type":"thinking","thinking":"first","signature":"sig-one"}),
+                serde_json::json!({"type":"thinking","thinking":"second","signature":"sig-two"}),
+                serde_json::json!({"type":"redacted_thinking","data":"opaque"}),
+            ]
+        );
+        let snapshot =
+            serde_json::json!({"type":"thinking","thinking":"complete","signature":"final"});
+        state.push(&serde_json::json!({"choices":[{"message":{"thinking_blocks":[snapshot]}}]}));
+        assert_eq!(state.blocks, vec![snapshot]);
+    }
+
+    #[test]
+    fn replay_identity_does_not_persist_url_credentials() {
+        let config = OpenAiChatConfig::new(
+            "https://user:password@example.test/v1/chat/completions?key=secret#fragment"
+                .parse()
+                .unwrap(),
+        );
+        let provider = OpenAiChatProvider::new(reqwest::Client::new(), config);
+        assert_eq!(
+            provider.provider_id(),
+            "https://example.test/v1/chat/completions"
         );
     }
 

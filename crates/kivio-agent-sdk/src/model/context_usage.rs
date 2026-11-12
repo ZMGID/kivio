@@ -137,6 +137,7 @@ mod tests {
             total_tokens: None,
             cached_input_tokens: cached,
             cache_creation_input_tokens: cache_create,
+            cache_creation_input_tokens_long: None,
             reasoning_tokens: None,
             context_window_tokens: None,
             context_tokens: None,

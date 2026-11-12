@@ -141,10 +141,7 @@ impl RunState {
         add(&mut total.output_tokens, bill.output_tokens);
         add(&mut total.total_tokens, bill.total_tokens);
         add(&mut total.cached_input_tokens, bill.cached_input_tokens);
-        add(
-            &mut total.cache_creation_input_tokens,
-            bill.cache_creation_input_tokens,
-        );
+        total.accumulate_cache_creation(&bill);
         add(&mut total.reasoning_tokens, bill.reasoning_tokens);
         if !main_display {
             return;

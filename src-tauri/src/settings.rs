@@ -422,6 +422,8 @@ pub struct ModelPricing {
     pub input: Option<f64>,
     pub output: Option<f64>,
     pub cached_input: Option<f64>,
+    pub cache_write: Option<f64>,
+    pub cache_write_long: Option<f64>,
 }
 
 /**

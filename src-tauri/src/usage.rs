@@ -52,6 +52,8 @@ pub struct UsageRecord {
     #[serde(default)]
     pub cache_creation_input_tokens: Option<u64>,
     #[serde(default)]
+    pub cache_creation_input_tokens_long: Option<u64>,
+    #[serde(default)]
     pub reasoning_tokens: Option<u64>,
     #[serde(default)]
     pub reasoning_effort: Option<String>,
@@ -226,6 +228,9 @@ pub fn record_model_call(state: &AppState, input: UsageRecordInput<'_>) {
         total_tokens,
         cached_input_tokens,
         cache_creation_input_tokens,
+        cache_creation_input_tokens_long: usage
+            .as_ref()
+            .and_then(|usage| usage.cache_creation_input_tokens_long),
         reasoning_tokens,
         reasoning_effort: input.reasoning_effort,
         cost_usd: None,
@@ -270,45 +275,81 @@ fn monthly_file_name(timestamp: i64) -> String {
 }
 
 fn apply_cost(provider: &ModelProvider, record: &mut UsageRecord) {
-    let Some((pricing, source)) = model_metadata::pricing_for_model(Some(provider), &record.model)
-    else {
-        return;
-    };
+    if let Some((cost, source)) = estimate_model_cost(
+        provider,
+        &record.model,
+        &ModelUsage {
+            input_tokens: record.input_tokens,
+            output_tokens: record.output_tokens,
+            cached_input_tokens: record.cached_input_tokens,
+            cache_creation_input_tokens: record.cache_creation_input_tokens,
+            cache_creation_input_tokens_long: record.cache_creation_input_tokens_long,
+            ..Default::default()
+        },
+    ) {
+        record.cost_usd = Some(cost);
+        record.cost_source = source;
+    }
+}
+
+/// Configured-rate estimate shared by the ledger and subagent budgets, not a vendor invoice.
+pub(crate) fn estimate_model_cost(
+    provider: &ModelProvider,
+    model: &str,
+    usage: &ModelUsage,
+) -> Option<(f64, String)> {
+    let (pricing, source) = model_metadata::pricing_for_model(Some(provider), model)?;
     let input_price = pricing.input.unwrap_or(0.0);
     let output_price = pricing.output.unwrap_or(0.0);
     let cached_price = pricing.cached_input.unwrap_or(input_price);
-    let input_tokens = record.input_tokens.unwrap_or(0);
-    let output_tokens = record.output_tokens.unwrap_or(0);
-    // Claude cache writes have a separate tariff: 5m = 1.25x, 1h = 2x.
-    // This remains a configured-rate estimate, not the gateway's actual invoice.
-    // Other Anthropic-compatible providers must not inherit Claude pricing.
-    let write_multiplier = if record.model.to_ascii_lowercase().contains("claude") {
-        if provider.cache_retention() == crate::settings::CacheRetention::Long {
-            2.0
-        } else {
-            1.25
-        }
+    let model = model
+        .rsplit('/')
+        .next()
+        .unwrap_or(model)
+        .to_ascii_lowercase();
+    let (short_multiplier, long_multiplier) = if model.starts_with("claude-") {
+        (1.25, 2.0)
+    } else if kivio_agent_sdk::model::openai::supports_explicit_prompt_cache(&model) {
+        (1.25, 2.5)
     } else {
-        1.0
+        (1.0, 1.0)
     };
-    let cost = if record.api_format == "anthropic_messages" {
-        let cache_read = record.cached_input_tokens.unwrap_or(0);
-        let cache_creation = record.cache_creation_input_tokens.unwrap_or(0);
-        (input_tokens as f64 * input_price
-            + cache_read as f64 * cached_price
-            + cache_creation as f64 * input_price * write_multiplier
-            + output_tokens as f64 * output_price)
-            / 1_000_000.0
+    let short_price = pricing
+        .cache_write
+        .unwrap_or(input_price * short_multiplier);
+    let long_price = pricing
+        .cache_write_long
+        .unwrap_or(input_price * long_multiplier);
+    let input = usage.input_tokens.unwrap_or(0);
+    let mut read = usage.cached_input_tokens.unwrap_or(0);
+    let mut write = usage.cache_creation_input_tokens.unwrap_or(0);
+    let ordinary = if provider.api_format == "anthropic_messages" {
+        input
     } else {
-        let cached_tokens = record.cached_input_tokens.unwrap_or(0).min(input_tokens);
-        let uncached_input_tokens = input_tokens.saturating_sub(cached_tokens);
-        (uncached_input_tokens as f64 * input_price
-            + cached_tokens as f64 * cached_price
-            + output_tokens as f64 * output_price)
-            / 1_000_000.0
+        read = read.min(input);
+        write = write.min(input - read);
+        input - read - write
     };
-    record.cost_usd = Some(cost);
-    record.cost_source = source;
+    let long = usage
+        .cache_creation_input_tokens_long
+        .unwrap_or_else(|| {
+            if provider.cache_retention() == crate::settings::CacheRetention::Long
+                && !(kivio_agent_sdk::model::openai::supports_explicit_prompt_cache(&model)
+                    && provider.api_format == "openai_chat")
+            {
+                write
+            } else {
+                0
+            }
+        })
+        .min(write);
+    let cost = (ordinary as f64 * input_price
+        + read as f64 * cached_price
+        + (write - long) as f64 * short_price
+        + long as f64 * long_price
+        + usage.output_tokens.unwrap_or(0) as f64 * output_price)
+        / 1_000_000.0;
+    Some((cost, source))
 }
 
 fn read_records(dir: &Path, start: Option<i64>) -> (Vec<UsageRecord>, usize) {
@@ -1110,6 +1151,91 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cache_cost_uses_protocol_counts_ttl_buckets_and_configured_prices() {
+        let mut provider: ModelProvider = serde_json::from_value(serde_json::json!({
+            "id":"p", "name":"test", "baseUrl":"https://example.test", "apiFormat":"openai_chat",
+            "modelOverrides": {
+                "claude-test": {"pricing":{"input":2.0,"output":10.0,"cachedInput":0.2}},
+                "gpt-5.6": {"pricing":{"input":2.0,"output":10.0,"cachedInput":0.2}},
+                "custom": {"pricing":{"input":2.0,"output":10.0,"cachedInput":0.2,"cacheWrite":3.0,"cacheWriteLong":7.0}}
+            }
+        })).unwrap();
+        for (model, api, input, long, expected) in [
+            ("claude-test", "openai_chat", 100, None, 0.000111),
+            ("claude-test", "anthropic_messages", 10, None, 0.000111),
+            ("claude-test", "openai_chat", 100, Some(4), 0.000117),
+            ("gpt-5.6", "openai_responses", 100, Some(4), 0.000121),
+            ("custom", "openai_chat", 100, Some(4), 0.000132),
+        ] {
+            provider.api_format = api.into();
+            let usage = ModelUsage {
+                input_tokens: Some(input),
+                output_tokens: Some(5),
+                cached_input_tokens: Some(80),
+                cache_creation_input_tokens: Some(10),
+                cache_creation_input_tokens_long: long,
+                ..Default::default()
+            };
+            let (cost, _) = estimate_model_cost(&provider, model, &usage).unwrap();
+            assert!((cost - expected).abs() < 1e-12, "{model}/{api}: {cost}");
+            let mut record = base_record(api);
+            record.model = model.into();
+            record.input_tokens = usage.input_tokens;
+            record.output_tokens = usage.output_tokens;
+            record.cached_input_tokens = usage.cached_input_tokens;
+            record.cache_creation_input_tokens = usage.cache_creation_input_tokens;
+            record.cache_creation_input_tokens_long = long;
+            apply_cost(&provider, &mut record);
+            assert_eq!(record.cost_usd, Some(cost));
+        }
+        provider
+            .model_overrides
+            .get_mut("claude-test")
+            .unwrap()
+            .pricing
+            .as_mut()
+            .unwrap()
+            .cache_write = Some(3.0);
+        let mixed = ModelUsage {
+            input_tokens: Some(100),
+            cache_creation_input_tokens: Some(20),
+            cache_creation_input_tokens_long: Some(10),
+            ..Default::default()
+        };
+        assert!(
+            (estimate_model_cost(&provider, "claude-test", &mixed)
+                .unwrap()
+                .0
+                - 0.00023)
+                .abs()
+                < 1e-12
+        );
+        provider
+            .model_overrides
+            .get_mut("claude-test")
+            .unwrap()
+            .pricing
+            .as_mut()
+            .unwrap()
+            .cache_write = None;
+        provider.request.prompt_cache_retention = "long".into();
+        let usage = ModelUsage {
+            input_tokens: Some(100),
+            cache_creation_input_tokens: Some(20),
+            cache_creation_input_tokens_long: Some(0),
+            ..Default::default()
+        };
+        assert!(
+            (estimate_model_cost(&provider, "claude-test", &usage)
+                .unwrap()
+                .0
+                - 0.00021)
+                .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
     fn claude_cache_write_cost_uses_requested_retention_without_affecting_other_models() {
         let mut provider: ModelProvider = serde_json::from_value(serde_json::json!({
             "id":"p", "name":"test", "baseUrl":"https://example.test", "apiFormat":"anthropic_messages",
@@ -1174,6 +1300,7 @@ mod tests {
             total_tokens: None,
             cached_input_tokens: None,
             cache_creation_input_tokens: None,
+            cache_creation_input_tokens_long: None,
             reasoning_tokens: None,
             reasoning_effort: None,
             cost_usd: None,
@@ -1212,6 +1339,7 @@ mod tests {
             total_tokens: Some(1_100),
             cached_input_tokens: Some(800),
             cache_creation_input_tokens: Some(50),
+            cache_creation_input_tokens_long: None,
             reasoning_tokens: None,
             reasoning_effort: None,
             cost_usd: None,

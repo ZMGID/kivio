@@ -109,13 +109,13 @@ describe('resolveModelInfo', () => {
   it('merges user overrides with untouched database defaults, including nested fields', () => {
     const resolved = resolveModelInfo('model-4.6', {
       'model-4.6': {
-        displayName: 'Custom', capabilities: { vision: false }, pricing: { input: 9 }, reasoningEfforts: [],
+        displayName: 'Custom', capabilities: { vision: false }, pricing: { input: 9, cacheWrite: 0, cacheWriteLong: 7 }, reasoningEfforts: [],
       },
     })
     expect(resolved).toMatchObject({
       displayName: 'Custom', contextWindow: 200, maxOutput: 60,
       capabilities: { vision: false, videoInput: true, embedding: true }, dimensions: 1024, multilingual: true,
-      pricing: { input: 9, output: 4, cachedInput: 0.2 }, reasoningEfforts: [],
+      pricing: { input: 9, output: 4, cachedInput: 0.2, cacheWrite: 0, cacheWriteLong: 7 }, reasoningEfforts: [],
     })
   })
 

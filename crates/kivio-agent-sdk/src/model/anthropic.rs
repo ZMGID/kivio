@@ -624,10 +624,7 @@ fn merge_anthropic_continuation(
             &mut usage.cached_input_tokens,
             next_usage.cached_input_tokens,
         );
-        add(
-            &mut usage.cache_creation_input_tokens,
-            next_usage.cache_creation_input_tokens,
-        );
+        usage.accumulate_cache_creation(&next_usage);
         add(&mut usage.reasoning_tokens, next_usage.reasoning_tokens);
         usage.context_window_tokens = next_usage
             .context_window_tokens
@@ -1405,6 +1402,9 @@ fn merge_stream_usage(
     current.cache_creation_input_tokens = next
         .cache_creation_input_tokens
         .or(current.cache_creation_input_tokens);
+    current.cache_creation_input_tokens_long = next
+        .cache_creation_input_tokens_long
+        .or(current.cache_creation_input_tokens_long);
     current.total_tokens = current
         .input_tokens
         .zip(current.output_tokens)
@@ -1598,7 +1598,7 @@ fn anthropic_content_blocks(
                     blocks.push(serde_json::json!({"type":"thinking", "thinking":text}));
                 }
             }
-            MessagePart::ReasoningItem { .. } => {}
+            MessagePart::ReasoningItem { .. } | MessagePart::ChatReasoning { .. } => {}
         }
     }
     if allow_unsigned

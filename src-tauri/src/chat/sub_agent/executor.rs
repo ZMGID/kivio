@@ -403,38 +403,8 @@ impl Host {
                 p.context_tokens = total;
             }
         }
-        if let Some((pricing, _)) =
-            crate::chat::model_metadata::pricing_for_model(Some(provider), model)
-        {
-            let input = usage.input_tokens.unwrap_or(0);
-            let output = usage.output_tokens.unwrap_or(0);
-            let cached = usage.cached_input_tokens.unwrap_or(0);
-            let input_price = pricing.input.unwrap_or(0.0);
-            let cached_price = pricing.cached_input.unwrap_or(input_price);
-            let output_price = pricing.output.unwrap_or(0.0);
-            let cost = if provider.api_format == "anthropic_messages" {
-                let multiplier = if model.to_ascii_lowercase().contains("claude") {
-                    if provider.cache_retention() == crate::settings::CacheRetention::Long {
-                        2.0
-                    } else {
-                        1.25
-                    }
-                } else {
-                    1.0
-                };
-                input as f64 * input_price
-                    + cached as f64 * cached_price
-                    + usage.cache_creation_input_tokens.unwrap_or(0) as f64
-                        * input_price
-                        * multiplier
-                    + output as f64 * output_price
-            } else {
-                let cached = cached.min(input);
-                (input - cached) as f64 * input_price
-                    + cached as f64 * cached_price
-                    + output as f64 * output_price
-            };
-            p.cost += cost / 1_000_000.0;
+        if let Some((cost, _)) = crate::usage::estimate_model_cost(provider, model, usage) {
+            p.cost += cost;
         }
         p.dirty = true;
     }

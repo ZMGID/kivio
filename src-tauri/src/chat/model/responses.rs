@@ -361,6 +361,12 @@ impl OpenAiResponsesProvider<'_> {
                 .reasoning_replay_unsupported(self.config.base_url),
             prompt_cache_key,
             prompt_cache_retention,
+            endpoint: reqwest::Url::parse(self.config.base_url).ok(),
+            cache_retention: Some(match self.config.cache_retention {
+                CacheRetention::None => kivio_agent_sdk::model::openai::CacheRetention::None,
+                CacheRetention::Long => kivio_agent_sdk::model::openai::CacheRetention::Long,
+                _ => kivio_agent_sdk::model::openai::CacheRetention::Short,
+            }),
             ..Default::default()
         };
         if self.config.codex_identity && !is_xai {

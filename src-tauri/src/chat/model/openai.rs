@@ -193,7 +193,12 @@ impl OpenAiChatProvider<'_> {
             );
             ModelError::new(message)
         })?;
-        let output = output_from_chat_completion(&value, &raw, &label)?;
+        let mut output = output_from_chat_completion(&value, &raw, &label)?;
+        kivio_agent_sdk::model::openai::bind_output_provenance(
+            &mut output,
+            &request.model,
+            Some(self.config.id),
+        );
         self.record_usage_success(
             &request,
             &label,
@@ -245,7 +250,7 @@ impl OpenAiChatProvider<'_> {
                 err
             })?;
 
-        let output = kivio_agent_sdk::model::openai::decode_chat_stream(response, sink, &label)
+        let mut output = kivio_agent_sdk::model::openai::decode_chat_stream(response, sink, &label)
             .await
             .map_err(|err| {
                 self.record_usage_failure(
@@ -265,6 +270,11 @@ impl OpenAiChatProvider<'_> {
                 );
                 err
             })?;
+        kivio_agent_sdk::model::openai::bind_output_provenance(
+            &mut output,
+            &request.model,
+            Some(self.config.id),
+        );
         self.record_usage_success(
             &request,
             &label,
@@ -442,7 +452,14 @@ impl OpenAiChatProvider<'_> {
                 .unwrap_or_default(),
             prompt_cache_key,
             prompt_cache_retention,
+            endpoint: reqwest::Url::parse(self.config.base_url).ok(),
+            cache_retention: Some(match self.config.cache_retention {
+                CacheRetention::None => kivio_agent_sdk::model::openai::CacheRetention::None,
+                CacheRetention::Long => kivio_agent_sdk::model::openai::CacheRetention::Long,
+                _ => kivio_agent_sdk::model::openai::CacheRetention::Short,
+            }),
             native_thinking_switch,
+            provider_id: Some(self.config.id.to_string()),
         };
         kivio_agent_sdk::model::openai::request_body(request, stream, &options)
     }

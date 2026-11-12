@@ -686,6 +686,8 @@ fn model_database_pricing(model: &str) -> Option<ModelPricing> {
         input: pricing.get("input").and_then(Value::as_f64),
         output: pricing.get("output").and_then(Value::as_f64),
         cached_input: pricing.get("cachedInput").and_then(Value::as_f64),
+        cache_write: pricing.get("cacheWrite").and_then(Value::as_f64),
+        cache_write_long: pricing.get("cacheWriteLong").and_then(Value::as_f64),
     })
 }
 

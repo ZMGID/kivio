@@ -138,6 +138,11 @@ fn estimate_model_message_tokens(message: &ModelMessage) -> usize {
         .iter()
         .filter_map(|part| match part {
             MessagePart::ReasoningItem { item, .. } => Some(estimate_reasoning_item_tokens(item)),
+            MessagePart::ChatReasoning {
+                blocks, details, ..
+            } => Some(estimate_tokens(
+                &serde_json::to_string(&(blocks, details)).unwrap_or_default(),
+            )),
             _ => None,
         })
         .sum();
@@ -185,6 +190,7 @@ fn estimate_model_message_tokens(message: &ModelMessage) -> usize {
             | MessagePart::Video { .. }
             | MessagePart::ImageUrl { .. }
             | MessagePart::ReasoningItem { .. }
+            | MessagePart::ChatReasoning { .. }
             | MessagePart::AnthropicRedactedThinking { .. } => 0,
         })
         .sum();

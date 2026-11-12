@@ -26,6 +26,8 @@ pub struct OpenAiResponsesOptions {
     pub replay_reasoning: bool,
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<String>,
+    pub endpoint: Option<reqwest::Url>,
+    pub cache_retention: Option<super::openai::CacheRetention>,
     pub extra_body: Value,
 }
 
@@ -37,6 +39,8 @@ impl Default for OpenAiResponsesOptions {
             replay_reasoning: true,
             prompt_cache_key: None,
             prompt_cache_retention: None,
+            endpoint: None,
+            cache_retention: None,
             extra_body: Value::Null,
         }
     }
@@ -94,6 +98,7 @@ impl OpenAiResponsesProvider {
             ));
         }
         let options = OpenAiResponsesOptions {
+            endpoint: Some(self.config.endpoint.clone()),
             temperature: request
                 .options
                 .temperature
@@ -339,6 +344,13 @@ pub fn request_body(
             body["prompt_cache_retention"] = Value::String(retention.clone());
         }
     }
+    super::openai::apply_request_capabilities(
+        &mut body,
+        &request.model,
+        options.endpoint.as_ref(),
+        options.cache_retention,
+        true,
+    );
     if let Some(overrides) = request.options.provider_options.as_object() {
         for (key, value) in overrides {
             body[key] = value.clone();
@@ -364,6 +376,7 @@ struct ResponsesToolPartial {
 
 #[derive(Default)]
 struct ResponsesStreamState {
+    refusal_parts: std::collections::BTreeMap<(String, u64), String>,
     text: String,
     reasoning: String,
     /// 本次请求的模型名，随 reasoning item 落进历史（回放前校验同模型，密文模型键控）。
@@ -622,6 +635,20 @@ fn handle_responses_stream_event(
 ) -> Result<Option<ModelError>, ModelError> {
     let event_type = value.get("type").and_then(Value::as_str).unwrap_or("");
     match event_type {
+        "response.refusal.delta" | "response.refusal.done" => {
+            let snapshot = event_type.ends_with(".done");
+            let text = value[if snapshot { "refusal" } else { "delta" }]
+                .as_str()
+                .unwrap_or_default();
+            push_refusal(
+                state,
+                value["item_id"].as_str().unwrap_or_default(),
+                value["content_index"].as_u64().unwrap_or(0),
+                text,
+                snapshot,
+                sink,
+            )?;
+        }
         "response.output_text.delta" => {
             if let Some(delta) = value.get("delta").and_then(Value::as_str) {
                 if !delta.is_empty() {
@@ -717,6 +744,7 @@ fn handle_responses_stream_event(
         }
         "response.output_item.done" => {
             if let Some(item) = value.get("item") {
+                finish_refusal_parts(state, item, sink)?;
                 match item.get("type").and_then(Value::as_str) {
                     Some("function_call") => {
                         let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
@@ -798,6 +826,9 @@ fn handle_responses_stream_event(
         }
         "response.completed" | "response.incomplete" => {
             if let Some(response) = value.get("response") {
+                if let Some(error) = responses_terminal_error(response) {
+                    return Ok(Some(error));
+                }
                 if let Some(usage) = model_usage_from_openai_value(response) {
                     if let Some(input_tokens) = usage.input_tokens {
                         sink.emit(StreamPart::ContextUsage {
@@ -828,6 +859,7 @@ fn handle_responses_stream_event(
                     // reasoning items 兜底：有些网关只在 completed 的完整 output 里带
                     // encrypted_content（output_item.done 里缺）。按 id 去重合并。
                     for item in output {
+                        finish_refusal_parts(state, item, sink)?;
                         if item.get("type").and_then(Value::as_str) == Some("reasoning")
                             && reasoning_item_replayable(item)
                         {
@@ -844,6 +876,12 @@ fn handle_responses_stream_event(
                     }
                 }
             }
+        }
+        "response.cancelled" => {
+            return Ok(Some(ModelError::with_kind(
+                "Responses cancelled",
+                ModelErrorKind::Cancelled,
+            )));
         }
         "response.failed" | "error" => {
             let code = responses_error_payload(value)
@@ -952,6 +990,9 @@ pub fn output_from_responses(
             ));
         }
     }
+    if let Some(error) = responses_terminal_error(value) {
+        return Err(error);
+    }
     let output = value
         .get("output")
         .and_then(Value::as_array)
@@ -967,10 +1008,13 @@ pub fn output_from_responses(
             Some("message") => {
                 if let Some(content) = item.get("content").and_then(Value::as_array) {
                     for part in content {
-                        if part.get("type").and_then(Value::as_str) == Some("output_text") {
-                            if let Some(part_text) = part.get("text").and_then(Value::as_str) {
-                                text.push_str(part_text);
-                            }
+                        let field = match part["type"].as_str() {
+                            Some("output_text") => "text",
+                            Some("refusal") => "refusal",
+                            _ => continue,
+                        };
+                        if let Some(part_text) = part.get(field).and_then(Value::as_str) {
+                            text.push_str(part_text);
                         }
                     }
                 }
@@ -1201,6 +1245,75 @@ fn web_search_from_responses_output(output: &[Value]) -> Option<BuiltinWebSearch
     } else {
         Some(result)
     }
+}
+
+fn push_refusal(
+    state: &mut ResponsesStreamState,
+    item_id: &str,
+    index: u64,
+    text: &str,
+    snapshot: bool,
+    sink: &mut (dyn StreamSink + Send),
+) -> Result<(), ModelError> {
+    let part = state
+        .refusal_parts
+        .entry((item_id.into(), index))
+        .or_default();
+    let delta = if snapshot {
+        text.strip_prefix(part.as_str()).unwrap_or_default()
+    } else {
+        text
+    };
+    if !delta.is_empty() {
+        part.push_str(delta);
+        state.text.push_str(delta);
+        sink.emit(StreamPart::TextDelta {
+            delta: delta.into(),
+        })?;
+    }
+    Ok(())
+}
+
+fn finish_refusal_parts(
+    state: &mut ResponsesStreamState,
+    item: &Value,
+    sink: &mut (dyn StreamSink + Send),
+) -> Result<(), ModelError> {
+    if item["type"] == "message" {
+        for (index, part) in item["content"].as_array().into_iter().flatten().enumerate() {
+            if part["type"] == "refusal" {
+                push_refusal(
+                    state,
+                    item["id"].as_str().unwrap_or_default(),
+                    index as u64,
+                    part["refusal"].as_str().unwrap_or_default(),
+                    true,
+                    sink,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn responses_terminal_error(response: &Value) -> Option<ModelError> {
+    let status = response["status"].as_str()?;
+    let reason = response["incomplete_details"]["reason"]
+        .as_str()
+        .unwrap_or(status);
+    if !matches!(status, "incomplete" | "failed" | "cancelled")
+        || (status == "incomplete" && reason == "max_output_tokens")
+    {
+        return None;
+    }
+    let kind = match (status, reason) {
+        (_, "content_filter") => ModelErrorKind::ContentModeration,
+        ("cancelled", _) => ModelErrorKind::Cancelled,
+        _ => ModelErrorKind::Other,
+    };
+    let mut error = ModelError::with_kind(format!("Responses {status}: {reason}"), kind);
+    error.provider_code = Some(reason.into());
+    Some(error)
 }
 
 fn responses_finish_reason(status: &str, response: &Value, has_tool_calls: bool) -> FinishReason {

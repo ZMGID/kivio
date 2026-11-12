@@ -308,6 +308,9 @@ pub async fn decode_gemini_stream(
                 continue;
             };
             value = unwrap_response(value, response_format);
+            if let Some(error) = gemini_terminal_error(&value) {
+                return Err(error);
+            }
             if let Some(err) = gemini_error_message(&value) {
                 let code = provider_error_code(&value["error"]);
                 return Err(ModelError::from_provider_stream(code.as_deref(), err));
@@ -575,6 +578,7 @@ fn gemini_parts_from_message(
             }
             // OpenAI Responses 专属的原生推理项：其它协议不识别，回放时忽略。
             MessagePart::ReasoningItem { .. }
+            | MessagePart::ChatReasoning { .. }
             | MessagePart::AnthropicThinking { .. }
             | MessagePart::AnthropicRedactedThinking { .. } => {}
         }
@@ -714,6 +718,9 @@ fn normalize_gemini_schema(schema: Value) -> Value {
 }
 
 fn output_from_gemini_response(value: &Value, label: &str) -> Result<GenerateOutput, ModelError> {
+    if let Some(error) = gemini_terminal_error(value) {
+        return Err(error);
+    }
     if let Some(msg) = gemini_error_message(value) {
         let code = provider_error_code(&value["error"]);
         return Err(ModelError::from_provider_payload(
@@ -986,9 +993,9 @@ fn gemini_finish_reason_str(value: &Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// Gemini finishReason → canonical。有工具调用时恒为 tool_calls（Gemini 常仍返回 STOP）。
+/// Gemini finishReason → canonical。仅正常停止时转换为 tool_calls，保留截断与异常终态。
 fn normalize_finish_reason(reason: Option<&str>, has_tool_calls: bool) -> FinishReason {
-    if has_tool_calls {
+    if has_tool_calls && reason.is_none_or(|reason| reason.eq_ignore_ascii_case("stop")) {
         return FinishReason::new(FinishKind::ToolCalls, reason.unwrap_or_default());
     }
     let Some(reason) = reason else {
@@ -1009,15 +1016,52 @@ fn gemini_usage(value: &Value) -> Option<ModelUsage> {
     let get = |key: &str| meta.get(key).and_then(|v| v.as_u64());
     Some(ModelUsage {
         input_tokens: get("promptTokenCount"),
-        output_tokens: get("candidatesTokenCount"),
+        output_tokens: match (get("candidatesTokenCount"), get("thoughtsTokenCount")) {
+            (None, None) => None,
+            (candidates, thoughts) => Some(
+                candidates
+                    .unwrap_or(0)
+                    .saturating_add(thoughts.unwrap_or(0)),
+            ),
+        },
         total_tokens: get("totalTokenCount"),
         cached_input_tokens: get("cachedContentTokenCount"),
         cache_creation_input_tokens: None,
+        cache_creation_input_tokens_long: None,
         reasoning_tokens: get("thoughtsTokenCount"),
         // 内置 provider 路径：窗口来自 model_metadata，不由响应携带。
         context_window_tokens: None,
         context_tokens: None,
     })
+}
+
+fn gemini_terminal_error(value: &Value) -> Option<ModelError> {
+    let blocked = value["promptFeedback"]["blockReason"]
+        .as_str()
+        .filter(|reason| !reason.is_empty() && *reason != "BLOCK_REASON_UNSPECIFIED");
+    let finish = gemini_finish_reason_str(value);
+    let reason = blocked.or(finish
+        .as_deref()
+        .filter(|reason| !matches!(*reason, "STOP" | "MAX_TOKENS")))?;
+    let kind = if blocked.is_some()
+        || matches!(
+            reason,
+            "SAFETY"
+                | "RECITATION"
+                | "BLOCKLIST"
+                | "PROHIBITED_CONTENT"
+                | "SPII"
+                | "IMAGE_SAFETY"
+                | "IMAGE_PROHIBITED_CONTENT"
+                | "IMAGE_RECITATION"
+        ) {
+        super::ModelErrorKind::ContentModeration
+    } else {
+        super::ModelErrorKind::Other
+    };
+    let mut error = ModelError::with_kind(format!("Gemini generation stopped: {reason}"), kind);
+    error.provider_code = Some(reason.to_string());
+    Some(error)
 }
 
 fn gemini_error_message(value: &Value) -> Option<String> {
@@ -1254,7 +1298,7 @@ mod tests {
         let usage = output.usage.unwrap();
         assert_eq!(usage.cached_input_tokens, Some(1));
         assert_eq!(usage.reasoning_tokens, Some(2));
-        assert_eq!(usage.output_tokens, Some(7));
+        assert_eq!(usage.output_tokens, Some(9));
         let call = parts
             .iter()
             .find_map(|part| {

@@ -158,6 +158,14 @@ pub enum MessagePart {
     Reasoning {
         text: String,
     },
+    /// Opaque Chat Completions replay data, scoped to its source independently of display text.
+    ChatReasoning {
+        blocks: Vec<Value>,
+        #[serde(default)]
+        details: Vec<Value>,
+        source_model: Option<String>,
+        source_provider_id: Option<String>,
+    },
     /// Complete Anthropic blocks are immutable replay data, separate from display reasoning.
     AnthropicThinking {
         thinking: String,
@@ -383,6 +391,9 @@ pub struct ModelUsage {
     pub cached_input_tokens: Option<u64>,
     #[serde(default)]
     pub cache_creation_input_tokens: Option<u64>,
+    /// Long-TTL writes (Anthropic 1h / OpenAI 12h). Some(0) means known short-only writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens_long: Option<u64>,
     #[serde(default)]
     pub reasoning_tokens: Option<u64>,
     /// Optional total context capacity, distinct from token usage.
@@ -393,6 +404,34 @@ pub struct ModelUsage {
     /// Missing on old messages and protocols which only report accumulated usage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
+}
+
+impl ModelUsage {
+    pub(crate) fn accumulate_cache_creation(&mut self, next: &Self) {
+        // A partially reported TTL split cannot describe the combined write total.
+        let unknown = (self.cache_creation_input_tokens.unwrap_or(0) > 0
+            && self.cache_creation_input_tokens_long.is_none())
+            || (next.cache_creation_input_tokens.unwrap_or(0) > 0
+                && next.cache_creation_input_tokens_long.is_none());
+        self.cache_creation_input_tokens_long = if unknown {
+            None
+        } else {
+            self.cache_creation_input_tokens_long
+                .or(next.cache_creation_input_tokens_long)
+                .map(|_| {
+                    self.cache_creation_input_tokens_long
+                        .unwrap_or(0)
+                        .saturating_add(next.cache_creation_input_tokens_long.unwrap_or(0))
+                })
+        };
+        if let Some(count) = next.cache_creation_input_tokens {
+            self.cache_creation_input_tokens = Some(
+                self.cache_creation_input_tokens
+                    .unwrap_or(0)
+                    .saturating_add(count),
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -899,6 +938,13 @@ fn repair_legacy_tool_result_order(messages: &mut Vec<ModelMessage>) {
 }
 
 pub fn openai_messages_from_generate_request(request: &GenerateRequest) -> Vec<Value> {
+    openai_messages_with_provider(request, None)
+}
+
+pub(crate) fn openai_messages_with_provider(
+    request: &GenerateRequest,
+    provider_id: Option<&str>,
+) -> Vec<Value> {
     let mut messages = Vec::new();
     if !request.system.trim().is_empty() {
         messages.push(serde_json::json!({
@@ -907,7 +953,34 @@ pub fn openai_messages_from_generate_request(request: &GenerateRequest) -> Vec<V
         }));
     }
     for message in paired_model_messages(&request.messages).iter() {
-        messages.extend(openai_messages_from_model_message(message, false));
+        let mut encoded = openai_messages_from_model_message(message, false);
+        if message.role == ModelRole::Assistant {
+            for part in &message.content {
+                if let MessagePart::ChatReasoning {
+                    blocks,
+                    details,
+                    source_model,
+                    source_provider_id,
+                } = part
+                {
+                    if source_model.as_deref() == Some(request.model.as_str())
+                        && provider_id.is_some()
+                        && source_provider_id.as_deref() == provider_id
+                    {
+                        if let Some(assistant) = encoded.first_mut() {
+                            for (field, data) in
+                                [("thinking_blocks", blocks), ("reasoning_details", details)]
+                            {
+                                if !data.is_empty() {
+                                    assistant[field] = Value::Array(data.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        messages.extend(encoded);
     }
     // 这是 Chat Completions 的**发送**路径：`reasoning_items` 是 Responses 专属的
     // 存续键（密文可达几 KB/轮），发给 Chat Completions 端点纯属浪费、严格端点还可能
@@ -916,6 +989,7 @@ pub fn openai_messages_from_generate_request(request: &GenerateRequest) -> Vec<V
         if let Some(obj) = message.as_object_mut() {
             obj.remove("reasoning_items");
             obj.remove("anthropic_content");
+            obj.remove("chat_content");
         }
     }
     messages
@@ -992,6 +1066,11 @@ pub fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage
     }
     // Legacy history carries ordered canonical Anthropic content at this compatibility seam.
     if role == ModelRole::Assistant {
+        if let Some(content) = message.get("chat_content") {
+            if let Ok(content) = serde_json::from_value::<Vec<MessagePart>>(content.clone()) {
+                return Some(ModelMessage { role, content });
+            }
+        }
         if let Some(content) = message.get("anthropic_content") {
             if let Ok(content) = serde_json::from_value::<Vec<MessagePart>>(content.clone()) {
                 return Some(ModelMessage { role, content });
@@ -1315,7 +1394,9 @@ fn openai_messages_from_model_message(
                     }
                 }
             }
-            MessagePart::AnthropicRedactedThinking { .. } | MessagePart::ToolResult { .. } => {}
+            MessagePart::ChatReasoning { .. }
+            | MessagePart::AnthropicRedactedThinking { .. }
+            | MessagePart::ToolResult { .. } => {}
         }
     }
     let content = if multimodal_parts.iter().any(|part| {
@@ -1342,6 +1423,14 @@ fn openai_messages_from_model_message(
     }
     if !reasoning_items.is_empty() {
         out["reasoning_items"] = Value::Array(reasoning_items);
+    }
+    if preserve_legacy_metadata
+        && message
+            .content
+            .iter()
+            .any(|part| matches!(part, MessagePart::ChatReasoning { .. }))
+    {
+        out["chat_content"] = serde_json::json!(message.content);
     }
     if message.content.iter().any(|part| {
         matches!(
@@ -1494,6 +1583,7 @@ fn responses_items_from_model_message(
             // Reasoning summary text is omitted on replay (the native item carries the
             // real chain); ToolResult only appears on Tool messages.
             MessagePart::Reasoning { .. }
+            | MessagePart::ChatReasoning { .. }
             | MessagePart::ToolResult { .. }
             | MessagePart::AnthropicThinking { .. }
             | MessagePart::AnthropicRedactedThinking { .. } => {}

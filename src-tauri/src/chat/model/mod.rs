@@ -991,7 +991,7 @@ mod anonymous_http_tests {
     }
 
     #[tokio::test]
-    async fn unknown_provider_finish_codes_keep_raw_and_legacy_behavior() {
+    async fn provider_terminal_outcomes_preserve_codes_without_masking_failures() {
         let cases = [
             (
                 "openai_chat",
@@ -1000,14 +1000,6 @@ mod anonymous_http_tests {
                 "New_Status",
                 None,
                 "New_Status",
-            ),
-            (
-                "openai_responses",
-                r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"New_Status"}}}"#,
-                FinishKind::Other,
-                "incomplete",
-                Some("New_Status"),
-                "incomplete",
             ),
             (
                 "anthropic_messages",
@@ -1019,19 +1011,11 @@ mod anonymous_http_tests {
             ),
             (
                 "gemini",
-                r#"{"candidates":[{"finishReason":"New_Status","content":{"parts":[{"text":"answer"}]}}]}"#,
-                FinishKind::Other,
-                "New_Status",
-                None,
-                "new_status",
-            ),
-            (
-                "gemini",
                 r#"{"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"functionCall":{"name":"read","args":{}}}]}}]}"#,
-                FinishKind::ToolCalls,
+                FinishKind::Length,
                 "MAX_TOKENS",
                 None,
-                "tool_calls",
+                "length",
             ),
         ];
         for (format, event, kind, raw, detail, legacy) in cases {
@@ -1048,6 +1032,30 @@ mod anonymous_http_tests {
             );
             assert_eq!(finish.legacy_name(), legacy, "{format}");
             server.await.unwrap();
+        }
+        for (format, event) in [
+            (
+                "openai_responses",
+                r#"{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"New_Status"}}}"#,
+            ),
+            (
+                "gemini",
+                r#"{"candidates":[{"finishReason":"New_Status","content":{"parts":[{"text":"answer"}]}}]}"#,
+            ),
+        ] {
+            let (url, server) =
+                endpoint(vec![("200 OK", format!("data: {event}\n\n"))], false).await;
+            let provider = provider(format, url, Vec::new());
+            let state = crate::state::test_app_state();
+            let error = call(&state, &provider, true).await.unwrap_err();
+            assert_eq!(error.kind, ModelErrorKind::Other);
+            assert_eq!(error.provider_code.as_deref(), Some("New_Status"));
+            assert!(!error.is_retryable_stream_error());
+            assert_eq!(
+                server.await.unwrap().len(),
+                1,
+                "terminal error must not retry"
+            );
         }
     }
 

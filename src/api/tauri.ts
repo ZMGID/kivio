@@ -994,6 +994,8 @@ export type ModelInfo = {
     input?: number
     output?: number
     cachedInput?: number
+    cacheWrite?: number
+    cacheWriteLong?: number
   }
   /** 每模型额外请求体字段（原样 merge 进 chat/completions body 根部）。用于给严格 OpenAI-compat
    *  端点塞标准 schema 之外的私有旋钮，如 NVIDIA NIM / vLLM 的 chat_template_kwargs。仅用于 modelOverrides。 */
@@ -1499,6 +1501,7 @@ export type UsageRecord = {
   totalTokens?: number | null
   cachedInputTokens?: number | null
   cacheCreationInputTokens?: number | null
+  cacheCreationInputTokensLong?: number | null
   reasoningTokens?: number | null
   reasoningEffort?: string | null
   costUsd?: number | null

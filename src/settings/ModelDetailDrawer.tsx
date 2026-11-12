@@ -387,6 +387,19 @@ export function ModelDetailDrawer({
                 />
               </div>
             </div>
+            <div className="kv-drawer-row">
+              {(['cacheWrite', 'cacheWriteLong'] as const).map((field) => (
+                <label className="kv-drawer-section flex-1" key={field}>
+                  <span className="kv-drawer-sublabel">
+                    {field === 'cacheWrite'
+                      ? (lang === 'zh' ? '缓存写入（短期）' : 'Cache write (short)')
+                      : (lang === 'zh' ? '缓存写入（长期）' : 'Cache write (long)')}
+                  </span>
+                  <Input type="number" value={form.pricing?.[field]?.toString() ?? ''}
+                    onChange={(v) => updatePricing(field, v)} placeholder="-" />
+                </label>
+              ))}
+            </div>
           </div>
 
           <div className="kv-drawer-section">

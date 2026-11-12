@@ -133,6 +133,7 @@ pub fn usage_from_parts(parts: CliUsageParts) -> ModelUsage {
         total_tokens: Some(total),
         cached_input_tokens: (parts.cache_read > 0).then_some(parts.cache_read),
         cache_creation_input_tokens: (parts.cache_creation > 0).then_some(parts.cache_creation),
+        cache_creation_input_tokens_long: None,
         reasoning_tokens: (parts.reasoning > 0).then_some(parts.reasoning),
         context_window_tokens: parts.context_window,
         context_tokens: None,
