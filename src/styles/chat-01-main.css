@@ -982,7 +982,7 @@ button.chat-composer-status-item:hover {
 }
 
 
-@container chat-reading (max-width: 719px) {
+@container chat-reading (width < 720px) {
   .chat-message-navigator {
     display: none;
   }
@@ -990,7 +990,7 @@ button.chat-composer-status-item:hover {
 
 /* 标题目录随滚动在不同回答间出现 / 消失，不能靠给正文加内边距让位，否则正文会反复重排。
    消息列（max-w-4xl）左侧留白不够放下目录时直接隐藏。 */
-@container chat-reading (max-width: 959px) {
+@container chat-reading (width < 960px) {
   .chat-heading-navigator {
     display: none;
   }
@@ -998,9 +998,16 @@ button.chat-composer-status-item:hover {
 
 /* 720–999px 时消息列几乎占满容器，右侧没有足够留白；为贴滚动条的轨道预留安全区，
    避免刻度与 Markdown 正文右缘重叠。更宽时消息列居中，轨道自然落在其右侧外。 */
-@container chat-reading (min-width: 720px) and (max-width: 999px) {
+@container chat-reading (720px <= width < 1000px) {
   .has-message-navigator .chat-message-list-inner {
-    padding-right: 3.25rem;
+    padding-right: 4rem;
+  }
+}
+
+/* 目录从 960px 起显示，此时居中消息列的自然留白仍不足以隔开刻度。 */
+@container chat-reading (960px <= width < 1000px) {
+  .chat-message-list-inner {
+    padding-left: 4rem;
   }
 }
 
@@ -1008,10 +1015,10 @@ button.chat-composer-status-item:hover {
    固定预留，不跟着 has-heading-navigator 切换，免得正文重排。 */
 @container chat-reading (min-width: 1000px) {
   .has-message-navigator .chat-message-list-inner--wide {
-    padding-right: 3.25rem;
+    padding-right: 4rem;
   }
   .chat-message-list-inner--wide {
-    padding-left: 3.25rem;
+    padding-left: 4rem;
   }
 }
 
