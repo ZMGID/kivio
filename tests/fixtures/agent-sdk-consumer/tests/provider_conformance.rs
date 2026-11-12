@@ -523,6 +523,93 @@ async fn responses_buffered_generation_accepts_sse_only_endpoints() {
 }
 
 #[tokio::test]
+async fn chat_cache_usage_survives_compatible_fields_and_partial_stream_tails() {
+    for fields in [
+        json!({"prompt_tokens_details":{"cached_tokens":80,"cache_write_tokens":10}}),
+        json!({"cache_read_input_tokens":80,"cache_creation_input_tokens":10}),
+        json!({"cached_tokens":80,"cache_creation_input_tokens":10}),
+        json!({"prompt_cache_hit_tokens":80,"cache_creation_input_tokens":10}),
+    ] {
+        let mut usage = json!({"prompt_tokens":100,"completion_tokens":0});
+        usage
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        let stream = format!(
+            "{}{}{}data: [DONE]\n\n",
+            event(json!({"choices":[{"delta":{"content":"answer"}}],"usage":usage})),
+            event(
+                json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"completion_tokens":5}})
+            ),
+            event(json!({"choices":[],"usage":null})),
+        );
+        usage["completion_tokens"] = json!(5);
+        usage["total_tokens"] = json!(105);
+        let server = ProtocolCase::Chat.server("/cache", vec![
+            Response::Sse(stream),
+            Response::Json(json!({"choices":[{"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],"usage":usage})),
+        ]).await;
+        let provider = ProtocolCase::Chat.provider(&server);
+        let mut sink = Sink::default();
+        let streamed = LanguageModelProvider::stream(provider.as_ref(), request(), &mut sink)
+            .await
+            .unwrap();
+        let buffered = LanguageModelProvider::generate(provider.as_ref(), request())
+            .await
+            .unwrap();
+        for output in [streamed, buffered] {
+            assert_eq!(output.text, "answer");
+            let usage = output.usage.unwrap();
+            assert_eq!(
+                (usage.input_tokens, usage.output_tokens, usage.total_tokens),
+                (Some(100), Some(5), Some(105))
+            );
+            assert_eq!(
+                (usage.cached_input_tokens, usage.cache_creation_input_tokens),
+                (Some(80), Some(10))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn anthropic_output_only_delta_preserves_disjoint_cache_usage() {
+    let case = ProtocolCase::Anthropic;
+    let stream = format!(
+        "{}{}{}{}",
+        event(json!({"type":"message_start","message":{"usage":{
+            "input_tokens":10,"output_tokens":0,"cache_read_input_tokens":80,"cache_creation_input_tokens":10
+        }}})),
+        case.delta("answer"),
+        event(
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}})
+        ),
+        event(json!({"type":"message_stop"})),
+    );
+    let server = case
+        .server("/native-cache", vec![Response::Sse(stream)])
+        .await;
+    let provider = case.provider(&server);
+    let mut sink = Sink::default();
+    let output = LanguageModelProvider::stream(provider.as_ref(), request(), &mut sink)
+        .await
+        .unwrap();
+    let usage = output.usage.unwrap();
+    assert_eq!(
+        (usage.input_tokens, usage.output_tokens),
+        (Some(10), Some(5))
+    );
+    assert_eq!(
+        (usage.cached_input_tokens, usage.cache_creation_input_tokens),
+        (Some(80), Some(10))
+    );
+    assert_eq!(
+        kivio_agent_sdk::model::context_usage::prompt_tokens(&usage, "anthropic_messages"),
+        Some(100)
+    );
+}
+
+#[tokio::test]
 async fn anthropic_native_continuations_keep_final_usage_separate_from_billing() {
     let case = ProtocolCase::Anthropic;
     for streamed in [false, true] {

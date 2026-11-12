@@ -1,6 +1,6 @@
 //! Shared OpenAI-compatible Chat Completions wire protocol and host-configured HTTP provider.
 use super::error::provider_error_code;
-use super::usage::{model_usage_from_openai_value, model_usage_from_stream_value};
+use super::usage::model_usage_from_openai_value;
 use super::{
     openai_messages_from_generate_request, pending_tool_calls_from_openai_message,
     stream_read_error, FinishReason, GenerateOutput, GenerateRequest, GeneratedImageData,
@@ -247,14 +247,31 @@ pub async fn decode_chat_stream(
                 let code = provider_error_code(error);
                 return Err(ModelError::from_provider_stream(code.as_deref(), message));
             }
-            if let Some(next_usage) = model_usage_from_stream_value(&value) {
-                if let Some(input_tokens) = next_usage.input_tokens {
+            if let Some(next) = model_usage_from_openai_value(&value) {
+                let current = usage.get_or_insert_with(ModelUsage::default);
+                current.input_tokens = next.input_tokens.or(current.input_tokens);
+                current.output_tokens = next.output_tokens.or(current.output_tokens);
+                current.cached_input_tokens =
+                    next.cached_input_tokens.or(current.cached_input_tokens);
+                current.cache_creation_input_tokens = next
+                    .cache_creation_input_tokens
+                    .or(current.cache_creation_input_tokens);
+                current.reasoning_tokens = next.reasoning_tokens.or(current.reasoning_tokens);
+                current.total_tokens = next
+                    .total_tokens
+                    .or_else(|| {
+                        current
+                            .input_tokens
+                            .zip(current.output_tokens)
+                            .map(|(input, output)| input.saturating_add(output))
+                    })
+                    .or(current.total_tokens);
+                if let Some(input_tokens) = current.input_tokens {
                     sink.emit(StreamPart::ContextUsage {
                         input_tokens,
-                        output_tokens: next_usage.output_tokens.unwrap_or(0),
+                        output_tokens: current.output_tokens.unwrap_or(0),
                     })?;
                 }
-                usage = Some(next_usage);
             }
             if let Some(reason) = openai_stream_finish_reason(&value) {
                 finish_reason = Some(FinishReason::from_openai(reason));
