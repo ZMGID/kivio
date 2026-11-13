@@ -106,7 +106,7 @@ function Harness() {
   };
   return React.createElement('div', {className:'chat-main-pane', style:{height:'100vh', width:narrow?'calc(100% - 260px)':'100%', display:'flex', flexDirection:'column'}},
     React.createElement(React.Profiler, {id:'acceptance-list', onRender:onChatPerfProfiler},
-      React.createElement(MessageList, {key:`${id}:${mount}`, conversationId:id, messages:fixtures[id].messages})));
+      React.createElement(MessageList, {key:mount, conversationId:id, messages:fixtures[id].messages})));
 }
 createRoot(document.getElementById('root')).render(React.createElement(Harness));
 </script></body></html>

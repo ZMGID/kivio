@@ -416,7 +416,9 @@ function MessageListBase({
 
   // A committed answer adopts its live key for both measurements and React
   // identity. Live and historical rows share a parent in renderTail below.
-  const liveRowModelRef = useRef(createLiveRowModel())
+  // A discarded conversation render must not reset the committed list's row identities.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- conversationId owns this mutable model's lifetime.
+  const liveRowModel = useMemo(() => createLiveRowModel(), [conversationId])
   const historyAssistantIds = useMemo(
     () => messages.filter((message) => message.role === 'assistant').map((message) => message.id),
     [messages],
@@ -429,7 +431,6 @@ function MessageListBase({
     }
     return ids
   }, [messages])
-  const liveRowModel = liveRowModelRef.current
   const { liveKey: liveRowKey } = liveRowModel.sync({
     conversationId,
     liveActive: liveRowActive,

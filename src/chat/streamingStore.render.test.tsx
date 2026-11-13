@@ -1,4 +1,4 @@
-import { StrictMode, memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { StrictMode, Suspense, memo, startTransition, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
@@ -73,6 +73,61 @@ function message(id: number): ChatMessage {
 }
 
 describe('MessageList ← streamingStore 集成', () => {
+  it.each([false, true])('keeps rows distinct after an interrupted switch (StrictMode: %s)', async strict => {
+    const user: ChatMessage = { id: 'switch-user', role: 'user', content: 'Question', timestamp: 1 }
+    const answer: ChatMessage = { id: 'switch-answer', role: 'assistant', content: 'Finished answer', timestamp: 2 }
+    const other: ChatMessage[] = [{ id: 'other-user', role: 'user', content: 'Other conversation', timestamp: 1 }]
+    const history = [user, answer]
+    let select!: (id: string) => void
+    let suspended = false
+    const pending = new Promise<void>(() => {})
+    function Gate({ id }: { id: string }) {
+      if (id === 'other') { suspended = true; throw pending }
+      return null
+    }
+    function Harness() {
+      const [id, setId] = useState('original')
+      select = setId
+      return <Suspense fallback="Loading">
+        <MessageList conversationId={id} messages={id === 'original' ? history : other} />
+        <Gate id={id} />
+      </Suspense>
+    }
+    act(() => {
+      setSnapshot(snapWith({ messageId: answer.id, content: answer.content, streaming: true }))
+      setCoarse({ streaming: true })
+    })
+    const { container } = render(strict ? <StrictMode><Harness /></StrictMode> : <Harness />)
+    await flush()
+    act(() => { setCoarse({ streaming: false }); setSnapshot(snapWith({})) })
+    await flush()
+    expect(container.querySelectorAll(`[data-message-id="${answer.id}"]`)).toHaveLength(1)
+    act(() => {
+      setSnapshot(snapWith({ messageId: 'next-answer', content: 'New streamed answer', streaming: true }))
+      setCoarse({ streaming: true })
+    })
+    await flush()
+    const historicalRow = container.querySelector(`[data-message-id="${answer.id}"]`)
+    const liveRow = container.querySelector('[data-message-id="next-answer"]')
+    // Render B without committing it, then resume A while its stream keeps updating.
+    act(() => { startTransition(() => select('other')) })
+    await flush()
+    expect(suspended).toBe(true)
+    act(() => {
+      select('original')
+      patchSnapshot({ content: 'New streamed answer continued' })
+    })
+    await flush()
+    expect(container.querySelectorAll(`[data-message-id="${answer.id}"]`)).toHaveLength(1)
+    expect(container.querySelectorAll('[data-message-id="next-answer"]')).toHaveLength(1)
+    expect(container.querySelector(`[data-message-id="${answer.id}"]`)).toBe(historicalRow)
+    expect(container.querySelector('[data-message-id="next-answer"]')).toBe(liveRow)
+    act(() => select('third'))
+    await flush()
+    expect(container.querySelector(`[data-message-id="${answer.id}"]`)).toBeNull()
+    expect(container.textContent).not.toContain('Finished answer')
+  })
+
   it.each([0, 2])('preserves the transcript while a completed send waits for React history commit (prior messages: %s)', async (historyCount) => {
     const conversationId = `empty-handoff-${historyCount}`
     const history = Array.from({ length: historyCount }, (_, index) => message(index))
