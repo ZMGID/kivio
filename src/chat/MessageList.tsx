@@ -388,7 +388,8 @@ function MessageListBase({
           active,
           open,
           showHeader: index === 0,
-          foldAnswer: message.role === 'assistant' && (active || includeLive || message !== lastAnswer)
+          foldAnswer: message.role === 'assistant' && !active && !includeLive && message !== lastAnswer
+            && !message.segments?.some(segment => segment.kind === 'text' && segment.phase === 'answer')
             && (!outcome || outcome === 'completed'),
           onOpenChange,
         })
@@ -411,7 +412,9 @@ function MessageListBase({
           || Boolean((message.tool_calls ?? message.toolCalls)?.some(isNativeTaskToolCall))
         if (visible.has(message.id)) {
           rows.push(message)
-          if (!(message.irc_message ?? message.ircMessage) && message.content.trim()) lastAnswer = message
+          if (!(message.irc_message ?? message.ircMessage)
+            && (message.content.trim() || message.segments?.some(segment =>
+              segment.kind === 'text' && segment.text?.trim()))) lastAnswer = message
         }
       }
     }

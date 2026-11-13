@@ -57,7 +57,7 @@ async fn offline_replay_recorded_codex_turn_emits_text_usage_and_delivery() {
         match event {
             UnifiedAgentEvent::TextDelta { delta }
             | UnifiedAgentEvent::TextItemDelta { delta, .. } => text.push_str(&delta),
-            UnifiedAgentEvent::TextItemCompleted { id, text } => completed.push((id, text)),
+            UnifiedAgentEvent::TextItemCompleted { id, text, .. } => completed.push((id, text)),
             UnifiedAgentEvent::Usage { usage: value } => usage = Some(value),
             _ => {}
         }

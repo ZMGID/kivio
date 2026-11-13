@@ -2482,13 +2482,22 @@
       "type": "object"
     },
     "ChatSegmentPhase": {
-      "enum": [
-        "auxiliary",
-        "plain",
-        "tool_loop",
-        "synthesis"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "auxiliary",
+            "plain",
+            "tool_loop",
+            "synthesis"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "answer",
+          "description": "Explicit provider answer, including a partial answer.",
+          "type": "string"
+        }
+      ]
     },
     "ChatTodoItemPayload": {
       "additionalProperties": false,

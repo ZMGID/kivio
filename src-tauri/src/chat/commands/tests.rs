@@ -5179,3 +5179,26 @@ fn maintenance_review_history_deletion_rejects_old_delivery_receipts() {
             .all(|message| message.id != removed));
     }
 }
+
+#[test]
+fn explicit_answer_survives_storage_normalization() {
+    let segment = ChatMessageSegment {
+        id: "answer".into(),
+        kind: ChatMessageSegmentKind::Text,
+        phase: ChatMessageSegmentPhase::Answer,
+        order: 1,
+        step_number: None,
+        round: None,
+        text: Some("Complete answer".into()),
+        tool_call_id: None,
+    };
+    let segments = normalize_assistant_segments("Complete answer", None, &[], vec![segment]);
+    assert_eq!(segments.len(), 1);
+    assert_eq!(
+        content_from_segments(&segments).as_deref(),
+        Some("Complete answer")
+    );
+    let saved = serde_json::to_string(&segments).unwrap();
+    let restored: Vec<ChatMessageSegment> = serde_json::from_str(&saved).unwrap();
+    assert_eq!(restored[0].phase, ChatMessageSegmentPhase::Answer);
+}

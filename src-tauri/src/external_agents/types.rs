@@ -601,6 +601,7 @@ pub enum UnifiedAgentEvent {
     TextItemCompleted {
         id: String,
         text: String,
+        is_answer: bool,
     },
     /// The CLI has cleared this request; withdraw its existing host card and waiter.
     InteractionResolved {

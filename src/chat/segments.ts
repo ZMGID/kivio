@@ -522,21 +522,18 @@ export function groupTimelineSegments(
   const presentations = new Set(orderedSegments.filter(segment =>
     segment.kind === 'tool' && isPresentation?.(segment)))
   let lastProcessIndex = -1
-  let lastActivityIndex = -1
   orderedSegments.forEach((segment, index) => {
     if (presentations.has(segment) || isSubagentTimelineSegment(segment)) return
-    if (segmentHasContent(segment) && segment.kind !== 'text') {
-      lastActivityIndex = index
-    }
     if (segmentHasContent(segment) && (segment.kind !== 'text'
       || segment.phase === 'tool_loop' || segment.phase === 'auxiliary')) {
       lastProcessIndex = index
     }
   })
   const hasFinalAnswer = orderedSegments.some((segment, index) =>
-    index > lastProcessIndex && segment.kind === 'text' && segmentHasContent(segment)
+    segment.kind === 'text' && segmentHasContent(segment)
     && !/^seg_\d+_cancelled_synthesis$/.test(segment.id)
-    && (segment.phase === 'plain' || segment.phase === 'synthesis'))
+    && (segment.phase === 'answer' || (index > lastProcessIndex
+      && (segment.phase === 'plain' || segment.phase === 'synthesis'))))
   const hasCancellationNotice = orderedSegments.some(segment =>
     segment.kind === 'text' && segmentHasContent(segment)
     && /^seg_\d+_cancelled_synthesis$/.test(segment.id))
@@ -547,23 +544,17 @@ export function groupTimelineSegments(
     body.push({ type: 'group', segments: process })
     process = []
   }
-  orderedSegments.forEach((segment, index) => {
+  orderedSegments.forEach((segment) => {
     if (!segmentHasContent(segment)) return
     if (presentations.has(segment)) {
       flushProcess()
       body.push({ type: 'presentation', segment })
       return
     }
-    const foldText = state === 'running'
-      // A live model reply still carries tool_loop until the round finishes.
-      // Only subsequent reasoning/tools establish that it was progress text;
-      // its phase alone must not pull the streaming answer above deliveries.
-      ? index <= lastActivityIndex
-      // Stopping does not turn explicit progress into a final answer. Keep this
-      // independent of the saved outcome, which older history may not contain.
-      : ((segment.phase === 'tool_loop' || segment.phase === 'auxiliary')
-          && (state === 'stopped' || hasCancellationNotice || hasFinalAnswer || index <= lastActivityIndex))
-        || (hasFinalAnswer && index <= lastProcessIndex)
+    // Unknown legacy text stays readable; tool order alone does not prove commentary.
+    const foldText = state !== 'running'
+      && (segment.phase === 'tool_loop' || segment.phase === 'auxiliary')
+      && (state === 'stopped' || hasCancellationNotice || hasFinalAnswer)
     if (segment.kind === 'text' && !foldText) {
       flushProcess()
       body.push({ type: 'text', segment })

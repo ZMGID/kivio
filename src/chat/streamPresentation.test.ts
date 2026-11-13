@@ -8,6 +8,20 @@ const event = (type: string, runId: string, delta?: string): ChatStreamPayload =
 } as ChatStreamPayload)
 
 describe('conversation stream presentation', () => {
+  it('applies an answer phase update without appending duplicate text', () => {
+    const snapshot = createEmptyStreamSnapshot()
+    snapshot.runId = 'run-a'
+    snapshot.content = 'Answer'
+    snapshot.segments = [{ id: 'answer', kind: 'text', phase: 'plain', order: 1, text: 'Answer' }]
+    applyConversationStreamEvent(snapshot, {
+      ...event('text_delta', 'run-a', ''),
+      segment: { id: 'answer', kind: 'text', phase: 'answer', order: 1, text: 'Answer',
+        stepNumber: null, round: null, toolCallId: null },
+    } as ChatStreamPayload)
+    expect(snapshot.content).toBe('Answer')
+    expect(snapshot.segments).toHaveLength(1)
+    expect(snapshot.segments[0].phase).toBe('answer')
+  })
 
   it('applies a final text correction without moving other timeline items and rejects stale runs', () => {
     const snapshot = createEmptyStreamSnapshot()

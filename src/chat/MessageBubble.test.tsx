@@ -1011,7 +1011,7 @@ describe('MessageBubble timeline grouping', () => {
     expect(screen.getAllByText('file-0.ts').length).toBeGreaterThan(0)
   })
 
-  it('folds text between tools when a legacy content fallback supplies the final answer', () => {
+  it('preserves text between tools when a legacy content fallback supplies the final answer', () => {
     const message: ChatMessage = {
       id: 'msg-3',
       role: 'assistant',
@@ -1030,7 +1030,7 @@ describe('MessageBubble timeline grouping', () => {
 
     render(<MessageBubble message={message} />)
     expect(screen.getAllByLabelText('过程分组')).toHaveLength(1)
-    expect(screen.queryByText('middle')).not.toBeInTheDocument()
+    expect(screen.getByText('middle')).toBeVisible()
     expect(screen.getByText('final')).toBeVisible()
   })
 
@@ -1287,8 +1287,8 @@ describe('MessageBubble explicit artifact presentation', () => {
     assertOrder()
     expect(screen.getAllByRole('button', { name: 'Working' })).toEqual([work])
     fireEvent.click(work)
-    expect(screen.queryByText('Verify video after delivery')).not.toBeInTheDocument()
-    expect(screen.queryByText('Cleanup after second delivery')).not.toBeInTheDocument()
+    expect(screen.getByText('Verify video after delivery')).toBeVisible()
+    expect(screen.getByText('Cleanup after second delivery')).toBeVisible()
     expect(preview).toBeVisible()
     expect(screen.getByText('Second delivery')).toBeVisible()
     const finished: ChatMessage = { ...continuing, stream_outcome: outcome, segments: [...continuing.segments!,

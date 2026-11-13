@@ -103,7 +103,9 @@ fn message_body_text(message: &ChatMessage) -> String {
             .is_some_and(|order| !order.is_empty() && order.bytes().all(|b| b.is_ascii_digit()))
             && matches!(
                 segment.phase,
-                ChatMessageSegmentPhase::Plain | ChatMessageSegmentPhase::Synthesis
+                ChatMessageSegmentPhase::Plain
+                    | ChatMessageSegmentPhase::Synthesis
+                    | ChatMessageSegmentPhase::Answer
             );
         if synthesized && text == parts.join("\n\n") {
             continue;
@@ -111,7 +113,9 @@ fn message_body_text(message: &ChatMessage) -> String {
         parts.push(text);
         if matches!(
             segment.phase,
-            ChatMessageSegmentPhase::Plain | ChatMessageSegmentPhase::Synthesis
+            ChatMessageSegmentPhase::Plain
+                | ChatMessageSegmentPhase::Synthesis
+                | ChatMessageSegmentPhase::Answer
         ) {
             final_parts.push(text);
         }

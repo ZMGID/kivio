@@ -167,6 +167,20 @@ describe('sub-agent result receipts in the parent timeline', () => {
     expect(screen.getByText('Final audit result.')).toBeVisible()
   })
 
+  it('keeps an explicit answer visible across automatic continuations', () => {
+    render(<MessageList conversationId="answer-continuation" messages={[
+      { id: 'user', role: 'user', content: 'Inspect', timestamp: 1 },
+      { id: 'answer', role: 'assistant', content: '', timestamp: 2, segments: [
+        { id: 'body', kind: 'text', phase: 'answer', order: 1, text: 'Complete findings' },
+      ] },
+      { id: 'subagent-result-worker', role: 'assistant', content: 'Internal receipt', timestamp: 3 },
+      { id: 'supplement', role: 'assistant', content: 'Follow-up note', timestamp: 4 },
+    ]} />)
+    expect(screen.getByText('Complete findings')).toBeVisible()
+    expect(screen.getByText('Follow-up note')).toBeVisible()
+    expect(screen.queryByText('Internal receipt')).not.toBeInTheDocument()
+  })
+
   it('does not hide user or assistant text just because it quotes a worker header', () => {
     render(<MessageList conversationId="subagent-quote" messages={[
       { id: 'question', role: 'user', content: '[Sub-agent: A · Completed] 是什么？', timestamp: 1 },

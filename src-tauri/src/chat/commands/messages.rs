@@ -838,7 +838,9 @@ pub(super) fn content_from_segments(segments: &[ChatMessageSegment]) -> Option<S
         segment.kind == ChatMessageSegmentKind::Text
             && matches!(
                 segment.phase,
-                ChatMessageSegmentPhase::Plain | ChatMessageSegmentPhase::Synthesis
+                ChatMessageSegmentPhase::Plain
+                    | ChatMessageSegmentPhase::Synthesis
+                    | ChatMessageSegmentPhase::Answer
             )
     });
     if content.trim().is_empty() {
@@ -907,7 +909,9 @@ pub(super) fn replace_final_text_segments_for_edit(message: &mut ChatMessage, co
         !(segment.kind == ChatMessageSegmentKind::Text
             && matches!(
                 segment.phase,
-                ChatMessageSegmentPhase::Plain | ChatMessageSegmentPhase::Synthesis
+                ChatMessageSegmentPhase::Plain
+                    | ChatMessageSegmentPhase::Synthesis
+                    | ChatMessageSegmentPhase::Answer
             ))
     });
     let order = next_segment_order(&segments);

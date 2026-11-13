@@ -52,7 +52,7 @@ interface ChatMarkdownProps {
   /** 用于把外置 artifact（path + 缩略图）还原成整图 */
   conversationId?: string | null
   onImageClick?: (src: string, alt: string, name?: string) => void
-  variant?: 'default' | 'reasoning' | 'process' | 'lens' | 'lens-muted'
+  variant?: 'default' | 'reasoning' | 'lens' | 'lens-muted'
   /** 引用：把答案里的 `[n]` 渲染成可点来源片段（n → KB 命中片段或联网来源）。 */
   citations?: Map<number, CitationView>
   /** 已完成助手回答才传入；ChatMarkdown 负责把同一份规范化 Markdown 的标题注册给消息目录。 */
@@ -80,8 +80,6 @@ function markdownShellClass(variant: ChatMarkdownProps['variant']): string {
   switch (variant) {
     case 'reasoning':
       return 'chat-markdown chat-reasoning-markdown max-w-none break-words text-sm leading-relaxed text-neutral-400 dark:text-neutral-500'
-    case 'process':
-      return 'chat-markdown max-w-none break-words text-[14px] leading-6 text-[var(--text-muted)]'
     case 'lens':
       return 'chat-markdown max-w-none break-words text-[13.5px] leading-7 text-neutral-800'
     case 'lens-muted':

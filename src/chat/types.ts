@@ -1,5 +1,5 @@
 // Chat 前端类型定义
-import type { CapabilitySupport, ChatSegmentKind } from '../generated/chatProtocol'
+import type { CapabilitySupport, ChatSegmentKind, ChatSegmentPhase } from '../generated/chatProtocol'
 
 export type ToolCallStatus =
   | 'pending'
@@ -152,7 +152,7 @@ export interface ChatToolArtifact {
 
 export type ChatMessageSegmentKind = ChatSegmentKind
 
-export type ChatMessageSegmentPhase = 'auxiliary' | 'plain' | 'tool_loop' | 'synthesis'
+export type ChatMessageSegmentPhase = ChatSegmentPhase
 
 /** 降级兜底的结构化描述（后端 recovery.rs 产出）。 */
 export interface DegradedAnswer {

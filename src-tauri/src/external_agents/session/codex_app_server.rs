@@ -873,6 +873,10 @@ fn emit_thread_item(
                     sink(UnifiedAgentEvent::TextItemCompleted {
                         id,
                         text: text.to_string(),
+                        is_answer: matches!(
+                            item.get("phase").and_then(Value::as_str),
+                            Some("final_answer" | "partial_answer")
+                        ),
                     });
                 }
             }
@@ -4074,6 +4078,28 @@ mod tests {
             .as_std()
             .get_envs()
             .any(|(key, value)| key == "CODEX_HOME" && value.is_some()));
+    }
+
+    #[test]
+    fn completed_message_preserves_explicit_answer_classification() {
+        for (phase, expected) in [
+            ("final_answer", true),
+            ("partial_answer", true),
+            ("commentary", false),
+            ("unknown", false),
+        ] {
+            let mut events = Vec::new();
+            map_codex_notification(
+                "item/completed",
+                &json!({"item": {"type": "agentMessage", "id": "answer", "text": "Body", "phase": phase}}),
+                &mut HashSet::new(),
+                &mut None,
+                &mut |event| events.push(event),
+            );
+            assert!(
+                matches!(&events[0], UnifiedAgentEvent::TextItemCompleted { is_answer, .. } if *is_answer == expected)
+            );
+        }
     }
 
     #[test]

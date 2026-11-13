@@ -404,6 +404,8 @@ pub enum ChatMessageSegmentPhase {
     Plain,
     ToolLoop,
     Synthesis,
+    /// Explicit provider answer, including a partial answer.
+    Answer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

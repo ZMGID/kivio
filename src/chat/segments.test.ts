@@ -95,12 +95,12 @@ describe('groupTimelineSegments', () => {
     expect(items[0].type === 'group' && items[0].segments.map(s => s.id)).toEqual(['note', 't'])
   })
 
-  it.each(['completed', 'stopped'] as const)('folds explicit process text without a final answer when %s', state => {
+  it.each(['completed', 'stopped'] as const)('keeps unfinished text readable on completion and respects explicit stop when %s', state => {
     const items = groupTimelineSegments([
       segment({ id: 'note', kind: 'text', phase: 'tool_loop', order: 1, text: 'Progress so far' }),
       toolSegment('t', 2, 'call'),
     ], state)
-    expect(items.map(item => item.type)).toEqual(['group'])
+    expect(items.map(item => item.type)).toEqual(state === 'stopped' ? ['group'] : ['text', 'group'])
   })
 
   it('keeps every trailing final-answer segment and folds earlier commentary', () => {
@@ -188,15 +188,15 @@ describe('groupTimelineSegments', () => {
     expect(items[1].type === 'text' && items[1].segment.id).toBe('txt')
   })
 
-  it('folds leading plain text once a final answer exists', () => {
+  it('preserves unclassified plain text when a later answer exists', () => {
     const items = groupTimelineSegments([
       segment({ id: 'intro', kind: 'text', order: 1, text: 'I will read the file' }),
       toolSegment('t1', 2, 'call-1'),
       segment({ id: 'ans', kind: 'text', order: 3, phase: 'synthesis', text: 'done' }),
     ])
-    expect(items.map(item => item.type)).toEqual(['group', 'text'])
-    expect(items[0].type === 'group' && items[0].segments[0].id).toBe('intro')
-    expect(items[1].type === 'text' && items[1].segment.id).toBe('ans')
+    expect(items.map(item => item.type)).toEqual(['text', 'group', 'text'])
+    expect(items[0].type === 'text' && items[0].segment.id).toBe('intro')
+    expect(items[2].type === 'text' && items[2].segment.id).toBe('ans')
   })
 
   it('groups a pure reasoning run', () => {

@@ -57,7 +57,7 @@ export type SubagentTimelineEntry = { agentId: string, name: string, status: Sub
 
 export type ChatSegmentKind = "text" | "reasoning" | "tool" | { "subagent": SubagentTimelineEntry };
 
-export type ChatSegmentPhase = "auxiliary" | "plain" | "tool_loop" | "synthesis";
+export type ChatSegmentPhase = "auxiliary" | "plain" | "tool_loop" | "synthesis" | "answer";
 
 export type ChatSegmentPayload = { id: string, kind: ChatSegmentKind, phase: ChatSegmentPhase, order: number, stepNumber: number | null, round: number | null, text: string | null, toolCallId: string | null, };
 

@@ -556,14 +556,12 @@ function TimelineTextSegment({
   artifacts,
   citations,
   conversationId,
-  process = false,
   outlineSource,
 }: {
   segment: ChatMessageSegment
   artifacts: ChatToolArtifact[]
   citations?: Map<number, CitationView>
   conversationId?: string | null
-  process?: boolean
   outlineSource?: ChatMarkdownOutlineSource
 }) {
   const text = segmentText(segment).trim()
@@ -576,7 +574,6 @@ function TimelineTextSegment({
       citations={citations}
       onImageClick={handleChatImageClick}
       outlineSource={outlineSource}
-      variant={process ? 'process' : undefined}
     />
   )
 }
@@ -635,7 +632,6 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
       artifacts={artifacts}
       citations={citations}
       conversationId={conversationId}
-      process
     />
   )
 }, (previous, next) => {

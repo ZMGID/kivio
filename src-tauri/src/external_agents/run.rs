@@ -1290,11 +1290,17 @@ impl StreamSegmentTracker {
         segments: &mut Vec<ChatMessageSegment>,
         segment_order: &mut u32,
         tool_calls_len: usize,
+        is_answer: bool,
     ) -> Option<(ChatMessageSegment, Option<String>)> {
         if let Some(index) = self.native_text_items.get(id).copied() {
+            let phase_changed =
+                is_answer && segments[index].phase != ChatMessageSegmentPhase::Answer;
+            if is_answer {
+                segments[index].phase = ChatMessageSegmentPhase::Answer;
+            }
             let previous = segments[index].text.as_deref().unwrap_or_default();
             if previous == text {
-                return None;
+                return phase_changed.then(|| (segments[index].clone(), Some(String::new())));
             }
             if let Some(suffix) = text.strip_prefix(previous) {
                 let delta = suffix.to_string();
@@ -1311,7 +1317,11 @@ impl StreamSegmentTracker {
         if text.is_empty() {
             return None;
         }
-        let segment = self.append_text_item(id, text, segments, segment_order, tool_calls_len);
+        let mut segment = self.append_text_item(id, text, segments, segment_order, tool_calls_len);
+        if is_answer {
+            segment.phase = ChatMessageSegmentPhase::Answer;
+            segments.last_mut().unwrap().phase = ChatMessageSegmentPhase::Answer;
+        }
         Some((segment, Some(text.to_string())))
     }
 
@@ -4395,18 +4405,24 @@ fn apply_unified_event(
                 );
             }
         }
-        UnifiedAgentEvent::TextItemCompleted { id, text } => {
+        UnifiedAgentEvent::TextItemCompleted {
+            id,
+            text,
+            is_answer,
+        } => {
             if let Some((segment, delta)) = segment_tracker.complete_text_item(
                 &id,
                 &text,
                 segments,
                 segment_order,
                 tool_calls.len(),
+                is_answer,
             ) {
                 if let Some(delta) = delta {
                     content.push_str(&delta);
                     emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
                 } else {
+                    emit_chat_stream_delta(app, run_id, "", None, Some(&segment));
                     *content = segments
                         .iter()
                         .filter(|segment| segment.kind == ChatMessageSegmentKind::Text)
@@ -6476,7 +6492,7 @@ mod tests {
         tracker.append_text_item("second", "后续", &mut segments, &mut order, 1);
         let ids: Vec<_> = segments.iter().map(|s| s.id.clone()).collect();
         let (_, delta) = tracker
-            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1)
+            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1, false)
             .unwrap();
         assert!(delta.is_none());
         assert_eq!(
@@ -6491,20 +6507,43 @@ mod tests {
             vec!["最终🌱", "thought", "后续"]
         );
         assert!(tracker
-            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1)
+            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1, false)
             .is_none());
         let (_, delta) = tracker
-            .complete_text_item("second", "后续补全", &mut segments, &mut order, 1)
+            .complete_text_item("second", "后续补全", &mut segments, &mut order, 1, false)
             .unwrap();
         assert_eq!(delta.as_deref(), Some("补全"));
         let (_, delta) = tracker
-            .complete_text_item("first", "最终🌱追加", &mut segments, &mut order, 1)
+            .complete_text_item("first", "最终🌱追加", &mut segments, &mut order, 1, false)
             .unwrap();
         assert!(
             delta.is_none(),
             "an earlier item's suffix must not append after later text"
         );
         assert_eq!(segments.len(), 3);
+    }
+
+    #[test]
+    fn explicit_answer_phase_survives_unchanged_completion_and_later_tools() {
+        let mut tracker = StreamSegmentTracker::default();
+        let mut segments = Vec::new();
+        let mut order = 0;
+        tracker.append_text_item("reply", "Answer", &mut segments, &mut order, 0);
+        push_tool_segment(&mut segments, &mut order, "todo");
+        let (answer, delta) = tracker
+            .complete_text_item("reply", "Answer", &mut segments, &mut order, 1, true)
+            .unwrap();
+        assert_eq!(answer.phase, ChatMessageSegmentPhase::Answer);
+        assert_eq!(delta.as_deref(), Some(""));
+        assert_eq!(segments[0].phase, ChatMessageSegmentPhase::Answer);
+        assert_eq!(segments[1].kind, ChatMessageSegmentKind::Tool);
+        assert!(tracker
+            .complete_text_item("reply", "Answer", &mut segments, &mut order, 1, true)
+            .is_none());
+        let (answer, _) = tracker
+            .complete_text_item("cold", "Cold answer", &mut segments, &mut order, 1, true)
+            .unwrap();
+        assert_eq!(answer.phase, ChatMessageSegmentPhase::Answer);
     }
 
     #[test]

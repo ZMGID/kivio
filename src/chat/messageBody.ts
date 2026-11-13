@@ -14,10 +14,10 @@ export function messageBodySegments(message: Pick<ChatMessage, 'content' | 'segm
     // normalize_assistant_segments appended this known fallback when there was no
     // Plain/Synthesis text. Only suppress a proven copy of preceding body text.
     if (/^seg_\d+_synthesis_text$/.test(segment.id)
-      && (segment.phase === 'plain' || segment.phase === 'synthesis')
+      && (segment.phase === 'plain' || segment.phase === 'synthesis' || segment.phase === 'answer')
       && text === parts.join('\n\n')) return false
     parts.push(text)
-    if (segment.phase === 'plain' || segment.phase === 'synthesis') finalParts.push(text)
+    if (segment.phase === 'plain' || segment.phase === 'synthesis' || segment.phase === 'answer') finalParts.push(text)
     return !/^seg_\d+_cancelled_synthesis$/.test(segment.id)
   })
   // The stored content may be a mirror of a segment, a full body, or an answer
