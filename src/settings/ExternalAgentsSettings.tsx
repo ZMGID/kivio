@@ -274,7 +274,7 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
                 value={query}
                 onChange={setQuery}
                 placeholder={t.externalAgentsSearch}
-                className="!pl-6 !text-[11.5px]"
+                className="!pl-6 !text-[12px]"
               />
             </div>
             <IconButton

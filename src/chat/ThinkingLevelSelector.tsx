@@ -117,7 +117,7 @@ function ThinkingLevelSelectorBase({
         title={notice ?? t.chatThinkingLevel.replace('{level}', effectiveLabel)}
         aria-label={t.chatThinkingLevel.replace('{level}', effectiveLabel)}
       >
-        <Brain size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+        <Brain size={15} className="shrink-0 text-neutral-500" />
         <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800">
           {effectiveLabel}
         </span>

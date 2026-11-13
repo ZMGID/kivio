@@ -343,7 +343,7 @@ function CardEyebrow({ running = false }: { running?: boolean }) {
  *  状态文字流光表达）。 */
 function CardStatusMark({ status }: { status: ToolCallStatus }) {
   if (status === 'completed' || status === 'success') {
-    return <CheckCircle2 size={13} strokeWidth={1.9} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+    return <CheckCircle2 size={13} strokeWidth={1.9} className="shrink-0 text-neutral-500" />
   }
   return <StatusIcon status={status} />
 }
@@ -365,7 +365,7 @@ function CardChip({ children, tabular = false }: { children: ReactNode; tabular?
 function CardSection({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
-      <div className="mb-0.5 font-mono text-[9.5px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500">
+      <div className="mb-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-neutral-400 dark:text-neutral-500">
         {label}
       </div>
       {children}
@@ -383,7 +383,7 @@ function StreamingToolOutput({ output }: { output: string }) {
     if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
   }, [output])
   return (
-    <pre ref={ref} tabIndex={0} className="custom-scrollbar max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.5] text-neutral-500 dark:text-neutral-400">
+    <pre ref={ref} tabIndex={0} className="custom-scrollbar max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.5] text-neutral-500">
       {output}
     </pre>
   )
@@ -417,7 +417,7 @@ function ConsultCard({
   const hasBody = Boolean(children)
   const running = status === 'running'
   return (
-    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors hover:bg-neutral-100/70 dark:text-neutral-400">
+    <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors hover:bg-neutral-100/70">
       <button
         type="button"
         onClick={() => { if (hasBody) setOpen((v) => !v) }}
@@ -450,7 +450,7 @@ function ConsultCard({
 
       {hasBody && (
         <ChatDisclosureBody open={open}>
-          <div className="mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12.5px]">
+          <div className="mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12px]">
             {children}
           </div>
         </ChatDisclosureBody>
@@ -516,7 +516,7 @@ function AdvisorCard({ toolCall }: ToolCallBlockProps) {
         <>
           {question && (
             <CardSection label="Question">
-              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              <div className="whitespace-pre-wrap break-words text-neutral-500">
                 {compactText(question, 600)}
               </div>
             </CardSection>
@@ -527,7 +527,7 @@ function AdvisorCard({ toolCall }: ToolCallBlockProps) {
             </CardSection>
           )}
           {!advice && error && (
-            <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+            <div className="whitespace-pre-wrap break-words text-neutral-500">
               {error}
             </div>
           )}
@@ -666,7 +666,7 @@ function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
       statusLine={statusLine}
     >
       {nodes.length > 0 && (
-        <div className="space-y-0.5 font-mono text-[10.5px] text-neutral-500 dark:text-neutral-400">
+        <div className="space-y-0.5 font-mono text-[11px] text-neutral-500">
           {nodes.map((node) => (
             <div key={node.nodeId} className="flex min-w-0 items-center gap-1.5">
               <span className="shrink-0">
@@ -679,13 +679,13 @@ function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
       )}
       {status !== 'running' && result && (
         <CardSection label="Result">
-          <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+          <div className="whitespace-pre-wrap break-words text-neutral-500">
             {compactText(result, 800)}
           </div>
         </CardSection>
       )}
       {error && status !== 'running' && (
-        <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+        <div className="whitespace-pre-wrap break-words text-neutral-500">
           {error}
         </div>
       )}
@@ -755,7 +755,7 @@ function KnowledgeHits({ hits }: { hits: KbHitView[] }) {
           key={`${hit.n}-${idx}`}
           className="rounded-md border border-neutral-900/[0.08] bg-neutral-900/[0.02] p-2"
         >
-          <div className="flex items-center gap-1.5 text-[10.5px] font-medium text-neutral-500 dark:text-neutral-400">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-neutral-500">
             <span className="shrink-0 rounded bg-[var(--accent)]/15 px-1 text-accent">[{hit.n}]</span>
             <span className="min-w-0 truncate">
               {hit.docName}
@@ -765,7 +765,7 @@ function KnowledgeHits({ hits }: { hits: KbHitView[] }) {
               {hit.score.toFixed(2)}
             </span>
           </div>
-          <div className="mt-1 line-clamp-4 whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+          <div className="mt-1 line-clamp-4 whitespace-pre-wrap break-words text-neutral-500">
             {hit.text}
           </div>
         </div>
@@ -809,7 +809,7 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
         <>
           {query && (
             <CardSection label="Query">
-              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              <div className="whitespace-pre-wrap break-words text-neutral-500">
                 {compactText(query, 300)}
               </div>
             </CardSection>
@@ -818,13 +818,13 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
             <KnowledgeHits hits={hits} />
           ) : (
             status !== 'running' && resultText && (
-              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              <div className="whitespace-pre-wrap break-words text-neutral-500">
                 {resultText}
               </div>
             )
           )}
           {!hits && error && (
-            <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+            <div className="whitespace-pre-wrap break-words text-neutral-500">
               {error}
             </div>
           )}
@@ -855,7 +855,7 @@ function WebSources({ citations }: { citations: WebCitationView[] }) {
           title={citation.url}
         >
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="shrink-0 w-4 text-[10.5px] font-medium tabular-nums text-accent">
+            <span className="shrink-0 w-4 text-[11px] font-medium tabular-nums text-accent">
               [{citation.n}]
             </span>
             <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-700 decoration-1 underline-offset-[3px] transition-colors group-hover:text-[var(--accent)] group-hover:underline">
@@ -866,12 +866,12 @@ function WebSources({ citations }: { citations: WebCitationView[] }) {
               className="shrink-0 text-neutral-400 transition-colors group-hover:text-[var(--accent)] dark:text-neutral-500"
             />
           </div>
-          <div className="mt-0.5 truncate pl-5 text-[10.5px] leading-4 text-neutral-400 dark:text-neutral-500">
+          <div className="mt-0.5 truncate pl-5 text-[11px] leading-4 text-neutral-400 dark:text-neutral-500">
             {citation.host}
             {citation.publishedDate ? ` · ${citation.publishedDate}` : ''}
           </div>
           {citation.snippet && (
-            <div className="mt-0.5 line-clamp-3 pl-5 whitespace-pre-wrap break-words text-[11px] leading-5 text-neutral-500 dark:text-neutral-400">
+            <div className="mt-0.5 line-clamp-3 pl-5 whitespace-pre-wrap break-words text-[11px] leading-5 text-neutral-500">
               {citation.snippet}
             </div>
           )}
@@ -926,7 +926,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
         <>
           {queries.length > 0 && (
             <CardSection label="Query">
-              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              <div className="whitespace-pre-wrap break-words text-neutral-500">
                 {compactText(queries.join(' · '), 300)}
               </div>
             </CardSection>
@@ -943,14 +943,14 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
             status !== 'pending' &&
             resultText && (
               <CardSection label={t.toolCardResult}>
-                <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                <div className="whitespace-pre-wrap break-words text-neutral-500">
                   {resultText}
                 </div>
               </CardSection>
             )
           )}
           {error && (
-            <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+            <div className="whitespace-pre-wrap break-words text-neutral-500">
               {error}
             </div>
           )}
@@ -1123,10 +1123,10 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
     <div className="space-y-1.5">
       {files.length > 0 && (
         <div>
-          <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+          <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
             文件变更
           </div>
-          <div className="space-y-0.5 text-neutral-500 dark:text-neutral-400">
+          <div className="space-y-0.5 text-neutral-500">
             {files.map((file, index) => (
               <div key={`${file.path}-${index}`} className="flex min-w-0 items-center gap-1.5">
                 <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
@@ -1146,7 +1146,7 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
       )}
       {warnings.length > 0 && (
         <div>
-          <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+          <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
             警告
           </div>
           <div className="whitespace-pre-wrap break-words text-amber-600 dark:text-amber-300">
@@ -1156,10 +1156,10 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
       )}
       {diagnostics.length > 0 && (
         <div>
-          <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+          <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
             诊断
           </div>
-          <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+          <div className="whitespace-pre-wrap break-words text-neutral-500">
             {previewValue(diagnostics, 900)}
           </div>
         </div>
@@ -1827,7 +1827,7 @@ function DefaultToolCallBlock({
   const hasDetails = Boolean(argumentPreview || resultPreview || error || hasFileMutationDetails || knowledgeHits || argDiff)
 
   return (
-    <div className="not-prose mb-1 text-[12.5px] leading-5 text-neutral-500 dark:text-neutral-400">
+    <div className="not-prose mb-1 text-[12px] leading-5 text-neutral-500">
       <button
         type="button"
         onClick={() => {
@@ -1892,23 +1892,23 @@ function DefaultToolCallBlock({
           <div className="mt-1.5 ml-1.5 space-y-1.5 border-l border-neutral-900/[0.08] pl-2.5">
             {argumentPreview && (
               <div>
-                <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+                <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
                   {t.toolCardArgs}
                 </div>
-                <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                <div className="whitespace-pre-wrap break-words text-neutral-500">
                   {argumentPreview}
                 </div>
               </div>
             )}
             {resultPreview && (partialOutput || !knowledgeHits) && (
               <div>
-                <div className="text-[10.5px] font-medium text-neutral-400 dark:text-neutral-500">
+                <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
                   {t.toolCardResult}
                 </div>
                 {partialOutput ? (
                   <StreamingToolOutput output={partialOutput} />
                 ) : (
-                  <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+                  <div className="whitespace-pre-wrap break-words text-neutral-500">
                     {resultPreview}
                   </div>
                 )}
@@ -1929,7 +1929,7 @@ function DefaultToolCallBlock({
                           ? 'bg-emerald-500/10 px-2 text-emerald-800 dark:text-emerald-200'
                           : line.startsWith('-')
                             ? 'bg-red-500/10 px-2 text-red-800 dark:text-red-200'
-                            : 'px-2 text-neutral-500 dark:text-neutral-400'
+                            : 'px-2 text-neutral-500'
                       }
                     >
                       {line || ' '}
@@ -1939,7 +1939,7 @@ function DefaultToolCallBlock({
               </div>
             )}
             {error && (
-              <div className="whitespace-pre-wrap break-words text-neutral-500 dark:text-neutral-400">
+              <div className="whitespace-pre-wrap break-words text-neutral-500">
                 {error}
               </div>
             )}
@@ -2042,13 +2042,13 @@ export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = fals
   const label = (running ? t.chatViewingImages : t.chatViewedImages).replace('{n}', String(Math.max(1, count)))
 
   return (
-    <div className="not-prose mb-1 text-[12.5px] leading-5 text-neutral-500 dark:text-neutral-400">
+    <div className="not-prose mb-1 text-[12px] leading-5 text-neutral-500">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         data-chat-disclosure
-        className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[15px] leading-6 text-neutral-500 transition-colors hover:text-neutral-700 dark:text-neutral-400"
+        className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[15px] leading-6 text-neutral-500 transition-colors hover:text-neutral-700"
       >
         <Eye
           className="shrink-0 text-neutral-400 dark:text-neutral-500"

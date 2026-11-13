@@ -34,12 +34,12 @@
 /* Recipe: pick a scene to start from, then layer modifiers. Every selection reads as solid ink. */
 .kv-media-recipe-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .kv-media-recipe-head h2 { margin: 0; color: var(--text); font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
-.kv-media-recipe-lede { margin: 4px 0 12px; color: var(--text-muted); font-size: 12.5px; line-height: 1.55; }
+.kv-media-recipe-lede { margin: 4px 0 12px; color: var(--text-muted); font-size: 12px; line-height: 1.55; }
 .kv-media-scenes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 8px; margin-bottom: 6px; }
 .kv-media-idea { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text-muted); font: inherit; text-align: left; cursor: pointer; animation: kv-media-rise var(--kv-dur-normal) var(--kv-ease-standard) both; animation-delay: var(--kv-idea-delay, 0ms); }
 .kv-media-idea-art { position: relative; display: grid; place-items: center; aspect-ratio: 16 / 10; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-input); color: var(--text-faint); transition: color var(--kv-dur-fast) var(--kv-ease-out), border-color var(--kv-dur-fast) var(--kv-ease-out), box-shadow var(--kv-dur-normal) var(--kv-ease-out), transform var(--kv-dur-normal) var(--kv-ease-standard); }
 .kv-media-idea-art svg { width: 84%; height: auto; }
-.kv-media-idea-ratio { position: absolute; right: 6px; bottom: 4px; display: inline-flex; align-items: center; gap: 3px; color: var(--text-faint); font-family: var(--font-mono); font-size: 9.5px; font-variant-numeric: tabular-nums; opacity: 0; transition: opacity var(--kv-dur-fast) var(--kv-ease-out); }
+.kv-media-idea-ratio { position: absolute; right: 6px; bottom: 4px; display: inline-flex; align-items: center; gap: 3px; color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; font-variant-numeric: tabular-nums; opacity: 0; transition: opacity var(--kv-dur-fast) var(--kv-ease-out); }
 .kv-media-idea strong { overflow: hidden; padding-left: 2px; color: var(--text-muted); font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; transition: color var(--kv-dur-fast) var(--kv-ease-out); }
 .kv-media-idea:hover .kv-media-idea-art, .kv-media-idea:focus-visible .kv-media-idea-art { border-color: var(--border-strong); color: var(--text); box-shadow: 0 10px 20px -14px color-mix(in srgb, var(--text) 45%, transparent); transform: translateY(-2px); }
 .kv-media-idea:hover strong, .kv-media-idea:focus-visible strong, .kv-media-idea[aria-pressed="true"] strong { color: var(--text); }
@@ -114,14 +114,14 @@
 .kv-media-crosshair::before, .kv-media-crosshair::after { content: ''; position: absolute; background: currentColor; }
 .kv-media-crosshair::before { top: -9px; bottom: -9px; left: 50%; width: 1px; transform: translateX(-0.5px); }
 .kv-media-crosshair::after { top: 50%; right: -9px; left: -9px; height: 1px; transform: translateY(-0.5px); }
-.kv-media-canvas-tag { position: absolute; top: 10px; left: 12px; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--bg-input) 82%, transparent); color: var(--text-muted); font-family: var(--font-mono); font-size: 10.5px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.kv-media-canvas-tag { position: absolute; top: 10px; left: 12px; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--bg-input) 82%, transparent); color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; line-height: 18px; font-variant-numeric: tabular-nums; }
 .kv-media-timeline { position: absolute; right: 14px; bottom: 12px; left: 14px; display: flex; align-items: center; gap: 10px; color: var(--text-faint); }
 .kv-media-timeline-track { position: relative; display: flex; flex: 1; align-items: flex-end; justify-content: space-between; height: 9px; border-bottom: 1px solid currentColor; }
 .kv-media-timeline-track i { width: 1px; height: 4px; background: currentColor; }
 .kv-media-timeline-track i:first-child, .kv-media-timeline-track i:last-child { height: 9px; }
 .kv-media-timeline-track::after { content: ''; position: absolute; bottom: -4px; left: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: kv-media-playhead 5s linear infinite; }
 @keyframes kv-media-playhead { 0% { left: 0; } 90%, 100% { left: calc(100% - 7px); } }
-.kv-media-timeline em { font-family: var(--font-mono); font-size: 10.5px; font-style: normal; font-variant-numeric: tabular-nums; }
+.kv-media-timeline em { font-family: var(--font-mono); font-size: 11px; font-style: normal; font-variant-numeric: tabular-nums; }
 
 /* Running: soft accent light drifts behind a slow sweep, like a print developing. */
 .kv-media-develop { display: grid; place-items: center; isolation: isolate; }
@@ -172,7 +172,7 @@
 .kv-media-status.is-cancelled i { background: var(--warn); }
 .kv-media-waiting { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px 14px; border-radius: 12px; background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .kv-media-waiting p { margin: 0; color: var(--text); font-size: 13px; font-weight: 500; }
-.kv-media-waiting small { color: var(--text-muted); font-size: 11.5px; line-height: 1.5; }
+.kv-media-waiting small { color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .kv-media-waiting .kv-btn { margin-top: 6px; }
 .kv-media-job-error { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .kv-media-prompt-block { position: relative; }
@@ -195,7 +195,7 @@
 .kv-media-detail-stage .kv-media-canvas-wrap { flex: 1; min-height: 0; }
 .kv-media-detail-side { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); }
 .kv-media-detail-header { display: flex; align-items: center; gap: 2px; padding: 8px 8px 8px 18px; }
-.kv-media-detail-position { color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.kv-media-detail-position { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .kv-media-detail-spacer { flex: 1; }
 .kv-media-detail-body { display: flex; flex: 1; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; padding: 4px 18px 16px; animation: kv-media-rise var(--kv-dur-normal) var(--kv-ease-standard) both; }
 .kv-media-detail-body .kv-media-prompt { display: block; }
@@ -214,7 +214,7 @@
 .kv-media-search { display: flex; align-items: center; gap: 6px; width: 220px; min-width: 0; color: var(--text-faint); }
 .kv-media-search > svg { flex: none; }
 .kv-media-day + .kv-media-day { margin-top: 22px; }
-.kv-media-day-title { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; color: var(--text); font-size: 12.5px; font-weight: 600; }
+.kv-media-day-title { display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px; color: var(--text); font-size: 12px; font-weight: 600; }
 .kv-media-day-title span { color: var(--text-faint); font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
 /* Grow and basis both scale with the ratio, so every tile in a row shares one height; the filler keeps the last row unstretched. */
 .kv-media-wall { --kv-wall-row: 168px; display: flex; flex-wrap: wrap; gap: 8px; }
@@ -231,7 +231,7 @@
 .kv-media-cover-develop { position: absolute; inset: -30%; background: radial-gradient(closest-side at 35% 40%, color-mix(in srgb, var(--accent) 28%, transparent), transparent), radial-gradient(closest-side at 70% 65%, color-mix(in srgb, var(--accent) 16%, transparent), transparent); filter: blur(10px); animation: kv-media-drift 8s var(--kv-ease-inout) infinite alternate; }
 .kv-media-cover-kind { position: absolute; right: 8px; bottom: 8px; display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: rgb(0 0 0 / 0.5); color: #fff; transition: opacity var(--kv-dur-fast) var(--kv-ease-out); }
 .kv-media-card:hover .kv-media-cover-kind { opacity: 0; }
-.kv-media-badge { position: absolute; top: 8px; left: 8px; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; background: rgb(0 0 0 / 0.5); color: #fff; font-size: 10.5px; line-height: 18px; backdrop-filter: blur(6px); }
+.kv-media-badge { position: absolute; top: 8px; left: 8px; display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; background: rgb(0 0 0 / 0.5); color: #fff; font-size: 11px; line-height: 18px; backdrop-filter: blur(6px); }
 .kv-media-badge::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .kv-media-badge.is-running::before { animation: kv-media-breathe 1.4s var(--kv-ease-inout) infinite; }
 .kv-media-badge.is-failed, .kv-media-badge.is-interrupted { background: color-mix(in srgb, var(--danger) 88%, black); }
@@ -239,7 +239,7 @@
 .kv-media-caption { position: absolute; right: 0; bottom: 0; left: 0; display: flex; flex-direction: column; gap: 1px; padding: 26px 10px 8px; border-radius: 0 0 10px 10px; background: linear-gradient(to top, rgb(0 0 0 / 0.62), rgb(0 0 0 / 0)); color: #fff; opacity: 0; transform: translateY(4px); pointer-events: none; transition: opacity var(--kv-dur-fast) var(--kv-ease-out), transform var(--kv-dur-normal) var(--kv-ease-standard); }
 .kv-media-card:hover .kv-media-caption, .kv-media-card:focus-visible .kv-media-caption { opacity: 1; transform: none; }
 .kv-media-caption strong { overflow: hidden; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.kv-media-caption small { font-size: 10.5px; opacity: 0.8; font-variant-numeric: tabular-nums; }
+.kv-media-caption small { font-size: 11px; opacity: 0.8; font-variant-numeric: tabular-nums; }
 .kv-media-card-wrap.is-textual .kv-media-caption { padding: 10px; background: none; color: var(--text); opacity: 1; transform: none; }
 .kv-media-card-wrap.is-textual .kv-media-caption small { color: var(--text-faint); opacity: 1; }
 .kv-media-card-wrap.is-textual .kv-media-cover > svg { margin-bottom: 24px; }
@@ -260,7 +260,7 @@
 .kv-media-empty-art i:nth-child(3) { --fan: translateY(-4px); background: radial-gradient(color-mix(in srgb, var(--text) 14%, transparent) 0.75px, transparent 1px) center / 8px 8px, var(--bg-input); }
 @keyframes kv-media-fan { from { transform: translateY(6px); } to { transform: var(--fan); } }
 .kv-media-empty h3 { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
-.kv-media-empty p { margin: 0 0 10px; color: var(--text-muted); font-size: 12.5px; }
+.kv-media-empty p { margin: 0 0 10px; color: var(--text-muted); font-size: 12px; }
 
 /* ── Composer dock ── */
 .kv-media-dock { flex: none; padding: 6px var(--settings-content-inset) 12px; }
@@ -298,7 +298,7 @@
 .kv-media-generate.is-busy { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text-muted); cursor: progress; }
 .kv-media-generate:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 2px; }
 .kv-media-composer-caption { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; margin: 7px 4px 0; text-align: center; }
-.kv-media-composer-caption kbd { margin-left: 8px; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--bg-input); color: var(--text-muted); font-family: var(--font-mono); font-size: 10.5px; line-height: 15px; }
+.kv-media-composer-caption kbd { margin-left: 8px; padding: 0 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; background: var(--bg-input); color: var(--text-muted); font-family: var(--font-mono); font-size: 11px; line-height: 15px; }
 
 /* ── Narrow containers ── */
 @container kv-media (max-width: 760px) {

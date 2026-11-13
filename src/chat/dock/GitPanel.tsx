@@ -194,7 +194,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
             ) : (
               <ChevronDown size={12} strokeWidth={2} className="shrink-0 text-neutral-400" />
             )}
-            <span className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">{title}</span>
+            <span className="text-[11px] font-medium text-neutral-500">{title}</span>
             <span className="text-[10px] text-neutral-400 dark:text-neutral-500">{entries.length}</span>
           </button>
           {sectionActions}
@@ -345,7 +345,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
               className={`rounded px-2 py-0.5 text-[11px] transition-colors ${
                 view === item
                   ? 'bg-neutral-50 font-medium text-neutral-800 shadow-sm'
-                  : 'text-neutral-500 hover:text-neutral-700 dark:text-neutral-400'
+                  : 'text-neutral-500 hover:text-neutral-700'
               }`}
               onClick={() => setView(item)}
             >

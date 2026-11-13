@@ -356,7 +356,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
 
   if (!parsed) {
     return (
-      <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[11.5px] leading-5 text-neutral-400 dark:text-neutral-500">
+      <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
         <MessageSquareMore size={12} strokeWidth={1.9} className="shrink-0" />
         <span className="truncate">等待用户确认</span>
       </div>
@@ -367,7 +367,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   // 两处都渲染整张会出现两个能点的副本、焦点也会打架。
   if ((!docked || !interactionId) && parsed.phase === 'awaiting' && !parsed.async) {
     return (
-      <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[11.5px] leading-5 text-neutral-400 dark:text-neutral-500">
+      <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
         <MessageSquareMore size={12} strokeWidth={1.9} className="shrink-0" />
         <span className="truncate">等待你回答（在下方面板里选）</span>
       </div>
@@ -579,7 +579,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
               >
                 <ChevronLeft size={14} strokeWidth={2} />
               </IconButton>
-              <span className="px-0.5 text-[11.5px] tabular-nums text-neutral-500 dark:text-neutral-400">
+              <span className="px-0.5 text-[12px] tabular-nums text-neutral-500">
                 {visibleIndex + 1}/{parsed.questions.length}
               </span>
               <IconButton
@@ -647,10 +647,10 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                     }`}
                   >
                     <span
-                      className={`grid size-6 shrink-0 place-items-center rounded-md text-[11.5px] font-medium tabular-nums transition-colors ${
+                      className={`grid size-6 shrink-0 place-items-center rounded-md text-[12px] font-medium tabular-nums transition-colors ${
                         selected
                           ? 'bg-neutral-900 text-neutral-50'
-                          : 'bg-neutral-100 text-neutral-500 dark:text-neutral-400'
+                          : 'bg-neutral-100 text-neutral-500'
                       }`}
                     >
                       {selected && multiSelect ? <Check size={13} strokeWidth={2.4} /> : index + 1}
@@ -660,7 +660,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                         {option.label}
                       </span>
                       {option.description && (
-                        <span className="mt-0.5 line-clamp-2 block break-words text-[11.5px] leading-4 text-neutral-500 dark:text-neutral-400">
+                        <span className="mt-0.5 line-clamp-2 block break-words text-[12px] leading-4 text-neutral-500">
                           {option.description}
                         </span>
                       )}
@@ -755,10 +755,10 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
           <div className="space-y-2">
             {parsed.questions.map((question) => (
               <div key={question.id}>
-                <div className="break-words text-[12.5px] font-medium leading-5 text-neutral-800">
+                <div className="break-words text-[12px] font-medium leading-5 text-neutral-800">
                   {question.prompt}
                 </div>
-                <div className="mt-0.5 break-words text-[12px] leading-5 text-neutral-500 dark:text-neutral-400">
+                <div className="mt-0.5 break-words text-[12px] leading-5 text-neutral-500">
                   {parsed.async ? '此问题已收起' : readonlySummary(question, parsed.answers[question.id])}
                 </div>
               </div>

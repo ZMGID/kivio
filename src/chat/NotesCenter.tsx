@@ -456,7 +456,7 @@ export function NotesCenter() {
             <button
               type="button"
               onClick={() => setCurrentFolder(null)}
-              className="mt-4 inline-flex items-center gap-1 text-[13px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400"
+              className="mt-4 inline-flex items-center gap-1 text-[13px] text-neutral-500 hover:text-neutral-800"
             >
               <ChevronLeft size={15} />
               {t.chatNavNotes}

@@ -15,6 +15,7 @@ import type { ConversationStreamSnapshot } from './conversationRuns'
 import type { ChatMessage, Conversation } from './types'
 import { isEmptyChatPresentation } from './emptyHero'
 import * as messageNavigator from './messageNavigator'
+import * as chatPerformanceProbe from './chatPerformanceProbe'
 import { beginGroup, endGroup, resetGroups } from './groupStreamingStore'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner } from './chatStreamLifecycleOwner'
@@ -413,7 +414,7 @@ describe('MessageList ← streamingStore 集成', () => {
     expect(document.querySelectorAll('[data-message-id="msg-recovered"]')).toHaveLength(1)
   })
 
-  it('流式逐帧更新只重渲 MessageList，不波及未订阅的兄弟节点', async () => {
+  it('流式逐帧更新只重渲订阅者，不波及未订阅的兄弟节点', async () => {
     siblingRenders = 0
     mountList()
     const baseline = siblingRenders // 1
@@ -427,6 +428,27 @@ describe('MessageList ← streamingStore 集成', () => {
     expect(screen.getByText(/frame 4/)).toBeInTheDocument()
     // 兄弟节点渲染次数不变 —— 证明 store 把更新隔离到订阅者。
     expect(siblingRenders).toBe(baseline)
+  })
+
+  it('流式内容帧只重渲流式行，列表本体不随每个 token 重渲', async () => {
+    const renderProbe = vi.spyOn(chatPerformanceProbe, 'useChatPerfRenderProbe')
+    const listRenders = () => renderProbe.mock.calls.filter(([name]) => name === 'MessageList').length
+    const messages = Array.from({ length: 12 }, (_, index) => message(index))
+    render(<MessageList messages={messages} conversationId="list-render-c1" />)
+    await flush()
+
+    act(() => setCoarse({ streaming: true }))
+    act(() => setSnapshot(snapWith({ content: 'first frame', streaming: true })))
+    await flush()
+    const baseline = listRenders()
+
+    for (let i = 0; i < 8; i++) {
+      act(() => setSnapshot(snapWith({ content: `token frame ${i}`, streaming: true })))
+    }
+    await flush()
+
+    expect(screen.getByText(/token frame 7/)).toBeInTheDocument()
+    expect(listRenders()).toBe(baseline)
   })
 
   it('流式内容帧不重建历史导航索引', async () => {

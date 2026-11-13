@@ -88,7 +88,7 @@ function modelBadgeClass(model: string): string {
   if (l.includes('gpt') || /\bo[13]\b/.test(l)) return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
   if (l.includes('gemini')) return 'bg-sky-500/10 text-sky-600 dark:text-sky-300'
   if (l.includes('grok')) return 'bg-orange-500/10 text-orange-600 dark:text-orange-300'
-  return 'bg-neutral-500/10 text-neutral-500 dark:text-neutral-400'
+  return 'bg-neutral-500/10 text-neutral-500'
 }
 
 /** 来源类别徽标：短标签 + 配色（与左侧竖条同色系），未知来源退回原串。 */
@@ -108,7 +108,7 @@ const SOURCE_BADGE: Record<string, { zh: string; en: string; cls: string }> = {
 function sourceBadge(source: string, lang: string): { label: string; cls: string } {
   const m = SOURCE_BADGE[source]
   if (m) return { label: lang === 'zh' ? m.zh : m.en, cls: m.cls }
-  return { label: source, cls: 'bg-neutral-500/10 text-neutral-500 dark:text-neutral-400' }
+  return { label: source, cls: 'bg-neutral-500/10 text-neutral-500' }
 }
 
 
@@ -362,7 +362,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
           )}
           {paramKeys.length > 0 && (
             <>
-              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+              <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
                 {lang === 'zh' ? '参数' : 'Parameters'}
               </div>
               <div className="flex flex-col gap-1.5">
@@ -375,7 +375,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="font-mono text-[12px] font-semibold text-sky-600 dark:text-sky-400">{key}</span>
                         {type && (
-                          <span className="rounded bg-neutral-100 px-1 py-0.5 font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+                          <span className="rounded bg-neutral-100 px-1 py-0.5 font-mono text-[10px] text-neutral-500">
                             {type}
                           </span>
                         )}
@@ -386,7 +386,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
                         )}
                       </div>
                       {pdesc && (
-                        <div className="mt-0.5 text-[11px] leading-snug text-neutral-500 dark:text-neutral-400">{pdesc}</div>
+                        <div className="mt-0.5 text-[11px] leading-snug text-neutral-500">{pdesc}</div>
                       )}
                     </div>
                   )
@@ -608,7 +608,7 @@ function UsageBar({ record, lang }: { record: RequestDebugRecord; lang: string }
       {items.map((item) => (
         <span key={item.key} className="inline-flex items-center gap-1.5">
           <span className={`size-1.5 rounded-full ${item.dot}`} />
-          <span className="text-neutral-500 dark:text-neutral-400">{lang === 'zh' ? item.zh : item.en}</span>
+          <span className="text-neutral-500">{lang === 'zh' ? item.zh : item.en}</span>
           <span className="tabular-nums font-medium text-neutral-700">
             {(item.value as number).toLocaleString()}
           </span>
@@ -726,7 +726,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
           <Trash2 size={11} />
           {zh ? '清空' : 'Clear'}
         </Button>
-        <span className="ml-auto text-[11px] text-neutral-500 dark:text-neutral-400">
+        <span className="ml-auto text-[11px] text-neutral-500">
           {zh ? `${records.length} 条记录` : `${records.length} records`}
         </span>
       </div>
@@ -907,7 +907,7 @@ function DetailView({ selected, lang }: { selected: RequestDebugRecord; lang: st
         <>
           {/* endpoint + 操作按钮 */}
           <div className="flex flex-wrap items-center gap-2">
-            <span className="mr-auto truncate font-mono text-[11px] text-neutral-500 dark:text-neutral-400" title={selected.request.url}>
+            <span className="mr-auto truncate font-mono text-[11px] text-neutral-500" title={selected.request.url}>
               {endpointLabel(selected.request.url)}
             </span>
             <CopyButton text={requestBodyText} lang={lang} label={zh ? '请求 JSON' : 'Request JSON'} />

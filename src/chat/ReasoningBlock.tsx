@@ -116,7 +116,7 @@ export function ReasoningBlock({ reasoning: arrivedReasoning, defaultOpen = fals
   }, [open])
 
   const titleClass =
-    'mb-1 flex h-6 w-full min-w-0 items-center gap-2 text-left text-[11.5px] font-medium text-neutral-700 transition-colors'
+    'mb-1 flex h-6 w-full min-w-0 items-center gap-2 text-left text-[12px] font-medium text-neutral-700 transition-colors'
   const thinkingDuration = formatThinkingDuration(durationMs ?? liveDurationMs)
   const titleText = streaming ? 'Thinking…' : 'Thought'
   const label = <span className="inline-flex shrink-0 items-baseline gap-1.5 whitespace-nowrap">

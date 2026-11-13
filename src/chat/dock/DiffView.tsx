@@ -63,7 +63,7 @@ function DiffFileCard({ file, defaultOpen, lang }: { file: DiffFile; defaultOpen
           </span>
         )}
         {file.isBinary && (
-          <span className="shrink-0 rounded bg-neutral-500/15 px-1 text-[10px] text-neutral-500 dark:text-neutral-400">
+          <span className="shrink-0 rounded bg-neutral-500/15 px-1 text-[10px] text-neutral-500">
             {t.dockDiffBinary}
           </span>
         )}
@@ -93,7 +93,7 @@ function DiffFileCard({ file, defaultOpen, lang }: { file: DiffFile; defaultOpen
                         ? 'flex bg-emerald-500/10 text-emerald-900 dark:text-emerald-100'
                         : line.type === 'del'
                           ? 'flex bg-red-500/10 text-red-900 dark:text-red-100'
-                          : 'flex text-neutral-600 dark:text-neutral-400'
+                          : 'flex text-neutral-600'
                     }
                   >
                     <span

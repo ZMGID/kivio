@@ -30,7 +30,7 @@ const CodeLine = memo(function CodeLine({
   gutterCh: number
 }) {
   return (
-    <div className="flex font-mono text-[11.5px] leading-5">
+    <div className="flex font-mono text-[12px] leading-5">
       <span
         className="shrink-0 select-none pr-3 text-right tabular-nums text-neutral-300 dark:text-neutral-600"
         style={{ width: `${gutterCh + 2}ch` }}
@@ -111,7 +111,7 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
     <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)]">
       {/* 头部：文件名 + 路径 + 操作 */}
       <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5">
-        <span className="shrink-0 text-[12.5px] font-medium text-neutral-800">
+        <span className="shrink-0 text-[12px] font-medium text-neutral-800">
           {basenameOf(path)}
         </span>
         {path !== basenameOf(path) ? (
@@ -156,7 +156,7 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             spellCheck={false}
-            className="custom-scrollbar min-h-0 flex-1 resize-none bg-transparent px-3 py-2 font-mono text-[11.5px] leading-5 text-neutral-800 outline-none"
+            className="custom-scrollbar min-h-0 flex-1 resize-none bg-transparent px-3 py-2 font-mono text-[12px] leading-5 text-neutral-800 outline-none"
           />
           <div className="flex shrink-0 items-center gap-1.5 border-t border-neutral-200/70 px-2 py-1.5">
             {saveError && (

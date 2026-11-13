@@ -2105,7 +2105,7 @@ export default function Lens() {
               {selectionLineCount > 0 && (
                 <span
                   title={lang === 'zh' ? `已选中 ${selectionLineCount} 行` : `${selectionLineCount} lines selected`}
-                  className="select-none px-1.5 py-0.5 rounded-md bg-neutral-100 text-[11px] font-medium tabular-nums text-neutral-600 dark:text-neutral-400 ring-1 ring-neutral-900/[0.04]"
+                  className="select-none px-1.5 py-0.5 rounded-md bg-neutral-100 text-[11px] font-medium tabular-nums text-neutral-600 ring-1 ring-neutral-900/[0.04]"
                 >
                   {selectionLineCount}
                 </span>
@@ -2160,7 +2160,7 @@ export default function Lens() {
               >
                 <HistoryIcon size={15} strokeWidth={1.75} />
                 {history.length > 0 && (
-                  <span className="text-[11px] font-medium tabular-nums text-neutral-500 dark:text-neutral-400">{history.length}</span>
+                  <span className="text-[11px] font-medium tabular-nums text-neutral-500">{history.length}</span>
                 )}
                 <ChevronDown size={13} strokeWidth={2} className={`transition-transform ${historyOpen ? 'rotate-180' : ''}`} />
               </button>
@@ -2212,11 +2212,11 @@ export default function Lens() {
                             </div>
                             <div className="min-w-0 flex-1">
                               {firstUserQ && (
-                                <div className="text-[11.5px] truncate leading-tight text-neutral-800">
+                                <div className="text-[12px] truncate leading-tight text-neutral-800">
                                   {firstUserQ}
                                 </div>
                               )}
-                              <div className="text-[9.5px] text-neutral-400 dark:text-neutral-500 mt-0.5 truncate leading-tight">
+                              <div className="text-[10px] text-neutral-400 dark:text-neutral-500 mt-0.5 truncate leading-tight">
                                 {item.appLabel ? `${item.appLabel} · ` : ''}{turns > 1 ? `${turns} 轮 · ` : ''}{relTime(item.timestamp)}
                               </div>
                             </div>
@@ -2332,7 +2332,7 @@ export default function Lens() {
                   return (
                     <div key={origIdx} className={`mb-3 ${isUser ? 'flex justify-end' : ''}`}>
                       {isUser ? (
-                        <div className="px-3 py-2 rounded-2xl bg-accent-soft text-[13.5px] text-neutral-800 max-w-[88%] whitespace-pre-wrap break-words">
+                        <div className="px-3 py-2 rounded-2xl bg-accent-soft text-[13px] text-neutral-800 max-w-[88%] whitespace-pre-wrap break-words">
                           {m.content}
                         </div>
                       ) : (
@@ -2361,14 +2361,14 @@ export default function Lens() {
                           )}
                           {m.content ? (
                             sourceMode ? (
-                              <pre className="not-prose whitespace-pre-wrap break-words text-[12.5px] leading-6 font-mono bg-neutral-100 rounded-lg p-3">
+                              <pre className="not-prose whitespace-pre-wrap break-words text-[12px] leading-6 font-mono bg-neutral-100 rounded-lg p-3">
                                 {m.content}
                               </pre>
                             ) : (
                               <ChatMarkdown content={m.content} variant="lens" />
                             )
                           ) : isLast && streaming && !m.reasoning && !searchInProgress ? (
-                            <div className="not-prose flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
+                            <div className="not-prose flex items-center gap-2 text-neutral-500">
                               <Loader2 className="animate-spin" size={14} />
                               <span className="text-[12px]">{t.lensAsking}</span>
                             </div>
@@ -2427,7 +2427,7 @@ export default function Lens() {
                 )}
               </div>
             )}
-            <span className="text-[12.5px] font-medium text-neutral-700 truncate flex-1">
+            <span className="text-[12px] font-medium text-neutral-700 truncate flex-1">
               {mode === 'translateText' ? t.selectedText : (appLabel || t.lensScreenshotOf.replace('：', '').replace(':', ''))}
             </span>
             {(() => {
@@ -2435,7 +2435,7 @@ export default function Lens() {
               const seconds = elapsedMs !== null ? Math.max(1, Math.round(elapsedMs / 1000)) : null
               const tokens = formatTokens(estimateTokens(translateOriginal + translateText))
               return (
-                <span className="shrink-0 flex items-center gap-1 text-[10.5px] text-neutral-400 dark:text-neutral-500 tabular-nums">
+                <span className="shrink-0 flex items-center gap-1 text-[11px] text-neutral-400 dark:text-neutral-500 tabular-nums">
                   {seconds !== null && <span>{seconds}s</span>}
                   {translateText && <span>· ~{tokens} tokens</span>}
                 </span>
@@ -2448,11 +2448,11 @@ export default function Lens() {
             style={translateContentStyle}>
             {translateError ? (
               translateError === 'rapidocr_models_missing' ? (
-                <div className="text-[12.5px] text-amber-700 dark:text-amber-300 leading-6 whitespace-pre-wrap break-words">
+                <div className="text-[12px] text-amber-700 dark:text-amber-300 leading-6 whitespace-pre-wrap break-words">
                   {t.rapidOcrModelsMissing}
                 </div>
               ) : (
-                <div className="text-[12.5px] text-red-500 leading-6 whitespace-pre-wrap break-words">
+                <div className="text-[12px] text-red-500 leading-6 whitespace-pre-wrap break-words">
                   {t.lensError}: {translateError}
                 </div>
               )

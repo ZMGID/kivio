@@ -105,7 +105,7 @@ export function ExternalCliAccount({ agent, conversationId }: {
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <strong className="text-[13px]">{agent?.name}</strong>
-          <p className="truncate text-neutral-500 dark:text-neutral-400" title={status.account?.email ?? undefined}>
+          <p className="truncate text-neutral-500" title={status.account?.email ?? undefined}>
             {[status.account?.email, status.account?.plan].filter(Boolean).join(' · ') || (zh ? '账号信息未知' : 'Account unavailable')}
           </p>
         </div>
@@ -119,12 +119,12 @@ export function ExternalCliAccount({ agent, conversationId }: {
           <div className="h-1.5 overflow-hidden rounded-full bg-neutral-200/80 dark:bg-white/15" role="progressbar" aria-valuenow={Math.round(left)} aria-valuemin={0} aria-valuemax={100}>
             <div className="h-full rounded-full transition-[width] duration-500 ease-kv-out" style={{ width: `${left}%`, background: tone(left) }} />
           </div>
-          <p className="text-[11px] text-neutral-500 dark:text-neutral-400">{resetLabel(window.resetsAt)}</p>
+          <p className="text-[11px] text-neutral-500">{resetLabel(window.resetsAt)}</p>
         </div>
       })}
       {status.credits && <p className="flex justify-between gap-3"><span>{status.credits.label}</span><span className="tabular-nums">{status.credits.unlimited ? (zh ? '不限量' : 'Unlimited') : status.credits.balance != null ? Number(status.credits.balance).toLocaleString(undefined, { maximumFractionDigits: 2 }) : `${status.credits.used ?? '—'} / ${status.credits.limit ?? '—'} ${status.credits.currency ?? ''}`}</span></p>}
-      {status.unavailable && <p className="text-neutral-500 dark:text-neutral-400">{status.unavailable}</p>}
-      <p className="text-[11px] text-neutral-500 dark:text-neutral-400">{zh ? '更新于' : 'Updated'} {new Date(status.checkedAt * 1000).toLocaleTimeString()}</p>
+      {status.unavailable && <p className="text-neutral-500">{status.unavailable}</p>}
+      <p className="text-[11px] text-neutral-500">{zh ? '更新于' : 'Updated'} {new Date(status.checkedAt * 1000).toLocaleTimeString()}</p>
     </section></>, document.body)}
   </div>
 }

@@ -81,9 +81,9 @@ function markdownShellClass(variant: ChatMarkdownProps['variant']): string {
     case 'reasoning':
       return 'chat-markdown chat-reasoning-markdown max-w-none break-words text-sm leading-relaxed text-neutral-400 dark:text-neutral-500'
     case 'lens':
-      return 'chat-markdown max-w-none break-words text-[13.5px] leading-7 text-neutral-800'
+      return 'chat-markdown max-w-none break-words text-[13px] leading-7 text-neutral-800'
     case 'lens-muted':
-      return 'chat-markdown max-w-none break-words text-[12.5px] leading-6 text-neutral-500 dark:text-neutral-400'
+      return 'chat-markdown max-w-none break-words text-[12px] leading-6 text-neutral-500'
     default:
       return 'chat-markdown max-w-none break-words text-[15px] leading-[1.7] text-neutral-900'
   }
@@ -113,7 +113,7 @@ const syntax = {
   fn: 'text-cyan-700 dark:text-cyan-400',
   type: 'text-violet-700 dark:text-violet-400',
   number: 'text-orange-700 dark:text-orange-400',
-  punct: 'text-neutral-500 dark:text-neutral-400',
+  punct: 'text-neutral-500',
   tag: 'text-blue-700 dark:text-blue-400',
   attr: 'text-amber-700 dark:text-amber-400',
   selector: 'text-rose-700 dark:text-rose-400',
@@ -1145,7 +1145,7 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
                 <span className="min-w-0 flex-1 truncate text-left">{web.title}</span>
                 <ExternalLink size={10.5} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
               </button>
-              <span className="mb-1 block truncate text-[10.5px] text-neutral-400 dark:text-neutral-500">
+              <span className="mb-1 block truncate text-[11px] text-neutral-400 dark:text-neutral-500">
                 {web.host}
                 {web.publishedDate ? ` · ${web.publishedDate}` : ''}
               </span>

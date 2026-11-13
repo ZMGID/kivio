@@ -151,14 +151,14 @@ export function SkillStoreBrowser() {
                   className="chat-motion-fade-up group flex flex-col rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow,transform] ease-kv-standard hover:-translate-y-0.5 hover:border-neutral-300 hover:shadow-md"
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">{card.displayName}</span>
+                    <span className="truncate text-[13px] font-semibold leading-tight text-neutral-950">{card.displayName}</span>
                     {card.latestVersion && (
-                      <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10.5px] tabular-nums text-neutral-500 dark:text-neutral-400">
+                      <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] tabular-nums text-neutral-500">
                         v{card.latestVersion}
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 line-clamp-2 min-h-[2.4em] text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
+                  <p className="mt-1 line-clamp-2 min-h-[2.4em] text-[12px] leading-[1.45] text-neutral-500">
                     {card.summary || t.chatSkillNoSummary}
                   </p>
                   <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-neutral-100 pt-2.5">

@@ -55,19 +55,19 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
         <Icon size={15} strokeWidth={2} className={`mt-0.5 shrink-0 ${tone.icon}`} />
         <div className="min-w-0 flex-1">
           <div className={`text-[13px] font-medium ${tone.label}`}>{meta.label}</div>
-          <p className="mt-1 min-w-0 [overflow-wrap:anywhere] text-[12.5px] leading-relaxed text-neutral-600 dark:text-neutral-400">
+          <p className="mt-1 min-w-0 [overflow-wrap:anywhere] text-[12px] leading-relaxed text-neutral-600">
             {degraded.reason}
           </p>
 
           {detail && (
-            <pre className="custom-scrollbar mt-2 max-h-40 min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-neutral-900/[0.04] px-2.5 py-1.5 font-mono text-[11.5px] leading-relaxed text-neutral-600 dark:text-neutral-400">
+            <pre className="custom-scrollbar mt-2 max-h-40 min-w-0 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-neutral-900/[0.04] px-2.5 py-1.5 font-mono text-[12px] leading-relaxed text-neutral-600">
               {detail}
             </pre>
           )}
 
           {/* 工具结果本身已在上方的工具卡片里，这里只给一句计数指路，不再复述一遍列表。 */}
           {(degraded.totalToolCalls != null || summaries.length > 0) && (
-            <div className="mt-2 text-[11.5px] text-neutral-500 dark:text-neutral-500">
+            <div className="mt-2 text-[12px] text-neutral-500 dark:text-neutral-500">
               {degraded.totalToolCalls != null
                 ? `本轮共 ${degraded.totalToolCalls} 个工具调用，结果见上方卡片`
                 : `最近 ${summaries.length} 个工具结果，见上方卡片`}

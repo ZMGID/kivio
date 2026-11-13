@@ -99,18 +99,16 @@
 }
 
 /* 工作区面板内联展开时由它写入 --chat-details-inset：只让内容让位，滚动条仍贴窗口右缘。
-   让位与收回随面板入场/退场一起平滑过渡。 */
+   让位是一次性布局切换，不做过渡：过渡 margin / padding 会让阅读列逐帧变宽，已挂载的 Markdown、
+   代码块连续重排，虚拟列表还会按每个中间宽度重测一遍（与下方「左右侧面板开合」同一条规则）。 */
 .chat-main-pane .chat-content-inset,
 .chat-main-pane .chat-composer-footer {
   margin-right: var(--chat-details-inset, 0px);
-  transition: margin-right var(--kv-dur-normal) var(--kv-ease-standard);
 }
 
 .chat-main-pane .chat-scroll-viewport {
   margin-right: calc(0px - var(--chat-details-inset, 0px));
   padding-right: var(--chat-details-inset, 0px);
-  transition: margin-right var(--kv-dur-normal) var(--kv-ease-standard),
-    padding-right var(--kv-dur-normal) var(--kv-ease-standard);
 }
 
 .chat-message-list {
@@ -556,7 +554,7 @@
 /* 排队中的消息使用 soft 底和 faint 字，不抢走正在生成的回答的注意力。 */
 .chat-composer-queue {
   margin-bottom: 6px;
-  border-radius: 7px;
+  border-radius: 6px;
   background: var(--theme-surface-soft);
   font-size: 12px;
   color: var(--text-faint);
@@ -596,7 +594,7 @@
   gap: 5px;
   height: 22px;
   padding: 0 6px;
-  border-radius: 5px;
+  border-radius: 6px;
   color: var(--text);
   transition: background-color var(--kv-dur-instant) var(--kv-ease-out);
 }
@@ -760,7 +758,7 @@ button.chat-composer-status-item:hover {
   flex: 0 0 auto;
   align-items: center;
   border: 0;
-  border-radius: 7px;
+  border-radius: 6px;
   padding: 0 10px 0 0;
   background: transparent;
   color: var(--outline-text);
@@ -1229,7 +1227,7 @@ button.chat-composer-status-item:hover {
   .chat-composer-status {
     min-height: 28px;
     padding: 0 6px;
-    font-size: 11.5px;
+    font-size: 12px;
   }
 
   .chat-composer-footer {
@@ -1247,7 +1245,7 @@ button.chat-composer-status-item:hover {
     width: 100%;
     max-height: 38%;
     border-right: none;
-    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    border-bottom: 1px solid var(--theme-surface-border);
   }
 
 }
@@ -1519,15 +1517,15 @@ button.chat-composer-status-item:hover {
 
 /* 右键/上下文菜单：容器 popover 入场后，直接子项（菜单项）再逐项级联进入。
    仅在打开态挂载（关闭走 chat-motion-popover-out，不带此 class，避免退场时重播）。
-   纯 CSS nth-child 级联，复用 chat-motion-row 关键帧（reduced-motion 全局兜底覆盖）。 */
+   纯 CSS nth-child 级联，复用 chat-motion-row 关键帧（reduced-motion 全局兜底覆盖）。
+   菜单是高频操作：级联总延迟压在 40ms 内，最后一项与容器入场（150ms）基本同时落定，不让人等。 */
 .chat-motion-menu-cascade > * {
   animation: chat-motion-row var(--kv-dur-fast) var(--kv-ease-standard) both;
 }
-.chat-motion-menu-cascade > *:nth-child(1) { animation-delay: 20ms; }
-.chat-motion-menu-cascade > *:nth-child(2) { animation-delay: 44ms; }
-.chat-motion-menu-cascade > *:nth-child(3) { animation-delay: 68ms; }
-.chat-motion-menu-cascade > *:nth-child(4) { animation-delay: 92ms; }
-.chat-motion-menu-cascade > *:nth-child(n + 5) { animation-delay: 112ms; }
+.chat-motion-menu-cascade > *:nth-child(2) { animation-delay: 10ms; }
+.chat-motion-menu-cascade > *:nth-child(3) { animation-delay: 20ms; }
+.chat-motion-menu-cascade > *:nth-child(4) { animation-delay: 30ms; }
+.chat-motion-menu-cascade > *:nth-child(n + 5) { animation-delay: 40ms; }
 
 /* ===== 弹出菜单统一规格 =====
    之前 12 个文件各自手搓（px-3.5 py-2 / px-2.5 py-2 / gap-3 / gap-2.5 …），
@@ -1561,7 +1559,7 @@ button.chat-composer-status-item:hover {
   padding: 0 8px;
   height: 28px;
   border-radius: 6px;
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: left;
   color: var(--text);
   transition: background-color var(--kv-dur-instant) var(--kv-ease-out);
@@ -1595,7 +1593,7 @@ button.chat-composer-status-item:hover {
   padding: 0 8px;
   min-height: 28px;
   border-radius: 6px;
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: left;
 }
 
@@ -1629,7 +1627,7 @@ button.chat-composer-status-item:hover {
 /* 分组小标题 */
 .kv-menu-label {
   padding: 6px 8px 2px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -2537,7 +2535,7 @@ button.chat-composer-status-item:hover {
   background: var(--theme-surface);
   box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 12%, transparent);
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.4;
   font-variant-numeric: tabular-nums;
   white-space: normal;
@@ -2563,7 +2561,7 @@ button.chat-composer-status-item:hover {
 .chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='cache'] { background: var(--accent); }
 .chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='input'] { background: color-mix(in srgb, var(--accent) 45%, transparent); }
 .chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='output'] { background: var(--text-muted); }
-.chat-session-usage-card p { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--theme-surface-border); color: var(--text-faint); font-size: 10.5px; }
+.chat-session-usage-card p { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--theme-surface-border); color: var(--text-faint); font-size: 11px; }
 @media (prefers-reduced-motion: reduce) {
   .chat-session-usage-grid > i, .chat-session-usage[data-live] .chat-session-usage-grid > i { animation: none; }
   .chat-session-usage :is(.chat-session-usage-cost, .chat-session-usage-grid) > i, .chat-session-usage-card { transition: none; }

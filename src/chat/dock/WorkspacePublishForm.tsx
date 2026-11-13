@@ -35,7 +35,7 @@ export function WorkspacePublishForm({ workdir, defaultName, lang, busy, onPubli
   }
   if (!readiness.ready) {
     return (
-      <div className="flex items-start justify-between gap-2 px-2.5 py-2 text-[12px] text-neutral-500 dark:text-neutral-400">
+      <div className="flex items-start justify-between gap-2 px-2.5 py-2 text-[12px] text-neutral-500">
         <span className="min-w-0">{readiness.hint || t.workspacePublishUnavailable}</span>
         <Button size="sm" variant="ghost" onClick={onCancel}>{t.workspacePublishCancel}</Button>
       </div>
@@ -66,7 +66,7 @@ export function WorkspacePublishForm({ workdir, defaultName, lang, busy, onPubli
             onClick={() => setIsPrivate(option)}
             className={`flex-1 rounded-md px-2 py-1 transition-colors ${isPrivate === option
               ? 'bg-black/[0.06] font-medium text-neutral-800 dark:bg-white/[0.1] dark:text-neutral-100'
-              : 'text-neutral-500 hover:bg-black/[0.035] dark:text-neutral-400 dark:hover:bg-white/[0.06]'}`}
+              : 'text-neutral-500 hover:bg-black/[0.035] dark:hover:bg-white/[0.06]'}`}
           >
             {option ? t.workspacePublishPrivate : t.workspacePublishPublic}
           </button>

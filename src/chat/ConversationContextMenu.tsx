@@ -312,7 +312,7 @@ export function ConversationContextMenu({
             {nativeSessionId ? <Copy strokeWidth={1.75} /> : <Hash strokeWidth={1.75} />}
             <span className="min-w-0 flex-1 truncate">
               {t.chatNativeSessionId}
-              <span className="ml-1.5 font-mono text-[11px] text-neutral-500 dark:text-neutral-400">
+              <span className="ml-1.5 font-mono text-[11px] text-neutral-500">
                 {nativeSessionLoading
                   ? '…'
                   : nativeSessionId

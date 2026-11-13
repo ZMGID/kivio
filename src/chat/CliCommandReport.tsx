@@ -52,7 +52,7 @@ export function CliCommandReport({ report }: { report: CliReport }) {
     </header>
     {quota.length > 0 ? <div className="space-y-5 px-4 py-4">
       {groups.map(group => <div key={group}>
-        <h4 className="mb-3 text-xs font-semibold text-neutral-500 dark:text-neutral-400">{group}</h4>
+        <h4 className="mb-3 text-xs font-semibold text-neutral-500">{group}</h4>
         <div className="grid grid-cols-1 gap-4 min-[460px]:grid-cols-2">
           {quota.filter(row => row.group === group).map(row => <div key={row.window}>
             <div className="mb-2 flex items-baseline justify-between gap-2">
@@ -78,7 +78,7 @@ export function CliCommandReport({ report }: { report: CliReport }) {
         {visible.map((row, index) => <div key={`${row.name}:${index}`} className="flex gap-2 border-b border-neutral-900/5 py-3 last:border-0">
           <div className="min-w-0 flex-1">
             <div className={`break-words ${report.command === 'model' || report.command === 'effort' ? 'text-base font-semibold' : 'text-xs font-medium'}`}>{row.name}</div>
-            {row.value && <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">{row.value}</div>}
+            {row.value && <div className="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed text-neutral-500">{row.value}</div>}
           </div>
           {searchable && (report.command !== 'help' || row.name.startsWith('/')) && <CopyButton value={report.command === 'skills' && !row.name.startsWith('/') ? `/${row.name}` : row.name} label={`复制 ${row.name}`} />}
         </div>)}

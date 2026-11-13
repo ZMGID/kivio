@@ -94,7 +94,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
         >
           <ArrowLeft size={18} strokeWidth={1.9} />
         </IconButton>
-        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-500 dark:text-neutral-400">
+        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-neutral-100 text-neutral-500">
           <ImageIcon size={16} strokeWidth={1.8} />
         </div>
         <div className="min-w-0 flex-1">
@@ -133,7 +133,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
           >
             <Minus size={15} strokeWidth={1.9} />
           </IconButton>
-          <span className="w-12 text-center text-[12px] tabular-nums text-neutral-500 dark:text-neutral-400">
+          <span className="w-12 text-center text-[12px] tabular-nums text-neutral-500">
             {Math.round(zoom * 100)}%
           </span>
           <IconButton

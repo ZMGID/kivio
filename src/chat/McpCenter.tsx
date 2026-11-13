@@ -675,7 +675,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
     <div className="flex h-full flex-col">
       <div className="mb-2">
         <div className="text-[13px] font-medium text-neutral-800">{label}</div>
-        {desc && <p className="mt-0.5 text-[12px] text-neutral-500 dark:text-neutral-400">{desc}</p>}
+        {desc && <p className="mt-0.5 text-[12px] text-neutral-500">{desc}</p>}
       </div>
       <div className="mt-auto">
         <Select className="w-full" value={value} onChange={onChange} options={options} ariaLabel={label} />
@@ -873,7 +873,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
             <div key="advanced" className="chat-motion-tab-in mt-5 space-y-6">
               <section>
                 <div className="mb-2 text-[13px] font-semibold text-neutral-800">{t.chatMcpNativeToolsTitle}</div>
-                <p className="mb-3 text-[12px] text-neutral-500 dark:text-neutral-400">
+                <p className="mb-3 text-[12px] text-neutral-500">
                   {t.chatMcpNativeToolsDesc}
                 </p>
                 <div className="overflow-hidden rounded-md border border-neutral-200 [&>*+*]:border-t [&>*+*]:border-neutral-100 dark:[&>*+*]:border-neutral-800/70">
@@ -929,7 +929,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
                       <div key={key} className="flex items-center justify-between gap-4 px-4 py-2.5">
                         <div>
                           <div className="text-[13px] text-neutral-800">{label}</div>
-                          <p className="mt-0.5 text-[12px] text-neutral-500 dark:text-neutral-400">{description}</p>
+                          <p className="mt-0.5 text-[12px] text-neutral-500">{description}</p>
                         </div>
                         <Toggle ariaLabel={label} checked={chatTools?.[key] ?? false} onChange={(checked) => persistChatTools({ [key]: checked })} />
                       </div>
@@ -951,7 +951,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
                   <div className="mt-4">
                     <div className="mb-2">
                       <div className="text-[13px] font-medium text-neutral-800">{subagentText.allow}</div>
-                      <p className="mt-0.5 text-[12px] text-neutral-500 dark:text-neutral-400">{subagentText.allowDesc}</p>
+                      <p className="mt-0.5 text-[12px] text-neutral-500">{subagentText.allowDesc}</p>
                     </div>
                     <Input
                       aria-label={subagentText.allow}

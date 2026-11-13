@@ -483,7 +483,7 @@ function TrendChart({ points, lang }: { points: UsageTrendPoint[]; lang: string 
         )}
       </div>
       <div
-        className="relative mt-2 h-4 text-[10.5px] text-[var(--text-muted)]"
+        className="relative mt-2 h-4 text-[11px] text-[var(--text-muted)]"
         style={{ marginLeft: `${(PAD_L / WIDTH) * 100}%`, marginRight: `${(PAD_R / WIDTH) * 100}%` }}
       >
         {trendAxisLabels(points, lang).map(item => {
@@ -663,13 +663,13 @@ function ModelDonut({ rows, lang }: { rows: UsageGroupStats[]; lang: string }) {
             <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
             <div className="min-w-0 flex-1">
               <div className="truncate text-[12px] font-medium text-neutral-800">{slice.label}</div>
-              <div className="truncate text-[10.5px] text-[var(--text-muted)]">
+              <div className="truncate text-[11px] text-[var(--text-muted)]">
                 {formatTokens(slice.value)} tokens{slice.sub ? ` · ${slice.sub}` : ''}
               </div>
             </div>
             <div className="shrink-0 text-right">
               <div className="text-[12px] tabular-nums text-neutral-800">{formatPercent(slice.value / total)}</div>
-              <div className="text-[10.5px] tabular-nums text-[var(--text-muted)]">{formatCost(slice.cost)}</div>
+              <div className="text-[11px] tabular-nums text-[var(--text-muted)]">{formatCost(slice.cost)}</div>
             </div>
           </div>
         ))}
@@ -690,7 +690,7 @@ function GroupTable({ rows, lang, type }: { rows: UsageGroupStats[]; lang: strin
   return (
     <div className="custom-scrollbar overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--bg-input)]">
       <table className="min-w-[720px] w-full text-left text-[12px]">
-        <thead className="border-b border-[var(--border)] text-[10.5px] uppercase tracking-wide text-[var(--text-muted)]">
+        <thead className="border-b border-[var(--border)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
           <tr>
             <th className="px-3 py-2 font-semibold">{type === 'provider' ? 'Provider' : 'Model'}</th>
             <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '请求' : 'Req'}</th>
@@ -710,7 +710,7 @@ function GroupTable({ rows, lang, type }: { rows: UsageGroupStats[]; lang: strin
                 <td className="max-w-[220px] px-3 py-2">
                   <div className="truncate font-medium">{row.label}</div>
                   {type === 'model' && row.providerName && (
-                    <div className="truncate text-[10.5px] text-[var(--text-muted)]">{row.providerName}</div>
+                    <div className="truncate text-[11px] text-[var(--text-muted)]">{row.providerName}</div>
                   )}
                 </td>
                 <td className="px-3 py-2 tabular-nums">{formatCount(row.requestCount)}</td>
@@ -952,7 +952,7 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
           <div className="flex min-w-0 items-center gap-2">
             <span className="shrink-0 tabular-nums text-[var(--text-muted)]">{formatTime(record.createdAt, lang)}</span>
             <span className="shrink-0 font-medium">{sourceLabel(record.source, lang)}</span>
-            <span className="min-w-0 truncate font-mono text-[11.5px]" title={record.model}>{record.model}</span>
+            <span className="min-w-0 truncate font-mono text-[12px]" title={record.model}>{record.model}</span>
             <span className={`kv-tag ml-auto shrink-0 ${record.status === 'success' ? 'ok' : record.status === 'cancelled' ? 'warn' : 'danger'}`}>
               {statusLabel(record.status, lang)}
             </span>

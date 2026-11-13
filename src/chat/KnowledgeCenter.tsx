@@ -219,15 +219,15 @@ function LibraryCard({
         <span className="grid size-10 shrink-0 place-items-center rounded-lg border border-neutral-200 bg-neutral-50 text-neutral-600">
           <Library size={18} />
         </span>
-        <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10.5px] tabular-nums text-neutral-500 dark:text-neutral-400">
+        <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] tabular-nums text-neutral-500">
           {t.chatKnowledgeDocCount.replace('{n}', String(lib.docCount))}
         </span>
       </div>
       <div className="mt-2.5 min-w-0 flex-1">
-        <div className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">
+        <div className="truncate text-[13px] font-semibold leading-tight text-neutral-950">
           {lib.name}
         </div>
-        <p className="mt-1 truncate text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
+        <p className="mt-1 truncate text-[12px] leading-[1.45] text-neutral-500">
           {lib.embeddingModel || t.chatKnowledgeNoEmbeddingModel}
         </p>
       </div>
@@ -584,7 +584,7 @@ export function KnowledgeCenter() {
               {t.contextSegmentKnowledgeBase}
             </h1>
             <div className="mt-3.5 flex min-w-0 items-center gap-4">
-              <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+              <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500">
                 {t.chatKnowledgeSubtitle}
               </p>
               <IconButton size="lg" label={t.dockRefresh} onClick={() => void refreshLibraries()} data-tauri-drag-region="false">
@@ -610,7 +610,7 @@ export function KnowledgeCenter() {
                 className={`relative px-3 py-2 text-[13px] font-medium transition-colors ${
                   view === id
                     ? 'text-neutral-900'
-                    : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
+                    : 'text-neutral-500 hover:text-neutral-800'
                 }`}
               >
                 {label}
@@ -663,7 +663,7 @@ export function KnowledgeCenter() {
                   ) : (
                     <h2 className="mt-2 truncate text-[20px] font-semibold text-neutral-950">{selected.name}</h2>
                   )}
-                  <p className="mt-1 text-[12.5px] text-neutral-500 dark:text-neutral-400">
+                  <p className="mt-1 text-[12px] text-neutral-500">
                     {t.chatKnowledgeStatsDocs.replace('{n}', String(selected.docCount))} · {t.chatKnowledgeChunks.replace('{n}', String(selected.chunkCount))}
                     {selected.embeddingDim > 0 ? ` · ${t.chatKnowledgeDimensions.replace('{n}', String(selected.embeddingDim))}` : ''}
                   </p>
@@ -737,7 +737,7 @@ export function KnowledgeCenter() {
                       <span>{EMBED_BATCH_MIN}</span>
                       <span>{EMBED_BATCH_MAX}</span>
                     </div>
-                    <p className="mt-1.5 text-xs leading-relaxed text-neutral-500 dark:text-neutral-400">
+                    <p className="mt-1.5 text-xs leading-relaxed text-neutral-500">
                       {t.chatKnowledgeBatchHint.replace('{n}', String(EMBED_BATCH_DEFAULT))}
                     </p>
                   </div>
@@ -823,7 +823,7 @@ export function KnowledgeCenter() {
                       {t.cancel}
                     </Button>
                   </div>
-                  <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
+                  <p className="mt-2 text-xs text-neutral-500">
                     {t.chatKnowledgeCreateHint}
                   </p>
                 </div>
@@ -850,7 +850,7 @@ export function KnowledgeCenter() {
                     <Library size={22} />
                   </span>
                   <span className="text-[14px] font-medium text-neutral-700">{t.chatKnowledgeEmptyTitle}</span>
-                  <span className="text-[12.5px] text-neutral-400">{t.chatKnowledgeEmptyHint}</span>
+                  <span className="text-[12px] text-neutral-400">{t.chatKnowledgeEmptyHint}</span>
                 </button>
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">

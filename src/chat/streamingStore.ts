@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useCallback, useRef, useSyncExternalStore } from 'react'
 import type { ConversationStreamSnapshot } from './conversationRuns'
 
 // 流式预览的高频状态从 Chat.tsx 的 useState 抽到这里，用 React 内置 useSyncExternalStore 订阅。
@@ -118,6 +118,42 @@ export function reset(): void {
 
 export function useStreamSnapshot(): ConversationStreamSnapshot {
   return useSyncExternalStore(subscribeSnapshot, getSnapshot, getSnapshot)
+}
+
+const subscribeNothing = (): (() => void) => () => {}
+const getIdleSnapshot = (): ConversationStreamSnapshot => IDLE_SNAPSHOT
+
+/**
+ * 只在 `live` 时订阅每帧内容。历史行与流式行共用同一个组件位置（落库交接不重挂），
+ * 历史行传 false：不订阅、恒得空闲快照，流式帧不会重渲它。
+ */
+export function useLiveStreamSnapshot(live: boolean): ConversationStreamSnapshot {
+  return useSyncExternalStore(
+    live ? subscribeSnapshot : subscribeNothing,
+    live ? getSnapshot : getIdleSnapshot,
+    live ? getSnapshot : getIdleSnapshot,
+  )
+}
+
+/**
+ * 订阅内容快照的派生值：只有 `isEqual` 判定变了才重渲。给只关心边沿信息
+ * （消息 id、是否出现子代理等）的组件用，避免跟着每个 token 重渲。
+ */
+export function useStreamSelector<T>(
+  selector: (snapshot: ConversationStreamSnapshot) => T,
+  isEqual: (a: T, b: T) => boolean = Object.is,
+): T {
+  const cache = useRef<{ source: ConversationStreamSnapshot; value: T } | null>(null)
+  const select = useCallback(() => {
+    const source = snapshot
+    const previous = cache.current
+    if (previous?.source === source) return previous.value
+    const next = selector(source)
+    const value = previous && isEqual(previous.value, next) ? previous.value : next
+    cache.current = { source, value }
+    return value
+  }, [isEqual, selector])
+  return useSyncExternalStore(subscribeSnapshot, select, select)
 }
 
 export function useStreamCoarse(): StreamCoarse {

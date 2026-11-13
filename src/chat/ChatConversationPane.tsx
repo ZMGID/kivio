@@ -227,7 +227,7 @@ export const ChatConversationPane = memo(function ChatConversationPane({
                 <button
                   type="button"
                   onClick={() => onSelectConversation(forkOrigin.sourceId)}
-                  className="inline-flex max-w-full items-center gap-1 rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-700 dark:text-neutral-400"
+                  className="inline-flex max-w-full items-center gap-1 rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-700"
                   title={`分叉自「${forkOrigin.title}」，点击回到源对话`}
                 >
                   <GitBranch size={12} strokeWidth={2} className="shrink-0" />

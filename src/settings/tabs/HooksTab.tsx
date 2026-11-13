@@ -105,7 +105,7 @@ export function HooksTab({ lang, hooks, onChange }: {
         {ordered.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-8 text-center">
             <Zap size={18} className="text-neutral-300 dark:text-neutral-600" strokeWidth={1.8} />
-            <div className="text-[12.5px] text-neutral-500 dark:text-neutral-400">{t.hooksEmptyTitle}</div>
+            <div className="text-[12px] text-neutral-500">{t.hooksEmptyTitle}</div>
             <p className="kv-row-desc max-w-[420px]">{t.hooksEmptyDesc}</p>
           </div>
         ) : (
@@ -120,7 +120,7 @@ export function HooksTab({ lang, hooks, onChange }: {
                 <div className="kv-row-text">
                   <span className="kv-row-label flex items-center gap-1.5">
                     {hook.name}
-                    <span className="inline-flex items-center gap-1 rounded bg-neutral-900/[0.05] px-1.5 py-px text-[10.5px] font-normal text-neutral-500 dark:text-neutral-400">
+                    <span className="inline-flex items-center gap-1 rounded bg-neutral-900/[0.05] px-1.5 py-px text-[11px] font-normal text-neutral-500">
                       <Icon size={10} strokeWidth={2} />
                       {eventLabel(t, event)}
                     </span>
@@ -200,7 +200,7 @@ export function HooksTab({ lang, hooks, onChange }: {
                       <span className="flex items-center gap-1.5 text-[13px]">
                         {eventLabel(t, event)}
                         {count > 0 && (
-                          <span className="rounded bg-neutral-900/[0.05] px-1.5 text-[10.5px] text-neutral-500 dark:text-neutral-400">
+                          <span className="rounded bg-neutral-900/[0.05] px-1.5 text-[11px] text-neutral-500">
                             {count}
                           </span>
                         )}

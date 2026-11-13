@@ -15,8 +15,8 @@ import {
 const DECISION_CLASS: Record<RetrievalDecision, string> = {
   kept: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300',
   duplicate: 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300',
-  below_threshold: 'bg-neutral-200 text-neutral-600 dark:text-neutral-400',
-  truncated: 'bg-neutral-200 text-neutral-600 dark:text-neutral-400',
+  below_threshold: 'bg-neutral-200 text-neutral-600',
+  truncated: 'bg-neutral-200 text-neutral-600',
 }
 
 function num(n: number | undefined, digits = 4): string {
@@ -35,7 +35,7 @@ function SnippetCell({ text }: { text: string }) {
     })
   }
   return (
-    <td className="min-w-[240px] px-2.5 py-2 text-neutral-600 dark:text-neutral-400">
+    <td className="min-w-[240px] px-2.5 py-2 text-neutral-600">
       <div className="group/snip flex items-start gap-1.5">
         <span className="line-clamp-2 flex-1">{text}</span>
         <button
@@ -93,7 +93,7 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
   return (
     <div key="test" className="chat-motion-tab-in mt-5 space-y-4">
       {libraries.length === 0 ? (
-        <p className="text-[13px] text-neutral-500 dark:text-neutral-400">{t.chatRetrievalEmptyHint}</p>
+        <p className="text-[13px] text-neutral-500">{t.chatRetrievalEmptyHint}</p>
       ) : (
         <>
           {/* 选库 */}
@@ -111,7 +111,7 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
                 }`}
               >
                 {l.name}
-                <span className="ml-1.5 text-[10.5px] tabular-nums text-neutral-400">{l.chunkCount}</span>
+                <span className="ml-1.5 text-[11px] tabular-nums text-neutral-400">{l.chunkCount}</span>
               </button>
             ))}
           </div>
@@ -151,7 +151,7 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
           {result && (
             <div className="space-y-3">
               {/* 概览：配置 + 耗时 + rerank 状态 */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-neutral-500 dark:text-neutral-400">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-neutral-500">
                 <span>
                   {t.chatRetrievalOverviewConfig
                     .replace('{candidates}', String(result.effectiveConfig.candidateK))
@@ -172,11 +172,11 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
               </div>
 
               {cands.length === 0 ? (
-                <p className="text-[13px] text-neutral-500 dark:text-neutral-400">{t.chatRetrievalNoCandidates}</p>
+                <p className="text-[13px] text-neutral-500">{t.chatRetrievalNoCandidates}</p>
               ) : (
                 <div className="overflow-x-auto rounded-lg border border-neutral-200">
-                  <table className="w-full min-w-[760px] text-left text-[11.5px]">
-                    <thead className="bg-neutral-50 text-neutral-500 dark:text-neutral-400">
+                  <table className="w-full min-w-[760px] text-left text-[12px]">
+                    <thead className="bg-neutral-50 text-neutral-500">
                       <tr className="whitespace-nowrap">
                         <th className="px-2.5 py-2 font-medium">{t.chatRetrievalColStatus}</th>
                         <th className="px-2.5 py-2 font-medium">{t.chatRetrievalColSource}</th>
@@ -195,7 +195,7 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
                           className="border-t border-neutral-100 align-top"
                         >
                           <td className="whitespace-nowrap px-2.5 py-2">
-                            <span className={`inline-block rounded px-1.5 py-0.5 text-[10.5px] ${DECISION_CLASS[c.decision]}`}>
+                            <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] ${DECISION_CLASS[c.decision]}`}>
                               {c.finalRank != null ? `#${c.finalRank + 1} ` : ''}
                               {decisionLabel[c.decision]}
                             </span>

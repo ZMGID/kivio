@@ -53,7 +53,7 @@ export function WorkspaceBranchPicker({ data, lang, disabled, onPick }: {
           }}
           placeholder={t.workspaceSearchBranches}
           aria-label={t.workspaceSearchBranches}
-          className="min-w-0 flex-1 border-0 bg-transparent text-[12.5px] text-neutral-800 outline-none placeholder:text-neutral-400 dark:text-neutral-100"
+          className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-neutral-800 outline-none placeholder:text-neutral-400 dark:text-neutral-100"
         />
       </label>
       {data === null ? (
@@ -78,8 +78,8 @@ export function WorkspaceBranchPicker({ data, lang, disabled, onPick }: {
             >
               <span className="min-w-0 flex-1 truncate">{ref.name}</span>
               {copied === ref.name ? (
-                <span role="status" className="chat-motion-pop shrink-0 text-[10.5px] text-emerald-600 dark:text-emerald-400">{t.workspaceBranchCopied}</span>
-              ) : ref.badge && <span className="shrink-0 text-[10.5px] text-neutral-400/80 dark:text-neutral-500">{badgeLabel[ref.badge]}</span>}
+                <span role="status" className="chat-motion-pop shrink-0 text-[11px] text-emerald-600 dark:text-emerald-400">{t.workspaceBranchCopied}</span>
+              ) : ref.badge && <span className="shrink-0 text-[11px] text-neutral-400/80 dark:text-neutral-500">{badgeLabel[ref.badge]}</span>}
             </button>
           ))}
           {canCreate && (

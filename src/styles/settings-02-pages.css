@@ -77,7 +77,7 @@
 .kv-titlebar-close {
   width: 22px;
   height: 22px;
-  border-radius: 5px;
+  border-radius: 6px;
   border: none;
   background: transparent;
   color: var(--text-faint);
@@ -113,7 +113,7 @@
 .kv-sidebar-brand-mark {
   width: 18px;
   height: 18px;
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--bg);
   border: 1px solid var(--border);
   display: flex;
@@ -129,13 +129,13 @@
   object-fit: contain;
 }
 .kv-sidebar-brand-name {
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0;
 }
 .kv-sidebar-brand-ver {
   margin-left: auto;
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
 }
@@ -151,7 +151,7 @@
   padding: 5px 8px;
   border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
   cursor: default;
   user-select: none;
   border: none;
@@ -222,14 +222,14 @@
   color: var(--text);
 }
 .kv-page-sub {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
   margin-top: 2px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
 .kv-page-header-right {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-faint);
   white-space: nowrap;
 }
@@ -326,7 +326,7 @@
   color: var(--accent, #4f46e5);
 }
 .kv-subpage-entry-hint {
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.35;
   color: var(--text-muted);
   /* 图标占位对齐：13 icon + 6 gap ≈ 19 */
@@ -413,7 +413,7 @@
   font-weight: 450;
 }
 .kv-row-desc {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
   margin-top: 2px;
   line-height: 1.35;
@@ -499,7 +499,7 @@
   gap: 6px;
   margin-top: 3px;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.35;
 }
 .computer-control-status-dot {
@@ -629,7 +629,7 @@
   background: transparent;
   padding: 3px 10px;
   font-size: 12px;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: default;
   color: var(--text-muted);
   font-family: inherit;
@@ -654,7 +654,7 @@
   border: 1px solid var(--border-input);
   border-radius: 6px;
   padding: 4px 26px 4px 9px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
   font-family: inherit;
   /* 宽度由外层 wrapper（如 w-[148px]）控制；不要在这里写死 min/max，
@@ -700,7 +700,7 @@
   padding: 0 8px;
   height: 28px;
   border-radius: 6px;
-  font-size: 12.5px;
+  font-size: 12px;
   text-align: left;
   color: var(--text);
   transition: background-color var(--kv-dur-instant) var(--kv-ease-out);
@@ -714,7 +714,7 @@
   height: 24px;
   padding: 0 6px;
   gap: 4px;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 
 
@@ -742,7 +742,7 @@
   border: 1px solid var(--border-input);
   border-radius: 6px;
   padding: 5px 9px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
   font-family: inherit;
   box-shadow: var(--shadow-sm);
@@ -771,7 +771,7 @@ input[type="password"]::-ms-clear {
   border: 1px solid var(--border-input);
   border-radius: 6px;
   padding: 7px 9px;
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text);
   font-family: inherit;
   width: 100%;
@@ -895,7 +895,7 @@ input[type="password"]::-ms-clear {
 .kv-icon-btn svg { width: 13px; height: 13px; }
 /* 尺寸/形状修饰（供 <IconButton> 使用）；无修饰时保持 22×22 基类给设置域既有用法 */
 .kv-icon-btn.sm { width: 28px; height: 28px; border-radius: 6px; }
-.kv-icon-btn.md { width: 32px; height: 32px; border-radius: 7px; }
+.kv-icon-btn.md { width: 32px; height: 32px; border-radius: 6px; }
 .kv-icon-btn.lg { width: 36px; height: 36px; border-radius: 8px; }
 .kv-icon-btn.circle { border-radius: 9999px; }
 .kv-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -903,7 +903,7 @@ input[type="password"]::-ms-clear {
 .kv-icon-btn.md svg,
 .kv-icon-btn.lg svg { width: 15px; height: 15px; }
 .kv-hotkey-record-label {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--accent);
   font-weight: 500;
 }
@@ -968,7 +968,7 @@ input[type="password"]::-ms-clear {
   box-shadow: none;
 }
 .kv-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
-.kv-btn.sm { padding: 2px 8px; font-size: 11.5px; }
+.kv-btn.sm { padding: 2px 8px; font-size: 12px; }
 .kv-btn svg { width: 12px; height: 12px; }
 
 .kv-path-row {
@@ -995,7 +995,7 @@ input[type="password"]::-ms-clear {
   margin-bottom: 8px;
 }
 .kv-field-label {
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text);
   margin-bottom: 4px;
@@ -1022,7 +1022,7 @@ input[type="password"]::-ms-clear {
   background: var(--bg-input-subtle);
   border: 1px solid var(--border);
   border-radius: 999px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text);
   line-height: 1.4;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
@@ -1049,7 +1049,7 @@ input[type="password"]::-ms-clear {
 .kv-panel {
   background: var(--bg-input-subtle);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   padding: 10px 12px;
 }
 .kv-panel.warn {
@@ -1074,7 +1074,7 @@ input[type="password"]::-ms-clear {
   height: 13px;
 }
 .kv-panel-body {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
   line-height: 1.45;
 }
@@ -1109,7 +1109,7 @@ input[type="password"]::-ms-clear {
   align-self: stretch;
   background: var(--bg-sidebar);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -1141,7 +1141,7 @@ input[type="password"]::-ms-clear {
   align-items: center;
   gap: 4px;
   padding: 5px 7px;
-  border-radius: 5px;
+  border-radius: 6px;
   cursor: pointer;
   border: none;
   background: transparent;
@@ -1258,7 +1258,7 @@ input[type="password"]::-ms-clear {
   margin-right: -2px;
   padding: 0;
   border: none;
-  border-radius: 5px;
+  border-radius: 6px;
   background: transparent;
   color: var(--text-muted);
   cursor: grab;
@@ -1295,7 +1295,7 @@ input[type="password"]::-ms-clear {
   to { transform: rotate(360deg); }
 }
 .kv-provider-add {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
   gap: 6px;
 }
@@ -1354,7 +1354,7 @@ input[type="password"]::-ms-clear {
   flex-shrink: 0;
   width: 32px;
   height: 32px;
-  border-radius: 9px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg-input-subtle, var(--bg-hover));
 }
@@ -1364,7 +1364,7 @@ input[type="password"]::-ms-clear {
 }
 .kv-provider-modal-titles h3 {
   margin: 0;
-  font-size: 14.5px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--text);
   overflow: hidden;
@@ -1373,7 +1373,7 @@ input[type="password"]::-ms-clear {
 }
 .kv-provider-modal-titles p {
   margin: 2px 0 0;
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.35;
   color: var(--text-faint);
   overflow: hidden;
@@ -1391,7 +1391,7 @@ input[type="password"]::-ms-clear {
 }
 .kv-provider-modal-desc {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--text-muted);
 }
@@ -1406,13 +1406,13 @@ input[type="password"]::-ms-clear {
 .kv-form-error {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--danger);
 }
 
 .kv-form-error-inline {
   margin: 4px 0 0;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--danger);
 }
 
@@ -1468,7 +1468,7 @@ input[type="password"]::-ms-clear {
 .kv-native-section-head h4 {
   margin: 0;
   color: var(--text);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 650;
   line-height: 1.35;
 }
@@ -1495,7 +1495,7 @@ input[type="password"]::-ms-clear {
 }
 .kv-native-provider-advanced .kv-disclosure {
   color: var(--text-faint);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .kv-native-provider-advanced-body {
   width: min(100%, 360px);
@@ -1510,7 +1510,7 @@ input[type="password"]::-ms-clear {
 .kv-native-model-actions > span {
   margin-right: 2px;
   color: var(--text-faint);
-  font-size: 10.5px;
+  font-size: 11px;
 }
 .kv-native-model-list {
   border-top: 1px solid var(--divider);
@@ -1551,7 +1551,7 @@ input[type="password"]::-ms-clear {
   min-width: 0;
   overflow: hidden;
   color: var(--text-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   white-space: nowrap;
 }
 .kv-native-model-summary > span {
@@ -1606,7 +1606,7 @@ input[type="password"]::-ms-clear {
 }
 .kv-native-model-advanced-head > span:last-child {
   color: var(--text-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.35;
   text-align: right;
 }
@@ -1667,7 +1667,7 @@ input[type="password"]::-ms-clear {
 .kv-native-persistence-note {
   margin: -2px 0 0;
   color: var(--text-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.45;
 }
 @keyframes kv-native-model-row-in {
@@ -1732,7 +1732,7 @@ input[type="password"]::-ms-clear {
   color: var(--text-muted);
   border-radius: 8px;
   padding: 6px 11px;
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
@@ -1926,7 +1926,7 @@ input[type="password"]::-ms-clear {
   padding: 0;
   cursor: pointer;
   font-family: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text);
 }
@@ -1940,7 +1940,7 @@ input[type="password"]::-ms-clear {
 }
 .kv-disclosure-caret.open { transform: rotate(90deg); }
 .kv-disclosure-count {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text-muted);
   background: var(--bg-hover);
   border-radius: 999px;
@@ -1956,7 +1956,7 @@ input[type="password"]::-ms-clear {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
 }
@@ -1997,7 +1997,7 @@ input[type="password"]::-ms-clear {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
   text-decoration: none;
 }
@@ -2010,7 +2010,7 @@ input[type="password"]::-ms-clear {
   border-radius: 6px;
   background: var(--bg-sidebar);
   border: 1px solid var(--border);
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -2035,7 +2035,7 @@ input[type="password"]::-ms-clear {
 .kv-cli-log {
   max-height: 180px;
   overflow: auto;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg-sidebar);
   padding: 8px 10px;
@@ -2050,7 +2050,7 @@ input[type="password"]::-ms-clear {
   margin: 0 0 10px;
   padding: 8px 10px;
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.45;
   font-weight: 550;
 }
@@ -2111,7 +2111,7 @@ input[type="password"]::-ms-clear {
   border: none;
   background: transparent;
   font-family: inherit;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
   cursor: pointer;
@@ -2131,7 +2131,7 @@ input[type="password"]::-ms-clear {
 .kv-cli-providers-head > .kv-row-label {
   flex: 1;
   min-width: 0;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -2147,7 +2147,7 @@ input[type="password"]::-ms-clear {
   flex-shrink: 0;
   width: 26px;
   height: 26px;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg);
   display: inline-flex;
@@ -2230,7 +2230,7 @@ input[type="password"]::-ms-clear {
 .kv-dsh-plugins-entry-icons span {
   width: 26px;
   height: 26px;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg-sidebar);
   color: var(--text-muted);
@@ -2241,7 +2241,7 @@ input[type="password"]::-ms-clear {
 .kv-pi-skills-entry-icon {
   width: 30px;
   height: 30px;
-  border-radius: 7px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   background: var(--bg-sidebar);
   color: var(--text-muted);
@@ -2338,7 +2338,7 @@ input[type="password"]::-ms-clear {
   place-items: center;
   flex-shrink: 0;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   background: var(--bg-sidebar);
   color: var(--text-muted);
 }
@@ -2356,7 +2356,7 @@ input[type="password"]::-ms-clear {
 .kv-pi-extension-meta {
   margin: 3px 0 0;
   color: var(--text-faint);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.35;
 }
 .kv-pi-extension-actions {
@@ -2422,7 +2422,7 @@ input[type="password"]::-ms-clear {
   place-items: center;
   flex-shrink: 0;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   background: var(--bg-sidebar);
   color: var(--text-muted);
 }
@@ -2466,7 +2466,7 @@ input[type="password"]::-ms-clear {
 }
 .kv-dsh-plugins-status,
 .kv-dsh-plugins-failure {
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .kv-dsh-plugins-failure {
   display: flex;
@@ -2576,7 +2576,7 @@ input[type="password"]::-ms-clear {
   margin-left: auto;
 }
 .kv-dsh-override {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 16px;
   padding: 1px 6px;
@@ -2652,7 +2652,7 @@ input[type="password"]::-ms-clear {
 .kv-dsh-status-tag {
   min-height: 20px;
   padding: 1px 6px;
-  border-radius: 5px;
+  border-radius: 6px;
   font-size: 11px;
   line-height: 16px;
   color: var(--text-muted);
@@ -2705,7 +2705,7 @@ input[type="password"]::-ms-clear {
   border-radius: 999px;
   background: var(--bg-pill);
   color: var(--text-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
   letter-spacing: 0;
   line-height: 1.5;
@@ -2728,7 +2728,7 @@ input[type="password"]::-ms-clear {
   color: var(--accent);
 }
 .kv-inline-error {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--danger);
   margin-top: 4px;
   display: flex;
@@ -2888,7 +2888,7 @@ dialog.kv-modal::backdrop {
 .kv-provider-preset-picker-foot {
   flex-shrink: 0;
   margin: 0;
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.4;
   color: var(--text-muted);
 }
@@ -3331,7 +3331,7 @@ dialog.kv-modal::backdrop {
   align-items: center;
   justify-content: center;
   padding: 16px 8px;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--text-muted);
   text-align: center;
@@ -3360,7 +3360,7 @@ dialog.kv-modal::backdrop {
 .kv-mtest-name {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3371,7 +3371,7 @@ dialog.kv-modal::backdrop {
   align-items: center;
   justify-content: flex-end;
   gap: 4px;
-  font-size: 11.5px;
+  font-size: 12px;
   flex-shrink: 0;
   width: 3.25rem;
   height: 16px;

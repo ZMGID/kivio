@@ -12,6 +12,7 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
+import { useT } from '../components/i18n'
 import { notifyError } from '../components/appNoticeStore'
 import { api } from '../api/tauri'
 import { record } from '../api/subagents'
@@ -371,7 +372,7 @@ function ToolPresentationBlock({
       <GeneratedImageArtifacts artifacts={selected} conversationId={conversationId} />
       <GeneratedFileArtifacts artifacts={selected} conversationId={conversationId} />
       {missingCount > 0 ? (
-        <div className="mt-2 inline-flex items-center gap-1.5 text-[11.5px] text-neutral-400 dark:text-neutral-500">
+        <div className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-neutral-400 dark:text-neutral-500">
           <AlertCircle size={12} strokeWidth={1.9} />
           <span>{missingCount} 个文件不可用</span>
         </div>
@@ -414,7 +415,7 @@ function AgentPlanAction({
   const document = planState?.document
   if (!document && !hasAgentPlanText(planState?.plan)) return null
   return (
-    <div className="not-prose mt-3 border-l-2 border-emerald-400/70 pl-3 text-[12px] leading-5 text-neutral-500 dark:border-emerald-500/60 dark:text-neutral-400">
+    <div className="not-prose mt-3 border-l-2 border-emerald-400/70 pl-3 text-[12px] leading-5 text-neutral-500 dark:border-emerald-500/60">
       <div className="flex min-w-0 items-center gap-2">
         <ListChecks size={14} className="shrink-0 text-emerald-600" />
         {document ? (
@@ -442,7 +443,7 @@ function segmentText(segment: ChatMessageSegment): string {
 
 function MissingToolSegment({ toolCallId }: { toolCallId: string }) {
   return (
-    <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[11.5px] leading-5 text-neutral-400 dark:text-neutral-500">
+    <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
       <AlertCircle size={12} strokeWidth={1.9} className="shrink-0" />
       <span className="truncate">工具记录缺失{toolCallId ? ` · ${toolCallId}` : ''}</span>
     </div>
@@ -1164,6 +1165,7 @@ function TimelineSegments({
 }
 
 function UserMessageText({ text }: { text: string }) {
+  const t = useT()
   const [expanded, setExpanded] = useState(false)
   const bodyId = useId()
   const displayText = asyncReplyDisplayText(text) ?? text
@@ -1180,7 +1182,7 @@ function UserMessageText({ text }: { text: string }) {
       {collapsible && (
         <div className="mt-1.5 flex justify-end">
           <Button size="sm" variant="ghost" aria-expanded={expanded} aria-controls={bodyId} onClick={() => setExpanded(value => !value)}>
-            {expanded ? '收起' : '展开全文'}
+            {expanded ? t.chatShowLess : t.chatMessageExpand}
           </Button>
         </div>
       )}
@@ -1214,6 +1216,7 @@ function MessageBubbleComponent({
   outlineEligible = false,
   onOutlineSourceChange,
 }: MessageBubbleProps) {
+  const t = useT()
   const isUser = message.role === 'user'
   const showAnswer = !turnWork?.foldAnswer || turnWork.open
   const streamOutcome = message.stream_outcome ?? message.streamOutcome
@@ -1450,7 +1453,7 @@ function MessageBubbleComponent({
               {replyModelTags.map((tag, index) => (
                 <span
                   key={`${tag.model}-${index}`}
-                  className="chat-user-bubble inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-neutral-500 dark:text-neutral-400"
+                  className="chat-user-bubble inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium text-neutral-500"
                   title={tag.providerId ? `${tag.model} | ${tag.providerId}` : (tag.model ?? '')}
                 >
                   {tag.model && <ModelIcon model={tag.model} size={12} />}
@@ -1476,7 +1479,7 @@ function MessageBubbleComponent({
               <IconButton
                 size="xs"
                 onClick={() => void handleCopy()}
-                label={copied ? '已复制' : '复制'}
+                label={copied ? t.chatMessageCopied : t.chatMessageCopy}
               >
                 {copied ? <Check size={13} strokeWidth={2} className="chat-motion-pop" /> : <Copy size={13} strokeWidth={2} />}
               </IconButton>
@@ -1484,8 +1487,8 @@ function MessageBubbleComponent({
                 <IconButton
                   size="xs"
                   onClick={() => void onRewindMessage(message.id)}
-                  label="回到这里"
-                  title="回到这里：删掉这条提问及其之后的消息，原文放回输入框"
+                  label={t.chatMessageRewind}
+                  title={t.chatMessageRewindHint}
                 >
                   <RotateCcw size={13} strokeWidth={2} />
                 </IconButton>
@@ -1494,8 +1497,8 @@ function MessageBubbleComponent({
                 <IconButton
                   size="xs"
                   onClick={() => void onForkMessage(message.id)}
-                  label="建分支"
-                  title="从这里建分支（复制到新对话）"
+                  label={t.chatMessageFork}
+                  title={t.chatMessageForkHint}
                 >
                   <GitBranch size={13} strokeWidth={2} />
                 </IconButton>

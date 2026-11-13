@@ -290,7 +290,7 @@
   align-items: center;
   gap: 10px;
   color: var(--text-muted);
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -320,7 +320,7 @@
   margin: 0;
   max-width: 36em;
   color: var(--text-muted);
-  font-size: 13.5px;
+  font-size: 13px;
   line-height: 1.65;
   text-wrap: pretty;
 }
@@ -371,7 +371,7 @@
   transform: rotate(45deg);
 }
 
-.ob-block-aside { color: var(--text-faint); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.ob-block-aside { color: var(--text-faint); font-size: 12px; font-weight: 500; white-space: nowrap; }
 .ob-block-body { display: flex; flex-direction: column; }
 .ob-block-body > * + * { margin-top: 12px; }
 
@@ -454,7 +454,7 @@
   background: var(--theme-surface-muted);
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 12px;
   word-break: break-word;
 }
 .ob-error-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }

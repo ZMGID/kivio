@@ -80,7 +80,7 @@ export function PastedTextEditorModal({
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
             <h3 className="truncate text-[15px] font-semibold">{name}</h3>
-            <p className="mt-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+            <p className="mt-1 text-[11px] text-neutral-500">
               {readOnly ? t.chatPastedTextViewHint : t.chatPastedTextEditHint}
             </p>
           </div>

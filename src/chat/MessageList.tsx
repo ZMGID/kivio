@@ -1,5 +1,9 @@
 import { ErrorNotice } from '../components/AppNotice'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Button } from '../components/Button'
+import {
+  memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState,
+  type ComponentProps,
+} from 'react'
 import { flushSync } from 'react-dom'
 import { ChevronDown, RotateCw } from 'lucide-react'
 import {
@@ -31,14 +35,15 @@ import { resolveCompactionBoundaries, resolvePendingCompactionAfterIndex, type C
 import { resolveClearBoundaries, type ContextClearBoundaryView } from './contextClearBoundary'
 import { hasAgentPlanText } from './agentPlan'
 import { artifactId } from './artifactPresentation'
-import { foldMessageGroups, isLastAssistantTurn, occupiedReplyModels } from './messageGroups'
+import { assistantTurnSpan, foldMessageGroups, isLastAssistantTurn, occupiedReplyModels } from './messageGroups'
 import {
   activeMessageNavigatorNodeId,
   buildMessageNavigatorNodes,
   visibleMessageNavigatorNodeIds,
   type MessageNavigatorNode,
 } from './messageNavigator'
-import { useStreamCoarse, useStreamSnapshot } from './streamingStore'
+import { getSnapshot, useLiveStreamSnapshot, useStreamCoarse, useStreamSelector } from './streamingStore'
+import type { ConversationStreamSnapshot } from './conversationRuns'
 import { StreamStatusLine } from './StreamStatusLine'
 import { getActiveGroup, useGroupVersion } from './groupStreamingStore'
 import { ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollow'
@@ -59,7 +64,7 @@ import {
   shouldAdjustChatItemSizeChange,
   unobservedChatRowSize,
 } from './messageListVirtualization'
-import type { Lang } from '../components/i18n'
+import { i18n, type Lang } from '../components/i18n'
 import { measureChatSurface, recordChatPerfSample, useChatPerfRenderProbe } from './chatPerformanceProbe'
 import {
   beginMessageNavigationHydrate,
@@ -179,28 +184,35 @@ type HistoryRenderItem =
   | { kind: 'compaction-progress'; key: string; afterIndex: number }
   | { kind: 'context-clear-divider'; key: string; boundary: ContextClearBoundaryView; animate: boolean }
 
+type LiveBubbleState = {
+  messageStreaming: boolean
+  markdownStreaming: boolean
+  /** 冻结帧里关掉思考态；是否正在思考由气泡自己从快照读。 */
+  reasoningLive: boolean
+}
+
 type LiveRenderItem =
   | { kind: 'live-group'; key: string; groupId: string }
   | {
     kind: 'streaming'
     key: string
-    message: ChatMessage
-    messageStreaming: boolean
-    markdownStreaming: boolean
-    reasoningStreaming: boolean
+    /** 已知真实消息 id 时用它，右键菜单 / 导航能定位；行 key 仍是 liveRowKey。 */
+    messageId: string
+    live: LiveBubbleState
   }
 
 type RenderItem = HistoryRenderItem | LiveRenderItem
   | { kind: 'error'; key: 'error'; text: string; retryMessageId: string | null }
 
 function readingRowKey(item: RenderItem): string {
-  if (item.kind === 'message' || item.kind === 'streaming') return item.message.id
+  if (item.kind === 'message') return item.message.id
+  if (item.kind === 'streaming') return item.messageId
   if (item.kind === 'group' || item.kind === 'live-group') return `group-${item.groupId}`
   return item.key
 }
 
 function measurementKey(item: RenderItem): string {
-  if (item.kind === 'message' || item.kind === 'streaming') {
+  if (item.kind === 'message') {
     return `${readingRowKey(item)}:${chatMessageLayoutRevision(item.message)}`
   }
   if (item.kind === 'group') {
@@ -238,6 +250,83 @@ function streamErrorDegraded(error: string): DegradedAnswer {
 
 // R8（多模型一问多答）：多答组的「本次所发模型」列表，渲染在该组对应 user 消息顶部。
 type GroupModelLabel = { providerId: string | null; model: string | null }
+
+// 列表本体只关心流式快照里「边沿才变」的这几项；正文逐帧变化由 MessageRowBubble 自己订阅。
+type LiveStreamEdges = { messageId: string | null; hasSubagentWork: boolean; injectionIds: string }
+
+function selectLiveStreamEdges(snapshot: ConversationStreamSnapshot): LiveStreamEdges {
+  return {
+    messageId: snapshot.messageId ?? null,
+    hasSubagentWork: snapshot.toolCalls.some(isNativeTaskToolCall)
+      || snapshot.segments.some(isSubagentTimelineSegment),
+    injectionIds: snapshot.toolCalls
+      .flatMap(tool => [userSteerId(tool), userFollowUpId(tool)].filter(Boolean))
+      .join('\0'),
+  }
+}
+
+function sameLiveStreamEdges(a: LiveStreamEdges, b: LiveStreamEdges): boolean {
+  return a.messageId === b.messageId && a.hasSubagentWork === b.hasSubagentWork
+    && a.injectionIds === b.injectionIds
+}
+
+/**
+ * 历史行与流式行共用的气泡位置。两者必须是同一个组件类型：回答落库时 React 原地换 props，
+ * 不重挂 MessageBubble（展开状态、已渲染的 Markdown、已加载的图片都留着）。
+ *
+ * 流式正文在这里订阅，而不是在 MessageList：每个 token 只重渲这一行，列表本体
+ * （虚拟列表、导航、其余所有行）不跟着逐帧重渲、重测。
+ */
+const MessageRowBubble = memo(function MessageRowBubble({
+  message,
+  live = null,
+  ...bubbleProps
+}: Omit<ComponentProps<typeof MessageBubble>, 'message'> & {
+  message?: ChatMessage
+  live?: LiveBubbleState | null
+}) {
+  const isLive = live !== null
+  const snapshot = useLiveStreamSnapshot(isLive)
+  const { notifyContentGrowth } = useContext(ScrollFollowingContext)
+  const liveMessage = useMemo<ChatMessage | null>(() => (isLive ? {
+    id: snapshot.messageId || 'streaming-assistant',
+    stream_outcome: snapshot.streamOutcome,
+    role: 'assistant',
+    content: snapshot.content,
+    reasoning: snapshot.reasoning || undefined,
+    artifacts: [],
+    tool_calls: snapshot.toolCalls,
+    segments: snapshot.segments,
+    timestamp: Math.floor(Date.now() / 1000),
+  } : null), [
+    isLive,
+    snapshot.messageId,
+    snapshot.streamOutcome,
+    snapshot.content,
+    snapshot.reasoning,
+    snapshot.toolCalls,
+    snapshot.segments,
+  ])
+  // ResizeObserver 是钉底主路径；它未投递时（高度在同一帧已变）补一次。
+  useLayoutEffect(() => {
+    if (liveMessage) notifyContentGrowth()
+  }, [liveMessage, notifyContentGrowth])
+
+  if (live && liveMessage) {
+    return (
+      <MessageBubble
+        {...bubbleProps}
+        message={liveMessage}
+        messageStreaming={live.messageStreaming}
+        markdownStreaming={live.markdownStreaming}
+        reasoningStreaming={live.reasoningLive && snapshot.reasoningStreaming}
+        reasoningDurationMs={snapshot.reasoningDurationMs}
+        reasoningDurationMsBySegmentId={snapshot.reasoningDurationMsBySegmentId}
+      />
+    )
+  }
+  return message ? <MessageBubble {...bubbleProps} message={message} /> : null
+})
 
 function MessageListBase({
   density = 'default',
@@ -301,9 +390,10 @@ function MessageListBase({
     conversationId,
     messages: messages.length,
   })
-  // 流式预览状态直接订阅 streamingStore——只有本组件随每帧内容重渲，Chat/侧栏/输入栏不动。
+  // 流式正文由 MessageRowBubble 订阅；列表本体只订阅边沿状态，不随每个 token 重渲。
   const coarse = useStreamCoarse()
-  const snapshot = useStreamSnapshot()
+  const liveEdges = useStreamSelector(selectLiveStreamEdges, sameLiveStreamEdges)
+  const liveMessageId = liveEdges.messageId
   // 多答组实时流：订阅 group store 版本号，活跃组列内容更新时驱动重渲（仅需订阅，值本身不用）。
   useGroupVersion(conversationId)
   const liveGroup = conversationId ? getActiveGroup(conversationId) : undefined
@@ -334,13 +424,6 @@ function MessageListBase({
   const liveRowActive = streaming || streamFrozen
 
   const error = coarse.streamError
-  const streamingContent = snapshot.content
-  const streamingReasoning = snapshot.reasoning
-  const streamingReasoningDurationMs = snapshot.reasoningDurationMs
-  const streamingReasoningDurationMsBySegmentId = snapshot.reasoningDurationMsBySegmentId
-  const reasoningStreaming = snapshot.reasoningStreaming
-  const streamingToolCalls = snapshot.toolCalls
-  const streamingSegments = snapshot.segments
 
   // 恢复中的 Kivio Agent 会同时有两份状态：后端为崩溃恢复写入的 interrupted
   // assistant 草稿，以及协议快照驱动的实时预览。它们共用同一个 messageId；实时
@@ -348,7 +431,7 @@ function MessageListBase({
   const historyMessages = useMemo(() => {
     if (!streaming && !streamFrozen) return messages
     const activeMessageIds = new Set<string>()
-    if (snapshot.messageId) activeMessageIds.add(snapshot.messageId)
+    if (liveMessageId) activeMessageIds.add(liveMessageId)
     if (liveGroup && (streaming || streamFrozen)) {
       for (const column of liveGroup.columns) {
         if (!column.messageId.startsWith('pending-')) activeMessageIds.add(column.messageId)
@@ -356,11 +439,10 @@ function MessageListBase({
     }
     if (activeMessageIds.size === 0) return messages
     return messages.filter((message) => !activeMessageIds.has(message.id))
-  }, [liveGroup, messages, snapshot.messageId, streamFrozen, streaming])
+  }, [liveGroup, messages, liveMessageId, streamFrozen, streaming])
 
   const [turnWorkOverrides, setTurnWorkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map())
-  const liveHasSubagentWork = liveRowActive && !liveGroupId
-    && (streamingToolCalls.some(isNativeTaskToolCall) || streamingSegments.some(isSubagentTimelineSegment))
+  const liveHasSubagentWork = liveRowActive && !liveGroupId && liveEdges.hasSubagentWork
   const { workByMessageId, liveTurnWork } = useMemo(() => {
     const visible = new Set(historyMessages.map(message => message.id))
     const workByMessageId = new Map<string, TurnWorkDisclosure>()
@@ -444,7 +526,7 @@ function MessageListBase({
     conversationId,
     liveActive: liveRowActive,
     liveGroupId: liveGroup && liveRowActive ? liveGroup.groupId : null,
-    preferredTwinId: snapshot.messageId ?? null,
+    preferredTwinId: liveMessageId,
     historyAssistantIds,
     historyGroupIds,
   })
@@ -637,15 +719,11 @@ function MessageListBase({
   >(null)
 
   // 底部跟随：外置 live 时 document-flow 高度变化 → RO contentGrowth 钉底。
-  // growthSignal 在 scrollHeight 真变且 RO 未投递时补一枪（jsdom）。
-  const streamGrowthSignal = streaming || streamFrozen
-    ? `${streamingContent.length}:${streamingReasoning.length}:${streamingToolCalls.length}:${streamingSegments.length}`
-    : null
+  // RO 未投递时由流式行在每次提交后调 notifyContentGrowth 补一枪（jsdom）。
   const { handle: followHandle, following, showJumpButton } = useScrollFollow({
     viewport: viewportEl,
     content: contentEl,
     trackKeys: true,
-    growthSignal: streamGrowthSignal,
     // 出字中逐行增长缓动到底；打开会话、导航与回到底部仍瞬时。
     glideGrowth: streaming && !streamFrozen,
   })
@@ -654,6 +732,7 @@ function MessageListBase({
   const followContext = useMemo(() => ({
     following,
     isFollowing: followHandle.isFollowing,
+    notifyContentGrowth: followHandle.notifyContentGrowth,
   }), [following, followHandle])
   const { contentWidth, widthReady, anchorRef: widthAnchorRef, prepareWidthChange, restoreAnchor: restoreWidthAnchor } = useChatWidthLayout(
     contentEl, viewportEl, followHandle, navigationLockRef,
@@ -685,6 +764,19 @@ function MessageListBase({
     messages.forEach((message, index) => map.set(message.id, index))
     return map
   }, [messages])
+
+  // 最后一轮回答的成员与已占用模型，整轮算一次：逐行调 isLastAssistantTurn /
+  // occupiedReplyModels 是每行一次全量扫描，而且每次返回新数组，会让该行的 memo 失效。
+  const lastAssistantTurn = useMemo(() => {
+    const last = messages[messages.length - 1]
+    // 最后一条是回答时，它所在的这一轮就是最后一轮。
+    const span = last ? assistantTurnSpan(messages, last.id) : null
+    if (!last || !span) return null
+    return {
+      ids: new Set(span.siblings.map(message => message.id)),
+      occupiedModels: occupiedReplyModels(messages, last.id, sessionProviderId, sessionModel),
+    }
+  }, [messages, sessionModel, sessionProviderId])
 
   const boundaries = useMemo(
     () => resolveCompactionBoundaries(messages, contextState),
@@ -787,53 +879,31 @@ function MessageListBase({
     pendingCompactionAfterIndex,
   ])
 
-  // Live content updates every token, but the **row key** is stable (liveRowKey).
-  // Keeping live out of the historyItems useMemo deps means committed rows do not rebuild
-  // per token — same split LiveAgent uses (history cache + live tail).
+  // The row claims its stable key before the first token. Content is not part of
+  // this item: MessageRowBubble reads it from the stream store, so a token frame
+  // re-renders that one row and nothing in the list.
   const liveItem = useMemo<LiveRenderItem | null>(() => {
     if (!liveRowKey) return null
     if (liveGroup) {
       return { kind: 'live-group', key: liveRowKey, groupId: liveGroup.groupId }
     }
-    // Claim the stable row key before the first token.
     return {
       kind: 'streaming',
       key: liveRowKey,
-      messageStreaming: streaming && !streamFrozen,
-      // 冻结帧（settle 等 twin 落地 / 本地取消等 invoke 返回）里 Markdown 上下文保持
-      // 「出字中」：mermaid 继续显示源码、岛保持 eager，把源码→出图这类内容变化留给
-      // twin 首挂一次完成，而不是 live 行先变一次、twin 再变一次。出错后长期停留的冻结
-      // 预览没有 twin 来接手，才切回落库态，让 mermaid 出图、控件可用。
-      markdownStreaming: streaming || !error,
-      reasoningStreaming: reasoningStreaming && !streamFrozen,
-      message: {
-        // Prefer real message id when known so context-menu / navigator can target it;
-        // the virtualizer row key is still liveRowKey (not this id).
-        id: snapshot.messageId || 'streaming-assistant',
-        stream_outcome: snapshot.streamOutcome,
-        role: 'assistant',
-        content: streamingContent,
-        reasoning: streamingReasoning || undefined,
-        artifacts: [],
-        tool_calls: streamingToolCalls,
-        segments: streamingSegments,
-        timestamp: Math.floor(Date.now() / 1000),
+      // Prefer real message id when known so context-menu / navigator can target it;
+      // the virtualizer row key is still liveRowKey (not this id).
+      messageId: liveMessageId || 'streaming-assistant',
+      live: {
+        messageStreaming: streaming && !streamFrozen,
+        // 冻结帧（settle 等 twin 落地 / 本地取消等 invoke 返回）里 Markdown 上下文保持
+        // 「出字中」：mermaid 继续显示源码、岛保持 eager，把源码→出图这类内容变化留给
+        // twin 首挂一次完成，而不是 live 行先变一次、twin 再变一次。出错后长期停留的冻结
+        // 预览没有 twin 来接手，才切回落库态，让 mermaid 出图、控件可用。
+        markdownStreaming: streaming || !error,
+        reasoningLive: !streamFrozen,
       },
     }
-  }, [
-    error,
-    liveGroup,
-    liveRowKey,
-    reasoningStreaming,
-    snapshot.messageId,
-    snapshot.streamOutcome,
-    streamFrozen,
-    streaming,
-    streamingContent,
-    streamingReasoning,
-    streamingSegments,
-    streamingToolCalls,
-  ])
+  }, [error, liveGroup, liveMessageId, liveRowKey, streamFrozen, streaming])
   // 历史项只在消息/压缩边界/组模型身份变化时重建。高频流式文本不进入依赖；
   // live 行单独挂在 virtualizer 外的文档流尾部。
   const historyItems = useMemo<HistoryRenderItem[]>(() => {
@@ -2294,9 +2364,10 @@ function MessageListBase({
     const id = targetEl?.dataset.messageId ?? null
     let messageText: string | null = null
     const isLiveBubble = id === 'streaming-assistant'
-      || Boolean(id && liveRowActive && (id === snapshot.messageId || id === liveRowKey))
+      || Boolean(id && liveRowActive && (id === liveMessageId || id === liveRowKey))
     if (isLiveBubble) {
-      messageText = streamingContent.trim() || null
+      // 事件发生时再读：列表不订阅逐帧正文。
+      messageText = getSnapshot().content.trim() || null
     } else if (id) {
       messageText = messages.find((m) => m.id === id)?.content?.trim() || null
     }
@@ -2305,7 +2376,7 @@ function MessageListBase({
     const left = Math.min(e.clientX, window.innerWidth - 184)
     const top = Math.min(e.clientY, window.innerHeight - 96)
     setMsgMenu({ anchor: { left, top }, selectionText, messageText })
-  }, [liveRowActive, liveRowKey, messages, snapshot.messageId, streamingContent])
+  }, [liveMessageId, liveRowActive, liveRowKey, messages])
 
   const closeMsgMenu = useCallback(() => setMsgMenu(null), [])
 
@@ -2498,7 +2569,7 @@ function MessageListBase({
             ? assistantStreamStatsByMessageId[msg.id]
             : undefined
           return (
-            <MessageBubble
+            <MessageRowBubble
               message={msg}
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
@@ -2516,14 +2587,12 @@ function MessageListBase({
                 onReplyWithModel
                   && !streaming
                   && !streamFrozen
-                  && isLastAssistantTurn(messages, msg.id)
+                  && lastAssistantTurn?.ids.has(msg.id)
                   ? onReplyWithModel
                   : undefined
               }
               replyOccupiedModels={
-                isLastAssistantTurn(messages, msg.id)
-                  ? occupiedReplyModels(messages, msg.id, sessionProviderId, sessionModel)
-                  : undefined
+                lastAssistantTurn?.ids.has(msg.id) ? lastAssistantTurn.occupiedModels : undefined
               }
               onForkMessage={streaming || streamFrozen ? undefined : onForkMessage}
               onRewindMessage={streaming || streamFrozen ? undefined : onRewindMessage}
@@ -2582,15 +2651,10 @@ function MessageListBase({
           )
         case 'streaming':
           return (
-            <MessageBubble
-              message={item.message}
+            <MessageRowBubble
+              live={item.live}
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
-              messageStreaming={item.messageStreaming}
-              markdownStreaming={item.markdownStreaming}
-              reasoningStreaming={item.reasoningStreaming}
-              reasoningDurationMs={streamingReasoningDurationMs}
-              reasoningDurationMsBySegmentId={streamingReasoningDurationMsBySegmentId}
               turnWork={liveTurnWork}
             />
           )
@@ -2624,14 +2688,10 @@ function MessageListBase({
             <div className="chat-motion-fade-up flex w-full min-w-0 flex-col items-start gap-2 py-3">
               <DegradedAnswerCard degraded={streamErrorDegraded(item.text)} />
               {item.retryMessageId && onRetryLastUser && (
-                <button
-                  type="button"
-                  onClick={() => onRetryLastUser(item.retryMessageId!)}
-                  className="inline-flex items-center gap-1 rounded-full border border-[var(--border-input)] bg-[var(--bg-input)] px-3 py-1 text-xs font-medium text-neutral-700 transition-colors hover:bg-neutral-50 active:scale-95 bg-neutral-100"
-                >
+                <Button size="sm" onClick={() => onRetryLastUser(item.retryMessageId!)}>
                   <RotateCw size={13} strokeWidth={2} />
-                  重试
-                </button>
+                  {i18n[lang].chatRetry}
+                </Button>
               )}
             </div>
           )
@@ -2658,13 +2718,12 @@ function MessageListBase({
       streaming,
       streamFrozen,
       messages,
+      lastAssistantTurn,
       workByMessageId,
       liveTurnWork,
       groupSelections,
       onSetGroupSelection,
       handleOutlineSourceChange,
-      streamingReasoningDurationMs,
-      streamingReasoningDurationMsBySegmentId,
       lang,
     ],
   )
@@ -2684,9 +2743,10 @@ function MessageListBase({
   // Delivery events and queue receipts may render in either order. Match by identity,
   // not text, so repeated user messages remain distinct and acknowledgements never duplicate them.
   const deliveredInjectionIds = useMemo(() => new Set([
-    ...snapshot.toolCalls,
-    ...messages.flatMap(message => message.tool_calls ?? message.toolCalls ?? []),
-  ].flatMap(tool => [userSteerId(tool), userFollowUpId(tool)].filter(Boolean))), [snapshot.toolCalls, messages])
+    ...liveEdges.injectionIds.split('\0').filter(Boolean),
+    ...messages.flatMap(message => message.tool_calls ?? message.toolCalls ?? [])
+      .flatMap(tool => [userSteerId(tool), userFollowUpId(tool)].filter(Boolean)),
+  ]), [liveEdges.injectionIds, messages])
   const visibleInjections = (pendingInjections ?? []).filter(message =>
     isQueuedSubmitted(message) && !deliveredInjectionIds.has(message.id))
 
@@ -2702,7 +2762,7 @@ function MessageListBase({
           data-chat-item-key={virtualItem ? measurementKey(item) : undefined}
           data-chat-row-index={virtualItem?.index}
           data-chat-reading-row={item.kind !== 'spacer' ? '' : undefined}
-          data-message-id={item.kind === 'message' || item.kind === 'streaming' ? item.message.id : undefined}
+          data-message-id={item.kind === 'message' ? item.message.id : item.kind === 'streaming' ? item.messageId : undefined}
           data-chat-message-list-item={item.kind}
           // `top`, not transform: layout positions snap to device pixels. A
           // translateY at 125% scaling lands text between pixels and smears it.
@@ -2793,10 +2853,10 @@ function MessageListBase({
         <button
           type="button"
           onClick={handleJumpToBottom}
-          aria-label="回到底部"
-          title="回到底部"
+          aria-label={i18n[lang].chatJumpToBottom}
+          title={i18n[lang].chatJumpToBottom}
           tabIndex={jumpButton.closing ? -1 : undefined}
-          className={`${jumpButton.closing ? 'chat-motion-pop-out pointer-events-none' : 'chat-motion-pop'} absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-600 shadow-md backdrop-blur transition-transform duration-[var(--kv-dur-instant)] ease-[var(--kv-ease-spring)] hover:text-neutral-900 active:scale-90`}
+          className={`${jumpButton.closing ? 'chat-motion-pop-out pointer-events-none' : 'chat-motion-pop'} absolute bottom-4 left-1/2 z-10 flex h-9 w-9 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--border-input)] bg-[var(--bg-input)] text-neutral-600 shadow-md transition-transform duration-[var(--kv-dur-instant)] ease-[var(--kv-ease-spring)] hover:text-neutral-900 active:scale-90`}
         >
           <ChevronDown size={18} strokeWidth={2} />
         </button>

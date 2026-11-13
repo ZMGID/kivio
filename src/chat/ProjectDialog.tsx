@@ -86,7 +86,7 @@ export function ProjectDialog({
         }}
       >
         <h3 className="text-[14px] font-semibold text-neutral-900">{title}</h3>
-        <label className="mt-3 block text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
+        <label className="mt-3 block text-[12px] font-medium text-neutral-500">
           项目名称
         </label>
         <input
@@ -98,7 +98,7 @@ export function ProjectDialog({
           className="mt-1.5 w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-[13px] text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400"
           placeholder="例如：产品发布计划"
         />
-        <label className="mt-3 block text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
+        <label className="mt-3 block text-[12px] font-medium text-neutral-500">
           项目文件夹
         </label>
         <div className="mt-1.5 flex min-w-0 gap-2">

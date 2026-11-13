@@ -30,7 +30,7 @@ export function ConfirmDialog({
           <TriangleAlert size={17} className="mt-0.5 shrink-0 text-accent" />
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold text-neutral-900">{title}</div>
-            <div className="mt-1 break-all text-[12px] text-neutral-500 dark:text-neutral-400">{message}</div>
+            <div className="mt-1 break-all text-[12px] text-neutral-500">{message}</div>
           </div>
         </div>
         <div className="flex justify-end gap-2">

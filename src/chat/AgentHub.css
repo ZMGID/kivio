@@ -32,7 +32,7 @@
 :is(button, summary).kv-agent-list-row:hover { background: var(--bg-hover); }
 .kv-agent-list-row:focus-visible,
 .kv-agent-views > button:focus-visible { outline: 2px solid var(--color-ring); outline-offset: -2px; }
-.kv-agent-status { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; color: var(--text-muted); font-size: 11.5px; white-space: nowrap; }
+.kv-agent-status { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
 .kv-agent-status > span { width: 6px; height: 6px; border: 1px solid currentColor; border-radius: 50%; }
 .kv-agent-status[data-state="running"] { color: var(--accent); }
 .kv-agent-status:is([data-state="failed"], [data-state="error"]) { color: var(--danger); }

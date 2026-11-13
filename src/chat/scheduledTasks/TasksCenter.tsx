@@ -72,11 +72,11 @@ export function TasksCenter({ tab, onOpenConversation, onCreateByChat, registerL
                 ))}
               </div>
             </div>
-            <p className="mt-1 text-[13px] text-neutral-500 dark:text-neutral-400">{t.chatTasksSubtitle}</p>
+            <p className="mt-1 text-[13px] text-neutral-500">{t.chatTasksSubtitle}</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">{actions}</div>
         </div>
-        <p className="mt-3 text-[12px] leading-relaxed text-neutral-500 dark:text-neutral-400">{tab === 'schedules' ? t.chatTasksSchedulesHint : t.chatTasksAutomationsHint}</p>
+        <p className="mt-3 text-[12px] leading-relaxed text-neutral-500">{tab === 'schedules' ? t.chatTasksSchedulesHint : t.chatTasksAutomationsHint}</p>
       </div>
     </header>
     <div id="tasks-panel" role="tabpanel" aria-labelledby={`tasks-tab-${tab}`} className="flex min-h-0 flex-1 flex-col">{body}</div>

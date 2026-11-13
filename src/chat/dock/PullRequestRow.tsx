@@ -166,7 +166,7 @@ function PullRequestDetailView({ item, workdir, onBranch, t, onCheckedOut }: {
               )}
             </div>
             {checks.length === 0 ? (
-              <div className="text-[11.5px] text-[var(--text-faint)]">{t.prNoChecks}</div>
+              <div className="text-[12px] text-[var(--text-faint)]">{t.prNoChecks}</div>
             ) : (
               <>
                 <div className="chat-pr-checkbar" aria-hidden="true">
@@ -189,7 +189,7 @@ function PullRequestDetailView({ item, workdir, onBranch, t, onCheckedOut }: {
                   >
                     <ChecksIcon checks={check.status} t={t} size={12} />
                     <span className="min-w-0 flex-1 truncate">{check.name}</span>
-                    {check.workflow && <span className="max-w-[40%] shrink-0 truncate text-[10.5px] text-[var(--text-faint)]">{check.workflow}</span>}
+                    {check.workflow && <span className="max-w-[40%] shrink-0 truncate text-[11px] text-[var(--text-faint)]">{check.workflow}</span>}
                   </button>
                 ))}
                 {checks.length > CHECKS_PREVIEW && (
@@ -234,7 +234,7 @@ function PullRequestDetailView({ item, workdir, onBranch, t, onCheckedOut }: {
                 )}
               </>
             ) : (
-              <div className="text-[11.5px] text-[var(--text-faint)]">{t.prNoDescription}</div>
+              <div className="text-[12px] text-[var(--text-faint)]">{t.prNoDescription}</div>
             )}
           </section>
 

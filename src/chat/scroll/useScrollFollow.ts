@@ -14,6 +14,8 @@ import {
 export const ScrollFollowingContext = createContext({
   following: true,
   isFollowing: (): boolean => true,
+  // 流式行每次提交后调用：ResizeObserver 未投递时补一次钉底（见 notifyContentGrowth）。
+  notifyContentGrowth: (): void => {},
 })
 
 // 低于此高度元素无法有效滚动；其上的 wheel/touch 不应改变跟随状态。
@@ -65,6 +67,9 @@ export type ScrollFollowHandle = {
   markLayoutCompensation: () => void
   // 仅在仍跟随时钉底（不 force re-attach）。live 行测高 / 代码块 hydrate 用。
   pinIfFollowing: () => void
+  // 内容刚提交过：跟随中且 scrollHeight 真变了才补一次 contentGrowth。
+  // ResizeObserver 是主路径，这是它未投递时的补钉；高度没变则 no-op。
+  notifyContentGrowth: () => void
 }
 
 // 跟随解除和按钮显示故意分开：底部附近的微小上滚不应立刻弹出按钮。
@@ -520,18 +525,23 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
   }, [applyScrollTop, content, dispatch, enabled, jumpButtonThreshold, listenerRoot, markLayoutCompensation, pinToBottom, stopGlide, trackKeys, viewport])
 
   // RO 主路径之外的补钉：仅当跟随中且 scrollHeight 真的变了。
-  useLayoutEffect(() => {
-    if (!enabled || !viewport || growthSignal == null) return
-    if (!stateRef.current.following) return
-    const nextHeight = viewport.scrollHeight
+  const notifyContentGrowth = useCallback(() => {
+    const el = boundViewportRef.current ?? (enabled ? viewport : null)
+    if (!el || !stateRef.current.following) return
+    const nextHeight = el.scrollHeight
     const prevHeight = lastScrollHeightRef.current
     if (prevHeight != null && nextHeight === prevHeight) return
     markLayoutCompensation()
-    const gap = Math.max(0, nextHeight - viewport.scrollTop - viewport.clientHeight)
+    const gap = Math.max(0, nextHeight - el.scrollTop - el.clientHeight)
     dispatch({ type: 'contentGrowth', gap })
     lastScrollHeightRef.current = nextHeight
-    lastScrollTopRef.current = viewport.scrollTop
-  }, [dispatch, enabled, growthSignal, markLayoutCompensation, viewport])
+    lastScrollTopRef.current = el.scrollTop
+  }, [dispatch, enabled, markLayoutCompensation, viewport])
+
+  useLayoutEffect(() => {
+    if (growthSignal == null) return
+    notifyContentGrowth()
+  }, [growthSignal, notifyContentGrowth])
 
 
   const handle = useMemo<ScrollFollowHandle>(
@@ -544,8 +554,9 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
       isFollowing: () => stateRef.current.following,
       markLayoutCompensation,
       pinIfFollowing,
+      notifyContentGrowth,
     }),
-    [jumpToBottom, markLayoutCompensation, pinIfFollowing, releaseFollow, restoreReadingPosition, scrollToOffset, stickToBottom],
+    [jumpToBottom, markLayoutCompensation, notifyContentGrowth, pinIfFollowing, releaseFollow, restoreReadingPosition, scrollToOffset, stickToBottom],
   )
 
   return { handle, following, showJumpButton }

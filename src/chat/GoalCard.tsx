@@ -58,7 +58,7 @@ export function GoalCard({ goal, onEdit, onPause, onResume, onCancel }: {
             {goal.criteria.length > 0 && <span className="shrink-0 whitespace-nowrap text-violet-600 dark:text-violet-300">已验证 {verified}/{goal.criteria.length} 项</span>}
             {usage != null && <span title={`${usage.toLocaleString()} tokens`} className="hidden shrink-0 whitespace-nowrap text-violet-500 sm:inline dark:text-violet-300">{formatTokens(usage)} tokens</span>}
             {completedDate && <time dateTime={completedDate.toISOString()} title={completedDate.toLocaleString()}
-              className="shrink-0 whitespace-nowrap text-neutral-500 dark:text-neutral-400">
+              className="shrink-0 whitespace-nowrap text-neutral-500">
               完成于 {completedDate.toLocaleString(undefined, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}
             </time>}
             <span className="min-w-0 flex-1 truncate opacity-75" title={goal.objective}>{goal.objective}</span>

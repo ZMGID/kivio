@@ -87,10 +87,10 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
         type="button"
         className={
           inStatusBar
-            ? 'flex h-[22px] shrink-0 items-center gap-1.5 rounded-[5px] px-1.5 text-[12px] font-medium text-neutral-700 transition-colors duration-[var(--kv-dur-instant)] hover:bg-neutral-900/[0.05]'
+            ? 'flex h-[22px] shrink-0 items-center gap-1.5 rounded-[6px] px-1.5 text-[12px] font-medium text-neutral-700 transition-colors duration-[var(--kv-dur-instant)] hover:bg-neutral-900/[0.05]'
             : `flex h-8 min-w-0 max-w-[18rem] shrink items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium transition duration-[var(--kv-dur-instant)] active:scale-[0.97] ${
                 allDone
-                  ? 'text-neutral-500 hover:bg-neutral-900/[0.05] hover:text-neutral-800 dark:text-neutral-400'
+                  ? 'text-neutral-500 hover:bg-neutral-900/[0.05] hover:text-neutral-800'
                   : 'text-neutral-700 hover:bg-neutral-900/[0.05] hover:text-neutral-950'
               }`
         }
@@ -102,7 +102,7 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
         {allDone ? (
           <CheckCircle2 size={14} strokeWidth={2} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
         ) : (
-          <ListTodo size={14} strokeWidth={2} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+          <ListTodo size={14} strokeWidth={2} className="shrink-0 text-neutral-500" />
         )}
         <span className="shrink-0 tabular-nums">
           {allDone ? t.agentTodoChipDone : t.agentTodoChip} {completedCount}/{countedTotal}
@@ -129,12 +129,12 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
                 <span className="text-[13px] font-semibold leading-none text-neutral-900">
                   {t.agentTodoTitle}
                 </span>
-                <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-[2px] text-[10px] font-medium leading-none text-neutral-500 dark:text-neutral-400">
+                <span className="shrink-0 rounded-full bg-neutral-100 px-1.5 py-[2px] text-[10px] font-medium leading-none text-neutral-500">
                   {completedCount}/{countedTotal}
                 </span>
               </div>
               {updatedAt && (
-                <div className="mt-1 text-[10.5px] leading-none text-neutral-400 dark:text-neutral-500">
+                <div className="mt-1 text-[11px] leading-none text-neutral-400 dark:text-neutral-500">
                   {t.agentTodoUpdatedAt.replace('{time}', updatedAt)}
                 </div>
               )}
@@ -166,7 +166,7 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
                     </div>
                   )}
                   {item.blocked_by && item.blocked_by.length > 0 && (
-                    <div className="mt-0.5 text-[10.5px] leading-snug text-neutral-400 dark:text-neutral-500">
+                    <div className="mt-0.5 text-[11px] leading-snug text-neutral-400 dark:text-neutral-500">
                       {t.agentTodoBlockedBy.replace(
                         '{items}',
                         item.blocked_by.map((id) => contentById.get(id) ?? id).join(', '),

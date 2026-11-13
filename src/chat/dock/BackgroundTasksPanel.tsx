@@ -56,7 +56,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
 
   if (tasks.length === 0 && !roster?.agents.length) {
     return (
-      <div className="grid flex-1 place-items-center px-6 text-center text-[12.5px] text-neutral-400 dark:text-neutral-500">
+      <div className="grid flex-1 place-items-center px-6 text-center text-[12px] text-neutral-400 dark:text-neutral-500">
         {t.chatBgEmpty}
       </div>
     )
@@ -66,7 +66,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
     <div className="shrink-0 px-2 py-2">
       {conversationId && roster && <SubagentTaskList key={conversationId} conversationId={conversationId} roster={roster} />}
       {running.length > 0 && (
-        <div className="px-1 py-1.5 text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
+        <div className="px-1 py-1.5 text-[12px] font-medium text-neutral-500">
           {t.chatBgRunning} · {running.length}
         </div>
       )}
@@ -78,7 +78,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
           <TaskGlyph kind={task.kind} />
           <div className="min-w-0 flex-1">
             <div
-              className="truncate font-mono text-[12.5px] text-neutral-800"
+              className="truncate font-mono text-[12px] text-neutral-800"
               title={task.title}
             >
               {task.title}
@@ -103,7 +103,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
       ))}
       {finished.length > 0 && (
         <div className="flex items-center justify-between px-1 py-1.5">
-          <span className="text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
+          <span className="text-[12px] font-medium text-neutral-500">
             {t.chatBgFinished} · {finished.length}
           </span>
           <button
@@ -121,7 +121,7 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
             <TaskGlyph kind={task.kind} />
             <div className="min-w-0 flex-1">
               <div
-                className="truncate font-mono text-[12.5px] text-neutral-600"
+                className="truncate font-mono text-[12px] text-neutral-600"
                 title={task.title}
               >
                 {task.title}

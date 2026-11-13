@@ -1753,7 +1753,7 @@ export const InputBar = memo(function InputBar({
   // 项目菜单内容：贴按钮紧凑宽度，状态条 / 工具栏入口共用同一 body。
   const projectMenuBody = (
     <>
-      <div className="flex h-7 items-center gap-1.5 rounded-md px-2 text-neutral-500 dark:text-neutral-400">
+      <div className="flex h-7 items-center gap-1.5 rounded-md px-2 text-neutral-500">
         <Search size={14} strokeWidth={1.8} className="shrink-0" />
         <input
           value={projectSearchQuery}
@@ -1788,7 +1788,7 @@ export const InputBar = memo(function InputBar({
                       : 'text-neutral-800 hover:bg-neutral-100'
                   }`}
                 >
-                  <Folder size={14} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+                  <Folder size={14} className="shrink-0 text-neutral-500" />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[12px] font-semibold">{project.name}</span>
                     {pathLabel && (
@@ -1814,7 +1814,7 @@ export const InputBar = memo(function InputBar({
           <button
             type="button"
             onClick={() => void selectProject(null)}
-            className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800 dark:text-neutral-400"
+            className="flex h-7 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12px] font-semibold text-neutral-500 transition-colors hover:bg-neutral-100 hover:text-neutral-800"
           >
             <Folder size={14} className="shrink-0" />
             <span className="min-w-0 flex-1 truncate">{t.chatLeaveProject}</span>
@@ -1873,7 +1873,7 @@ export const InputBar = memo(function InputBar({
                   )}
                 </div>
                 <div className="text-[11px] leading-4 text-neutral-600">
-                  <span className="text-neutral-500 dark:text-neutral-400">
+                  <span className="text-neutral-500">
                     {t.chatSkillsEnabledCount.replace('{n}', String(enabledSkills.length))}
                   </span>
                   {enabledSkills.length > 0 && (
@@ -1887,7 +1887,7 @@ export const InputBar = memo(function InputBar({
                 </div>
 
                 {showMcpSection && mcpStatusLine && (
-                  <div className="border-t border-neutral-200/80 pt-1.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+                  <div className="border-t border-neutral-200/80 pt-1.5 text-[11px] text-neutral-500">
                     {mcpStatusLine}
                   </div>
                 )}
@@ -1913,7 +1913,7 @@ export const InputBar = memo(function InputBar({
             data-chat-slash-panel="true"
             data-tauri-drag-region="false"
           >
-            <div className="chat-popover-scroll max-h-[min(184px,34vh)] overflow-y-auto">
+            <div role="listbox" className="chat-popover-scroll max-h-[min(184px,34vh)] overflow-y-auto">
               {filteredSlashCommands.length > 0 ? (
                 filteredSlashCommands.map((command, index) => {
                   const selected = index === slashSelectedIndex
@@ -1921,6 +1921,7 @@ export const InputBar = memo(function InputBar({
                     <button
                       key={command.id}
                       type="button"
+                      role="option"
                       aria-selected={selected}
                       onMouseEnter={() => setSlashSelectedIndex(index)}
                       onMouseDown={(event) => event.preventDefault()}
@@ -1950,8 +1951,8 @@ export const InputBar = memo(function InputBar({
                   {usesExternalRuntime
                     ? (externalCliSlashLoading
                       ? t.chatLoadingCliCommands
-                      : externalCliSlashHint ?? 'No matching CLI command')
-                    : 'No matching command'}
+                      : externalCliSlashHint ?? t.chatNoMatchingCliCommand)
+                    : t.chatNoMatchingCommand}
                 </div>
               )}
             </div>
@@ -2190,7 +2191,7 @@ export const InputBar = memo(function InputBar({
               } ${
                 canUndoOptimize
                   ? 'text-emerald-600 dark:text-emerald-400'
-                  : 'text-neutral-500 dark:text-neutral-400'
+                  : 'text-neutral-500'
               }`}
             >
               <WandSparkles size={18} strokeWidth={1.75} />
@@ -2282,7 +2283,7 @@ export const InputBar = memo(function InputBar({
                 type="button"
                 onClick={() => void handleSend()}
                 disabled={!canSend}
-                tabIndex={-1}
+                tabIndex={stopOwnsSendSlot ? -1 : undefined}
                 title={sendDisabledReason || (canSend ? t.chatSend : t.chatSendHintEmpty)}
                 aria-label={sendDisabledReason || t.chatSend}
                 aria-hidden={stopOwnsSendSlot}

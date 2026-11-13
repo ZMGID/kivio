@@ -661,7 +661,7 @@ export function FileTreePanel({
             value={tree.searchQuery}
             onChange={(e) => tree.setSearchQuery(e.target.value)}
             placeholder={t.dockSearchPlaceholder}
-            className="h-7 min-w-0 flex-1 bg-transparent text-[12.5px] outline-none placeholder:text-neutral-400"
+            className="h-7 min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-neutral-400"
             onKeyDown={(e) => {
               if (e.key === 'Escape' && tree.searchQuery) tree.setSearchQuery('')
             }}
@@ -831,7 +831,7 @@ export function FileTreePanel({
       {viewer?.kind === 'diff' && (
         <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)]">
           <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-neutral-800">
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-800">
               {viewer.title}
             </span>
             <IconButton label={t.dockViewerClose} size="sm" variant="ghost" onClick={() => setViewer(null)}>
@@ -846,7 +846,7 @@ export function FileTreePanel({
       {viewer?.kind === 'markdown' && (
         <div className="absolute inset-0 z-10 flex flex-col bg-[var(--theme-surface-soft)]">
           <div className="flex shrink-0 items-center gap-1.5 border-b border-neutral-200/70 px-2 py-1.5">
-            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-neutral-800">
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-800">
               {viewer.title}
             </span>
             <IconButton label={t.dockViewerClose} size="sm" variant="ghost" onClick={() => setViewer(null)}>

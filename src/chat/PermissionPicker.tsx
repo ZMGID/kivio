@@ -96,7 +96,7 @@ function PermissionPickerBase({
                 >
                   <span>{option.label}</span>
                   {active && (
-                    <Check size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+                    <Check size={15} className="shrink-0 text-neutral-500" />
                   )}
                 </button>
               )

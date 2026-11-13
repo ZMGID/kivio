@@ -44,7 +44,7 @@ export function WebSearchBlock({
   }, [labels, results.length, search.status])
 
   return (
-    <div className="not-prose mb-2 text-[11.5px] leading-5 text-neutral-500 dark:text-neutral-400">
+    <div className="not-prose mb-2 text-[12px] leading-5 text-neutral-500">
       <button
         type="button"
         onClick={() => {
@@ -84,7 +84,7 @@ export function WebSearchBlock({
           )}
           {!search.error && results.length > 0 && (
             <div className="space-y-1">
-              <div className="text-[10.5px] text-neutral-400 dark:text-neutral-500">
+              <div className="text-[11px] text-neutral-400 dark:text-neutral-500">
                 {labels.citations.replace('{count}', String(results.length))}
               </div>
               {results.map((result, idx) => (
@@ -95,20 +95,20 @@ export function WebSearchBlock({
                   className="group block w-full min-w-0 text-left rounded-md py-1 transition-colors hover:text-neutral-700"
                 >
                   <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="shrink-0 w-4 text-[10.5px] font-medium tabular-nums text-accent">
+                    <span className="shrink-0 w-4 text-[11px] font-medium tabular-nums text-accent">
                       {idx + 1}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-[11.5px] font-medium text-neutral-700 decoration-1 underline-offset-[3px] transition-colors group-hover:text-[var(--accent)] group-hover:underline">
+                    <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-700 decoration-1 underline-offset-[3px] transition-colors group-hover:text-[var(--accent)] group-hover:underline">
                       {result.title || sourceHost(result.url)}
                     </span>
                     <ExternalLink size={10.5} className="shrink-0 text-neutral-400 transition-colors group-hover:text-[var(--accent)] dark:text-neutral-500" />
                   </div>
-                  <div className="mt-0.5 pl-5 text-[10.5px] leading-4 text-neutral-400 dark:text-neutral-500 truncate">
+                  <div className="mt-0.5 pl-5 text-[11px] leading-4 text-neutral-400 dark:text-neutral-500 truncate">
                     {sourceHost(result.url)}
                     {result.publishedDate ? ` · ${result.publishedDate}` : ''}
                   </div>
                   {result.content && (
-                    <div className="mt-0.5 pl-5 text-[11px] leading-5 text-neutral-500 dark:text-neutral-400">
+                    <div className="mt-0.5 pl-5 text-[11px] leading-5 text-neutral-500">
                       {compactText(result.content)}
                     </div>
                   )}

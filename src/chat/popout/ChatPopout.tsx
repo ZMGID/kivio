@@ -164,7 +164,7 @@ function ChatPopoutBody({
     />
   )
   const pane = session.loadError ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-[13px] text-neutral-500 dark:text-neutral-400">
+    <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-[13px] text-neutral-500">
       {session.loadError}
     </div>
   ) : (

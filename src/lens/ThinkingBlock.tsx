@@ -57,7 +57,7 @@ export function ThinkingBlock({
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[11.5px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 transition-colors"
+        className="w-full flex items-center gap-1.5 px-2.5 py-1.5 text-[12px] text-neutral-500 hover:text-neutral-700 transition-colors"
       >
         {active
           ? <Loader2 className="animate-spin" size={11} />
@@ -72,7 +72,7 @@ export function ThinkingBlock({
       {open && (
         <div
           ref={bodyRef}
-          className="px-2.5 pb-2 max-h-[160px] overflow-y-auto custom-scrollbar text-[11.5px] leading-5 text-neutral-500 dark:text-neutral-400 italic whitespace-pre-wrap break-words"
+          className="px-2.5 pb-2 max-h-[160px] overflow-y-auto custom-scrollbar text-[12px] leading-5 text-neutral-500 italic whitespace-pre-wrap break-words"
         >
           {reasoning}
         </div>

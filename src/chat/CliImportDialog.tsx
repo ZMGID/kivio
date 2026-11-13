@@ -223,7 +223,7 @@ export function CliImportDialog({
             <h3 className="text-[14px] font-semibold text-neutral-900">
               {t.chatImportFromCli}
             </h3>
-            <p className="mt-0.5 truncate text-[11px] text-neutral-500 dark:text-neutral-400">
+            <p className="mt-0.5 truncate text-[11px] text-neutral-500">
               {t.chatSkillCliImportScopeHint.replace('{path}', rootPath)}
             </p>
           </div>
@@ -235,12 +235,12 @@ export function CliImportDialog({
 
         <div className="min-h-[160px] flex-1 overflow-y-auto px-4 py-3">
           {loading ? (
-            <div className="flex items-center gap-2 py-8 text-[12px] text-neutral-500 dark:text-neutral-400">
+            <div className="flex items-center gap-2 py-8 text-[12px] text-neutral-500">
               <Loader2 strokeWidth={1.75} className="animate-spin" />
               {t.chatSkillCliScanningHint}
             </div>
           ) : !sessions.length ? (
-            <p className="py-8 text-center text-[12px] text-neutral-500 dark:text-neutral-400">
+            <p className="py-8 text-center text-[12px] text-neutral-500">
               {t.chatSkillCliNoSessions}
             </p>
           ) : (

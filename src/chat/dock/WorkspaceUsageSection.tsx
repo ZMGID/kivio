@@ -31,7 +31,7 @@ function MeterRow({ label, value, percent, tone, detail }: {
   const bar = tone === 'critical' ? 'bg-red-500' : tone === 'warning' ? 'bg-amber-500' : 'bg-[var(--accent)]'
   return (
     <div className="flex h-8 items-center gap-2.5 px-2.5 text-[12px]" title={detail}>
-      <span className="w-20 shrink-0 truncate text-neutral-500 dark:text-neutral-400">{label}</span>
+      <span className="w-20 shrink-0 truncate text-neutral-500">{label}</span>
       <span
         role="progressbar"
         aria-label={label}

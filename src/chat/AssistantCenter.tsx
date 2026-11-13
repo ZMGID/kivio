@@ -159,17 +159,17 @@ function AssistantSuiteCard({
           >
             {assistant.name.trim().slice(0, 1) || t.chatAssistantAvatarFallback}
           </span>
-          <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">
+          <span className="truncate text-[13px] font-semibold leading-tight text-neutral-950">
             {assistant.name}
           </span>
         </div>
         {!builtIn && (
-          <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10.5px] font-medium text-neutral-500 dark:text-neutral-400">
+          <span className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[11px] font-medium text-neutral-500">
             {t.chatAssistantCustom}
           </span>
         )}
       </div>
-      <p className="mt-1.5 line-clamp-2 min-h-[2.4em] flex-1 text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
+      <p className="mt-1.5 line-clamp-2 min-h-[2.4em] flex-1 text-[12px] leading-[1.45] text-neutral-500">
         {assistant.description || t.chatAssistantNoDescription}
       </p>
       <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-neutral-100 pt-2.5">
@@ -489,11 +489,11 @@ export function AssistantCenter({
               className={`flex h-8 items-center gap-2 rounded-md px-2.5 text-[13px] font-medium transition-colors ${
                 tab === value
                   ? 'bg-neutral-100 text-neutral-950'
-                  : 'text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800 dark:text-neutral-400'
+                  : 'text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800'
               }`}
             >
               {label}
-              <span className="rounded-full bg-neutral-50 px-1.5 py-0.5 text-[11px] text-neutral-500 dark:text-neutral-400">
+              <span className="rounded-full bg-neutral-50 px-1.5 py-0.5 text-[11px] text-neutral-500">
                 {count}
               </span>
             </button>
@@ -843,7 +843,7 @@ export function AssistantCenter({
             <section className="space-y-3 rounded-md border border-neutral-200 p-3">
               <div className="text-[12px] font-semibold text-neutral-700">{t.chatAssistantRunSettings}</div>
               <label className="block">
-                <span className="mb-1 block text-[11px] text-neutral-500 dark:text-neutral-400">{t.chatAssistantModelProvider}</span>
+                <span className="mb-1 block text-[11px] text-neutral-500">{t.chatAssistantModelProvider}</span>
                 <Select
                   value={draft.provider_id ?? ''}
                   onChange={(providerId) => {
@@ -861,7 +861,7 @@ export function AssistantCenter({
                 />
               </label>
               <label className="block">
-                <span className="mb-1 block text-[11px] text-neutral-500 dark:text-neutral-400">{t.sectionModel}</span>
+                <span className="mb-1 block text-[11px] text-neutral-500">{t.sectionModel}</span>
                 <Select
                   value={draft.model ?? ''}
                   onChange={(model) => updateDraft('model', model)}
@@ -896,7 +896,7 @@ export function AssistantCenter({
 
             <section className="space-y-2 rounded-md border border-neutral-200 p-3">
               <div className="text-[12px] font-semibold text-neutral-700">{t.chatAssistantCurrentConfig}</div>
-              <div className="space-y-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+              <div className="space-y-1 text-[11px] text-neutral-500">
                 <div className="truncate">{t.chatAssistantConfigModel.replace('{name}', draft.model || t.chatAssistantFollowChatDefault)}</div>
                 <div className="truncate">{t.chatAssistantConfigMcp.replace('{n}', String(draftMcpIds.length))}</div>
                 <div className="truncate">{t.chatAssistantConfigSkills.replace('{n}', String(draftSkillIds.length))}</div>
@@ -926,7 +926,7 @@ export function AssistantCenter({
                 {t.chatAssistantTitle}
               </h1>
               <div className="mt-3.5 flex min-w-0 items-center gap-4">
-                <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
+                <p className="min-w-0 flex-1 text-[14px] leading-relaxed text-neutral-500">
                   {t.chatAssistantSubtitle}
                 </p>
                 <IconButton

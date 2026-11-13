@@ -178,7 +178,7 @@ export function PiSkillsSettings({ lang, onBack }: { lang: Lang; onBack: () => v
             value={query}
             onChange={setQuery}
             placeholder={t.externalAgentsPiSkillsSearch}
-            className="!pl-6 !text-[11.5px]"
+            className="!pl-6 !text-[12px]"
           />
         </div>
       </div>

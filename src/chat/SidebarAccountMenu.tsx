@@ -143,7 +143,7 @@ export function SidebarAccountMenu({
       >
         <BarChart3 strokeWidth={1.75} />
         {t.modelUsage}
-        <span className="ml-auto tabular-nums text-[11px] text-neutral-500 dark:text-neutral-400">
+        <span className="ml-auto tabular-nums text-[11px] text-neutral-500">
           {todayTokens == null ? '' : formatTokensCompact(todayTokens)}
         </span>
       </button>
@@ -154,7 +154,7 @@ export function SidebarAccountMenu({
       <div className="kv-menu-item" style={{ cursor: 'default' }}>
         <Globe strokeWidth={1.75} />
         {t.language}
-        <div className="ml-auto flex shrink-0 items-center gap-px rounded-[5px] bg-neutral-900/[0.05] p-px">
+        <div className="ml-auto flex shrink-0 items-center gap-px rounded-[6px] bg-neutral-900/[0.05] p-px">
           {(
             [
               ['zh', '中'],
@@ -170,7 +170,7 @@ export function SidebarAccountMenu({
               className={`rounded-[4px] px-1.5 py-0.5 text-[11px] font-medium leading-none transition-colors ${
                 lang === value
                   ? 'bg-[var(--theme-surface-active)] text-neutral-900 shadow-sm'
-                  : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
+                  : 'text-neutral-500 hover:text-neutral-800'
               }`}
             >
               {label}

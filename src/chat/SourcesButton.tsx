@@ -48,9 +48,9 @@ function SourceRow({
       onClick={onClick}
       className="kv-menu-item"
     >
-      <span className="grid size-4 shrink-0 place-items-center text-neutral-500 dark:text-neutral-400">{icon}</span>
+      <span className="grid size-4 shrink-0 place-items-center text-neutral-500">{icon}</span>
       <span className="min-w-0 flex-1 truncate">{label}</span>
-      {meta && <span className="shrink-0 text-[10.5px] text-neutral-400">{meta}</span>}
+      {meta && <span className="shrink-0 text-[11px] text-neutral-400">{meta}</span>}
       <Switch checked={checked} />
     </button>
   )
@@ -123,7 +123,7 @@ export function SourcesButton({
   return (
     <>
       <div className="flex items-center gap-2 px-2 py-1 text-[12px] text-neutral-700">
-        <span className="grid size-4 shrink-0 place-items-center text-neutral-500 dark:text-neutral-400">
+        <span className="grid size-4 shrink-0 place-items-center text-neutral-500">
           <Globe size={13} strokeWidth={1.75} />
         </span>
         <span className="min-w-0 flex-1 truncate">网络搜索</span>
@@ -138,7 +138,7 @@ export function SourcesButton({
                 disabled={dim}
                 title={dim ? '当前模型不支持内置搜索' : opt.hint}
                 onClick={() => void onSetWebSearchMode(opt.value)}
-                className={`rounded-md px-2 py-0.5 text-[11.5px] transition-colors ${
+                className={`rounded-md px-2 py-0.5 text-[12px] transition-colors ${
                   active
                     ? 'bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-300'
                     : dim

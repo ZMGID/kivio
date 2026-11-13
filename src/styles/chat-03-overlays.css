@@ -40,7 +40,7 @@
 .kv-quote-chip-text {
   flex: 1;
   min-width: 0;
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.45;
   color: var(--text-muted);
   white-space: pre-wrap;

@@ -41,7 +41,7 @@ export function AutomationList({
             <p className="text-[15px] font-medium text-neutral-800">
               {t.chatAutomationEmpty}
             </p>
-            <p className="mt-1 max-w-[28rem] text-[13px] text-neutral-500 dark:text-neutral-400">
+            <p className="mt-1 max-w-[28rem] text-[13px] text-neutral-500">
               {t.chatAutomationEmptyHint}
             </p>
             <div className="mt-4 flex items-center gap-2">
@@ -76,7 +76,7 @@ export function AutomationList({
                         <span className="block truncate text-[14px] font-medium text-neutral-900">
                           {item.name.trim() || t.chatAutomationUntitled}
                         </span>
-                        <span className="mt-0.5 block text-[12px] text-neutral-500 dark:text-neutral-400">
+                        <span className="mt-0.5 block text-[12px] text-neutral-500">
                           {triggerLabel(item, t)}
                           {' · '}
                           {item.enabled ? t.chatAutomationEnabled : t.chatAutomationDisabled}

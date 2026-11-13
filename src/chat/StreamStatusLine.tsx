@@ -171,7 +171,7 @@ export const StreamStatusLine = memo(function StreamStatusLine({ active, convers
         </span>
       )}
       {(parts.length > 0 || showQuip) && (
-        <span className="min-w-0 break-words text-xs tabular-nums text-neutral-500 dark:text-neutral-400">
+        <span className="min-w-0 break-words text-xs tabular-nums text-neutral-500">
           {parts.join(' · ')}
           {showQuip && (
             <span key={quip} className="kv-blob-quip">

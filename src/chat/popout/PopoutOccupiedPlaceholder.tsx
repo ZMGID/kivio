@@ -46,7 +46,7 @@ export function PopoutOccupiedPlaceholder({
         </header>
       )}
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6">
-        <p className="max-w-sm text-center text-[13px] text-neutral-500 dark:text-neutral-400">
+        <p className="max-w-sm text-center text-[13px] text-neutral-500">
           {t.chatPopoutOccupied}
         </p>
         <div className="flex items-center justify-center gap-2">

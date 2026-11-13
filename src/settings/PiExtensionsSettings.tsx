@@ -160,7 +160,7 @@ export function PiExtensionsSettings({ lang, onBack }: { lang: Lang; onBack: () 
             value={query}
             onChange={setQuery}
             placeholder={t.externalAgentsPiExtensionsSearch}
-            className="!pl-6 !text-[11.5px]"
+            className="!pl-6 !text-[12px]"
           />
         </div>
         <IconButton

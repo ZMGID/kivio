@@ -939,14 +939,14 @@ export function SessionCenter({
             />
             <label className="flex h-[30px] shrink-0 items-center gap-2">
               <Toggle checked={fullText} onChange={setFullText} ariaLabel={t.chatLibFullText} />
-              <span className="whitespace-nowrap text-[12.5px] text-neutral-600">
+              <span className="whitespace-nowrap text-[12px] text-neutral-600">
                 {t.chatLibFullText}
               </span>
             </label>
           </div>
           {selected.size > 0 && (
             <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-neutral-100 bg-neutral-50/90 px-3 py-1.5" aria-busy={batch.phase === 'running'}>
-              <span className="text-[12.5px] font-medium text-neutral-700">
+              <span className="text-[12px] font-medium text-neutral-700">
                 {t.chatLibSelected.replace('{n}', String(selected.size))}
               </span>
               <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibStar} onClick={() => bulkPin(true)}>
@@ -964,11 +964,11 @@ export function SessionCenter({
                 </Button>
                 {moveOpen === 'set' && (
                   <div role="menu" className="absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50 py-1 shadow-lg">
-                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50" onClick={() => bulkMoveSet(null)}>
+                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-neutral-50" onClick={() => bulkMoveSet(null)}>
                       {t.chatLibClearOwner}
                     </button>
                     {sets.map((s) => (
-                      <button key={s.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50" onClick={() => bulkMoveSet(s.id)}>
+                      <button key={s.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12px] hover:bg-neutral-50" onClick={() => bulkMoveSet(s.id)}>
                         {s.name}
                       </button>
                     ))}
@@ -982,11 +982,11 @@ export function SessionCenter({
                 </Button>
                 {moveOpen === 'project' && (
                   <div role="menu" className="absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50 py-1 shadow-lg">
-                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50" onClick={() => bulkMoveProject(null)}>
+                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-neutral-50" onClick={() => bulkMoveProject(null)}>
                       {t.chatLibClearOwner}
                     </button>
                     {projects.map((p) => (
-                      <button key={p.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12.5px] hover:bg-neutral-50" onClick={() => bulkMoveProject(p.id)}>
+                      <button key={p.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12px] hover:bg-neutral-50" onClick={() => bulkMoveProject(p.id)}>
                         {p.name}
                       </button>
                     ))}
@@ -1011,7 +1011,7 @@ export function SessionCenter({
                 <Trash2 size={12} />
                 {!compactPad && <span>{t.chatLibDelete}</span>}
               </Button>
-              <button type="button" className="ml-auto text-[12px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400" onClick={clearSelection}>
+              <button type="button" className="ml-auto text-[12px] text-neutral-500 hover:text-neutral-800" onClick={clearSelection}>
                 {t.chatLibClearSelection}
               </button>
             </div>
@@ -1021,7 +1021,7 @@ export function SessionCenter({
             <ErrorNotice message={state.error} />
           )}
 
-          <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-neutral-200/70 bg-neutral-50 px-3 py-[7px] text-[12px] font-medium text-neutral-500 dark:text-neutral-400">
+          <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-neutral-200/70 bg-neutral-50 px-3 py-[7px] text-[12px] font-medium text-neutral-500">
             <label className="flex w-7 shrink-0 items-center justify-center">
               <input
                 type="checkbox"
@@ -1058,10 +1058,10 @@ export function SessionCenter({
             ) : state.items.length === 0 ? (
               <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
                 <MessagesSquare size={22} strokeWidth={1.5} className="text-neutral-300 dark:text-neutral-600" />
-                <p className="mt-3 text-[13.5px] text-neutral-500">
+                <p className="mt-3 text-[13px] text-neutral-500">
                   {debouncedQ ? t.chatSessionEmptySearch : t.chatSessionEmpty}
                 </p>
-                <p className="mt-1 max-w-sm text-[12.5px] text-neutral-400">{t.chatLibEmptyHint}</p>
+                <p className="mt-1 max-w-sm text-[12px] text-neutral-400">{t.chatLibEmptyHint}</p>
               </div>
             ) : (
               grouped.map((group) => (
@@ -1124,7 +1124,7 @@ export function SessionCenter({
                                 className="min-w-0 flex-1 rounded border border-neutral-300 bg-neutral-50 px-1.5 py-0.5 text-[13px] dark:border-[var(--border-input)] dark:bg-[var(--bg-hover)]"
                               />
                             ) : (
-                              <span className="min-w-0 truncate text-[13.5px] font-medium text-neutral-900">
+                              <span className="min-w-0 truncate text-[13px] font-medium text-neutral-900">
                                 {debouncedQ
                                   ? <HighlightText text={c.title || t.chatLibUntitled} query={debouncedQ} />
                                   : (c.title || t.chatLibUntitled)}
@@ -1140,7 +1140,7 @@ export function SessionCenter({
                             // 搜索命中片段即使紧凑布局也要露出，否则正文匹配看不见高亮。
                             if (!(cols.preview || debouncedQ) || !line) return null
                             return (
-                              <p className="mt-0.5 line-clamp-2 text-[12px] leading-snug text-neutral-500 dark:text-neutral-400">
+                              <p className="mt-0.5 line-clamp-2 text-[12px] leading-snug text-neutral-500">
                                 {debouncedQ
                                   ? <HighlightText text={line} query={debouncedQ} />
                                   : line}
@@ -1195,7 +1195,7 @@ export function SessionCenter({
             {!state.loading && !state.loadingMore && hasMore && (
               <button
                 type="button"
-                className="w-full py-2.5 text-center text-[12.5px] text-neutral-500 hover:bg-neutral-50"
+                className="w-full py-2.5 text-center text-[12px] text-neutral-500 hover:bg-neutral-50"
                 onClick={() => void loadPage({ append: true })}
               >
                 {t.chatLibLoadMore}

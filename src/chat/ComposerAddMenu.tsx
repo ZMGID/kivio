@@ -173,7 +173,7 @@ export function ComposerAddMenu({
             {view === 'sources' && sourcesPanel ? (
               <>
                 <button type="button" className="kv-menu-item" onClick={() => setView('root')}>
-                  <span className="grid size-4 shrink-0 place-items-center text-neutral-500 dark:text-neutral-400">
+                  <span className="grid size-4 shrink-0 place-items-center text-neutral-500">
                     <ChevronLeft size={13} strokeWidth={1.75} />
                   </span>
                   <span className="min-w-0 flex-1 truncate font-semibold">{t.chatComposerSources}</span>
@@ -184,7 +184,7 @@ export function ComposerAddMenu({
             ) : (
               <>
                 <button type="button" className="kv-menu-item" disabled={disabled} onClick={pickAttachment}>
-                  <span className="grid size-4 shrink-0 place-items-center text-neutral-500 dark:text-neutral-400">
+                  <span className="grid size-4 shrink-0 place-items-center text-neutral-500">
                     <Paperclip size={13} strokeWidth={1.75} />
                   </span>
                   <span className="min-w-0 flex-1 truncate">{t.chatAddAttachment}</span>
@@ -197,7 +197,7 @@ export function ComposerAddMenu({
                       disabled={disabled || atLimit}
                       onClick={() => void addFromFolder()}
                     >
-                      <span className="grid size-4 shrink-0 place-items-center text-neutral-500 dark:text-neutral-400">
+                      <span className="grid size-4 shrink-0 place-items-center text-neutral-500">
                         <FolderPlus size={13} strokeWidth={1.75} />
                       </span>
                       <span className="min-w-0 flex-1 truncate">{t.chatAddAdditionalDirectory}</span>
@@ -218,7 +218,7 @@ export function ComposerAddMenu({
                       disabled={disabled}
                       onClick={() => setView('sources')}
                     >
-                      <span className="grid size-4 shrink-0 place-items-center text-neutral-500 dark:text-neutral-400">
+                      <span className="grid size-4 shrink-0 place-items-center text-neutral-500">
                         <SlidersHorizontal size={13} strokeWidth={1.75} />
                       </span>
                       <span className="min-w-0 flex-1 truncate">{t.chatComposerSources}</span>
@@ -234,7 +234,7 @@ export function ComposerAddMenu({
                         <div className="kv-menu-label">{t.chatAdditionalDirectories}</div>
                         {directories.map((entry) => (
                           <div key={entry.path} className="kv-menu-item pr-1">
-                            <span className="grid size-4 shrink-0 place-items-center text-neutral-500 dark:text-neutral-400">
+                            <span className="grid size-4 shrink-0 place-items-center text-neutral-500">
                               <Folders size={13} strokeWidth={1.75} />
                             </span>
                             <span className="min-w-0 flex-1 truncate" title={entry.path}>

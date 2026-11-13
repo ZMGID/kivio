@@ -325,7 +325,7 @@ export function ProvidersTab({
                           setIconPickerOpen(false)
                         }}
                         data-tauri-drag-region="false"
-                        className={`flex h-8 items-center justify-center rounded-md text-[10px] text-neutral-500 hover:bg-neutral-900/[0.06] dark:text-neutral-400 ${
+                        className={`flex h-8 items-center justify-center rounded-md text-[10px] text-neutral-500 hover:bg-neutral-900/[0.06] ${
                           settings.providerIcons?.[selectedProvider.id] ? '' : 'bg-neutral-900/[0.07]'
                         }`}
                       >

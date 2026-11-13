@@ -121,7 +121,7 @@ function ChatInlineImageSource({
           loading={src.startsWith('data:') ? undefined : conversationOpening ? 'eager' : 'lazy'}
           className={`h-full w-full min-w-0 max-w-full ${IMAGE_CLASS} ${failed ? 'hidden' : ''}`}
         />
-        {failed ? <span className="flex h-full w-full items-center justify-center text-neutral-500 dark:text-neutral-400"><ImageOff size={18} aria-hidden="true" /></span> : null}
+        {failed ? <span className="flex h-full w-full items-center justify-center text-neutral-500"><ImageOff size={18} aria-hidden="true" /></span> : null}
       </button>
       {menuAnchor ? (
         <ChatImageContextMenu

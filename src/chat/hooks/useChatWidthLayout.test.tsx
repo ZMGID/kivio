@@ -38,7 +38,7 @@ function setup({ following = false, locked = false, live = false } = {}) {
     scrollToOffset: vi.fn((next) => { viewport.scrollTop = next }),
     markLayoutCompensation: vi.fn(),
     stickToBottom: vi.fn(), jumpToBottom: vi.fn(), releaseFollow: vi.fn(),
-    restoreReadingPosition: vi.fn(), pinIfFollowing: vi.fn(),
+    restoreReadingPosition: vi.fn(), pinIfFollowing: vi.fn(), notifyContentGrowth: vi.fn(),
   }
   const navigationLocked = { current: locked }
   const hook = renderHook(() => useChatWidthLayout(content, viewport, follow, navigationLocked))

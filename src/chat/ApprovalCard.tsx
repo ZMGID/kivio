@@ -79,7 +79,7 @@ export function ApprovalCard({ title, subtitle, detail, actions, error }: Approv
             {title}
           </div>
           {subtitle && (
-            <div className="mt-0.5 text-[12px] text-neutral-500 dark:text-neutral-400">
+            <div className="mt-0.5 text-[12px] text-neutral-500">
               {subtitle}
             </div>
           )}
@@ -91,7 +91,7 @@ export function ApprovalCard({ title, subtitle, detail, actions, error }: Approv
         </pre>
       )}
       {error && (
-        <div className="mt-2 text-[11.5px] leading-5 text-red-600 dark:text-red-400" role="alert">
+        <div className="mt-2 text-[12px] leading-5 text-red-600 dark:text-red-400" role="alert">
           {error}
         </div>
       )}

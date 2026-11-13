@@ -96,7 +96,7 @@ export function AssistantPicker({
             ? 'bg-neutral-200 text-neutral-700'
             : currentAssistant
               ? 'text-accent! hover:bg-neutral-100'
-              : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400'
+              : 'text-neutral-500 hover:bg-neutral-100'
         }`}
         aria-expanded={open}
         aria-haspopup="menu"

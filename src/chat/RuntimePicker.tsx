@@ -563,7 +563,7 @@ function ExternalModelSelectorBase({
               )}
               {models.length === 0 ? (
                 <div
-                  className={`kv-menu-row ${loading ? 'reasoning-shimmer-text' : 'text-neutral-500 dark:text-neutral-400'}`}
+                  className={`kv-menu-row ${loading ? 'reasoning-shimmer-text' : 'text-neutral-500'}`}
                 >
                   {loading ? t.chatRuntimeProbingModels : t.chatRuntimeNoModels}
                 </div>
@@ -619,7 +619,7 @@ function ExternalModelSelectorBase({
             title={t.chatThinkingLevel.replace('{level}', currentReasoningLabel)}
             aria-label={t.chatThinkingLevel.replace('{level}', currentReasoningLabel)}
           >
-            <Brain size={15} className="shrink-0 text-neutral-500 dark:text-neutral-400" />
+            <Brain size={15} className="shrink-0 text-neutral-500" />
             <span className="chat-thinking-level-label max-w-[64px] truncate font-medium text-neutral-800">
               {currentReasoningLabel}
             </span>
@@ -680,7 +680,7 @@ function ExternalModelSelectorBase({
             onModelChange(agentRuntime.externalModel ?? 'default', undefined, fastOn ? null : fastTier.id)
           }}
           data-tauri-drag-region="false"
-          className={`grid size-7 shrink-0 place-items-center rounded-full transition-colors hover:bg-neutral-100 ${fastOn ? 'text-[var(--accent)]' : 'text-neutral-500 dark:text-neutral-400'}`}
+          className={`grid size-7 shrink-0 place-items-center rounded-full transition-colors hover:bg-neutral-100 ${fastOn ? 'text-[var(--accent)]' : 'text-neutral-500'}`}
         >
           <Zap size={15} fill={fastOn ? 'currentColor' : 'none'} />
         </button>

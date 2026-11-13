@@ -148,7 +148,7 @@ function GroupColumnView({
     >
       {showColumnChrome && (
         <div className="mb-1 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
+          <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-neutral-500">
             {message.model && <ModelIcon model={message.model} size={14} />}
             <span className="min-w-0 truncate" title={columnModelLabel(message.provider_id, message.model)}>
               {columnModelLabel(message.provider_id, message.model)}
@@ -163,7 +163,7 @@ function GroupColumnView({
               className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
                 isSelected
                   ? 'bg-emerald-500/90 text-white'
-                  : 'border border-neutral-200 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400'
+                  : 'border border-neutral-200 text-neutral-500 hover:bg-neutral-100'
               }`}
             >
               <Check size={11} strokeWidth={2.5} />
@@ -286,7 +286,7 @@ function GroupFooter({
                 className={`inline-flex max-w-[160px] shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
                   isActive
                     ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
-                    : 'text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400'
+                    : 'text-neutral-500 hover:bg-neutral-100'
                 }`}
               >
                 {message.model && <ModelIcon model={message.model} size={13} />}

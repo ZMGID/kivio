@@ -163,10 +163,10 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
               type="button"
               onClick={() => setSource(opt.value)}
               data-tauri-drag-region="false"
-              className={`rounded px-3 py-1 text-[12.5px] font-medium transition-colors duration-[var(--kv-dur-fast)] ${
+              className={`rounded px-3 py-1 text-[12px] font-medium transition-colors duration-[var(--kv-dur-fast)] ${
                 source === opt.value
                   ? 'bg-neutral-100 text-neutral-900'
-                  : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
+                  : 'text-neutral-500 hover:text-neutral-800'
               }`}
             >
               {opt.label}
@@ -208,16 +208,16 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className="truncate text-[13.5px] font-semibold leading-tight text-neutral-950">{card.displayName}</span>
+                        <span className="truncate text-[13px] font-semibold leading-tight text-neutral-950">{card.displayName}</span>
                         {card.verified && <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">{t.chatMcpVerified}</span>}
                         {card.transportHints.map((hint) => (
-                          <span key={hint} className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-500 dark:text-neutral-400">{hint}</span>
+                          <span key={hint} className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-500">{hint}</span>
                         ))}
                       </div>
-                      <p className="mt-1 line-clamp-2 min-h-[2.4em] text-[12px] leading-[1.45] text-neutral-500 dark:text-neutral-400">
+                      <p className="mt-1 line-clamp-2 min-h-[2.4em] text-[12px] leading-[1.45] text-neutral-500">
                         {card.description || t.chatMcpNoDescription}
                       </p>
-                      <div className="mt-1 truncate font-mono text-[10.5px] text-neutral-400 dark:text-neutral-500">{card.sourceId}</div>
+                      <div className="mt-1 truncate font-mono text-[11px] text-neutral-400 dark:text-neutral-500">{card.sourceId}</div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       {card.detailUrl && (
@@ -243,7 +243,7 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
                         const key = mcpRegistryConfigInputKey(input)
                         return (
                           <div key={key}>
-                            <label className="mb-1 block text-[11.5px] font-medium text-neutral-600">
+                            <label className="mb-1 block text-[12px] font-medium text-neutral-600">
                               {input.label ?? input.name}
                               {input.required && <span className="ml-1 text-red-500">*</span>}
                               <span className="ml-1.5 text-[10px] font-normal text-neutral-400 dark:text-neutral-500">{input.target}</span>

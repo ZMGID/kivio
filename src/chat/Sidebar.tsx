@@ -302,7 +302,7 @@ function SidebarUserFooter({
         >
           <UserAvatar profile={profile} size={22} />
           <span
-            className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-700"
+            className="min-w-0 flex-1 truncate text-[12px] text-neutral-700"
             title={profile.displayName || undefined}
           >
             {profile.displayName || 'Kivio'}
@@ -404,7 +404,7 @@ function ExtensionsNav({
         }`}
         aria-expanded={expanded}
       >
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition-colors group-hover:text-neutral-800 dark:text-neutral-400">
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center text-neutral-600 transition-colors group-hover:text-neutral-800">
           <ExtensionsIcon size={18} strokeWidth={1.75} />
         </span>
         <span className="min-w-0 flex-1 truncate">{t.chatNavExtensions}</span>
@@ -604,7 +604,7 @@ function SearchDialog({
                       )}
                     </div>
                     {showSnippet && (
-                      <p className="mt-0.5 line-clamp-2 text-[12px] leading-snug text-neutral-500 dark:text-neutral-400">
+                      <p className="mt-0.5 line-clamp-2 text-[12px] leading-snug text-neutral-500">
                         <HighlightText text={snippet} query={normalizedQuery} />
                       </p>
                     )}
@@ -1819,7 +1819,7 @@ export const Sidebar = memo(function Sidebar({
                             <Folder
                               open={!collapsedProject}
                               size={15}
-                              className="shrink-0 text-neutral-500 dark:text-neutral-400"
+                              className="shrink-0 text-neutral-500"
                             />
                             <span className="min-w-0 truncate">{project.name}</span>
                           </button>
@@ -1973,7 +1973,7 @@ export const Sidebar = memo(function Sidebar({
                               <Layers
                                 size={15}
                                 strokeWidth={1.75}
-                                className={`shrink-0 ${set.color ? '' : 'text-neutral-500 dark:text-neutral-400'}`}
+                                className={`shrink-0 ${set.color ? '' : 'text-neutral-500'}`}
                                 style={set.color ? { color: set.color } : undefined}
                               />
                               <span className="min-w-0 truncate">{set.name}</span>
