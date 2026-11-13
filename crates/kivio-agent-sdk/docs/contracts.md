@@ -102,6 +102,8 @@ The SDK does not reserve application-wide run capacity. The host prevents confli
 
 Within one invocation, sequence numbers increase strictly. `RunStarted` precedes step, model message, and tool facts. Step and message events have matching end events. Tool events pair by round and call ID. Concurrent tool work can interleave facts, so consumers use these identities instead of assuming adjacent pairs.
 
+SSE decoding limits each pending event (unfinished line plus accumulated data) to 64 MiB, including non-data lines. Exceeding this limit returns a non-retryable `InvalidRequest` error; the generous limit accommodates inline Gemini images.
+
 When an adapter retries a visible stream, `AttemptDiscarded` identifies text, reasoning, blocks, and tools withdrawn from the failed attempt. A consumer that renders tentative output must apply that withdrawal before rendering the next attempt. The standalone HTTP provider has no SDK-level retry loop. Its supplied HTTP client owns transport retries and redirects.
 
 `RunEnded` is emitted once after paired inner scopes end. No later facts reach the sink. Its outcome is `Completed`, `Recovered`, `CompactionBlocked`, `Cancelled`, `Failed(AgentFailure)`, or `Dropped`. The core returned status and terminal event use the same completion reason. An outer session commit can fail afterward and changes the session result to a host failure; it does not rewrite the already emitted core event.

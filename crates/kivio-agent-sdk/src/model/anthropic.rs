@@ -452,7 +452,7 @@ pub async fn decode_anthropic_stream(
         let Some(chunk) = chunk else {
             break;
         };
-        for data in sse.push(&chunk) {
+        for data in sse.push(&chunk)? {
             content_blocks.push(&data);
             match parse_anthropic_sse_event(&format!("data: {data}")) {
                 Some(AnthropicSseEvent::Usage(next)) => {

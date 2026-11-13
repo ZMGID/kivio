@@ -208,7 +208,7 @@ pub async fn decode_responses_stream(
         let Some(chunk) = chunk else {
             break;
         };
-        for data in sse.push(&chunk) {
+        for data in sse.push(&chunk)? {
             if let Some(error) = process_sse_data(&data, &mut state, sink)? {
                 return Err(error);
             }
@@ -931,7 +931,7 @@ fn looks_like_sse(body: &str) -> bool {
 fn output_from_sse_body(body: &str) -> Result<GenerateOutput, ModelError> {
     let mut state = ResponsesStreamState::default();
     let mut sink = DiscardSink;
-    for data in super::sse::SseDecoder::default().push(body.as_bytes()) {
+    for data in super::sse::SseDecoder::default().push(body.as_bytes())? {
         if let Some(err) = process_sse_data(&data, &mut state, &mut sink)? {
             return Err(err);
         }
@@ -2386,7 +2386,10 @@ mod tests {
         );
         let mut state = ResponsesStreamState::default();
         let mut sink = CapturingSink::default();
-        for data in crate::model::sse::SseDecoder::default().push(body.as_bytes()) {
+        for data in crate::model::sse::SseDecoder::default()
+            .push(body.as_bytes())
+            .unwrap()
+        {
             process_sse_data(&data, &mut state, &mut sink).expect("process event");
         }
         state.finish(&mut sink).expect("finish");

@@ -330,7 +330,7 @@ pub async fn decode_chat_stream(
         let Some(chunk) = chunk else {
             break;
         };
-        for data in sse.push(&chunk) {
+        for data in sse.push(&chunk)? {
             let data = data.trim();
             if data.is_empty() {
                 continue;
