@@ -1057,9 +1057,26 @@ async fn run_capture(
         .await
         .map_err(|e| format!("Stop preview browser: {e}"));
     let diagnostics = diagnostics.await.unwrap_or_default();
-    let removed = profile
-        .close()
-        .map_err(|e| format!("Remove preview browser profile: {e}"));
+    // Windows can retain file locks briefly after the browser job becomes empty.
+    let cleanup_deadline = Instant::now() + Duration::from_secs(5);
+    let removed = loop {
+        match std::fs::remove_dir_all(profile.path()) {
+            Ok(()) => break Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break Ok(()),
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(32 | 33))
+                    && Instant::now() < cleanup_deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => break Err(format!("Remove preview browser profile: {error}")),
+        }
+    };
+    #[cfg(test)]
+    if result.is_err() {
+        eprintln!("MEMORY_AUDIT cleanup removed={removed:?}");
+    }
     waited?;
     removed?;
     result.map_err(|error| {
@@ -1530,5 +1547,90 @@ mod tests {
                 .iter()
                 .any(|entry| entry.text == format!("preview ready {dark}")));
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a local Chromium browser and exclusive preview use for cleanup checks"]
+    async fn repeated_real_previews_reclaim_resources_after_success_timeout_and_cancellation() {
+        fn profiles() -> HashSet<PathBuf> {
+            std::fs::read_dir(std::env::temp_dir())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("kivio-html-preview-")
+                })
+                .map(|entry| entry.path())
+                .collect()
+        }
+
+        async fn reclaimed(baseline: &HashSet<PathBuf>) {
+            let completed = tokio::time::timeout(Duration::from_secs(20), async {
+                while browser_slots().available_permits() != 2 || !profiles().is_subset(baseline) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+            assert!(
+                completed.is_ok(),
+                "preview cleanup incomplete: available_slots={}, remaining_profiles={:?}",
+                browser_slots().available_permits(),
+                profiles().difference(baseline).collect::<Vec<_>>()
+            );
+        }
+
+        let browser = system_browser().expect("install a Chromium-family browser to run this test");
+        let baseline = profiles();
+        for round in 0..20 {
+            let html = format!("<html><body>Round {round}<script>console.log('round-{round}')</script></body></html>");
+            let result = capture(&browser, &html, 320, false).await.unwrap();
+            assert!(result
+                .console
+                .iter()
+                .any(|entry| entry.text == format!("round-{round}")));
+            let png = STANDARD.decode(&result.png_base64).unwrap();
+            assert_eq!(image::load_from_memory(&png).unwrap().width(), 320);
+            reclaimed(&baseline).await;
+            eprintln!("MEMORY_AUDIT preview_round={round} reclaimed=true");
+        }
+
+        let hung_page = "<html><script>while(true){}</script></html>";
+        let error = capture(&browser, hung_page, 320, false)
+            .await
+            .err()
+            .expect("the hung page must fail");
+        assert!(
+            error.contains("timed out"),
+            "expected a real page timeout: {error}"
+        );
+        reclaimed(&baseline).await;
+        eprintln!("MEMORY_AUDIT timeout reclaimed=true");
+
+        let cancel_browser = browser.clone();
+        let pending =
+            tokio::spawn(async move { capture(&cancel_browser, hung_page, 320, false).await });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while profiles().is_subset(&baseline) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cancellation must happen after the browser worker has started");
+        pending.abort();
+        assert!(pending
+            .await
+            .err()
+            .expect("caller was cancelled")
+            .is_cancelled());
+        reclaimed(&baseline).await;
+        eprintln!("MEMORY_AUDIT cancellation reclaimed=true");
+
+        capture(&browser, "<html><body>Recovered</body></html>", 320, false)
+            .await
+            .expect("preview must still work after timeout and cancellation");
+        reclaimed(&baseline).await;
+        eprintln!("MEMORY_AUDIT recovery reclaimed=true");
     }
 }
