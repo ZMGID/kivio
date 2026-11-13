@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { api, type ModelDatabaseSnapshot } from '../api/tauri'
 import { startModelDatabaseSync, updateModelDatabase } from './modelDatabaseSync'
-import { getModelDatabaseSnapshot, matchModel, resolveModelInfo } from './modelMatching'
+import { getModelDatabaseSnapshot, matchModel, resolveModelInfo, seedModelDatabase } from './modelMatching'
 
 function data(revision: number, context: number): ModelDatabaseSnapshot {
   return { revision, version: `2026-10-13.${revision}`, database: {
@@ -37,5 +37,12 @@ describe('desktop model database synchronization', () => {
     dispose()
     expect(stop).toHaveBeenCalledOnce()
     vi.restoreAllMocks()
+  })
+
+  it('ignores the bundled catalog once the backend catalog has arrived', () => {
+    // The previous case left the backend catalog at revision 3.
+    seedModelDatabase({ _meta: { version: 'bundled' }, 'sample-2.1': { contextWindow: 1 } })
+    expect(matchModel('sample-2.1')?.contextWindow).toBe(300)
+    expect(getModelDatabaseSnapshot().version).toBe('2026-10-13.3')
   })
 })

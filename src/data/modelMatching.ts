@@ -1,4 +1,3 @@
-import modelDatabase from './modelDatabase.json'
 import type { ModelInfo, ModelProvider, ModelDatabaseSnapshot } from '../api/tauri'
 
 type DbEntry = {
@@ -29,8 +28,10 @@ type DbEntry = {
   }
 }
 
-// Browser preview starts from the bundle; desktop replaces it before mounting React.
-let snapshot: ModelDatabaseSnapshot = { revision: -1, version: modelDatabase._meta.version, database: modelDatabase }
+// 桌面端在挂载 React 前由后端下发目录（见 modelDatabaseSync），从不读打包内的那份；它有 3 MB，
+// 静态引入会让每个窗口启动时都解析一遍。没有后端的场景（浏览器预览、测试）改由
+// bundledModelDatabase.ts 按需加载后调 seedModelDatabase。
+let snapshot: ModelDatabaseSnapshot = { revision: -1, version: '', database: {} }
 const listeners = new Set<() => void>()
 export const getModelDatabaseSnapshot = () => snapshot
 export function subscribeModelDatabase(listener: () => void) {
@@ -57,6 +58,15 @@ export function applyModelDatabaseSnapshot(next: ModelDatabaseSnapshot) {
   // A subscription event may overtake an earlier get/update response.
   if (next.revision <= snapshot.revision) return
   snapshot = next
+  rebuildDatabase()
+  for (const listener of listeners) listener()
+}
+
+/** 用打包内的目录作起始值。后端快照已到达则忽略；之后到达的后端快照照常覆盖它。 */
+export function seedModelDatabase(database: Record<string, unknown>) {
+  if (snapshot.revision >= 0) return
+  const version = (database._meta as { version?: string } | undefined)?.version ?? ''
+  snapshot = { revision: -1, version, database }
   rebuildDatabase()
   for (const listener of listeners) listener()
 }

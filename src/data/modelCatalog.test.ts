@@ -1,16 +1,15 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { ModelProvider } from '../api/tauri'
 import { applyModelCatalog } from './modelCatalog'
-import { resolveModelInfo } from './modelMatching'
+import { resolveModelInfo, seedModelDatabase } from './modelMatching'
 import { createProviderRequestDraft } from '../settings/public/providerDraft'
 
-vi.mock('./modelDatabase.json', () => ({
-  default: {
-    _meta: { version: 'test' },
-    'known-video': { capabilities: { videoInput: true } },
-    'known-image': { capabilities: { vision: true } },
-  },
-}))
+// 目录不再随模块静态引入；与没有后端的运行环境一样，显式给一份起始目录。
+seedModelDatabase({
+  _meta: { version: 'test' },
+  'known-video': { capabilities: { videoInput: true } },
+  'known-image': { capabilities: { vision: true } },
+})
 
 const provider: ModelProvider = {
   id: 'test', name: 'Test', baseUrl: 'https://example.com/v1', apiKeys: [],

@@ -6,13 +6,14 @@ import { mediaStationApi, type MediaJob } from '../api/mediaStation'
 import { getSettingsCached } from '../api/settingsCache'
 import type { Settings } from '../api/tauri'
 import { confirmDialog } from '../components/dialogQueue'
+import { seedModelDatabase } from '../data/modelMatching'
 
-vi.mock('../data/modelDatabase.json', () => ({ default: {
+seedModelDatabase({
   _meta: { version: 'test' },
   'gpt-image-1': { displayName: 'Image fixture', contextWindow: 0, maxOutput: 0, capabilities: { imageGeneration: true } },
   'grok-imagine-video': { displayName: 'Video fixture', contextWindow: 0, maxOutput: 0, capabilities: { videoGeneration: true } },
   'doubao-seedance-2-5-260628': { displayName: 'Library video fixture', contextWindow: 0, maxOutput: 0, capabilities: { videoGeneration: true } },
-} }))
+})
 
 vi.mock('../api/mediaStation', () => ({ mediaStationApi: { list: vi.fn(), start: vi.fn(), cancel: vi.fn(), resume: vi.fn(), read: vi.fn(), export: vi.fn(), reference: vi.fn(), delete: vi.fn() } }))
 vi.mock('../api/settingsCache', () => ({ getSettingsCached: vi.fn() }))

@@ -1,6 +1,11 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
 import { afterEach } from 'vitest'
+import bundledModelDatabase from '../data/modelDatabase.json'
+import { seedModelDatabase } from '../data/modelMatching'
+
+// 测试没有后端目录；与浏览器预览一样从打包内的那份起步。
+seedModelDatabase(bundledModelDatabase)
 
 afterEach(() => {
   cleanup()

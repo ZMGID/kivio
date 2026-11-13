@@ -1,24 +1,23 @@
-import { describe, expect, it, vi } from 'vitest'
-import { matchModel, matchModelExact, resolveModelInfo } from './modelMatching'
+import { describe, expect, it } from 'vitest'
+import { matchModel, matchModelExact, resolveModelInfo, seedModelDatabase } from './modelMatching'
 
-vi.mock('./modelDatabase.json', () => ({
-  default: {
-    _meta: { version: 'test' },
-    'model-4': { displayName: 'Model 4', contextWindow: 100 },
-    'model-4.6': {
-      displayName: 'Model 4.6', contextWindow: 200, maxOutput: 60, temperature: 0.7,
-      capabilities: { vision: true, videoInput: true, functionCalling: true, reasoning: true, streaming: true, embedding: true },
-      dimensions: 1024, multilingual: true, reasoningEfforts: ['low', 'high'],
-      pricing: { input: 2, output: 4, cachedInput: 0.2 },
-    },
-    'model-4.6-fast': { displayName: 'Model 4.6 Fast', contextWindow: 300 },
-    'model-4.6-free': { displayName: 'Model 4.6 Free', contextWindow: 300 },
-    'vendor/model-4.6': { displayName: 'Vendor Model 4.6', contextWindow: 400 },
-    '[self-hosted]model/model-4.6-private': { displayName: 'Private Model 4.6', contextWindow: 500 },
-    'kimi-code/k3': { displayName: 'Coding Model', contextWindow: 600, reasoningEfforts: ['low', 'high'] },
-    'kimi-code/k3-256k': { displayName: 'Coding Model Small', contextWindow: 700 },
+// 目录不再随模块静态引入；与没有后端的运行环境一样，显式给一份起始目录。
+seedModelDatabase({
+  _meta: { version: 'test' },
+  'model-4': { displayName: 'Model 4', contextWindow: 100 },
+  'model-4.6': {
+    displayName: 'Model 4.6', contextWindow: 200, maxOutput: 60, temperature: 0.7,
+    capabilities: { vision: true, videoInput: true, functionCalling: true, reasoning: true, streaming: true, embedding: true },
+    dimensions: 1024, multilingual: true, reasoningEfforts: ['low', 'high'],
+    pricing: { input: 2, output: 4, cachedInput: 0.2 },
   },
-}))
+  'model-4.6-fast': { displayName: 'Model 4.6 Fast', contextWindow: 300 },
+  'model-4.6-free': { displayName: 'Model 4.6 Free', contextWindow: 300 },
+  'vendor/model-4.6': { displayName: 'Vendor Model 4.6', contextWindow: 400 },
+  '[self-hosted]model/model-4.6-private': { displayName: 'Private Model 4.6', contextWindow: 500 },
+  'kimi-code/k3': { displayName: 'Coding Model', contextWindow: 600, reasoningEfforts: ['low', 'high'] },
+  'kimi-code/k3-256k': { displayName: 'Coding Model Small', contextWindow: 700 },
+})
 
 describe('matchModel', () => {
   it('prefers qualified entries and normalizes version separators without losing the route', () => {

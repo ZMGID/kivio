@@ -39,5 +39,9 @@ if (isTauriRuntime()) {
     root.textContent = '本地数据加载失败，请重新打开窗口。 / Local data failed to load. Reopen this window.'
   })
 } else {
-  mountApp()
+  // 浏览器预览没有后端目录，挂载前加载打包内的那份；加载失败也照常挂载（模型信息显示为未知）。
+  void import('./data/bundledModelDatabase')
+    .then((module) => module.loadBundledModelDatabase())
+    .catch((error) => console.error('[startup] could not load bundled model database', error))
+    .then(mountApp)
 }
