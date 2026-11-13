@@ -3,7 +3,7 @@ import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Info, Loader2, Pl
 import { api, type Settings, type WebSearchMcpAuth, type WebSearchProviderId } from '../api/tauri'
 import type { I18n, Lang } from '../components/i18n'
 import { Input, Select, SettingRow, SettingsGroup, TextArea, Toggle } from './components'
-import { Button } from '../components/Button'
+import { Button, IconButton } from '../components/Button'
 import { isProviderConfigured, providerSupportsFetch, resolvedFetchProvider } from './webSearch'
 
 type WebSearchConfig = NonNullable<Settings['lens']['webSearch']>
@@ -486,18 +486,16 @@ function TestSearch({ t, config }: { t: I18n; config: WebSearchConfig }) {
           placeholder={t.webSearchTestPlaceholder}
           className="flex-1"
         />
-        <button
-          type="button"
+        <IconButton
           onClick={() => void run()}
           disabled={!query.trim() || state.status === 'running'}
-          className="grid size-9 shrink-0 place-items-center rounded-lg border border-zinc-200 text-zinc-500 transition hover:bg-zinc-100 hover:text-accent disabled:opacity-40"
           data-tauri-drag-region="false"
-          aria-label={t.webSearchTestSection}
+          label={t.webSearchTestSection}
         >
           {state.status === 'running'
-            ? <Loader2 size={16} className="animate-spin" />
-            : <Play size={16} />}
-        </button>
+            ? <Loader2 className="animate-spin" />
+            : <Play />}
+        </IconButton>
       </div>
 
       {state.status === 'running' && (

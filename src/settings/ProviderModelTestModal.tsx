@@ -5,6 +5,7 @@ import { api } from '../api/tauri'
 import type { ProviderRequestConfig } from '../api/tauri'
 import { ModelIcon } from '../components/ModelIcon'
 import { Button, IconButton } from '../components/Button'
+import { Checkbox } from './components'
 import { MODEL_TEST_CONCURRENCY, runPool } from '../components/providerModelTestPool'
 
 type Lang = 'zh' | 'en'
@@ -143,10 +144,9 @@ export function ProviderModelTestModal({
         ) : (
           <>
             <div className="kv-mtest-toolbar">
-              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" className="kv-mtest-check" checked={allChecked} onChange={toggleAll} />
-                <span className="text-[12px]">{t.selectAll}</span>
-              </label>
+              <Checkbox checked={allChecked} indeterminate={!allChecked && selected.size > 0} onChange={toggleAll}>
+                {t.selectAll}
+              </Checkbox>
               <span className="kv-row-desc">
                 {running
                   ? t.progress(finishedCount, selected.size)
@@ -162,7 +162,8 @@ export function ProviderModelTestModal({
                     <div className="kv-mtest-row">
                       <input
                         type="checkbox"
-                        className="kv-mtest-check"
+                        className="kv-checkbox"
+                        aria-label={model}
                         checked={selected.has(model)}
                         onChange={() => toggle(model)}
                         disabled={running}

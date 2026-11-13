@@ -4,6 +4,8 @@ import { useState } from 'react'
 import { AlertCircle, Check, Copy, Search } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { useT } from '../components/i18n'
+import { Button } from '../components/Button'
+import { TextArea } from '../settings/public/controls'
 import {
   kbRetrievalTest,
   type KnowledgeLibrary,
@@ -118,27 +120,28 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
 
           {/* 查询 */}
           <div className="flex items-stretch gap-2">
-            <textarea
+            <TextArea
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={setQuery}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) run()
               }}
               placeholder={t.chatRetrievalQueryPlaceholder}
+              aria-label={t.chatRetrievalQueryPlaceholder}
               rows={2}
-              data-tauri-drag-region="false"
-              className="min-w-0 flex-1 resize-none rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-[13px] leading-relaxed outline-none focus:border-accent"
+              maxRows={6}
+              className="min-w-0 flex-1"
             />
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={run}
               disabled={busy || !query.trim() || selected.length === 0}
+              className="shrink-0 self-end"
               data-tauri-drag-region="false"
-              className="flex shrink-0 items-center gap-1.5 self-stretch rounded-lg bg-accent px-4 text-[13px] font-medium text-[var(--text-onaccent)] transition-opacity hover:opacity-90 disabled:opacity-40"
             >
-              <Search size={14} />
+              <Search />
               {busy ? t.chatRetrievalRunning : t.chatRetrievalRun}
-            </button>
+            </Button>
           </div>
 
           {error && (

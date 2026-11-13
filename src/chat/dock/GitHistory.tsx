@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { VList } from 'virtua'
 import { GitBranch, Loader2, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
+import { Select } from '../../settings/public/controls'
 import { dockApi } from './api'
 import { DiffView } from './DiffView'
 import { GRAPH_COLORS, layoutGitGraph, type GraphRow } from './gitGraph'
@@ -104,10 +105,17 @@ export function GitHistory({ workdir, lang, active, refreshKey }: { workdir: str
   return <div className="flex min-h-0 flex-1 flex-col bg-[var(--theme-surface-soft)] text-neutral-700 bg-neutral-50">
     <div className="flex items-center justify-between gap-2 border-b border-neutral-200/60 px-2 py-1">
       <span className="flex items-center gap-1.5 text-[11px] text-neutral-500"><GitBranch size={12} /> Graph {loading && <Loader2 size={11} className="animate-spin" />}</span>
-      <select aria-label={zh ? '历史范围' : 'History scope'} value={allBranches ? 'all' : 'current'} onChange={(event) => setAllBranches(event.target.value === 'all')} className="max-w-40 rounded border-0 bg-transparent text-[11px] text-neutral-500 bg-neutral-50">
-        <option value="all">{zh ? '所有分支' : 'All branches'}</option>
-        <option value="current">{zh ? '当前分支' : 'Current branch'}</option>
-      </select>
+      <Select
+        size="sm"
+        ariaLabel={zh ? '历史范围' : 'History scope'}
+        value={allBranches ? 'all' : 'current'}
+        onChange={(value) => setAllBranches(value === 'all')}
+        triggerLabel={allBranches ? (zh ? '所有分支' : 'All branches') : (zh ? '当前分支' : 'Current branch')}
+        options={[
+          { value: 'all', label: zh ? '所有分支' : 'All branches' },
+          { value: 'current', label: zh ? '当前分支' : 'Current branch' },
+        ]}
+      />
     </div>
     {error && <button className="px-3 py-2 text-left text-[11px] text-red-500" onClick={() => setRevision((value) => value + 1)}>{error} · {t.dockRetry}</button>}
     <div className="min-h-0 flex-1">

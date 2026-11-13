@@ -795,7 +795,7 @@ export function McpCenter({ heading, conversationId }: { heading?: ReactNode; co
                         const isHttp = server.transport === 'streamable_http'
                         return (
                           <label key={server.id} data-tauri-drag-region="false">
-                            <input type="checkbox" checked={cliSelected.has(server.id)} onChange={() => toggleCliSelected(server.id)} />
+                            <input type="checkbox" className="kv-checkbox" checked={cliSelected.has(server.id)} onChange={() => toggleCliSelected(server.id)} />
                             <span>
                               <strong>{server.name}</strong>
                               <small>{isHttp ? server.url : [server.command, ...server.args].filter(Boolean).join(' ')}</small>

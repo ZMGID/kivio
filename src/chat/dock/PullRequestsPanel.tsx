@@ -8,7 +8,7 @@ import { i18n, type Lang } from '../../components/i18n'
 import { Button, IconButton } from '../../components/Button'
 import { ErrorNotice } from '../../components/AppNotice'
 import { notifyError } from '../../components/appNoticeStore'
-import { Input, Select } from '../../settings/public/controls'
+import { SearchInput, Select } from '../../settings/public/controls'
 import { api } from '../../api/tauri'
 import { dockApi } from './api'
 import { usePresence } from './workspacePanelMotion'
@@ -245,29 +245,21 @@ export function PullRequestsPanel({ workdir, active, lang }: PullRequestsPanelPr
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </IconButton>
         </div>
-        <div className="chat-pr-search">
-          <Search size={13} aria-hidden="true" />
-          <Input
-            ref={searchRef}
-            value={search}
-            onChange={setSearch}
-            placeholder={t.prSearchPlaceholder}
-            aria-label={t.prSearchPlaceholder}
-            title={t.prSearchHelp}
-            spellCheck={false}
-            onKeyDown={(event) => {
-              if (event.key === 'Escape' && search) {
-                event.stopPropagation()
-                setSearch('')
-              }
-            }}
-          />
-          {search && (
-            <IconButton label={t.prCancel} size="xs" variant="ghost" className="chat-pr-search-clear" onClick={() => { setSearch(''); searchRef.current?.focus() }}>
-              <X size={12} />
-            </IconButton>
-          )}
-        </div>
+        <SearchInput
+          ref={searchRef}
+          value={search}
+          onChange={setSearch}
+          placeholder={t.prSearchPlaceholder}
+          aria-label={t.prSearchPlaceholder}
+          title={t.prSearchHelp}
+          clearLabel={t.prCancel}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape' && search) {
+              event.stopPropagation()
+              setSearch('')
+            }
+          }}
+        />
         <div className="chat-pr-controls">
           <StateSegment value={stateFilter} count={data && !loading ? data.totalCount : null} onChange={setStateFilter} t={t} />
           <Select

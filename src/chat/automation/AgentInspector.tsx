@@ -311,6 +311,7 @@ export function AgentInspector({
                 <label key={id} className="kv-automation-check">
                   <input
                     type="checkbox"
+                    className="kv-checkbox"
                     checked={agent.toolIds.includes(id)}
                     onChange={() => toggleTool(id)}
                   />
@@ -342,6 +343,7 @@ export function AgentInspector({
             <label key={skill.id} className="kv-automation-check">
               <input
                 type="checkbox"
+                className="kv-checkbox"
                 checked={agent.skillIds.includes(skill.id)}
                 onChange={() => toggleSkill(skill.id)}
               />

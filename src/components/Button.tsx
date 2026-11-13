@@ -15,6 +15,8 @@ type ButtonSize = 'md' | 'sm'
 type ButtonProps = {
   variant?: ButtonVariant
   size?: ButtonSize
+  /** 占满容器宽度（面板底部的主动作等）；页面不再用样式覆盖按钮宽度。 */
+  fullWidth?: boolean
   children?: ReactNode
 } & ButtonHTMLAttributes<HTMLButtonElement>
 
@@ -22,6 +24,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   {
     variant = 'default',
     size = 'md',
+    fullWidth = false,
     type = 'button',
     className = '',
     children,
@@ -33,6 +36,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     'kv-btn',
     variant !== 'default' && variant,
     size === 'sm' && 'sm',
+    fullWidth && 'full',
     className,
   ]
     .filter(Boolean)

@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { Button } from '../components/Button'
 
 type ChatErrorBoundaryProps = {
   children: ReactNode
@@ -30,13 +31,9 @@ export class ChatErrorBoundary extends Component<ChatErrorBoundaryProps, ChatErr
             <p className="mt-2 break-all text-sm text-danger">
               {this.state.error.message}
             </p>
-            <button
-              type="button"
-              className="mt-4 rounded-full border border-neutral-200/90 bg-neutral-50 px-4 py-2 text-sm font-medium text-neutral-800 shadow-sm hover:bg-neutral-50"
-              onClick={() => this.setState({ error: null })}
-            >
+            <Button className="mt-4" onClick={() => this.setState({ error: null })}>
               重试
-            </button>
+            </Button>
           </div>
         </div>
       )

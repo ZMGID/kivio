@@ -405,7 +405,7 @@ export function ModelDetailDrawer({
           <div className="kv-drawer-section">
             <label className="kv-drawer-label">{t.extraBody}</label>
             <textarea
-              className="kv-input font-mono text-[12px] min-h-[88px] resize-y"
+              className="kv-textarea mono custom-scrollbar min-h-[88px]"
               value={extraBodyInput}
               onChange={(e) => updateExtraBody(e.target.value)}
               placeholder={'{\n  "chat_template_kwargs": { "thinking": true }\n}'}

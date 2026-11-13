@@ -7,6 +7,7 @@ import {
   type ImportedCcSwitchProvider,
 } from '../api/externalCliSettings'
 import { Button, IconButton } from '../components/Button'
+import { Checkbox } from './components'
 import { i18n, type Lang } from '../components/i18n'
 
 /**
@@ -116,15 +117,14 @@ export function CcSwitchImportModal({
 
         {!!items?.length && (
           <>
-            <label className="flex items-center gap-2 text-[12px]">
-              <input
-                type="checkbox"
-                disabled={importing}
-                checked={allSelected}
-                onChange={() => setSelected(allSelected ? new Set() : new Set(items.map((p) => p.id)))}
-              />
+            <Checkbox
+              disabled={importing}
+              checked={allSelected}
+              indeterminate={!allSelected && selected.size > 0}
+              onChange={() => setSelected(allSelected ? new Set() : new Set(items.map((p) => p.id)))}
+            >
               {t.externalAgentsProviderImportSelectAll}
-            </label>
+            </Checkbox>
             <div className="custom-scrollbar max-h-[50vh] space-y-1 overflow-y-auto pr-0.5">
               {items.map((item) => (
                 <label key={item.id} className="kv-row !py-1.5">
@@ -133,7 +133,7 @@ export function CcSwitchImportModal({
                     disabled={importing}
                     checked={selected.has(item.id)}
                     onChange={() => toggle(item.id)}
-                    className="mr-2"
+                    className="kv-checkbox mr-2"
                   />
                   <div className="kv-row-text">
                     <div className="kv-row-label">{item.name}</div>

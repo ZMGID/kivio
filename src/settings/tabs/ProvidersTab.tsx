@@ -1,8 +1,8 @@
 import { providerAuthenticationReady } from '../../api/tauri'
-import { ArrowDownAZ, Heart, Plus, Search, Trash2, X } from 'lucide-react'
+import { ArrowDownAZ, Heart, Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { Toggle, Input, SettingsGroup } from '../components'
+import { Toggle, Input, SearchInput, SettingsGroup } from '../components'
 import { IconButton } from '../../components/Button'
 import { ProviderSortableList } from '../ProviderSortableList'
 import { ProviderIcon, PROVIDER_PICKER_KEYS } from '../../components/ModelIcon'
@@ -185,15 +185,14 @@ export function ProvidersTab({
               </IconButton>
             </div>
             <div className="kv-provider-preset-picker-toolbar">
-              <div className="kv-provider-preset-picker-search">
-                <Search size={14} className="kv-provider-preset-picker-search-icon" />
-                <Input
-                  value={presetQuery}
-                  onChange={setPresetQuery}
-                  placeholder={t.presetProvidersSearch}
-                  mono={false}
-                />
-              </div>
+              <SearchInput
+                className="kv-provider-preset-picker-search"
+                value={presetQuery}
+                onChange={setPresetQuery}
+                placeholder={t.presetProvidersSearch}
+                aria-label={t.presetProvidersSearch}
+                clearLabel={t.dialogClear}
+              />
               <IconButton
                 size="sm"
                 className={presetSortAz ? 'is-active' : ''}

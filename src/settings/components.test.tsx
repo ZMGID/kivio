@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
-import { FieldBlock, Select, TextArea, Toggle } from './components'
+import { Checkbox, FieldBlock, SearchInput, Select, TextArea, Toggle } from './components'
 
 describe('Toggle', () => {
   it('reflects checked state and toggles on click', async () => {
@@ -167,6 +167,80 @@ describe('TextArea', () => {
     view.rerender(<fieldset disabled><TextArea value="hello" onChange={onChange} /></fieldset>)
     await act(async () => { resolvePaste('pasted') })
     expect(screen.getByRole('textbox')).toHaveValue('hello')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('Select keyboard navigation', () => {
+  const options = [
+    { value: 'a', label: 'Alpha' },
+    { value: 'b', label: 'Beta' },
+    { value: 'c', label: 'Gamma' },
+  ]
+
+  it('opens on the current option, moves with the arrow keys and picks with Enter', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<Select ariaLabel="Greek" value="a" onChange={onChange} options={options} />)
+    const trigger = screen.getByRole('button', { name: 'Greek' })
+    trigger.focus()
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getByRole('option', { name: 'Alpha' })).toHaveFocus()
+    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}')
+    expect(screen.getByRole('option', { name: 'Gamma' })).toHaveFocus()
+    await user.keyboard('{Home}b')
+    expect(screen.getByRole('option', { name: 'Beta' })).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(onChange).toHaveBeenCalledWith('b')
+    expect(trigger).toHaveFocus()
+  })
+
+  it('closes on Tab and Escape and returns focus to the trigger without changing the value', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<Select ariaLabel="Greek" value="a" onChange={onChange} options={options} />)
+    const trigger = screen.getByRole('button', { name: 'Greek' })
+    for (const closeKey of ['{Tab}', '{Escape}']) {
+      await user.click(trigger)
+      expect(trigger).toHaveAttribute('aria-expanded', 'true')
+      await user.keyboard(`{ArrowDown}${closeKey}`)
+      expect(trigger).toHaveAttribute('aria-expanded', 'false')
+      expect(trigger).toHaveFocus()
+    }
+    expect(onChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('SearchInput', () => {
+  it('shows a clear button only when there is text, clears and refocuses the field', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    const view = render(<SearchInput value="" onChange={onChange} placeholder="Search" clearLabel="Clear" />)
+    expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument()
+    view.rerender(<SearchInput value="abc" onChange={onChange} placeholder="Search" clearLabel="Clear" />)
+    await user.click(screen.getByRole('button', { name: 'Clear' }))
+    expect(onChange).toHaveBeenCalledWith('')
+    expect(screen.getByPlaceholderText('Search')).toHaveFocus()
+  })
+})
+
+describe('Checkbox', () => {
+  it('toggles through its label and exposes the indeterminate state', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    const view = render(<Checkbox checked={false} onChange={onChange}>Select all</Checkbox>)
+    const box = screen.getByRole('checkbox', { name: 'Select all' }) as HTMLInputElement
+    await user.click(screen.getByText('Select all'))
+    expect(onChange).toHaveBeenCalledWith(true, expect.anything())
+    view.rerender(<Checkbox checked={false} indeterminate onChange={onChange}>Select all</Checkbox>)
+    expect(box.indeterminate).toBe(true)
+  })
+
+  it('does not change while disabled', async () => {
+    const user = userEvent.setup()
+    const onChange = vi.fn()
+    render(<Checkbox checked onChange={onChange} disabled ariaLabel="Locked" />)
+    await user.click(screen.getByRole('checkbox', { name: 'Locked' }))
     expect(onChange).not.toHaveBeenCalled()
   })
 })

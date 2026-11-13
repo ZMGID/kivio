@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
-import { Search, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { IconButton } from '../../components/Button'
 import { useT } from '../../components/i18n'
+import { SearchInput } from '../../settings/public/controls'
 import { catalogGroups, type NodeCatalogEntry } from './nodeCatalog'
 
 export function AddNodePicker({
@@ -45,15 +46,14 @@ export function AddNodePicker({
           </IconButton>
         ) : null}
       </header>
-      <label className="kv-automation-picker-search">
-        <Search size={14} strokeWidth={2} aria-hidden />
-        <input
-          className="kv-input"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={t.chatAutomationSearchNodes}
-        />
-      </label>
+      <SearchInput
+        className="kv-automation-picker-search"
+        value={query}
+        onChange={setQuery}
+        placeholder={t.chatAutomationSearchNodes}
+        aria-label={t.chatAutomationSearchNodes}
+        clearLabel={t.dialogClear}
+      />
       <div className="kv-automation-picker-list">
         {groups.map((group) => (
           <section key={group.id} className="kv-automation-picker-group">

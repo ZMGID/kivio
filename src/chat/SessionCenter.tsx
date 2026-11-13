@@ -22,7 +22,6 @@ import {
   Pin,
   PinOff,
   RefreshCw,
-  Search,
   Star,
   Trash2,
 } from 'lucide-react'
@@ -39,7 +38,7 @@ import type {
   ConversationSearchHit,
 } from './types'
 import { IconButton, Button } from '../components/Button'
-import { Select, Toggle } from '../settings/public/controls'
+import { Checkbox, SearchInput, Select, Toggle } from '../settings/public/controls'
 import { useT, type Lang } from '../components/i18n'
 import {
   conversationOwnerLabel,
@@ -902,18 +901,15 @@ export function SessionCenter({
           className="flex min-h-0 min-w-0 flex-1 flex-col"
         >
           <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-neutral-100 px-3 py-2">
-            <div className="relative min-w-[200px] flex-1">
-              <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 z-[1] -translate-y-1/2 text-neutral-400" />
-              <input
-                ref={searchInputRef}
-                type="search"
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                placeholder={t.chatSessionSearchPlaceholder}
-                data-tauri-drag-region="false"
-                className="kv-input w-full min-w-0 !h-[32px] !pl-8"
-              />
-            </div>
+            <SearchInput
+              ref={searchInputRef}
+              className="min-w-[200px] flex-1"
+              type="search"
+              value={searchInput}
+              onChange={setSearchInput}
+              placeholder={t.chatSessionSearchPlaceholder}
+              clearLabel={t.dialogClear}
+            />
             <Select
               className="w-[148px] shrink-0"
               value={`${sort}:${order}`}
@@ -1022,14 +1018,14 @@ export function SessionCenter({
           )}
 
           <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-neutral-200/70 bg-neutral-50 px-3 py-[7px] text-[12px] font-medium text-neutral-500">
-            <label className="flex w-7 shrink-0 items-center justify-center">
-              <input
-                type="checkbox"
+            <span className="flex w-7 shrink-0 items-center justify-center">
+              <Checkbox
+                ariaLabel={t.editSelectAll}
                 checked={state.items.length > 0 && selected.size === state.items.length}
-                onChange={(e) => (e.target.checked ? selectAllVisible() : clearSelection())}
-                className="rounded accent-[var(--accent)]"
+                indeterminate={selected.size > 0 && selected.size < state.items.length}
+                onChange={(checked) => (checked ? selectAllVisible() : clearSelection())}
               />
-            </label>
+            </span>
             <span className="min-w-0 flex-1 truncate">{t.chatLibColTitle}</span>
             {cols.model && (
               <span className="w-24 shrink-0 truncate">{t.chatLibColModel}</span>
@@ -1093,14 +1089,13 @@ export function SessionCenter({
                           isSel ? 'bg-[var(--accent-soft)]' : ''
                         } ${isCurrent ? 'ring-1 ring-inset ring-[var(--accent)]/35' : ''}`}
                       >
-                        <label data-row-chrome className="flex w-7 shrink-0 items-center justify-center" onClick={(e) => e.stopPropagation()}>
-                          <input
-                            type="checkbox"
+                        <span data-row-chrome className="flex w-7 shrink-0 items-center justify-center" onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            ariaLabel={c.title}
                             checked={isSel}
-                            onChange={(e) => toggleSelect(c.id, (e.nativeEvent as MouseEvent).shiftKey)}
-                            className="rounded accent-[var(--accent)]"
+                            onChange={(_, e) => toggleSelect(c.id, (e.nativeEvent as MouseEvent).shiftKey)}
                           />
-                        </label>
+                        </span>
                         <div className="min-w-0 flex-1 overflow-hidden">
                           <div className="flex min-w-0 items-center gap-1.5">
                             {c.pinned && <Star size={12} className="shrink-0 fill-amber-400 text-amber-500" />}

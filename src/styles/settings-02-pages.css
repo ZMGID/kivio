@@ -522,10 +522,6 @@
 }
 .computer-control-action .kv-btn {
   min-width: 48px;
-  justify-content: center;
-  border: none;
-  background: var(--surface-hover);
-  box-shadow: none;
 }
 .computer-control-error {
   margin-top: 12px;
@@ -584,22 +580,39 @@
 }
 .kv-row-stack .kv-row-text { margin-bottom: 8px; }
 
+/* ===== 共享基础控件 =====
+   按钮、输入、选择、开关、分段、复选框的唯一样式来源。尺寸取自 index.css 的 --kv-control-*：
+   同一行里的按钮、输入框、下拉框等高（md 28px / sm 24px），圆角一致。
+   状态约定：悬停加深边框或底色；键盘聚焦画强调色轮廓；文本输入聚焦为强调色边框 + 光环；
+   禁用降低不透明度并换成禁止光标。页面样式只负责布局，不在外部重写这些状态。 */
+
+/* 键盘聚焦环。鼠标操作期间由 shared-surfaces.css 的 data-focus-source 规则统一隐藏。
+   选择器带 html[data-focus-source]，优先级需高于聊天外壳的 button:focus { outline: none }。 */
+html[data-focus-source="keyboard"] :is(.kv-btn, .kv-icon-btn, .kv-toggle, .kv-seg button, .kv-suggest-input-toggle, .kv-hotkey-clear, .kv-chip-x, .kv-search-clear):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+html[data-focus-source="keyboard"] .kv-btn.primary:focus-visible {
+  outline-offset: 2px;
+}
+
 .kv-toggle {
   position: relative;
   width: 30px;
   height: 18px;
   border-radius: 999px;
   background: var(--theme-surface-active);
-  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
-  cursor: pointer;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 10%, transparent);
+  cursor: default;
   flex-shrink: 0;
   transition: background-color var(--kv-dur-fast) var(--kv-ease-out);
   border: none;
   padding: 0;
 }
-.dark .kv-toggle {
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+.kv-toggle:hover:not(:disabled):not(.on) {
+  background: color-mix(in srgb, var(--text) 12%, var(--theme-surface-active));
 }
+/* 滑块固定为白色：跟随 --theme-surface 时，深色主题下会变成强调色轨道上的一颗黑点。 */
 .kv-toggle::after {
   content: "";
   position: absolute;
@@ -607,71 +620,135 @@
   left: 2px;
   width: 14px;
   height: 14px;
-  border-radius: 50%;
-  background: var(--theme-surface);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  transition: transform var(--kv-dur-fast) var(--kv-ease-standard);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  transition:
+    transform var(--kv-dur-fast) var(--kv-ease-standard),
+    width var(--kv-dur-fast) var(--kv-ease-standard);
 }
-.kv-toggle.on { background: var(--accent); }
+.dark .kv-toggle:not(.on)::after {
+  background: color-mix(in srgb, var(--text) 78%, var(--theme-surface));
+}
+.kv-toggle.on { background: var(--accent); box-shadow: none; }
+.kv-toggle.on:hover:not(:disabled) { background: var(--accent-hover); }
 .kv-toggle.on::after { transform: translateX(12px); }
+/* 按下时滑块朝运动方向拉长一点，松手后归位。 */
+.kv-toggle:active:not(:disabled)::after { width: 17px; }
+.kv-toggle.on:active:not(:disabled)::after { transform: translateX(9px); }
 .kv-toggle:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .kv-seg {
   display: inline-flex;
   background: var(--bg-input-subtle);
   border: 1px solid var(--border-input);
-  border-radius: 6px;
+  border-radius: var(--kv-control-radius);
   padding: 1px;
   gap: 1px;
 }
 .kv-seg button {
   border: none;
   background: transparent;
-  padding: 3px 10px;
-  font-size: 12px;
-  border-radius: 6px;
+  min-height: calc(var(--kv-control-h) - 4px);
+  padding: 2px 10px;
+  font-size: var(--kv-control-font);
+  border-radius: calc(var(--kv-control-radius) - 1px);
   cursor: default;
   color: var(--text-muted);
   font-family: inherit;
   line-height: 1.4;
+  transition:
+    color var(--kv-dur-fast) var(--kv-ease-out),
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    box-shadow var(--kv-dur-fast) var(--kv-ease-out);
 }
+.kv-seg button:hover:not(:disabled):not(.active) {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.kv-seg button:disabled { opacity: 0.5; cursor: not-allowed; }
 .kv-seg button.active {
   background: var(--bg);
   color: var(--text);
   box-shadow: 0 0 0 0.5px var(--border-strong), 0 1px 2px rgba(0, 0, 0, 0.05);
   font-weight: 500;
 }
-.dark .kv .kv-seg button.active,
+.dark .kv-seg button.active,
 .kv[data-theme="dark"] .kv-seg button.active {
   background: var(--bg-active);
   box-shadow: 0 0 0 0.5px var(--border-strong);
 }
 
+/* 文本类字段（输入、多行、下拉触发器、快捷键框）共用的边框、悬停、聚焦与禁用。 */
+.kv-input,
+.kv-textarea,
+.kv-select,
+.kv-hotkey {
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: var(--kv-control-radius);
+  font-size: var(--kv-control-font);
+  color: var(--text);
+  font-family: inherit;
+  box-shadow: var(--shadow-sm);
+  transition:
+    border-color var(--kv-dur-fast) var(--kv-ease-out),
+    box-shadow var(--kv-dur-fast) var(--kv-ease-out),
+    background-color var(--kv-dur-fast) var(--kv-ease-out);
+}
+:is(.kv-input, .kv-textarea, .kv-select):hover:not(:disabled, :focus, [aria-expanded="true"]) {
+  border-color: color-mix(in srgb, var(--text) 30%, var(--border-input));
+}
+.kv-input:focus,
+.kv-textarea:focus,
+.kv-select:focus-visible,
+.kv-select[aria-expanded="true"] {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.kv-select:focus { outline: none; }
+:is(.kv-input, .kv-textarea, .kv-select):disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: var(--bg-input-subtle);
+  box-shadow: none;
+}
+/* 字段校验失败：调用方设置 aria-invalid，不另写红框。 */
+:is(.kv-input, .kv-textarea)[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+:is(.kv-input, .kv-textarea)[aria-invalid="true"]:focus {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 24%, transparent);
+}
+:is(.kv-input, .kv-textarea)::placeholder { color: var(--text-faint); opacity: 1; }
+
 .kv-select {
   appearance: none;
   -webkit-appearance: none;
-  background: var(--bg-input);
-  border: 1px solid var(--border-input);
-  border-radius: 6px;
-  padding: 4px 26px 4px 9px;
-  font-size: 12px;
-  color: var(--text);
-  font-family: inherit;
+  height: var(--kv-control-h);
+  padding: 0 26px 0 9px;
   /* 宽度由外层 wrapper（如 w-[148px]）控制；不要在这里写死 min/max，
      否则 button.w-full 仍会被 min-width:140px 撑破容器，叠到相邻控件上。 */
   min-width: 0;
   max-width: none;
   width: 100%;
   cursor: default;
-  box-shadow: var(--shadow-sm);
-}
-.kv-select:focus,
-.kv-select:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .kv-select-button { line-height: 1.35; }
+.kv-select-chevron {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  margin-top: -7px;
+  color: var(--text-faint);
+  pointer-events: none;
+  transition: transform var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-select:hover:not(:disabled) .kv-select-chevron,
+.kv-select[aria-expanded="true"] .kv-select-chevron { color: var(--text-muted); }
+.kv-select[aria-expanded="true"] .kv-select-chevron { transform: rotate(180deg); }
 .kv-select-menu {
   padding: 4px;
   border-radius: 10px;
@@ -689,7 +766,7 @@
     0 14px 32px -14px rgba(0, 0, 0, 0.6);
 }
 
-/* 选项行：与 .kv-menu-item 同规格（28px / 12.5px）。
+/* 选项行：与 .kv-menu-item 同规格（28px / 12px）。
    勾常驻左侧但未选中时 visibility:hidden —— 这样标签起点始终对齐，
    且不必给右侧留 32px 空位（原来 pr-8 把标签提前截断成「白山智算 - DeepSeek-…」）。 */
 .kv-select-option {
@@ -703,11 +780,19 @@
   font-size: 12px;
   text-align: left;
   color: var(--text);
+  cursor: default;
   transition: background-color var(--kv-dur-instant) var(--kv-ease-out);
 }
 
-.kv-select-option:hover {
-  background: color-mix(in srgb, var(--text) 5%, transparent);
+/* 键盘移动的当前项与鼠标悬停同一种底色；选项不另画焦点环。 */
+.kv-select-menu .kv-select-option:focus,
+.kv-select-menu .kv-select-option:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.kv-select-option:hover,
+.kv-select-option:focus-visible {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
 .kv-select-menu.sm .kv-select-option {
@@ -717,13 +802,10 @@
   font-size: 12px;
 }
 
-
 /* 选中态：macOS 原生下拉是「勾 + 轻底」，不是实心蓝条（那是 Win98 观感）。 */
 .kv-select-option.is-active {
   font-weight: 500;
-  background: color-mix(in srgb, var(--text) 5%, transparent);
 }
-
 
 .kv-select-option-check {
   width: 13px;
@@ -738,28 +820,31 @@
 }
 
 .kv-input {
-  background: var(--bg-input);
-  border: 1px solid var(--border-input);
-  border-radius: 6px;
-  padding: 5px 9px;
-  font-size: 12px;
-  color: var(--text);
-  font-family: inherit;
-  box-shadow: var(--shadow-sm);
-  width: 100%;
+  padding: 0 9px;
 }
-.kv-input:focus,
-.kv-input:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
+/* 宽度属于页面布局：默认撑满容器，放进 components 层，调用方的 w-* 工具类可以指定宽度。
+   （写在层外时 w-28 这类类名不生效，输入框会撑满整行。） */
+@layer components {
+  .kv-input,
+  .kv-textarea {
+    width: 100%;
+  }
 }
-.kv-input::placeholder { color: var(--text-faint); }
+/* 高度只约束单行 input；多行文本用 kv-textarea。 */
+input.kv-input {
+  height: var(--kv-control-h);
+}
 /* Windows WebView2 (Edge) 给 password 框注入原生的 reveal/clear 眼睛图标，
    会和我们自定义的显示切换按钮叠成两个眼睛。全局隐藏原生的。 */
 input[type="password"]::-ms-reveal,
 input[type="password"]::-ms-clear {
   display: none;
+}
+/* 搜索框的原生清除叉与共享 SearchInput 的清除按钮重复。 */
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
 }
 .kv-input.mono,
 .kv-textarea.mono {
@@ -767,23 +852,9 @@ input[type="password"]::-ms-clear {
   font-size: 12px;
 }
 .kv-textarea {
-  background: var(--bg-input);
-  border: 1px solid var(--border-input);
-  border-radius: 6px;
   padding: 7px 9px;
-  font-size: 12px;
-  color: var(--text);
-  font-family: inherit;
-  width: 100%;
   resize: vertical;
   line-height: 1.5;
-  box-shadow: var(--shadow-sm);
-}
-.kv-textarea:focus,
-.kv-textarea:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* 无框正文编辑器：保留共享输入行为，适用于轻量浮层。 */
@@ -797,7 +868,6 @@ input[type="password"]::-ms-clear {
   line-height: 1.65;
   box-shadow: none;
 }
-.kv-textarea.plain::placeholder { color: var(--text-faint); }
 .kv-textarea.plain:focus,
 .kv-textarea.plain:focus-visible {
   border-color: transparent;
@@ -805,22 +875,137 @@ input[type="password"]::-ms-clear {
   outline: none;
 }
 
+/* 搜索框（SearchInput）：左侧放大镜，有内容时右侧出现清除按钮。 */
+.kv-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+.kv-search-icon {
+  position: absolute;
+  left: 9px;
+  width: 13px;
+  height: 13px;
+  color: var(--text-faint);
+  pointer-events: none;
+  transition: color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-search:focus-within .kv-search-icon { color: var(--text-muted); }
+.kv-search .kv-input {
+  padding-left: 28px;
+  padding-right: 26px;
+}
+.kv-search-clear {
+  position: absolute;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: default;
+  transition: background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-search-clear:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
+}
+.kv-search-clear svg { width: 12px; height: 12px; }
+
+/* 复选框：直接绘制在原生 input 上，语义、键盘操作与表单行为不变。
+   <Checkbox> 自带标签；列表行里已有 label 的场景给 input 加 kv-checkbox 类即可。
+   勾用 mask 上色，跟随 --text-onaccent（部分主题的强调色是浅色，白勾会看不清）。 */
+.kv-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  display: inline-grid;
+  place-content: center;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  margin: 0;
+  border-radius: 4px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-input);
+  box-shadow: var(--shadow-sm);
+  cursor: default;
+  vertical-align: middle;
+  transition:
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    border-color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-checkbox::before {
+  content: "";
+  width: 11px;
+  height: 11px;
+  background: var(--text-onaccent);
+  -webkit-mask: var(--kv-checkbox-mark) center / contain no-repeat;
+  mask: var(--kv-checkbox-mark) center / contain no-repeat;
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity var(--kv-dur-instant) var(--kv-ease-out),
+    transform var(--kv-dur-fast) var(--kv-ease-spring);
+  --kv-checkbox-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 6.4l2.4 2.4 4.6-5.3'/%3E%3C/svg%3E");
+}
+.kv-checkbox:indeterminate::before {
+  --kv-checkbox-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M3 6h6'/%3E%3C/svg%3E");
+}
+.kv-checkbox:hover:not(:disabled, :checked, :indeterminate) {
+  border-color: color-mix(in srgb, var(--text) 38%, var(--border-input));
+}
+.kv-checkbox:is(:checked, :indeterminate) {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: none;
+}
+.kv-checkbox:is(:checked, :indeterminate):hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+.kv-checkbox:is(:checked, :indeterminate)::before {
+  opacity: 1;
+  transform: none;
+}
+.kv-checkbox:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.kv-checkbox:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.kv-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: var(--kv-control-font);
+  color: var(--text);
+  cursor: default;
+}
+.kv-check:has(.kv-checkbox:disabled) {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 .kv-hotkey {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  background: var(--bg-input);
-  border: 1px solid var(--border-input);
-  border-radius: 6px;
   padding: 3px 5px 3px 8px;
   /* 固定宽度：空态长 placeholder 与已配置键帽同宽，避免列表里一长一短 */
   box-sizing: border-box;
   width: 11.75rem;
   min-width: 11.75rem;
-  min-height: 30px;
+  min-height: var(--kv-control-h);
   cursor: default;
-  box-shadow: var(--shadow-sm);
-  font-size: 12px;
 }
 .kv-hotkey.recording {
   border-color: var(--accent);
@@ -858,10 +1043,11 @@ input[type="password"]::-ms-clear {
 .kv-icon-btn {
   width: 22px;
   height: 22px;
+  flex-shrink: 0;
   border-radius: 4px;
   background: transparent;
   border: none;
-  color: var(--text-faint);
+  color: var(--text-muted);
   cursor: default;
   display: flex;
   align-items: center;  justify-content: center;
@@ -871,11 +1057,15 @@ input[type="password"]::-ms-clear {
   width: 18px;
   height: 18px;
   margin-left: 2px;
+  color: var(--text-faint);
 }
 .kv-hotkey-clear:hover,
 .kv-icon-btn:hover:not(:disabled) {
   background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--text);
+}
+.kv-icon-btn:active:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
 }
 .kv-icon-btn.danger:hover:not(:disabled) {
   background: var(--danger-soft);
@@ -894,11 +1084,11 @@ input[type="password"]::-ms-clear {
 .kv-icon-btn:active:not(:disabled) { transform: scale(0.95); }
 .kv-icon-btn svg { width: 13px; height: 13px; }
 /* 尺寸/形状修饰（供 <IconButton> 使用）；无修饰时保持 22×22 基类给设置域既有用法 */
-.kv-icon-btn.sm { width: 28px; height: 28px; border-radius: 6px; }
-.kv-icon-btn.md { width: 32px; height: 32px; border-radius: 6px; }
+.kv-icon-btn.sm { width: var(--kv-control-h); height: var(--kv-control-h); border-radius: var(--kv-control-radius); }
+.kv-icon-btn.md { width: 32px; height: 32px; border-radius: var(--kv-control-radius); }
 .kv-icon-btn.lg { width: 36px; height: 36px; border-radius: 8px; }
 .kv-icon-btn.circle { border-radius: 9999px; }
-.kv-icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.kv-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .kv-icon-btn.sm svg,
 .kv-icon-btn.md svg,
 .kv-icon-btn.lg svg { width: 15px; height: 15px; }
@@ -909,7 +1099,7 @@ input[type="password"]::-ms-clear {
 }
 /* 快捷键列表：紧凑两栏 + 行间细分隔线；右侧热键框右对齐内容 */
 .kv-hotkey-list .kv-row + .kv-row {
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--divider);
 }
 .kv-hotkey-list .kv-hotkey {
   justify-content: flex-end;
@@ -920,10 +1110,11 @@ input[type="password"]::-ms-clear {
   align-items: center;
   justify-content: center;
   gap: 5px;
+  min-height: var(--kv-control-h);
   padding: 4px 11px;
-  font-size: 12px;
+  font-size: var(--kv-control-font);
   font-weight: 500;
-  border-radius: 6px;
+  border-radius: var(--kv-control-radius);
   border: 1px solid var(--border-input);
   background: var(--bg-input);
   color: var(--text);
@@ -932,14 +1123,23 @@ input[type="password"]::-ms-clear {
   font-family: inherit;
   line-height: 1.4;
   white-space: nowrap;
+  user-select: none;
+  -webkit-user-select: none;
   transition:
     background-color var(--kv-dur-fast) var(--kv-ease-out),
     border-color var(--kv-dur-fast) var(--kv-ease-out),
+    color var(--kv-dur-fast) var(--kv-ease-out),
     transform var(--kv-dur-instant) var(--kv-ease-out);
 }
-.kv-btn:hover:not(:disabled) { background: var(--bg-hover); }
-.kv-btn:active:not(:disabled) { transform: scale(0.97); }
-.kv-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.kv-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--text) 22%, var(--border-input));
+}
+.kv-btn:active:not(:disabled) {
+  background: var(--bg-active);
+  transform: scale(0.97);
+}
+.kv-btn:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 .kv-btn.primary {
   background: var(--accent);
   border-color: var(--accent);
@@ -950,7 +1150,12 @@ input[type="password"]::-ms-clear {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
-.kv-btn.accent {
+.kv-btn.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-hover) 88%, #000);
+  border-color: color-mix(in srgb, var(--accent-hover) 88%, #000);
+}
+.kv-btn.accent,
+.kv-btn.accent:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
   background: var(--accent-soft);
@@ -960,16 +1165,27 @@ input[type="password"]::-ms-clear {
   background: transparent;
   box-shadow: none;
 }
-.kv-btn.ghost:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
+.kv-btn.ghost:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.kv-btn.ghost:active:not(:disabled) { background: color-mix(in srgb, var(--text) 10%, transparent); }
 .kv-btn.danger {
   color: var(--danger);
   border-color: transparent;
   background: transparent;
   box-shadow: none;
 }
-.kv-btn.danger:hover:not(:disabled) { background: var(--danger-soft); }
-.kv-btn.sm { padding: 2px 8px; font-size: 12px; }
-.kv-btn svg { width: 12px; height: 12px; }
+.kv-btn.danger:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--danger-soft);
+}
+.kv-btn.danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 14%, var(--danger-soft));
+}
+.kv-btn.sm { min-height: var(--kv-control-h-sm); padding: 2px 8px; }
+.kv-btn.full { width: 100%; }
+.kv-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
 
 .kv-path-row {
   display: flex;
@@ -1615,10 +1831,6 @@ input[type="password"]::-ms-clear {
   grid-template-columns: minmax(0, 1.15fr) minmax(120px, 0.8fr) minmax(120px, 0.8fr);
   gap: 8px;
 }
-.kv-native-model-advanced-grid .kv-input {
-  height: 28px;
-  font-size: 11px;
-}
 .kv-native-model-caps {
   margin: 8px 38px 2px 36px;
   display: flex;
@@ -1782,13 +1994,13 @@ input[type="password"]::-ms-clear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
+  width: var(--kv-control-h);
+  height: var(--kv-control-h);
+  border-radius: var(--kv-control-radius);
   border: 1px solid var(--border-input);
   background: var(--bg-input);
   color: var(--text-muted);
-  cursor: pointer;
+  cursor: default;
   box-shadow: var(--shadow-sm);
   transition: border-color var(--kv-dur-fast) var(--kv-ease-out), background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
 }
@@ -1796,11 +2008,6 @@ input[type="password"]::-ms-clear {
   border-color: var(--border-strong, var(--text-faint));
   background: var(--bg-hover);
   color: var(--text);
-}
-.kv-suggest-input-toggle:focus-visible {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 /* 模型档位：两列四格 */
@@ -2600,19 +2807,9 @@ input[type="password"]::-ms-clear {
   color: var(--text-muted);
 }
 .kv-dsh-inventory-search {
-  position: relative;
   display: flex;
   align-items: center;
   gap: 6px;
-}
-.kv-dsh-inventory-search > svg {
-  position: absolute;
-  left: 10px;
-  color: var(--text-faint);
-  pointer-events: none;
-}
-.kv-dsh-inventory-search .kv-input {
-  padding-left: 30px;
 }
 .kv-dsh-inventory-count {
   display: flex;
@@ -2848,22 +3045,8 @@ dialog.kv-modal::backdrop {
   flex-shrink: 0;
 }
 .kv-provider-preset-picker-search {
-  position: relative;
   flex: 1;
   min-width: 0;
-}
-.kv-provider-preset-picker-search-icon {
-  position: absolute;
-  left: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--text-faint);
-  pointer-events: none;
-  z-index: 1;
-}
-.kv-provider-preset-picker-search .kv-input {
-  height: 28px;
-  padding: 0 9px 0 30px;
 }
 .kv-provider-preset-picker-toolbar .kv-icon-btn.is-active {
   background: var(--bg-hover);
@@ -2950,24 +3133,8 @@ dialog.kv-modal::backdrop {
 }
 
 .kv-model-picker-search {
-  position: relative;
   flex: 1;
   min-width: 0;
-}
-
-.kv-model-picker-search-icon {
-  position: absolute;
-  left: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: var(--text-faint);
-  pointer-events: none;
-  z-index: 1;
-}
-
-.kv-model-picker-search .kv-input {
-  height: 28px;
-  padding: 0 9px 0 30px !important;
 }
 
 .kv-model-picker-toolbar .kv-icon-btn.is-active {
@@ -2982,11 +3149,6 @@ dialog.kv-modal::backdrop {
   flex-shrink: 0;
 }
 
-.kv-model-picker-manual .kv-input {
-  height: 28px;
-  padding-top: 0;
-  padding-bottom: 0;
-}
 
 .kv-model-picker-body {
   flex: 1 1 auto;
@@ -3349,13 +3511,6 @@ dialog.kv-modal::backdrop {
   min-height: 36px;
   padding: 8px 2px;
   overflow: hidden;
-}
-.kv-mtest-check {
-  width: 15px;
-  height: 15px;
-  flex-shrink: 0;
-  accent-color: var(--accent);
-  cursor: pointer;
 }
 .kv-mtest-name {
   flex: 1;

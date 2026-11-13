@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { open } from '@tauri-apps/plugin-dialog'
 import { X } from 'lucide-react'
+import { Button, IconButton } from '../components/Button'
+import { Input } from '../settings/public/controls'
 import type { ChatProject } from './types'
 import { useCloseAnimation } from './useCloseAnimation'
 
@@ -89,59 +91,42 @@ export function ProjectDialog({
         <label className="mt-3 block text-[12px] font-medium text-neutral-500">
           项目名称
         </label>
-        <input
+        <Input
           ref={inputRef}
-          type="text"
           value={name}
           maxLength={80}
-          onChange={(e) => setName(e.target.value)}
-          className="mt-1.5 w-full rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-[13px] text-neutral-900 outline-none transition-colors placeholder:text-neutral-400 focus:border-neutral-400"
+          onChange={setName}
+          className="mt-1.5"
           placeholder="例如：产品发布计划"
         />
         <label className="mt-3 block text-[12px] font-medium text-neutral-500">
           项目文件夹
         </label>
-        <div className="mt-1.5 flex min-w-0 gap-2">
+        <div className="mt-1.5 flex min-w-0 items-center gap-1.5">
+          {/* 与下拉触发器同款的字段外观：点击后由系统选择器取值。 */}
           <button
             type="button"
             onClick={pickFolder}
             disabled={saving}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2 text-left text-[13px] text-neutral-700 outline-none transition-colors hover:border-neutral-300 disabled:cursor-default disabled:opacity-50 dark:hover:border-neutral-600"
+            className="kv-select flex flex-1 items-center gap-2 text-left"
           >
-            <FolderOpen open size={15} className="shrink-0 text-neutral-500" />
+            <FolderOpen open size={14} className="shrink-0 text-neutral-500" />
             <span className={`min-w-0 flex-1 truncate ${rootPath ? '' : 'text-neutral-400'}`}>
               {rootPath || '选择文件夹'}
             </span>
           </button>
           {rootPath && (
-            <button
-              type="button"
-              onClick={() => setRootPath('')}
-              disabled={saving}
-              className="shrink-0 rounded-lg border border-neutral-200 bg-neutral-50 p-2 text-neutral-400 transition-colors hover:border-neutral-300 hover:text-neutral-700 disabled:cursor-default disabled:opacity-50 dark:hover:border-neutral-600"
-              aria-label="清除项目文件夹"
-              title="清除项目文件夹"
-            >
-              <X size={15} strokeWidth={1.75} />
-            </button>
+            <IconButton label="清除项目文件夹" onClick={() => setRootPath('')} disabled={saving}>
+              <X />
+            </IconButton>
           )}
         </div>
         {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={startClose}
-            className="rounded-lg px-3 py-1.5 text-[13px] text-neutral-600 transition-colors hover:bg-neutral-900/[0.04]"
-          >
-            取消
-          </button>
-          <button
-            type="submit"
-            disabled={!name.trim() || saving}
-            className="rounded-lg bg-neutral-900 px-3 py-1.5 text-[13px] font-medium text-neutral-50 transition-colors hover:bg-neutral-800 disabled:cursor-default disabled:opacity-50"
-          >
+          <Button onClick={startClose}>取消</Button>
+          <Button type="submit" variant="primary" disabled={!name.trim() || saving}>
             {saving ? '保存中…' : project ? '保存' : '创建'}
-          </button>
+          </Button>
         </div>
       </form>
     </div>,

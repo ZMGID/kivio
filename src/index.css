@@ -179,12 +179,20 @@ html.windows body {
   --bg-hover: var(--theme-surface-hover);
   --border-input: var(--theme-surface-border-strong);
   --shadow-sm: 0 1px 1px color-mix(in srgb, var(--text) 8%, transparent);
+  /* 弹窗等浮层的抬升阴影；设置域 .kv 内有自己的明暗取值。 */
+  --shadow-md: 0 6px 18px rgba(15, 15, 20, 0.08), 0 1px 1px rgba(15, 15, 20, 0.04);
+  /* 共享基础控件的尺寸（按钮、输入、下拉、分段）。同一行的控件等高，改这里即可全局调密度。 */
+  --kv-control-h: 28px;
+  --kv-control-h-sm: 24px;
+  --kv-control-radius: 6px;
+  --kv-control-font: 12px;
   color: var(--text);
 }
 
 .dark {
   --success: #34d399;
   --warning: #fbbf24;
+  --shadow-md: 0 6px 18px rgba(0, 0, 0, 0.35), 0 1px 1px rgba(0, 0, 0, 0.3);
 }
 
 /* ===== Motion tokens =====

@@ -638,22 +638,6 @@ button.chat-composer-status-item:hover {
   gap: 2px;
 }
 
-/* 裸露工具栏上的图标钮：原来是极浅的细线图标，飘在点阵背景上立不住。
-   加深到 --text-faint 之上一档，并让 hover 有明确的底，读作「可按」。 */
-.chat-composer-tools .kv-icon-btn {
-  color: var(--text-muted);
-}
-
-
-.chat-composer-tools .kv-icon-btn:hover:not(:disabled) {
-  color: var(--text);
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-}
-
-.dark .chat-composer-tools .kv-icon-btn:hover:not(:disabled) {
-  color: var(--text);
-}
-
 /* 图标统一 16px：各调用点传的是 18（原来在高盒子里合适），裸栏里偏大。
    在这里统一压一档，省得逐个改 size=。 */
 .chat-composer-tools .kv-icon-btn > svg {

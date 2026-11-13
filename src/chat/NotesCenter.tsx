@@ -671,7 +671,7 @@ export function NotesCenter() {
                 if (e.key === 'Escape') setFolderDialog(null)
               }}
               placeholder={t.chatNotesFolderNamePlaceholder}
-              className="mt-3 w-full rounded-lg border border-neutral-300 bg-neutral-50 px-3 py-2 text-[13px] text-neutral-900 outline-none focus:border-accent dark:border-neutral-600"
+              className="kv-input mt-3"
             />
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={() => setFolderDialog(null)}>

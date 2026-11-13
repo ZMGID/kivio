@@ -835,6 +835,7 @@ export function SkillCenter({ onSkillsChanged, projectCwd, heading }: SkillCente
                         <label key={skill.id} data-tauri-drag-region="false">
                           <input
                             type="checkbox"
+                            className="kv-checkbox"
                             checked={ops.cliSelectedIds.includes(skill.id)}
                             onChange={() => toggleCliSkillSelected(skill.id)}
                           />

@@ -3,6 +3,7 @@
 import { Square } from 'lucide-react'
 import { api, type BackgroundTaskInfo } from '../../api/tauri'
 import { i18n, type Lang } from '../../components/i18n'
+import { IconButton } from '../../components/Button'
 import { notifyError } from '../../components/appNoticeStore'
 import { formatTaskElapsed, partitionTasks } from '../backgroundTasks'
 import { stopBackgroundTask, updateBackgroundTasks, useBackgroundTasks } from '../useBackgroundTasks'
@@ -90,15 +91,14 @@ export function BackgroundTasksPanel({ active, lang, conversationId }: Backgroun
               {task.summary ? ` · ${task.summary}` : ''}
             </div>
           </div>
-          <button
-            type="button"
+          <IconButton
+            variant="danger"
             onClick={() => void stop(task)}
-            className="grid size-7 shrink-0 place-items-center rounded-md text-neutral-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/30 dark:hover:text-red-300"
             title={t.chatKill}
-            aria-label={t.chatKillNamed.replace('{name}', task.title)}
+            label={t.chatKillNamed.replace('{name}', task.title)}
           >
-            <Square size={13} strokeWidth={2} fill="currentColor" />
-          </button>
+            <Square strokeWidth={2} fill="currentColor" />
+          </IconButton>
         </div>
       ))}
       {finished.length > 0 && (

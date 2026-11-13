@@ -1,6 +1,6 @@
 import { forwardRef, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, ChevronDown, ExternalLink, X } from 'lucide-react'
+import { Check, ChevronDown, ExternalLink, Search, X } from 'lucide-react'
 import { formatHotkey, getPlatform, type SelectOption } from './utils'
 import { Button, IconButton } from '../components/Button'
 import { copyToClipboard, readClipboardText } from '../utils/clipboard'
@@ -83,6 +83,8 @@ function useSelectMenuOpen(
   triggerRef: RefObject<HTMLElement | null>,
   menuRef: RefObject<HTMLElement | null>,
   updateMenuRect: () => void,
+  /** Esc 关闭后还焦点的元素；锚点本身不可聚焦（SuggestInput 的整行）时单独指定。 */
+  returnFocusRef: RefObject<HTMLElement | null> = triggerRef,
 ) {
   useEffect(() => {
     if (!open) return
@@ -95,7 +97,7 @@ function useSelectMenuOpen(
       if (event.key === 'Escape') {
         event.preventDefault()
         setOpen(false)
-        triggerRef.current?.focus()
+        returnFocusRef.current?.focus()
       }
     }
     const handleLayoutChange = () => updateMenuRect()
@@ -110,7 +112,7 @@ function useSelectMenuOpen(
       window.removeEventListener('resize', handleLayoutChange)
       window.removeEventListener('scroll', handleLayoutChange, true)
     }
-  }, [open, setOpen, triggerRef, menuRef, updateMenuRect])
+  }, [open, setOpen, triggerRef, menuRef, updateMenuRect, returnFocusRef])
 }
 
 /** 与 Select 同款的选项菜单（portal）。 */
@@ -122,6 +124,7 @@ function SelectMenuPortal({
   options,
   value,
   onPick,
+  onClose,
   compact = false,
 }: {
   open: boolean
@@ -131,6 +134,8 @@ function SelectMenuPortal({
   options: SelectOption[]
   value: string
   onPick: (value: string) => void
+  /** Tab 离开菜单时关闭并把焦点还给触发器。 */
+  onClose: () => void
   compact?: boolean
 }) {
   // 关闭后保留一个退场动画的挂载期；退场中的菜单不可交互、不进无障碍树。
@@ -152,6 +157,42 @@ function SelectMenuPortal({
     }
   }, [open, value, menuRect.maxHeight, menuRef])
 
+  // 打开即把焦点放到当前项（没有则第一项），方向键可以直接移动，与原生下拉一致。
+  useLayoutEffect(() => {
+    if (!open) return
+    const menu = menuRef.current
+    const target = menu?.querySelector<HTMLElement>('[aria-selected="true"]') ?? menu?.querySelector<HTMLElement>('[role="option"]')
+    target?.focus({ preventScroll: true })
+  }, [open, menuRef])
+
+  const handleMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      onClose()
+      return
+    }
+    const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'))
+    if (items.length === 0) return
+    const current = items.indexOf(document.activeElement as HTMLElement)
+    let next = -1
+    if (event.key === 'ArrowDown') next = Math.min(current + 1, items.length - 1)
+    else if (event.key === 'ArrowUp') next = Math.max(current - 1, 0)
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = items.length - 1
+    else if (event.key.length === 1 && event.key !== ' ' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      // 首字母跳转：从当前项之后循环查找。
+      const needle = event.key.toLowerCase()
+      for (let step = 1; step <= items.length; step++) {
+        const index = (Math.max(current, 0) + step) % items.length
+        if (items[index].textContent?.trim().toLowerCase().startsWith(needle)) { next = index; break }
+      }
+      if (next < 0) return
+    } else return
+    event.preventDefault()
+    items[next].focus({ preventScroll: true })
+    items[next].scrollIntoView?.({ block: 'nearest' })
+  }
+
   if (!open && !mounted) return null
   const flipUp = menuRect.bottom !== undefined
   return createPortal(
@@ -172,6 +213,7 @@ function SelectMenuPortal({
       onAnimationEnd={(event) => {
         if (closing && event.target === event.currentTarget) setMounted(false)
       }}
+      onKeyDown={closing ? undefined : handleMenuKeyDown}
       data-tauri-drag-region="false"
     >
       {options.map(opt => {
@@ -182,7 +224,7 @@ function SelectMenuPortal({
             type="button"
             role="option"
             aria-selected={active}
-            tabIndex={closing ? -1 : undefined}
+            tabIndex={-1}
             onClick={() => onPick(opt.value)}
             title={opt.title || opt.label}
             className={`kv-select-option ${active ? 'is-active' : ''}`}
@@ -242,7 +284,7 @@ export function Select({ value, onChange, options, className = '', disabled: dis
     },
     onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
       if (event.currentTarget.matches(':disabled')) return
-      if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
         event.preventDefault()
         setOpen(true)
       }
@@ -269,15 +311,11 @@ export function Select({ value, onChange, options, className = '', disabled: dis
         <button
           {...triggerProps}
           type="button"
-          className="kv-select kv-select-button relative h-[30px] w-full min-w-0 max-w-none text-left disabled:cursor-not-allowed disabled:opacity-50"
+          className="kv-select kv-select-button relative text-left"
           aria-label={ariaLabel}
         >
           <span className="block truncate">{displayLabel}</span>
-          <ChevronDown
-            size={14}
-            strokeWidth={2.25}
-            className={`absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 dark:text-neutral-500 transition-transform ${open ? 'rotate-180' : ''}`}
-          />
+          <ChevronDown size={14} strokeWidth={2.25} className="kv-select-chevron" aria-hidden="true" />
         </button>
       )}
 
@@ -292,6 +330,10 @@ export function Select({ value, onChange, options, className = '', disabled: dis
         onPick={(next) => {
           if (triggerRef.current?.matches(':disabled')) return
           onChange(next)
+          setOpen(false)
+          triggerRef.current?.focus()
+        }}
+        onClose={() => {
           setOpen(false)
           triggerRef.current?.focus()
         }}
@@ -330,7 +372,7 @@ export function SuggestInput({
   const canSuggest = options.length > 0 && !disabled
   // 菜单宽度对齐整行（输入框 + 箭头），锚在 root 上
   const { menuRect, updateMenuRect } = useSelectMenuRect(open, value, options.length, rootRef)
-  useSelectMenuOpen(open, setOpen, rootRef, menuRef, updateMenuRect)
+  useSelectMenuOpen(open, setOpen, rootRef, menuRef, updateMenuRect, triggerRef)
 
   return (
     <div ref={rootRef} className={`kv-suggest-input ${className}`.trim()}>
@@ -375,6 +417,10 @@ export function SuggestInput({
           setOpen(false)
           triggerRef.current?.focus()
         }}
+        onClose={() => {
+          setOpen(false)
+          triggerRef.current?.focus()
+        }}
       />
     </div>
   )
@@ -402,12 +448,100 @@ export const Input = forwardRef<HTMLInputElement, {
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
-      className={`kv-input w-full ${mono ? 'mono' : ''} ${className}`}
+      className={`kv-input ${mono ? 'mono' : ''} ${className}`}
       data-tauri-drag-region="false"
       {...props}
     />
   )
 })
+
+/**
+ * 搜索框：左侧放大镜，有内容时右侧出现清除按钮；边框、聚焦与禁用表现沿用 Input。
+ * 列表过滤、目录搜索统一用它，页面不再各自摆放图标和内边距。
+ */
+export const SearchInput = forwardRef<HTMLInputElement, {
+  value: string
+  onChange: (v: string) => void
+  /** 清除按钮的可访问名称与提示。 */
+  clearLabel: string
+  className?: string
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'className'>>(function SearchInput(
+  { value, onChange, clearLabel, className = '', type = 'text', disabled, ...props },
+  ref,
+) {
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  return (
+    <div className={`kv-search ${className}`.trim()}>
+      <Search className="kv-search-icon" aria-hidden="true" />
+      <input
+        ref={(node) => {
+          inputRef.current = node
+          if (typeof ref === 'function') ref(node)
+          else if (ref) ref.current = node
+        }}
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        spellCheck={false}
+        className="kv-input"
+        data-tauri-drag-region="false"
+        {...props}
+      />
+      {value && !disabled && (
+        <button
+          type="button"
+          className="kv-search-clear"
+          aria-label={clearLabel}
+          title={clearLabel}
+          onClick={() => {
+            onChange('')
+            inputRef.current?.focus()
+          }}
+          data-tauri-drag-region="false"
+        >
+          <X strokeWidth={2.25} aria-hidden="true" />
+        </button>
+      )}
+    </div>
+  )
+})
+
+/**
+ * 复选框：多选列表、批量选择与「同时执行某项」这类附加选项使用；即时生效的开关用 Toggle。
+ * 方框直接绘制在原生 input 上（kv-checkbox），跟随主题强调色；行内已有 label 的列表可直接给 input 加该类。
+ */
+export function Checkbox({ checked, onChange, disabled, indeterminate = false, children, className = '', ariaLabel, title }: {
+  checked: boolean
+  onChange: (v: boolean, event: React.ChangeEvent<HTMLInputElement>) => void
+  disabled?: boolean
+  /** 部分选中（全选框）；点击后由调用方决定下一状态。 */
+  indeterminate?: boolean
+  /** 标签文字；省略时须提供 ariaLabel。 */
+  children?: ReactNode
+  className?: string
+  ariaLabel?: string
+  title?: string
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  useEffect(() => {
+    if (inputRef.current) inputRef.current.indeterminate = indeterminate
+  }, [indeterminate])
+  return (
+    <label className={`kv-check ${className}`.trim()} title={title} data-tauri-drag-region="false">
+      <input
+        ref={inputRef}
+        type="checkbox"
+        className="kv-checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked, e)}
+        disabled={disabled}
+        aria-label={ariaLabel}
+      />
+      {children != null && children !== false && <span className="min-w-0">{children}</span>}
+    </label>
+  )
+}
 
 /**
  * 多行文本输入 — 默认 sans
@@ -490,7 +624,7 @@ export function TextArea({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         rows={rows}
-        className={`kv-textarea custom-scrollbar w-full ${variant === 'plain' ? 'plain' : ''} ${mono ? 'mono' : ''} ${className}`}
+        className={`kv-textarea custom-scrollbar ${variant === 'plain' ? 'plain' : ''} ${mono ? 'mono' : ''} ${className}`}
         style={{ ...props.style, ...(maxRows === undefined ? {} : { resize: 'none' }) }}
         data-tauri-drag-region="false"
         onContextMenu={(event) => {
@@ -794,14 +928,13 @@ export function HotkeyInput({
             </button>
           )}
         </div>
-        <button
-          type="button"
+        <Button
           onClick={onToggleRecording}
-          className={`kv-btn ${recording ? 'accent' : ''}`}
+          className={recording ? 'accent' : ''}
           data-tauri-drag-region="false"
         >
           {recording ? recordingLabel : recordLabel}
-        </button>
+        </Button>
       </div>
       {error && (
         <p className="text-[11px] text-danger leading-snug">{error}</p>

@@ -3,11 +3,11 @@
 // 数据层见 ../settings/public/mcpRegistry.ts。
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import { Check, ExternalLink, Loader2, Search } from 'lucide-react'
+import { Check, ExternalLink, Loader2 } from 'lucide-react'
 import type { ChatMcpServer } from '../api/tauri'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
-import { Input } from '../settings/public/controls'
+import { Input, SearchInput } from '../settings/public/controls'
 import { useT } from '../components/i18n'
 import {
   applyMcpRegistryInstallConfig,
@@ -145,29 +145,23 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 工具行：搜索为主（与技能商店同规格），来源切换退居右侧分段控件 */}
       <div className="flex items-center gap-2 pb-4">
-        <div className="relative min-w-0 flex-1">
-          <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-          <input
-            type="text"
-            value={queryInput}
-            onChange={(e) => setQueryInput(e.target.value)}
-            placeholder={t.chatMcpSearchPlaceholder}
-            className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 text-neutral-900"
-            data-tauri-drag-region="false"
-          />
-        </div>
-        <div className="inline-flex h-10 shrink-0 items-center rounded-md border border-neutral-200 p-1">
+        <SearchInput
+          className="flex-1"
+          value={queryInput}
+          onChange={setQueryInput}
+          placeholder={t.chatMcpSearchPlaceholder}
+          aria-label={t.chatMcpSearchPlaceholder}
+          clearLabel={t.dialogClear}
+        />
+        <div className="kv-seg shrink-0">
           {MCP_REGISTRY_SOURCE_OPTIONS.map((opt) => (
             <button
               key={opt.value}
               type="button"
               onClick={() => setSource(opt.value)}
+              aria-pressed={source === opt.value}
               data-tauri-drag-region="false"
-              className={`rounded px-3 py-1 text-[12px] font-medium transition-colors duration-[var(--kv-dur-fast)] ${
-                source === opt.value
-                  ? 'bg-neutral-100 text-neutral-900'
-                  : 'text-neutral-500 hover:text-neutral-800'
-              }`}
+              className={source === opt.value ? 'active' : ''}
             >
               {opt.label}
             </button>

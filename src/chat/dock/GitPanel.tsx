@@ -14,7 +14,8 @@ import {
   X,
 } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
-import { IconButton } from '../../components/Button'
+import { Button, IconButton } from '../../components/Button'
+import { Input, TextArea } from '../../settings/public/controls'
 import { dockApi } from './api'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DiffView } from './DiffView'
@@ -364,11 +365,12 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
             <div className="fixed inset-0 z-[150]" onClick={() => setBranchOpen(false)} />
             <div className="absolute left-1 right-1 top-full z-[160] mt-1 max-h-64 overflow-auto rounded-lg border border-neutral-200 bg-neutral-50 py-1 shadow-lg">
               <div className="flex items-center gap-1 px-2 py-1">
-                <input
+                <Input
                   value={newBranch}
-                  onChange={(e) => setNewBranch(e.target.value)}
+                  onChange={setNewBranch}
                   placeholder={t.dockGitNewBranchPlaceholder}
-                  className="min-w-0 flex-1 rounded-md border border-neutral-200 bg-transparent px-1.5 py-1 text-[12px] outline-none focus:border-neutral-400 dark:focus:border-neutral-500"
+                  aria-label={t.dockGitNewBranchPlaceholder}
+                  className="min-w-0 flex-1"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && newBranch.trim()) {
                       mutate(() => dockApi.gitCreateBranch(workdir, newBranch.trim()))
@@ -516,25 +518,27 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
 
           {/* 提交框 */}
           <div className="shrink-0 border-t border-neutral-200/70 p-2">
-            <textarea
+            <TextArea
               value={commitMessage}
-              onChange={(e) => setCommitMessage(e.target.value)}
+              onChange={setCommitMessage}
               placeholder={t.dockGitCommitPlaceholder}
+              aria-label={t.dockGitCommitPlaceholder}
               rows={2}
-              className="custom-scrollbar w-full resize-none rounded-md border border-neutral-200 bg-transparent px-2 py-1.5 text-[12px] outline-none focus:border-neutral-400 dark:focus:border-neutral-500"
+              maxRows={8}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleCommit()
               }}
             />
-            <button
-              type="button"
-              className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md bg-neutral-900 px-3 py-1.5 text-[12px] font-medium text-neutral-50 transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
+            <Button
+              variant="primary"
+              fullWidth
+              className="mt-1.5"
               disabled={partitioned.staged.length === 0 || !commitMessage.trim() || busy}
               onClick={handleCommit}
             >
-              {busy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} strokeWidth={2} />}
+              {busy ? <Loader2 className="animate-spin" /> : <Check strokeWidth={2} />}
               {t.dockGitCommit}
-            </button>
+            </Button>
           </div>
         </>
       ) : (

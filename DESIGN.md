@@ -109,7 +109,8 @@ components:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.text}"
     rounded: "{rounded.control}"
-    padding: "5px 9px"
+    height: "28px"
+    padding: "0 9px"
   settings-card:
     backgroundColor: "{colors.surface}"
     textColor: "{colors.text}"
@@ -208,25 +209,37 @@ html、body 和 root 保持透明，让原生材质与截图浮窗继续工作�
 
 **The Shared Owner Rule.** 共享控件的视觉规则由现有组件与全局样式维护，页面只负责内容与布局。
 
+### Control Scale
+
+基础控件共用 index.css 的 --kv-control-h（28px）、--kv-control-h-sm（24px）、--kv-control-radius（6px）与 --kv-control-font（12px）。同一行的 Button、IconButton sm、Input、SearchInput、Select、分段控件与快捷键框等高（28px），小号按钮为 24px；调整密度只改这组变量。样式集中在 settings-02-pages.css 的「共享基础控件」区块。
+
+状态约定对所有基础控件一致：悬停加深边框或底色；按下使用 active 表面；禁用降低不透明度并显示禁止光标；光标统一为 default（桌面应用习惯），不用 pointer。字段校验失败由调用方设置 aria-invalid，红色边框与光环由共享样式给出。宽度属于页面布局：Input / TextArea 默认撑满容器，调用方可用 w-* 工具类指定；高度、圆角、颜色与状态不在页面覆盖。
+
 ### Buttons
 
-紧凑、圆润、低干扰。[Button / IconButton](src/components/Button.tsx) 是动作按钮入口。Button 提供 default、primary、ghost、danger，以及 md / sm；小号规格（2px 8px，11.5px）。普通按压缩放（0.97），禁用透明度（0.5）。
+紧凑、圆润、低干扰。[Button / IconButton](src/components/Button.tsx) 是动作按钮入口。Button 提供 default、primary、ghost、danger，以及 md（28px）/ sm（24px，2px 8px），字号均为 12px；fullWidth 用于面板底部占满整行的主动作。悬停加深底色与边框，普通按压缩放（0.97），禁用透明度（0.5）。danger 是透明底的危险文字按钮，删除确认也用它，不另写实心红色按钮。
 
-IconButton 默认 sm（28px），另有 xs / md / lg（22px / 32px / 36px）与 circle；图标带 aria-label 和 title。ghost 复用透明基底，静止图标使用 text-muted，悬停沿用既有 hover 表面与 text 主文字色；其尺寸、聚焦和禁用行为由同一共享控件维护。
+IconButton 默认 sm（28px），另有 xs / md / lg（22px / 32px / 36px）与 circle；图标带 aria-label 和 title。静止图标使用 text-muted，悬停沿用既有 hover 表面与 text 主文字色；其尺寸、聚焦和禁用行为由同一共享控件维护。
 
 聊天标题栏的侧栏、新建与弹出窗口动作统一使用 28px 的共享 ghost IconButton。新建用加号；左右侧栏复用镜像分栏轮廓，内部隔线随开合状态变化，悬停和键盘聚焦预示操作方向，不再旋转或放大图标；减少动态效果时关闭隔线过渡。Dock 展开后的关闭按钮沿用同一图标，开合状态通过 aria-pressed 暴露，弹出窗口保留向右上方的外开箭头。
 
 ### Inputs / Fields
 
-通过 [settings/public/controls.ts](src/settings/public/controls.ts) 使用 Input、TextArea、Select、Toggle 等既有控件。输入聚焦以强调色边框与光环（3px、32% 强调色混色）反馈；Select 是按钮加门户菜单，不是原生 select，选项默认高度（28px），菜单圆角使用 menu。
+通过 [settings/public/controls.ts](src/settings/public/controls.ts) 使用 Input、SearchInput、TextArea、Select、Checkbox、Toggle 等既有控件。输入聚焦以强调色边框与光环（3px、32% 强调色混色）反馈，悬停加深边框，禁用换成 muted 底色。
 
-Input、TextArea（含 plain）与聊天 composer 的占位提示使用 text-muted，保留为可读的次要文字；Input / TextArea 显式保持完整占位不透明度（1）。这项角色由共享输入样式与 composer 的既有样式负责人实现，不在局部页面重写；它不改变其他 text-faint 信息的角色。
+Select 是按钮加门户菜单，不是原生 select，选项默认高度（28px），菜单圆角使用 menu；展开时触发器保持聚焦边框、箭头翻转。打开后焦点落在当前项，方向键、Home / End 与首字母移动，Enter 选择，Esc 或 Tab 关闭并把焦点还给触发器。
 
-Toggle 是紧凑胶囊开关（30×18px），滑块（14px）；开关状态使用交互强调色。不要替换为另一套局部基础控件。
+SearchInput 是列表过滤与目录搜索的统一入口：左侧放大镜，有内容时右侧出现清除按钮，清除后焦点回到输入框；页面不再自行摆放图标和内边距。
+
+Checkbox 用于多选列表、批量选择与附加选项（15px 方框，选中为强调色底，勾跟随 on-accent，全选框支持半选）；即时生效的设置用 Toggle。样式直接绘制在原生 input 上，行内已有 label 的列表给 input 加 kv-checkbox 类，不使用浏览器默认复选框。
+
+Input、TextArea（含 plain）与聊天 composer 的占位提示使用 text-faint；Input / TextArea 显式保持完整占位不透明度（1）。这项角色由共享输入样式与 composer 的既有样式负责人实现，不在局部页面重写。
+
+Toggle 是紧凑胶囊开关（30×18px），滑块（14px）固定为浅色，深色主题下也不跟随表面色；开关状态使用交互强调色，按下时滑块略微拉长。不要替换为另一套局部基础控件。
 
 ### Chips / Tabs
 
-可移除技术芯片使用等宽字体、胶囊轮廓与小型删除按钮；状态标签使用较小标签字与语义状态颜色，两者不是同一组件。分段切换在浅色轨道上抬升选中片段；深色状态使用 active 表面，保留其现有作用域规则。
+可移除技术芯片使用等宽字体、胶囊轮廓与小型删除按钮；状态标签使用较小标签字与语义状态颜色，两者不是同一组件。分段切换（kv-seg）在浅色轨道上抬升选中片段，整体与其他控件等高（28px），未选中片段悬停时加深文字并浮出薄底；深色状态使用 active 表面，在设置域内外表现一致。
 
 ### Cards / Containers
 
@@ -240,7 +253,7 @@ Toggle 是紧凑胶囊开关（30×18px），滑块（14px）；开关状态使�
 
 弹窗复用 kv-modal；基础圆角使用 menu、内边距使用 inset-card、宽度上限（340px），应用确认对话可为（360px）。保留 backdrop、焦点与 Escape 行为，不为单页重造弹窗。工具提示主要依赖原生 title；没有可提取的自定义 tooltip 皮肤。
 
-聊天外壳和原生 dialog 中，按钮键盘聚焦光环为（2px、浅色 14% / 深色 18% 强调色混色）；输入光环不受指针来源隐藏规则限制。独立设置按钮不在上述选择器覆盖范围，保留原生焦点表现。不要声称各宿主已完全一致。
+共享基础控件（Button、IconButton、Toggle、分段片段、Checkbox 等）在所有宿主的键盘聚焦表现一致：2px 强调色轮廓、外偏 1px（主按钮 2px）。鼠标操作期间由 data-focus-source 规则隐藏，输入光环不受指针来源隐藏规则限制。聊天外壳和原生 dialog 中的其他自绘按钮（列表行、菜单项等）仍用既有的淡光环（2px、浅色 14% / 深色 18% 强调色混色），这部分尚未统一。
 
 ## Do's and Don'ts
 

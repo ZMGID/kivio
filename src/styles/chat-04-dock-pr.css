@@ -40,30 +40,6 @@
   white-space: nowrap;
 }
 
-.chat-pr-search {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.chat-pr-search > svg {
-  position: absolute;
-  left: 9px;
-  color: var(--text-faint);
-  pointer-events: none;
-}
-
-/* 只为放大镜和清除按钮让出位置，不改共享输入框的边框、圆角与聚焦表现。 */
-.chat-pr-search .kv-input {
-  padding-left: 28px;
-  padding-right: 28px;
-}
-
-.chat-pr-search-clear {
-  position: absolute;
-  right: 3px;
-}
-
 .chat-pr-controls {
   display: flex;
   align-items: center;

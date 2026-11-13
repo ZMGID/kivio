@@ -2,10 +2,10 @@
 // 排序/搜索/翻页 + 一键安装（下载走后端 chat_skills_install_from_url）。数据层见 ../settings/public/skills.ts。
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
-import { Check, Download, ExternalLink, Loader2, Search, Star } from 'lucide-react'
+import { Check, Download, ExternalLink, Loader2, Star } from 'lucide-react'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
-import { Select } from '../settings/public/controls'
+import { SearchInput, Select } from '../settings/public/controls'
 import { useT } from '../components/i18n'
 import {
   CLAWHUB_SORT_OPTIONS,
@@ -95,22 +95,18 @@ export function SkillStoreBrowser() {
     <div className="flex min-h-0 flex-1 flex-col">
       {/* 工具行：搜索为主（与已安装 tab 同规格），排序退居右侧紧凑控件 */}
       <div className="flex items-center gap-2 pb-4">
-        <div className="relative min-w-0 flex-1">
-          <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-          <input
-            type="text"
-            value={queryInput}
-            onChange={(e) => setQueryInput(e.target.value)}
-            placeholder={t.chatSkillSearchPlaceholder}
-            className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 text-neutral-900"
-            data-tauri-drag-region="false"
-          />
-        </div>
+        <SearchInput
+          className="flex-1"
+          value={queryInput}
+          onChange={setQueryInput}
+          placeholder={t.chatSkillSearchPlaceholder}
+          aria-label={t.chatSkillSearchPlaceholder}
+          clearLabel={t.dialogClear}
+        />
         {/* 排序：用共享 Select（自绘菜单）而非原生 <select> —— 原生弹层由系统绘制，
-            样式无法统一，跟应用里其他所有下拉长得完全不同。
-            [&_button]:h-10 是为了跟左边 h-10 的搜索框对齐（Select 默认 30px）。 */}
+            样式无法统一，跟应用里其他所有下拉长得完全不同。 */}
         <Select
-          className="w-[132px] shrink-0 [&_button]:h-10"
+          className="w-[132px] shrink-0"
           value={sort}
           onChange={(value) => setSort(value as ClawHubSort)}
           disabled={Boolean(query)}

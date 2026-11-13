@@ -186,16 +186,7 @@
 }
 
 .kv-automation-picker-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin-top: 12px;
-  color: var(--text-muted);
-}
-
-.kv-automation-picker-search .kv-input {
-  flex: 1;
-  min-width: 0;
 }
 
 .kv-automation-picker-group + .kv-automation-picker-group {

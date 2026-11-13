@@ -1,12 +1,12 @@
 import { useModelDatabase } from '../data/useModelDatabase'
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronDown, Minus, Plus, RefreshCw, Search, X } from 'lucide-react'
+import { ChevronDown, Minus, Plus, RefreshCw, X } from 'lucide-react'
 import type { ModelProvider } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { resolveModelInfo, providerModelDatabaseId } from '../data/modelMatching'
 import { ModelIcon } from '../components/ModelIcon'
-import { Input } from './components'
+import { Input, SearchInput } from './components'
 
 type Lang = 'zh' | 'en'
 
@@ -143,15 +143,14 @@ export function ProviderModelsPicker({
         </div>
 
         <div className="kv-model-picker-toolbar">
-          <div className="kv-model-picker-search">
-            <Search size={14} className="kv-model-picker-search-icon" />
-            <Input
-              value={query}
-              onChange={setQuery}
-              placeholder={labels.searchPlaceholder}
-              mono={false}
-            />
-          </div>
+          <SearchInput
+            className="kv-model-picker-search"
+            value={query}
+            onChange={setQuery}
+            placeholder={labels.searchPlaceholder}
+            aria-label={labels.searchPlaceholder}
+            clearLabel={lang === 'zh' ? '清空' : 'Clear'}
+          />
           <IconButton
             size="sm"
             onClick={onFetch}

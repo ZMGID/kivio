@@ -11,7 +11,6 @@ import {
   Plus,
   RefreshCw,
   Save,
-  Search,
   Sparkles,
   Trash2,
   Wrench,
@@ -20,7 +19,7 @@ import { api, type ModelProvider } from '../api/tauri'
 import { getSettingsCached } from '../api/settingsCache'
 import { Button, IconButton } from '../components/Button'
 import { isProviderEnabled } from '../settings/public/providers'
-import { Select } from '../settings/public/controls'
+import { Checkbox, Input, SearchInput, Select, TextArea } from '../settings/public/controls'
 import { useT } from '../components/i18n'
 import { AgentIcon } from '../settings/public/icons'
 import { chatApi } from './api'
@@ -502,20 +501,14 @@ export function AssistantCenter({
 
       {/* 工具行：搜索为主 + 创建动作（与技能商店/MCP 市场的工具行同规格） */}
       <div className="flex items-center gap-2">
-        <div className="relative min-w-0 flex-1">
-          <Search
-            size={16}
-            className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-neutral-400"
-          />
-          <input
-            type="text"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t.chatAssistantSearch}
-            className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 pl-10 pr-4 text-[14px] outline-none placeholder:text-neutral-400 focus:border-neutral-300 text-neutral-900"
-            data-tauri-drag-region="false"
-          />
-        </div>
+        <SearchInput
+          className="flex-1"
+          value={query}
+          onChange={setQuery}
+          placeholder={t.chatAssistantSearch}
+          aria-label={t.chatAssistantSearch}
+          clearLabel={t.dialogClear}
+        />
         {onStartBuilder && (
           <Button
             onClick={() => onStartBuilder()}
@@ -758,39 +751,23 @@ export function AssistantCenter({
             <div className="grid gap-3 sm:grid-cols-[7rem_minmax(0,1fr)]">
               <label className="block">
                 <span className="mb-1.5 block text-[12px] font-medium text-neutral-600">{t.chatAssistantIcon}</span>
-                <input
-                  type="text"
-                  value={draft.icon ?? ''}
-                  onChange={(event) => updateDraft('icon', event.target.value)}
-                  className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 text-[13px] outline-none focus:border-neutral-300 text-neutral-900"
-                />
+                <Input value={draft.icon ?? ''} onChange={(value) => updateDraft('icon', value)} />
               </label>
               <label className="block">
                 <span className="mb-1.5 block text-[12px] font-medium text-neutral-600">{t.chatAssistantName}</span>
-                <input
-                  type="text"
-                  value={draft.name}
-                  onChange={(event) => updateDraft('name', event.target.value)}
-                  className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 text-[15px] font-medium outline-none focus:border-neutral-300 text-neutral-900"
-                />
+                <Input value={draft.name} onChange={(value) => updateDraft('name', value)} />
               </label>
             </div>
             <label className="block">
               <span className="mb-1.5 block text-[12px] font-medium text-neutral-600">{t.chatAssistantDescription}</span>
-              <input
-                type="text"
-                value={draft.description ?? ''}
-                onChange={(event) => updateDraft('description', event.target.value)}
-                className="h-10 w-full rounded-md border border-neutral-200 bg-neutral-50 px-3 text-[13px] outline-none focus:border-neutral-300 text-neutral-900"
-              />
+              <Input value={draft.description ?? ''} onChange={(value) => updateDraft('description', value)} />
             </label>
             <label className="block">
               <span className="mb-1.5 block text-[12px] font-medium text-neutral-600">{t.chatSystemPrompt}</span>
-              <textarea
+              <TextArea
                 value={draft.system_prompt ?? ''}
-                onChange={(event) => updateDraft('system_prompt', event.target.value)}
+                onChange={(value) => updateDraft('system_prompt', value)}
                 rows={9}
-                className="custom-scrollbar w-full resize-none rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2.5 text-[13px] leading-relaxed text-neutral-900 outline-none focus:border-neutral-300"
               />
             </label>
             <div className="grid gap-4 md:grid-cols-2">
@@ -803,15 +780,14 @@ export function AssistantCenter({
                   {mcpServers.length === 0 ? (
                     <div className="px-1 py-2 text-[12px] text-neutral-400">{t.chatAssistantNoMcpConfigured}</div>
                   ) : mcpServers.map((server) => (
-                    <label key={server.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[13px] hover:bg-neutral-50">
-                      <input
-                        type="checkbox"
-                        checked={draftMcpIds.includes(server.id)}
-                        onChange={() => updateDraft('mcp_server_ids', toggleId(draftMcpIds, server.id))}
-                        className="size-4 accent-neutral-900 dark:accent-neutral-100"
-                      />
-                      <span className="min-w-0 truncate text-neutral-700">{server.name}</span>
-                    </label>
+                    <Checkbox
+                      key={server.id}
+                      className="flex w-full rounded px-1.5 py-1.5 hover:bg-neutral-900/[0.04]"
+                      checked={draftMcpIds.includes(server.id)}
+                      onChange={() => updateDraft('mcp_server_ids', toggleId(draftMcpIds, server.id))}
+                    >
+                      <span className="block truncate">{server.name}</span>
+                    </Checkbox>
                   ))}
                 </div>
               </div>
@@ -824,15 +800,14 @@ export function AssistantCenter({
                   {skills.length === 0 ? (
                     <div className="px-1 py-2 text-[12px] text-neutral-400">{t.chatAssistantNoAvailableSkills}</div>
                   ) : skills.map((skill) => (
-                    <label key={skill.id} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[13px] hover:bg-neutral-50">
-                      <input
-                        type="checkbox"
-                        checked={draftSkillIds.includes(skill.id)}
-                        onChange={() => updateDraft('skill_ids', toggleId(draftSkillIds, skill.id))}
-                        className="size-4 accent-neutral-900 dark:accent-neutral-100"
-                      />
-                      <span className="min-w-0 truncate text-neutral-700">{skill.name}</span>
-                    </label>
+                    <Checkbox
+                      key={skill.id}
+                      className="flex w-full rounded px-1.5 py-1.5 hover:bg-neutral-900/[0.04]"
+                      checked={draftSkillIds.includes(skill.id)}
+                      onChange={() => updateDraft('skill_ids', toggleId(draftSkillIds, skill.id))}
+                    >
+                      <span className="block truncate">{skill.name}</span>
+                    </Checkbox>
                   ))}
                 </div>
               </div>

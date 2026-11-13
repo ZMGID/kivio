@@ -1,6 +1,8 @@
 import { useId, useState } from 'react'
 import { useT, type I18n } from '../components/i18n'
 import { Check, ChevronDown, ChevronRight, Circle, CirclePause, CirclePlay, Pencil, Target, X } from 'lucide-react'
+import { Button, IconButton } from '../components/Button'
+import { TextArea } from '../settings/public/controls'
 import type { GoalState } from './types'
 import { formatTokens } from '../utils/tokens'
 import { goalCompletedAt } from './goalPresentation'
@@ -68,21 +70,20 @@ export function GoalCard({ goal, onEdit, onPause, onResume, onCancel }: {
           </button>
           {isEditing && <div className="mt-2" role="group" aria-label={t.chatGoalEdit}>
             <label htmlFor={`${detailsId}-editor`} className="mb-1 block text-xs font-medium">{t.chatGoalContent}</label>
-            <textarea id={`${detailsId}-editor`} autoFocus value={editing.text} maxLength={4000}
-              disabled={busy} rows={4} onChange={(event) => setEditing({ key: goalKey, text: event.target.value })}
+            <TextArea id={`${detailsId}-editor`} autoFocus value={editing.text} maxLength={4000}
+              disabled={busy} rows={4} onChange={(text) => setEditing({ key: goalKey, text })}
               onKeyDown={(event) => {
                 if (event.key === 'Escape' && !busy) { event.preventDefault(); setEditing(null) }
                 if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !busy && editing.text.trim()) {
                   event.preventDefault(); save()
                 }
-              }}
-              className="w-full resize-y rounded-md border border-neutral-300 bg-neutral-50 px-3 py-2 text-[13px] leading-5 outline-none focus:border-violet-500 dark:border-neutral-600" />
+              }} />
             <div className="mt-2 flex items-center justify-between gap-2">
               <span className="text-[11px] text-neutral-500">{goal.status === 'paused' ? t.chatGoalSaveKeepsPaused : t.chatGoalSaveContinues} · {t.chatGoalSaveShortcut}</span>
               <div className="flex gap-2">
-                <button type="button" disabled={busy} onClick={() => setEditing(null)} className="rounded px-3 py-1 hover:bg-neutral-200">{t.chatGoalCancelEdit}</button>
-                <button type="button" disabled={busy || !editing.text.trim() || editing.text.trim() === goal.objective}
-                  onClick={save} className="rounded bg-violet-600 px-3 py-1 text-white disabled:opacity-40">{busy ? t.chatGoalSaving : t.chatGoalSave}</button>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => setEditing(null)}>{t.chatGoalCancelEdit}</Button>
+                <Button size="sm" variant="primary" disabled={busy || !editing.text.trim() || editing.text.trim() === goal.objective}
+                  onClick={save}>{busy ? t.chatGoalSaving : t.chatGoalSave}</Button>
               </div>
             </div>
           </div>}
@@ -111,13 +112,13 @@ export function GoalCard({ goal, onEdit, onPause, onResume, onCancel }: {
           )}
           </div>}
         </div>
-        {!terminal && <button type="button" disabled={busy} onClick={edit} aria-label={t.chatGoalEdit} className="rounded p-1 hover:bg-violet-200/70 dark:hover:bg-violet-300/15"><Pencil size={13} /></button>}
+        {!terminal && <IconButton size="xs" disabled={busy} onClick={edit} label={t.chatGoalEdit}><Pencil /></IconButton>}
         {running ? (
-          <button type="button" disabled={busy} onClick={() => void act(onPause)} aria-label={t.chatGoalPause} className="rounded p-1 hover:bg-violet-200/70 dark:hover:bg-violet-300/15"><CirclePause size={14} /></button>
+          <IconButton size="xs" disabled={busy} onClick={() => void act(onPause)} label={t.chatGoalPause}><CirclePause /></IconButton>
         ) : !terminal ? (
-          <button type="button" disabled={busy} onClick={() => void act(onResume)} aria-label={t.chatGoalResume} className="rounded p-1 hover:bg-violet-200/70 dark:hover:bg-violet-300/15"><CirclePlay size={14} /></button>
+          <IconButton size="xs" disabled={busy} onClick={() => void act(onResume)} label={t.chatGoalResume}><CirclePlay /></IconButton>
         ) : null}
-        {!terminal && <button type="button" disabled={busy} onClick={() => void act(onCancel)} aria-label={t.chatGoalStop} className="rounded p-1 hover:bg-violet-200/70 dark:hover:bg-violet-300/15"><X size={14} /></button>}
+        {!terminal && <IconButton size="xs" disabled={busy} onClick={() => void act(onCancel)} label={t.chatGoalStop}><X /></IconButton>}
       </div>
     </div>
   )

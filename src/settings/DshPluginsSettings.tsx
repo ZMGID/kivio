@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { ArrowLeft, ChevronDown, RefreshCw, Search, Terminal, Workflow, Globe } from 'lucide-react'
+import { ArrowLeft, ChevronDown, RefreshCw, Terminal, Workflow, Globe } from 'lucide-react'
 import { FileIcon } from '../components/FileIcon'
 import {
   externalCliSettingsApi as dshPluginSettingsApi,
@@ -8,7 +8,7 @@ import {
   type DshPluginSettingsSnapshot,
 } from '../api/externalCliSettings'
 import { Button, IconButton } from '../components/Button'
-import { Input } from './components'
+import { Input, SearchInput } from './components'
 import { dshPluginShortName } from './dshPluginNames'
 import { i18n, type Lang } from '../components/i18n'
 
@@ -612,12 +612,13 @@ function InventoryTab({ lang }: { lang: Lang }) {
   return (
     <div className="kv-dsh-inventory">
       <div className="kv-dsh-inventory-search">
-        <Search size={13} aria-hidden />
-        <Input
+        <SearchInput
+          className="flex-1"
           value={query}
           onChange={setQuery}
           placeholder={t.externalAgentsDshPluginsListSearch}
           aria-label={t.externalAgentsDshPluginsListSearch}
+          clearLabel={t.dialogClear}
         />
         <IconButton
           size="sm"
