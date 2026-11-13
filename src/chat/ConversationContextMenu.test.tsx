@@ -1,7 +1,36 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { ConversationContextMenu } from './ConversationContextMenu'
+import { i18n } from '../components/i18n'
+
+it.each(['project', 'set'] as const)('keeps a large %s submenu inside the viewport and selects its last item', async (kind) => {
+  const onMove = vi.fn()
+  const onClose = vi.fn()
+  const items = Array.from({ length: 30 }, (_, index) => ({ id: String(index), name: `Item ${index}`, created_at: 0, updated_at: 0 }))
+  const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    return new DOMRect(900, 700, 176, this.getAttribute('aria-label') ? 420 : 200)
+  })
+  try {
+    render(<ConversationContextMenu anchor={{ left: 900, top: 700 }} projects={items} sets={items} lang="zh"
+      onRegenerateTitle={vi.fn()} onExport={vi.fn()} onMoveToProject={onMove} onMoveToSet={onMove}
+      onDelete={vi.fn()} onClose={onClose} />)
+    const label = kind === 'project' ? i18n.zh.chatAddToProject : i18n.zh.chatMoveToSet
+    fireEvent.click(screen.getByRole('menuitem', { name: label }))
+    const submenu = screen.getByRole('menu', { name: label })
+    expect(Number.parseFloat(submenu.style.top) + 420).toBeLessThanOrEqual(window.innerHeight - 8)
+    expect(Number.parseFloat(submenu.style.left) + 176).toBeLessThanOrEqual(window.innerWidth - 8)
+    expect(submenu).toHaveClass('overflow-y-auto', 'custom-scrollbar')
+    fireEvent.mouseLeave(screen.getByRole('menuitem', { name: label }))
+    fireEvent.mouseDown(screen.getByText('Item 29'))
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('Item 29'))
+    expect(onMove).toHaveBeenCalledWith('29')
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+  } finally {
+    bounds.mockRestore()
+  }
+})
 
 function renderMenu(
   lang: 'zh' | 'en',

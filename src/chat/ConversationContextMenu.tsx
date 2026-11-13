@@ -1,5 +1,5 @@
 import { FolderIcon as Folder } from '../components/FileIcon'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronRight, Copy, Download, Hash, Layers, RotateCcw, SquareArrowOutUpRight, Trash2 } from 'lucide-react'
 import { i18n, type Lang } from '../components/i18n'
@@ -34,6 +34,23 @@ interface ConversationContextMenuProps {
   onClose: () => void
 }
 
+function ConversationSubmenu({ anchor, label, menuRef, children }: {
+  anchor: ConversationMenuAnchor
+  label: string
+  menuRef: RefObject<HTMLDivElement>
+  children: ReactNode
+}) {
+  const pos = useClampedMenuPosition(menuRef, anchor)
+  return createPortal(
+    <div ref={menuRef} role="menu" aria-label={label}
+      className="kv-menu fixed z-[201] min-w-[168px] max-w-[calc(100vw-16px)] max-h-[min(70vh,420px)] overflow-y-auto custom-scrollbar"
+      style={{ left: pos.left, top: pos.top }}>
+      {children}
+    </div>,
+    document.body,
+  )
+}
+
 function shortNativeId(id: string): string {
   if (id.length <= 22) return id
   return `${id.slice(0, 8)}…${id.slice(-6)}`
@@ -63,14 +80,20 @@ export function ConversationContextMenu({
   const t = i18n[lang]
   const menuRef = useRef<HTMLDivElement>(null)
   const pos = useClampedMenuPosition(menuRef, anchor)
+  const submenuRef = useRef<HTMLDivElement>(null)
+  const [submenu, setSubmenu] = useState<{ kind: 'project' | 'set'; anchor: ConversationMenuAnchor } | null>(null)
+  const openSubmenu = (kind: 'project' | 'set', button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect()
+    setSubmenu({ kind, anchor: { left: rect.right + 4, top: rect.top } })
+  }
   const { closing, startClose, onAnimationEnd } = useCloseAnimation(onCloseProp)
   // 所有内部关闭触发（菜单项动作后 / 外部点击 / Esc）走 startClose，先播退场再卸载
   const onClose = startClose
 
   useEffect(() => {
     const onPointerDown = (e: MouseEvent) => {
-      const target = e.target as Node
-      if (menuRef.current?.contains(target)) return
+      const target = e.target
+      if (target instanceof Node && (menuRef.current?.contains(target) || submenuRef.current?.contains(target))) return
       onClose()
     }
     const onKeyDown = (e: KeyboardEvent) => {
@@ -121,19 +144,23 @@ export function ConversationContextMenu({
         </button>
       )}
 
-      <div className="group/sub relative">
+      <div>
         <button
           type="button"
           role="menuitem"
           className="kv-menu-item"
+          aria-haspopup="menu"
+          aria-expanded={submenu?.kind === 'project'}
+          onMouseEnter={(event) => openSubmenu('project', event.currentTarget)}
+          onClick={(event) => openSubmenu('project', event.currentTarget)}
         >
           <Folder />
           <span className="min-w-0 flex-1">{t.chatAddToProject}</span>
           <ChevronRight size={16} className="shrink-0 text-neutral-400" />
         </button>
 
-        <div className="pointer-events-none absolute left-full top-0 z-[201] min-w-[168px] pl-1 opacity-0 transition-opacity group-hover/sub:pointer-events-auto group-hover/sub:opacity-100">
-          <div className="kv-menu">
+        {!closing && submenu?.kind === 'project' && (
+          <ConversationSubmenu anchor={submenu.anchor} label={t.chatAddToProject} menuRef={submenuRef}>
             {projects.length === 0 ? (
               <div className="kv-menu-item">{t.chatNoProjects}</div>
             ) : (
@@ -175,23 +202,27 @@ export function ConversationContextMenu({
                 </button>
               </>
             )}
-          </div>
-        </div>
+          </ConversationSubmenu>
+        )}
       </div>
 
-      <div className="group/subset relative">
+      <div>
         <button
           type="button"
           role="menuitem"
           className="kv-menu-item"
+          aria-haspopup="menu"
+          aria-expanded={submenu?.kind === 'set'}
+          onMouseEnter={(event) => openSubmenu('set', event.currentTarget)}
+          onClick={(event) => openSubmenu('set', event.currentTarget)}
         >
           <Layers strokeWidth={1.75} />
           <span className="min-w-0 flex-1">{t.chatMoveToSet}</span>
           <ChevronRight size={16} className="shrink-0 text-neutral-400" />
         </button>
 
-        <div className="pointer-events-none absolute left-full top-0 z-[201] min-w-[168px] pl-1 opacity-0 transition-opacity group-hover/subset:pointer-events-auto group-hover/subset:opacity-100">
-          <div className="kv-menu">
+        {!closing && submenu?.kind === 'set' && (
+          <ConversationSubmenu anchor={submenu.anchor} label={t.chatMoveToSet} menuRef={submenuRef}>
             {sets.length === 0 ? (
               <div className="kv-menu-item">{t.chatNoSets}</div>
             ) : (
@@ -231,8 +262,8 @@ export function ConversationContextMenu({
                 </button>
               </>
             )}
-          </div>
-        </div>
+          </ConversationSubmenu>
+        )}
       </div>
 
       <button

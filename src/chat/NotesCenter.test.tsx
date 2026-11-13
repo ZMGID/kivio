@@ -20,7 +20,7 @@ vi.mock('../api/tauri', () => ({
   isTauriRuntime: () => true,
   api: {
     notesList: async () => [{ ...mocks.persisted, preview: 'original' }],
-    notesFoldersList: async () => [],
+    notesFoldersList: async () => ['Work'],
     notesRead: async () => mocks.persisted,
     notesDirPath: async () => '',
     notesUpdate: mocks.update,
@@ -63,7 +63,7 @@ beforeEach(() => {
   mocks.remove.mockResolvedValue(undefined)
   mocks.persisted = { ...mocks.note }
   mocks.update.mockImplementation(async (id: string, title: string, content: string, folder: string) => {
-    mocks.persisted = { ...mocks.note, id, title, content, folder }
+    mocks.persisted = { ...mocks.persisted!, id, title, content, folder }
     return mocks.persisted
   })
 })
@@ -78,6 +78,37 @@ async function advance(ms = NOTE_SAVE_DEBOUNCE_MS) { await act(async () => { awa
 async function back() {
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chatNotesBack' })) })
 }
+
+it('searches across folders without separate source tabs', async () => {
+  mocks.persisted = { ...mocks.note, folder: 'Work', origin: 'chat' }
+  await act(async () => { render(<NotesCenter />) })
+  expect(screen.queryByText('Test note')).toBeNull()
+  expect(screen.queryByText('chatNotesTabChat')).toBeNull()
+  expect(screen.queryByText('chatNotesTabLibrary')).toBeNull()
+  await act(async () => { fireEvent.change(screen.getByPlaceholderText('chatNotesSearchPlaceholder'), { target: { value: 'original' } }) })
+  await act(async () => { fireEvent.click(screen.getByText('Test note')) })
+  expect(mocks.initialMarkdown).toBe('original')
+})
+
+it.each(['user', 'chat'])('shows a moved %s note in its folder and after reopening', async (origin) => {
+  mocks.persisted = { ...mocks.note, origin }
+  const view = render(<NotesCenter />)
+  await act(async () => {})
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chatNotesMoveToFolder' })) })
+  await act(async () => { fireEvent.click(screen.getByText('Work', { selector: 'span' })) })
+  expect(mocks.persisted).toMatchObject({ folder: 'Work', origin, content: 'original' })
+  await act(async () => { fireEvent.click(screen.getByText('Work')) })
+  expect(screen.getByText('Test note')).toBeInTheDocument()
+  view.unmount()
+  await act(async () => { render(<NotesCenter />) })
+  await act(async () => { fireEvent.click(screen.getByText('Work')) })
+  expect(screen.getByText('Test note')).toBeInTheDocument()
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chatNotesMoveToFolder' })) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'chatNotesLibraryRoot' })) })
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: /chatNavNotes/ })) })
+  expect(screen.getByText('Test note')).toBeInTheDocument()
+  expect(mocks.persisted).toMatchObject({ folder: '', origin, content: 'original' })
+})
 
 it('preserves typing after submission and persists it before returning to the list', async () => {
   let finish!: (note: Note) => void

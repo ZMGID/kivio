@@ -3,8 +3,8 @@
 //! skills 的 `split_frontmatter`，与 agents / skills 的文件格式约定保持一致。
 //!
 //! 组织方式：
-//! - `origin`：`user`（手动新建，进「库」）| `chat`（对话存来，进「聊天保存」）。缺省 = user。
-//! - `folder`：单层文件夹名，空 = 库根。仅对 user 笔记有意义。
+//! - `origin`：`user`（手动新建）| `chat`（对话存来）。缺省 = user，仅记录来源。
+//! - `folder`：单层文件夹名，空 = 库根。归档位置与 origin 来源独立。
 //! - 空文件夹也要留存，故文件夹清单单独存 `<app_data>/notes/folders.json`（有序数组）。
 //! 文件始终扁平存放（id=文件名），移动文件夹只改 frontmatter，查找保持 O(1)。
 

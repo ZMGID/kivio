@@ -2,14 +2,15 @@ import { FolderIcon as Folder, FolderIcon as FolderOpen } from '../components/Fi
 import { ErrorNotice } from '../components/AppNotice'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useWindowStore } from '../utils/windowStore'
-import { ArrowLeft, Check, ChevronLeft, FolderInput, FolderPlus, MessageSquare, NotebookPen, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { ArrowLeft, Check, ChevronLeft, FolderInput, FolderPlus, NotebookPen, Pencil, Plus, Trash2 } from 'lucide-react'
 import { Crepe } from '@milkdown/crepe'
 import '@milkdown/crepe/theme/common/style.css'
 import '@milkdown/crepe/theme/frame.css'
 import { api, isTauriRuntime, type NoteMeta } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
+import { Input } from '../settings/public/controls'
 import { workspaceActivity } from './dock/workspaceActivity'
-import { useLang, useT } from '../components/i18n'
+import { useT } from '../components/i18n'
 import { confirmDialog } from '../components/dialogQueue'
 import {
   discardNoteDraft,
@@ -30,9 +31,6 @@ function claimNoteNavigation() {
 function noteNavigationCurrent(request: number) {
   return request === noteNavigation
 }
-
-/** 顶部入口：最近（全部按时间）/ 聊天保存（对话存来）/ 库（手动笔记 + 文件夹）。 */
-type NotesTab = 'recent' | 'chat' | 'library'
 
 /**
  * Obsidian 风格的一体化写作面：Milkdown Crepe 提供 markdown 原生 live-preview
@@ -91,35 +89,19 @@ function MilkdownNoteEditor({
   return <div ref={rootRef} className="kv-note-editor min-h-full" />
 }
 
-function formatDateTime(iso: string, locale: string): string {
-  try {
-    return new Date(iso).toLocaleString(locale, {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    })
-  } catch {
-    return iso
-  }
-}
-
 function displayTitle(title: string | undefined, untitled: string): string {
   return title?.trim() || untitled
 }
 
 export function NotesCenter() {
   const t = useT()
-  const lang = useLang()
-  const dateLocale = lang === 'en' ? 'en-US' : 'zh-CN'
   const [notes, setNotes] = useState<NoteMeta[]>([])
   const [folders, setFolders] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [search, setSearch] = useState('')
 
-  const [tab, setTab] = useState<NotesTab>('recent')
-  // 库内当前文件夹：null = 库根（显示文件夹 + 散笔记），字符串 = 进入该文件夹
+  // 当前文件夹：null = 根目录（显示文件夹 + 散笔记），字符串 = 进入该文件夹
   const [currentFolder, setCurrentFolder] = useState<string | null>(null)
   // 文件夹命名弹框：WKWebView 不支持 window.prompt（恒返回 null），故用内联输入。
   // 输入走非受控 ref，规避中文 IME 合成期受控写回吞字（与编辑器同款处理）。
@@ -129,7 +111,7 @@ export function NotesCenter() {
     | null
   >(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
-  // 卡片「移动到文件夹」菜单：当前展开的笔记 id。
+  // 「移动到文件夹」菜单：当前展开的笔记 id。
   const [moveMenuFor, setMoveMenuFor] = useState<string | null>(null)
 
   // 打开的笔记、草稿和保存队列在窗口 store 里，离开页面后仍在。
@@ -138,7 +120,6 @@ export function NotesCenter() {
   const editing = draft.note
   const flushMarkdownRef = useRef<(() => void) | null>(null)
   const saving = draft.status === 'saving'
-  const charCount = draft.content.length
 
   const loadNotes = useCallback(async () => {
     setError('')
@@ -207,38 +188,12 @@ export function NotesCenter() {
     }
   }, [loadNotes])
 
-  /** 库文件夹的笔记数（仅手动笔记）。 */
-  const folderCounts = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const n of notes) {
-      if (n.origin === 'chat') continue
-      const f = n.folder.trim()
-      if (f) m.set(f, (m.get(f) ?? 0) + 1)
-    }
-    return m
-  }, [notes])
-
-  /** 当前 tab / 文件夹 / 搜索下可见的笔记。 */
   const visibleNotes = useMemo(() => {
-    let list: NoteMeta[]
-    if (tab === 'recent') {
-      list = notes
-    } else if (tab === 'chat') {
-      list = notes.filter((n) => n.origin === 'chat')
-    } else {
-      const target = currentFolder ?? ''
-      list = notes.filter((n) => n.origin !== 'chat' && n.folder.trim() === target)
-    }
     const needle = search.trim().toLowerCase()
-    if (needle) {
-      list = list.filter(
-        (n) =>
-          displayTitle(n.title, t.chatNotesUntitled).toLowerCase().includes(needle) ||
-          n.preview.toLowerCase().includes(needle),
-      )
-    }
-    return list
-  }, [notes, tab, currentFolder, search, t])
+    return notes.filter((note) => needle
+      ? displayTitle(note.title, t.chatNotesUntitled).toLowerCase().includes(needle) || note.preview.toLowerCase().includes(needle)
+      : note.folder.trim() === (currentFolder ?? ''))
+  }, [notes, currentFolder, search, t])
 
   // 离开笔记页不是取消：把未落盘的草稿交给窗口里的保存队列，回来仍打开同一篇。
   useEffect(() => () => {
@@ -290,8 +245,7 @@ export function NotesCenter() {
     if (!noteNavigationCurrent(request)) return
     if (noteDraftStore.getSnapshot().session !== session) return
     setError('')
-    // 库内新建归入当前文件夹；其他视图归库根。手动笔记一律 origin=user。
-    const folder = tab === 'library' && currentFolder ? currentFolder : ''
+    const folder = currentFolder ?? ''
     try {
       const note = await api.notesCreate('', '', folder, 'user')
       if (!noteNavigationCurrent(request)) return
@@ -302,7 +256,7 @@ export function NotesCenter() {
       if (!noteNavigationCurrent(request)) return
       setError(err instanceof Error ? err.message : String(err))
     }
-  }, [loadNotes, tab, currentFolder])
+  }, [loadNotes, currentFolder])
 
   const deleteNote = useCallback(
     async (id: string) => {
@@ -324,7 +278,7 @@ export function NotesCenter() {
     [notes, t],
   )
 
-  /* ===== 文件夹管理（用原生 prompt/confirm，不做自定义弹窗） ===== */
+  /* ===== 文件夹管理 ===== */
   const moveNoteToFolder = useCallback(
     async (id: string, folder: string) => {
       setMoveMenuFor(null)
@@ -398,15 +352,8 @@ export function NotesCenter() {
     [currentFolder, loadNotes, t],
   )
 
-  const changeTab = useCallback((next: NotesTab) => {
-    setTab(next)
-    setCurrentFolder(null)
-    setSearch('')
-  }, [])
-
   /* ===== 编辑器态 ===== */
   if (editing) {
-    const isChat = editing.origin === 'chat'
     return (
       <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900">
         <div className="mx-auto flex h-full w-full min-h-0 max-w-[820px] flex-col px-9 pb-4 pt-6">
@@ -440,21 +387,6 @@ export function NotesCenter() {
             placeholder={t.chatNotesUntitled}
             className="mt-5 w-full shrink-0 bg-transparent text-[26px] font-semibold tracking-normal text-neutral-950 placeholder:text-neutral-300 focus:outline-none dark:placeholder:text-neutral-600"
           />
-          <p className="mt-1.5 shrink-0 text-[12px] text-neutral-400 dark:text-neutral-500">
-            {t.chatNotesUpdatedInfo
-              .replace('{time}', formatDateTime(editing.updatedAt, dateLocale))
-              .replace('{n}', String(charCount))}
-          </p>
-
-          {isChat && (
-            <div className="mt-2.5 flex shrink-0 items-center gap-1.5">
-              <span className="inline-flex items-center gap-1.5 rounded-md bg-neutral-100/70 px-2 py-0.5 text-[12.5px] text-neutral-500 dark:text-neutral-400">
-                <MessageSquare size={13} />
-                {t.chatNotesFromChat}
-              </span>
-            </div>
-          )}
-
           <div className="custom-scrollbar mt-3 min-h-0 flex-1 overflow-y-auto">
             <MilkdownNoteEditor
               key={`${editing.id}:${draft.session}`}
@@ -475,104 +407,59 @@ export function NotesCenter() {
   }
 
   /* ===== 列表态 ===== */
-  const inLibraryRoot = tab === 'library' && currentFolder === null
-  const showFolderGrid = inLibraryRoot && folders.length > 0
-  const emptyEverything = !showFolderGrid && visibleNotes.length === 0
-
-  const emptyText =
-    tab === 'chat'
-      ? t.chatNotesEmptyChat
-      : tab === 'library'
-        ? currentFolder
-          ? t.chatNotesEmptyFolder
-          : t.chatNotesEmptyLibrary
-        : t.chatNotesEmptyRecent
+  const atRoot = currentFolder === null
+  const showFolders = atRoot && !search.trim() && folders.length > 0
+  const emptyEverything = !showFolders && visibleNotes.length === 0
 
   return (
     <div className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900">
       <main className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[1040px] px-9 pb-10 pt-7">
-          {/* 头部：标题 + 副标题 */}
+          {/* 笔记 */}
           <div className="border-b border-neutral-200 pb-5">
             <h1 className="flex items-center gap-2.5 text-[28px] font-semibold tracking-normal text-neutral-950">
               <NotebookPen size={24} className="text-neutral-500" />
               {t.chatNavNotes}
             </h1>
-            <p className="mt-3 text-[14px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-              {t.chatNotesSubtitle}
-            </p>
           </div>
 
-          {/* 一行：tab（左） + 搜索（中） + 操作（右） */}
-          <div className="mt-5 flex items-center gap-3">
-            <div className="flex shrink-0 items-center gap-1 rounded-lg bg-neutral-100 p-0.5">
-              {(
-                [
-                  ['recent', t.chatTabRecent],
-                  ['chat', t.chatNotesTabChat],
-                  ['library', t.chatNotesTabLibrary],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => changeTab(id)}
-                  className={`rounded-md px-3.5 py-1.5 text-[13px] transition-colors ${
-                    tab === id
-                      ? 'bg-neutral-50 font-medium text-neutral-900 shadow-sm'
-                      : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <div className="relative w-full max-w-xs">
-              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
-              <input
-                type="text"
+          {/* 搜索与新建 */}
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <div className="w-full max-w-xs">
+              <Input
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={setSearch}
                 placeholder={t.chatNotesSearchPlaceholder}
-                className="w-full rounded-lg border border-neutral-200 bg-neutral-50 py-1.5 pl-8 pr-3 text-[13px] text-neutral-800 placeholder:text-neutral-400 focus:border-neutral-400 focus:outline-none"
+                aria-label={t.chatNotesSearchPlaceholder}
               />
             </div>
-            {visibleNotes.length > 0 && (
-              <span className="shrink-0 text-[12px] tabular-nums text-neutral-400 dark:text-neutral-500">
-                {t.chatNotesCount.replace('{n}', String(visibleNotes.length))}
-              </span>
-            )}
-
             <div className="ml-auto flex shrink-0 items-center gap-2">
               <Button variant="ghost" onClick={() => void openNotesFolder()}>
                 <FolderOpen open size={14} />
                 {t.chatNotesOpenFolder}
               </Button>
-              {inLibraryRoot && (
+              {atRoot && (
                 <Button variant="ghost" onClick={() => void createFolder()}>
                   <FolderPlus size={14} />
                   {t.dockNewFolder}
                 </Button>
               )}
-              {tab !== 'chat' && (
-                <Button onClick={() => void createNote()}>
-                  <Plus size={14} />
-                  {t.chatNotesNewNote}
-                </Button>
-              )}
+              <Button onClick={() => void createNote()}>
+                <Plus size={14} />
+                {t.chatNotesNewNote}
+              </Button>
             </div>
           </div>
 
-          {/* 库文件夹内的面包屑返回 */}
-          {tab === 'library' && currentFolder !== null && (
+          {/* 返回根目录 */}
+          {currentFolder !== null && (
             <button
               type="button"
               onClick={() => setCurrentFolder(null)}
               className="mt-4 inline-flex items-center gap-1 text-[13px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400"
             >
               <ChevronLeft size={15} />
-              {t.chatNotesTabLibrary}
+              {t.chatNavNotes}
               <span className="text-neutral-300 dark:text-neutral-600">/</span>
               <span className="font-medium text-neutral-700">{currentFolder}</span>
             </button>
@@ -583,21 +470,16 @@ export function NotesCenter() {
           )}
 
           {loading && notes.length === 0 ? (
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <div className="mt-6 flex flex-col gap-3">
               {Array.from({ length: 3 }, (_, i) => (
-                <div key={i} className="rounded-xl border border-neutral-200/80 p-4">
-                  <div className="kv-skeleton h-4 w-1/3 rounded" />
-                  <div className="kv-skeleton mt-2.5 h-3 w-full rounded" />
-                  <div className="kv-skeleton mt-1.5 h-3 w-2/3 rounded" />
-                  <div className="kv-skeleton mt-4 h-3 w-16 rounded" />
-                </div>
+                <div key={i} className="kv-skeleton h-7 w-full rounded" />
               ))}
             </div>
           ) : (
             <>
-              {/* 库根：文件夹卡片 */}
-              {showFolderGrid && (
-                <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {/* 文件夹 */}
+              {showFolders && (
+                <div className="mt-5 flex flex-col gap-1">
                   {folders.map((name) => (
                     <div
                       key={name}
@@ -605,23 +487,20 @@ export function NotesCenter() {
                       tabIndex={0}
                       onClick={() => setCurrentFolder(name)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
+                        if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
                           e.preventDefault()
                           setCurrentFolder(name)
                         }
                       }}
-                      className="group flex cursor-pointer items-center gap-3 rounded-xl border border-neutral-200 bg-neutral-50 p-3.5 shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:shadow"
+                      className="group flex cursor-pointer items-center gap-3 rounded-md px-3 py-2 hover:bg-neutral-100"
                     >
                       <Folder size={20} className="shrink-0 text-neutral-400 dark:text-neutral-500" />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[14px] font-medium text-neutral-900">
                           {name}
                         </div>
-                        <div className="text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
-                          {t.chatNotesCount.replace('{n}', String(folderCounts.get(name) ?? 0))}
-                        </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
                         <IconButton
                           size="xs"
                           variant="ghost"
@@ -654,38 +533,15 @@ export function NotesCenter() {
               {emptyEverything ? (
                 <div className="mt-16 flex flex-col items-center justify-center text-center">
                   <div className="flex h-14 w-14 items-center justify-center rounded-md bg-neutral-100 text-neutral-400 dark:text-neutral-500">
-                    {tab === 'chat' ? (
-                      <MessageSquare size={28} strokeWidth={1.5} />
-                    ) : (
-                      <NotebookPen size={28} strokeWidth={1.5} />
-                    )}
+                    <NotebookPen size={28} strokeWidth={1.5} />
                   </div>
                   <p className="mt-4 text-[15px] font-medium text-neutral-700">
-                    {search.trim() ? t.chatNotesNoMatch : emptyText}
+                    {search.trim() ? t.chatNotesNoMatch : currentFolder ? t.chatNotesEmptyFolder : t.chatNotesEmptyRecent}
                   </p>
-                  {!search.trim() && tab === 'chat' && (
-                    <p className="mt-1 text-[13px] text-neutral-500 dark:text-neutral-400">
-                      {t.chatNotesSaveHint}
-                    </p>
-                  )}
-                  {!search.trim() && tab !== 'chat' && (
-                    <div className="mt-5 flex items-center gap-2">
-                      {inLibraryRoot && (
-                        <Button variant="ghost" onClick={() => void createFolder()}>
-                          <FolderPlus size={14} />
-                          {t.dockNewFolder}
-                        </Button>
-                      )}
-                      <Button onClick={() => void createNote()}>
-                        <Plus size={14} />
-                        {t.chatNotesNewNote}
-                      </Button>
-                    </div>
-                  )}
                 </div>
               ) : (
                 visibleNotes.length > 0 && (
-                  <div className="chat-motion-tab-in mt-5 grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                  <div className="mt-3 flex flex-col gap-1">
                     {visibleNotes.map((note) => (
                       <article
                         key={note.id}
@@ -698,10 +554,11 @@ export function NotesCenter() {
                             void openNote(note.id)
                           }
                         }}
-                        className="chat-motion-fade-up group flex min-h-[132px] min-w-0 cursor-pointer flex-col gap-2 rounded-xl border border-neutral-200 bg-neutral-50 p-4 shadow-sm transition-[border-color,box-shadow] duration-[var(--kv-dur-fast)] hover:border-neutral-300 hover:shadow"
+                        className="group min-w-0 cursor-pointer rounded-md px-3 py-2 hover:bg-neutral-100"
                       >
-                        <div className="flex min-w-0 items-start justify-between gap-2">
-                          <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold text-neutral-900">
+                        <div className="flex min-w-0 items-center justify-between gap-2">
+                          <NotebookPen size={16} className="shrink-0 text-neutral-400" />
+                          <h3 className="min-w-0 flex-1 truncate text-[14px] font-medium text-neutral-900">
                             {displayTitle(note.title, t.chatNotesUntitled)}
                           </h3>
                           <div className="flex shrink-0 items-center gap-0.5">
@@ -710,7 +567,7 @@ export function NotesCenter() {
                                 size="xs"
                                 variant="ghost"
                                 label={t.chatNotesMoveToFolder}
-                                className={`transition-opacity ${moveMenuFor === note.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                                className={`transition-opacity ${moveMenuFor === note.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
                                 onClick={(e) => {
                                   e.stopPropagation()
                                   setMoveMenuFor((prev) => (prev === note.id ? null : note.id))
@@ -728,7 +585,7 @@ export function NotesCenter() {
                                     }}
                                   />
                                   <div
-                                    className="absolute right-0 z-50 mt-1 max-h-64 w-44 overflow-auto kv-menu"
+                                    className="custom-scrollbar absolute right-0 z-50 mt-1 max-h-64 w-44 overflow-auto kv-menu"
                                     onClick={(e) => e.stopPropagation()}
                                   >
                                     <button
@@ -770,7 +627,7 @@ export function NotesCenter() {
                               size="xs"
                               variant="ghost"
                               label={t.chatDelete}
-                              className={`transition-opacity ${moveMenuFor === note.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+                              className={`transition-opacity ${moveMenuFor === note.id ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'}`}
                               onClick={(e) => {
                                 e.stopPropagation()
                                 void deleteNote(note.id)
@@ -779,27 +636,6 @@ export function NotesCenter() {
                               <Trash2 size={13} />
                             </IconButton>
                           </div>
-                        </div>
-                        <p className="line-clamp-3 min-w-0 flex-1 text-[13px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-                          {note.preview || <span className="text-neutral-300 dark:text-neutral-600">{t.chatNotesNoContent}</span>}
-                        </p>
-                        <div className="mt-auto flex shrink-0 items-center justify-between gap-2">
-                          <span className="text-[11px] tabular-nums text-neutral-400 dark:text-neutral-500">
-                            {formatDateTime(note.updatedAt, dateLocale)}
-                          </span>
-                          {/* 最近视图里标注来源/文件夹，便于区分 */}
-                          {tab === 'recent' && note.origin === 'chat' && (
-                            <span className="inline-flex items-center gap-1 text-[11px] text-neutral-400 dark:text-neutral-500">
-                              <MessageSquare size={11} />
-                              {t.chatNotesSourceChat}
-                            </span>
-                          )}
-                          {tab === 'recent' && note.origin !== 'chat' && note.folder.trim() && (
-                            <span className="inline-flex max-w-[50%] items-center gap-1 truncate text-[11px] text-neutral-400 dark:text-neutral-500">
-                              <Folder size={11} />
-                              {note.folder.trim()}
-                            </span>
-                          )}
                         </div>
                       </article>
                     ))}
