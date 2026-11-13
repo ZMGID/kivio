@@ -133,7 +133,7 @@
 
 ### 系统要求
 
-- **macOS**：Apple Silicon（`.dmg` 未签名）
+- **macOS**：Apple Silicon（`.dmg` 内应用使用临时签名，未公证）
 - **Windows**：Windows 10 / 11（需要 Edge WebView2，系统通常已带）
 
 从 [Releases](https://github.com/ZMGID/kivio/releases/latest) 下载：
@@ -149,6 +149,8 @@ xattr -cr "/Applications/Kivio Desktop.app"
 ```
 
 macOS 需要**辅助功能**与**屏幕录制**权限。启动后按引导填供应商即可。
+
+当前临时签名不保证升级后保留授权。如果系统设置已开启权限但应用仍提示未授权，请退出 Kivio，在对应权限列表删除旧条目，重新添加 `/Applications/Kivio Desktop.app` 并启动。完整临时签名修复应用包的签名校验；跨版本保留授权还需要稳定的签名身份。
 
 ## 帮助
 
@@ -187,7 +189,7 @@ macOS 需要**辅助功能**与**屏幕录制**权限。启动后按引导填供
 <details>
 <summary><strong>macOS 提示已损坏 / 无法打开？</strong></summary>
 
-安装包未签名。请右键 → 打开，或执行 `xattr -cr "/Applications/Kivio Desktop.app"`。截图与替换翻译还需要屏幕录制权限。
+安装包未公证。请右键 → 打开，或执行 `xattr -cr "/Applications/Kivio Desktop.app"`。截图与替换翻译还需要屏幕录制权限。
 
 </details>
 

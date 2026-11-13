@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { checkResources, checkVersions } from './check-desktop-package.mjs'
+import { checkMacApp, checkResources, checkVersions } from './check-desktop-package.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 function fixture(t) {
@@ -28,6 +29,48 @@ test('all checked-in versions and resource sources agree', () => {
   const { version } = checkVersions(root)
   checkVersions(root, `v${version}`)
   assert.ok(checkResources(root) > 0)
+})
+
+test('macOS bundles request a complete signature', t => {
+  const directory = fixture(t)
+  changeJson(directory, 'src-tauri/tauri.conf.json', config => {
+    delete config.bundle.macOS.signingIdentity
+  })
+  assert.throws(() => checkVersions(directory), /macOS signing identity/)
+})
+
+test('rejects a macOS bundle without its resource seal', t => {
+  assert.throws(() => checkMacApp(path.join(fixture(t), 'Unsigned.app'), 'com.zmair.kivio'), /CodeResources/)
+})
+
+test('validates a real macOS signature and rejects tampering or the wrong identity', {
+  skip: process.platform !== 'darwin',
+}, t => {
+  const directory = fixture(t)
+  const app = path.join(directory, 'Test.app')
+  const contents = path.join(app, 'Contents')
+  mkdirSync(path.join(contents, 'MacOS'), { recursive: true })
+  mkdirSync(path.join(contents, 'Resources'))
+  const identifier = 'com.zmair.kivio.signature-test'
+  writeFileSync(path.join(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>${identifier}</string>
+<key>CFBundleExecutable</key><string>test</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>`)
+  const source = path.join(directory, 'main.c')
+  writeFileSync(source, 'int main(void) { return 0; }')
+  execFileSync('/usr/bin/clang', [source, '-o', path.join(contents, 'MacOS/test')])
+  const resource = path.join(contents, 'Resources/test.txt')
+  writeFileSync(resource, 'original')
+  const sign = (...args) => execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', ...args, app], { stdio: 'pipe' })
+  sign()
+  checkMacApp(app, identifier)
+  assert.throws(() => checkMacApp(app, 'com.zmair.other'), /bundle identifier/)
+  writeFileSync(resource, 'modified')
+  assert.throws(() => checkMacApp(app, identifier))
+  sign('--identifier', 'com.zmair.other')
+  assert.throws(() => checkMacApp(app, identifier))
 })
 
 test('desktop CSP permits skill and MCP market APIs in production and development', () => {

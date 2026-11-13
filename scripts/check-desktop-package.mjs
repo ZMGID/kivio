@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
@@ -30,7 +31,18 @@ export function checkVersions(root, expectedVersion) {
     assert.equal(expectedVersion.replace(/^v/, ''), config.version, 'Release tag must match app version')
   }
   assert.equal(config.bundle.windows.wix?.version, undefined, 'MSI must inherit the app version')
+  assert.ok(config.bundle.macOS?.signingIdentity?.trim(), 'macOS signing identity must be explicit')
   return config
+}
+
+export function checkMacApp(appDirectory, identifier) {
+  assert.ok(lstatSync(path.join(appDirectory, 'Contents/_CodeSignature/CodeResources')).isFile(),
+    'macOS application bundle signature is missing')
+  execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=2', appDirectory], { stdio: 'pipe' })
+  const bundleId = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier',
+    path.join(appDirectory, 'Contents/Info.plist')], { encoding: 'utf8' }).trim()
+  assert.equal(bundleId, identifier, 'macOS bundle identifier must match the app configuration')
+  execFileSync('/usr/bin/codesign', ['--verify', '-R', `identifier "${identifier}"`, appDirectory], { stdio: 'pipe' })
 }
 
 function manifest(directory, prefix = '') {
@@ -73,16 +85,19 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     let resourceDirectory
     let expectedVersion
+    let appDirectory
     const args = process.argv.slice(2)
     while (args.length) {
       const flag = args.shift()
-      assert.ok(['--resources-dir', '--version'].includes(flag) && args.length, `Invalid argument: ${flag}`)
+      assert.ok(['--resources-dir', '--version', '--macos-app'].includes(flag) && args.length, `Invalid argument: ${flag}`)
       const value = args.shift()
       if (flag === '--resources-dir') resourceDirectory = path.resolve(value)
+      else if (flag === '--macos-app') appDirectory = path.resolve(value)
       else expectedVersion = value
     }
     const config = checkVersions(repoRoot, expectedVersion)
     const count = checkResources(repoRoot, resourceDirectory)
+    if (appDirectory) checkMacApp(appDirectory, config.identifier)
     console.log(`Desktop package checked: v${config.version}, ${count} resource files${resourceDirectory ? ' (packaged contents match)' : ''}.`)
   } catch (error) {
     console.error(error.message)

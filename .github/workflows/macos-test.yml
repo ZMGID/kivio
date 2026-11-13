@@ -40,7 +40,7 @@ jobs:
       - name: Build macOS DMG with the current app version
         run: npm run build -- --bundles dmg
 
-      - name: Verify bundled resources in macOS DMG
+      - name: Verify signature and resources in macOS DMG
         run: |
           set -euo pipefail
           mount_dir=$(mktemp -d)
@@ -49,7 +49,7 @@ jobs:
           hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg"
           trap 'hdiutil detach "$mount_dir"; rmdir "$mount_dir"' EXIT
           resources="$mount_dir/Kivio Desktop.app/Contents/Resources"
-          node scripts/check-desktop-package.mjs --resources-dir "$resources"
+          node scripts/check-desktop-package.mjs --resources-dir "$resources" --macos-app "$mount_dir/Kivio Desktop.app"
 
       - name: Upload macOS test installer
         uses: actions/upload-artifact@v4
