@@ -215,6 +215,21 @@ function toolGlyph(toolCall: ToolCallRecord): LucideIcon | ComponentType<{ size?
   return Wrench
 }
 
+function isKivioServerToolName(name: unknown): boolean {
+  return typeof name === 'string' && /^(?:mcp__)?(?:kivio-server|kivio)(?:__|[./])/.test(name.toLowerCase())
+}
+
+function isKivioServerToolCall(toolCall: ToolCallRecord): boolean {
+  if (/^(?:kivio-server|kivio)$/i.test(toolCall.server_name || toolCall.serverName || '')
+    || isKivioServerToolName(toolRecordRawName(toolCall))) return true
+  const input = objectValue(toolCall.structured_content ?? toolCall.structuredContent)
+  if (toolCall.source !== 'external_cli'
+    || (input?.sessionUpdate !== 'tool_call' && input?.sessionUpdate !== 'tool_call_update')) return false
+  if (isKivioServerToolName(input.name) || isKivioServerToolName(input.toolName)) return true
+  const calls = objectValue(objectValue(input.rawOutput)?.metadata)?.toolCalls
+  return Array.isArray(calls) && calls.length > 0 && calls.every(call => isKivioServerToolName(objectValue(call)?.tool))
+}
+
 function isAskUserTool(toolCall: ToolCallRecord): boolean {
   return hasAskUserStructuredContent(toolCall.structured_content ?? toolCall.structuredContent)
     || isAskUserToolName(toolRecordRawName(toolCall))
@@ -1640,6 +1655,10 @@ function ToolTypeIcon({ toolCall, status }: { toolCall: ToolCallRecord; status: 
   }
   if (status === 'cancelled') {
     return <XCircle className={`shrink-0${justFailed ? ' chat-motion-pop' : ''}`} size={14} strokeWidth={1.9} />
+  }
+  if (isKivioServerToolCall(toolCall)) {
+    return <img src="/kivio-server.png" alt="" aria-hidden="true" width={14} height={14}
+      className={`shrink-0 object-contain${status === 'running' ? ' animate-pulse' : justCompleted ? ' chat-motion-pop' : ''}`} />
   }
   if (['read', 'read_file', 'write', 'write_file', 'edit', 'edit_file'].includes(toolRawName(toolCall))) {
     return <FileIcon name={toolPathArgument(parsedArguments(toolCall))} size={14}

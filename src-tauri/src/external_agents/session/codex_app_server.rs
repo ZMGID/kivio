@@ -152,11 +152,23 @@ fn build_codex_thread_params(
 /// Per-thread config overrides (T3 Code `CODEX_THREAD_CONFIG`): explicitly enable the
 /// `update_plan` tool that feeds `turn/plan/updated` → todo card, and give cold npx/uvx MCP
 /// servers 10 s instead of the 1 s default before the first model request.
+///
+/// Kivio-server tools are pre-approved like Claude's `allowedTools` and the voice entry:
+/// otherwise Codex 0.167 asks via `mcpServer/elicitation/request`
+/// (`codex_approval_kind: mcp_tool_call`) before every call, and any non-accept answer
+/// surfaces to the model as "user rejected MCP tool call". The timeout covers the server's
+/// own 620 s tool limit instead of Codex's 60 s default.
 fn codex_thread_config(mcp: Option<(&str, &str)>) -> Value {
     let mut config =
         json!({ "tools.update_plan.enabled": true, "mcp_optional_startup_grace_ms": 10_000 });
     if let Some((url, authorization)) = mcp {
-        config[format!("mcp_servers.{}", crate::app_mcp::SERVER_NAME)] = json!({ "enabled": true, "url": url, "http_headers": { "Authorization": authorization } });
+        config[format!("mcp_servers.{}", crate::app_mcp::SERVER_NAME)] = json!({
+            "enabled": true,
+            "url": url,
+            "http_headers": { "Authorization": authorization },
+            "default_tools_approval_mode": "approve",
+            "tool_timeout_sec": 630
+        });
     }
     config
 }
@@ -5658,7 +5670,9 @@ mod tests {
             json!({
                 "enabled": true,
                 "url": "http://127.0.0.1:1234/mcp",
-                "http_headers": {"Authorization": "Bearer secret"}
+                "http_headers": {"Authorization": "Bearer secret"},
+                "default_tools_approval_mode": "approve",
+                "tool_timeout_sec": 630
             })
         );
     }
@@ -5679,7 +5693,9 @@ mod tests {
             json!({
                 "enabled": true,
                 "url": "http://127.0.0.1:1234/mcp",
-                "http_headers": {"Authorization": "Bearer secret"}
+                "http_headers": {"Authorization": "Bearer secret"},
+                "default_tools_approval_mode": "approve",
+                "tool_timeout_sec": 630
             })
         );
         assert_eq!(

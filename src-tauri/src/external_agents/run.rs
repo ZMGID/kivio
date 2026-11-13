@@ -4911,7 +4911,22 @@ fn attach_external_html_render(
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|name| name == "html_render" || is_qualified_html_render_name(name))
         });
-    if !is_qualified_html_render_name(&record.name) && !acp_title && !acp_name {
+    // OpenCode 2.x code mode wraps MCP calls in one `execute` tool and lists the nested
+    // calls in `rawOutput.metadata.toolCalls` (`tool: "Kivio-server.html_render"`).
+    let acp_nested = acp
+        && input
+            .pointer("/rawOutput/metadata/toolCalls")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    call.get("status").and_then(serde_json::Value::as_str) == Some("completed")
+                        && call
+                            .get("tool")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(is_qualified_html_render_name)
+                })
+            });
+    if !is_qualified_html_render_name(&record.name) && !acp_title && !acp_name && !acp_nested {
         return;
     }
     if let Some(reference) = render_attachment_id(result_content)
@@ -5470,6 +5485,47 @@ mod tests {
                 false,
             );
             assert_eq!(record.structured_content, Some(reference), "{key}");
+        }
+    }
+
+    #[test]
+    fn opencode_code_mode_execute_attaches_nested_render() {
+        let conversation = format!("conv_{}", Uuid::new_v4());
+        let nested = |tool: &str, status: &str| {
+            serde_json::json!({
+                "sessionUpdate": "tool_call", "name": "execute", "kind": "other",
+                "rawInput": {"code": "return await tools[\"Kivio-server\"].html_render({})"},
+                "rawOutput": {"metadata": {"toolCalls": [{"tool": tool, "status": status}]}}
+            })
+        };
+        let reference = queue_render(&conversation);
+        let mut record =
+            render_test_record("execute", nested("Kivio-server.html_render", "completed"));
+        attach_external_html_render(
+            &mut record,
+            &conversation,
+            &render_result(&reference),
+            false,
+        );
+        assert_eq!(record.structured_content, Some(reference));
+
+        for (tool, status) in [
+            ("Kivio-server.html_preview", "completed"),
+            ("Kivio-server.html_render", "error"),
+            ("other.html_render", "completed"),
+        ] {
+            let reference = queue_render(&conversation);
+            let input = nested(tool, status);
+            let mut record = render_test_record("execute", input.clone());
+            attach_external_html_render(
+                &mut record,
+                &conversation,
+                &render_result(&reference),
+                false,
+            );
+            assert_eq!(record.structured_content, Some(input), "{tool} {status}");
+            let id = reference["attachmentId"].as_str().unwrap();
+            assert!(crate::html_render::take_pending_render(&conversation, id).is_some());
         }
     }
 

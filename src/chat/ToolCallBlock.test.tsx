@@ -87,6 +87,56 @@ describe('HTML tool labels', () => {
   })
 })
 
+describe('Kivio-server tool icons', () => {
+  it.each([
+    'mcp__Kivio-server__html_render', 'Kivio-server.html_preview',
+    'Kivio-server/html_render', 'Kivio-server__html_preview', 'mcp__kivio__html_render',
+  ])('uses the Kivio logo for %s', name => {
+    const { container } = render(<ToolCallBlock toolCall={buildToolCall({ name, toolName: name, source: 'external_cli' })} />)
+    expect(container.querySelector('img')).toHaveAttribute('src', '/kivio-server.png')
+  })
+
+  it.each([
+    { server_name: 'Kivio-server' },
+    { serverName: 'Kivio-server' },
+    { structured_content: { sessionUpdate: 'tool_call', name: 'Kivio-server/html_render' } },
+    { structuredContent: { sessionUpdate: 'tool_call_update', toolName: 'kivio/html_preview' } },
+    { structured_content: { sessionUpdate: 'tool_call_update', rawOutput: { metadata: {
+      toolCalls: [{ tool: 'Kivio-server.html_render', status: 'running' }],
+    } } } },
+  ] satisfies Partial<ToolCallRecord>[])('recognizes server identity from record metadata: %j', metadata => {
+    const { container } = render(<ToolCallBlock toolCall={buildToolCall({ toolName: 'execute', source: 'external_cli', ...metadata })} />)
+    expect(container.querySelector('img')).toHaveAttribute('src', '/kivio-server.png')
+  })
+
+  it.each(['pending', 'running', 'completed'] as const)('uses the logo in the cluster while %s', status => {
+    const call = buildToolCall({ toolName: 'mcp__Kivio-server__html_preview', status })
+    const { container } = render(<ToolCallCluster segments={toolSegments(call.id)} toolCalls={[call]} toolCallById={toolIndex(call)} messageStreaming={status !== 'completed'}>{() => null}</ToolCallCluster>)
+    expect(container.querySelector('img')).toHaveAttribute('src', '/kivio-server.png')
+  })
+
+  it.each(['error', 'cancelled', 'skipped'] as const)('preserves the %s status icon', status => {
+    const { container } = render(<ToolCallBlock toolCall={buildToolCall({ toolName: 'Kivio-server.html_render', status })} />)
+    expect(container.querySelector('img')).toBeNull()
+    expect(container.querySelector('.lucide-circle-alert, .lucide-circle-x, .lucide-circle-slash')).not.toBeNull()
+  })
+
+  it.each(['html_render', 'mcp__other__html_render', 'other-Kivio-server.html_render', 'Kivio-serverless.html_preview', 'execute'])('keeps the generic icon for %s', toolName => {
+    const { container } = render(<ToolCallBlock toolCall={buildToolCall({ toolName, source: 'external_cli' })} />)
+    expect(container.querySelector('img')).toBeNull()
+  })
+
+  it.each([
+    { toolCalls: [] }, { toolCalls: [null] }, { toolCalls: [{ tool: 'other.html_render' }] },
+    { toolCalls: [{ tool: 'Kivio-server.html_render' }, { tool: 'other.html_preview' }] },
+  ])('keeps the generic icon for unknown or mixed nested calls: %j', ({ toolCalls }) => {
+    const { container } = render(<ToolCallBlock toolCall={buildToolCall({ toolName: 'execute', source: 'external_cli',
+      structured_content: { sessionUpdate: 'tool_call_update', rawOutput: { metadata: { toolCalls } } },
+    })} />)
+    expect(container.querySelector('img')).toBeNull()
+  })
+})
+
 describe('ToolCallCluster', () => {
   it('prefers an older active tool over a later completed one', () => {
     const toolCalls = [
