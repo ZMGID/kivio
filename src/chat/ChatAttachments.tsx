@@ -1,4 +1,5 @@
-import { useContext, useEffect, useState } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
+import { notifyError } from '../components/appNoticeStore'
 import { ImageOff, X } from 'lucide-react'
 import { ChatImageContextMenu, type ChatImageMenuAnchor } from './ChatImageContextMenu'
 import { loadAttachmentDataUrl, openAttachment, type DisplayAttachment } from './attachmentPreview'
@@ -40,6 +41,7 @@ function ImagePreview({
   const [loading, setLoading] = useState(true)
   const [failed, setFailed] = useState(false)
   const [menuAnchor, setMenuAnchor] = useState<ChatImageMenuAnchor | null>(null)
+  const generation = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -47,7 +49,7 @@ function ImagePreview({
     setFailed(false)
     setSrc(null)
 
-    void loadAttachmentDataUrl(attachment, conversationId).then((dataUrl) => {
+    void loadAttachmentDataUrl(attachment, conversationId, true).then((dataUrl) => {
       if (cancelled) return
       if (dataUrl) {
         setSrc(dataUrl)
@@ -59,8 +61,17 @@ function ImagePreview({
 
     return () => {
       cancelled = true
+      generation.current += 1
     }
   }, [attachment, conversationId])
+
+  const showOriginal = async () => {
+    const request = ++generation.current
+    const original = await loadAttachmentDataUrl(attachment, conversationId)
+    if (request !== generation.current) return
+    if (original) onPreview?.(original, attachment.name)
+    else void notifyError(failedLabel)
+  }
 
   return (
     <div className="relative h-16 w-16 overflow-hidden rounded-lg bg-neutral-100">
@@ -69,7 +80,7 @@ function ImagePreview({
         <button
           type="button"
           className="block h-full w-full cursor-zoom-in rounded-lg p-0"
-          onClick={() => onPreview?.(src, attachment.name)}
+          onClick={() => void showOriginal()}
           // 与模型出图（ChatInlineImage）同一个菜单组件。stopPropagation 是必须的：
           // 滚动容器上挂着消息级右键菜单，不掐断就会被它盖住。
           onContextMenu={(event) => {
@@ -92,9 +103,10 @@ function ImagePreview({
         <ChatImageContextMenu
           anchor={menuAnchor}
           src={src}
+          loadFullSrc={() => loadAttachmentDataUrl(attachment, conversationId)}
           name={attachment.name}
           onRevealLocation={fileLocationAction(attachment.path, conversationId)}
-          onOpenViewer={() => onPreview?.(src, attachment.name)}
+          onOpenViewer={() => void showOriginal()}
           onClose={() => setMenuAnchor(null)}
         />
       ) : null}

@@ -8,6 +8,24 @@ vi.mock('./utils', () => ({ isTauriRuntime: () => true }))
 beforeEach(() => { invoke.mockReset() })
 
 describe('attachment preview reads', () => {
+  it('separates thumbnails from originals and expires entries while idle', async () => {
+    vi.useFakeTimers()
+    try {
+      const attachment = { path: 'idle.png', name: 'image', type: 'image' as const }
+      invoke.mockResolvedValue({ success: true, data: 'thumbnail' })
+      await loadAttachmentDataUrl(attachment, 'idle', true)
+      expect(invoke).toHaveBeenLastCalledWith('chat_read_attachment', expect.objectContaining({ thumbnail: true }))
+      invoke.mockResolvedValue({ success: true, data: 'original' })
+      expect(await loadAttachmentDataUrl(attachment, 'idle')).toBe('original')
+      const before = Date.now()
+      await vi.advanceTimersByTimeAsync(30_000)
+      vi.setSystemTime(before)
+      await loadAttachmentDataUrl(attachment, 'idle', true)
+      expect(invoke).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
   it('shares an in-flight read and reuses a stable sent attachment', async () => {
     let resolve!: (result: { success: boolean; data: string }) => void
     invoke.mockReturnValue(new Promise(r => { resolve = r }))

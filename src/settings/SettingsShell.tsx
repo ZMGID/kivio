@@ -497,7 +497,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       }
 
       if (e.key === 'Escape') {
-        handleCloseRequest({ waitForSave: false })
+        handleCloseRequest()
       } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
         if (hasUnsavedChanges) void persistSettingsNow()
@@ -970,7 +970,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       <>
         <nav className="settings-embedded-nav-list settings-embedded-nav-list--header">
           <SidebarNavItem
-            onClick={() => handleCloseRequest({ waitForSave: false })}
+            onClick={() => handleCloseRequest()}
             icon={<ArrowLeft size={18} strokeWidth={1.75} />}
             label={lang === 'zh' ? '返回对话' : 'Back to chat'}
           />

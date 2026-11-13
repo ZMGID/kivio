@@ -4,7 +4,7 @@ const TTL_MS = 30_000
 const MAX_ENTRIES = 4
 const MAX_BYTES = 24 * 1024 * 1024
 
-type Entry = { conversation: Conversation; bytes: number; expiresAt: number }
+type Entry = { conversation: Conversation; bytes: number; expiresAt: number; timer: ReturnType<typeof setTimeout> }
 
 /** Owns loaded display windows between short navigation round trips.
  * Every hit must be checked against the repository index revision first. */
@@ -16,6 +16,7 @@ export function createConversationWarmCache(now = Date.now) {
   const remove = (id: string) => {
     const entry = entries.get(id)
     if (!entry) return
+    clearTimeout(entry.timer)
     usedBytes -= entry.bytes
     entries.delete(id)
   }
@@ -53,7 +54,8 @@ export function createConversationWarmCache(now = Date.now) {
     // here counts nested tool cards and metadata that text-only estimates miss.
     const bytes = JSON.stringify(conversation).length * 2
     if (bytes > MAX_BYTES) return
-    entries.set(conversation.id, { conversation, bytes, expiresAt: now() + TTL_MS })
+    const id = conversation.id
+    entries.set(id, { conversation, bytes, expiresAt: now() + TTL_MS, timer: setTimeout(() => remove(id), TTL_MS) })
     usedBytes += bytes
     prune()
   }
@@ -94,7 +96,7 @@ export function createConversationWarmCache(now = Date.now) {
     forget(id: string) { cancelPending(id); remove(id) },
     clear() {
       for (const id of pending.keys()) cancelPending(id)
-      entries.clear()
+      for (const id of entries.keys()) remove(id)
       usedBytes = 0
     },
     stats() { prune(); return { entries: entries.size, bytes: usedBytes } },

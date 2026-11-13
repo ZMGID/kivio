@@ -51,11 +51,12 @@ describe('SettingsShell session center language slot', () => {
 
   it('renders the unsaved language draft before the canonical snapshot changes', async () => {
     const user = userEvent.setup()
+    const onClose = vi.fn()
     const renderSessionCenter = (lang: 'zh' | 'en') => <p data-testid="session-language">{lang}</p>
     render(
       <SettingsShell
         variant="embedded"
-        onClose={vi.fn()}
+        onClose={onClose}
         onSettingsChange={vi.fn()}
         renderSessionCenter={renderSessionCenter}
         renderReleaseNotes={() => null}
@@ -68,5 +69,8 @@ describe('SettingsShell session center language slot', () => {
 
     expect(screen.getByTestId('session-language')).toHaveTextContent('en')
     expect(canonical.settings.settingsLanguage).toBe('zh')
+    await user.keyboard('{Escape}')
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByTestId('session-language')).toHaveTextContent('en')
   })
 })

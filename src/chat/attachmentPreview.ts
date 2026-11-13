@@ -12,40 +12,45 @@ function isLocalAttachmentPath(path: string): boolean {
 // 草稿的绝对路径可能被外部程序改写，只在并发读取期间去重。
 const CACHE_MAX_BYTES = 24 * 1024 * 1024
 const CACHE_TTL_MS = 30_000
-const completed = new Map<string, { data: string; bytes: number; expires: number }>()
+const completed = new Map<string, { data: string; bytes: number; expires: number; timer: ReturnType<typeof setTimeout> }>()
 const reading = new Map<string, Promise<string | null>>()
 let completedBytes = 0
 
 function cached(key: string): string | null {
   const item = completed.get(key)
   if (!item) return null
+  if (item.expires <= Date.now()) { forget(key); return null }
   completed.delete(key)
   completedBytes -= item.bytes
-  if (item.expires <= Date.now()) return null
   completed.set(key, item)
   completedBytes += item.bytes
   return item.data
+}
+
+function forget(key: string): void {
+  const item = completed.get(key)
+  if (!item) return
+  clearTimeout(item.timer)
+  completedBytes -= item.bytes
+  completed.delete(key)
 }
 
 function remember(key: string, data: string): void {
   // JS 字符串以最多 2 字节/字符计，宁可少缓存，不低估内存预算。
   const bytes = data.length * 2
   if (bytes > CACHE_MAX_BYTES) return
-  const previous = completed.get(key)
-  if (previous) completedBytes -= previous.bytes
-  completed.delete(key)
-  completed.set(key, { data, bytes, expires: Date.now() + CACHE_TTL_MS })
+  forget(key)
+  completed.set(key, { data, bytes, expires: Date.now() + CACHE_TTL_MS, timer: setTimeout(() => forget(key), CACHE_TTL_MS) })
   completedBytes += bytes
   for (const [entryKey, item] of completed) {
     if (completedBytes <= CACHE_MAX_BYTES && item.expires > Date.now()) break
-    completed.delete(entryKey)
-    completedBytes -= item.bytes
+    forget(entryKey)
   }
 }
 
-async function readImageDataUrl(path: string, conversationId?: string | null): Promise<string | null> {
+async function readImageDataUrl(path: string, conversationId?: string | null, thumbnail = false): Promise<string | null> {
   const stable = !isLocalAttachmentPath(path) && !!conversationId
-  const key = `${conversationId ?? ''}\u0000${path}`
+  const key = `${thumbnail ? "thumbnail" : "original"}\u0000${conversationId ?? ''}\u0000${path}`
   if (stable) {
     const hit = cached(key)
     if (hit) return hit
@@ -56,7 +61,7 @@ async function readImageDataUrl(path: string, conversationId?: string | null): P
     try {
       const result = await invoke<{ success: boolean; data?: string; error?: string }>(
         'chat_read_attachment',
-        { conversationId: isLocalAttachmentPath(path) ? null : conversationId ?? null, path },
+        { conversationId: isLocalAttachmentPath(path) ? null : conversationId ?? null, path, ...(thumbnail ? { thumbnail: true } : {}) },
       )
       if (!result.success || !result.data) return null
       if (stable) remember(key, result.data)
@@ -75,10 +80,11 @@ async function readImageDataUrl(path: string, conversationId?: string | null): P
 export async function loadAttachmentDataUrl(
   attachment: AttachmentLike,
   conversationId?: string | null,
+  thumbnail = false,
 ): Promise<string | null> {
   if (!isTauriRuntime() || attachment.type !== 'image') return null
   const previewConversationId = isLocalAttachmentPath(attachment.path) ? null : conversationId
-  return readImageDataUrl(attachment.path, previewConversationId)
+  return readImageDataUrl(attachment.path, previewConversationId, thumbnail)
 }
 
 export async function openAttachment(

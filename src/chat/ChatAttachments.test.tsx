@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
+
+const { loadImage, openViewer } = vi.hoisted(() => ({ loadImage: vi.fn(), openViewer: vi.fn() }))
+vi.mock('./imageViewer', () => ({ openChatImageViewer: openViewer }))
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUg'
 
 vi.mock('./attachmentPreview', () => ({
-  loadAttachmentDataUrl: () => Promise.resolve(PNG),
+  loadAttachmentDataUrl: (...args: unknown[]) => loadImage(...args),
   openAttachment: () => Promise.resolve(),
 }))
 
 import { ChatAttachments } from './ChatAttachments'
+loadImage.mockResolvedValue(PNG)
 
 const imageAttachment = {
   id: 'a1',
@@ -73,4 +77,16 @@ describe('ChatAttachments 卡片形态', () => {
     expect(container.textContent).toContain('testend')
     expect(container.textContent).toContain('FOLDER')
   })
+})
+
+it('loads only a thumbnail until the viewer is requested', async () => {
+  loadImage.mockReset().mockResolvedValueOnce(PNG).mockResolvedValueOnce('data:image/png;base64,ORIGINAL')
+  openViewer.mockClear()
+  const { container } = render(<ChatAttachments attachments={[imageAttachment]} variant="user" />)
+  await waitFor(() => expect(container.querySelector('img')).toHaveAttribute('src', PNG))
+  expect(loadImage).toHaveBeenCalledTimes(1)
+  expect(loadImage).toHaveBeenCalledWith(imageAttachment, undefined, true)
+  fireEvent.click(container.querySelector('button[aria-label="预览图片"]')!)
+  await waitFor(() => expect(openViewer).toHaveBeenCalledWith(expect.objectContaining({ src: 'data:image/png;base64,ORIGINAL' })))
+  expect(loadImage).toHaveBeenLastCalledWith(imageAttachment, undefined)
 })

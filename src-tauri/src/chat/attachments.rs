@@ -235,6 +235,27 @@ fn mime_type_for_attachment(name: &str) -> &'static str {
     }
 }
 
+pub(crate) fn read_attachment_thumbnail(path: &Path) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|e| format!("读取附件信息失败: {e}"))?;
+    if metadata.len() > MAX_ATTACHMENT_PREVIEW_BYTES {
+        return Err("附件过大，无法在界面内预览".to_string());
+    }
+    // Animated and vector formats keep their existing browser preview behavior.
+    let extension = path
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default();
+    if extension.eq_ignore_ascii_case("gif")
+        || extension.eq_ignore_ascii_case("svg")
+        || extension.eq_ignore_ascii_case("webp")
+    {
+        return read_attachment_as_data_url(path);
+    }
+    let bytes = fs::read(path).map_err(|e| format!("读取附件失败: {e}"))?;
+    // shortcut: browser-only formats retain full previews until the native decoder supports them.
+    make_thumbnail_data_url(&bytes).map_or_else(|| read_attachment_as_data_url(path), Ok)
+}
+
 pub(crate) fn read_attachment_as_data_url(path: &Path) -> Result<String, String> {
     let metadata = fs::metadata(path).map_err(|e| format!("读取附件信息失败: {e}"))?;
     if metadata.len() > MAX_ATTACHMENT_PREVIEW_BYTES {
@@ -1855,6 +1876,17 @@ mod tests {
             .unwrap();
 
         let data_url = make_thumbnail_data_url(original.get_ref()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preview.png");
+        fs::write(&path, original.get_ref()).unwrap();
+        assert_eq!(read_attachment_thumbnail(&path).unwrap(), data_url);
+        assert_eq!(fs::read(&path).unwrap(), *original.get_ref());
+        let thumbnail = general_purpose::STANDARD
+            .decode(data_url.split_once(',').unwrap().1)
+            .unwrap();
+        let decoded = image::load_from_memory(&thumbnail).unwrap();
+        assert!(decoded.width() <= ARTIFACT_THUMBNAIL_MAX_DIM);
+        assert!(decoded.height() <= ARTIFACT_THUMBNAIL_MAX_DIM);
         assert!(data_url.starts_with("data:image/png;base64,"));
         let thumb_payload = data_url.split_once(',').unwrap().1;
         assert!(decoded_base64_len(thumb_payload) < original.get_ref().len());

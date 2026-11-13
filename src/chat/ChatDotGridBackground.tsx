@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useContext, useEffect, useRef } from 'react'
+import { ChatRouteActiveContext } from './chatRouteActiveContext'
 import { isWindows } from './platform'
 import { prefersReducedMotion } from './utils'
 
@@ -219,6 +220,7 @@ function readDarkMode(): boolean {
 }
 
 export function ChatDotGridBackground() {
+  const active = useContext(ChatRouteActiveContext)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameRef = useRef<number>()
   const frameTimerRef = useRef<number>()
@@ -231,7 +233,9 @@ export function ChatDotGridBackground() {
 
   useEffect(() => {
     const canvas = canvasRef.current
-    if (!canvas) return
+    if (!canvas || !active) return
+    darkRef.current = readDarkMode()
+    reducedMotionRef.current = prefersReducedMotion()
 
     // ponytail: 不开 desynchronized —— 这块画布按 10–20fps 跑（TARGET_FRAME_MS），
     // 低延迟直通路径一点收益没有，却会在「transparent(true) 窗口 + 圆角 overflow:hidden 祖先」
@@ -423,7 +427,7 @@ export function ChatDotGridBackground() {
       canvas.width = 0
       canvas.height = 0
     }
-  }, [])
+  }, [active])
 
   return (
     <canvas

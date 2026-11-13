@@ -4,6 +4,25 @@ import { ChatRouteKeepAlive } from './ChatRouteKeepAlive'
 import chatStyles from '../styles/chat-01-main.css?inline'
 
 describe('ChatRouteKeepAlive', () => {
+  it('releases the settings page after leaving it', () => {
+    const { rerender, queryByTestId } = render(
+      <ChatRouteKeepAlive activeKey="settings" settingsExiting><section data-testid="settings">settings</section></ChatRouteKeepAlive>,
+    )
+    rerender(<ChatRouteKeepAlive activeKey="conversation"><main>chat</main></ChatRouteKeepAlive>)
+    expect(queryByTestId('settings')).toBeNull()
+  })
+  it('preserves the settings draft when external navigation bypasses the save gate', () => {
+    const { rerender, getByTestId } = render(
+      <ChatRouteKeepAlive activeKey="settings"><input data-testid="draft" defaultValue="unsaved" /></ChatRouteKeepAlive>,
+    )
+    const draft = getByTestId('draft')
+    rerender(<ChatRouteKeepAlive activeKey="conversation"><main>chat</main></ChatRouteKeepAlive>)
+    expect(draft).toBeInTheDocument()
+    expect(draft).toHaveValue('unsaved')
+    rerender(<ChatRouteKeepAlive activeKey="settings"><input data-testid="draft" defaultValue="saved" /></ChatRouteKeepAlive>)
+    expect(getByTestId('draft')).toBe(draft)
+    expect(draft).toHaveValue('unsaved')
+  })
   it('页面透明入场时，常驻阅读底色不会随路由消失', () => {
     const stylesheet = document.createElement('style')
     // jsdom 不解析 CSS 自定义属性；只替换色板值，仍加载真实样式规则。

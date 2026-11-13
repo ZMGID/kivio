@@ -8,6 +8,17 @@ const conversation = (id: string, revision = 1): Conversation => ({
 })
 
 describe('conversation warm cache', () => {
+  it('releases idle snapshots without another cache operation', () => {
+    vi.useFakeTimers()
+    try {
+      const cache = createConversationWarmCache(() => 0)
+      cache.remember(conversation('idle'))
+      vi.advanceTimersByTime(30_000)
+      expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
+      cache.clear()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { vi.useRealTimers() }
+  })
   it('evicts by aggregate bytes and keeps accounting correct after replacement and removal', () => {
     const cache = createConversationWarmCache()
     const large = (id: string) => ({ ...conversation(id), messages: [
@@ -90,8 +101,9 @@ describe('conversation warm cache', () => {
       vi.runAllTimers()
       expect(cache.stats().entries).toBe(0)
       cache.rememberSoon(conversation('a'))
-      vi.runAllTimers()
+      vi.advanceTimersByTime(100)
       expect(cache.stats().entries).toBe(1)
+      cache.clear()
     } finally {
       vi.useRealTimers()
     }

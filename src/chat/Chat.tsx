@@ -389,6 +389,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const [currentConversation, setCurrentConversation] = useState<Conversation | null>(null)
   const [historyLoadError, setHistoryLoadError] = useState<{ conversationId: string; message: string } | null>(null)
   const [warmConversationCache] = useState(createConversationWarmCache)
+  useEffect(() => () => warmConversationCache.clear(), [warmConversationCache])
   const [conversationRenderRequestId, setConversationRenderRequestId] = useState(0)
   /** 全局搜索跳转目标；MessageList 完成滚动后清空。 */
   const [focusMessageId, setFocusMessageId] = useState<string | null>(null)
@@ -2994,6 +2995,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
         <ChatRouteKeepAlive
           activeKey={chatView === 'conversation' || chatView === 'settings' ? chatView : 'center'}
+          settingsExiting={settingsExiting}
         >
         {chatView === 'onboarding' ? (
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">

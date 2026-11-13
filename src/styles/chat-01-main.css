@@ -1967,12 +1967,11 @@ button.chat-composer-status-item:hover {
 .chat-motion-settings-in {
   opacity: 0.2;
   transform: translateY(24px);
-  will-change: transform, opacity;
 }
 
 .chat-motion-settings-in--entered {
   opacity: 1;
-  transform: translateY(0);
+  transform: none;
   transition:
     opacity var(--kv-dur-slow) var(--kv-ease-standard),
     transform var(--kv-dur-slow) var(--kv-ease-standard);
@@ -1983,7 +1982,6 @@ button.chat-composer-status-item:hover {
    否则是"缓缓推上来、啪一下掉下去"。终点全透明避免冻帧可见。 */
 .chat-motion-settings-out {
   animation: chat-motion-settings-out var(--kv-dur-normal) var(--kv-ease-in) both;
-  will-change: transform, opacity;
   pointer-events: none;
 }
 
@@ -2001,12 +1999,10 @@ button.chat-composer-status-item:hover {
 /* 设置 section 切换入场（对齐 LiveAgent settingsSectionIn / settingsSectionTitleIn）：
    标题与内容各自 key={activeTab} 重播，内容 14px + 轻缩放，标题 8px。 */
 .settings-section-enter {
-  animation: settings-section-in var(--kv-dur-slow) var(--kv-ease-standard) both;
-  will-change: transform, opacity;
+  animation: settings-section-in var(--kv-dur-slow) var(--kv-ease-standard) backwards;
 }
 .settings-section-title-enter {
-  animation: settings-section-title-in var(--kv-dur-normal) var(--kv-ease-standard) both;
-  will-change: transform, opacity;
+  animation: settings-section-title-in var(--kv-dur-normal) var(--kv-ease-standard) backwards;
 }
 @keyframes settings-section-in {
   from {

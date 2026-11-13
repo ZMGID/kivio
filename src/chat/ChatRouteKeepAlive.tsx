@@ -3,21 +3,26 @@ import { ChatRouteActiveContext } from './chatRouteActiveContext'
 
 interface ChatRouteKeepAliveProps {
   activeKey: string
+  settingsExiting?: boolean
   children: ReactNode
 }
 /**
- * 保留聊天/设置两棵大树的挂载状态，切换页面只切换可见性。
+ * 保留聊天页挂载状态，返回时复用草稿与滚动位置。
  *
- * 聊天历史和设置页都包含较大的 React/Markdown 子树。路由分支直接互斥渲染时，
- * 从设置返回聊天会让 MessageList 从零挂载；这里把这两个稳定路由缓存为同一个 key，
- * 让 React 复用原实例。非聊天中心页不缓存，避免把多个中心页的大树长期留在内存里。
+ * 聊天历史包含较大的 React/Markdown 子树。路由分支直接互斥渲染时，
+ * 从设置返回聊天会让 MessageList 从零挂载，因此只缓存 conversation。
+ * 设置页由关闭流程等待保存并完成退场后卸载；绕过关闭流程时保留未确认的草稿。
  *
  * Hidden panes must be a real `display:none` box (`hidden` + `inert`).
  * `display: contents` lets a cached conversation composer leak into the
  * settings layout and swallow the back-button click.
  */
-export function ChatRouteKeepAlive({ activeKey, children }: ChatRouteKeepAliveProps) {
+export function ChatRouteKeepAlive({ activeKey, settingsExiting = false, children }: ChatRouteKeepAliveProps) {
   const cacheRef = useRef(new Map<string, ReactNode>())
+  const settingsCanRelease = useRef(false)
+  // External navigation can bypass the settings save gate; retain its draft in that case.
+  if (activeKey === 'settings') settingsCanRelease.current = settingsExiting
+  else if (settingsCanRelease.current) cacheRef.current.delete('settings')
   const keep = activeKey === 'conversation' || activeKey === 'settings'
   if (keep) cacheRef.current.set(activeKey, children)
 

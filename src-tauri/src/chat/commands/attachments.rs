@@ -14,10 +14,15 @@ pub(crate) async fn chat_read_attachment(
     app: AppHandle,
     conversation_id: Option<String>,
     path: String,
+    thumbnail: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let full = resolve_attachment_file_path(&app, conversation_id.as_deref(), &path)?;
-        let data_url = read_attachment_as_data_url(&full)?;
+        let data_url = if thumbnail.unwrap_or(false) {
+            crate::chat::attachments::read_attachment_thumbnail(&full)?
+        } else {
+            read_attachment_as_data_url(&full)?
+        };
         Ok(serde_json::json!({
             "success": true,
             "data": data_url,
