@@ -193,12 +193,18 @@ type LiveRenderItem =
 type RenderItem = HistoryRenderItem | LiveRenderItem
   | { kind: 'error'; key: 'error'; text: string; retryMessageId: string | null }
 
+function readingRowKey(item: RenderItem): string {
+  if (item.kind === 'message' || item.kind === 'streaming') return item.message.id
+  if (item.kind === 'group' || item.kind === 'live-group') return `group-${item.groupId}`
+  return item.key
+}
+
 function measurementKey(item: RenderItem): string {
   if (item.kind === 'message' || item.kind === 'streaming') {
-    return `${item.key}:${chatMessageLayoutRevision(item.message)}`
+    return `${readingRowKey(item)}:${chatMessageLayoutRevision(item.message)}`
   }
   if (item.kind === 'group') {
-    return `${item.key}:${item.messages.map((message) => [
+    return `${readingRowKey(item)}:${item.messages.map((message) => [
       message.id,
       message.provider_id ?? message.providerId ?? '',
       message.model ?? '',
@@ -600,6 +606,7 @@ function MessageListBase({
   const navigatorHoldRef = useRef<{
     generation: number
     targetIndex: number
+    rowOffset: number | null
     frames: number
     stable: number
     jumped: boolean
@@ -1284,7 +1291,7 @@ function MessageListBase({
         const item = anchor ? itemAt(anchor.index) : null
         rememberChatReadingPosition(conversationId, {
           following: followHandle.isFollowing(),
-          rowKey: item?.key ?? null,
+          rowKey: item ? readingRowKey(item) : null,
           rowRevision: item ? measurementKey(item) : null,
           rowOffset: anchor ? scrollTop - anchor.start : 0,
           scrollTop,
@@ -1582,11 +1589,18 @@ function MessageListBase({
     return true
   }, [contentEl, followHandle])
 
-  const alignViewportToNavigationTarget = useCallback((targetRenderIndex: number) => {
+  const alignViewportToNavigationTarget = useCallback((targetRenderIndex: number, rowOffset: number | null = null) => {
+    if (rowOffset !== null) {
+      virtualizer.getTotalSize()
+      const row = virtualizer.measurementsCache[targetRenderIndex]
+      if (!row) return false
+      followHandle.scrollToOffset(row.start + rowOffset)
+      return true
+    }
     const target = headingNavigationTargetRef.current
     if (target?.targetIndex === targetRenderIndex && alignViewportToHeading(target.anchorId)) return true
     return alignViewportToRowIndex(targetRenderIndex)
-  }, [alignViewportToHeading, alignViewportToRowIndex])
+  }, [alignViewportToHeading, alignViewportToRowIndex, followHandle, virtualizer])
 
   const rowHasPendingMedia = useCallback((row: HTMLElement) => {
     if (row.querySelector(NAVIGATOR_PENDING_SELECTOR)) return true
@@ -1600,7 +1614,7 @@ function MessageListBase({
   }, [])
 
 
-  const readNavigatorTargetMetrics = useCallback((targetRenderIndex: number) => {
+  const readNavigatorTargetMetrics = useCallback((targetRenderIndex: number, rowOffset: number | null = null) => {
     const el = scrollRef.current
     const row = contentEl?.querySelector(
       `[data-chat-row-index="${targetRenderIndex}"]`,
@@ -1623,10 +1637,12 @@ function MessageListBase({
       : null
     // Heading jumps settle at the heading, rather than waiting for the whole
     // answer's top to align (which never happens for a heading midway down it).
-    const desiredOffset = heading
-      ? Math.max(0, Math.min(el.scrollHeight - el.clientHeight,
-        heading.getBoundingClientRect().top - viewportRect.top + el.scrollTop - HEADING_NAVIGATOR_TOP_INSET_PX))
-      : null
+    const desiredOffset = rowOffset !== null
+      ? Math.max(0, Math.min(el.scrollHeight - el.clientHeight, rowRect.top - viewportRect.top + el.scrollTop + rowOffset))
+      : heading
+        ? Math.max(0, Math.min(el.scrollHeight - el.clientHeight,
+          heading.getBoundingClientRect().top - viewportRect.top + el.scrollTop - HEADING_NAVIGATOR_TOP_INSET_PX))
+        : null
     return {
       ready: true as const,
       height,
@@ -1664,6 +1680,7 @@ function MessageListBase({
       navigatorHoldRef.current = {
         generation,
         targetIndex: targetRenderIndex,
+        rowOffset: null,
         frames: 0,
         stable: 0,
         jumped: false,
@@ -1723,11 +1740,11 @@ function MessageListBase({
     }
 
     setNavigationLock(true)
-    alignViewportToNavigationTarget(hold.targetIndex)
+    alignViewportToNavigationTarget(hold.targetIndex, hold.rowOffset)
     hold.jumped = true
     hold.frames += 1
 
-    const metrics = readNavigatorTargetMetrics(hold.targetIndex)
+    const metrics = readNavigatorTargetMetrics(hold.targetIndex, hold.rowOffset)
     const totalSize = virtualizer.getTotalSize()
     const geometryStable = metrics.ready
       && metrics.offsetPx <= NAVIGATOR_ALIGN_EPSILON_PX
@@ -2182,7 +2199,7 @@ function MessageListBase({
       } else {
         const hold = navigatorHoldRef.current
         if (hold?.jumped) {
-          alignViewportToNavigationTarget(hold.targetIndex)
+          alignViewportToNavigationTarget(hold.targetIndex, hold.rowOffset)
         }
       }
     }
@@ -2197,12 +2214,19 @@ function MessageListBase({
   // + NAVIGATOR_UNLOCK_FRAMES(10) ≈ 470ms —— 体感就是「点完回底再上滚被反复拽回」。
   // 任何以纵向为主的滚轮都直接终止当前会话：prepare 阶段取消 settle 循环，hold 阶段
   // 走 endNavigatorSession（清 hold/force-mount、结束 eager hydrate、几帧后解锁）。
-  // 只挂 wheel：原生滚动条拖动不派发 wheel，本来也进不了这条拉锯（scroll 源分类接管）。
+  // 阅读位置恢复也在触摸、拖动滚动条和翻页键时立即让出控制权。
   useEffect(() => {
     if (!viewportEl) return
+    const takeOver = () => {
+      cancelHistoryNavigation()
+      if (navigatorHoldRef.current?.rowOffset != null) {
+        clearNavigatorPrepare()
+        endMessageNavigationHydrate(navigatorSettleGenerationRef.current)
+      }
+    }
     const handleWheel = (event: WheelEvent) => {
       if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
-      cancelHistoryNavigation()
+      takeOver()
       const sessionActive = navigationLockRef.current
         || navigatorSettleRafRef.current !== null
         || navigatorHoldRef.current !== null
@@ -2227,21 +2251,21 @@ function MessageListBase({
       }
     }
     viewportEl.addEventListener('wheel', handleWheel, { passive: true })
-    viewportEl.addEventListener('pointerdown', cancelHistoryNavigation)
-    viewportEl.addEventListener('touchstart', cancelHistoryNavigation, { passive: true })
+    viewportEl.addEventListener('pointerdown', takeOver)
+    viewportEl.addEventListener('touchstart', takeOver, { passive: true })
     const handleKey = (event: KeyboardEvent) => {
       const target = event.target
       if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'))) return
-      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) cancelHistoryNavigation()
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) takeOver()
     }
     window.addEventListener('keydown', handleKey)
     return () => {
       viewportEl.removeEventListener('wheel', handleWheel)
-      viewportEl.removeEventListener('pointerdown', cancelHistoryNavigation)
-      viewportEl.removeEventListener('touchstart', cancelHistoryNavigation)
+      viewportEl.removeEventListener('pointerdown', takeOver)
+      viewportEl.removeEventListener('touchstart', takeOver)
       window.removeEventListener('keydown', handleKey)
     }
-  }, [cancelHistoryNavigation, cancelNavigatorSettle, endNavigatorSession, prefetchOlderHistory, viewportEl])
+  }, [cancelHistoryNavigation, cancelNavigatorSettle, clearNavigatorPrepare, endNavigatorSession, prefetchOlderHistory, viewportEl])
 
 
   const handleDisclosureClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -2293,12 +2317,23 @@ function MessageListBase({
     if (!viewportEl || !widthReady) return
     const saved = rememberedReadingPosition
     if (saved && !saved.following && !focusMessageId) {
-      const index = historyItems.findIndex((item) => item.key === saved.rowKey)
+      const index = historyItems.findIndex((item) => readingRowKey(item) === saved.rowKey)
       if (index >= 0 && (!saved.rowRevision || saved.rowRevision === measurementKey(historyItems[index]))) {
         const start = virtualizer.measurementsCache[index]?.start
           ?? virtualizer.getOffsetForIndex(index, 'start')?.[0]
         if (start !== undefined) {
+          clearNavigatorPrepare()
+          widthAnchorRef.current = null
+          const generation = beginMessageNavigationHydrate()
+          navigatorSettleGenerationRef.current = generation
+          navigatorHoldRef.current = {
+            generation, targetIndex: index, rowOffset: saved.rowOffset,
+            frames: 0, stable: 0, jumped: false, lastHeight: -1, lastTotalSize: -1,
+          }
+          setForceMountRenderIndex(index)
+          setNavigationLock(true)
           followHandle.restoreReadingPosition(start + saved.rowOffset)
+          setNavigatorHoldEpoch(value => value + 1)
           return
         }
       }
@@ -2312,8 +2347,8 @@ function MessageListBase({
     updateActiveNavigatorNode(lastNode?.id ?? null)
     updateVisibleNavigatorNodes(lastNode ? [lastNode.id] : [])
   // Wait for the measured width: the initial 704px estimate can put the same
-  // row at a different offset even on a warm return. Subsequent row/width
-  // changes remain owned by the virtualizer and width anchor.
+  // row at a different offset even on a warm return. The navigation hold then
+  // keeps that row in place until its measurements settle.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId, viewportEl, widthReady])
 

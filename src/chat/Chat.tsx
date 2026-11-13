@@ -1,6 +1,7 @@
 import { ExtensionCenter, catalog, initializeExtensions, extensionIdForPath, useExtensions, useExtensionPath } from '../extensions/public/host'
 import { PluginCenterHeading } from './market/PluginCenterHeading'
-import { lazy, memo, Profiler, startTransition, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
+import { lazy, memo, Profiler, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ProfilerOnRenderCallback, type ReactNode, type Ref } from 'react'
+import { flushSync } from 'react-dom'
 import { SettingsNavFooter, type ConversationSelectionScope, type ExtensionsNavItem } from './Sidebar'
 import { ChatSidebarPane } from './ChatSidebarPane'
 import { MediaStation } from './MediaStation'
@@ -1046,14 +1047,15 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       setFocusMessageId(focusMessageId)
     },
     showConversation: (conversation, { renderRequestId, selection }) => {
-      currentConversationIdRef.current = conversation.id
-      startTransition(() => {
+      // The external preview store and React history must commit to the same conversation.
+      flushSync(() => {
+        currentConversationIdRef.current = conversation.id
         applyConversation(conversation)
         if (renderRequestId > 0) setConversationRenderRequestId(renderRequestId)
+        restoreStreamingPreview(conversation.id)
+        if (selection) setStreamError('')
+        else setStreamCoarse({ cancelling: false })
       })
-      restoreStreamingPreview(conversation.id)
-      if (selection) setStreamError('')
-      else setStreamCoarse({ cancelling: false })
     },
     resetConversation: () => {
       clearDisplayedConversation()

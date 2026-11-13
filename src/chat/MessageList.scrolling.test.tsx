@@ -3,8 +3,10 @@ import { act, fireEvent } from '@testing-library/react'
 import type { Virtualizer } from '@tanstack/react-virtual'
 import { afterEach, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
-import { clearChatReadingPositions, rememberChatReadingPosition } from './chatReadingPosition'
-import { reset, setCoarse } from './streamingStore'
+import { clearChatReadingPositions, recallChatReadingPosition, rememberChatReadingPosition } from './chatReadingPosition'
+import { reset, setCoarse, setSnapshot } from './streamingStore'
+import { createEmptyStreamSnapshot } from './conversationRuns'
+import type { ChatMessage } from './types'
 
 let list: Virtualizer<Element, Element>
 vi.mock('@tanstack/react-virtual', async (importOriginal) => {
@@ -19,6 +21,58 @@ vi.mock('@tanstack/react-virtual', async (importOriginal) => {
 })
 
 afterEach(() => { act(() => reset()); clearChatReadingPositions(); vi.restoreAllMocks() })
+
+it('restores a streamed answer by its message identity after switching away', async () => {
+  const answer: ChatMessage = { id: 'reading-answer', role: 'assistant', content: 'Finished answer', timestamp: 2 }
+  const history: ChatMessage[] = [{ id: 'reading-question', role: 'user', content: 'Question', timestamp: 1 }, answer,
+    ...Array.from({ length: 30 }, (_, index): ChatMessage => ({ id: `later-${index}`, role: 'user', content: 'Later', timestamp: index + 3 }))]
+  act(() => {
+    setSnapshot({ ...createEmptyStreamSnapshot(), messageId: answer.id, content: answer.content, streaming: true })
+    setCoarse({ streaming: true })
+  })
+  const { container, rerender } = render(<MessageList conversationId="reading-a" messages={history} />)
+  await act(async () => {})
+  act(() => reset())
+  await act(async () => {})
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 5000 })
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 800 })
+  fireEvent.wheel(viewport, { deltaY: -100 })
+  viewport.scrollTop = list.getVirtualItems().find(item => item.index === 2)!.start + 10
+  list.scrollOffset = viewport.scrollTop
+  const before = viewport.scrollTop
+  rerender(<MessageList conversationId="reading-b" messages={[]} />)
+  await act(async () => {})
+  expect(recallChatReadingPosition('reading-a')?.following).toBe(false)
+  rerender(<MessageList conversationId="reading-a" messages={history} />)
+  await act(async () => {})
+  expect(viewport.scrollTop).toBe(before)
+})
+
+it.each(['wheel', 'pointerdown', 'touchstart', 'keydown'])(
+  'holds a restored row through late measurements and yields to %s', async gesture => {
+    const messages: ChatMessage[] = Array.from({ length: 40 }, (_, index) => ({
+      id: `restore-${index}`, role: 'user', content: 'Short', timestamp: index,
+    }))
+    rememberChatReadingPosition('settling-restore', {
+      following: false, rowKey: 'restore-10', rowOffset: 10, scrollTop: 0, layoutKey: 'old-width',
+    })
+    const { container } = render(<MessageList conversationId="settling-restore" messages={messages} />)
+    await act(async () => {})
+    const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+    // Earlier offscreen rows change size after the estimated initial jump.
+    act(() => { for (let index = 1; index < 11; index++) list.resizeItem(index, 250) })
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)) })
+    expect(viewport.scrollTop).toBe(list.measurementsCache[11].start + 10)
+    if (gesture === 'wheel') fireEvent.wheel(viewport, { deltaY: -100 })
+    else if (gesture === 'keydown') fireEvent.keyDown(viewport, { key: 'PageUp' })
+    else if (gesture === 'touchstart') fireEvent.touchStart(viewport, { touches: [{ clientY: 100 }] })
+    else fireEvent.pointerDown(viewport)
+    viewport.scrollTop = 50
+    await act(async () => { await new Promise(resolve => requestAnimationFrame(resolve)) })
+    expect(viewport.scrollTop).toBe(50)
+  },
+)
 
 it('renders a cross-window image from supplied history dependencies', async () => {
   const { container } = render(<MessageList conversationId="window-image" historyStart={70}
