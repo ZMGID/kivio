@@ -52,12 +52,12 @@ export function QueuedMessages({
               </button>
               {/* 引导被拒：这条得留在原地说话（不能只做 tooltip），否则用户点了按钮什么都看不见。 */}
               {message.steerRejected && (
-                <span className="shrink-0 pr-1 text-[11px] text-amber-600 dark:text-amber-300">
+                <span className="shrink-0 pr-1 text-[11px] text-warning">
                   {t.chatSteerRejected}
                 </span>
               )}
               {message.followUpRejected && (
-                <span className="shrink-0 pr-1 text-[11px] text-amber-600 dark:text-amber-300">
+                <span className="shrink-0 pr-1 text-[11px] text-warning">
                   {t.chatFollowUpRejected}
                 </span>
               )}

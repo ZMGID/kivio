@@ -100,7 +100,7 @@ export function AgentTodoIndicator({ todoState, placement = 'titlebar' }: AgentT
         onClick={() => setOpen((value) => !value)}
       >
         {allDone ? (
-          <CheckCircle2 size={14} strokeWidth={2} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
+          <CheckCircle2 size={14} strokeWidth={2} className="shrink-0 text-success" />
         ) : (
           <ListTodo size={14} strokeWidth={2} className="shrink-0 text-neutral-500" />
         )}

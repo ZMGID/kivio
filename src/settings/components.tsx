@@ -687,7 +687,7 @@ export function PermissionItem({
         </span>
         <div className="min-w-0">
           <p className="kv-row-label">{label}</p>
-          <p className={`text-[11px] mt-0.5 ${granted ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+          <p className={`text-[11px] mt-0.5 ${granted ? 'text-success' : 'text-warning'}`}>
             {granted ? grantedText : missingText}
           </p>
         </div>
@@ -804,7 +804,7 @@ export function HotkeyInput({
         </button>
       </div>
       {error && (
-        <p className="text-[11px] text-red-500 dark:text-red-400 leading-snug">{error}</p>
+        <p className="text-[11px] text-danger leading-snug">{error}</p>
       )}
     </div>
   )

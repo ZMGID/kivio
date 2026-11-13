@@ -126,4 +126,31 @@ describe('InputBar 底栏模式胶囊', () => {
     })
     expect(onPresetChange).not.toHaveBeenCalled()
   })
+
+  it('弹层开着时 Esc 只关弹层，再按一次才停止生成', async () => {
+    const runtime: AgentRuntimeConfig = { kind: 'external', externalAgentId: 'dsh', externalAgentPreset: 'code' }
+    const presets = deriveDshPresetModes(runtime)
+    const cancel = vi.fn()
+    render(
+      <InputBar
+        onSend={() => {}}
+        onCancel={cancel}
+        cancelVisible
+        presetOptions={presets.options}
+        presetValue={presets.current}
+        onPresetChange={vi.fn()}
+      />,
+    )
+    act(() => {
+      fireEvent.click(screen.getByTitle('切换 Agent 模式'))
+    })
+    expect(screen.getAllByRole('menuitemradio').length).toBeGreaterThan(0)
+
+    await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' }) })
+    expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument()
+    expect(cancel).not.toHaveBeenCalled()
+
+    await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' }) })
+    expect(cancel).toHaveBeenCalledTimes(1)
+  })
 })

@@ -19,10 +19,10 @@ import { DEFAULT_FILTERS, activeFilterCount, diffBlocks, highlightRanges, type P
 import type { PullRequestChecks, PullRequestState, PullRequestStateFilter } from '../../api/dockContracts'
 
 const STATE_ICON: Record<PullRequestState, { icon: typeof GitPullRequest; className: string }> = {
-  open: { icon: GitPullRequest, className: 'text-emerald-600 dark:text-emerald-400' },
+  open: { icon: GitPullRequest, className: 'text-success' },
   draft: { icon: GitPullRequestDraft, className: 'text-neutral-400 dark:text-neutral-500' },
   merged: { icon: GitMerge, className: 'text-violet-600 dark:text-violet-400' },
-  closed: { icon: GitPullRequestClosed, className: 'text-red-500 dark:text-red-400' },
+  closed: { icon: GitPullRequestClosed, className: 'text-danger' },
 }
 
 export function StateIcon({ state, conflicting, t }: { state: PullRequestState; conflicting: boolean; t: I18n }) {
@@ -43,10 +43,10 @@ export function StateIcon({ state, conflicting, t }: { state: PullRequestState; 
 export function ChecksIcon({ checks, t, size = 13 }: { checks: PullRequestChecks | 'skipped'; t: I18n; size?: number }) {
   const common = { size, 'aria-hidden': false, role: 'img' } as const
   if (checks === 'success') {
-    return <CircleCheck {...common} strokeWidth={2} className="shrink-0 text-emerald-600 dark:text-emerald-400" aria-label={t.prChecksSuccess} />
+    return <CircleCheck {...common} strokeWidth={2} className="shrink-0 text-success" aria-label={t.prChecksSuccess} />
   }
   if (checks === 'failure') {
-    return <CircleX {...common} strokeWidth={2} className="shrink-0 text-red-500 dark:text-red-400" aria-label={t.prChecksFailure} />
+    return <CircleX {...common} strokeWidth={2} className="shrink-0 text-danger" aria-label={t.prChecksFailure} />
   }
   if (checks === 'pending') {
     return <CircleDashed {...common} strokeWidth={2.2} className="chat-pr-pending shrink-0" aria-label={t.prChecksPending} />

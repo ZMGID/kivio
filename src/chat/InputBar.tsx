@@ -1337,6 +1337,15 @@ export const InputBar = memo(function InputBar({
       }
     }
 
+    // 输入栏的弹层开着时，Esc 只关弹层，不继续落到下面的「停止生成」。
+    if (e.key === 'Escape' && (toolPanelOpen || projectMenuOpen || presetMenuOpen)) {
+      e.preventDefault()
+      setToolPanelOpen(false)
+      closeProjectMenu()
+      closePresetMenu()
+      return
+    }
+
     // 生成中按 Esc = 点停止。只绑在输入框上（发完焦点就在这），
     // 不接全局监听——图片查看器/右键菜单/侧边栏那一堆 Esc 关闭会跟着一块触发。
     if (e.key === 'Escape' && onCancel && cancelVisible && !cancelling) {
@@ -1615,6 +1624,8 @@ export const InputBar = memo(function InputBar({
 
   usePopoverMenu(toolPanelOpen, () => setToolPanelOpen(false), toolPanelRef)
   usePopoverMenu(projectMenuOpen, closeProjectMenu, projectMenuRef)
+  // 预设菜单由编辑器持有焦点时打开（按钮不抢焦点），只接 Esc 关闭，不把焦点移进菜单。
+  usePopoverMenu(presetMenuOpen, closePresetMenu)
 
   useEffect(() => {
     if (!slashPanelOpen) return
@@ -1769,7 +1780,7 @@ export const InputBar = memo(function InputBar({
             {t.chatLoadingProjects}
           </div>
         ) : projectOptionsError ? (
-          <div className="px-2 py-2 text-[12px] text-red-500 dark:text-red-400">
+          <div className="px-2 py-2 text-[12px] text-danger">
             {projectOptionsError}
           </div>
         ) : visibleProjectOptions.length > 0 ? (
@@ -2046,7 +2057,7 @@ export const InputBar = memo(function InputBar({
             </div>
           )}
           {(sendDisabledReason || toolStatusHint) && !attachmentError && (
-            <div className="chat-motion-fade-up mb-2 px-1 text-[12px] text-amber-600 dark:text-amber-300">
+            <div className="chat-motion-fade-up mb-2 px-1 text-[12px] text-warning">
               {sendDisabledReason || toolStatusHint}
             </div>
           )}
@@ -2190,7 +2201,7 @@ export const InputBar = memo(function InputBar({
                 optimizing ? 'is-prompt-optimizing' : ''
               } ${
                 canUndoOptimize
-                  ? 'text-emerald-600 dark:text-emerald-400'
+                  ? 'text-success'
                   : 'text-neutral-500'
               }`}
             >

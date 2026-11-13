@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
+import { useT } from '../components/i18n'
 import { Code2, ExternalLink, Maximize2, X } from 'lucide-react'
 import { api } from '../api/tauri'
 import { IconButton } from '../components/Button'
@@ -56,7 +57,7 @@ function postTheme(target: Window | null | undefined) {
 }
 
 export function HtmlFrame({
-  src, title = 'HTML 预览', initialHeight = 160, onSource, onOpenInBrowser, fullscreenHtml, failed = false, fallback = null,
+  src, title: titleProp, initialHeight = 160, onSource, onOpenInBrowser, fullscreenHtml, failed = false, fallback = null,
 }: {
   src: string | null
   title?: string
@@ -67,6 +68,8 @@ export function HtmlFrame({
   failed?: boolean
   fallback?: ReactNode
 }) {
+  const t = useT()
+  const title = titleProp ?? t.chatMsgHtmlPreview
   const [fullscreen, setFullscreen] = useState(false)
   const [height, setHeight] = useState(() => clampHeight(initialHeight))
   const [measured, setMeasured] = useState(false)
@@ -126,12 +129,12 @@ export function HtmlFrame({
         else setDialogFailed(true)
       } else if (data[MESSAGE] === 'open' && typeof data.value === 'string'
         && /^https?:\/\//i.test(data.value) && navigator.userActivation?.isActive) {
-        void api.openExternal(data.value).catch((error) => notifyError(`打开链接失败：${String(error)}`))
+        void api.openExternal(data.value).catch((error) => notifyError(`${t.chatMsgOpenLinkFailed}${String(error)}`))
       }
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [src, fullscreen])
+  }, [src, fullscreen, t.chatMsgOpenLinkFailed])
 
   useEffect(() => {
     const dialog = dialogRef.current
@@ -159,13 +162,13 @@ export function HtmlFrame({
       <div className="group/html not-prose relative my-3" data-chat-async-pending={measured ? undefined : 'true'}>
         {inlineSrc ? frame(frameRef, inlineSrc, 'block w-full border-0 bg-transparent', false, height) : <div style={{ height }} />}
         <div className="absolute right-0 top-0 flex gap-0.5 rounded-md bg-[var(--theme-surface)] opacity-0 shadow-sm transition-opacity focus-within:opacity-100 group-hover/html:opacity-100">
-          <IconButton size="sm" onClick={() => { setDialogPreviewUrl(null); setDialogFailed(false); setFullscreen(true) }} label="全屏查看" disabled={!src}>
+          <IconButton size="sm" onClick={() => { setDialogPreviewUrl(null); setDialogFailed(false); setFullscreen(true) }} label={t.chatMsgFullscreen} disabled={!src}>
             <Maximize2 size={14} strokeWidth={2} />
           </IconButton>
-          {onSource && <IconButton size="sm" onClick={onSource} label="查看源码">
+          {onSource && <IconButton size="sm" onClick={onSource} label={t.chatMsgViewSource}>
             <Code2 size={14} strokeWidth={2} />
           </IconButton>}
-          <IconButton size="sm" onClick={() => onOpenInBrowser(htmlThemeCss())} label="在浏览器打开">
+          <IconButton size="sm" onClick={() => onOpenInBrowser(htmlThemeCss())} label={t.chatMsgOpenInBrowser}>
             <ExternalLink size={14} strokeWidth={2} />
           </IconButton>
         </div>
@@ -175,14 +178,14 @@ export function HtmlFrame({
           onClose={() => setFullscreen(false)}
           onClick={(event) => { if (event.target === event.currentTarget) dialogRef.current?.close() }}>
           <div className="flex justify-end">
-            <IconButton size="sm" onClick={() => dialogRef.current?.close()} label="关闭">
+            <IconButton size="sm" onClick={() => dialogRef.current?.close()} label={t.chatMsgClose}>
               <X size={14} strokeWidth={2} />
             </IconButton>
           </div>
           {dialogFailed ? (
-            <div role="status" className="p-4 text-[13px] text-[var(--text-muted)]">全屏页面不可用</div>
+            <div role="status" className="p-4 text-[13px] text-[var(--text-muted)]">{t.chatMsgFullscreenUnavailable}</div>
           ) : fullscreenSrc ? frame(dialogFrameRef, fullscreenSrc, 'min-h-0 w-full flex-1 border-0 bg-transparent', true)
-            : <div role="status" className="p-4 text-[13px] text-[var(--text-muted)]">正在加载页面…</div>}
+            : <div role="status" className="p-4 text-[13px] text-[var(--text-muted)]">{t.chatMsgPageLoading}</div>}
         </dialog>
       ) : null}
     </ChatHeavyIsland>

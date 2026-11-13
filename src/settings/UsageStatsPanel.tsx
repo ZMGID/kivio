@@ -963,7 +963,7 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
               {record.operation ? ` · ${record.operation}` : ''}
             </span>
             <span className="text-neutral-700">{formatReasoningEffort(record.reasoningEffort)}</span>
-            <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400" title={lang === 'zh' ? '输入 Token' : 'Input tokens'}>
+            <span className="inline-flex items-center gap-1 text-success" title={lang === 'zh' ? '输入 Token' : 'Input tokens'}>
               <ArrowDown aria-hidden="true" size={12} strokeWidth={1.8} />
               <span className="text-neutral-800">{formatOptionalTokens(record.inputTokens)}</span>
             </span>
@@ -977,7 +977,7 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
               <Database aria-hidden="true" size={11} strokeWidth={1.7} />
               <span>{formatOptionalTokens(record.cachedInputTokens)}</span>
               {(record.cacheCreationInputTokens ?? 0) > 0 && (
-                <span className="text-amber-700 dark:text-amber-400">
+                <span className="text-warning">
                   {lang === 'zh' ? '写入' : 'write'} {formatTokens(record.cacheCreationInputTokens)}
                 </span>
               )}
@@ -989,7 +989,7 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
               {lang === 'zh' ? '总耗时' : 'Total'} {formatDuration(record.durationMs)}
             </span>
             {record.usageSource === 'missing' && (
-              <span className="text-amber-700 dark:text-amber-400">{lang === 'zh' ? 'Usage 缺失' : 'Usage missing'}</span>
+              <span className="text-warning">{lang === 'zh' ? 'Usage 缺失' : 'Usage missing'}</span>
             )}
           </div>
         </div>

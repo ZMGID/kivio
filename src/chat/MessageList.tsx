@@ -64,7 +64,7 @@ import {
   shouldAdjustChatItemSizeChange,
   unobservedChatRowSize,
 } from './messageListVirtualization'
-import { i18n, type Lang } from '../components/i18n'
+import { i18n, type I18n, type Lang } from '../components/i18n'
 import { measureChatSurface, recordChatPerfSample, useChatPerfRenderProbe } from './chatPerformanceProbe'
 import {
   beginMessageNavigationHydrate,
@@ -226,7 +226,7 @@ function measurementKey(item: RenderItem): string {
   return item.key
 }
 
-function streamErrorDegraded(error: string): DegradedAnswer {
+function streamErrorDegraded(error: string, t: I18n): DegradedAnswer {
   const normalized = error.toLowerCase()
   const kind: DegradedAnswer['kind'] =
     normalized.includes('stream_read_error')
@@ -243,8 +243,8 @@ function streamErrorDegraded(error: string): DegradedAnswer {
           ? 'rate_limited'
           : 'unknown'
   const reason = kind === 'timeout'
-    ? '模型流式响应中途断开。'
-    : '回复生成失败。'
+    ? t.chatMsgStreamDisconnected
+    : t.chatMsgReplyFailed
   return { kind, reason, detail: error, text: reason }
 }
 
@@ -2686,7 +2686,7 @@ function MessageListBase({
         case 'error':
           return (
             <div className="chat-motion-fade-up flex w-full min-w-0 flex-col items-start gap-2 py-3">
-              <DegradedAnswerCard degraded={streamErrorDegraded(item.text)} />
+              <DegradedAnswerCard degraded={streamErrorDegraded(item.text, i18n[lang])} />
               {item.retryMessageId && onRetryLastUser && (
                 <Button size="sm" onClick={() => onRetryLastUser(item.retryMessageId!)}>
                   <RotateCw size={13} strokeWidth={2} />

@@ -209,7 +209,7 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="truncate text-[13px] font-semibold leading-tight text-neutral-950">{card.displayName}</span>
-                        {card.verified && <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">{t.chatMcpVerified}</span>}
+                        {card.verified && <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-success">{t.chatMcpVerified}</span>}
                         {card.transportHints.map((hint) => (
                           <span key={hint} className="shrink-0 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-500">{hint}</span>
                         ))}
@@ -228,7 +228,7 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
                         </span>
                       )}
                       {installed ? (
-                        <span className="chat-motion-pop inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[12px] font-medium text-emerald-600 dark:text-emerald-400"><Check size={13} />{t.chatMcpAdded}</span>
+                        <span className="chat-motion-pop inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[12px] font-medium text-success"><Check size={13} />{t.chatMcpAdded}</span>
                       ) : (
                         <Button size="sm" onClick={() => void handleInstall(card)} disabled={busyId === card.id}>
                           {busyId === card.id ? <Loader2 size={12} className="animate-spin" /> : t.chatMcpAdd}

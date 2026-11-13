@@ -90,7 +90,7 @@ function MemoryEditor({
         aria-label={title}
       />
       {overLimit && (
-        <p className="mt-1.5 text-[11px] leading-snug text-red-500 dark:text-red-400">
+        <p className="mt-1.5 text-[11px] leading-snug text-danger">
           {lang === 'zh'
             ? `${layer.toUpperCase()} 超出字节上限，保存前需要精简。`
             : `${layer.toUpperCase()} is over its byte limit.`}

@@ -1,4 +1,5 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useT, type I18n } from '../components/i18n'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import { codexAsyncReplyEnvelope } from './asyncQuestionReply'
 import type { ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react'
@@ -163,7 +164,7 @@ function normalizeAnswer(value: unknown): AskUserAnswer {
   }
 }
 
-function parseAskUser(toolCall: ToolCallRecord): ParsedAskUser | null {
+function parseAskUser(toolCall: ToolCallRecord, fallbackTitle: string): ParsedAskUser | null {
   const structured = objectValue(toolCall.structured_content ?? toolCall.structuredContent) as AskUserStructuredContent | null
   const askUser = objectValue(structured?.askUser)
   if (askUser) {
@@ -173,7 +174,7 @@ function parseAskUser(toolCall: ToolCallRecord): ParsedAskUser | null {
         async: askUser.async === true,
         title: typeof askUser.title === 'string' && askUser.title.trim()
           ? askUser.title.trim()
-          : '需要确认',
+          : fallbackTitle,
         phase: typeof askUser.phase === 'string' ? askUser.phase : 'awaiting',
         questions,
         answers: normalizeAnswers(askUser.answers),
@@ -185,7 +186,7 @@ function parseAskUser(toolCall: ToolCallRecord): ParsedAskUser | null {
   const questions = normalizeQuestions(args?.questions)
   if (!questions.length) return null
   return {
-    title: typeof args?.title === 'string' && args.title.trim() ? args.title.trim() : '需要确认',
+    title: typeof args?.title === 'string' && args.title.trim() ? args.title.trim() : fallbackTitle,
     phase: toolCall.status === 'cancelled' ? 'cancelled' : 'awaiting',
     questions,
     answers: {},
@@ -257,18 +258,18 @@ function promptSignature(parsed: ParsedAskUser | null): string {
     .join('|')
 }
 
-function phaseLabel(phase: string): string {
+function phaseLabel(phase: string, t: I18n): string {
   switch (phase) {
     case 'answered':
-      return '已回答'
+      return t.chatAskAnswered
     case 'skipped':
-      return '已跳过'
+      return t.chatAskSkipped
     case 'timeout':
-      return '已超时'
+      return t.chatAskTimedOut
     case 'cancelled':
-      return '已取消'
+      return t.chatAskCancelled
     default:
-      return '等待'
+      return t.chatAskWaiting
   }
 }
 
@@ -276,16 +277,16 @@ function optionLabel(question: AskUserQuestion, optionId: string): string {
   return question.options.find((option) => option.id === optionId)?.label ?? optionId
 }
 
-function readonlySummary(question: AskUserQuestion, answer?: AskUserAnswer): string {
+function readonlySummary(question: AskUserQuestion, answer: AskUserAnswer | undefined, t: I18n): string {
   const labels = answerSelectedIds(answer).map((optionId) => optionLabel(question, optionId))
   const custom = answerCustomText(answer)
-  return [...labels, custom].filter(Boolean).join(' · ') || '未回答'
+  return [...labels, custom].filter(Boolean).join(' · ') || t.chatAskUnanswered
 }
 
 function phaseTone(phase: string): string {
   switch (phase) {
     case 'answered':
-      return 'text-emerald-600 dark:text-emerald-400'
+      return 'text-success'
     case 'skipped':
     case 'timeout':
     case 'cancelled':
@@ -300,8 +301,9 @@ function preventMouseFocus(event: ReactMouseEvent<HTMLButtonElement>) {
 }
 
 export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onResolved }: AskUserBlockProps) {
+  const t = useT()
   const asyncQuestions = useContext(AsyncQuestionsContext)
-  const parsed = useMemo(() => parseAskUser(toolCall), [toolCall])
+  const parsed = useMemo(() => parseAskUser(toolCall, t.chatAskNeedsConfirm), [toolCall, t.chatAskNeedsConfirm])
   const parsedRef = useRef(parsed)
   parsedRef.current = parsed
   const docked = variant === 'docked'
@@ -358,7 +360,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
     return (
       <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
         <MessageSquareMore size={12} strokeWidth={1.9} className="shrink-0" />
-        <span className="truncate">等待用户确认</span>
+        <span className="truncate">{t.chatAskWaitingConfirm}</span>
       </div>
     )
   }
@@ -369,7 +371,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
     return (
       <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
         <MessageSquareMore size={12} strokeWidth={1.9} className="shrink-0" />
-        <span className="truncate">等待你回答（在下方面板里选）</span>
+        <span className="truncate">{t.chatAskWaitingAnswer}</span>
       </div>
     )
   }
@@ -517,7 +519,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
           ]
         }))
       if (parsed.async) {
-        if (!asyncQuestions) throw new Error('当前视图无法发送答复')
+        if (!asyncQuestions) throw new Error(t.chatAskCannotReply)
         const replies = parsed.questions.flatMap((question) => {
           const answer = answers[question.id]
           if (!answer) return []
@@ -558,11 +560,11 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
         <div className="min-w-0 flex-1 text-[14px] font-semibold leading-6 text-neutral-950">
           {awaiting && currentQuestion ? currentQuestion.prompt : compactText(parsed.title, 96)}
           {awaiting && currentQuestion?.required === false && (
-            <span className="ml-1.5 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">可选</span>
+            <span className="ml-1.5 text-[11px] font-normal text-neutral-400 dark:text-neutral-500">{t.chatAskOptional}</span>
           )}
           {awaiting && multiSelect && (
             <span className="ml-1.5 align-[1px] text-[11px] font-normal text-neutral-400 dark:text-neutral-500">
-              可多选
+              {t.chatAskMultiple}
             </span>
           )}
         </div>
@@ -570,7 +572,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
           {awaiting && multiQuestion && (
             <>
               <IconButton
-                label="上一题"
+                label={t.chatAskPrev}
                 size="xs"
                 variant="ghost"
                 disabled={visibleIndex === 0 || submitting}
@@ -583,7 +585,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                 {visibleIndex + 1}/{parsed.questions.length}
               </span>
               <IconButton
-                label="下一题"
+                label={t.chatAskNext}
                 size="xs"
                 variant="ghost"
                 disabled={(!currentAnswered && currentQuestion?.required !== false) || isLastQuestion || submitting}
@@ -596,7 +598,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
           )}
           {awaiting ? (
             <IconButton
-              label="跳过这次询问"
+              label={t.chatAskSkip}
               size="xs"
               variant="ghost"
               disabled={submitting}
@@ -606,7 +608,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <X size={14} strokeWidth={2} />}
             </IconButton>
           ) : (
-            <span className={`text-[11px] ${phaseTone(parsed.phase)}`}>{parsed.async ? '已收起' : phaseLabel(parsed.phase)}</span>
+            <span className={`text-[11px] ${phaseTone(parsed.phase)}`}>{parsed.async ? t.chatAskCollapsed : phaseLabel(parsed.phase, t)}</span>
           )}
         </div>
       </div>
@@ -719,7 +721,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                       else if (!isLastQuestion) goNext()
                       else if (allAnswered) void submit(false)
                     }}
-                    placeholder="自己写一个…"
+                    placeholder={t.chatAskCustomPlaceholder}
                     className="custom-scrollbar min-w-0 flex-1 resize-y bg-transparent text-[13px] leading-5 outline-none placeholder:text-neutral-400 dark:placeholder:text-neutral-500"
                   />
                 </div>
@@ -729,7 +731,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
 
           <div className="flex items-center gap-2 px-3.5 pb-2.5 pt-1.5">
             <span className="min-w-0 flex-1 truncate text-[11px] text-neutral-400 dark:text-neutral-500">
-              {multiline ? 'Enter 换行 · Ctrl/⌘+Enter 提交' : `↑↓ 切换 · Enter 选择${optionCount > 1 ? ` · 数字键 1–${Math.min(optionCount, 9)} 直选` : ''}`}
+              {multiline ? t.chatAskHintMultiline : `${t.chatAskHintSelect}${optionCount > 1 ? t.chatAskHintDigits.replace('{n}', String(Math.min(optionCount, 9))) : ''}`}
             </span>
             {(!answerOnPick
               || currentQuestion.required === false
@@ -742,7 +744,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                 disabled={!allAnswered || submitting}
               >
                 {submitting ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} strokeWidth={1.9} />}
-                提交
+                {t.chatAskSubmit}
               </Button>
             )}
           </div>
@@ -759,7 +761,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                   {question.prompt}
                 </div>
                 <div className="mt-0.5 break-words text-[12px] leading-5 text-neutral-500">
-                  {parsed.async ? '此问题已收起' : readonlySummary(question, parsed.answers[question.id])}
+                  {parsed.async ? t.chatAskQuestionCollapsed : readonlySummary(question, parsed.answers[question.id], t)}
                 </div>
               </div>
             ))}

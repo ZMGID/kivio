@@ -135,7 +135,7 @@ export function GitHistory({ workdir, lang, active, refreshKey }: { workdir: str
         {!detail.fileStats?.length && <div className="p-3 text-[11px] text-neutral-400">{t.dockDiffEmpty}</div>}
         {detail.fileStats?.map((stat) => <button key={stat.path} title={stat.path} onClick={() => setFile(file === stat.path ? null : stat.path)} className={`flex w-full items-center gap-2 px-2 py-1 text-left text-[11px] hover:bg-neutral-500/5 ${file === stat.path ? 'bg-neutral-500/10' : ''}`}>
           <span className="min-w-0 flex-1 truncate">{stat.path}</span>
-          {detail.binaryFiles.includes(stat.path) ? <span className="text-neutral-400">{zh ? '二进制' : 'Binary'}</span> : <span className="shrink-0 tabular-nums"><span className="text-emerald-600 dark:text-emerald-400">+{stat.additions}</span><span className="ml-2 text-red-500">−{stat.deletions}</span></span>}
+          {detail.binaryFiles.includes(stat.path) ? <span className="text-neutral-400">{zh ? '二进制' : 'Binary'}</span> : <span className="shrink-0 tabular-nums"><span className="text-success">+{stat.additions}</span><span className="ml-2 text-red-500">−{stat.deletions}</span></span>}
         </button>)}
         {file && <div className="px-2 pb-2">{fileError ? <div className="text-[11px] text-red-500">{fileError}</div> : fileDiff ? <DiffView patch={fileDiff.patch} truncated={fileDiff.truncated} lang={lang} emptyText={t.dockDiffEmpty} /> : <Loader2 size={13} className="m-2 animate-spin" />}</div>}
       </>}

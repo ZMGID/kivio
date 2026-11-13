@@ -113,7 +113,7 @@ function PullRequestDetailView({ item, workdir, onBranch, t, onCheckedOut }: {
           </Button>
         )}
         <Button size="sm" variant="ghost" onClick={() => void copyToClipboard(item.url).then((ok) => ok && setCopied(true))}>
-          {copied ? <Check size={12} className="text-emerald-600 dark:text-emerald-400" /> : <Copy size={12} />}
+          {copied ? <Check size={12} className="text-success" /> : <Copy size={12} />}
           {copied ? t.prCopied : t.prCopyLink}
         </Button>
       </div>

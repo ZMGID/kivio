@@ -175,7 +175,7 @@ export function SkillStoreBrowser() {
                         </span>
                       )}
                       {done ? (
-                        <span className="chat-motion-pop inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[12px] font-medium text-emerald-600 dark:text-emerald-400"><Check size={13} />{t.chatSkillInstalled}</span>
+                        <span className="chat-motion-pop inline-flex items-center gap-1 rounded-md bg-emerald-500/15 px-2 py-1 text-[12px] font-medium text-success"><Check size={13} />{t.chatSkillInstalled}</span>
                       ) : (
                         <Button
                           size="sm"

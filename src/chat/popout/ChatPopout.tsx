@@ -170,7 +170,7 @@ function ChatPopoutBody({
   ) : (
     <>
       {session.streamError && (
-        <div className="shrink-0 px-4 pt-2 text-center text-[12px] text-red-600 dark:text-red-400">
+        <div className="shrink-0 px-4 pt-2 text-center text-[12px] text-danger">
           {session.streamError}
         </div>
       )}

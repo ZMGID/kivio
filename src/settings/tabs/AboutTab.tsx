@@ -109,7 +109,7 @@ export function UpdateGroup({
 
       {status === 'check-failed' && (
         <div className="kv-panel mt-2">
-          <div className="kv-panel-body mb-2 text-amber-700 dark:text-amber-400">
+          <div className="kv-panel-body mb-2 text-warning">
             {t.updateCheckFailed}
           </div>
           <Button

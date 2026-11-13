@@ -801,7 +801,7 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
     <ConsultCard
       label="KNOWLEDGE"
       status={status}
-      identityChips={count > 0 ? <CardChip>{count} 段</CardChip> : undefined}
+      identityChips={count > 0 ? <CardChip>{t.chatToolSegmentsCount.replace('{n}', String(count))}</CardChip> : undefined}
       metricChips={duration ? <CardChip tabular>{duration}</CardChip> : undefined}
       statusLine={statusLine}
     >
@@ -916,7 +916,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
       identityChips={provider ? <CardChip>{provider}</CardChip> : undefined}
       metricChips={
         <>
-          {citations.length > 0 && <CardChip tabular>{citations.length} 来源</CardChip>}
+          {citations.length > 0 && <CardChip tabular>{t.chatToolSourcesCount.replace('{n}', String(citations.length))}</CardChip>}
           {duration && status !== 'running' && <CardChip tabular>{duration}</CardChip>}
         </>
       }
@@ -1105,7 +1105,7 @@ function InlineDiffStats({
           : undefined
       }
     >
-      <span className="text-emerald-600 dark:text-emerald-400">+{additions}</span>
+      <span className="text-success">+{additions}</span>
       <span className="ml-1 text-red-500/80 dark:text-red-400/80">-{removals}</span>
     </span>
   )
@@ -1124,7 +1124,7 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
       {files.length > 0 && (
         <div>
           <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-            文件变更
+            {t.chatToolFileChanges}
           </div>
           <div className="space-y-0.5 text-neutral-500">
             {files.map((file, index) => (
@@ -1133,7 +1133,7 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
                   {fileOperationLabel(t, file.operation)}
                 </span>
                 <span className="min-w-0 truncate">{cleanWinPath(file.path)}</span>
-                <span className="shrink-0 tabular-nums text-emerald-600 dark:text-emerald-400">
+                <span className="shrink-0 tabular-nums text-success">
                   +{file.additions}
                 </span>
                 <span className="shrink-0 tabular-nums text-red-500/80 dark:text-red-400/80">
@@ -1147,9 +1147,9 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
       {warnings.length > 0 && (
         <div>
           <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-            警告
+            {t.chatToolWarnings}
           </div>
-          <div className="whitespace-pre-wrap break-words text-amber-600 dark:text-amber-300">
+          <div className="whitespace-pre-wrap break-words text-warning">
             {warnings.join('\n')}
           </div>
         </div>
@@ -1157,7 +1157,7 @@ function FileMutationDetails({ mutation }: { mutation: FileMutationStructuredCon
       {diagnostics.length > 0 && (
         <div>
           <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-            诊断
+            {t.chatToolDiagnostics}
           </div>
           <div className="whitespace-pre-wrap break-words text-neutral-500">
             {previewValue(diagnostics, 900)}
@@ -1743,7 +1743,7 @@ export function ToolCallCluster({
       <button
         type="button"
         aria-expanded={open}
-        title={reasoningOnly && (activityCount ?? segments.length) === 1 ? (open ? '收起完整思考' : '展开完整思考') : undefined}
+        title={reasoningOnly && (activityCount ?? segments.length) === 1 ? (open ? t.chatMsgThinkingCollapse : t.chatMsgThinkingExpand) : undefined}
         data-chat-disclosure
         data-tauri-drag-region="false"
         className="flex min-h-6 w-full min-w-0 items-center gap-1.5 rounded-md text-left transition-colors hover:text-[var(--text)]"
@@ -1755,7 +1755,7 @@ export function ToolCallCluster({
         {showReasoning ? <Brain size={14} className="shrink-0 text-neutral-400 dark:text-neutral-500" /> :
           currentTool && displayStatus ? <ToolTypeIcon toolCall={currentTool} status={displayStatus} /> : <Wrench size={14} className="shrink-0" />}
         <span className={`max-w-full shrink-0 truncate font-medium text-[var(--text)]${activeTool && currentStatus === 'running' ? ' chat-motion-tool-shimmer' : ''}`}>
-          {open ? `${activityCount ?? segments.length} 项活动` :
+          {open ? t.chatToolActivitiesCount.replace('{n}', String(activityCount ?? segments.length)) :
             showReasoning ? (messageStreaming && latestReasoning?.streaming ? 'Thinking…' : 'Thought') :
               messageStreaming && currentTool ? (imageRead
                 ? fill(activeTool ? t.chatViewingImages : t.chatViewedImages, 'n', imageReadCount(currentTool))
@@ -1767,7 +1767,7 @@ export function ToolCallCluster({
         {!open && !showReasoning && !imageRead && messageStreaming && target && (
           <span className="min-w-0 truncate">{target}</span>
         )}
-        {(open || messageStreaming || reasoningOnly) && summary.stoppedCount > 0 && <span className="shrink-0">{summary.stoppedCount} 项已停止</span>}
+        {(open || messageStreaming || reasoningOnly) && summary.stoppedCount > 0 && <span className="shrink-0">{t.chatToolStoppedCount.replace('{n}', String(summary.stoppedCount))}</span>}
         <ChevronDown size={12} aria-hidden="true" className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       <ChatDisclosureBody open={open}>

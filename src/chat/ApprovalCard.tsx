@@ -91,7 +91,7 @@ export function ApprovalCard({ title, subtitle, detail, actions, error }: Approv
         </pre>
       )}
       {error && (
-        <div className="mt-2 text-[12px] leading-5 text-red-600 dark:text-red-400" role="alert">
+        <div className="mt-2 text-[12px] leading-5 text-danger" role="alert">
           {error}
         </div>
       )}

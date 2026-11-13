@@ -38,6 +38,10 @@
   --color-accent-soft: var(--accent-soft);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
+  /* 状态色：text-success / text-warning / text-danger。明暗两套值在下方 :root 与 .dark 里各定义一次，
+     调用处不再成对写 text-emerald-600 dark:text-emerald-400 这类原色。 */
+  --color-success: var(--success);
+  --color-warning: var(--warning);
 
   /* 动效 token → Tailwind：ease-kv-standard 等工具类；未写时长/曲线的 transition-* 默认走 fast + kv-ease-out。 */
   --ease-kv-standard: var(--kv-ease-standard);
@@ -167,12 +171,20 @@ html.windows body {
   --text-onaccent: #ffffff;
   --danger: #c4341c;
   --danger-soft: #fdecea;
+  /* 成功 / 警告不随主题色板变化，只分明暗（值取自原先成对使用的 emerald-600/400、amber-700/400）。 */
+  --success: #059669;
+  --warning: #b45309;
   --accent-ring: color-mix(in srgb, var(--accent) 32%, transparent);
   --bg-input: var(--theme-surface);
   --bg-hover: var(--theme-surface-hover);
   --border-input: var(--theme-surface-border-strong);
   --shadow-sm: 0 1px 1px color-mix(in srgb, var(--text) 8%, transparent);
   color: var(--text);
+}
+
+.dark {
+  --success: #34d399;
+  --warning: #fbbf24;
 }
 
 /* ===== Motion tokens =====

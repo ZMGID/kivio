@@ -506,13 +506,13 @@ function TestSearch({ t, config }: { t: I18n; config: WebSearchConfig }) {
         </p>
       )}
       {state.status === 'error' && (
-        <p className="mt-2 flex items-start gap-1.5 text-[12px] text-red-500 dark:text-red-400">
+        <p className="mt-2 flex items-start gap-1.5 text-[12px] text-danger">
           <AlertCircle size={13} className="mt-px shrink-0" /> <span className="break-all">{state.message}</span>
         </p>
       )}
       {state.status === 'ok' && (
         <div className="mt-2 space-y-1.5">
-          <p className="flex items-center gap-1.5 text-[12px] text-emerald-600 dark:text-emerald-400">
+          <p className="flex items-center gap-1.5 text-[12px] text-success">
             <CheckCircle2 size={13} className="shrink-0" />
             {state.count > 0
               ? t.webSearchTestResults.replace('{n}', String(state.count))

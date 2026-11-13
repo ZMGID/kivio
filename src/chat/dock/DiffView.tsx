@@ -53,12 +53,12 @@ function DiffFileCard({ file, defaultOpen, lang }: { file: DiffFile; defaultOpen
           {file.isDeleted ? file.oldPath : displayPath}
         </span>
         {file.isNew && (
-          <span className="shrink-0 rounded bg-emerald-500/15 px-1 text-[10px] text-emerald-700 dark:text-emerald-300">
+          <span className="shrink-0 rounded bg-emerald-500/15 px-1 text-[10px] text-success">
             {t.dockDiffNewFile}
           </span>
         )}
         {file.isDeleted && (
-          <span className="shrink-0 rounded bg-red-500/15 px-1 text-[10px] text-red-700 dark:text-red-300">
+          <span className="shrink-0 rounded bg-red-500/15 px-1 text-[10px] text-danger">
             {t.dockDiffDeletedFile}
           </span>
         )}
@@ -68,9 +68,9 @@ function DiffFileCard({ file, defaultOpen, lang }: { file: DiffFile; defaultOpen
           </span>
         )}
         <span className="shrink-0 font-mono text-[10px]">
-          {adds > 0 && <span className="text-emerald-600 dark:text-emerald-400">+{adds}</span>}
+          {adds > 0 && <span className="text-success">+{adds}</span>}
           {adds > 0 && dels > 0 && ' '}
-          {dels > 0 && <span className="text-red-600 dark:text-red-400">−{dels}</span>}
+          {dels > 0 && <span className="text-danger">−{dels}</span>}
         </span>
       </button>
       {open && !file.isBinary && (
@@ -136,7 +136,7 @@ export function DiffView({ patch, truncated = false, lang, emptyText }: DiffView
   return (
     <div className="flex flex-col gap-2">
       {truncated && (
-        <div className="rounded-md bg-amber-500/10 px-2 py-1.5 text-[11px] text-amber-700 dark:text-amber-300">
+        <div className="rounded-md bg-amber-500/10 px-2 py-1.5 text-[11px] text-warning">
           {t.dockDiffTruncated}
         </div>
       )}

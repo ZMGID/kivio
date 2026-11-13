@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useT } from '../components/i18n'
 import { createPortal } from 'react-dom'
 import { Copy, ClipboardCopy } from 'lucide-react'
 import { useCloseAnimation } from './useCloseAnimation'
@@ -26,6 +27,7 @@ export function MessageContextMenu({
   onCopyMessage,
   onClose: onCloseProp,
 }: MessageContextMenuProps) {
+  const t = useT()
   const menuRef = useRef<HTMLDivElement>(null)
   const { closing, startClose, onAnimationEnd } = useCloseAnimation(onCloseProp)
   const onClose = startClose
@@ -68,7 +70,7 @@ export function MessageContextMenu({
           }}
         >
           <Copy strokeWidth={1.75} />
-          复制
+          {t.chatMessageCopy}
         </button>
       )}
       {canCopyMessage && (
@@ -82,7 +84,7 @@ export function MessageContextMenu({
           }}
         >
           <ClipboardCopy strokeWidth={1.75} />
-          复制整条消息
+          {t.chatMsgCopyWholeMessage}
         </button>
       )}
     </div>

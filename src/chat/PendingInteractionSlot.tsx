@@ -1,4 +1,5 @@
 import { memo, useMemo } from 'react'
+import { useT } from '../components/i18n'
 import { ApprovalCard } from './ApprovalCard'
 import { AskUserBlock } from './AskUserBlock'
 import type { RunInteractionSnapshot } from './runInteractionInbox'
@@ -27,6 +28,7 @@ export const PendingInteractionSlot = memo(function PendingInteractionSlot({
   onDismissUserPrompt,
   onPersistApprovedSandbox,
 }: PendingInteractionSlotProps) {
+  const t = useT()
   const {
     toolConfirm, toolConfirmSubmitting, toolConfirmError,
     sessionConsent, sessionConsentSubmitting, sessionConsentError,
@@ -73,17 +75,17 @@ export const PendingInteractionSlot = memo(function PendingInteractionSlot({
         )}
         {sessionConsent && (
           <ApprovalCard
-            title="允许本次会话使用文件和命令工具？"
-            subtitle="授权后，本会话内 Kivio 可读写、删除磁盘上的任意文件并执行任意终端命令（包括项目目录之外）。仅本次会话有效，重启后需重新授权。"
+            title={t.chatConsentTitle}
+            subtitle={t.chatConsentSubtitle}
             error={sessionConsentError}
             actions={[
               {
-                label: '拒绝',
+                label: t.chatConsentDeny,
                 disabled: sessionConsentSubmitting,
                 onSelect: () => { void onResolveSessionConsent(false) },
               },
               {
-                label: '允许本次会话',
+                label: t.chatConsentAllow,
                 primary: true,
                 hint: 'Ctrl+↵',
                 disabled: sessionConsentSubmitting,

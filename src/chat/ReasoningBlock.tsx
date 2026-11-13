@@ -1,4 +1,5 @@
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useT } from '../components/i18n'
 import { ChevronRight } from 'lucide-react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { ReasoningPreviewContext } from './reasoningPreview'
@@ -27,6 +28,7 @@ function formatThinkingDuration(durationMs: number | null | undefined): string {
 }
 
 export function ReasoningBlock({ reasoning: arrivedReasoning, defaultOpen = false, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
+  const t = useT()
   // 思考写入时与正文同样按节奏显示新增文字。
   const reasoning = useRevealedText(arrivedReasoning, streaming)
   const collapsible = reasoning.trim().length > 0
@@ -138,7 +140,7 @@ export function ReasoningBlock({ reasoning: arrivedReasoning, defaultOpen = fals
           }}
           className={`${titleClass} hover:text-neutral-900`}
           aria-expanded={open}
-          title={open ? '收起完整思考' : '展开完整思考'}
+          title={open ? t.chatMsgThinkingCollapse : t.chatMsgThinkingExpand}
           data-chat-disclosure
           data-tauri-drag-region="false"
         >

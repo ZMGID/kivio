@@ -1,4 +1,6 @@
 import { AlertTriangle, Ban, Gauge, MessageSquareOff, PlugZap, Scissors } from 'lucide-react'
+import { useT } from '../components/i18n'
+import type { I18n } from '../components/i18n'
 import type { DegradedAnswer } from './types'
 
 /**
@@ -11,32 +13,33 @@ import type { DegradedAnswer } from './types'
 
 const KIND_META: Record<
   string,
-  { Icon: typeof AlertTriangle; label: string; tone: string }
+  { Icon: typeof AlertTriangle; label: keyof I18n; tone: string }
 > = {
-  rate_limited: { Icon: Gauge, label: '限流 / 配额', tone: 'amber' },
-  context_overflow: { Icon: Scissors, label: '上下文超长', tone: 'amber' },
-  timeout: { Icon: PlugZap, label: '超时 / 连接中断', tone: 'amber' },
-  moderation: { Icon: Ban, label: '内容审核拦截', tone: 'red' },
-  empty_response: { Icon: MessageSquareOff, label: '空响应', tone: 'amber' },
-  invalid_image: { Icon: AlertTriangle, label: '图片无效', tone: 'red' },
-  invalid_request: { Icon: AlertTriangle, label: '请求被拒绝', tone: 'red' },
-  unknown: { Icon: AlertTriangle, label: '调用失败', tone: 'red' },
+  rate_limited: { Icon: Gauge, label: 'chatDegradedRateLimited', tone: 'amber' },
+  context_overflow: { Icon: Scissors, label: 'chatDegradedContextOverflow', tone: 'amber' },
+  timeout: { Icon: PlugZap, label: 'chatDegradedTimeout', tone: 'amber' },
+  moderation: { Icon: Ban, label: 'chatDegradedModeration', tone: 'red' },
+  empty_response: { Icon: MessageSquareOff, label: 'chatDegradedEmptyResponse', tone: 'amber' },
+  invalid_image: { Icon: AlertTriangle, label: 'chatDegradedInvalidImage', tone: 'red' },
+  invalid_request: { Icon: AlertTriangle, label: 'chatDegradedInvalidRequest', tone: 'red' },
+  unknown: { Icon: AlertTriangle, label: 'chatDegradedUnknown', tone: 'red' },
 }
 
 const TONE_CLASS: Record<string, { border: string; icon: string; label: string }> = {
   amber: {
     border: 'border-amber-200/80 bg-amber-50/60 dark:border-amber-900/50 dark:bg-amber-950/25',
-    icon: 'text-amber-600 dark:text-amber-400',
+    icon: 'text-warning',
     label: 'text-amber-800 dark:text-amber-300',
   },
   red: {
     border: 'border-red-200/80 bg-red-50/60 dark:border-red-900/50 dark:bg-red-950/25',
-    icon: 'text-red-600 dark:text-red-400',
+    icon: 'text-danger',
     label: 'text-red-800 dark:text-red-300',
   },
 }
 
 export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
+  const t = useT()
   // Old framework verdicts are no longer part of collaboration.
   if (degraded.kind === 'collaboration_incomplete') return null
   const meta = KIND_META[degraded.kind] ?? KIND_META.unknown
@@ -54,7 +57,7 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
       <div className="flex min-w-0 items-start gap-2.5">
         <Icon size={15} strokeWidth={2} className={`mt-0.5 shrink-0 ${tone.icon}`} />
         <div className="min-w-0 flex-1">
-          <div className={`text-[13px] font-medium ${tone.label}`}>{meta.label}</div>
+          <div className={`text-[13px] font-medium ${tone.label}`}>{t[meta.label]}</div>
           <p className="mt-1 min-w-0 [overflow-wrap:anywhere] text-[12px] leading-relaxed text-neutral-600">
             {degraded.reason}
           </p>
@@ -69,8 +72,8 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
           {(degraded.totalToolCalls != null || summaries.length > 0) && (
             <div className="mt-2 text-[12px] text-neutral-500 dark:text-neutral-500">
               {degraded.totalToolCalls != null
-                ? `本轮共 ${degraded.totalToolCalls} 个工具调用，结果见上方卡片`
-                : `最近 ${summaries.length} 个工具结果，见上方卡片`}
+                ? t.chatDegradedToolCallsTotal.replace('{n}', String(degraded.totalToolCalls))
+                : t.chatDegradedRecentToolResults.replace('{n}', String(summaries.length))}
             </div>
           )}
         </div>

@@ -641,7 +641,7 @@ export function FileTreePanel({
           />
         </div>
         {editing.error && (
-          <div className="pl-[34px] pb-1 text-[11px] leading-4 text-red-500 dark:text-red-400">
+          <div className="pl-[34px] pb-1 text-[11px] leading-4 text-danger">
             {editing.error}
           </div>
         )}

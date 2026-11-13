@@ -1,4 +1,5 @@
 import { FolderIcon as FolderOpen } from '../components/FileIcon'
+import { useT } from '../components/i18n'
 
 import { useState } from 'react'
 import { FileIcon } from '../components/FileIcon'
@@ -27,6 +28,7 @@ export function FileChip({
   variant?: 'card' | 'inline' | 'compact'
   onRevealLocation?: () => Promise<void>
 }) {
+  const t = useT()
   const [menuAnchor, setMenuAnchor] = useState<DockMenuAnchor | null>(null)
   const [locationError, setLocationError] = useState(false)
   const visual = kind === 'folder' ? folderKindVisual() : fileKindVisual(name)
@@ -38,10 +40,10 @@ export function FileChip({
   } : undefined
   const menu = <>
     {menuAnchor && onRevealLocation && <DockContextMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} items={[{
-      key: 'reveal', label: '打开所在位置', icon: <FolderOpen open size={16} />,
+      key: 'reveal', label: t.chatMsgRevealLocation, icon: <FolderOpen open size={16} />,
       onSelect: () => { void onRevealLocation().catch(() => setLocationError(true)) },
     }]} />}
-    {locationError && <span role="status" className="ml-1 text-xs text-neutral-500">无法打开所在位置，请检查文件是否仍存在。</span>}
+    {locationError && <span role="status" className="ml-1 text-xs text-neutral-500">{t.chatMsgRevealLocationFailed}</span>}
   </>
   if (variant === 'inline') {
     return (

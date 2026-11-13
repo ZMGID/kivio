@@ -27,7 +27,7 @@ export class ChatErrorBoundary extends Component<ChatErrorBoundaryProps, ChatErr
             <h2 className="text-base font-semibold text-neutral-900">
               界面加载失败
             </h2>
-            <p className="mt-2 break-all text-sm text-red-600 dark:text-red-400">
+            <p className="mt-2 break-all text-sm text-danger">
               {this.state.error.message}
             </p>
             <button

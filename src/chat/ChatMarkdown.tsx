@@ -1,4 +1,5 @@
 import { createContext, isValidElement, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useT } from '../components/i18n'
 import { createPortal } from 'react-dom'
 import { Code2, ExternalLink, Eye, Loader2 } from 'lucide-react'
 import type { BlockProps, Components, UrlTransform } from 'streamdown'
@@ -107,15 +108,15 @@ type TokenRule = {
 /** 语法高亮 token 色：浅色/暗色各一套，避免暗色主题下对比度不足。 */
 const syntax = {
   comment: 'text-neutral-400 dark:text-neutral-500',
-  string: 'text-emerald-700 dark:text-emerald-400',
+  string: 'text-success',
   keyword: 'text-blue-700 dark:text-blue-400',
-  literal: 'text-amber-700 dark:text-amber-400',
+  literal: 'text-warning',
   fn: 'text-cyan-700 dark:text-cyan-400',
   type: 'text-violet-700 dark:text-violet-400',
   number: 'text-orange-700 dark:text-orange-400',
   punct: 'text-neutral-500',
   tag: 'text-blue-700 dark:text-blue-400',
-  attr: 'text-amber-700 dark:text-amber-400',
+  attr: 'text-warning',
   selector: 'text-rose-700 dark:text-rose-400',
   atRule: 'text-cyan-700 dark:text-cyan-400',
   unit: 'text-orange-700 dark:text-orange-400',
@@ -381,10 +382,11 @@ function normalizeLegacyErrorDetails(content: string): string {
 }
 
 function ErrorDetails({ detail }: { detail: string }) {
+  const t = useT()
   return (
     <details className="not-prose my-3 overflow-hidden rounded-md border border-red-200/80 bg-red-50/60 dark:border-red-900/70 dark:bg-red-950/20">
       <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium text-red-700 marker:text-red-400 dark:text-red-300 dark:marker:text-red-600">
-        错误详情
+        {t.chatMdErrorDetails}
       </summary>
       <pre className="custom-scrollbar m-0 max-h-64 overflow-auto border-t border-red-200/70 bg-transparent px-3 py-2 text-xs leading-5 text-red-800 dark:border-red-900/60 dark:text-red-200">
         <code className="whitespace-pre-wrap break-words font-mono">{normalizeCodeBlockText(detail)}</code>
@@ -442,6 +444,7 @@ function mermaidThemeVariables() {
 }
 
 function CodeBlock({ code, language, actions }: { code: string; language: string; actions?: ReactNode }) {
+  const t = useT()
   const normalizedCode = useMemo(() => normalizeCodeBlockText(code), [code])
   // 上下文为 true 时只放转义后的全文，不调用 highlightCode。Block memo 不订阅这个上下文，
   // 所以这里自己读：定稿变 false 后仍会重渲，再走缓存高亮。岛一旦 hydrate 不拆这块，<pre>/<code> 仍在。
@@ -477,7 +480,7 @@ function CodeBlock({ code, language, actions }: { code: string; language: string
         <IconButton
           size="sm"
           onClick={() => void handleCopy()}
-          label={copied ? '已复制' : '复制代码'}
+          label={copied ? t.chatMessageCopied : t.chatMdCopyCode}
         >
           <span className={copied ? 'kv-copy-glyph is-copied' : 'kv-copy-glyph'} aria-hidden="true" />
         </IconButton>
@@ -539,6 +542,7 @@ function cacheMermaidSvg(key: string, svg: string) {
 }
 
 function MermaidBlock({ code }: { code: string }) {
+  const t = useT()
   const normalizedCode = useMemo(() => normalizeCodeBlockText(code), [code])
   const themeKey = useThemeKey()
   const cacheKey = `${themeKey}\n${normalizedCode}`
@@ -639,7 +643,7 @@ function MermaidBlock({ code }: { code: string }) {
     <IconButton
       size="sm"
       onClick={() => setView((current) => (current === 'diagram' ? 'source' : 'diagram'))}
-      label={view === 'diagram' ? '查看源码' : '查看图表'}
+      label={view === 'diagram' ? t.chatMsgViewSource : t.chatMdViewDiagram}
     >
       {view === 'diagram' ? <Code2 size={15} strokeWidth={2} /> : <Eye size={15} strokeWidth={2} />}
     </IconButton>
@@ -655,7 +659,7 @@ function MermaidBlock({ code }: { code: string }) {
     return (
       <>
         <div className="my-3 -mb-1 rounded-lg border border-red-100 bg-red-50 px-4 py-2 text-[12px] leading-5 text-red-600 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-          Mermaid 渲染失败：{error}
+          {t.chatMdMermaidFailed}{error}
         </div>
         <CodeBlock code={normalizedCode} language="mermaid" />
       </>
@@ -687,7 +691,7 @@ function MermaidBlock({ code }: { code: string }) {
       ) : (
         <div className="flex min-h-28 items-center justify-center gap-2 px-4 py-8 text-[13px] text-neutral-400 dark:text-neutral-500">
           <Loader2 size={15} className="animate-spin" />
-          正在渲染图表
+          {t.chatMdRenderingDiagram}
         </div>
       )}
       </figure>
@@ -723,6 +727,7 @@ function htmlPreviewSrcDoc(html: string): string {
 }
 
 function HtmlCodePreview({ html }: { html: string }) {
+  const t = useT()
   const [view, setView] = useState<'preview' | 'source'>('preview')
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
@@ -750,14 +755,14 @@ function HtmlCodePreview({ html }: { html: string }) {
   }, [html, showPreview])
 
   const openInBrowser = () => {
-    void api.openHtmlPreview(htmlPreviewSrcDoc(html)).catch((error) => notifyError(`打开页面失败：${String(error)}`))
+    void api.openHtmlPreview(htmlPreviewSrcDoc(html)).catch((error) => notifyError(`${t.chatMsgOpenPageFailed}${String(error)}`))
   }
   const source = (canReturn: boolean) => (
     <CodeBlock code={html} language="html" actions={<>
-      {canReturn && <IconButton size="sm" onClick={() => setView('preview')} label="查看预览">
+      {canReturn && <IconButton size="sm" onClick={() => setView('preview')} label={t.chatMdViewPreview}>
         <Eye size={14} strokeWidth={2} />
       </IconButton>}
-      <IconButton size="sm" onClick={openInBrowser} label="在浏览器打开">
+      <IconButton size="sm" onClick={openInBrowser} label={t.chatMsgOpenInBrowser}>
         <ExternalLink size={14} strokeWidth={2} />
       </IconButton>
     </>} />
@@ -767,7 +772,7 @@ function HtmlCodePreview({ html }: { html: string }) {
     return (
       <div className="not-prose my-3 flex items-center gap-2 text-[13px] text-[var(--text-muted)]" role="status">
         <Loader2 size={14} className="animate-spin" />
-        正在生成页面… {html.split('\n').length} 行
+        {t.chatMdGeneratingPage.replace('{n}', String(html.split('\\n').length))}
       </div>
     )
   }
@@ -778,6 +783,7 @@ function HtmlCodePreview({ html }: { html: string }) {
 
 /** Decode complete SVG snapshots offscreen; an unfinished delta never clears the last picture. */
 function SvgCodePreview({ source, language }: { source: string; language: string }) {
+  const t = useT()
   const streaming = useContext(MarkdownStreamingContext)
   const [view, setView] = useState<'preview' | 'source'>('preview')
   const [analysis, setAnalysis] = useState(() => ({ source, result: readSvgPreview(source) }))
@@ -890,14 +896,14 @@ function SvgCodePreview({ source, language }: { source: string; language: string
     return <HtmlCodePreview html={source} />
   }
   const snapshot = analysis.source === source ? analysis.result.snapshot : null
-  const status = streaming ? '正在绘制 SVG…'
-    : snapshot?.complete && !failed ? frame?.svg === snapshot.svg ? 'SVG' : '正在加载 SVG…'
-      : 'SVG 未完成或无法预览，请查看源码'
+  const status = streaming ? t.chatMdSvgDrawing
+    : snapshot?.complete && !failed ? frame?.svg === snapshot.svg ? 'SVG' : t.chatMdSvgLoading
+      : t.chatMdSvgUnavailable
   return <>
     {view === 'source' ? <CodeBlock code={source} language={language} /> : (
       <div className="relative my-3 w-full overflow-hidden rounded-lg border border-[var(--border-input)] bg-neutral-50"
         style={{ aspectRatio: String(work.current.ratio ?? 16 / 9), maxHeight: 520 }}>
-        {frame ? <img src={frame.url} alt="SVG 预览" className="absolute inset-0 h-full w-full object-contain" />
+        {frame ? <img src={frame.url} alt={t.chatMdSvgPreview} className="absolute inset-0 h-full w-full object-contain" />
           : <div className="absolute inset-0 flex items-center justify-center text-[var(--color-muted-foreground)]"><Loader2 className={streaming ? 'animate-spin' : ''} size={20} aria-hidden="true" /></div>}
       </div>
     )}
@@ -905,11 +911,11 @@ function SvgCodePreview({ source, language }: { source: string; language: string
       <span role="status" className="text-xs text-[var(--color-muted-foreground)]">{status}</span>
       <div className="flex gap-0.5">
         <IconButton size="sm" onClick={() => setView((current) => current === 'preview' ? 'source' : 'preview')}
-          label={view === 'preview' ? '查看源码' : '查看预览'}>
+          label={view === 'preview' ? t.chatMsgViewSource : t.chatMdViewPreview}>
           {view === 'preview' ? <Code2 size={14} strokeWidth={2} /> : <Eye size={14} strokeWidth={2} />}
         </IconButton>
         <IconButton size="sm" onClick={() => void api.openHtmlPreview(source).catch((error) => console.error('Failed to open SVG preview:', error))}
-          label="在浏览器打开"><ExternalLink size={14} strokeWidth={2} /></IconButton>
+          label={t.chatMsgOpenInBrowser}><ExternalLink size={14} strokeWidth={2} /></IconButton>
       </div>
     </div>
   </>
@@ -1055,6 +1061,7 @@ const EXTENSIONLESS_FILES = new Set(['makefile', 'dockerfile', 'license', 'readm
 /** 引用角标 `[n]`：点击弹出对应来源片段。KB 命中显示「文档 · 标题 · 正文」；
  *  联网来源显示「标题 · 域名 · 日期 · 摘要」，标题可点直接在浏览器打开。 */
 function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
+  const t = useT()
   const [open, setOpen] = useState(false)
   const [popoverPosition, setPopoverPosition] = useState<CitationPopoverPosition | null>(null)
   const triggerRef = useRef<HTMLSpanElement>(null)
@@ -1112,7 +1119,7 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
           type="button"
           onClick={() => setOpen((value) => !value)}
           className="mx-0.5 rounded bg-[var(--accent)]/15 px-1 align-baseline text-[0.82em] font-medium text-accent transition hover:bg-[var(--accent)]/25"
-          aria-label={`来源 ${n}`}
+          aria-label={t.chatMdSource.replace('{n}', String(n))}
           aria-expanded={open}
         >
           [{n}]
@@ -1122,7 +1129,7 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
         <span
           ref={popoverRef}
           role="dialog"
-          aria-label={`来源 ${n}`}
+          aria-label={t.chatMdSource.replace('{n}', String(n))}
           className="fixed z-[200] block max-h-[calc(100vh-1rem)] w-80 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border border-[var(--border-input)] bg-[var(--bg-input)] p-2.5 text-left text-xs shadow-lg"
           style={{
             left: popoverPosition?.left ?? 0,
@@ -1169,7 +1176,7 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
               </span>
             </>
           ) : (
-            <span className="text-neutral-400">未找到对应来源片段</span>
+            <span className="text-neutral-400">{t.chatMdSourceNotFound}</span>
           )}
         </span>,
         document.body,
@@ -1308,10 +1315,11 @@ const MarkdownReferencesContext = createContext<{
 }>({ artifacts: new Map(), artifactLookup: new Map() })
 
 function MarkdownArtifactReference({ url, label, image }: { url: string; label: string; image: boolean }) {
+  const t = useT()
   const context = useContext(MarkdownReferencesContext)
   const id = artifactReferenceId(url)
   const artifact = id ? context.artifacts.get(id) : undefined
-  if (!artifact) return <span role="status" className="text-sm text-neutral-500">{label || '文件'}（文件不可用）</span>
+  if (!artifact) return <span role="status" className="text-sm text-neutral-500">{label || t.chatMdFile}{t.chatMdFileUnavailable}</span>
   if (image && isImageArtifact(artifact)) {
     return <MarkdownArtifactImage rawSrc={artifact.name} alt={label || artifact.name}
       artifact={artifact} conversationId={context.conversationId} onImageClick={context.onImageClick} />

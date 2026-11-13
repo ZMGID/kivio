@@ -12,7 +12,7 @@ import {
   RotateCcw,
 } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
-import { useT } from '../components/i18n'
+import { useT, type I18n } from '../components/i18n'
 import { notifyError } from '../components/appNoticeStore'
 import { api } from '../api/tauri'
 import { record } from '../api/subagents'
@@ -164,12 +164,14 @@ function isTechnicalMcpImageName(name: string | undefined | null): boolean {
   return /^mcp-image-[\w.-]+\.(png|jpe?g|gif|webp)$/i.test(name.trim())
 }
 
-function artifactCaption(artifact: ChatToolArtifact, index: number, total: number): string | null {
+function artifactCaption(artifact: ChatToolArtifact, index: number, total: number, t: I18n): string | null {
   const name = (artifact.name ?? '').trim()
   if (!name) return null
   if (isTechnicalMcpImageName(name)) {
     // 多张时显示「截图 1/3」，单张只写「截图」
-    return total > 1 ? `截图 ${index + 1}/${total}` : '截图'
+    return total > 1
+      ? t.chatMsgScreenshotOf.replace('{index}', String(index + 1)).replace('{total}', String(total))
+      : t.chatMsgScreenshot
   }
   return name
 }
@@ -287,6 +289,7 @@ function GeneratedImageArtifacts({
   artifacts: ChatToolArtifact[]
   conversationId?: string | null
 }) {
+  const t = useT()
   const imageArtifacts = artifacts.filter(isImageArtifact)
   if (imageArtifacts.length === 0) return null
   const total = imageArtifacts.length
@@ -298,7 +301,7 @@ function GeneratedImageArtifacts({
           key={`${artifact.path || artifact.name || 'img'}-${index}`}
           artifact={artifact}
           conversationId={conversationId}
-          caption={artifactCaption(artifact, index, total)}
+          caption={artifactCaption(artifact, index, total, t)}
         />
       ))}
     </div>
@@ -316,6 +319,7 @@ function ToolPresentationBlock({
   conversationId?: string | null
   excludedArtifactIds?: ReadonlySet<string>
 }) {
+  const t = useT()
   const structured = toolCall.structured_content ?? toolCall.structuredContent
   if (structured && typeof structured === 'object' && 'type' in structured && structured.type === 'html_render') {
     const reference = htmlRenderReferenceFromToolCall(toolCall)
@@ -324,8 +328,8 @@ function ToolPresentationBlock({
     if (!src) return null
     return <HtmlFrame src={src} title={reference.title} initialHeight={reference.height}
       onOpenInBrowser={(themeCss) => void api.openHtmlRender(conversationId, reference.attachmentId, themeCss)
-        .catch((error) => notifyError(`打开页面失败：${String(error)}`))}
-      fallback={<div className="my-3 text-[13px] text-[var(--text-muted)]" role="status">页面不可用</div>} />
+        .catch((error) => notifyError(`${t.chatMsgOpenPageFailed}${String(error)}`))}
+      fallback={<div className="my-3 text-[13px] text-[var(--text-muted)]" role="status">{t.chatMsgPageUnavailable}</div>} />
   }
   const presentation = artifactPresentationFromToolCall(toolCall)
   if (!presentation) {
@@ -356,14 +360,14 @@ function ToolPresentationBlock({
   if (!selectedIds.length) return null
   if (presentation.mode === 'prepare') {
     return <details className="not-prose my-1 text-xs text-neutral-500">
-      <summary className="cursor-pointer">已准备 {selectedIds.length} 个文件</summary>
+      <summary className="cursor-pointer">{t.chatMsgFilesPrepared.replace('{n}', String(selectedIds.length))}</summary>
       <GeneratedFileArtifacts artifacts={selected} includeImages conversationId={conversationId} />
-      {missingCount > 0 && <span>{missingCount} 个文件不可用</span>}
+      {missingCount > 0 && <span>{t.chatMsgFilesUnavailable.replace('{n}', String(missingCount))}</span>}
     </details>
   }
 
   return (
-    <section aria-label="展示文件" className="not-prose my-2">
+    <section aria-label={t.chatMsgPresentedFiles} className="not-prose my-2">
       {presentation.caption ? (
         <div className="mb-2 text-[13px] leading-5 text-neutral-600">
           {presentation.caption}
@@ -374,7 +378,7 @@ function ToolPresentationBlock({
       {missingCount > 0 ? (
         <div className="mt-2 inline-flex items-center gap-1.5 text-[12px] text-neutral-400 dark:text-neutral-500">
           <AlertCircle size={12} strokeWidth={1.9} />
-          <span>{missingCount} 个文件不可用</span>
+          <span>{t.chatMsgFilesUnavailable.replace('{n}', String(missingCount))}</span>
         </div>
       ) : null}
     </section>
@@ -382,15 +386,16 @@ function ToolPresentationBlock({
 }
 
 function ImageGenerationPending() {
+  const t = useT()
   return (
-    <section aria-label="图片生成中" className="image-generation-pending">
+    <section aria-label={t.chatMsgImageGenerating} className="image-generation-pending">
       <div className="mb-3">
         <div className="flex items-center gap-2 text-[14px] font-medium leading-5 text-neutral-700">
           <span className="image-generation-pending-indicator" aria-hidden="true" />
-          <span>正在生成图片</span>
+          <span>{t.chatMsgImageGeneratingTitle}</span>
         </div>
         <div className="mt-1 pl-4 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
-          正在细化画面细节，请稍候。
+          {t.chatMsgImageGeneratingHint}
         </div>
       </div>
       <div className="image-generation-pending-frame" aria-hidden="true">
@@ -411,6 +416,7 @@ function AgentPlanAction({
   disabled?: boolean
   onExecute?: (messageId: string) => Promise<void> | void
 }) {
+  const t = useT()
   const [openError, setOpenError] = useState<string | null>(null)
   const document = planState?.document
   if (!document && !hasAgentPlanText(planState?.plan)) return null
@@ -422,14 +428,14 @@ function AgentPlanAction({
           <button className="min-w-0 flex-1 truncate text-left hover:underline" title={document.path} onClick={() => requestDockPreview(document.path)}>
             {document.title}.md
           </button>
-        ) : <span className="min-w-0 flex-1 truncate">计划草案</span>}
+        ) : <span className="min-w-0 flex-1 truncate">{t.chatMsgPlanDraft}</span>}
         {document && <Button variant="ghost" size="sm" onClick={() => {
           setOpenError(null)
           void invoke('chat_open_generated_artifact', { path: document.path }).catch((error) => setOpenError(String(error)))
-        }}>打开编辑</Button>}
-        {onExecute && <Button variant="primary" size="sm" onClick={() => void onExecute(messageId)} disabled={disabled} aria-label="执行这条计划">
+        }}>{t.chatMsgPlanOpenEditor}</Button>}
+        {onExecute && <Button variant="primary" size="sm" onClick={() => void onExecute(messageId)} disabled={disabled} aria-label={t.chatMsgPlanExecute}>
           <Play size={12} strokeWidth={2.2} fill="currentColor" />
-          {document ? '执行当前版本' : '执行这条计划'}
+          {document ? t.chatMsgPlanExecuteCurrent : t.chatMsgPlanExecute}
         </Button>}
       </div>
       {openError && <div role="alert">{openError}</div>}
@@ -442,10 +448,11 @@ function segmentText(segment: ChatMessageSegment): string {
 }
 
 function MissingToolSegment({ toolCallId }: { toolCallId: string }) {
+  const t = useT()
   return (
     <div className="not-prose mb-2 inline-flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[12px] leading-5 text-neutral-400 dark:text-neutral-500">
       <AlertCircle size={12} strokeWidth={1.9} className="shrink-0" />
-      <span className="truncate">工具记录缺失{toolCallId ? ` · ${toolCallId}` : ''}</span>
+      <span className="truncate">{t.chatMsgToolRecordMissing}{toolCallId ? ` · ${toolCallId}` : ''}</span>
     </div>
   )
 }
@@ -905,6 +912,7 @@ function TimelineGroupBlock({
   reasoningDurationMsBySegmentId?: Record<string, number>
   reasoningSegmentCount: number
 }) {
+  const t = useT()
   const generating = messageStreaming
   const summary = useMemo(
     () => summarizeToolGroup(allProcessSegments, toolCalls, toolCallById, messageStreaming),
@@ -920,16 +928,16 @@ function TimelineGroupBlock({
   if (!showHeader && (!renderDetails || segments.length === 0)) return null
 
   return (
-    <section aria-label="过程分组" className="not-prose">
+    <section aria-label={t.chatMsgWorkGroups} className="not-prose">
       {showHeader && <TimelineWorkHeader generating={generating} open={renderDetails} title={title} onToggle={onToggle}>
           {summary.diffStats && (
             <span className="shrink-0 font-mono text-[13px] tabular-nums">
-              <span className="text-emerald-600 dark:text-emerald-400">+{summary.diffStats.additions}</span>
+              <span className="text-success">+{summary.diffStats.additions}</span>
               <span className="ml-1 text-red-500/80 dark:text-red-400/80">-{summary.diffStats.removals}</span>
             </span>
           )}
           {!renderDetails && summary.stoppedCount > 0 && (
-            <span className="shrink-0 text-[var(--text-muted)]">{summary.stoppedCount} 项已停止或跳过</span>
+            <span className="shrink-0 text-[var(--text-muted)]">{t.chatMsgStoppedOrSkipped.replace('{n}', String(summary.stoppedCount))}</span>
           )}
       </TimelineWorkHeader>}
       <ChatDisclosureBody open={renderDetails} animate={userOpen !== null}>
@@ -1011,6 +1019,7 @@ function TimelineSegments({
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
   turnWork?: TurnWorkDisclosure
 }) {
+  const t = useT()
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
   const handleReasoningExpand = useCallback(() => {
     if (turnWork) turnWork.onOpenChange(true)
@@ -1089,7 +1098,7 @@ function TimelineSegments({
     && groupItems.every(item => item.type === 'group' || (item.type === 'text' && !showAnswer))) return null
   const artifactById = new Map(artifacts.map(artifact => [artifactId(artifact), artifact]))
   return (
-    <section aria-label="回答时间线" className="space-y-1.5">
+    <section aria-label={t.chatMsgAnswerTimeline} className="space-y-1.5">
       {groupItems.map((item: TimelineGroupItem) => {
         if (item.type === 'presentation') {
           return <TimelineToolSegment
@@ -1152,13 +1161,13 @@ function TimelineSegments({
           />
         )
       })}
-      {showFallbackFiles && <section aria-label="交付文件" className="not-prose text-xs text-neutral-500">
-        <span>文件</span>
+      {showFallbackFiles && <section aria-label={t.chatMsgDeliveredFiles} className="not-prose text-xs text-neutral-500">
+        <span>{t.chatMsgFiles}</span>
         <GeneratedFileArtifacts artifacts={fallbackIds.flatMap(id => {
           const artifact = artifactById.get(id)
           return artifact ? [artifact] : []
         })} includeImages conversationId={conversationId} />
-        {fallbackIds.some(id => !artifactById.has(id)) && <span role="status">部分文件不可用</span>}
+        {fallbackIds.some(id => !artifactById.has(id)) && <span role="status">{t.chatMsgSomeFilesUnavailable}</span>}
       </section>}
     </section>
   )
@@ -1522,7 +1531,7 @@ function MessageBubbleComponent({
         <TurnWorkHeader work={turnWork} />
         {toolCalls.length > 0 && !hasTimelineSegments && (
           <section
-            aria-label="工具调用"
+            aria-label={t.chatMsgToolCalls}
             className={message.content.trim().length > 0 || message.reasoning ? 'mb-3' : ''}
           >
             {toolsCollapsible ? (
@@ -1535,12 +1544,12 @@ function MessageBubbleComponent({
                 data-tauri-drag-region="false"
               >
                 <span>
-                  工具调用 · {toolCalls.length} 个
+                  {t.chatMsgToolCallsCount.replace('{n}', String(toolCalls.length))}
                 </span>
               </button>
             ) : (
               <div className="mb-1 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-                工具调用
+                {t.chatMsgToolCalls}
               </div>
             )}
             {toolsCollapsible && (
@@ -1601,10 +1610,10 @@ function MessageBubbleComponent({
           </>
         ) : (
           ((showAnswer && hasAnswerContent) || hasGeneratedImages || hasGeneratedFiles) && (
-            <section aria-label="回答">
+            <section aria-label={t.chatMsgAnswer}>
               {(toolCalls.length > 0 || message.reasoning) && (
                 <div className="mb-1 text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-                  回答
+                  {t.chatMsgAnswer}
                 </div>
               )}
               {showAnswer && hasAnswerContent && (

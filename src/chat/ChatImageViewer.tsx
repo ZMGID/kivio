@@ -22,7 +22,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
   const [original, setOriginal] = useState<{ key: string; src: string | null; failed: boolean } | null>(null)
   const [retryOriginal, setRetryOriginal] = useState(0)
   const [copied, setCopied] = useState(false)
-  const title = item.name || item.alt || '图片附件'
+  const title = item.name || item.alt || t.chatImageAttachment
   const imageKey = `${item.conversationId ?? ''}\u0000${item.path ?? ''}\u0000${item.src.length}:${item.src.slice(-64)}`
   const fullSrc = original?.key === imageKey ? original.src : null
   const originalFailed = original?.key === imageKey && original.failed
@@ -81,7 +81,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
   }, [onClose])
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col bg-neutral-50" aria-label="图片查看">
+    <section className="flex min-h-0 flex-1 flex-col bg-neutral-50" aria-label={t.chatImageViewerLabel}>
       <div
         className="flex h-[52px] shrink-0 items-center gap-2 border-b border-neutral-200/80 bg-[var(--theme-surface-titlebar)]/92 px-4 backdrop-blur"
         data-tauri-drag-region
@@ -90,7 +90,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
           size="md"
           onClick={onClose}
           data-tauri-drag-region="false"
-          label="返回对话"
+          label={t.chatImageBack}
         >
           <ArrowLeft size={18} strokeWidth={1.9} />
         </IconButton>
@@ -102,22 +102,22 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
             {title}
           </div>
           <div className="truncate text-[11px] text-neutral-400 dark:text-neutral-500">
-            {originalFailed ? '无法读取原图' : item.path && !fullSrc ? '正在读取原图…' : 'Esc 返回对话'}
+            {originalFailed ? t.chatImageOriginalFailed : item.path && !fullSrc ? t.chatImageOriginalLoading : t.chatImageEscBack}
           </div>
         </div>
-        {originalFailed ? <IconButton size="sm" label="重试加载原图" onClick={() => setRetryOriginal((value) => value + 1)}><RotateCcw size={15} /></IconButton> : null}
+        {originalFailed ? <IconButton size="sm" label={t.chatImageRetryOriginal} onClick={() => setRetryOriginal((value) => value + 1)}><RotateCcw size={15} /></IconButton> : null}
         <div
           className="flex items-center gap-1"
           data-tauri-drag-region="false"
         >
-          <IconButton size="md" onClick={() => void handleCopy()} disabled={!base64} label="复制图片">
+          <IconButton size="md" onClick={() => void handleCopy()} disabled={!base64} label={t.chatImageCopy}>
             {copied ? (
               <Check size={17} strokeWidth={2} className="chat-motion-pop" />
             ) : (
               <Clipboard size={17} strokeWidth={1.85} />
             )}
           </IconButton>
-          <IconButton size="md" onClick={() => void handleSave()} disabled={!base64} label="图片另存为">
+          <IconButton size="md" onClick={() => void handleSave()} disabled={!base64} label={t.chatImageSaveAsButton}>
             <Download size={17} strokeWidth={1.85} />
           </IconButton>
         </div>
@@ -129,7 +129,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
             size="sm"
             shape="circle"
             onClick={() => setZoom((value) => Math.max(0.5, Number((value - 0.25).toFixed(2))))}
-            label="缩小"
+            label={t.chatImageZoomOut}
           >
             <Minus size={15} strokeWidth={1.9} />
           </IconButton>
@@ -140,7 +140,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
             size="sm"
             shape="circle"
             onClick={() => setZoom((value) => Math.min(3, Number((value + 0.25).toFixed(2))))}
-            label="放大"
+            label={t.chatImageZoomIn}
           >
             <Plus size={15} strokeWidth={1.9} />
           </IconButton>
@@ -148,7 +148,7 @@ export function ChatImageViewer({ item, onClose }: ChatImageViewerProps) {
             size="sm"
             shape="circle"
             onClick={() => setZoom(1)}
-            label="重置缩放"
+            label={t.chatImageZoomReset}
           >
             <RotateCcw size={14} strokeWidth={1.9} />
           </IconButton>

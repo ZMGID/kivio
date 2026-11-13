@@ -87,7 +87,7 @@ export function ScheduledTasksCenter({ onOpenConversation, onCreateByChat, rende
   ]
   const body = <>
     <div className="custom-scrollbar mx-auto flex min-h-0 w-full max-w-[880px] flex-1 flex-col overflow-y-auto px-6 pb-6">
-      {(error || loadError) && <p className="mb-3 text-[13px] text-red-600 dark:text-red-400" role="alert">{error || loadError}</p>}
+      {(error || loadError) && <p className="mb-3 text-[13px] text-danger" role="alert">{error || loadError}</p>}
       {!tasks ? <p className="text-[13px] text-neutral-500">{t.chatSchedulesLoading}</p> : tasks.length === 0 ? <div className="flex flex-1 flex-col items-center justify-center rounded-xl border border-dashed border-[var(--theme-surface-border)] px-6 py-14 text-center dark:border-white/[0.1]">
         <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--theme-surface-muted)] text-neutral-400"><Clock size={23} strokeWidth={1.5} /></span>
         <h2 className="text-[15px] font-medium text-neutral-800">{t.chatSchedulesEmpty}</h2>
@@ -113,7 +113,7 @@ export function ScheduledTasksCenter({ onOpenConversation, onCreateByChat, rende
             <span className="text-[12px] tabular-nums text-neutral-500" title={formatScheduleTime(task.nextRunAt, lang)}>{task.status === 'completed' ? t.chatSchedulesCompleted : !task.enabled ? t.chatSchedulesDisabled : friendlyScheduleTime(task.nextRunAt, t, lang)}</span>
             {(running || task.lastError) && <span className="flex items-center gap-1.5">
               {running && <span className="rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[10px] text-blue-600 dark:text-blue-400">{running === 'queued' ? t.chatSchedulesQueued : t.chatSchedulesRunning}</span>}
-              {task.lastError && <span title={task.lastError} className="flex items-center gap-1 rounded-md bg-red-500/10 px-1.5 py-0.5 text-[10px] text-red-600 dark:text-red-400"><AlertCircle size={11} />{t.chatSchedulesFailed}</span>}
+              {task.lastError && <span title={task.lastError} className="flex items-center gap-1 rounded-md bg-red-500/10 px-1.5 py-0.5 text-[10px] text-danger"><AlertCircle size={11} />{t.chatSchedulesFailed}</span>}
             </span>}
           </div>
           <Toggle checked={task.enabled} disabled={busy !== null} ariaLabel={`${t.chatSchedulesEnabled} · ${task.name}`} onChange={enabled => { void mutate(task.id, () => api.scheduledTaskSetEnabled(task.id, enabled)) }} />

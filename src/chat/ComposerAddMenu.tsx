@@ -203,7 +203,7 @@ export function ComposerAddMenu({
                       <span className="min-w-0 flex-1 truncate">{t.chatAddAdditionalDirectory}</span>
                     </button>
                     {promptOnly && (
-                      <div className="px-2.5 py-1 text-[11px] leading-snug text-amber-700 dark:text-amber-300">
+                      <div className="px-2.5 py-1 text-[11px] leading-snug text-warning">
                         {t.chatAdditionalDirectoryPromptOnly.replace('{agent}', externalAgentId ?? '')}
                       </div>
                     )}

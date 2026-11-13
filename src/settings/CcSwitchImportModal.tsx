@@ -110,7 +110,7 @@ export function CcSwitchImportModal({
           </IconButton>
         </div>
 
-        {error && <p className="text-[12px] text-red-500 dark:text-red-400">{error}</p>}
+        {error && <p className="text-[12px] text-danger">{error}</p>}
         {!error && items === null && <p className="kv-row-desc">{t.externalAgentsRescanning}</p>}
         {!error && items?.length === 0 && <p className="kv-row-desc">{t.externalAgentsProviderImportEmpty}</p>}
 

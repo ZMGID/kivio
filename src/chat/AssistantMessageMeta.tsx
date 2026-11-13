@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useT } from '../components/i18n'
 import { Check, Copy, Gauge, GitBranch, NotebookPen, RotateCcw } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { copyToClipboard } from '../utils/clipboard'
@@ -57,6 +58,7 @@ export function AssistantMessageMeta({
   onFork,
   onSaveToNote,
 }: AssistantMessageMetaProps) {
+  const t = useT()
   const [copied, setCopied] = useState(false)
   const [saved, setSaved] = useState(false)
   // 优先显示 provider 报告的真实用量；provider 不报时回落到 chars 估算（带 ~ 前缀）。
@@ -84,12 +86,12 @@ export function AssistantMessageMeta({
     window.setTimeout(() => setSaved(false), 2000)
   }
 
-  const runEntryLabel = runEntry === 'regenerate' ? '已重新生成' : null
+  const runEntryLabel = runEntry === 'regenerate' ? t.chatMsgRegenerated : null
   const streamOutcomeLabel =
     streamOutcome === 'error'
-        ? '生成异常结束'
+        ? t.chatMsgStreamError
         : streamOutcome === 'interrupted'
-          ? '运行中断，未完成'
+          ? t.chatMsgStreamInterrupted
           : null
 
   return (
@@ -112,7 +114,7 @@ export function AssistantMessageMeta({
         <IconButton
           size="xs"
           onClick={() => void handleCopy()}
-          label={copied ? '已复制' : '复制'}
+          label={copied ? t.chatMessageCopied : t.chatMessageCopy}
         >
           {copied ? <Check size={13} strokeWidth={2} className="chat-motion-pop" /> : <Copy size={13} strokeWidth={2} />}
         </IconButton>
@@ -120,7 +122,7 @@ export function AssistantMessageMeta({
           size="xs"
           onClick={() => void handleSaveToNote()}
           disabled={!onSaveToNote}
-          label={saved ? '已存为笔记' : '存为笔记'}
+          label={saved ? t.chatMsgSavedToNote : t.chatMsgSaveToNote}
         >
           {saved ? <Check size={13} strokeWidth={2} className="chat-motion-pop" /> : <NotebookPen size={13} strokeWidth={2} />}
         </IconButton>
@@ -128,7 +130,7 @@ export function AssistantMessageMeta({
           size="xs"
           onClick={onRegenerate}
           disabled={!onRegenerate}
-          label="重新生成"
+          label={t.chatMsgRegenerate}
         >
           <RotateCcw size={13} strokeWidth={2} />
         </IconButton>
@@ -142,8 +144,8 @@ export function AssistantMessageMeta({
           size="xs"
           onClick={onFork}
           disabled={!onFork}
-          label="建分支"
-          title="从这里建分支（复制到新对话）"
+          label={t.chatMessageFork}
+          title={t.chatMessageForkHint}
         >
           <GitBranch size={13} strokeWidth={2} />
         </IconButton></>}

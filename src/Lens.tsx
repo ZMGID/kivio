@@ -2448,7 +2448,7 @@ export default function Lens() {
             style={translateContentStyle}>
             {translateError ? (
               translateError === 'rapidocr_models_missing' ? (
-                <div className="text-[12px] text-amber-700 dark:text-amber-300 leading-6 whitespace-pre-wrap break-words">
+                <div className="text-[12px] text-warning leading-6 whitespace-pre-wrap break-words">
                   {t.rapidOcrModelsMissing}
                 </div>
               ) : (

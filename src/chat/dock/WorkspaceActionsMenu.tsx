@@ -709,8 +709,8 @@ function WorkspaceActionsPanel({
                   </span>
                   {diffStat ? (
                     <span key={`${diffStat.additions}:${diffStat.deletions}`} className="chat-motion-pop ml-auto flex shrink-0 gap-2 ps-2 font-mono text-[12px] tabular-nums">
-                      <span className={diffStat.additions ? 'text-emerald-600 dark:text-emerald-400' : 'text-neutral-400'}>+{diffStat.additions.toLocaleString()}</span>
-                      <span className={diffStat.deletions ? 'text-red-500 dark:text-red-400' : 'text-neutral-400'}>-{diffStat.deletions.toLocaleString()}</span>
+                      <span className={diffStat.additions ? 'text-success' : 'text-neutral-400'}>+{diffStat.additions.toLocaleString()}</span>
+                      <span className={diffStat.deletions ? 'text-danger' : 'text-neutral-400'}>-{diffStat.deletions.toLocaleString()}</span>
                     </span>
                   ) : gitLoading || state.entries.length > 0 ? (
                     <span aria-hidden className="kv-skeleton ml-auto h-3 w-14 shrink-0 self-center rounded" />
@@ -737,7 +737,7 @@ function WorkspaceActionsPanel({
           {show.tasks && conversationId && tasks.length > 0 && <PanelSection>
             <div className="flex items-center gap-2 px-2.5 pb-1 pt-1.5 text-[12px] font-medium text-neutral-400">
               <span className="min-w-0 flex-1">{t.chatBgJobs}</span>
-              {runningTasks > 0 && <span aria-label={tasksLabel} className="shrink-0 text-emerald-600 dark:text-emerald-400">{runningTasks}</span>}
+              {runningTasks > 0 && <span aria-label={tasksLabel} className="shrink-0 text-success">{runningTasks}</span>}
               {onOpenTasks && <IconButton label={t.dockTabTasks} variant="ghost" size="sm" onClick={() => { setOpen(false); onOpenTasks() }}>
                 <Activity size={14} />
               </IconButton>}
@@ -761,7 +761,7 @@ function WorkspaceActionsPanel({
               <div className="flex items-center justify-between px-2.5 pb-1 pt-1.5 text-[12px] font-medium text-neutral-400">
                 <span>{t.workspaceSubagents}</span>
                 {roster.runningCount > 0 && (
-                  <span className="inline-flex items-center gap-1.5 font-normal text-emerald-600 dark:text-emerald-400">
+                  <span className="inline-flex items-center gap-1.5 font-normal text-success">
                     <span aria-hidden className="size-1.5 animate-pulse rounded-full bg-emerald-500 motion-reduce:animate-none" />
                     {t.workspaceSubagentsRunningShort.replace('{n}', String(roster.runningCount))}
                   </span>

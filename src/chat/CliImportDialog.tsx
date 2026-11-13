@@ -252,7 +252,7 @@ export function CliImportDialog({
                   </span>
                   <span className="text-[11px] text-neutral-400">{t.chatSkillCliCount.replace('{n}', String(list.length))}</span>
                   {list.some((session) => session.importHistory === 'fallback') && (
-                    <span className="text-[11px] text-amber-600 dark:text-amber-500">
+                    <span className="text-[11px] text-warning">
                       {t.chatSkillCliNoHistoryHint}
                     </span>
                   )}
@@ -313,7 +313,7 @@ export function CliImportDialog({
         </div>
 
         {error && (
-          <p className="border-t border-neutral-200 px-4 py-2 text-[11px] text-red-600 dark:text-red-400">
+          <p className="border-t border-neutral-200 px-4 py-2 text-[11px] text-danger">
             {error}
           </p>
         )}

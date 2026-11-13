@@ -232,9 +232,9 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
 function RerankBadge({ status }: { status: RetrievalResponse['rerankStatus'] }) {
   const t = useT()
   if (status.state === 'off') return <span className="text-neutral-400">{t.chatRetrievalRerankOff}</span>
-  if (status.state === 'ok') return <span className="text-emerald-600 dark:text-emerald-400">{t.chatRetrievalRerankApplied}</span>
+  if (status.state === 'ok') return <span className="text-success">{t.chatRetrievalRerankApplied}</span>
   return (
-    <span className="text-red-600 dark:text-red-400" title={status.error}>
+    <span className="text-danger" title={status.error}>
       {t.chatRetrievalRerankFailed}
     </span>
   )

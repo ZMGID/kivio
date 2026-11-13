@@ -85,7 +85,7 @@ function modelBadgeClass(model: string): string {
   const l = model.toLowerCase()
   if (l.includes('claude') || l.includes('opus') || l.includes('sonnet') || l.includes('haiku'))
     return 'bg-violet-500/10 text-violet-600 dark:text-violet-300'
-  if (l.includes('gpt') || /\bo[13]\b/.test(l)) return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-300'
+  if (l.includes('gpt') || /\bo[13]\b/.test(l)) return 'bg-emerald-500/10 text-success'
   if (l.includes('gemini')) return 'bg-sky-500/10 text-sky-600 dark:text-sky-300'
   if (l.includes('grok')) return 'bg-orange-500/10 text-orange-600 dark:text-orange-300'
   return 'bg-neutral-500/10 text-neutral-500'
@@ -100,7 +100,7 @@ const SOURCE_BADGE: Record<string, { zh: string; en: string; cls: string }> = {
   chat_aux_video: { zh: '视频分析', en: 'Video analysis', cls: 'bg-pink-500/10 text-pink-600 dark:text-pink-300' },
   chat_image_generation: { zh: '绘图', en: 'Image', cls: 'bg-rose-500/10 text-rose-600 dark:text-rose-300' },
   chat_prompt_optimize: { zh: '优化', en: 'Rewrite', cls: 'bg-lime-500/10 text-lime-600 dark:text-lime-300' },
-  translator: { zh: '翻译', en: 'Translate', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-300' },
+  translator: { zh: '翻译', en: 'Translate', cls: 'bg-amber-500/10 text-warning' },
   screenshot_translation: { zh: '截图', en: 'Shot', cls: 'bg-violet-500/10 text-violet-600 dark:text-violet-300' },
   lens: { zh: 'Lens', en: 'Lens', cls: 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-300' },
 }
@@ -380,7 +380,7 @@ function ToolBlock({ td, lang }: { td: unknown; lang: string }) {
                           </span>
                         )}
                         {required.has(key) && (
-                          <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                          <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[10px] font-medium text-warning">
                             {lang === 'zh' ? '必填' : 'required'}
                           </span>
                         )}
@@ -511,7 +511,7 @@ function MessageBlock({ block }: { block: MsgBlock }) {
     if (!txt.trim()) return null
     return (
       <div>
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">thinking</span>
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-warning">thinking</span>
         <InlinePre text={txt} />
       </div>
     )
@@ -816,10 +816,10 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
                         </span>
                       </div>
                       <div className="flex items-center gap-2.5 font-mono text-[11px] tabular-nums">
-                        <span className="font-medium text-emerald-600 dark:text-emerald-400">
+                        <span className="font-medium text-success">
                           {(tokens ?? 0).toLocaleString()} tok
                         </span>
-                        <span className="font-medium text-amber-600 dark:text-amber-500">
+                        <span className="font-medium text-warning">
                           {formatDuration(record.durationMs)}
                         </span>
                         <span className="ml-auto text-neutral-400">{formatTime(record.createdAt, lang)}</span>

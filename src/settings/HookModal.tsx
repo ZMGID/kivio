@@ -207,7 +207,7 @@ export function HookModal({ lang, event, eventLabel, eventOptions, initial, onSa
           </div>
         </div>
 
-        {error && <p className="text-[12px] text-red-500 dark:text-red-400">{error}</p>}
+        {error && <p className="text-[12px] text-danger">{error}</p>}
 
         <div className="flex justify-end gap-2 pt-1">
           <Button onClick={onClose} data-tauri-drag-region="false">{t.cancel}</Button>

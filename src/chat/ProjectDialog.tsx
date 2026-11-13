@@ -126,7 +126,7 @@ export function ProjectDialog({
             </button>
           )}
         </div>
-        {error && <p className="mt-2 text-[12px] text-red-600 dark:text-red-400">{error}</p>}
+        {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"

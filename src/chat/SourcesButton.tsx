@@ -1,16 +1,17 @@
 // 会话「来源」面板：知识库挂载、网络搜索。嵌在加号菜单的二级页里。
 // 仿 Notion「信息源」：每项一个开关，底部「管理来源」跳设置。
 import { useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { useT, type I18n } from '../components/i18n'
 import { SlidersHorizontal, Library, Globe, SearchCheck } from 'lucide-react'
 import { kbListLibraries, onKbIndex, type KnowledgeLibrary } from './knowledgeBase'
 import { ComposerAddMenuCloseContext } from './composerAddMenuContext'
 import type { ChatMcpServer } from '../api/tauri'
 import type { WebSearchMode } from './types'
 
-const WEB_SEARCH_OPTIONS: { value: WebSearchMode; label: string; hint?: string }[] = [
-  { value: 'off', label: '关闭' },
-  { value: 'builtin', label: '内置', hint: '使用模型自带的联网搜索' },
-  { value: 'third_party', label: '第三方', hint: '使用已配置的搜索服务（Tavily / Exa 等）' },
+const WEB_SEARCH_OPTIONS: { value: WebSearchMode; label: keyof I18n; hint?: keyof I18n }[] = [
+  { value: 'off', label: 'chatSourcesOff' },
+  { value: 'builtin', label: 'chatSourcesBuiltin', hint: 'chatSourcesBuiltinHint' },
+  { value: 'third_party', label: 'chatSourcesThirdParty', hint: 'chatSourcesThirdPartyHint' },
 ]
 
 function Switch({ checked }: { checked: boolean }) {
@@ -78,6 +79,7 @@ export function SourcesButton({
   builtinWebSearchSupported?: boolean
   onOpenSettings?: () => void
 }) {
+  const t = useT()
   const closeAddMenu = useContext(ComposerAddMenuCloseContext)
   const [libraries, setLibraries] = useState<KnowledgeLibrary[]>([])
 
@@ -126,7 +128,7 @@ export function SourcesButton({
         <span className="grid size-4 shrink-0 place-items-center text-neutral-500">
           <Globe size={13} strokeWidth={1.75} />
         </span>
-        <span className="min-w-0 flex-1 truncate">网络搜索</span>
+        <span className="min-w-0 flex-1 truncate">{t.chatSourcesWebSearch}</span>
         <div className="flex shrink-0 gap-1">
           {WEB_SEARCH_OPTIONS.map((opt) => {
             const active = webSearchMode === opt.value
@@ -136,17 +138,17 @@ export function SourcesButton({
                 key={opt.value}
                 type="button"
                 disabled={dim}
-                title={dim ? '当前模型不支持内置搜索' : opt.hint}
+                title={dim ? t.chatSourcesBuiltinUnsupported : opt.hint ? t[opt.hint] : undefined}
                 onClick={() => void onSetWebSearchMode(opt.value)}
                 className={`rounded-md px-2 py-0.5 text-[12px] transition-colors ${
                   active
-                    ? 'bg-emerald-500/15 font-medium text-emerald-700 dark:text-emerald-300'
+                    ? 'bg-emerald-500/15 font-medium text-success'
                     : dim
                       ? 'cursor-not-allowed text-neutral-300 dark:text-neutral-600'
                       : 'text-neutral-600 hover:bg-neutral-100'
                 }`}
               >
-                {opt.label}
+                {t[opt.label]}
               </button>
             )
           })}
@@ -156,7 +158,7 @@ export function SourcesButton({
       {libraries.length > 0 && (
         <>
           <div className="px-2 pt-1 pb-0.5 text-[10px] font-semibold uppercase tracking-wide text-neutral-400">
-            知识库
+            {t.chatSourcesKnowledge}
           </div>
           {libraries.map((lib) => (
             <SourceRow
@@ -171,8 +173,8 @@ export function SourcesButton({
           {onToggleForceKnowledgeSearch && (
             <SourceRow
               icon={<SearchCheck size={13} strokeWidth={1.75} />}
-              label="强制检索"
-              meta={mountedKbCount === 0 ? '需先挂载' : undefined}
+              label={t.chatSourcesForceSearch}
+              meta={mountedKbCount === 0 ? t.chatSourcesMountFirst : undefined}
               checked={forceKnowledgeSearch}
               onClick={() => void onToggleForceKnowledgeSearch()}
             />
@@ -194,7 +196,7 @@ export function SourcesButton({
             <span className="grid size-4 shrink-0 place-items-center">
               <SlidersHorizontal size={13} strokeWidth={1.75} />
             </span>
-            管理来源
+            {t.chatSourcesManage}
           </button>
         </>
       )}

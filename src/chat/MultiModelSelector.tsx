@@ -113,7 +113,7 @@ function MultiModelSelectorBase({ value, onChange, placement = 'up' }: MultiMode
         aria-expanded={open}
         aria-haspopup="menu"
         label={t.chatMultiModelLabel.replace('{max}', String(MAX_REPLY_MODELS))}
-        className={`shrink-0 ${enabled ? 'text-emerald-600 dark:text-emerald-400' : ''}`}
+        className={`shrink-0 ${enabled ? 'text-success' : ''}`}
       >
         <Layers size={18} strokeWidth={1.75} className="shrink-0" />
       </IconButton>

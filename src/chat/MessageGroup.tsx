@@ -52,11 +52,11 @@ interface GroupColumn {
   streaming: boolean
 }
 
-function columnModelLabel(provider: string | null | undefined, model: string | null | undefined): string {
+function columnModelLabel(provider: string | null | undefined, model: string | null | undefined, fallback: string): string {
   const m = (model ?? '').trim()
   const p = (provider ?? '').trim()
   if (m && p) return `${m} | ${p}`
-  return m || p || '模型'
+  return m || p || fallback
 }
 
 function streamColumnToMessage(column: GroupColumnSnapshot): ChatMessage {
@@ -129,6 +129,7 @@ function GroupColumnView({
   outlineEligible?: boolean
   onOutlineSourceChange?: (update: MarkdownOutlineSourceUpdate) => void
 }) {
+  const t = useT()
   const { message, streaming } = column
   const wrapperClass = showColumnChrome
     ? `chat-message-group-col flex max-h-[min(560px,70vh)] min-w-[280px] flex-1 flex-col rounded-2xl border px-3 py-2 ${
@@ -150,8 +151,8 @@ function GroupColumnView({
         <div className="mb-1 flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-neutral-500">
             {message.model && <ModelIcon model={message.model} size={14} />}
-            <span className="min-w-0 truncate" title={columnModelLabel(message.provider_id, message.model)}>
-              {columnModelLabel(message.provider_id, message.model)}
+            <span className="min-w-0 truncate" title={columnModelLabel(message.provider_id, message.model, t.chatMsgModel)}>
+              {columnModelLabel(message.provider_id, message.model, t.chatMsgModel)}
             </span>
           </div>
           {!live && onSelectColumn && (
@@ -159,7 +160,7 @@ function GroupColumnView({
               type="button"
               onClick={() => onSelectColumn(groupId, message.id)}
               aria-pressed={isSelected}
-              title={isSelected ? '已选为续聊上下文' : '用这条继续'}
+              title={isSelected ? t.chatMsgSelectedAsContext : t.chatMsgContinueWithThis}
               className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium transition-colors ${
                 isSelected
                   ? 'bg-emerald-500/90 text-white'
@@ -167,7 +168,7 @@ function GroupColumnView({
               }`}
             >
               <Check size={11} strokeWidth={2.5} />
-              {isSelected ? '已选' : '用这条继续'}
+              {isSelected ? t.chatMsgSelected : t.chatMsgContinueWithThis}
             </button>
           )}
         </div>
@@ -251,8 +252,8 @@ function GroupFooter({
       {/* 视图切换：iOS 风分段控件，激活项白底浮起，克制不抢眼 */}
       <div className="inline-flex shrink-0 items-center rounded-lg bg-neutral-100 p-0.5">
         {([
-          ['tabs', Square, '切换', '切换显示（一次一条）'],
-          ['columns', Columns2, '并排', '并排显示（多列）'],
+          ['tabs', Square, t.chatMsgViewTabs, t.chatMsgViewTabsHint],
+          ['columns', Columns2, t.chatMsgViewColumns, t.chatMsgViewColumnsHint],
         ] as const).map(([mode, Icon, label, hint]) => (
           <button
             key={mode}
@@ -275,24 +276,24 @@ function GroupFooter({
       <div className="flex min-w-0 flex-wrap items-center gap-0.5">
         {columns.map(({ message }) => {
           const isActive = message.id === activeMessageId
-          const shortLabel = (message.model ?? '').trim() || columnModelLabel(message.provider_id, message.model)
+          const shortLabel = (message.model ?? '').trim() || columnModelLabel(message.provider_id, message.model, t.chatMsgModel)
           return (
             <div key={message.id} className="inline-flex items-center">
               <button
                 type="button"
                 onClick={() => onSelectChip(message.id)}
                 aria-pressed={isActive}
-                title={columnModelLabel(message.provider_id, message.model)}
+                title={columnModelLabel(message.provider_id, message.model, t.chatMsgModel)}
                 className={`inline-flex max-w-[160px] shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors ${
                   isActive
-                    ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                    ? 'bg-emerald-500/10 text-success'
                     : 'text-neutral-500 hover:bg-neutral-100'
                 }`}
               >
                 {message.model && <ModelIcon model={message.model} size={13} />}
                 <span className="min-w-0 truncate">{shortLabel}</span>
                 {isActive && markContext && (
-                  <Check size={12} strokeWidth={2.5} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  <Check size={12} strokeWidth={2.5} className="shrink-0 text-success" />
                 )}
               </button>
               {onDeleteMessage && (

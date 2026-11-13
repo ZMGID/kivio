@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { useT } from '../components/i18n'
 import { useState } from 'react'
 import { artifactDataUrl, isFileArtifact } from './artifacts'
 import { FileChip } from './fileChip'
@@ -32,13 +33,14 @@ export function ArtifactFileChip({
   conversationId?: string | null
   variant?: 'card' | 'inline'
 }) {
+  const t = useT()
   const [error, setError] = useState(false)
   return <span className="not-prose" data-artifact-id={artifact.id ?? undefined}>
-    <FileChip variant={variant} name={artifact.name} onRevealLocation={fileLocationAction(artifactPath(artifact), conversationId)} ariaLabel={`打开文件 ${artifact.name}`} onClick={() => {
+    <FileChip variant={variant} name={artifact.name} onRevealLocation={fileLocationAction(artifactPath(artifact), conversationId)} ariaLabel={`${t.chatMsgOpenFile} ${artifact.name}`} onClick={() => {
       setError(false)
       void openGeneratedArtifact(artifact).catch(() => setError(true))
     }} />
-    {error && <span role="status" className="ml-1 text-xs text-neutral-500">文件无法打开，请检查文件是否仍存在。</span>}
+    {error && <span role="status" className="ml-1 text-xs text-neutral-500">{t.chatMsgFileOpenFailed}</span>}
   </span>
 }
 

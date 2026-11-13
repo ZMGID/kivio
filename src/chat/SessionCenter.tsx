@@ -1315,7 +1315,7 @@ function MenuItem({
       onClick={onClick}
       disabled={disabled}
       className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-neutral-50 disabled:cursor-default disabled:opacity-40 ${
-        danger ? 'text-red-600 dark:text-red-400' : 'text-neutral-700'
+        danger ? 'text-danger' : 'text-neutral-700'
       }`}
     >
       {icon}

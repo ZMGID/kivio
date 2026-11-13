@@ -22,12 +22,13 @@ import { GitHistory } from './GitHistory'
 import { DockContextMenu, type DockMenuAnchor, type DockMenuItem } from './DockContextMenu'
 import { partitionStatusEntries, statusLetter, type StatusLetter } from './gitReviewModel'
 import { useGitReview } from './useGitReview'
+import { usePopoverMenu } from '../usePopoverMenu'
 import type { GitBranchItem, GitStatusEntry } from '../../api/dockContracts'
 
 const STATUS_BADGE_CLASS: Record<StatusLetter, string> = {
-  M: 'bg-amber-500/15 text-amber-700 dark:text-amber-300',
-  A: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',
-  D: 'bg-red-500/15 text-red-700 dark:text-red-300',
+  M: 'bg-amber-500/15 text-warning',
+  A: 'bg-emerald-500/15 text-success',
+  D: 'bg-red-500/15 text-danger',
   R: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
   C: 'bg-sky-500/15 text-sky-700 dark:text-sky-300',
   U: 'bg-purple-500/15 text-purple-700 dark:text-purple-300',
@@ -70,6 +71,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
 
   // 分支下拉
   const [branchOpen, setBranchOpen] = useState(false)
+  usePopoverMenu(branchOpen, () => setBranchOpen(false))
   const [branches, setBranches] = useState<GitBranchItem[] | null>(null)
   const [newBranch, setNewBranch] = useState('')
 
@@ -236,10 +238,10 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
                 {stat && (stat.additions > 0 || stat.deletions > 0) && (
                   <span className="shrink-0 text-[11px] tabular-nums">
                     {stat.additions > 0 && (
-                      <span className="font-medium text-emerald-600 dark:text-emerald-400">+{stat.additions}</span>
+                      <span className="font-medium text-success">+{stat.additions}</span>
                     )}
                     {stat.deletions > 0 && (
-                      <span className="ml-1 font-medium text-red-500 dark:text-red-400">−{stat.deletions}</span>
+                      <span className="ml-1 font-medium text-danger">−{stat.deletions}</span>
                     )}
                   </span>
                 )}
@@ -430,7 +432,7 @@ export function GitPanel({ workdir, active, lang, onRevealInTree }: GitPanelProp
 
       {/* 错误横幅 */}
       {(review.viewError || review.mutationError || (status && status.status === 'error')) && (
-        <div className="flex items-start gap-1.5 border-b border-red-500/20 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
+        <div className="flex items-start gap-1.5 border-b border-red-500/20 bg-red-500/10 px-2 py-1.5 text-[11px] text-danger">
           <span className="min-w-0 flex-1 break-all">
             {review.mutationError || review.viewError || status?.error}
           </span>

@@ -274,9 +274,9 @@ export function AutomationCenter({ items, loading, listError, onReload, onCreate
             : (english ? 'Save failed · draft retained' : '保存失败 · 草稿已保留')}</span>
           {draftState.status === 'error' && <Button size="sm" onClick={() => void flushAutomationDraft().catch(() => {})}>{english ? 'Retry save' : '重试保存'}</Button>}
         </div>}
-        {visibleError ? <p role="alert" className="shrink-0 px-6 py-2 text-[13px] text-red-600 dark:text-red-400">{visibleError}</p> : null}
+        {visibleError ? <p role="alert" className="shrink-0 px-6 py-2 text-[13px] text-danger">{visibleError}</p> : null}
         {remoteHint ? (
-          <p className="shrink-0 px-6 py-2 text-[13px] text-amber-700 dark:text-amber-400">{remoteHint}</p>
+          <p className="shrink-0 px-6 py-2 text-[13px] text-warning">{remoteHint}</p>
         ) : null}
         <AutomationEditor
           key={`${editing.id}:${canvasEpoch}`}

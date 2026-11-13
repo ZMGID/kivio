@@ -160,7 +160,7 @@ export function FileViewer({ workdir, path, lang, onClose }: FileViewerProps) {
           />
           <div className="flex shrink-0 items-center gap-1.5 border-t border-neutral-200/70 px-2 py-1.5">
             {saveError && (
-              <span className="min-w-0 flex-1 truncate text-[11px] text-red-500 dark:text-red-400" title={saveError}>
+              <span className="min-w-0 flex-1 truncate text-[11px] text-danger" title={saveError}>
                 {saveError}
               </span>
             )}
