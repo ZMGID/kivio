@@ -1,6 +1,6 @@
 # Kivio Agent 目标运行架构
 
-状态：设计提议，尚未实施。基线：`36655fa1`。本设计取代此前仅调整两处分配位置的局部方案，主线是 Kivio Agent；外部 CLI 保留现有实现。依据为[问题分析](research/kivio-agent-stack-analysis-2026-11-07.md)，落地顺序见[实施方案](prd/kivio-agent-runtime-redesign.md)。工程规则仍以[统一工程规范](engineering-standards.md)为唯一入口。
+状态：未采用。2026-11-08 起由[栈修复实施计划](prd/kivio-agent-runtime-redesign.md)取代：独立 worker 进程、受控载荷类型和统一预算均未实施，现行实现是同进程的 owned 工具任务。本文只保留为当时的设计记录，不作为待办或验收依据。基线：`36655fa1`。本设计取代此前仅调整两处分配位置的局部方案，主线是 Kivio Agent；外部 CLI 保留现有实现。依据为[问题分析](research/kivio-agent-stack-analysis-2026-11-07.md)，落地顺序见[实施方案](prd/kivio-agent-runtime-redesign.md)。工程规则仍以[统一工程规范](engineering-standards.md)为唯一入口。
 
 ## 目标是约束增长，并隔离不可恢复故障
 
