@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
 import './styles/app.css'
 import 'streamdown/styles.css'
+import './browserDefaults'
 import { isTauriRuntime } from './api/tauri'
 import { startBackendSettingsSync } from './api/settingsCache'
 import { startModelDatabaseSync } from './data/modelDatabaseSync'
@@ -14,9 +15,6 @@ if (isTauriRuntime()) {
   })
   if (import.meta.hot) import.meta.hot.dispose(() => { void backendSettingsSync.then((stop) => stop()) })
 }
-
-// 屏蔽 WebView 原生右键菜单（Back/Reload/Inspect）
-document.addEventListener('contextmenu', (e) => e.preventDefault())
 
 // React 应用入口文件
 // 使用 createRoot 将 App 组件挂载到 DOM 的 #root 元素上

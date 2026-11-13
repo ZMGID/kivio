@@ -8,6 +8,7 @@
         "src/App.tsx",
         "src/Lens.tsx",
         "src/main.tsx",
+        "src/browserDefaults.ts",
         "src/chat/Chat.tsx"
       ]
     },
