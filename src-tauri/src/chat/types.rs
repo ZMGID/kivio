@@ -415,7 +415,7 @@ pub struct ChatMessageSegment {
     pub phase: ChatMessageSegmentPhase,
     pub order: u32,
     #[serde(default)]
-    pub step_number: Option<u8>,
+    pub step_number: Option<u32>,
     #[serde(default)]
     pub round: Option<u32>,
     #[serde(default)]

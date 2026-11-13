@@ -54,7 +54,6 @@ pub(crate) async fn synthesis_step(
             segment_phase_for_agent_phase(phase),
             Some(step_number),
             None,
-            &format!("step_{step_number}_compaction_blocked"),
         );
         return Ok(SynthesisFlow::Early(
             RunResultBuilder::new(host, content)
@@ -80,7 +79,6 @@ pub(crate) async fn synthesis_step(
         response_phase.clone(),
         Some(step_number),
         None,
-        &format!("step_{step_number}_reasoning"),
     );
     // reasoning 与正文之间预留内置搜索实时卡的 order 槽（任务 07-23，与 planning 同款）。
     let web_search_order = state.segment_builder.reserve_order();
@@ -89,7 +87,6 @@ pub(crate) async fn synthesis_step(
         response_phase.clone(),
         Some(step_number),
         None,
-        &format!("step_{step_number}_text"),
     );
     // 内置搜索实时卡追踪器：仅 Builtin 模式且模型支持时建（否则 None，走现状路径）。
     let synth_web_search_tracker = if config.builtin_web_search_active() {

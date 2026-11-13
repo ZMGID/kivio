@@ -2126,8 +2126,7 @@
           ]
         },
         "stepNumber": {
-          "format": "uint8",
-          "maximum": 255,
+          "format": "uint32",
           "minimum": 0,
           "type": [
             "integer",

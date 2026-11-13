@@ -802,7 +802,7 @@ pub(super) fn auxiliary_tool_segments(records: &[ToolCallRecord]) -> Vec<ChatMes
 pub(super) fn tool_segment_for_record(
     record: &ToolCallRecord,
     order: u32,
-    step_number: Option<u8>,
+    step_number: Option<u32>,
 ) -> ChatMessageSegment {
     ChatMessageSegment {
         id: format!("seg_{}_tool_{}", order, record.id),

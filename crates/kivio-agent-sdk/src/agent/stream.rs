@@ -37,7 +37,7 @@ pub struct ToolCallDraftTracker {
 struct ToolCallDraftState {
     tools: Vec<ToolDefinition>,
     round: u32,
-    step_number: Option<u8>,
+    step_number: Option<u32>,
     next_order: u32,
     drafts: Vec<ToolCallDraft>,
     speculative: Option<Box<dyn SpeculativeTaskScope>>,
@@ -59,7 +59,7 @@ impl ToolCallDraftTracker {
     pub fn new(
         tools: Vec<ToolDefinition>,
         round: u32,
-        step_number: Option<u8>,
+        step_number: Option<u32>,
         first_order: u32,
     ) -> Self {
         Self {

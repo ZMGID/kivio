@@ -169,9 +169,8 @@ impl SegmentBuilder {
         &mut self,
         kind: ContentKind,
         phase: ContentPhase,
-        step_number: Option<u8>,
+        step_number: Option<u32>,
         round: Option<u32>,
-        _suffix: &str,
     ) -> ContentBlock {
         let segment = ContentBlock {
             id: self.next_order,
@@ -204,7 +203,7 @@ impl SegmentBuilder {
     pub(crate) fn append_tool_calls(
         &mut self,
         phase: ContentPhase,
-        step_number: Option<u8>,
+        step_number: Option<u32>,
         round: u32,
         calls: &[PendingToolCall],
     ) -> Vec<ContentBlock> {
@@ -431,7 +430,6 @@ mod tests {
             super::ContentPhase::Synthesis,
             None,
             None,
-            "notice",
         );
         builder.append_text_from_template(&notice, "temporary failure");
         builder.remove_segment(notice.id);
@@ -512,15 +510,8 @@ mod tests {
             ContentPhase::ToolLoop,
             Some(1),
             Some(1),
-            "step_1_reasoning",
         );
-        let text = builder.reserve(
-            ContentKind::Text,
-            ContentPhase::ToolLoop,
-            Some(1),
-            Some(1),
-            "step_1_text",
-        );
+        let text = builder.reserve(ContentKind::Text, ContentPhase::ToolLoop, Some(1), Some(1));
 
         assert!(reasoning.id < text.id);
     }
@@ -618,15 +609,9 @@ mod tests {
             ContentPhase::ToolLoop,
             Some(1),
             Some(1),
-            "step_1_reasoning",
         );
-        let planning_text_segment = segment_builder.reserve(
-            ContentKind::Text,
-            ContentPhase::ToolLoop,
-            Some(1),
-            Some(1),
-            "step_1_text",
-        );
+        let planning_text_segment =
+            segment_builder.reserve(ContentKind::Text, ContentPhase::ToolLoop, Some(1), Some(1));
         let tracker = ToolCallDraftTracker::new(
             vec![crate::tools::ToolDefinition::new(crate::model::ModelTool {
                 name: "write".into(),

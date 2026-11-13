@@ -35,7 +35,7 @@ pub struct ContentBlock {
     pub id: u32,
     pub kind: ContentKind,
     pub phase: ContentPhase,
-    pub step_number: Option<u8>,
+    pub step_number: Option<u32>,
     pub round: Option<u32>,
     pub text: Option<String>,
     pub tool_call_id: Option<String>,

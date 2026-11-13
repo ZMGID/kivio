@@ -86,7 +86,6 @@ pub(crate) async fn planning_step(
             ContentPhase::Plain,
             Some(step_number),
             Some(round),
-            &format!("step_{step_number}_compaction_blocked"),
         );
         return Ok(PlanningStepOutcome::Recovered(
             RunResultBuilder::new(host, content)
@@ -108,7 +107,6 @@ pub(crate) async fn planning_step(
         ContentPhase::ToolLoop,
         Some(step_number),
         Some(round),
-        &format!("step_{step_number}_reasoning"),
     );
     // 在 reasoning 与正文之间预留内置搜索实时卡的 order 槽（任务 07-23）：搜索发生时卡插到
     // 这里 → 渲染在答案文本之前；未搜索则该 order 留空洞无害。
@@ -118,7 +116,6 @@ pub(crate) async fn planning_step(
         ContentPhase::ToolLoop,
         Some(step_number),
         Some(round),
-        &format!("step_{step_number}_text"),
     );
     let planning_tool_drafts = ToolCallDraftTracker::new(
         active_tools.clone(),
