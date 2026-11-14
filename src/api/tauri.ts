@@ -1539,6 +1539,15 @@ export type UsageTrendPoint = {
   cachedInputTokens: number
   cacheCreationInputTokens: number
   costUsd: number
+  /** 该时间桶内各来源的份额；没有用量的桶不带此字段。 */
+  sources?: UsageTrendSource[]
+}
+
+export type UsageTrendSource = {
+  providerId: string
+  requests: number
+  totalTokens: number
+  costUsd: number
 }
 
 export type UsageGroupStats = {

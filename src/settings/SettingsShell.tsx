@@ -1071,7 +1071,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               <div className="flex items-center gap-3">
                 <div className="kv-page-title">{pageMeta[activeTab].title}</div>
                 {activeTab === 'usage' && (
-                  <div className="inline-flex items-center gap-0.5 rounded-full bg-[var(--bg-input-subtle)] p-0.5" data-tauri-drag-region="false">
+                  <div className="kv-seg" data-tauri-drag-region="false">
                     {([
                       { id: 'app' as const, label: lang === 'zh' ? '应用用量' : 'App usage' },
                       { id: 'calls' as const, label: lang === 'zh' ? '调用明细' : 'Call details' },
@@ -1080,11 +1080,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                       <button
                         key={option.id}
                         type="button"
-                        className={`rounded-full px-2.5 py-0.5 text-[12px] leading-5 ${
-                          usageView === option.id
-                            ? 'bg-[var(--bg)] text-[var(--text)] shadow-sm'
-                            : 'text-[var(--text-muted)]'
-                        }`}
+                        aria-pressed={usageView === option.id}
+                        className={usageView === option.id ? 'active' : ''}
                         onClick={() => setUsageView(option.id)}
                         data-tauri-drag-region="false"
                       >

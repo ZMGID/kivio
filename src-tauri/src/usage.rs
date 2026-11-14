@@ -119,6 +119,18 @@ pub struct UsageTrendPoint {
     pub cached_input_tokens: u64,
     pub cache_creation_input_tokens: u64,
     pub cost_usd: f64,
+    /// 该时间桶内各来源的份额，按 provider_id 排序；趋势图据此分来源堆叠。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<UsageTrendSource>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageTrendSource {
+    pub provider_id: String,
+    pub requests: u64,
+    pub total_tokens: u64,
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -699,6 +711,31 @@ fn build_trend(records: &[UsageRecord], range: &str) -> Vec<UsageTrendPoint> {
             .cache_creation_input_tokens
             .saturating_add(record.cache_creation_input_tokens.unwrap_or(0));
         point.cost_usd += record.cost_usd.unwrap_or(0.0);
+        let index = match point
+            .sources
+            .iter()
+            .position(|source| source.provider_id == record.provider_id)
+        {
+            Some(index) => index,
+            None => {
+                point.sources.push(UsageTrendSource {
+                    provider_id: record.provider_id.clone(),
+                    ..Default::default()
+                });
+                point.sources.len() - 1
+            }
+        };
+        let source = &mut point.sources[index];
+        source.requests = source.requests.saturating_add(1);
+        source.total_tokens = source
+            .total_tokens
+            .saturating_add(record_total_tokens(record));
+        source.cost_usd += record.cost_usd.unwrap_or(0.0);
+    }
+    for point in points.values_mut() {
+        point
+            .sources
+            .sort_by(|a, b| a.provider_id.cmp(&b.provider_id));
     }
     points.into_values().collect()
 }

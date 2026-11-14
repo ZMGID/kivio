@@ -388,12 +388,33 @@ fn trend(
                 cached_input_tokens: totals.cached_input_tokens,
                 cache_creation_input_tokens: totals.cache_creation_input_tokens,
                 cost_usd: totals.total_cost_usd,
+                sources: Vec::new(),
             })
         })
         .map_err(db_error)?;
     for point in rows {
         let point = point.map_err(db_error)?;
         points.insert(point.date.clone(), point);
+    }
+    let mut stmt = db.prepare(&format!("SELECT strftime('{format}',created_at,'unixepoch','localtime') AS bucket, provider_id, count(*), coalesce(sum(effective_total),0), coalesce(sum(cost_usd),0.0) FROM accounted{filter} GROUP BY bucket, provider_id ORDER BY provider_id")).map_err(db_error)?;
+    let rows = stmt
+        .query_map(params_from_iter(values), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                UsageTrendSource {
+                    provider_id: r.get(1)?,
+                    requests: unsigned(r.get(2)?)?,
+                    total_tokens: unsigned(r.get(3)?)?,
+                    cost_usd: r.get(4)?,
+                },
+            ))
+        })
+        .map_err(db_error)?;
+    for row in rows {
+        let (bucket, source) = row.map_err(db_error)?;
+        if let Some(point) = points.get_mut(&bucket) {
+            point.sources.push(source);
+        }
     }
     Ok(points.into_values().collect())
 }
