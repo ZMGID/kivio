@@ -33,7 +33,6 @@ async function renderCenter(onSelectConversation = vi.fn()) {
   const view = render(
     <SessionCenter
       lang="zh"
-      embedded
       onSelectConversation={onSelectConversation}
     />,
   )
@@ -76,5 +75,40 @@ describe('SessionCenter row menu', () => {
     expect(menu?.parentElement).toBe(document.body)
     expect(container.contains(menu)).toBe(false)
     await waitFor(() => expect(menu).toBeVisible())
+  })
+})
+
+describe('SessionCenter toolbar', () => {
+  it('searches message bodies by default and offers only the three scopes', async () => {
+    await renderCenter()
+    expect(chatApi.queryConversations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ shelf: 'all', fullText: true, sort: 'updated', order: 'desc' }),
+    )
+    const scope = screen.getByRole('group', { name: '范围' })
+    expect(Array.from(scope.querySelectorAll('button'), (button) => button.textContent)).toEqual(['全部', '收藏', '归档'])
+    expect(screen.getByText('共 1 条')).toBeInTheDocument()
+  })
+
+  it('switches scope and filters by owner in the same query', async () => {
+    const user = userEvent.setup()
+    await renderCenter()
+
+    await user.click(screen.getByRole('button', { name: '归档' }))
+    await waitFor(() => expect(chatApi.queryConversations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ shelf: 'archived', projectId: null, setId: null }),
+    ))
+
+    await user.click(screen.getByRole('button', { name: '归属' }))
+    await user.click(await screen.findByRole('option', { name: project.name }))
+    await waitFor(() => expect(chatApi.queryConversations).toHaveBeenLastCalledWith(
+      expect.objectContaining({ shelf: 'archived', projectId: project.id, setId: null }),
+    ))
+  })
+
+  it('shows the owner on each row and groups time-sorted rows by day', async () => {
+    await renderCenter()
+    const row = screen.getByRole('button', { name: /历史对话/ })
+    expect(row).toHaveTextContent(project.name)
+    expect(screen.getByText('更早')).toBeInTheDocument()
   })
 })

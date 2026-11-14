@@ -1342,17 +1342,7 @@ input[type="search"]::-webkit-search-decoration {
   margin-bottom: 4px;
   position: relative;
 }
-.kv-provider-list-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 4px;
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--divider);
-  padding-bottom: 8px;
-}
-.kv-provider-item,
-.kv-provider-add {
+.kv-provider-item {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -1446,8 +1436,7 @@ input[type="search"]::-webkit-search-decoration {
 .kv-provider-item:hover .kv-provider-item-select {
   color: var(--text);
 }
-.kv-provider-item:hover,
-.kv-provider-add:hover {
+.kv-provider-item:hover {
   background: var(--bg-hover);
   color: var(--text);
 }
@@ -1463,29 +1452,6 @@ input[type="search"]::-webkit-search-decoration {
 }
 .dark .kv-provider-item.is-dragging {
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
-}
-.kv-provider-drag-handle {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  margin-right: -2px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: grab;
-  transition: background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
-}
-.kv-provider-drag-handle:hover {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-.kv-provider-drag-handle:active {
-  cursor: grabbing;
 }
 .kv-provider-dot {
   width: 6px;
@@ -1510,22 +1476,7 @@ input[type="search"]::-webkit-search-decoration {
 @keyframes kv-cli-spin {
   to { transform: rotate(360deg); }
 }
-.kv-provider-add {
-  font-size: 12px;
-  color: var(--text-muted);
-  gap: 6px;
-}
-.kv-provider-add--preset {
-  color: var(--accent);
-  font-weight: 500;
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-}
-.kv-provider-add--preset:hover {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-}
-.kv-provider-item svg,
-.kv-provider-add svg {
+.kv-provider-item svg {
   width: 12px;
   height: 12px;
   flex-shrink: 0;
@@ -1539,6 +1490,258 @@ input[type="search"]::-webkit-search-decoration {
 .kv-provider-detail {
   flex: 1 1 0%;
   min-width: 0;
+}
+
+/* ===== 供应商页（列表级）=====
+   工具栏（搜索 + 添加）→「已添加」卡片 →「可添加」预设。点开卡片进入详情。 */
+.kv-provider-page {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.kv-provider-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.kv-provider-toolbar-search {
+  flex: 1;
+  min-width: 0;
+  max-width: 320px;
+  margin-right: auto;
+}
+.kv-provider-block { margin-top: 14px; }
+.kv-provider-block-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.kv-provider-block-count {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+.kv-provider-block-empty {
+  margin: 0;
+  padding: 18px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  text-align: center;
+}
+.kv-provider-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px; /* 与 ProviderSortableList 的 CARD_GAP 一致 */
+  position: relative;
+}
+.kv-provider-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 12px 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  position: relative;
+  transition: border-color var(--kv-dur-fast) var(--kv-ease-out), background-color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-provider-card:hover { border-color: var(--border-strong); }
+.kv-provider-card:active { background: var(--bg-input-subtle); }
+html[data-focus-source="keyboard"] .kv-provider-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* 合成层提升只在拖拽排序期间启用，常态开启会让 WebView2 间歇性吞掉首个 pointer 事件。 */
+.kv-provider-cards.is-sorting .kv-provider-card { will-change: transform; }
+.kv-provider-cards.is-sorting .kv-provider-card:not(.is-dragging) {
+  transition: transform var(--kv-dur-normal) var(--kv-ease-firm);
+}
+.kv-provider-card.is-dragging {
+  transition: none;
+  z-index: 2;
+  border-color: var(--border-strong);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+}
+.dark .kv-provider-card.is-dragging { box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35); }
+.kv-provider-card-grip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 28px;
+  margin: 0 -6px 0 -8px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-provider-card:hover .kv-provider-card-grip,
+.kv-provider-card-grip:focus-visible,
+.kv-provider-cards.is-sorting .kv-provider-card-grip { opacity: 1; }
+.kv-provider-card-grip:hover { color: var(--text); }
+.kv-provider-card-grip:active { cursor: grabbing; }
+.kv-provider-card-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+}
+.kv-provider-card-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.kv-provider-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kv-provider-card-url {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kv-provider-card.is-off .kv-provider-card-icon,
+.kv-provider-card.is-off .kv-provider-card-text { opacity: 0.55; }
+.kv-provider-card-tags,
+.kv-provider-card-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.kv-provider-card-actions { gap: 4px; }
+.kv-provider-card-actions > .kv-toggle { margin-right: 6px; }
+@container settings-shell (max-width: 560px) {
+  .kv-provider-card-tags { display: none; }
+}
+
+/* 供应商顶栏：图标 + 名称 + 状态 + 测试 + 启用 + 删除，一行说清「是谁、通不通、开没开」。 */
+.kv-provider-hero {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 0 14px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--divider);
+}
+.kv-provider-hero-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  cursor: default;
+  transition: border-color var(--kv-dur-fast) var(--kv-ease-out), background-color var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-provider-hero-icon:hover,
+.kv-provider-hero-icon[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+.kv-provider-hero-name {
+  flex: 1 1 140px;
+  min-width: 0;
+  width: auto;
+}
+.kv-provider-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(32px, 1fr));
+  gap: 4px;
+  margin-top: 10px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input-subtle);
+}
+.kv-provider-icon-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  cursor: default;
+}
+.kv-provider-icon-cell:hover { background: var(--bg-hover); }
+.kv-provider-icon-cell[aria-selected="true"] { background: var(--bg-active); color: var(--text); }
+
+/* 分区标题带计数和动作（模型区）。 */
+.kv-provider-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 10px;
+  margin-bottom: 8px;
+}
+.kv-provider-section-head > .kv-btn { margin-left: auto; }
+.kv-provider-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.kv-provider-link {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: default;
+}
+.kv-provider-link:hover { text-decoration: underline; }
+.kv-provider-usage {
+  margin: 4px 0 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input-subtle);
+}
+/* 分区里唯一的一行入口：分区自己已有上边线，入口不再重复画。 */
+.kv-subpage-entry--flush {
+  border-top: none;
+  padding-top: 6px;
 }
 
 /* ===== 供应商编辑弹窗 =====
@@ -2180,24 +2383,34 @@ input[type="search"]::-webkit-search-decoration {
   margin-bottom: 12px;
   border-bottom: 1px solid var(--divider);
 }
-/* 标题 + 官方文档一组，占住左侧全部余量：这样文档链接紧贴名字，
-   右侧版本/更新那组被顶到边上；窄宽度下先挤标题（留 5em 兜底，不许缩到看不见）。 */
+/* 名称在上、版本与状态在下，占住左侧余量；文档链接和启用开关被顶到右边。 */
 .kv-cli-head-main {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 2px;
 }
 .kv-cli-head-title {
-  flex: 0 1 auto;
-  min-width: 5em;
   font-size: 15px;
   font-weight: 600;
+  line-height: 1.3;
   color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.kv-cli-head-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;
+}
+.kv-cli-version {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 .kv-cli-docs {
   flex-shrink: 0;
@@ -2211,16 +2424,33 @@ input[type="search"]::-webkit-search-decoration {
 .kv-cli-docs:hover {
   color: var(--text);
 }
-.kv-cli-pill {
+.kv-cli-enable {
   flex-shrink: 0;
-  padding: 3px 8px;
-  border-radius: 6px;
-  background: var(--bg-sidebar);
-  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 1px solid var(--divider);
   font-size: 12px;
   color: var(--text-muted);
-  white-space: nowrap;
 }
+/* 安装 / 更新动作条：只在需要动手时出现。 */
+.kv-cli-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-input-subtle);
+}
+.kv-cli-action > .kv-row-desc {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+.kv-cli-note { margin: 0 0 10px; }
 .kv-cli-card {
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -2232,12 +2462,6 @@ input[type="search"]::-webkit-search-decoration {
 .kv-cli-card .kv-row:first-child,
 .kv-cli-card .kv-row-stack:first-child {
   border-top: none;
-}
-.kv-cli-sub {
-  padding: 0 0 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 .kv-cli-log {
   max-height: 180px;
@@ -2327,19 +2551,75 @@ input[type="search"]::-webkit-search-decoration {
 .kv-cli-group-head:hover { color: var(--text); }
 .kv-cli-group-head svg { width: 12px; height: 12px; flex-shrink: 0; }
 
-/* 「所有供应商」区块：标题行右侧挂导入/添加，下面直接复用 .kv-cli-card 的分隔行。 */
-.kv-cli-providers { margin-top: 18px; }
-.kv-cli-providers-head {
+/* 详情分区（供应商 / 模型 / 扩展 / 高级）：标题与一句说明在左，动作在右，下面接 .kv-cli-card。 */
+.kv-cli-section { margin-top: 20px; }
+.kv-cli-section-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   margin-bottom: 8px;
 }
-.kv-cli-providers-head > .kv-row-label {
+.kv-cli-section-text {
+  flex: 1;
+  min-width: 0;
+}
+.kv-cli-section-text > .kv-row-desc { margin: 2px 0 0; }
+.kv-cli-section-title {
   flex: 1;
   min-width: 0;
   font-size: 13px;
   font-weight: 600;
+  color: var(--text);
+}
+.kv-cli-models {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+}
+.kv-cli-model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.kv-cli-model-chips > .kv-chip { padding-right: 8px; }
+.kv-cli-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 单选型 CLI 的行首单选圈：选中为强调色实心点。 */
+.kv-cli-radio {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+.kv-cli-radio::before {
+  content: '';
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  background: var(--bg-input);
+  transition: border-color var(--kv-dur-fast) var(--kv-ease-out), border-width var(--kv-dur-fast) var(--kv-ease-out);
+}
+.kv-cli-radio:hover::before { border-color: var(--text-muted); }
+.kv-cli-radio[aria-checked="true"]::before {
+  border: 4.5px solid var(--accent);
+  background: var(--text-onaccent);
+}
+html[data-focus-source="keyboard"] .kv-cli-radio:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* 供应商行：行首一个字母方块。**不给选中行加底色/色条** —— 卡片本身有 14px 内边距，
@@ -2999,16 +3279,6 @@ dialog.kv-modal::backdrop {
   padding: 16px;
 }
 
-.kv-modal.kv-model-picker {
-  max-width: 480px;
-  padding: 14px 16px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  height: min(80vh, 560px);
-  max-height: min(80vh, 560px);
-}
-
 .kv-modal.kv-provider-preset-picker {
   max-width: min(640px, calc(100vw - 48px));
   padding: 14px 16px 12px;
@@ -3075,6 +3345,17 @@ dialog.kv-modal::backdrop {
   line-height: 1.4;
   color: var(--text-muted);
 }
+
+.kv-modal.kv-model-picker {
+  max-width: 480px;
+  padding: 14px 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: min(80vh, 560px);
+  max-height: min(80vh, 560px);
+}
+
 
 /* 虚拟文本附件编辑弹窗（粘贴长文本转虚拟 txt 后点击打开） */
 .kv-modal.kv-pasted-text-editor {

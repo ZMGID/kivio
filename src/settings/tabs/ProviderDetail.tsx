@@ -1,7 +1,6 @@
 import { useModelDatabase } from '../../data/useModelDatabase'
-import { useEffect, useState } from 'react'
 import {
-  Plus, Minus, Trash2, RefreshCw, Eye, EyeOff, Wrench, Brain,
+  Plus, Minus, Trash2, Eye, EyeOff, Wrench, Brain,
   ArrowLeft, ChevronRight, SlidersHorizontal, List,
   Image as ImageIcon, Video, Clapperboard,
 } from 'lucide-react'
@@ -17,18 +16,19 @@ import { api, isOpenCodeFree, clampedActiveKeyIndex, activeKeyIndexAfterRemove }
 import type { I18n, Lang } from '../../components/i18n'
 import type { ModelProvider, ProviderApiFormat } from '../../api/tauri'
 
-/** 右栏：选中供应商的端点/协议/gzip/密钥池/模型列表，以及通往「请求配置」二级页的入口。 */
+/** 右栏正文，按配置顺序排：连接（端点/协议/密钥）→ 账户用量 → 模型 → 高级（「请求配置」二级页入口）。 */
 export function ProviderDetail({
   provider,
   t,
   lang,
   revealedKeys,
   gzipInfoOpen,
+  requestPageOpen,
+  onRequestPageOpenChange,
   onUpdateProvider,
   onToggleGzipInfo,
   onToggleKeyReveal,
   onOpenModelPicker,
-  onOpenModelTest,
   onOpenModelDrawer,
   onRemoveEnabledModel,
 }: {
@@ -37,25 +37,23 @@ export function ProviderDetail({
   lang: Lang
   revealedKeys: Set<string>
   gzipInfoOpen: Set<string>
+  /** 「请求配置」二级页是否打开。由供应商页持有：打开时它要收起自己的顶栏，换供应商时要退回一级页。 */
+  requestPageOpen: boolean
+  onRequestPageOpenChange: (open: boolean) => void
   onUpdateProvider: (id: string, updates: Partial<ModelProvider>) => void
   onToggleGzipInfo: (id: string) => void
   onToggleKeyReveal: (keyId: string) => void
   onOpenModelPicker: (id: string) => void
-  onOpenModelTest: (id: string) => void
   onOpenModelDrawer: (target: { providerId: string; model: string }) => void
   onRemoveEnabledModel: (providerId: string, model: string) => void
 }) {
   useModelDatabase()
-  const [showRequestPage, setShowRequestPage] = useState(false)
-  // 切换供应商时退回一级页：否则会停在二级页上、悄悄改到另一个供应商的头。
-  useEffect(() => setShowRequestPage(false), [provider.id])
-
-  if (showRequestPage) {
+  if (requestPageOpen) {
     return (
       <>
         <button
           type="button"
-          onClick={() => setShowRequestPage(false)}
+          onClick={() => onRequestPageOpenChange(false)}
           className="kv-subpage-back"
           data-tauri-drag-region="false"
         >
@@ -78,8 +76,7 @@ export function ProviderDetail({
 
   return (
     <>
-    <ProviderUsageCard key={provider.id} provider={provider} lang={lang} />
-    <SettingsGroup title={lang === 'zh' ? '配置' : 'Configuration'}>
+    <SettingsGroup title={lang === 'zh' ? '连接' : 'Connection'}>
       <ProviderOAuthPanel key={provider.id} provider={provider} lang={lang} onUpdateProvider={onUpdateProvider} />
       <FieldBlock label={t.baseUrl}>
         <div className="kv-provider-endpoint-row">
@@ -107,7 +104,7 @@ export function ProviderDetail({
         </div>
       </FieldBlock>
 
-      {isOpenCodeFree(provider) && <p className="text-sm opacity-70">{lang === 'zh' ? '免费模型，无需账号、API Key 或安装 OpenCode。管理模型可刷新当前免费列表。' : 'Free models: no account, API key or OpenCode installation required. Manage models to refresh the free catalog.'}</p>}
+      {isOpenCodeFree(provider) && <p className="kv-row-desc">{lang === 'zh' ? '免费模型，无需账号、API Key 或安装 OpenCode。管理模型可刷新当前免费列表。' : 'Free models: no account, API key or OpenCode installation required. Manage models to refresh the free catalog.'}</p>}
       {!provider.request.oauth && !isOpenCodeFree(provider) && <FieldBlock label={t.apiKey} description={t.apiKeysHint}>
         <div className="space-y-1.5">
           {(() => {
@@ -120,7 +117,7 @@ export function ProviderDetail({
               <button
                 type="button"
                 onClick={() => void api.openExternal(preset.apiKeyUrl!)}
-                className="inline-flex w-fit items-center gap-0.5 text-[12px] text-indigo-500 hover:underline dark:text-indigo-300"
+                className="kv-provider-link"
                 data-tauri-drag-region="false"
               >
                 {lang === 'zh' ? `获取 ${preset.name} API Key ↗` : `Get ${preset.name} API key ↗`}
@@ -204,70 +201,27 @@ export function ProviderDetail({
         </Button>
       </FieldBlock>}
 
-      <div className="kv-row">
-        <div className="kv-row-text">
-          <span className="kv-row-label">{t.testConnection}</span>
-        </div>
-        <div className="kv-row-control kv-row-control-cluster">
-          <Button
-            size="sm"
-            onClick={() => onOpenModelPicker(provider.id)}
-            data-tauri-drag-region="false"
-          >
-            <List size={12} />
-            {lang === 'zh' ? '管理模型' : 'Models'}
-          </Button>
-          <Button
-            size="sm"
-            onClick={() => onOpenModelTest(provider.id)}
-            data-tauri-drag-region="false"
-          >
-            <RefreshCw size={10} />
-            {t.testConnection}
-          </Button>
-        </div>
+    </SettingsGroup>
+
+    <ProviderUsageCard key={provider.id} provider={provider} lang={lang} />
+
+    <SettingsGroup>
+      <div className="kv-provider-section-head">
+        <span className="kv-provider-section-title">{lang === 'zh' ? '模型' : 'Models'}</span>
+        <span className="kv-tag tabular-nums">{provider.enabledModels.length}</span>
+        <Button
+          size="sm"
+          onClick={() => onOpenModelPicker(provider.id)}
+          data-tauri-drag-region="false"
+        >
+          <List size={12} />
+          {lang === 'zh' ? '管理模型' : 'Manage models'}
+        </Button>
       </div>
-
-      <button
-        type="button"
-        onClick={() => setShowRequestPage(true)}
-        className="kv-subpage-entry"
-        data-tauri-drag-region="false"
-      >
-        <span className="kv-subpage-entry-body">
-          <span className="kv-subpage-entry-title">
-            <SlidersHorizontal size={13} strokeWidth={2} aria-hidden="true" />
-            {t.requestConfig}
-          </span>
-          <span className="kv-subpage-entry-hint">{t.requestConfigHint}</span>
-        </span>
-        <span className="kv-subpage-entry-trail">
-          {provider.request.customHeaders.length > 0 && (
-            <span className="kv-tag ok tabular-nums">
-              {lang === 'zh'
-                ? `${provider.request.customHeaders.length} 个头`
-                : `${provider.request.customHeaders.length} headers`}
-            </span>
-          )}
-          <span className="kv-subpage-entry-go">
-            {lang === 'zh' ? '配置' : 'Edit'}
-            <ChevronRight size={14} aria-hidden="true" />
-          </span>
-        </span>
-      </button>
-
-      <FieldBlock
-        label={(
-          <span className="inline-flex items-center gap-2">
-            <span>{lang === 'zh' ? '模型' : 'Models'}</span>
-            <span className="kv-tag">{provider.enabledModels.length}</span>
-          </span>
-        )}
-      >
         <ul className="kv-enabled-model-list">
           {provider.enabledModels.length === 0 && (
             <li className="kv-enabled-model-empty">
-              {lang === 'zh' ? '打开「管理模型」拉取并添加。' : 'Open “Models” to fetch and add models.'}
+              {lang === 'zh' ? '还没有模型。点「管理模型」拉取并添加。' : 'No models yet. Use “Manage models” to fetch and add some.'}
             </li>
           )}
           {provider.enabledModels.map(model => {
@@ -321,7 +275,36 @@ export function ProviderDetail({
             )
           })}
         </ul>
-      </FieldBlock>
+    </SettingsGroup>
+
+    <SettingsGroup title={lang === 'zh' ? '高级' : 'Advanced'}>
+      <button
+        type="button"
+        onClick={() => onRequestPageOpenChange(true)}
+        className="kv-subpage-entry kv-subpage-entry--flush"
+        data-tauri-drag-region="false"
+      >
+        <span className="kv-subpage-entry-body">
+          <span className="kv-subpage-entry-title">
+            <SlidersHorizontal size={13} strokeWidth={2} aria-hidden="true" />
+            {t.requestConfig}
+          </span>
+          <span className="kv-subpage-entry-hint">{t.requestConfigHint}</span>
+        </span>
+        <span className="kv-subpage-entry-trail">
+          {provider.request.customHeaders.length > 0 && (
+            <span className="kv-tag ok tabular-nums">
+              {lang === 'zh'
+                ? `${provider.request.customHeaders.length} 个头`
+                : `${provider.request.customHeaders.length} headers`}
+            </span>
+          )}
+          <span className="kv-subpage-entry-go">
+            {lang === 'zh' ? '配置' : 'Edit'}
+            <ChevronRight size={14} aria-hidden="true" />
+          </span>
+        </span>
+      </button>
     </SettingsGroup>
     </>
   )

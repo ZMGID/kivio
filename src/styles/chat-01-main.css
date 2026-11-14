@@ -2458,64 +2458,56 @@ button.chat-composer-status-item:hover {
 .kv-modal.kv-html-preview-full { display: none; flex-direction: column; gap: 6px; width: 92vw; max-width: 92vw; height: 90vh; max-height: 90vh; padding: 8px 12px 12px; }
 .kv-modal.kv-html-preview-full[open] { display: flex; }
 
-/* 输入框底栏的会话用量像素条：左侧 4 格费用量级柱与 6×4 像素矩阵无缝拼成一块，矩阵按比例显示 缓存 / 输入 / 输出。
-   不放可见文字；悬停或键盘聚焦时上方弹出信息卡。生成中像素逐列起伏如声波，数据变化时格子换色有过渡。 */
+/* 输入框底栏的会话用量：一个数字压在一条细光谱线上。数字是费用（外部 CLI 无费用时为 ↑输入 ↓输出），
+   光谱线按比例分成 缓存 / 输入 / 输出 三段；生成中一道高光沿线扫过。悬停或键盘聚焦时上方弹出信息卡。 */
 .chat-session-usage {
   position: relative;
-  --px: 4px;
-  --gap: 0px;
   display: inline-flex;
   align-items: center;
-  gap: var(--gap);
   flex: none;
-  padding: 3px 5px;
-  border: 1px solid var(--theme-surface-border);
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--theme-surface-muted) 72%, transparent);
+  height: 28px;
+  padding: 0 7px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: default;
   outline: none;
-  transition: border-color var(--kv-dur-slow) var(--kv-ease-out);
+  transition: background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
 }
-.chat-session-usage:is(:hover, :focus-visible) { border-color: var(--theme-surface-border-strong); }
+.chat-session-usage:is(:hover, :focus-visible) { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 .chat-session-usage:focus-visible { box-shadow: 0 0 0 2px var(--accent-ring); }
-.chat-session-usage[data-live] { border-color: color-mix(in srgb, var(--accent) 40%, var(--theme-surface-border)); }
-.chat-session-usage :is(.chat-session-usage-cost, .chat-session-usage-grid) > i {
-  display: block;
-  width: var(--px);
-  height: var(--px);
-  background: color-mix(in srgb, var(--text) 9%, transparent);
-  transition: background-color var(--kv-dur-slow) var(--kv-ease-out);
-}
-.chat-session-usage-cost { display: grid; gap: var(--gap); }
-.chat-session-usage-cost > i[data-on] { background: var(--text); }
-.chat-session-usage-cost[data-partial] > i[data-on]:first-of-type { background: var(--danger); }
-.chat-session-usage-grid {
+.chat-session-usage-readout { display: grid; gap: 4px; min-width: 34px; }
+.chat-session-usage-value { font-size: 11.5px; font-weight: 600; line-height: 1; letter-spacing: -0.01em; text-align: center; }
+.chat-session-usage-spectrum {
   position: relative;
-  display: grid;
-  grid-auto-flow: column;
-  grid-template-rows: repeat(4, var(--px));
-  gap: var(--gap);
+  display: flex;
+  gap: 1px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
 }
-.chat-session-usage-grid > i { animation: chat-session-usage-in var(--kv-dur-slow) var(--kv-ease-standard) backwards; animation-delay: calc(var(--c) * 12ms); }
-.chat-session-usage-grid > i[data-k='cache'] { background: var(--accent); }
-.chat-session-usage-grid > i[data-k='input'] { background: color-mix(in srgb, var(--accent) 45%, transparent); }
-.chat-session-usage-grid > i[data-k='output'] { background: var(--text-muted); }
-.chat-session-usage[data-live] .chat-session-usage-grid > i {
-  animation: chat-session-usage-wave 1.2s var(--kv-ease-inout) infinite;
-  animation-delay: calc(var(--c) * 45ms);
+.chat-session-usage-spectrum > i { min-width: 2px; transition: flex-grow var(--kv-dur-slow) var(--kv-ease-out); }
+.chat-session-usage[data-live] .chat-session-usage-spectrum::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--theme-surface) 85%, transparent), transparent);
+  animation: chat-session-usage-sweep 1.4s var(--kv-ease-inout) infinite;
 }
-@keyframes chat-session-usage-in { from { opacity: 0; transform: scale(0.2); } }
-@keyframes chat-session-usage-wave { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+@keyframes chat-session-usage-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
 
 /* 悬停信息卡：右对齐在条的正上方，避免在底栏右侧溢出窗口。 */
 .chat-session-usage-card {
   position: absolute;
-  right: -1px;
+  right: 0;
   bottom: calc(100% + 8px);
   z-index: 50;
-  width: 220px;
-  padding: 10px 12px;
+  width: 228px;
+  padding: 14px 14px 12px;
   border: 1px solid var(--theme-surface-border);
-  border-radius: 6px;
+  border-radius: 12px;
   background: var(--theme-surface);
   box-shadow: 0 8px 24px color-mix(in srgb, var(--text) 12%, transparent);
   color: var(--text-muted);
@@ -2535,18 +2527,18 @@ button.chat-composer-status-item:hover {
   transform: none;
   transition-delay: 0s;
 }
-.chat-session-usage-card-cost { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
-.chat-session-usage-card-cost strong { color: var(--text); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
-.chat-session-usage-card-bar { display: flex; gap: 1px; height: 4px; margin-bottom: 8px; background: color-mix(in srgb, var(--text) 9%, transparent); }
-.chat-session-usage-card-bar > i { min-width: 2px; }
-.chat-session-usage-card-row { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
-.chat-session-usage-card-row > i { width: 6px; height: 6px; flex: none; }
+.chat-session-usage-card-cost { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+.chat-session-usage-card-cost strong { color: var(--text); font-size: 22px; font-weight: 600; line-height: 1; letter-spacing: -0.02em; }
+.chat-session-usage-card-bar { display: flex; gap: 2px; height: 6px; margin-bottom: 10px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--text) 9%, transparent); }
+.chat-session-usage-card-bar > i { min-width: 3px; }
+.chat-session-usage-card-row { display: flex; align-items: center; gap: 7px; padding: 2.5px 0; }
+.chat-session-usage-card-row > i { width: 7px; height: 7px; flex: none; border-radius: 50%; }
 .chat-session-usage-card-row > :last-child { margin-left: auto; color: var(--text); font-weight: 500; }
-.chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='cache'] { background: var(--accent); }
-.chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='input'] { background: color-mix(in srgb, var(--accent) 45%, transparent); }
-.chat-session-usage-card :is(.chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='output'] { background: var(--text-muted); }
-.chat-session-usage-card p { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--theme-surface-border); color: var(--text-faint); font-size: 11px; }
+.chat-session-usage :is(.chat-session-usage-spectrum, .chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='cache'] { background: var(--accent); }
+.chat-session-usage :is(.chat-session-usage-spectrum, .chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='input'] { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+.chat-session-usage :is(.chat-session-usage-spectrum, .chat-session-usage-card-bar, .chat-session-usage-card-row) > i[data-k='output'] { background: color-mix(in srgb, var(--text) 38%, transparent); }
+.chat-session-usage-card p { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--theme-surface-border); color: var(--text-faint); font-size: 11px; }
 @media (prefers-reduced-motion: reduce) {
-  .chat-session-usage-grid > i, .chat-session-usage[data-live] .chat-session-usage-grid > i { animation: none; }
-  .chat-session-usage :is(.chat-session-usage-cost, .chat-session-usage-grid) > i, .chat-session-usage-card { transition: none; }
+  .chat-session-usage, .chat-session-usage-card, .chat-session-usage-spectrum > i { transition: none; }
+  .chat-session-usage[data-live] .chat-session-usage-spectrum::after { animation: none; display: none; }
 }

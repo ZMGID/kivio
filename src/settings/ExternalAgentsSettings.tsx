@@ -11,7 +11,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  Search,
   Terminal,
   Trash2,
   Workflow,
@@ -27,7 +26,7 @@ import {
   type NativeProviderSummary,
   onExternalAgentsUpdated,
 } from '../api/externalCliSettings'
-import { Input, Toggle } from './components'
+import { Input, SearchInput, Toggle } from './components'
 import { i18n, type Lang } from '../components/i18n'
 import { Button, IconButton } from '../components/Button'
 import { dshNativeDetailToProvider } from './cliNativeProviderConfigs'
@@ -52,6 +51,8 @@ import { confirmDialog } from '../components/dialogQueue'
 const EMPTY_CONFIG: ExternalCliAgentConfig = {}
 const DSH_OFFICIAL_PROVIDER_ID = 'deepseek-official'
 const DSH_OFFICIAL_KEY_URL = 'https://platform.deepseek.com/api_keys'
+/** 探测到的模型先露这么多，其余收在「+N」后面：有的 CLI 一次能报上百个。 */
+const PROBED_MODELS_PREVIEW = 12
 
 function withOfficialDshProviders(
   agentId: string,
@@ -265,18 +266,14 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
           {/* 搜索框 + 重新扫描。扫描按钮做成搜索行右边的一个图标：它原来是列表下方一个整
               宽按钮，自带边框和分隔线，在左栏里显得像另一块面板。 */}
           <div className="kv-cli-search">
-            <div className="relative min-w-0 flex-1">
-              <Search
-                size={12}
-                className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[var(--text-faint)]"
-              />
-              <Input
-                value={query}
-                onChange={setQuery}
-                placeholder={t.externalAgentsSearch}
-                className="!pl-6 !text-[12px]"
-              />
-            </div>
+            <SearchInput
+              className="min-w-0 flex-1"
+              value={query}
+              onChange={setQuery}
+              placeholder={t.externalAgentsSearch}
+              aria-label={t.externalAgentsSearch}
+              clearLabel={t.dialogClear}
+            />
             <IconButton
               size="sm"
               label={t.externalAgentsRescan}
@@ -384,7 +381,7 @@ function AgentDetail({
   const t = i18n[lang]
   const disabled = config.disabled ?? agent.disabled ?? false
   const customModels = config.customModels ?? []
-  const [modelsExpanded, setModelsExpanded] = useState(false)
+  const [probedExpanded, setProbedExpanded] = useState(false)
   const install = useInstall(agent.id, reloadAgents)
 
   const [probedModels, setProbedModels] = useState<DetectedExternalAgent['models']>([])
@@ -450,34 +447,64 @@ function AgentDetail({
     return <DshPluginsSettings lang={lang} onBack={() => setShowPlugins(false)} />
   }
 
+  const hasExtensions = agent.available && (agent.id === 'dsh' || agent.id === 'pi')
+  const shownProbed = probedExpanded ? probedModels : probedModels.slice(0, PROBED_MODELS_PREVIEW)
+
   return (
     <>
+      {/* 顶栏：是哪个 CLI、什么版本、是否最新、开没开。 */}
       <div className="kv-cli-head">
-        <IconBox id={agent.id} size={32} />
-        <span className="kv-cli-head-main">
+        <IconBox id={agent.id} size={36} />
+        <div className="kv-cli-head-main">
           <span className="kv-cli-head-title">{agent.name}</span>
-          {info && (
-            <a
-              className="kv-cli-docs"
-              href={info.docsUrl}
-              target="_blank"
-              rel="noreferrer"
-              title={t.externalAgentsDocs}
-              data-tauri-drag-region="false"
+          <span className="kv-cli-head-meta">
+            {localVersion
+              ? <span className="kv-cli-version">{localVersion}</span>
+              : !agent.available && <span className="kv-tag">{t.externalAgentsNotInstalled}</span>}
+            {versionStatus && (
+              <span className={`kv-tag ${versionStatus.tone}`}>{versionStatus.label}</span>
+            )}
+            <IconButton
+              size="xs"
+              label={t.externalAgentsCheckUpdate}
+              onClick={() => void refresh()}
+              disabled={checking}
             >
-              <ExternalLink size={12} />
-              {t.externalAgentsDocs}
-            </a>
-          )}
-        </span>
-        <span className="kv-cli-pill">
-          {localVersion
-            ?? (agent.available ? t.externalAgentsInstalled : t.externalAgentsNotInstalled)}
-        </span>
-        {versionStatus && (
-          <span className={`kv-tag ${versionStatus.tone}`}>{versionStatus.label}</span>
+              <RefreshCw size={11} className={checking ? 'animate-spin' : ''} />
+            </IconButton>
+          </span>
+        </div>
+        {info && (
+          <a
+            className="kv-cli-docs"
+            href={info.docsUrl}
+            target="_blank"
+            rel="noreferrer"
+            title={t.externalAgentsDocs}
+            data-tauri-drag-region="false"
+          >
+            <ExternalLink size={12} />
+            {t.externalAgentsDocs}
+          </a>
         )}
-        {showInstallAction && (
+        <span className="kv-cli-enable" title={t.externalAgentsEnableDesc}>
+          <span>{t.externalAgentsEnable}</span>
+          <Toggle
+            checked={!disabled}
+            onChange={(on) => onPatch({ disabled: !on })}
+            ariaLabel={`${agent.name} ${t.externalAgentsEnable}`}
+          />
+        </span>
+      </div>
+
+      {/* 需要动手时才出现的一条：安装 / 更新 / 修复，连同它会怎么装。 */}
+      {showInstallAction && (
+        <div className="kv-cli-action">
+          <p className="kv-row-desc break-all">
+            {info?.planId
+              ? [info.source, info.environment, info.targetVersion, info.binaryPath].filter(Boolean).join(' · ')
+              : ''}
+          </p>
           <Button size="sm" variant="primary" onClick={() => void runInstall()} disabled={running}>
             {running
               ? t.externalAgentsInstalling
@@ -485,22 +512,9 @@ function AgentDetail({
                 ? t.externalAgentsUpdate
                 : t.externalAgentsInstall}
           </Button>
-        )}
-        <IconButton
-          size="sm"
-          label={t.externalAgentsCheckUpdate}
-          onClick={() => void refresh()}
-          disabled={checking}
-        >
-          <RefreshCw size={13} className={checking ? 'animate-spin' : ''} />
-        </IconButton>
-      </div>
-      {info?.manualReason && <p className="kv-row-desc">{info.manualReason}</p>}
-      {info?.planId && showInstallAction && (
-        <p className="kv-row-desc break-all">
-          {[info.source, info.environment, info.targetVersion, info.binaryPath].filter(Boolean).join(' · ')}
-        </p>
+        </div>
       )}
+      {info?.manualReason && <p className="kv-row-desc kv-cli-note">{info.manualReason}</p>}
       {(running || result) && (
         <div
           className={`kv-cli-install-banner ${running ? 'running' : result === 'ok' ? (needsRepair ? 'warn' : 'ok') : 'fail'}`}
@@ -514,10 +528,10 @@ function AgentDetail({
         </div>
       )}
       {agent.id === 'dsh' && !agent.available && (
-        <p className="kv-row-desc">{t.externalAgentsDshInstallHint}</p>
+        <p className="kv-row-desc kv-cli-note">{t.externalAgentsDshInstallHint}</p>
       )}
       {agent.id === 'antigravity' && (
-        <p className="kv-row-desc">
+        <p className="kv-row-desc kv-cli-note">
           {lang === 'zh'
             ? '首次使用请在终端运行 agy 完成登录。默认遵循 CLI 权限配置，需要确认的操作可能被拒绝；可在聊天底栏选择权限模式。'
             : 'Run agy in a terminal to sign in first. Native CLI permissions apply by default; operations requiring confirmation may be denied. Choose a permission mode in the chat composer.'}
@@ -536,111 +550,58 @@ function AgentDetail({
         </div>
       )}
 
-      {agent.id === 'dsh' && <DshOfficialKeyCard lang={lang} />}
-
-      {agent.id === 'dsh' && (
-        <button
-          type="button"
-          onClick={() => setShowPlugins(true)}
-          className="kv-cli-card kv-dsh-plugins-entry"
-          data-tauri-drag-region="false"
-        >
-          <span className="kv-dsh-plugins-entry-icons" aria-hidden="true">
-            <span><Terminal size={13} /></span>
-            <span><Workflow size={13} /></span>
-            <span><Globe size={13} /></span>
-          </span>
-          <span className="kv-row-text">
-            <span className="kv-row-label">{t.externalAgentsDshPlugins}</span>
-            <span className="kv-row-desc">{t.externalAgentsDshPluginsHint}</span>
-          </span>
-          <span className="kv-subpage-entry-go">
-            {lang === 'zh' ? '配置' : 'Edit'}
-            <ChevronRight size={14} aria-hidden="true" />
-          </span>
-        </button>
+      {/* 以下各区对每个 CLI 顺序固定：供应商 → 模型 → 扩展 → 高级。
+          没装的 CLI 只留安装动作和「高级」里的路径：装好或指对路径之前，其余配置都用不上。 */}
+      {agent.available && (
+      <ProviderSection
+        lang={lang}
+        agentId={agent.id}
+        agentName={agent.name}
+        providers={config.providers ?? []}
+        nativeProviders={agent.nativeProviders ?? []}
+        current={config.currentProvider ?? ''}
+        onPatch={onPatch}
+        reloadAgents={reloadAgents}
+      />
       )}
 
-      {agent.id === 'pi' && agent.available && (
-        <button
-          type="button"
-          onClick={onOpenPiExtensions}
-          className="kv-cli-card kv-pi-extensions-entry"
-          data-tauri-drag-region="false"
-        >
-          <span className="kv-pi-extensions-entry-icon" aria-hidden="true">
-            <Blocks size={16} />
-          </span>
-          <span className="kv-row-text">
-            <span className="kv-row-label">{t.externalAgentsPiExtensions}</span>
-            <span className="kv-row-desc">{t.externalAgentsPiExtensionsHint}</span>
-          </span>
-          <span className="kv-subpage-entry-go">
-            {lang === 'zh' ? '管理' : 'Manage'}
-            <ChevronRight size={14} aria-hidden="true" />
-          </span>
-        </button>
-      )}
-
-      {agent.id === 'pi' && agent.available && (
-        <button
-          type="button"
-          onClick={onOpenPiSkills}
-          className="kv-cli-card kv-pi-skills-entry"
-          data-tauri-drag-region="false"
-        >
-          <span className="kv-pi-skills-entry-icon" aria-hidden="true">
-            <BookOpen size={16} />
-          </span>
-          <span className="kv-row-text">
-            <span className="kv-row-label">{t.externalAgentsPiSkills}</span>
-            <span className="kv-row-desc">{t.externalAgentsPiSkillsHint}</span>
-          </span>
-          <span className="kv-subpage-entry-go">
-            {lang === 'zh' ? '管理' : 'Manage'}
-            <ChevronRight size={14} aria-hidden="true" />
-          </span>
-        </button>
-      )}
-
-      <div className="kv-cli-card">
-        <Row label={t.externalAgentsEnable} desc={t.externalAgentsEnableDesc}>
-          <Toggle checked={!disabled} onChange={(on) => onPatch({ disabled: !on })} />
-        </Row>
-        <Row
-          label={t.externalAgentsBinaryPath}
-          desc={config.path || agent.path || t.externalAgentsUsePath}
-        >
-          {config.path && (
-            <Button size="sm" variant="ghost" onClick={() => onPatch({ path: '' })}>
-              {t.externalAgentsClear}
-            </Button>
-          )}
-          <Button size="sm" onClick={() => void pickBinary()}>
-            {t.externalAgentsConfigPath}
+      {agent.available && (
+      <section className="kv-cli-section">
+        <div className="kv-cli-section-head">
+          <div className="kv-cli-section-text">
+            <span className="kv-cli-section-title">{t.externalAgentsModelsSection}</span>
+            <p className="kv-row-desc">
+              {t.externalAgentsModelsSummary
+                .replace('{probed}', String(probedModels.length))
+                .replace('{custom}', String(customModels.length))}
+            </p>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => onPatch({ customModels: [...customModels, { id: '', label: '' }] })}
+          >
+            <Plus size={12} />
+            {t.externalAgentsModelAdd}
           </Button>
-        </Row>
-        <Row
-          label={t.externalAgentsModelsSection}
-          desc={t.externalAgentsModelsSummary
-            .replace('{probed}', String(probedModels.length))
-            .replace('{custom}', String(customModels.length))}
-        >
-          <Button size="sm" onClick={() => setModelsExpanded((value) => !value)}>
-            {modelsExpanded ? t.externalAgentsCollapse : t.externalAgentsManageModels}
-          </Button>
-        </Row>
-        {modelsExpanded && (
-          <div className="kv-cli-sub">
-            <p className="kv-row-desc">{t.externalAgentsModelsDesc}</p>
+        </div>
+        {(probedModels.length > 0 || customModels.length > 0) && (
+          <div className="kv-cli-card kv-cli-models">
             {probedModels.length > 0 && (
-              <p className="kv-row-desc break-all">
-                {t.externalAgentsModelsProbed.replace('{count}', String(probedModels.length))}:{' '}
-                {probedModels.map((model) => model.id).join(', ')}
-              </p>
+              <div className="kv-cli-model-chips">
+                {shownProbed.map((model) => (
+                  <span key={model.id} className="kv-chip" title={model.label || model.id}>{model.id}</span>
+                ))}
+                {probedModels.length > PROBED_MODELS_PREVIEW && (
+                  <Button size="sm" variant="ghost" onClick={() => setProbedExpanded((value) => !value)}>
+                    {probedExpanded
+                      ? t.externalAgentsCollapse
+                      : `+${probedModels.length - PROBED_MODELS_PREVIEW}`}
+                  </Button>
+                )}
+              </div>
             )}
             {customModels.map((model, idx) => (
-              <div key={idx} className="flex items-center gap-2">
+              <div key={idx} className="kv-cli-model-row">
                 <Input
                   value={model.id}
                   onChange={(value) =>
@@ -651,6 +612,7 @@ function AgentDetail({
                     })
                   }
                   placeholder={t.externalAgentsModelId}
+                  aria-label={t.externalAgentsModelId}
                   mono
                 />
                 <Input
@@ -663,6 +625,7 @@ function AgentDetail({
                     })
                   }
                   placeholder={t.externalAgentsModelLabel}
+                  aria-label={t.externalAgentsModelLabel}
                 />
                 <IconButton
                   size="sm"
@@ -673,29 +636,101 @@ function AgentDetail({
                 </IconButton>
               </div>
             ))}
-            <div>
-              <Button
-                size="sm"
-                onClick={() => onPatch({ customModels: [...customModels, { id: '', label: '' }] })}
-              >
-                <Plus size={12} />
-                {t.externalAgentsModelAdd}
-              </Button>
-            </div>
           </div>
         )}
-      </div>
+      </section>
+      )}
 
-      <ProviderSection
-        lang={lang}
-        agentId={agent.id}
-        agentName={agent.name}
-        providers={config.providers ?? []}
-        nativeProviders={agent.nativeProviders ?? []}
-        current={config.currentProvider ?? ''}
-        onPatch={onPatch}
-        reloadAgents={reloadAgents}
-      />
+      {hasExtensions && (
+        <section className="kv-cli-section">
+          <div className="kv-cli-section-head">
+            <span className="kv-cli-section-title">{lang === 'zh' ? '扩展' : 'Extensions'}</span>
+          </div>
+          {agent.id === 'dsh' && (
+            <button
+              type="button"
+              onClick={() => setShowPlugins(true)}
+              className="kv-cli-card kv-dsh-plugins-entry"
+              data-tauri-drag-region="false"
+            >
+              <span className="kv-dsh-plugins-entry-icons" aria-hidden="true">
+                <span><Terminal size={13} /></span>
+                <span><Workflow size={13} /></span>
+                <span><Globe size={13} /></span>
+              </span>
+              <span className="kv-row-text">
+                <span className="kv-row-label">{t.externalAgentsDshPlugins}</span>
+                <span className="kv-row-desc">{t.externalAgentsDshPluginsHint}</span>
+              </span>
+              <span className="kv-subpage-entry-go">
+                {lang === 'zh' ? '配置' : 'Edit'}
+                <ChevronRight size={14} aria-hidden="true" />
+              </span>
+            </button>
+          )}
+          {agent.id === 'pi' && (
+            <>
+              <button
+                type="button"
+                onClick={onOpenPiExtensions}
+                className="kv-cli-card kv-pi-extensions-entry"
+                data-tauri-drag-region="false"
+              >
+                <span className="kv-pi-extensions-entry-icon" aria-hidden="true">
+                  <Blocks size={16} />
+                </span>
+                <span className="kv-row-text">
+                  <span className="kv-row-label">{t.externalAgentsPiExtensions}</span>
+                  <span className="kv-row-desc">{t.externalAgentsPiExtensionsHint}</span>
+                </span>
+                <span className="kv-subpage-entry-go">
+                  {lang === 'zh' ? '管理' : 'Manage'}
+                  <ChevronRight size={14} aria-hidden="true" />
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={onOpenPiSkills}
+                className="kv-cli-card kv-pi-skills-entry"
+                data-tauri-drag-region="false"
+              >
+                <span className="kv-pi-skills-entry-icon" aria-hidden="true">
+                  <BookOpen size={16} />
+                </span>
+                <span className="kv-row-text">
+                  <span className="kv-row-label">{t.externalAgentsPiSkills}</span>
+                  <span className="kv-row-desc">{t.externalAgentsPiSkillsHint}</span>
+                </span>
+                <span className="kv-subpage-entry-go">
+                  {lang === 'zh' ? '管理' : 'Manage'}
+                  <ChevronRight size={14} aria-hidden="true" />
+                </span>
+              </button>
+            </>
+          )}
+        </section>
+      )}
+
+      <section className="kv-cli-section">
+        <div className="kv-cli-section-head">
+          <span className="kv-cli-section-title">{lang === 'zh' ? '高级' : 'Advanced'}</span>
+        </div>
+        <div className="kv-cli-card">
+          <Row
+            label={t.externalAgentsBinaryPath}
+            desc={config.path || agent.path || t.externalAgentsUsePath}
+          >
+            {config.path && (
+              <Button size="sm" variant="ghost" onClick={() => onPatch({ path: '' })}>
+                {t.externalAgentsClear}
+              </Button>
+            )}
+            <Button size="sm" onClick={() => void pickBinary()}>
+              {t.externalAgentsConfigPath}
+            </Button>
+          </Row>
+        </div>
+      </section>
     </>
   )
 }
@@ -850,14 +885,8 @@ function NativeProviderRow({
               </Button>
             )}
           </>
-        ) : inUse ? (
-          <span className="kv-tag ok">{t.externalAgentsProviderInUse}</span>
-        ) : current && provider.isDefault ? (
-          <Button size="sm" onClick={onUseCliConfig}>
-            {t.externalAgentsProviderActivate}
-          </Button>
         ) : (
-          <span className={`kv-tag ${provider.isDefault ? 'ok' : ''}`}>
+          <span className={`kv-tag ${inUse ? 'ok' : ''}`}>
             {provider.isDefault
               ? t.externalAgentsNativeProviderDefault
               : official
@@ -877,6 +906,33 @@ function NativeProviderRow({
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * 「同一时间只用一个」的 CLI 用单选圈选当前供应商；可并存的 CLI 不用它，改用每行的开关。
+ */
+function ProviderRadio({
+  checked,
+  label,
+  onSelect,
+}: {
+  checked: boolean
+  label: string
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={checked}
+      aria-label={label}
+      className="kv-cli-radio"
+      onClick={() => {
+        if (!checked) onSelect()
+      }}
+      data-tauri-drag-region="false"
+    />
   )
 }
 
@@ -1053,9 +1109,20 @@ function ProviderSection({
   const envOnly = agentId !== 'claude' && agentId !== 'codex' && agentId !== 'dsh' && !nativeOnDisk
 
   return (
-    <div className="kv-cli-providers">
-      <div className="kv-cli-providers-head">
-        <span className="kv-row-label">{t.externalAgentsProviderAll}</span>
+    <section className="kv-cli-section">
+      <div className="kv-cli-section-head">
+        <div className="kv-cli-section-text">
+          <span className="kv-cli-section-title">{t.externalAgentsProviderAll}</span>
+          <p className="kv-row-desc">
+            {providersCoexist
+              ? t.externalAgentsProviderCoexistScope
+              : nativeOnDisk
+                ? t.externalAgentsNativeScope
+                : envOnly
+                  ? t.externalAgentsProviderEnvOnly
+                  : t.externalAgentsProviderScope}
+          </p>
+        </div>
         <Button size="sm" onClick={() => setImporting(true)}>
           <Download size={12} />
           {t.externalAgentsProviderImport}
@@ -1065,7 +1132,12 @@ function ProviderSection({
           {t.externalAgentsProviderAdd}
         </Button>
       </div>
-      <div className="kv-cli-card">
+      {agentId === 'dsh' && <DshOfficialKeyCard lang={lang} />}
+      <div
+        className="kv-cli-card"
+        role={providersCoexist ? undefined : 'radiogroup'}
+        aria-label={t.externalAgentsProviderAll}
+      >
         {providers.length === 0 && listedNatives.length === 0 ? (
           // 一条供应商都没有时只留这句话（同 ccgui）：此时「使用 CLI 自身配置」是唯一可能的
           // 状态，把它渲染成一行可选项纯属噪音。
@@ -1074,29 +1146,33 @@ function ProviderSection({
           <>
             {!hideGenericLocal && (
               <div className="kv-row kv-cli-provider">
-                <span className="kv-cli-monogram local">
-                  <Terminal size={13} />
-                </span>
+                {providersCoexist ? (
+                  <span className="kv-cli-monogram local">
+                    <Terminal size={13} />
+                  </span>
+                ) : (
+                  <ProviderRadio
+                    checked={!current}
+                    label={t.externalAgentsProviderNone}
+                    onSelect={() => onPatch({ currentProvider: '' })}
+                  />
+                )}
                 <div className="kv-row-text">
                   <div className="kv-row-label">{t.externalAgentsProviderNone}</div>
                   <p className="kv-row-desc">{t.externalAgentsProviderNoneDesc}</p>
                 </div>
-                <div className="kv-row-control">
-                  {!current ? (
-                    <span className="kv-tag ok">
-                      {providersCoexist
-                        ? t.externalAgentsProviderDefault
-                        : t.externalAgentsProviderInUse}
-                    </span>
-                  ) : (
-                    <Button size="sm" onClick={() => onPatch({ currentProvider: '' })}>
-                      {providersCoexist
-                        ? t.externalAgentsProviderSetDefault
-                        : t.externalAgentsProviderActivate}
-                    </Button>
-                  )}
-                  <span className="kv-cli-provider-spacer" />
-                </div>
+                {providersCoexist && (
+                  <div className="kv-row-control">
+                    {!current ? (
+                      <span className="kv-tag ok">{t.externalAgentsProviderDefault}</span>
+                    ) : (
+                      <Button size="sm" onClick={() => onPatch({ currentProvider: '' })}>
+                        {t.externalAgentsProviderSetDefault}
+                      </Button>
+                    )}
+                    <span className="kv-cli-provider-spacer" />
+                  </div>
+                )}
               </div>
             )}
             {hideGenericLocal &&
@@ -1122,13 +1198,21 @@ function ProviderSection({
               ))}
             {providers.map((provider) => (
               <div className="kv-row kv-cli-provider" key={provider.id}>
-                <span className="kv-cli-monogram">{monogram(provider.name)}</span>
+                {providersCoexist ? (
+                  <span className="kv-cli-monogram">{monogram(provider.name)}</span>
+                ) : (
+                  <ProviderRadio
+                    checked={current === provider.id}
+                    label={provider.name}
+                    onSelect={() => onPatch({ currentProvider: provider.id })}
+                  />
+                )}
                 <div className="kv-row-text">
                   <div className="kv-row-label">{provider.name}</div>
                   <p className="kv-row-desc truncate">{providerSubtitle(provider)}</p>
                 </div>
                 <div className="kv-row-control">
-                  {providersCoexist ? (
+                  {providersCoexist && (
                     <>
                       <span
                         className={`kv-tag ${!provider.disabled && current === provider.id ? 'ok' : ''}`}
@@ -1150,12 +1234,6 @@ function ProviderSection({
                         ariaLabel={`${provider.name} ${t.externalAgentsEnable}`}
                       />
                     </>
-                  ) : current === provider.id ? (
-                    <span className="kv-tag ok">{t.externalAgentsProviderInUse}</span>
-                  ) : (
-                    <Button size="sm" onClick={() => onPatch({ currentProvider: provider.id })}>
-                      {t.externalAgentsProviderActivate}
-                    </Button>
                   )}
                   <IconButton
                     size="sm"
@@ -1188,16 +1266,6 @@ function ProviderSection({
           </>
         )}
       </div>
-      <p className="kv-row-desc mt-2">
-        {providersCoexist
-          ? t.externalAgentsProviderCoexistScope
-          : nativeOnDisk
-            ? t.externalAgentsNativeScope
-            : envOnly
-              ? t.externalAgentsProviderEnvOnly
-              : t.externalAgentsProviderScope}
-      </p>
-
       {editing !== undefined && (
         <CliProviderModal
           lang={lang}
@@ -1217,7 +1285,7 @@ function ProviderSection({
           onClose={() => setImporting(false)}
         />
       )}
-    </div>
+    </section>
   )
 }
 

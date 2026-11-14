@@ -190,8 +190,7 @@
 }
 
 
-.settings-embedded .kv-provider-item,
-.settings-embedded .kv-provider-add {
+.settings-embedded .kv-provider-item {
   padding: 7px 10px;
   border-radius: 8px;
   font-size: 13px;
@@ -210,11 +209,6 @@
   gap: 1px;
   margin-bottom: 4px;
   position: relative;
-}
-
-.settings-embedded .kv-provider-list-actions {
-  margin-bottom: 6px;
-  padding-bottom: 10px;
 }
 
 /* ponytail: 模型页右侧详情去卡片化——只在 .kv-provider-detail 内覆盖通用 .kv-group 卡片样式,
@@ -237,68 +231,6 @@
 .settings-embedded .kv-provider-detail .kv-group + .kv-group {
   border-top: 1px solid var(--divider);
   margin-top: 0;
-}
-
-.settings-embedded .kv-provider-section {
-  width: 100%;
-}
-
-.settings-embedded .kv-provider-header {
-  padding: 10px 0 4px;
-}
-
-.settings-embedded .kv-provider-header-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.settings-embedded .kv-provider-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.settings-embedded .kv-provider-empty-hint {
-  margin: 0;
-  padding: 10px 0 4px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--text-muted);
-}
-
-.kv-provider-section {
-  width: 100%;
-}
-
-.kv-provider-header {
-  padding: 8px 0 4px;
-}
-
-.kv-provider-header-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.kv-provider-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.kv-provider-empty-hint {
-  margin: 0;
-  padding: 8px 0 4px;
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--text-muted);
 }
 
 .kv-provider-preset-tile {
@@ -455,5 +387,54 @@
   .kv-row-control {
     width: 100%;
     justify-content: flex-start;
+  }
+}
+
+/* 设置导航分组：小标题 + 组间留白。窄栏（图标轨）里标题收成一条分隔线。 */
+.settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-group + .settings-nav-group {
+  margin-top: 10px;
+}
+
+.settings-nav-group-title {
+  padding: 4px 12px 2px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.kv-nav .settings-nav-group {
+  gap: 1px;
+}
+
+.kv-nav .settings-nav-group-title {
+  padding: 4px 8px 2px;
+}
+
+@container settings-shell (max-width: 820px) {
+  .settings-embedded-nav .settings-nav-group-title {
+    height: 1px;
+    margin: 2px 8px 4px;
+    padding: 0;
+    overflow: hidden;
+    background: var(--border);
+    color: transparent;
+  }
+}
+
+@container settings-shell (max-width: 480px) {
+  .kv-nav .settings-nav-group-title {
+    height: 1px;
+    margin: 2px 6px 4px;
+    padding: 0;
+    overflow: hidden;
+    background: var(--border);
+    color: transparent;
   }
 }

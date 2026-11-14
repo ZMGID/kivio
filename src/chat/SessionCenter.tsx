@@ -13,7 +13,7 @@ import { createPortal } from 'react-dom'
 import {
   Archive,
   ArchiveRestore,
-  Check,
+  Download,
   FolderKanban,
   Layers,
   Loader2,
@@ -23,14 +23,13 @@ import {
   PinOff,
   RefreshCw,
   Star,
+  StarOff,
   Trash2,
 } from 'lucide-react'
 import { chatApi } from './api'
 import type {
   ChatProject,
   ChatSet,
-  ConversationLibraryDensity,
-  ConversationLibraryGroup,
   ConversationLibraryOrder,
   ConversationLibraryQuery,
   ConversationLibraryShelf,
@@ -38,7 +37,7 @@ import type {
   ConversationSearchHit,
 } from './types'
 import { IconButton, Button } from '../components/Button'
-import { Checkbox, SearchInput, Select, Toggle } from '../settings/public/controls'
+import { Checkbox, Input, SearchInput, Select } from '../settings/public/controls'
 import { useT, type Lang } from '../components/i18n'
 import {
   conversationOwnerLabel,
@@ -46,7 +45,6 @@ import {
   dayBucketLabel,
   formatRelativeTime,
   libraryTimestamp,
-  shortModelName,
   type DayBucket,
 } from './sessionLibrary/format'
 import { HighlightText } from './searchHighlight'
@@ -63,36 +61,11 @@ import {
 
 const PAGE_SIZE = 80
 
-/** 内容区宽度档位（测的是对话库根节点，不是浏览器视口）。 */
-type LayoutTier = {
-  /** 整页内容宽 */
-  page: number
-  /** 结果表宽（不含书架） */
-  table: number
-}
+/** 工具栏上的范围切换。后端还认 uncategorized / recent7d，对话库不再提供这两个入口。 */
+type ShelfId = Extract<ConversationLibraryShelf, 'all' | 'starred' | 'archived'>
 
-/**
- * 列策略：必须按表格真实宽度，不能用 sm/md 视口断点
- * （聊天侧栏 + 书架会让视口宽 ≠ 表格宽）。
- */
-function columnFlags(tableWidth: number, density: ConversationLibraryDensity) {
-  // 行固定占位约：checkbox7 + gap + title + time14 + menu8 + padding ≈ 120，再加副列
-  if (density === 'compact' || tableWidth < 480) {
-    return { model: false, owner: false, msgs: false, preview: false }
-  }
-  if (tableWidth < 560) {
-    return { model: false, owner: false, msgs: false, preview: density === 'comfortable' }
-  }
-  if (tableWidth < 720) {
-    return { model: false, owner: true, msgs: false, preview: true }
-  }
-  if (tableWidth < 900) {
-    return { model: true, owner: true, msgs: false, preview: true }
-  }
-  return { model: true, owner: true, msgs: true, preview: true }
-}
-
-type ShelfId = ConversationLibraryShelf
+/** 归属筛选的取值：全部，或某个集 / 项目。 */
+const OWNER_ALL = 'all'
 
 function sameSelection(current: Set<string>, ids: readonly string[]): boolean {
   if (current.size !== ids.length) return false
@@ -130,8 +103,6 @@ function batchNotice(
 
 interface SessionCenterProps {
   lang: Lang
-  /** 嵌在设置页里时隐藏与设置标题重复的 h1 */
-  embedded?: boolean
   currentConversationId?: string
   generatingConversationIds?: ReadonlySet<string>
   onSelectConversation: (
@@ -156,7 +127,6 @@ export type { SessionCenterProps }
 
 export function SessionCenter({
   lang,
-  embedded = false,
   currentConversationId,
   generatingConversationIds = new Set(),
   onSelectConversation,
@@ -168,11 +138,10 @@ export function SessionCenter({
   const searchInputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const tableHostRef = useRef<HTMLDivElement>(null)
   const lastClickedIdRef = useRef<string | null>(null)
 
-  const [layout, setLayout] = useState<LayoutTier>({ page: 1200, table: 900 })
+  /** 对话库自身的宽度（不是视口）：聊天侧栏和设置导航都会吃掉一部分。 */
+  const [pageWidth, setPageWidth] = useState(1200)
   const [shelf, setShelf] = useState<ShelfId>('all')
   const [projectId, setProjectId] = useState<string | null>(null)
   const [setId, setSetId] = useState<string | null>(null)
@@ -180,41 +149,22 @@ export function SessionCenter({
   const [debouncedQ, setDebouncedQ] = useState('')
   const [sort, setSort] = useState<ConversationLibrarySort>('updated')
   const [order, setOrder] = useState<ConversationLibraryOrder>('desc')
-  const [groupBy, setGroupBy] = useState<ConversationLibraryGroup>('day')
-  const [density, setDensity] = useState<ConversationLibraryDensity>('comfortable')
-  const [fullText, setFullText] = useState(true)
 
-  /** 窄屏书架：chip 横条；宽屏左侧纵栏 */
-  const shelfAsChips = layout.page < 720
-  const cols = useMemo(() => columnFlags(layout.table, density), [layout.table, density])
+  const compactPad = pageWidth < 640
+  const showOwner = pageWidth >= 560
 
   useLayoutEffect(() => {
+    const node = rootRef.current
+    if (!node) return
     const measure = () => {
-      const page = rootRef.current?.clientWidth ?? 1200
-      // 优先表格宿主；芯片模式下表格占满 body
-      const table =
-        tableHostRef.current?.clientWidth ||
-        bodyRef.current?.clientWidth ||
-        page
-      setLayout((prev) =>
-        Math.abs(prev.page - page) < 1 && Math.abs(prev.table - table) < 1
-          ? prev
-          : { page, table },
-      )
+      const width = node.clientWidth
+      if (width > 0) setPageWidth((prev) => (Math.abs(prev - width) < 1 ? prev : width))
     }
     measure()
-    const ro = new ResizeObserver(() => measure())
-    const nodes = [rootRef.current, bodyRef.current, tableHostRef.current].filter(
-      (n): n is HTMLDivElement => Boolean(n),
-    )
-    for (const n of nodes) ro.observe(n)
-    // 下一帧再测一次：首屏 aside 挂载后表格宽度才稳定
-    const raf = requestAnimationFrame(measure)
-    return () => {
-      cancelAnimationFrame(raf)
-      ro.disconnect()
-    }
-  }, [shelfAsChips])
+    const ro = new ResizeObserver(measure)
+    ro.observe(node)
+    return () => ro.disconnect()
+  }, [])
 
   const [projects, setProjects] = useState<ChatProject[]>([])
   const [sets, setSets] = useState<ChatSet[]>([])
@@ -282,12 +232,12 @@ export function SessionCenter({
       sort,
       order,
       q: debouncedQ || undefined,
-      fullText,
+      fullText: true,
       shelf,
       projectId: projectId,
       setId: setId,
     }),
-    [debouncedQ, fullText, order, projectId, setId, shelf, sort],
+    [debouncedQ, order, projectId, setId, shelf, sort],
   )
 
   const itemsLenRef = useRef(0)
@@ -602,65 +552,41 @@ export function SessionCenter({
     [busy, generatingConversationIds, onForceDropConversation, t],
   )
 
+  // 按时间排序时按「今天 / 昨天 / 本周 / 更早」分段；按标题或消息数排序时分段没有意义。
   const grouped = useMemo(() => {
-    if (groupBy === 'none') {
+    if (sort !== 'updated' && sort !== 'created') {
       return [{ key: 'all', label: '', items: state.items }]
     }
-    const map = new Map<string, { label: string; items: ConversationSearchHit[] }>()
-    const push = (key: string, label: string, c: ConversationSearchHit) => {
-      let g = map.get(key)
-      if (!g) {
-        g = { label, items: [] }
-        map.set(key, g)
-      }
-      g.items.push(c)
-    }
+    const map = new Map<DayBucket, ConversationSearchHit[]>()
     for (const c of state.items) {
-      if (groupBy === 'day' || groupBy === 'week') {
-        // 按日/周分组与当前排序键对齐：最近创建看 created_at，其余看 updated_at。
-        const b: DayBucket = dayBucket(libraryTimestamp(c, sort))
-        // week grouping collapses day buckets into fewer: today/yesterday stay, rest week/older
-        const key = groupBy === 'week' && (b === 'today' || b === 'yesterday') ? b : b === 'today' || b === 'yesterday' ? b : b
-        push(key, dayBucketLabel(key, t), c)
-      } else if (groupBy === 'project') {
-        const pid = c.project_id ?? c.projectId ?? c.folder ?? '__none__'
-        const label =
-          conversationOwnerLabel(c, projects, sets, t) ||
-          (pid === '__none__' ? t.chatLibUncategorized : String(pid))
-        push(String(pid), label.startsWith(t.chatSetPrefix) ? t.chatLibUncategorized : label, c)
-      } else if (groupBy === 'set') {
-        const sid = c.set_id ?? c.setId ?? '__none__'
-        const name = sets.find((s) => s.id === sid)?.name
-        push(String(sid), name ? `${t.chatSetPrefix} · ${name}` : t.chatLibUncategorized, c)
-      }
+      const bucket = dayBucket(libraryTimestamp(c, sort))
+      const items = map.get(bucket)
+      if (items) items.push(c)
+      else map.set(bucket, [c])
     }
-    return [...map.entries()].map(([key, v]) => ({ key, label: v.label, items: v.items }))
-  }, [groupBy, projects, sets, sort, state.items, t])
+    return [...map.entries()].map(([key, items]) => ({ key, label: dayBucketLabel(key, t), items }))
+  }, [sort, state.items, t])
 
-  const shelves: Array<{ id: ShelfId; label: string; icon: typeof Star }> = [
-    { id: 'all', label: t.chatLibShelfAll, icon: MessagesSquare },
-    { id: 'starred', label: t.chatLibShelfStarred, icon: Star },
-    { id: 'uncategorized', label: t.chatLibUncategorized, icon: Layers },
-    { id: 'recent7d', label: t.chatLibShelfRecent7d, icon: RefreshCw },
-    { id: 'archived', label: t.chatLibShelfArchived, icon: Archive },
+  const scopes: Array<{ id: ShelfId; label: string }> = [
+    { id: 'all', label: t.chatLibShelfAll },
+    { id: 'starred', label: t.chatLibShelfStarred },
+    { id: 'archived', label: t.chatLibShelfArchived },
   ]
 
-  const pickShelf = (id: ShelfId) => {
-    setShelf(id)
-    setProjectId(null)
-    setSetId(null)
-  }
-
-  const pickProject = (id: string | null) => {
-    setProjectId(id)
-    setSetId(null)
-    setShelf('all')
-  }
-
-  const pickSet = (id: string | null) => {
-    setSetId(id)
-    setProjectId(null)
-    setShelf('all')
+  const ownerValue = setId ? `set:${setId}` : projectId ? `project:${projectId}` : OWNER_ALL
+  const ownerOptions = useMemo(
+    () => [
+      { value: OWNER_ALL, label: t.chatLibOwnerAll },
+      ...sets.map((s) => ({ value: `set:${s.id}`, label: `${t.chatSetPrefix} · ${s.name}` })),
+      ...projects.map((p) => ({ value: `project:${p.id}`, label: p.name })),
+    ],
+    [projects, sets, t],
+  )
+  const pickOwner = (value: string) => {
+    const [kind, ...rest] = value.split(':')
+    const id = rest.join(':')
+    setSetId(kind === 'set' ? id : null)
+    setProjectId(kind === 'project' ? id : null)
   }
 
   const menuConv = menu ? state.items.find((c) => c.id === menu.id) : undefined
@@ -677,347 +603,89 @@ export function SessionCenter({
       set: sets.find((set) => set.id === conversationSetId) ?? null,
     }
   }, [projects, sets])
-  const compactPad = layout.page < 640
-
-  // 与 SkillStore / Knowledge / MCP 中心一致：自绘 Select，不用原生 <select>
   const sortOptions = useMemo(
     () => [
       { value: 'updated:desc', label: t.chatLibSortUpdatedDesc },
-      { value: 'updated:asc', label: t.chatLibSortUpdatedAsc },
       { value: 'created:desc', label: t.chatLibSortCreatedDesc },
       { value: 'title:asc', label: t.chatLibSortTitleAsc },
       { value: 'messages:desc', label: t.chatLibSortMessagesDesc },
     ],
     [t],
   )
-  const groupOptions = useMemo(
-    () => [
-      { value: 'none', label: t.chatLibGroupNone },
-      { value: 'day', label: t.chatLibGroupByDay },
-      { value: 'week', label: t.chatLibGroupByWeek },
-      { value: 'project', label: t.chatLibGroupByProject },
-      { value: 'set', label: t.chatLibGroupBySet },
-    ],
-    [t],
-  )
-  const densityOptions = useMemo(
-    () => [
-      { value: 'comfortable', label: t.chatLibDensityComfortable },
-      { value: 'compact', label: t.chatLibDensityCompact },
-    ],
-    [t],
-  )
 
-  const shelfNavVertical = (
-    <>
-      <nav className="flex flex-col gap-0.5">
-        <div className="mb-1 px-2 text-[12px] text-neutral-400">{t.chatLibShelf}</div>
-        {shelves.map(({ id, label, icon: Icon }) => {
-          const active = shelf === id && !projectId && !setId
-          return (
-            <button
-              key={id}
-              type="button"
-              onClick={() => pickShelf(id)}
-              className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors ${
-                active
-                  ? 'bg-neutral-100 font-medium text-neutral-900'
-                  : 'text-neutral-600 hover:bg-neutral-50'
-              }`}
-            >
-              <Icon size={14} className="shrink-0 opacity-70" />
-              <span className="truncate">{label}</span>
-            </button>
-          )
-        })}
-      </nav>
-
-      {sets.length > 0 && (
-        <nav className="flex flex-col gap-0.5">
-          <div className="mb-1 flex items-center gap-1 px-2 text-[12px] text-neutral-400">
-            <Layers size={11} /> {t.chatTabSets}
-          </div>
-          {sets.map((s) => {
-            const active = setId === s.id
-            return (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => pickSet(active ? null : s.id)}
-                className={`truncate rounded-md px-2 py-1.5 text-left text-[13px] transition-colors ${
-                  active
-                    ? 'bg-neutral-100 font-medium text-neutral-900'
-                    : 'text-neutral-600 hover:bg-neutral-50'
-                }`}
-              >
-                {s.name}
-              </button>
-            )
-          })}
-        </nav>
-      )}
-
-      {projects.length > 0 && (
-        <nav className="flex flex-col gap-0.5">
-          <div className="mb-1 flex items-center gap-1 px-2 text-[12px] text-neutral-400">
-            <FolderKanban size={11} /> {t.chatTabProjects}
-          </div>
-          {projects.map((p) => {
-            const active = projectId === p.id
-            return (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => pickProject(active ? null : p.id)}
-                className={`truncate rounded-md px-2 py-1.5 text-left text-[13px] transition-colors ${
-                  active
-                    ? 'bg-neutral-100 font-medium text-neutral-900'
-                    : 'text-neutral-600 hover:bg-neutral-50'
-                }`}
-              >
-                {p.name}
-              </button>
-            )
-          })}
-        </nav>
-      )}
-    </>
-  )
-
-  const chipBtn = (active: boolean) =>
-    `shrink-0 rounded-full px-2.5 py-1 text-[12px] transition-colors ${
-      active
-        ? 'bg-neutral-900 font-medium text-neutral-50'
-        : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
-    }`
+  const allSelectedPinned = selected.size > 0
+    && state.items.some((c) => selected.has(c.id))
+    && state.items.every((c) => !selected.has(c.id) || c.pinned)
+  const filtered = Boolean(debouncedQ) || shelf !== 'all' || ownerValue !== OWNER_ALL
 
   return (
     <div
       ref={rootRef}
-      className="assistant-center-root flex h-full min-h-0 flex-col text-neutral-900"
+      className="assistant-center-root flex h-full min-h-0 flex-col pt-1"
     >
-      <div className={`shrink-0 ${compactPad ? 'px-3 pb-2.5 pt-4' : 'px-6 pb-3 pt-5'} ${embedded ? '!pt-1' : ''}`}>
-        <div className="mx-auto flex w-full max-w-[1200px] items-center justify-between gap-3">
-          {embedded ? (
-            <span className="text-[12px] tabular-nums text-neutral-400">
-              {state.loading
-                ? t.chatLoading
-                : t.chatLibCount.replace('{n}', String(state.total))}
-            </span>
-          ) : (
-            <h1
-              className={`flex min-w-0 items-center gap-2 font-semibold tracking-tight text-neutral-950 ${
-                compactPad ? 'text-[18px]' : 'gap-2.5 text-[22px]'
-              }`}
-            >
-              <MessagesSquare size={compactPad ? 17 : 20} className="shrink-0 text-neutral-500" />
-              <span className="truncate">{t.chatNavSessions}</span>
-            </h1>
-          )}
-          <div className="flex shrink-0 items-center gap-2">
-            {!embedded && (
-            <span className="hidden text-[12px] tabular-nums text-neutral-400 sm:inline">
-              {state.loading
-                ? t.chatLoading
-                : t.chatLibCount.replace('{n}', String(state.total))}
-            </span>
-            )}
-            <IconButton size="md" label={t.chatSessionRefresh} onClick={() => void loadPage({ append: false })} disabled={state.loading || busy}>
-              <RefreshCw size={15} className={state.loading ? 'animate-spin' : ''} />
-            </IconButton>
-          </div>
-        </div>
-      </div>
-
-      {/* Body */}
       <div
-        ref={bodyRef}
-        className={`mx-auto flex min-h-0 w-full max-w-[1200px] flex-1 flex-col ${
-          compactPad ? 'gap-2 px-2 pb-2' : 'gap-3 px-4 pb-4'
-        }`}
+        className={`mx-auto flex min-h-0 w-full max-w-[1200px] flex-1 flex-col ${compactPad ? 'px-2 pb-2' : 'px-4 pb-4'}`}
       >
-        {/* 窄屏：书架 / 集 / 项目 → 横向 chip，不占死 200px */}
-        {shelfAsChips ? (
-          <div className="custom-scrollbar shrink-0 overflow-x-auto">
-            <div className="flex min-w-min items-center gap-1.5">
-              {shelves.map(({ id, label }) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => pickShelf(id)}
-                  className={chipBtn(shelf === id && !projectId && !setId)}
-                >
-                  {label}
-                </button>
-              ))}
-              {sets.length > 0 && (
-                <>
-                  <span className="mx-0.5 h-4 w-px shrink-0 bg-neutral-200" />
-                  {sets.map((s) => (
-                    <button
-                      key={s.id}
-                      type="button"
-                      onClick={() => pickSet(setId === s.id ? null : s.id)}
-                      className={chipBtn(setId === s.id)}
-                    >
-                      {s.name}
-                    </button>
-                  ))}
-                </>
-              )}
-              {projects.length > 0 && (
-                <>
-                  <span className="mx-0.5 h-4 w-px shrink-0 bg-neutral-200" />
-                  {projects.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => pickProject(projectId === p.id ? null : p.id)}
-                      className={chipBtn(projectId === p.id)}
-                    >
-                      {p.name}
-                    </button>
-                  ))}
-                </>
-              )}
-            </div>
+        {/* 一行工具栏：搜索、范围（全部 / 收藏 / 归档）、归属、排序、刷新。 */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2 pb-3">
+          <SearchInput
+            ref={searchInputRef}
+            className="min-w-[180px] flex-1"
+            type="search"
+            value={searchInput}
+            onChange={setSearchInput}
+            placeholder={t.chatSessionSearchPlaceholder}
+            aria-label={t.chatSessionSearchPlaceholder}
+            clearLabel={t.dialogClear}
+          />
+          <div className="kv-seg shrink-0" role="group" aria-label={t.chatLibScope}>
+            {scopes.map(({ id, label }) => (
+              <button
+                key={id}
+                type="button"
+                className={shelf === id ? 'active' : ''}
+                aria-pressed={shelf === id}
+                onClick={() => setShelf(id)}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-        ) : null}
-
-        <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50 dark:bg-[var(--bg-input)]">
-        {!shelfAsChips && (
-          <aside
-            className={`custom-scrollbar flex shrink-0 flex-col gap-4 overflow-y-auto border-r border-neutral-200/80 bg-neutral-50/70 px-2 py-3 ${
-              layout.page < 900 ? 'w-[152px]' : 'w-[176px]'
-            }`}
-          >
-            {shelfNavVertical}
-          </aside>
-        )}
-
-        {/* Main list */}
-        <div
-          ref={tableHostRef}
-          className="flex min-h-0 min-w-0 flex-1 flex-col"
-        >
-          <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-neutral-100 px-3 py-2">
-            <SearchInput
-              ref={searchInputRef}
-              className="min-w-[200px] flex-1"
-              type="search"
-              value={searchInput}
-              onChange={setSearchInput}
-              placeholder={t.chatSessionSearchPlaceholder}
-              clearLabel={t.dialogClear}
-            />
+          {ownerOptions.length > 1 && (
             <Select
               className="w-[148px] shrink-0"
-              value={`${sort}:${order}`}
-              onChange={(value) => {
-                const [s, o] = value.split(':') as [ConversationLibrarySort, ConversationLibraryOrder]
-                setSort(s)
-                setOrder(o)
-              }}
-              options={sortOptions}
-              title={t.chatLibSort}
+              value={ownerValue}
+              onChange={pickOwner}
+              options={ownerOptions}
+              ariaLabel={t.chatLibColOwner}
             />
-            <Select
-              className="w-[132px] shrink-0"
-              value={groupBy}
-              onChange={(value) => setGroupBy(value as ConversationLibraryGroup)}
-              options={groupOptions}
-            />
-            <Select
-              className="w-[100px] shrink-0"
-              value={density}
-              onChange={(value) => setDensity(value as ConversationLibraryDensity)}
-              options={densityOptions}
-            />
-            <label className="flex h-[30px] shrink-0 items-center gap-2">
-              <Toggle checked={fullText} onChange={setFullText} ariaLabel={t.chatLibFullText} />
-              <span className="whitespace-nowrap text-[12px] text-neutral-600">
-                {t.chatLibFullText}
-              </span>
-            </label>
-          </div>
-          {selected.size > 0 && (
-            <div className="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-neutral-100 bg-neutral-50/90 px-3 py-1.5" aria-busy={batch.phase === 'running'}>
-              <span className="text-[12px] font-medium text-neutral-700">
-                {t.chatLibSelected.replace('{n}', String(selected.size))}
-              </span>
-              <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibStar} onClick={() => bulkPin(true)}>
-                <Star size={12} />
-                {!compactPad && <span>{t.chatLibStar}</span>}
-              </Button>
-              <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibUnstar} onClick={() => bulkPin(false)}>
-                <PinOff size={12} />
-                {!compactPad && <span>{t.chatLibUnstar}</span>}
-              </Button>
-              <div className="relative">
-                <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibMoveToSet} onClick={() => setMoveOpen(moveOpen === 'set' ? null : 'set')}>
-                  <Layers size={12} />
-                  {!compactPad && <span>{t.chatLibMoveToSet}</span>}
-                </Button>
-                {moveOpen === 'set' && (
-                  <div role="menu" className="absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50 py-1 shadow-lg">
-                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-neutral-50" onClick={() => bulkMoveSet(null)}>
-                      {t.chatLibClearOwner}
-                    </button>
-                    {sets.map((s) => (
-                      <button key={s.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12px] hover:bg-neutral-50" onClick={() => bulkMoveSet(s.id)}>
-                        {s.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <div className="relative">
-                <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibMoveToProject} onClick={() => setMoveOpen(moveOpen === 'project' ? null : 'project')}>
-                  <FolderKanban size={12} />
-                  {!compactPad && <span>{t.chatLibMoveToProject}</span>}
-                </Button>
-                {moveOpen === 'project' && (
-                  <div role="menu" className="absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-md border border-neutral-200 bg-neutral-50 py-1 shadow-lg">
-                    <button type="button" role="menuitem" className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-neutral-50" onClick={() => bulkMoveProject(null)}>
-                      {t.chatLibClearOwner}
-                    </button>
-                    {projects.map((p) => (
-                      <button key={p.id} type="button" role="menuitem" className="block w-full truncate px-3 py-1.5 text-left text-[12px] hover:bg-neutral-50" onClick={() => bulkMoveProject(p.id)}>
-                        {p.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {shelf === 'archived' ? (
-                <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibUnarchive} onClick={() => bulkArchive(false)}>
-                  <ArchiveRestore size={12} />
-                  {!compactPad && <span>{t.chatLibUnarchive}</span>}
-                </Button>
-              ) : (
-                <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibArchive} onClick={() => bulkArchive(true)}>
-                  <Archive size={12} />
-                  {!compactPad && <span>{t.chatLibArchive}</span>}
-                </Button>
-              )}
-              <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibExport} onClick={bulkExport}>
-                {t.chatLibExport}
-              </Button>
-              <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibDelete} onClick={() => void bulkDelete()} className="text-red-600">
-                <Trash2 size={12} />
-                {!compactPad && <span>{t.chatLibDelete}</span>}
-              </Button>
-              <button type="button" className="ml-auto text-[12px] text-neutral-500 hover:text-neutral-800" onClick={clearSelection}>
-                {t.chatLibClearSelection}
-              </button>
-            </div>
           )}
+          <Select
+            className="w-[124px] shrink-0"
+            value={`${sort}:${order}`}
+            onChange={(value) => {
+              const [s, o] = value.split(':') as [ConversationLibrarySort, ConversationLibraryOrder]
+              setSort(s)
+              setOrder(o)
+            }}
+            options={sortOptions}
+            ariaLabel={t.chatLibSort}
+          />
+          <IconButton label={t.chatSessionRefresh} onClick={() => void loadPage({ append: false })} disabled={state.loading || busy}>
+            <RefreshCw size={14} className={state.loading ? 'animate-spin' : ''} />
+          </IconButton>
+        </div>
 
-          {state.error && (
-            <ErrorNotice message={state.error} />
-          )}
+        {state.error && (
+          <ErrorNotice message={state.error} />
+        )}
 
-          <div className="flex min-w-0 shrink-0 items-center gap-2 border-b border-neutral-200/70 bg-neutral-50 px-3 py-[7px] text-[12px] font-medium text-neutral-500">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-[var(--theme-surface-border)] bg-[var(--theme-surface)]">
+          {/* 列表顶条：平时是全选框 + 总数；选中后原地变成批量操作。 */}
+          <div
+            className="flex min-h-[38px] shrink-0 flex-wrap items-center gap-1.5 border-b border-[var(--theme-surface-border)] px-3 py-1"
+            aria-busy={batch.phase === 'running'}
+          >
             <span className="flex w-7 shrink-0 items-center justify-center">
               <Checkbox
                 ariaLabel={t.editSelectAll}
@@ -1026,25 +694,87 @@ export function SessionCenter({
                 onChange={(checked) => (checked ? selectAllVisible() : clearSelection())}
               />
             </span>
-            <span className="min-w-0 flex-1 truncate">{t.chatLibColTitle}</span>
-            {cols.model && (
-              <span className="w-24 shrink-0 truncate">{t.chatLibColModel}</span>
+            {selected.size === 0 ? (
+              <span className="text-[12px] tabular-nums text-[var(--text-muted)]">
+                {state.loading ? t.chatLoading : t.chatLibCount.replace('{n}', String(state.total))}
+              </span>
+            ) : (
+              <>
+                <span className="mr-1 text-[12px] font-medium tabular-nums text-[var(--text)]">
+                  {t.chatLibSelected.replace('{n}', String(selected.size))}
+                </span>
+                {allSelectedPinned ? (
+                  <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibUnstar} onClick={() => bulkPin(false)}>
+                    <StarOff size={12} />
+                    {!compactPad && <span>{t.chatLibUnstar}</span>}
+                  </Button>
+                ) : (
+                  <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibStar} onClick={() => bulkPin(true)}>
+                    <Star size={12} />
+                    {!compactPad && <span>{t.chatLibStar}</span>}
+                  </Button>
+                )}
+                {sets.length > 0 && (
+                  <div className="relative">
+                    <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibMoveToSet} aria-haspopup="menu" aria-expanded={moveOpen === 'set'} onClick={() => setMoveOpen(moveOpen === 'set' ? null : 'set')}>
+                      <Layers size={12} />
+                      {!compactPad && <span>{t.chatLibMoveToSet}</span>}
+                    </Button>
+                    {moveOpen === 'set' && (
+                      <MoveMenu
+                        clearLabel={t.chatLibClearOwner}
+                        targets={sets}
+                        onPick={bulkMoveSet}
+                      />
+                    )}
+                  </div>
+                )}
+                {projects.length > 0 && (
+                  <div className="relative">
+                    <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibMoveToProject} aria-haspopup="menu" aria-expanded={moveOpen === 'project'} onClick={() => setMoveOpen(moveOpen === 'project' ? null : 'project')}>
+                      <FolderKanban size={12} />
+                      {!compactPad && <span>{t.chatLibMoveToProject}</span>}
+                    </Button>
+                    {moveOpen === 'project' && (
+                      <MoveMenu
+                        clearLabel={t.chatLibClearOwner}
+                        targets={projects}
+                        onPick={bulkMoveProject}
+                      />
+                    )}
+                  </div>
+                )}
+                {shelf === 'archived' ? (
+                  <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibUnarchive} onClick={() => bulkArchive(false)}>
+                    <ArchiveRestore size={12} />
+                    {!compactPad && <span>{t.chatLibUnarchive}</span>}
+                  </Button>
+                ) : (
+                  <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibArchive} onClick={() => bulkArchive(true)}>
+                    <Archive size={12} />
+                    {!compactPad && <span>{t.chatLibArchive}</span>}
+                  </Button>
+                )}
+                <Button size="sm" disabled={controlsBusy} aria-label={t.chatLibExport} onClick={bulkExport}>
+                  <Download size={12} />
+                  {!compactPad && <span>{t.chatLibExport}</span>}
+                </Button>
+                <Button size="sm" variant="danger" disabled={controlsBusy} aria-label={t.chatLibDelete} onClick={() => void bulkDelete()}>
+                  <Trash2 size={12} />
+                  {!compactPad && <span>{t.chatLibDelete}</span>}
+                </Button>
+                <Button size="sm" variant="ghost" className="ml-auto" onClick={clearSelection}>
+                  {t.chatLibClearSelection}
+                </Button>
+              </>
             )}
-            {cols.owner && (
-              <span className="w-24 shrink-0 truncate">{t.chatLibColOwner}</span>
-            )}
-            {cols.msgs && (
-              <span className="w-12 shrink-0 text-right">{t.chatLibColMsgs}</span>
-            )}
-            <span className="w-14 shrink-0 text-right">{t.chatLibColTime}</span>
-            <span className="w-8 shrink-0" />
           </div>
+
           <div
             ref={listRef}
             onScroll={onScrollList}
             className="custom-scrollbar min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
           >
-
             {state.loading && state.items.length === 0 ? (
               <div className="flex flex-col gap-2 p-4">
                 {Array.from({ length: 8 }, (_, i) => (
@@ -1053,26 +783,31 @@ export function SessionCenter({
               </div>
             ) : state.items.length === 0 ? (
               <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
-                <MessagesSquare size={22} strokeWidth={1.5} className="text-neutral-300 dark:text-neutral-600" />
-                <p className="mt-3 text-[13px] text-neutral-500">
+                <MessagesSquare size={22} strokeWidth={1.5} className="text-[var(--text-faint)]" />
+                <p className="mt-3 text-[13px] text-[var(--text-muted)]">
                   {debouncedQ ? t.chatSessionEmptySearch : t.chatSessionEmpty}
                 </p>
-                <p className="mt-1 max-w-sm text-[12px] text-neutral-400">{t.chatLibEmptyHint}</p>
+                {filtered && (
+                  <p className="mt-1 max-w-sm text-[12px] text-[var(--text-faint)]">{t.chatLibEmptyHint}</p>
+                )}
               </div>
             ) : (
               grouped.map((group) => (
                 <div key={group.key}>
                   {group.label && (
-                    <div className="sticky top-0 z-[5] border-b border-neutral-100 bg-[var(--theme-surface)]/95 px-3 py-1.5 text-[12px] font-medium text-neutral-500 backdrop-blur">
+                    <div className="sticky top-0 z-[5] bg-[var(--theme-surface)] px-3 pb-1 pt-2.5 text-[12px] font-medium text-[var(--text-muted)]">
                       {group.label}
-                      <span className="ml-1.5 tabular-nums text-neutral-400">{group.items.length}</span>
                     </div>
                   )}
                   {group.items.map((c) => {
                     const isSel = selected.has(c.id)
                     const isCurrent = c.id === currentConversationId
                     const owner = conversationOwnerLabel(c, projects, sets, t)
-                    const rowPad = density === 'compact' || !cols.preview ? 'py-1.5' : 'py-2.5'
+                    // 有搜索词时优先展示命中片段（正文/思考），否则回退 index 预览。
+                    const snippet = (c.match_snippet ?? c.matchSnippet ?? '').trim()
+                    const line = debouncedQ
+                      ? (snippet && snippet !== (c.title || '') ? snippet : (c.preview || snippet))
+                      : c.preview
                     return (
                       <div
                         key={c.id}
@@ -1083,9 +818,10 @@ export function SessionCenter({
                           onSelectConversation(c.id, c, selectionScope(c))
                         }}
                         onKeyDown={(e: ReactKeyboardEvent) => {
+                          if (e.target !== e.currentTarget) return
                           if (e.key === 'Enter') onSelectConversation(c.id, c, selectionScope(c))
                         }}
-                        className={`group flex cursor-pointer items-center gap-2 border-b border-[var(--theme-surface-border)] px-3 ${rowPad} transition-colors hover:bg-[var(--theme-surface-hover)] ${
+                        className={`group flex cursor-default items-center gap-2 border-b border-[var(--theme-surface-border)] px-3 py-2 transition-colors hover:bg-[var(--theme-surface-hover)] ${
                           isSel ? 'bg-[var(--accent-soft)]' : ''
                         } ${isCurrent ? 'ring-1 ring-inset ring-[var(--accent)]/35' : ''}`}
                       >
@@ -1098,14 +834,15 @@ export function SessionCenter({
                         </span>
                         <div className="min-w-0 flex-1 overflow-hidden">
                           <div className="flex min-w-0 items-center gap-1.5">
-                            {c.pinned && <Star size={12} className="shrink-0 fill-amber-400 text-amber-500" />}
-                            {c.archived && <Archive size={12} className="shrink-0 text-neutral-400" />}
+                            {c.pinned && <Star size={12} className="shrink-0 fill-[var(--warn)] text-[var(--warn)]" />}
                             {renameId === c.id ? (
-                              <input
+                              <Input
                                 data-row-chrome
                                 autoFocus
+                                className="min-w-0 flex-1"
                                 value={renameDraft}
-                                onChange={(e) => setRenameDraft(e.target.value)}
+                                onChange={setRenameDraft}
+                                aria-label={t.chatRename}
                                 onClick={(e) => e.stopPropagation()}
                                 onKeyDown={(e) => {
                                   if (e.key === 'Enter') void patchOne(c.id, { title: renameDraft.trim() || c.title })
@@ -1116,65 +853,47 @@ export function SessionCenter({
                                     void patchOne(c.id, { title: renameDraft.trim() })
                                   } else setRenameId(null)
                                 }}
-                                className="min-w-0 flex-1 rounded border border-neutral-300 bg-neutral-50 px-1.5 py-0.5 text-[13px] dark:border-[var(--border-input)] dark:bg-[var(--bg-hover)]"
                               />
                             ) : (
-                              <span className="min-w-0 truncate text-[13px] font-medium text-neutral-900">
+                              <span className="min-w-0 truncate text-[13px] font-medium text-[var(--text)]">
                                 {debouncedQ
                                   ? <HighlightText text={c.title || t.chatLibUntitled} query={debouncedQ} />
                                   : (c.title || t.chatLibUntitled)}
                               </span>
                             )}
                           </div>
-                          {(() => {
-                            // 有搜索词时优先展示命中片段（正文/思考），否则回退 index 预览。
-                            const snippet = (c.match_snippet ?? c.matchSnippet ?? '').trim()
-                            const line = debouncedQ
-                              ? (snippet && snippet !== (c.title || '') ? snippet : (c.preview || snippet))
-                              : c.preview
-                            // 搜索命中片段即使紧凑布局也要露出，否则正文匹配看不见高亮。
-                            if (!(cols.preview || debouncedQ) || !line) return null
-                            return (
-                              <p className="mt-0.5 line-clamp-2 text-[12px] leading-snug text-neutral-500">
-                                {debouncedQ
-                                  ? <HighlightText text={line} query={debouncedQ} />
-                                  : line}
-                              </p>
-                            )
-                          })()}
+                          {line && (
+                            <p className="mt-0.5 truncate text-[12px] leading-snug text-[var(--text-muted)]">
+                              {debouncedQ
+                                ? <HighlightText text={line} query={debouncedQ} />
+                                : line}
+                            </p>
+                          )}
                         </div>
-                        {cols.model && (
-                          <span className="w-24 shrink-0 truncate text-[12px] text-neutral-500">
-                            {shortModelName(c.model)}
+                        {showOwner && owner && (
+                          <span className="max-w-[120px] shrink-0 truncate rounded-full bg-[var(--theme-surface-hover)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
+                            {owner}
                           </span>
                         )}
-                        {cols.owner && (
-                          <span className="w-24 shrink-0 truncate text-[12px] text-neutral-500">
-                            {owner || '—'}
-                          </span>
-                        )}
-                        {cols.msgs && (
-                          <span className="w-12 shrink-0 text-right text-[12px] tabular-nums text-neutral-400">
-                            {c.message_count}
-                          </span>
-                        )}
-                        <span className="w-14 shrink-0 text-right text-[12px] tabular-nums text-neutral-400">
+                        <span className="w-16 shrink-0 text-right text-[12px] tabular-nums text-[var(--text-faint)]">
                           {formatRelativeTime(libraryTimestamp(c, sort), t)}
                         </span>
-                        <button
-                          data-row-chrome
-                          type="button"
-                          className="grid size-8 shrink-0 place-items-center rounded-md text-neutral-400 opacity-60 hover:bg-neutral-100 hover:text-neutral-700 group-hover:opacity-100 dark:text-neutral-500"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                            const menuW = 180
-                            const x = Math.min(rect.right - menuW, window.innerWidth - menuW - 8)
-                            setMenu({ id: c.id, x: Math.max(8, x), y: rect.bottom + 4 })
-                          }}
-                        >
-                          <MoreHorizontal size={16} />
-                        </button>
+                        <span data-row-chrome className="shrink-0 opacity-60 group-hover:opacity-100 group-focus-within:opacity-100">
+                          <IconButton
+                            data-row-chrome
+                            label={t.chatLibMore}
+                            aria-haspopup="menu"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                              const menuW = 180
+                              const x = Math.min(rect.right - menuW, window.innerWidth - menuW - 8)
+                              setMenu({ id: c.id, x: Math.max(8, x), y: rect.bottom + 4 })
+                            }}
+                          >
+                            <MoreHorizontal size={15} />
+                          </IconButton>
+                        </span>
                       </div>
                     )
                   })}
@@ -1183,20 +902,17 @@ export function SessionCenter({
             )}
 
             {state.loadingMore && (
-              <div className="flex items-center justify-center gap-2 py-3 text-[12px] text-neutral-400">
+              <div className="flex items-center justify-center gap-2 py-3 text-[12px] text-[var(--text-faint)]">
                 <Loader2 size={14} className="animate-spin" /> {t.chatLoading}
               </div>
             )}
             {!state.loading && !state.loadingMore && hasMore && (
-              <button
-                type="button"
-                className="w-full py-2.5 text-center text-[12px] text-neutral-500 hover:bg-neutral-50"
-                onClick={() => void loadPage({ append: true })}
-              >
-                {t.chatLibLoadMore}
-              </button>
+              <div className="flex justify-center py-2">
+                <Button size="sm" variant="ghost" onClick={() => void loadPage({ append: true })}>
+                  {t.chatLibLoadMore}
+                </Button>
+              </div>
             )}
-          </div>
           </div>
         </div>
       </div>
@@ -1247,7 +963,7 @@ export function SessionCenter({
                 })
               }}
             />
-            <div className="my-1 border-t border-neutral-100" />
+            <div className="my-1 border-t border-[var(--theme-surface-border)]" />
             <MenuItem
               label={t.chatLibDelete}
               danger
@@ -1257,6 +973,34 @@ export function SessionCenter({
             />
         </PortaledRowMenu>
       )}
+    </div>
+  )
+}
+
+/** 批量「移入集 / 移入项目」的下拉：第一项是移出归属。 */
+function MoveMenu({
+  clearLabel,
+  targets,
+  onPick,
+}: {
+  clearLabel: string
+  targets: Array<{ id: string; name: string }>
+  onPick: (id: string | null) => void
+}) {
+  const itemClass = 'block w-full truncate px-3 py-1.5 text-left text-[12px] text-[var(--text)] hover:bg-[var(--theme-surface-hover)]'
+  return (
+    <div
+      role="menu"
+      className="custom-scrollbar absolute left-0 top-full z-20 mt-1 max-h-56 w-48 overflow-y-auto rounded-[10px] border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] py-1 shadow-lg"
+    >
+      <button type="button" role="menuitem" className={itemClass} onClick={() => onPick(null)}>
+        {clearLabel}
+      </button>
+      {targets.map((target) => (
+        <button key={target.id} type="button" role="menuitem" className={itemClass} onClick={() => onPick(target.id)}>
+          {target.name}
+        </button>
+      ))}
     </div>
   )
 }
@@ -1279,7 +1023,7 @@ function PortaledRowMenu({
       <div
         ref={menuRef}
         role="menu"
-        className="fixed z-[200] w-[180px] rounded-lg border border-neutral-200 bg-neutral-50 py-1 shadow-xl"
+        className="fixed z-[200] w-[180px] rounded-[10px] border border-[var(--theme-surface-border)] bg-[var(--theme-surface)] py-1 shadow-xl"
         style={{ left: pos.left, top: pos.top }}
       >
         {children}
@@ -1302,21 +1046,18 @@ function MenuItem({
   danger?: boolean
   disabled?: boolean
 }) {
-  // icon optional
   return (
     <button
       type="button"
       role="menuitem"
       onClick={onClick}
       disabled={disabled}
-      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-neutral-50 disabled:cursor-default disabled:opacity-40 ${
-        danger ? 'text-danger' : 'text-neutral-700'
+      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-[var(--theme-surface-hover)] disabled:cursor-default disabled:opacity-40 ${
+        danger ? 'text-[var(--danger)]' : 'text-[var(--text)]'
       }`}
     >
       {icon}
       <span className="flex-1">{label}</span>
-      {!icon && null}
-      {false && <Check size={12} />}
     </button>
   )
 }

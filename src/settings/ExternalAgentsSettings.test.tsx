@@ -467,6 +467,20 @@ describe('ExternalAgentsSettings', () => {
     expect(screen.queryByRole('button', { name: '更新' })).not.toBeInTheDocument()
   })
 
+  it('shows only install and path for a CLI that is not installed', async () => {
+    renderPanel()
+    await waitFor(() => {
+      expect(screen.getByText('供应商')).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText('Codex'))
+    await waitFor(() => {
+      expect(screen.queryByText('供应商')).not.toBeInTheDocument()
+    })
+    expect(screen.queryByText('模型')).not.toBeInTheDocument()
+    expect(screen.getByText('自定义路径')).toBeInTheDocument()
+  })
+
   it('moves a disabled agent into its own group', async () => {
     renderPanel({ externalCliAgents: { claude: { disabled: true } } })
 
@@ -491,8 +505,9 @@ describe('ExternalAgentsSettings', () => {
     await waitFor(() => {
       expect(screen.getByText('Loki')).toBeInTheDocument()
     })
-    // 卡片里那行「启用」是纯 label（旁边是 Toggle），只有供应商行的才是按钮。
-    fireEvent.click(screen.getByRole('button', { name: '启用' }))
+    // 单选型 CLI 用行首的单选圈切换当前供应商。
+    expect(screen.getByRole('radio', { name: '使用 CLI 自身配置' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('radio', { name: 'Loki' }))
     expect(updateChat).toHaveBeenCalledWith(
       expect.objectContaining({
         externalCliAgents: expect.objectContaining({
@@ -571,7 +586,7 @@ describe('ExternalAgentsSettings', () => {
   it('shows the empty state when no provider is configured', async () => {
     renderPanel()
     await waitFor(() => {
-      expect(screen.getByText('所有供应商')).toBeInTheDocument()
+      expect(screen.getByText('供应商')).toBeInTheDocument()
     })
     expect(screen.getByText('暂无供应商，点击上方「添加」创建一个。')).toBeInTheDocument()
   })
@@ -763,7 +778,7 @@ describe('ExternalAgentsSettings', () => {
 
     renderPanel()
     await waitFor(() => {
-      expect(screen.getByText('所有供应商')).toBeInTheDocument()
+      expect(screen.getByText('供应商')).toBeInTheDocument()
     })
     expect(screen.queryByRole('tab', { name: '插件配置' })).not.toBeInTheDocument()
     const plugins = screen.getByText('插件')
@@ -771,11 +786,11 @@ describe('ExternalAgentsSettings', () => {
     fireEvent.click(plugins.closest('button')!)
     expect(screen.getByRole('tab', { name: '插件配置' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /返回/ })).toBeInTheDocument()
-    expect(screen.queryByText('所有供应商')).not.toBeInTheDocument()
+    expect(screen.queryByText('供应商')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /返回/ }))
     expect(screen.queryByRole('tab', { name: '插件配置' })).not.toBeInTheDocument()
-    expect(screen.getByText('所有供应商')).toBeInTheDocument()
+    expect(screen.getByText('供应商')).toBeInTheDocument()
   })
 
   it('opens Pi extension management as a full secondary page', async () => {

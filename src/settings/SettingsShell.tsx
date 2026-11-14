@@ -860,25 +860,62 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       : effectiveChatMaxOutput.model)
     : (lang === 'zh' ? '未配置聊天模型' : 'No chat model configured')
 
-  const navItems = [
-    { id: 'general' as const, label: t.tabGeneral, icon: GeneralIcon },
-    { id: 'themes' as const, label: lang === 'zh' ? '主题' : 'Themes', icon: Palette },
-    { id: 'providers' as const, label: t.tabModels, icon: ProvidersIcon },
-    { id: 'hotkeys' as const, label: t.tabHotkeys, icon: HotkeysIcon },
-    { id: 'translate' as const, label: t.tabTranslation, icon: TranslateIcon },
-    { id: 'lens' as const, label: t.lensTabLabel, icon: LensIcon },
-    { id: 'chat' as const, label: t.tabChatClient, icon: ChatIcon },
-    { id: 'memory' as const, label: t.tabMemory, icon: MemoryIcon },
-    { id: 'mixer' as const, label: t.tabMixer, icon: MixerIcon },
-    { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: CliIcon },
-    { id: 'computerControl' as const, label: lang === 'zh' ? '电脑操控' : 'Computer control', icon: ComputerIcon },
-    { id: 'hooks' as const, label: t.tabHooks, icon: HooksIcon },
-    { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
-    { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
-    { id: 'usage' as const, label: lang === 'zh' ? '使用统计' : 'Usage', icon: UsageIcon },
-    { id: 'backup' as const, label: lang === 'zh' ? '备份与同步' : 'Backup & sync', icon: CloudUpload },
-    // 关于固定在分类列表最末
-    { id: 'about' as const, label: lang === 'zh' ? '关于' : 'About', icon: AboutIcon },
+  const zh = lang === 'zh'
+  // 分组只决定导航里的排列；标签页 id 与各页内容不变。
+  const navGroups = [
+    {
+      id: 'app',
+      label: zh ? '通用' : 'General',
+      items: [
+        { id: 'general' as const, label: t.tabGeneral, icon: GeneralIcon },
+        { id: 'themes' as const, label: zh ? '主题' : 'Themes', icon: Palette },
+        { id: 'hotkeys' as const, label: t.tabHotkeys, icon: HotkeysIcon },
+      ],
+    },
+    {
+      id: 'models',
+      label: zh ? '模型' : 'Models',
+      items: [
+        { id: 'providers' as const, label: zh ? '供应商' : 'Providers', icon: ProvidersIcon },
+        { id: 'mixer' as const, label: t.tabMixer, icon: MixerIcon },
+      ],
+    },
+    {
+      id: 'agent',
+      label: 'Agent',
+      items: [
+        { id: 'chat' as const, label: t.tabChatClient, icon: ChatIcon },
+        { id: 'externalAgents' as const, label: t.tabExternalAgents, icon: CliIcon },
+        { id: 'memory' as const, label: t.tabMemory, icon: MemoryIcon },
+        { id: 'webSearch' as const, label: t.tabWebSearch, icon: WebSearchIcon },
+        { id: 'computerControl' as const, label: zh ? '电脑操控' : 'Computer control', icon: ComputerIcon },
+        { id: 'hooks' as const, label: t.tabHooks, icon: HooksIcon },
+      ],
+    },
+    {
+      id: 'screen',
+      label: zh ? '屏幕工具' : 'Screen tools',
+      items: [
+        { id: 'translate' as const, label: t.tabTranslation, icon: TranslateIcon },
+        { id: 'lens' as const, label: t.lensTabLabel, icon: LensIcon },
+      ],
+    },
+    {
+      id: 'data',
+      label: zh ? '数据' : 'Data',
+      items: [
+        { id: 'sessions' as const, label: t.tabSessions, icon: SessionsIcon },
+        { id: 'usage' as const, label: zh ? '使用统计' : 'Usage', icon: UsageIcon },
+        { id: 'backup' as const, label: zh ? '备份与同步' : 'Backup & sync', icon: CloudUpload },
+      ],
+    },
+    {
+      id: 'about',
+      label: '',
+      items: [
+        { id: 'about' as const, label: zh ? '关于' : 'About', icon: AboutIcon },
+      ],
+    },
   ]
   const pageMeta: Record<typeof activeTab, { title: string; subtitle: string; right?: string }> = {
     backup: {
@@ -887,7 +924,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     },
     general: {
       title: t.tabGeneral,
-      subtitle: lang === 'zh' ? '外观、行为、归档和权限。' : 'Appearance, behavior, archive, and permissions.',
+      subtitle: zh ? '语言、字体、启动与通知。' : 'Language, fonts, startup, and notifications.',
     },
     themes: {
       title: lang === 'zh' ? '主题' : 'Themes',
@@ -908,20 +945,20 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     chat: {
       title: t.tabChatClient,
       subtitle: lang === 'zh'
-        ? '主对话模型、流式/思考、系统提示词。'
-        : 'Main chat model, streaming/thinking, and system prompt.',
+        ? '内置运行时的工作目录、输出上限、工具与系统提示词。'
+        : 'Workspace, output limit, tools, and system prompts for the built-in runtime.',
     },
     memory: {
       title: t.tabMemory,
       subtitle: lang === 'zh'
-        ? 'L1 注入；L2 按需读取。'
-        : 'L1 injected; L2 read on demand.',
+        ? '让 Agent 跨对话记住你的偏好与长期信息。'
+        : 'Let the agent remember preferences and long-term facts across conversations.',
     },
     mixer: {
       title: t.tabMixer,
       subtitle: lang === 'zh'
-        ? '按副任务路由模型：视觉、标题总结、上下文压缩、生图。'
-        : 'Route models by side task: vision, title summaries, context compression, and image generation.',
+        ? '为视觉、标题总结、上下文压缩、生图、子代理等任务指定模型。'
+        : 'Pick models for vision, title summaries, context compression, image generation, and subagents.',
     },
     computerControl: {
       title: lang === 'zh' ? '电脑操控' : 'Computer control',
@@ -930,8 +967,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     externalAgents: {
       title: t.tabExternalAgents,
       subtitle: lang === 'zh'
-        ? '检测外部 CLI 编码代理，管理版本、路径、模型与环境变量。'
-        : 'Detect external CLI coding agents; manage versions, paths, models, and env vars.',
+        ? '本机的外部 CLI 代理：安装更新、供应商、模型与扩展。'
+        : 'External CLI agents on this machine: install and update, providers, models, and extensions.',
     },
     hooks: {
       title: t.tabHooks,
@@ -944,16 +981,16 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     webSearch: {
       title: t.tabWebSearch,
       subtitle: lang === 'zh'
-        ? 'Tavily/Exa 密钥；分别开启 Lens 与 Chat 联网。'
-        : 'Tavily/Exa keys; enable web search for Lens and Chat.',
+        ? '搜索服务与密钥，以及对话和 Lens 的联网开关。'
+        : 'Search services and keys, plus web access for chat and Lens.',
     },
     usage: {
       title: lang === 'zh' ? '使用统计' : 'Usage',
       subtitle: '',
     },
     providers: {
-      title: t.tabModels,
-      subtitle: lang === 'zh' ? '管理 OpenAI 兼容供应商、密钥和启用模型。' : 'Manage OpenAI-compatible providers, keys, and enabled models.',
+      title: zh ? '供应商' : 'Providers',
+      subtitle: zh ? '接入模型服务：地址、密钥和可用模型。' : 'Connect model services: endpoint, keys, and available models.',
     },
     about: {
       title: lang === 'zh' ? '关于' : 'About',
@@ -976,38 +1013,48 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
           />
         </nav>
         <nav className="settings-embedded-nav-list custom-scrollbar">
-          {navItems.map((item) => {
-            const Icon = item.icon
-            return (
-              <SidebarNavItem
-                key={item.id}
-                onClick={() => setActiveTab(item.id)}
-                active={activeTab === item.id}
-                icon={<Icon size={18} strokeWidth={1.75} />}
-                label={item.label}
-              />
-            )
-          })}
+          {navGroups.map((group) => (
+            <div key={group.id} className="settings-nav-group" role="group" aria-label={group.label || undefined}>
+              {group.label && <div className="settings-nav-group-title">{group.label}</div>}
+              {group.items.map((item) => {
+                const Icon = item.icon
+                return (
+                  <SidebarNavItem
+                    key={item.id}
+                    onClick={() => setActiveTab(item.id)}
+                    active={activeTab === item.id}
+                    icon={<Icon size={18} strokeWidth={1.75} />}
+                    label={item.label}
+                  />
+                )
+              })}
+            </div>
+          ))}
         </nav>
       </>
     ) : (
       <>
         <nav className="kv-nav">
-          {navItems.map((item) => {
-            const Icon = item.icon
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => setActiveTab(item.id)}
-                className={`kv-nav-item ${activeTab === item.id ? 'active' : ''}`}
-                data-tauri-drag-region="false"
-              >
-                <Icon strokeWidth={1.7} />
-                <span>{item.label}</span>
-              </button>
-            )
-          })}
+          {navGroups.map((group) => (
+            <div key={group.id} className="settings-nav-group" role="group" aria-label={group.label || undefined}>
+              {group.label && <div className="settings-nav-group-title">{group.label}</div>}
+              {group.items.map((item) => {
+                const Icon = item.icon
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setActiveTab(item.id)}
+                    className={`kv-nav-item ${activeTab === item.id ? 'active' : ''}`}
+                    data-tauri-drag-region="false"
+                  >
+                    <Icon strokeWidth={1.7} />
+                    <span>{item.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ))}
         </nav>
 
         <div className="kv-nav-spacer" />

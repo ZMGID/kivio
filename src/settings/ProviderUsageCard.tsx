@@ -31,7 +31,7 @@ export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider;
 
   if (!supported || !auth?.credentialId) return null
   const label = (value: string) => zh ? ({ Weekly: '每周额度', Session: '会话额度' }[value] ?? value.replace('Code review · ', '代码审查 · ').replace(/^(\d+)h$/, '$1 小时额度')) : value
-  return <section aria-label={zh ? '账户用量' : 'Account usage'} className="mb-5 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4">
+  return <section aria-label={zh ? '账户用量' : 'Account usage'} className="kv-provider-usage">
     <div className="flex items-center justify-between gap-3">
       <div className="flex items-center gap-2">
         <h3 className="text-sm font-medium">{zh ? '账户用量' : 'Account usage'}</h3>
@@ -42,7 +42,7 @@ export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider;
       </Button>
     </div>
     {busy && <p className="mt-3 text-xs opacity-60" role="status">{zh ? '正在获取账户额度…' : 'Fetching account limits…'}</p>}
-    {error && <p className="mt-3 text-xs text-red-500" role="alert">{zh ? '暂时无法获取用量，请检查网络或授权后重试。' : 'Could not fetch usage. Check your connection or authorization and retry.'}</p>}
+    {error && <p className="mt-3 text-xs text-[var(--danger)]" role="alert">{zh ? '暂时无法获取用量，请检查网络或授权后重试。' : 'Could not fetch usage. Check your connection or authorization and retry.'}</p>}
     {data && data.windows.length === 0 && <p className="mt-3 text-xs opacity-60">{zh ? '供应商暂未返回额度数据' : 'No quota data returned by the provider'}</p>}
     {auth?.provider === 'antigravity' && data && data.windows.length > 0 && <p className="mt-2 text-xs opacity-60">{zh ? '显示接口返回的额度组；部分账号可能不提供完整周额度。' : 'Reported quota groups; full weekly limits may not be available for every account.'}</p>}
     {data?.windows.map((window, i) => {
@@ -52,8 +52,8 @@ export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider;
           <span>{label(window.label)}</span>
           <span className="tabular-nums">{remaining === null ? (zh ? '暂无比例' : 'Unavailable') : `${zh ? '剩余 ' : ''}${remaining.toFixed(0)}%${zh ? '' : ' remaining'}`}</span>
         </div>
-        {remaining !== null && <div role="progressbar" aria-label={label(window.label)} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining} className="h-1.5 overflow-hidden rounded-full bg-neutral-900/5">
-          <div className={`h-full rounded-full ${remaining <= 10 ? 'bg-amber-500' : 'bg-indigo-500'}`} style={{ width: `${remaining}%` }} />
+        {remaining !== null && <div role="progressbar" aria-label={label(window.label)} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining} className="h-1.5 overflow-hidden rounded-full bg-[var(--bg-active)]">
+          <div className={`h-full rounded-full ${remaining <= 10 ? 'bg-[var(--warn)]' : 'bg-[var(--accent)]'}`} style={{ width: `${remaining}%` }} />
         </div>}
         <div className="mt-1 flex flex-wrap justify-between gap-x-3 text-[11px] opacity-60">
           {window.used !== null && window.limit !== null && <span>{zh ? '已用 ' : 'Used '}{window.used.toLocaleString()} / {window.limit.toLocaleString()}</span>}

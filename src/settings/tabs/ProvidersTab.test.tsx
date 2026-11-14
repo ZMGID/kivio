@@ -23,8 +23,8 @@ vi.mock('../providerPresets', () => ({
 type Props = Parameters<typeof ProvidersTab>[0]
 
 /**
- * 回归重点（拆成 ProvidersTab + ProviderDetail 两个文件后尤其要验）：
- *   1. 选中/未选中供应商的两种形态
+ * 回归重点：
+ *   1. 列表级（已添加卡片 / 可添加预设）与详情级的切换
  *   2. 密钥池的显隐、增删按 index 作用到正确的那一条
  *   3. 各回调不串（更新 / 删除 / 模型抽屉 / 测试连接）
  */
@@ -57,121 +57,80 @@ function buildProps(overrides: Partial<Props> = {}): Props {
 
 function renderTab(overrides: Partial<Props> = {}) {
   const props = buildProps(overrides)
-  render(<ProvidersTab {...props} />)
-  return props
-}
-
-/** 需要在同一棵树上换 props 的用例（如切换供应商）用它，别重新 render 出第二棵树。 */
-function renderTabWithRerender(overrides: Partial<Props> = {}) {
-  const props = { ...buildProps(overrides) }
   const view = render(<ProvidersTab {...props} />)
   return { props, rerender: (next: Props) => view.rerender(<ProvidersTab {...next} />) }
 }
 
-describe('ProvidersTab', () => {
-  it('OpenCode Free enables model management without a key field', async () => {
-    const provider = makeProvider({ name: 'OpenCode Free', baseUrl: 'https://opencode.ai/zen/v1', apiKeys: [] })
-    const props = renderTab({ selectedProvider: provider, settings: makeSettings({ providers: [provider] }) })
-    expect(screen.getByText(/免费模型，无需账号/)).toBeInTheDocument()
-    expect(document.querySelectorAll('input[type="password"]')).toHaveLength(0)
-    const manage = screen.getByRole('button', { name: /管理模型/ })
-    expect(manage).toBeEnabled()
-    await userEvent.click(manage)
-    expect(props.onOpenModelPicker).toHaveBeenCalled()
-  })
+/** 列表里点开一家供应商的详情。 */
+async function openDetail(name = 'OpenAI') {
+  await userEvent.click(screen.getByRole('button', { name }))
+}
 
-  it('切换供应商选择时显示对应详情', () => {
-    const { props, rerender } = renderTabWithRerender({ selectedProvider: undefined })
-    expect(screen.getByText(/在左侧选择供应商/)).toBeTruthy()
-    expect(screen.queryByText(t.baseUrl)).toBeNull()
-    rerender({ ...props, selectedProvider: props.settings.providers[0] })
-    expect(screen.queryByText(/在左侧选择供应商/)).toBeNull()
-    expect(screen.getByText(t.baseUrl)).toBeTruthy()
-    expect(screen.getByDisplayValue(props.settings.providers[0].baseUrl)).toBeTruthy()
-  })
+/** 只有一家供应商时直接渲染并进入它的详情。 */
+async function renderDetail(provider = makeProvider({ apiKeys: ['sk-aaa', 'sk-bbb'] })) {
+  const view = renderTab({ selectedProvider: provider, settings: makeSettings({ providers: [provider] }) })
+  await openDetail(provider.name)
+  return view
+}
 
-  it('密钥默认掩码显示，池中每条各一行', () => {
+describe('ProvidersTab 列表', () => {
+  it('默认显示已添加的供应商卡片，不直接展开详情', () => {
     renderTab()
-    // 两条密钥 → 两个 password 输入
-    const masked = document.querySelectorAll('input[type="password"]')
-    expect(masked).toHaveLength(2)
+    const card = screen.getByRole('button', { name: 'OpenAI' })
+    expect(within(card).getByText('https://api.openai.com/v1')).toBeTruthy()
+    expect(within(card).getByText('1 个模型')).toBeTruthy()
+    expect(screen.queryByText(t.baseUrl)).toBeNull()
   })
 
-  it('revealedKeys 只解掩指定那一条', () => {
-    renderTab({ revealedKeys: new Set(['p1-0']) })
-    expect(document.querySelectorAll('input[type="password"]')).toHaveLength(1)
-    expect(screen.getByDisplayValue('sk-aaa')).toBeTruthy()
+  it('点卡片进入详情，返回后回到列表', async () => {
+    const { props } = renderTab()
+    await openDetail()
+    expect(props.onSelectProvider).toHaveBeenCalledWith('p1')
+    expect(screen.getByText(t.baseUrl)).toBeTruthy()
+    expect(screen.getByDisplayValue('https://api.openai.com/v1')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: '全部供应商' }))
+    expect(screen.queryByText(t.baseUrl)).toBeNull()
+    expect(screen.getByRole('button', { name: 'OpenAI' })).toBeTruthy()
   })
 
-  it('删除密钥按 index 作用（删第 2 条时保留第 1 条）', async () => {
-    const props = renderTab()
-    const removes = document.querySelectorAll<HTMLButtonElement>('.kv-icon-btn[aria-label="移除"]')
-    await userEvent.click(removes[1])
-    expect(props.onUpdateProvider).toHaveBeenCalledWith('p1', { apiKeys: ['sk-aaa'], activeKeyIndex: 0 })
-  })
-
-  it('点备用 Key 的开关切到该条，不改密钥顺序', async () => {
-    const props = renderTab()
-    const current = screen.getByRole('switch', { name: t.apiKeyCurrent })
-    const backup = screen.getByRole('switch', { name: t.apiKeyUse })
-    expect(current.getAttribute('aria-checked')).toBe('true')
-    expect(backup.getAttribute('aria-checked')).toBe('false')
-    await userEvent.click(backup)
-    expect(props.onUpdateProvider).toHaveBeenCalledWith('p1', { activeKeyIndex: 1 })
-  })
-
-  it('单条密钥时不显示切换开关', () => {
-    renderTab({ selectedProvider: makeProvider({ apiKeys: ['sk-only'] }) })
-    expect(screen.queryByRole('switch', { name: t.apiKeyCurrent })).toBeNull()
-    expect(screen.queryByRole('switch', { name: t.apiKeyUse })).toBeNull()
-  })
-
-  it('新增密钥追加空串而非覆盖', async () => {
-    const props = renderTab()
-    await userEvent.click(screen.getByRole('button', { name: t.addKey }))
-    expect(props.onUpdateProvider).toHaveBeenCalledWith('p1', { apiKeys: ['sk-aaa', 'sk-bbb', ''] })
-  })
-
-  it('单条密钥时不显示删除按钮', () => {
-    renderTab({ selectedProvider: makeProvider({ apiKeys: ['sk-only'] }) })
-    expect(document.querySelectorAll('.kv-icon-btn[aria-label="移除"]')).toHaveLength(0)
-  })
-
-  it('删除供应商走 onRequestDeleteProvider（不直接删）', async () => {
-    const props = renderTab()
+  it('卡片上的开关、删除不会顺带打开详情', async () => {
+    const { props } = renderTab()
+    await userEvent.click(screen.getByRole('switch', { name: '启用 OpenAI' }))
+    expect(props.onUpdateProvider).toHaveBeenCalledWith('p1', { enabled: false })
     await userEvent.click(screen.getByRole('button', { name: t.deleteProvider }))
     expect(props.onRequestDeleteProvider).toHaveBeenCalledWith('p1')
-    expect(props.onUpdateProvider).not.toHaveBeenCalled()
+    expect(screen.queryByText(t.baseUrl)).toBeNull()
   })
 
-
-  it('测试连接与模型管理是两个不同回调', async () => {
-    const props = renderTab()
-    await userEvent.click(screen.getByRole('button', { name: t.testConnection }))
-    expect(props.onOpenModelTest).toHaveBeenCalledWith('p1')
-    expect(props.onOpenModelPicker).not.toHaveBeenCalled()
-
-    await userEvent.click(screen.getByRole('button', { name: /管理模型/ }))
-    expect(props.onOpenModelPicker).toHaveBeenCalledWith('p1')
+  it('未填密钥的启用供应商在卡片上标出未授权', () => {
+    const provider = makeProvider({ apiKeys: [], request: { oauth: { provider: 'kimi' } } })
+    renderTab({ selectedProvider: provider, settings: makeSettings({ providers: [provider] }) })
+    expect(within(screen.getByRole('button', { name: 'OpenAI' })).getByText(t.permissionMissing)).toBeTruthy()
   })
 
-  it('点击已启用模型打开抽屉，带 providerId + model', async () => {
-    const props = renderTab()
-    await userEvent.click(screen.getByTitle('gpt-4o'))
-    expect(props.onOpenModelDrawer).toHaveBeenCalledWith({ providerId: 'p1', model: 'gpt-4o' })
+  it('供应商被删除后从详情退回列表', async () => {
+    const { props, rerender } = renderTab()
+    await openDetail()
+    rerender({ ...props, selectedProvider: undefined, settings: makeSettings({ providers: [] }) })
+    expect(screen.queryByText(t.baseUrl)).toBeNull()
+    expect(screen.getByText(/还没有供应商/)).toBeTruthy()
   })
 
-  it('移除模型不冒泡触发抽屉', async () => {
-    const props = renderTab()
-    await userEvent.click(document.querySelector<HTMLButtonElement>('.kv-enabled-model-remove')!)
-    expect(props.onRemoveEnabledModel).toHaveBeenCalledWith('p1', 'gpt-4o')
-    expect(props.onOpenModelDrawer).not.toHaveBeenCalled()
-  })
-
-  it('opens presets and adds the selected provider, with sponsored entries first', async () => {
-    const props = renderTab()
+  it('预设不直接铺在列表页，只在添加流程里出现', async () => {
+    renderTab()
+    expect(screen.queryByRole('button', { name: /Alpha Test/ })).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: t.addProvider }))
-    const dialog = screen.getByRole('dialog', { name: t.presetProviders })
+    const dialog = screen.getByRole('dialog', { name: t.addProvider })
+    expect(within(dialog).getByRole('button', { name: /Alpha Test/ })).toBeTruthy()
+    expect(within(dialog).getByRole('button', { name: t.presetCustom })).toBeTruthy()
+  })
+
+  it('添加流程里选预设：赞助位在前，选中后添加并关闭弹窗', async () => {
+    const { props } = renderTab()
+    await userEvent.click(screen.getByRole('button', { name: t.addProvider }))
+    const dialog = screen.getByRole('dialog')
     expect(props.onAddProvider).not.toHaveBeenCalled()
     const sponsored = within(dialog).getByRole('button', { name: /Alpha Test/ })
     const regular = within(dialog).getByRole('button', { name: /Beta Test/ })
@@ -183,36 +142,151 @@ describe('ProvidersTab', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-
-  it('选择自定义配置时创建空白供应商', async () => {
-    const props = renderTab()
+  it('添加流程里选自定义配置：创建空白供应商，外壳选中后直接进入详情', async () => {
+    const { props, rerender } = renderTab()
     await userEvent.click(screen.getByRole('button', { name: t.addProvider }))
     await userEvent.click(screen.getByRole('button', { name: t.presetCustom }))
     expect(props.onAddProvider).toHaveBeenCalled()
     expect(props.onAddProviderFromPreset).not.toHaveBeenCalled()
     expect(screen.queryByRole('dialog')).toBeNull()
+
+    const created = makeProvider({ id: 'p-new', name: '', baseUrl: '', apiKeys: [], enabledModels: [] })
+    rerender({
+      ...props,
+      selectedProvider: created,
+      settings: makeSettings({ providers: [...props.settings.providers, created] }),
+    })
+    expect(screen.getByText(t.baseUrl)).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: t.providerName })).toHaveValue('')
   })
 
-  it('预设网格支持搜索过滤', async () => {
-    renderTab()
+  it('添加弹窗内可搜索预设；关闭后不添加任何东西', async () => {
+    const { props } = renderTab()
     await userEvent.click(screen.getByRole('button', { name: t.addProvider }))
-    const dialog = screen.getByRole('dialog', { name: t.presetProviders })
-    await userEvent.type(screen.getByPlaceholderText(t.presetProvidersSearch), 'alpha')
+    const dialog = screen.getByRole('dialog')
+    await userEvent.type(within(dialog).getByPlaceholderText(t.presetProvidersSearch), 'alpha')
     expect(within(dialog).getByRole('button', { name: /Alpha Test/ })).toBeTruthy()
     expect(within(dialog).queryByRole('button', { name: /Beta Test/ })).toBeNull()
+
+    await userEvent.click(within(dialog).getByRole('button', { name: '关闭' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(props.onAddProvider).not.toHaveBeenCalled()
+    expect(props.onAddProviderFromPreset).not.toHaveBeenCalled()
   })
 
-  it('预设弹层点关闭后详情仍在', async () => {
-    renderTab()
-    await userEvent.click(screen.getByRole('button', { name: t.addProvider }))
-    expect(screen.getByRole('dialog')).toBeTruthy()
-    await userEvent.click(screen.getByRole('button', { name: '关闭' }))
-    expect(screen.queryByRole('dialog')).toBeNull()
-    expect(screen.getByText(t.baseUrl)).toBeTruthy()
+  it('列表页搜索过滤已添加的供应商', async () => {
+    const other = makeProvider({ id: 'p2', name: 'Anthropic', baseUrl: 'https://api.anthropic.com' })
+    const provider = makeProvider()
+    renderTab({ selectedProvider: provider, settings: makeSettings({ providers: [provider, other] }) })
+    await userEvent.type(screen.getByPlaceholderText(t.presetProvidersSearch), 'anthropic')
+    expect(screen.getByRole('button', { name: 'Anthropic' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'OpenAI' })).toBeNull()
+  })
+
+  it('多于一家且未搜索时才显示拖拽手柄', async () => {
+    const other = makeProvider({ id: 'p2', name: 'Anthropic' })
+    const { props, rerender } = renderTab()
+    expect(screen.queryByRole('button', { name: '拖动调整顺序' })).toBeNull()
+    rerender({ ...props, settings: makeSettings({ providers: [...props.settings.providers, other] }) })
+    expect(screen.getAllByRole('button', { name: '拖动调整顺序' })).toHaveLength(2)
+    await userEvent.type(screen.getByPlaceholderText(t.presetProvidersSearch), 'o')
+    expect(screen.queryByRole('button', { name: '拖动调整顺序' })).toBeNull()
+  })
+})
+
+describe('ProvidersTab 详情', () => {
+  it('OpenCode Free enables model management without a key field', async () => {
+    const provider = makeProvider({ name: 'OpenCode Free', baseUrl: 'https://opencode.ai/zen/v1', apiKeys: [] })
+    const { props } = await renderDetail(provider)
+    expect(screen.getByText(/免费模型，无需账号/)).toBeInTheDocument()
+    expect(document.querySelectorAll('input[type="password"]')).toHaveLength(0)
+    const manage = screen.getByRole('button', { name: /管理模型/ })
+    expect(manage).toBeEnabled()
+    await userEvent.click(manage)
+    expect(props.onOpenModelPicker).toHaveBeenCalled()
+  })
+
+  it('密钥默认掩码显示，池中每条各一行', async () => {
+    await renderDetail()
+    // 两条密钥 → 两个 password 输入
+    expect(document.querySelectorAll('input[type="password"]')).toHaveLength(2)
+  })
+
+  it('revealedKeys 只解掩指定那一条', async () => {
+    renderTab({ revealedKeys: new Set(['p1-0']) })
+    await openDetail()
+    expect(document.querySelectorAll('input[type="password"]')).toHaveLength(1)
+    expect(screen.getByDisplayValue('sk-aaa')).toBeTruthy()
+  })
+
+  it('删除密钥按 index 作用（删第 2 条时保留第 1 条）', async () => {
+    const { props } = await renderDetail()
+    const removes = document.querySelectorAll<HTMLButtonElement>('.kv-icon-btn[aria-label="移除"]')
+    await userEvent.click(removes[1])
+    expect(props.onUpdateProvider).toHaveBeenCalledWith('p1', { apiKeys: ['sk-aaa'], activeKeyIndex: 0 })
+  })
+
+  it('点备用 Key 的开关切到该条，不改密钥顺序', async () => {
+    const { props } = await renderDetail()
+    const current = screen.getByRole('switch', { name: t.apiKeyCurrent })
+    const backup = screen.getByRole('switch', { name: t.apiKeyUse })
+    expect(current.getAttribute('aria-checked')).toBe('true')
+    expect(backup.getAttribute('aria-checked')).toBe('false')
+    await userEvent.click(backup)
+    expect(props.onUpdateProvider).toHaveBeenCalledWith('p1', { activeKeyIndex: 1 })
+  })
+
+  it('单条密钥时不显示切换开关和删除按钮', async () => {
+    await renderDetail(makeProvider({ apiKeys: ['sk-only'] }))
+    expect(screen.queryByRole('switch', { name: t.apiKeyCurrent })).toBeNull()
+    expect(screen.queryByRole('switch', { name: t.apiKeyUse })).toBeNull()
+    expect(document.querySelectorAll('.kv-icon-btn[aria-label="移除"]')).toHaveLength(0)
+  })
+
+  it('新增密钥追加空串而非覆盖', async () => {
+    const { props } = await renderDetail()
+    await userEvent.click(screen.getByRole('button', { name: t.addKey }))
+    expect(props.onUpdateProvider).toHaveBeenCalledWith('p1', { apiKeys: ['sk-aaa', 'sk-bbb', ''] })
+  })
+
+  it('删除供应商走 onRequestDeleteProvider（不直接删）', async () => {
+    const { props } = await renderDetail()
+    await userEvent.click(screen.getByRole('button', { name: t.deleteProvider }))
+    expect(props.onRequestDeleteProvider).toHaveBeenCalledWith('p1')
+    expect(props.onUpdateProvider).not.toHaveBeenCalled()
+  })
+
+  it('顶栏开关启停供应商', async () => {
+    const { props } = await renderDetail()
+    await userEvent.click(screen.getByRole('switch', { name: '启用供应商' }))
+    expect(props.onUpdateProvider).toHaveBeenCalledWith('p1', { enabled: false })
+  })
+
+  it('测试连接与模型管理是两个不同回调', async () => {
+    const { props } = await renderDetail()
+    await userEvent.click(screen.getByRole('button', { name: t.testConnection }))
+    expect(props.onOpenModelTest).toHaveBeenCalledWith('p1')
+    expect(props.onOpenModelPicker).not.toHaveBeenCalled()
+
+    await userEvent.click(screen.getByRole('button', { name: /管理模型/ }))
+    expect(props.onOpenModelPicker).toHaveBeenCalledWith('p1')
+  })
+
+  it('点击已启用模型打开抽屉，带 providerId + model', async () => {
+    const { props } = await renderDetail()
+    await userEvent.click(screen.getByTitle('gpt-4o'))
+    expect(props.onOpenModelDrawer).toHaveBeenCalledWith({ providerId: 'p1', model: 'gpt-4o' })
+  })
+
+  it('移除模型不冒泡触发抽屉', async () => {
+    const { props } = await renderDetail()
+    await userEvent.click(document.querySelector<HTMLButtonElement>('.kv-enabled-model-remove')!)
+    expect(props.onRemoveEnabledModel).toHaveBeenCalledWith('p1', 'gpt-4o')
+    expect(props.onOpenModelDrawer).not.toHaveBeenCalled()
   })
 
   it('opens request settings, toggles gzip details, and returns to provider details', async () => {
-    const { props, rerender } = renderTabWithRerender()
+    const { props, rerender } = await renderDetail()
     expect(screen.queryByText(t.customHeaders)).toBeNull()
     expect(screen.queryByRole('switch', { name: '压缩请求体 (gzip)' })).toBeNull()
 
@@ -224,22 +298,13 @@ describe('ProvidersTab', () => {
     expect(props.onToggleGzipInfo).toHaveBeenCalledWith('p1')
     rerender({ ...props, gzipInfoOpen: new Set(['p1']) })
     expect(screen.getByText(/WAF 会扫描明文请求体/)).toBeTruthy()
-    // 二级页接管右栏：一级页的字段不该还留在 DOM 里。
+    // 二级页接管整页：一级页的字段和供应商顶栏都不该还留在 DOM 里。
     expect(screen.queryByText(t.baseUrl)).toBeNull()
+    expect(screen.queryByRole('button', { name: t.testConnection })).toBeNull()
+    expect(screen.queryByRole('button', { name: '全部供应商' })).toBeNull()
 
     await userEvent.click(screen.getByRole('button', { name: /返回/ }))
     expect(screen.getByText(t.baseUrl)).toBeTruthy()
     expect(screen.queryByText(t.customHeaders)).toBeNull()
-  })
-
-  it('切换供应商时退回一级页，避免改到别人的请求头', async () => {
-    const other = makeProvider({ id: 'p2', name: 'Anthropic' })
-    const { rerender, props } = renderTabWithRerender()
-    await userEvent.click(screen.getByRole('button', { name: new RegExp(t.requestConfig) }))
-    expect(screen.getByText(t.customHeaders)).toBeTruthy()
-
-    rerender({ ...props, selectedProvider: other })
-    expect(screen.queryByText(t.customHeaders)).toBeNull()
-    expect(screen.getByText(t.baseUrl)).toBeTruthy()
   })
 })

@@ -692,8 +692,6 @@ export type ConversationLibraryShelf =
 
 export type ConversationLibrarySort = 'updated' | 'created' | 'title' | 'messages'
 export type ConversationLibraryOrder = 'asc' | 'desc'
-export type ConversationLibraryGroup = 'none' | 'day' | 'week' | 'project' | 'set'
-export type ConversationLibraryDensity = 'comfortable' | 'compact'
 
 export interface ConversationLibraryQuery {
   offset?: number

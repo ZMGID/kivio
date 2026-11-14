@@ -134,7 +134,7 @@ export function ProviderOAuthPanel({ provider, lang, onUpdateProvider, authorize
           ? (zh ? '在授权页面输入设备码：' : 'Enter this device code on the authorization page:')
           : (zh ? '请在浏览器中完成 Google 登录，完成后会自动返回授权结果。' : 'Complete Google sign-in in your browser. Kivio will receive the authorization automatically.')}</p>
         {login.userCode && <code className="block select-text text-lg tracking-widest">{login.userCode}</code>}
-        <button type="button" className="text-sm text-indigo-500 hover:underline" onClick={() => void api.openExternal(login.verificationUrl).catch(err => setError(String(err)))}>
+        <button type="button" className="kv-provider-link" onClick={() => void api.openExternal(login.verificationUrl).catch(err => setError(String(err)))}>
           {zh ? '打开授权页面 ↗' : 'Open authorization page ↗'}
         </button>
         <p className="text-xs opacity-70">{zh ? '有效期至 ' : 'Expires at '}{new Date(login.expiresAt * 1000).toLocaleTimeString()}</p>

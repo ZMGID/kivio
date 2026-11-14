@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState, type CSSProperties } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { api, type ConversationCost } from '../api/tauri'
 import { formatTokensK } from '../utils/tokens'
 import { i18n, type Lang } from '../components/i18n'
@@ -32,19 +32,6 @@ function formatCachePercent(cached: number, input: number): string {
   if (pct >= 10) return `${Math.round(pct)}%`
   if (pct > 0) return `${pct.toFixed(1)}%`
   return '0%'
-}
-
-const GRID_COLS = 6
-const GRID_ROWS = 4
-
-/** 按比例把 cells 格分给各部分；非零部分至少 1 格，舍入误差由最大部分吸收。 */
-function allocateCells(parts: number[], cells: number): number[] {
-  const sum = parts.reduce((a, b) => a + b, 0)
-  if (sum <= 0) return parts.map(() => 0)
-  const out = parts.map(p => (p > 0 ? Math.max(1, Math.round((p / sum) * cells)) : 0))
-  const largest = out.indexOf(Math.max(...out))
-  out[largest] += cells - out.reduce((a, b) => a + b, 0)
-  return out
 }
 
 /**
@@ -120,8 +107,8 @@ export function SessionUsageStrip({
   const knownCost = amount != null && Number.isFinite(amount) && amount >= 0
   const partialCost = Boolean(cost && (cost.unpricedRequests > 0 || cost.skippedRecords > 0))
   const costText = knownCost
-    ? `${amount.toFixed(2)}$`
-    : '—$'
+    ? `$${amount.toFixed(2)}`
+    : '$—'
   const costHint = lang === 'zh'
     ? '根据已记录请求及模型价格估算，单位为美元，并非实际账单。'
     : 'Estimated in USD from recorded requests and model prices; not an invoice.'
@@ -129,44 +116,32 @@ export function SessionUsageStrip({
     ? `部分请求缺少价格或用量。${knownCost ? '仅显示已知费用。' : ''}`
     : `Some requests lack pricing or usage.${knownCost ? ' Only known costs are shown.' : ''}`
 
-  if (!totals.hasAny && !conversationId) return null
+  const showCost = Boolean(conversationId) && !hideCost
+  if (!totals.hasAny && !showCost) return null
 
   const t = i18n[lang]
   const cacheKnown = totals.hasInput && totals.hasCached && totals.cached + totals.input > 0
   const cachePercent = cacheKnown ? formatCachePercent(totals.cached, totals.input) : '—'
   const inputText = totals.hasInput ? formatTokensK(totals.input) : '—'
   const outputText = totals.hasOutput ? formatTokensK(totals.output) : '—'
-  const [cacheCells, inputCells, outputCells] = allocateCells([
-    totals.hasCached ? totals.cached : 0,
-    totals.hasInput ? totals.input : 0,
-    totals.hasOutput ? totals.output : 0,
-  ], GRID_COLS * GRID_ROWS)
-  const cells = [
-    ...Array<string>(cacheCells).fill('cache'),
-    ...Array<string>(inputCells).fill('input'),
-    ...Array<string>(outputCells).fill('output'),
+  const shares: Array<[string, number]> = [
+    ['cache', totals.hasCached ? totals.cached : 0],
+    ['input', totals.hasInput ? totals.input : 0],
+    ['output', totals.hasOutput ? totals.output : 0],
   ]
-  while (cells.length < GRID_COLS * GRID_ROWS) cells.push('empty')
-  // 每亮一格费用跨一个数量级：<$0.1 / <$1 / <$10 / ≥$10。
-  const costLevel = knownCost && amount > 0 ? Math.min(GRID_ROWS, Math.max(1, Math.floor(Math.log10(amount)) + 3)) : 0
-  const showCost = Boolean(conversationId) && !hideCost
-  const shares: Array<[string, number]> = [['cache', cacheCells], ['input', inputCells], ['output', outputCells]]
 
-  // 条本身只有像素；悬停或键盘聚焦时上方弹出信息卡，读屏通过 aria-describedby 读到同一份内容。
+  const spectrum = shares.map(([kind, n]) => n > 0 && <i key={kind} data-k={kind} style={{ flexGrow: n }} />)
+
+  // 底栏只放一个数字（有费用显示费用，否则显示 ↑输入 ↓输出），下方一条细光谱线表示 缓存 / 输入 / 输出 的占比；
+  // 明细在悬停或键盘聚焦时弹出的信息卡里，读屏通过 aria-describedby 读到同一份内容。
   return (
-    <div className="chat-session-usage" data-live={generating || undefined} data-tauri-drag-region="false"
-      tabIndex={0} aria-describedby={cardId}>
-      {showCost && (
-        <span className="chat-session-usage-cost" data-partial={partialCost || undefined} aria-hidden="true">
-          {Array.from({ length: GRID_ROWS }, (_, row) => (
-            <i key={row} data-on={GRID_ROWS - row <= costLevel || undefined} />
-          ))}
+    <div className="chat-session-usage" data-live={generating || undefined} data-tauri-drag-region="false" role="group"
+      aria-label={lang === 'zh' ? '会话用量' : 'Session usage'} tabIndex={0} aria-describedby={cardId}>
+      <span className="chat-session-usage-readout" aria-hidden="true">
+        <span className="chat-session-usage-value">
+          {showCost ? <>{costText}{partialCost ? '*' : ''}</> : <>↑{inputText} ↓{outputText}</>}
         </span>
-      )}
-      <span className="chat-session-usage-grid" aria-hidden="true">
-        {cells.map((kind, index) => (
-          <i key={index} data-k={kind} style={{ '--c': Math.floor(index / GRID_ROWS) } as CSSProperties} />
-        ))}
+        <span className="chat-session-usage-spectrum">{spectrum}</span>
       </span>
       <div id={cardId} role="tooltip" className="chat-session-usage-card">
         {showCost && (
@@ -176,7 +151,7 @@ export function SessionUsageStrip({
           </div>
         )}
         <span className="chat-session-usage-card-bar" aria-hidden="true">
-          {shares.map(([kind, n]) => n > 0 && <i key={kind} data-k={kind} style={{ flexGrow: n }} />)}
+          {spectrum}
         </span>
         <div className="chat-session-usage-card-row" aria-label={t.chatUsageCache}>
           <i data-k="cache" />{t.chatUsageCache}<span>{cachePercent}</span>

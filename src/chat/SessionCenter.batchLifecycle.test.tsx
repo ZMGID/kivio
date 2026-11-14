@@ -61,7 +61,6 @@ function renderCenter(options?: {
   return render(
     <SessionCenter
       lang="zh"
-      embedded
       currentConversationId={conversation.id}
       onSelectConversation={vi.fn()}
       onConversationsChanged={options?.onConversationsChanged}
@@ -351,9 +350,8 @@ describe('SessionCenter remaining batch lifetime', () => {
     await act(async () => { await gate.promise.catch(() => {}) })
     renderCenter()
     expect(await within(screen.getByLabelText('操作提示')).findByRole('alert')).toHaveTextContent('set busy')
-    expect(await screen.findByRole('button', { name: chatSet.name })).toBeInTheDocument()
     update.mockResolvedValue(1)
-    fireEvent.click(screen.getByRole('button', { name: '移入集' }))
+    fireEvent.click(await screen.findByRole('button', { name: '移入集' }))
     fireEvent.click(screen.getByRole('menuitem', { name: chatSet.name }))
     await waitFor(() => expect(update).toHaveBeenCalledTimes(2))
     expect(update.mock.calls[1]).toEqual([[conversation.id], { setId: chatSet.id }])

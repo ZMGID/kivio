@@ -3022,7 +3022,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               <Suspense fallback={null}>
                 <SessionCenter
                   lang={lang}
-                  embedded
                   currentConversationId={currentConversation?.id}
                   generatingConversationIds={generatingConversationIds}
                   onSelectConversation={handleSidebarSelectConversation}
