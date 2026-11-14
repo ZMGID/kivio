@@ -7,6 +7,7 @@ import { Block, defaultRemarkPlugins, parseMarkdownIntoBlocks, Streamdown } from
 import remend, { type RemendOptions } from 'remend'
 import type { PluggableList } from 'unified'
 import { cjk } from '@streamdown/cjk'
+import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import { code } from '@streamdown/code'
 import { createMathPlugin } from '@streamdown/math'
 import 'katex/dist/katex.min.css'
@@ -1357,13 +1358,25 @@ const referencedMarkdownComponents: Components = {
 }
 
 const streamdownPlugins = {
-  cjk,
+  cjk: {
+    ...cjk,
+    remarkPluginsAfter: cjk.remarkPluginsAfter.map<PluggableList[number]>((plugin) => (
+      plugin === remarkCjkFriendlyGfmStrikethrough
+        ? [remarkCjkFriendlyGfmStrikethrough, { singleTilde: false }]
+        : plugin
+    )),
+  },
   code,
   math: createMathPlugin({ singleDollarTextMath: true }),
   mermaid,
 }
 const streamdownRemarkPlugins: PluggableList = [
-  ...Object.values(defaultRemarkPlugins),
+  // GFM 和 CJK 都注册删除线解析；两处都只允许 ~~，避免数值范围被划掉。
+  ...Object.entries(defaultRemarkPlugins).map<PluggableList[number]>(([name, plugin]) => (
+    name === 'gfm' && Array.isArray(plugin)
+      ? [plugin[0], { ...plugin[1], singleTilde: false }]
+      : plugin
+  )),
   remarkBreaks,
   // Parse citation candidates once. Missing sources remain literal text in the
   // context consumer; a late source can become a chip inside a cached block.
@@ -1374,7 +1387,8 @@ const streamdownRemarkPlugins: PluggableList = [
 
 // remend 的 italic 会给未闭合的 `_` 补一个结尾下划线。下划线不再表示强调，
 // 补出来的字符会直接显示；星号加粗仍由 bold 补全。
-const STREAMING_REMEND_OPTIONS: RemendOptions = { italic: false }
+// 单 ~ 已由解析器保留；remend 的转义还会改坏 URL、公式和 ~~~ 代码围栏。
+const STREAMING_REMEND_OPTIONS: RemendOptions = { italic: false, singleTilde: false }
 
 /**
  * 出字中的分块：先按顶层块切分，再只修补最后一块的未闭合语法。
