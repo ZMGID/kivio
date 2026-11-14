@@ -206,6 +206,34 @@ describe('ConversationList pin and archive', () => {
 })
 
 describe('ConversationList generating wave', () => {
+  it.each([
+    { compact: true },
+    { cardLayout: true },
+    {},
+  ])('shows the running wave before the title in %j and keeps the title selectable', async layout => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const props = { ...listProps, ...layout, onSelectConversation: onSelect }
+    const view = render(<ConversationList {...props} generatingConversationIds={new Set([conversation.id])} />)
+    const wave = screen.getByRole('status', { name: '正在生成' })
+    const title = screen.getByRole('button', { name: conversation.title })
+    expect(wave.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(wave.closest('.kv-conv-trailing')).toBeNull()
+    await user.click(title)
+    expect(onSelect).toHaveBeenCalledWith(conversation.id, conversation)
+
+    view.rerender(<ConversationList {...props} />)
+    expect(screen.queryByRole('status', { name: '正在生成' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: conversation.title })).toBe(title)
+    expect(wave).toBeInTheDocument()
+    expect(wave).toHaveAttribute('aria-hidden', 'true')
+    expect(title.previousElementSibling?.querySelector('svg')).not.toBeInTheDocument()
+
+    view.rerender(<ConversationList {...props} generatingConversationIds={new Set([conversation.id])} />)
+    expect(screen.getByRole('status', { name: '正在生成' })).toBe(wave)
+    expect(wave).not.toHaveAttribute('aria-hidden')
+  })
+
   it('still fires pin while generating — the wave must not swallow the click', async () => {
     const user = userEvent.setup()
     const onTogglePin = vi.fn()
@@ -232,7 +260,6 @@ describe('ConversationList generating wave', () => {
     )
 
     const trailing = container.querySelector('.kv-conv-trailing')
-    expect(trailing).toHaveAttribute('data-busy')
     expect(trailing).toHaveAttribute('data-pinned')
     expect(container.querySelector('.kv-conv-meta svg')).toBeInTheDocument()
     expect(screen.getByRole('status', { name: '正在生成' })).toBeInTheDocument()

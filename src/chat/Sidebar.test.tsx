@@ -553,8 +553,9 @@ describe('Sidebar refresh lifecycle', () => {
 
 
 describe('Sidebar view choice', () => {
-  beforeEach(() => window.localStorage.removeItem('kivio-chat-sidebar-view'))
-  afterEach(() => window.localStorage.removeItem('kivio-chat-sidebar-view'))
+  const preferenceKeys = ['kivio-chat-sidebar-view', 'kivio-chat-recent-hides-projects', 'kivio-chat-recent-hides-sets']
+  beforeEach(() => preferenceKeys.forEach(key => window.localStorage.removeItem(key)))
+  afterEach(() => preferenceKeys.forEach(key => window.localStorage.removeItem(key)))
 
   function setup() {
     const set = { id: 'writing', name: '写作', created_at: 1, updated_at: 1 }
@@ -581,6 +582,61 @@ describe('Sidebar view choice', () => {
     await user.click(await screen.findByRole('menuitem', { name }))
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
   }
+
+  it.each(['classic', 'flat'])('omits new chat and search from the %s list menu', async sidebarView => {
+    window.localStorage.setItem('kivio-chat-sidebar-view', sidebarView)
+    const user = userEvent.setup()
+    const { props } = setup()
+    render(<Sidebar {...props} />)
+    await user.click(await screen.findByRole('button', { name: '对话列表操作' }))
+    expect(screen.queryByRole('menuitem', { name: '新建聊天' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '搜索对话' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: sidebarView === 'flat' ? '切换为经典视图' : '切换为扁平视图' })).toBeInTheDocument()
+  })
+
+  it.each(['set_id', 'setId'] as const)('hides set chats from Recent using %s, remembers the choice, and can restore them', async setIdKey => {
+    const user = userEvent.setup()
+    const { props, projectChat, setChat, looseChat, set } = setup()
+    vi.mocked(chatApi.getConversations).mockResolvedValue([
+      projectChat, { ...setChat, set_id: undefined, [setIdKey]: set.id }, looseChat,
+    ])
+    const view = render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: setChat.title })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '对话列表操作' }))
+    const option = await screen.findByRole('menuitemcheckbox', { name: '最近中隐藏集内对话' })
+    expect(option).toHaveAttribute('aria-checked', 'false')
+    await user.click(option)
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: setChat.title })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: projectChat.title })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: looseChat.title })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '集', current: false }))
+    expect(await screen.findByRole('button', { name: setChat.title })).toBeInTheDocument()
+    view.unmount()
+    render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: looseChat.title })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: setChat.title })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '对话列表操作' }))
+    expect(screen.getByRole('menuitemcheckbox', { name: '最近中隐藏集内对话' })).toHaveAttribute('aria-checked', 'true')
+    await user.click(screen.getByRole('menuitemcheckbox', { name: '最近中隐藏项目对话' }))
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: projectChat.title })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: setChat.title })).not.toBeInTheDocument()
+
+    await toggleView(user, '切换为扁平视图')
+    expect(screen.getByRole('button', { name: setChat.title })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: projectChat.title })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '对话列表操作' }))
+    expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('menuitem', { name: '切换为经典视图' }))
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('button', { name: '对话列表操作' }))
+    await user.click(screen.getByRole('menuitemcheckbox', { name: '最近中隐藏集内对话' }))
+    expect(await screen.findByRole('button', { name: setChat.title })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: projectChat.title })).not.toBeInTheDocument()
+    expect(window.localStorage.getItem('kivio-chat-recent-hides-sets')).toBe('0')
+  })
 
   it('keeps both views available and remembers the choice across remounts', async () => {
     const user = userEvent.setup()

@@ -1290,45 +1290,103 @@ button.chat-composer-status-item:hover {
   50% { opacity: 0; }
 }
 
-/* 侧栏对话「生成中」：G7 慢波（四竖线，无圆环） */
-.chat-gen-wave {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  height: 11px;
-  width: 14px;
+/* 侧栏对话行首的运行标记。
+   空闲：一枚静止小点。运行：小点收起，3×3 点阵从中心旋转绽开，一颗带拖尾的光点沿外圈
+   顺时针流转，中心点同步呼吸。结束：点阵卸载，小点带回弹落回原位。
+   只动画 opacity / transform，不用 mask 或渐变（部分 WebView 上会退化成色块）。 */
+.kv-run-mark {
+  position: relative;
+  display: block;
+  width: 10px;
+  height: 10px;
   flex-shrink: 0;
 }
-.chat-gen-wave > span {
-  display: block;
-  width: 2px;
-  height: 100%;
-  border-radius: 1px;
-  /* 文字色而非 surface 色：surface-active 与选中行底色相同，竖线会被吞掉 */
+.kv-run-mark::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 4px;
+  height: 4px;
+  margin: auto;
+  border-radius: 50%;
+  /* 文字色而非 surface 色：surface-active 与选中行底色相同，小点会被吞掉 */
   background: var(--text-muted);
-  transform-origin: center;
-  animation: chat-gen-wave 1.4s var(--kv-ease-inout) infinite;
+  opacity: 0.3;
+  transition: opacity var(--kv-dur-fast) var(--kv-ease-out),
+    transform var(--kv-dur-slow) var(--kv-ease-spring);
+}
+.kv-conv-row:hover .kv-run-mark::before {
+  opacity: 0.5;
+}
+.kv-conv-row.is-active .kv-run-mark::before {
+  opacity: 0.8;
+}
+.kv-conv-row .kv-run-mark[data-running]::before {
+  opacity: 0;
+  transform: scale(0);
+  transition-duration: var(--kv-dur-fast);
+  transition-timing-function: var(--kv-ease-in);
 }
 
-.chat-gen-wave > span:nth-child(1) { animation-delay: 0s; }
-.chat-gen-wave > span:nth-child(2) { animation-delay: 0.2s; }
-.chat-gen-wave > span:nth-child(3) { animation-delay: 0.4s; }
-.chat-gen-wave > span:nth-child(4) { animation-delay: 0.6s; }
-@keyframes chat-gen-wave {
-  0%, 100% {
-    transform: scaleY(0.32);
-    opacity: 0.4;
-  }
-  50% {
-    transform: scaleY(1);
-    opacity: 1;
+.kv-run-mark-ring {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template: repeat(3, 2px) / repeat(3, 2px);
+  gap: 2px;
+  color: var(--accent);
+  animation: kv-run-mark-bloom var(--kv-dur-slow) var(--kv-ease-spring) both;
+}
+.kv-run-mark-ring > i {
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.18;
+  animation: kv-run-mark-comet 1.2s linear infinite;
+}
+/* 前 8 个点按顺时针排在外圈，负延迟让拖尾一挂载就处于稳态；第 9 个是中心点。 */
+.kv-run-mark-ring > i:nth-child(1) { grid-area: 1 / 1; animation-delay: -1.2s; }
+.kv-run-mark-ring > i:nth-child(2) { grid-area: 1 / 2; animation-delay: -1.05s; }
+.kv-run-mark-ring > i:nth-child(3) { grid-area: 1 / 3; animation-delay: -0.9s; }
+.kv-run-mark-ring > i:nth-child(4) { grid-area: 2 / 3; animation-delay: -0.75s; }
+.kv-run-mark-ring > i:nth-child(5) { grid-area: 3 / 3; animation-delay: -0.6s; }
+.kv-run-mark-ring > i:nth-child(6) { grid-area: 3 / 2; animation-delay: -0.45s; }
+.kv-run-mark-ring > i:nth-child(7) { grid-area: 3 / 1; animation-delay: -0.3s; }
+.kv-run-mark-ring > i:nth-child(8) { grid-area: 2 / 1; animation-delay: -0.15s; }
+.kv-run-mark-ring > i:nth-child(9) {
+  grid-area: 2 / 2;
+  animation: kv-run-mark-core 1.2s var(--kv-ease-inout) infinite alternate;
+}
+@keyframes kv-run-mark-bloom {
+  from {
+    opacity: 0;
+    transform: scale(0.3) rotate(-90deg);
   }
 }
+@keyframes kv-run-mark-comet {
+  0%, 10% {
+    opacity: 1;
+    transform: scale(1.2);
+  }
+  65%, 100% {
+    opacity: 0.18;
+    transform: scale(0.85);
+  }
+}
+@keyframes kv-run-mark-core {
+  from { opacity: 0.3; }
+  to { opacity: 0.9; }
+}
 @media (prefers-reduced-motion: reduce) {
-  .chat-gen-wave > span {
+  .kv-run-mark::before {
+    transition: none;
+  }
+  .kv-run-mark-ring,
+  .kv-run-mark-ring > i,
+  .kv-run-mark-ring > i:nth-child(9) {
     animation: none;
-    opacity: 0.7;
-    transform: scaleY(0.65);
+  }
+  .kv-run-mark-ring > i {
+    opacity: 0.75;
   }
 }
 
@@ -1351,7 +1409,7 @@ button.chat-composer-status-item:hover {
   font-weight: 500;
 }
 
-/* 行尾交换槽：平时只显示状态标记（钉/定时/慢波/归属），悬停或键盘焦点时整体换成置顶 + 归档。
+/* 行尾交换槽：平时只显示状态标记（钉/定时/归属），悬停或键盘焦点时整体换成置顶 + 归档。
    按钮用 opacity 隐藏而非 visibility：隐藏时仍可 Tab 聚焦，聚焦后 :has(:focus-visible) 把它们亮出来。
    :has(:focus-visible) 而非 :focus-within：鼠标点击后焦点留在行内，不能让按钮常驻盖住短龄。 */
 .kv-conv-actions {

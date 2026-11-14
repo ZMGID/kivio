@@ -285,6 +285,12 @@ export const externalCliSettingsApi = {
     await invoke('chat_external_cli_install', { agentId, planId })
   },
 
+  /** 在系统文件管理器里打开该 CLI 的配置目录。 */
+  async openConfigDir(agentId: string): Promise<void> {
+    if (!isTauriRuntime()) return
+    await invoke('chat_external_cli_open_config_dir', { agentId })
+  },
+
   async piExtensionsInventory(): Promise<PiExtensionInventory | null> {
     if (!isTauriRuntime()) return null
     return invoke<PiExtensionInventory>('chat_pi_extensions_inventory')

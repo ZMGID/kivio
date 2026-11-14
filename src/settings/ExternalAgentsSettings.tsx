@@ -1,166 +1,24 @@
-import { notifyError } from '../components/appNoticeStore'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  Blocks,
-  BookOpen,
-  ChevronDown,
-  ChevronRight,
-  Download,
-  ExternalLink,
-  Globe,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Terminal,
-  Trash2,
-  Workflow,
-} from 'lucide-react'
-import { open } from '@tauri-apps/plugin-dialog'
-import { AgentIcon } from '../components/AgentIcon'
-import {
-  externalCliSettingsApi as externalAgentSettingsApi,
-  type ImportedCcSwitchProvider,
-  type DetectedExternalAgent,
-  type DshOfficialCredential,
-  type ExternalCliInstallInfo,
-  type NativeProviderSummary,
+  externalCliSettingsApi,
   onExternalAgentsUpdated,
+  type DetectedExternalAgent,
 } from '../api/externalCliSettings'
-import { Input, SearchInput, Toggle } from './components'
+import type { ExternalCliAgentConfig, Settings as SettingsData } from '../api/tauri'
 import { i18n, type Lang } from '../components/i18n'
-import { Button, IconButton } from '../components/Button'
-import { dshNativeDetailToProvider } from './cliNativeProviderConfigs'
-import { CliProviderModal } from './CliProviderModal'
-import { DshPluginsSettings } from './DshPluginsSettings'
+import { AgentDetail } from './externalAgents/AgentDetail'
+import { AgentSidebar, type AgentRow } from './externalAgents/AgentSidebar'
+import {
+  checkCliInstallInfoBatch,
+  deriveCliMaintenance,
+  getCliInstallInfo,
+  runCliInstall,
+  useCliMaintenanceRevision,
+} from './externalAgents/cliMaintenance'
 import { PiExtensionsSettings } from './PiExtensionsSettings'
 import { PiSkillsSettings } from './PiSkillsSettings'
-import { CcSwitchImportModal } from './CcSwitchImportModal'
-import {
-  clearCliInstallJob,
-  getCliInstallJob,
-  startCliInstall,
-  subscribeCliInstallJobs,
-} from './cliInstallJobs'
-import type {
-  ExternalCliAgentConfig,
-  ExternalCliProvider,
-  Settings as SettingsData,
-} from '../api/tauri'
-import { confirmDialog } from '../components/dialogQueue'
 
 const EMPTY_CONFIG: ExternalCliAgentConfig = {}
-const DSH_OFFICIAL_PROVIDER_ID = 'deepseek-official'
-const DSH_OFFICIAL_KEY_URL = 'https://platform.deepseek.com/api_keys'
-/** 探测到的模型先露这么多，其余收在「+N」后面：有的 CLI 一次能报上百个。 */
-const PROBED_MODELS_PREVIEW = 12
-
-function withOfficialDshProviders(
-  agentId: string,
-  natives: NativeProviderSummary[],
-): NativeProviderSummary[] {
-  if (agentId !== 'dsh') return natives
-  if (natives.some((provider) => provider.id === DSH_OFFICIAL_PROVIDER_ID)) return natives
-  return [
-    {
-      id: DSH_OFFICIAL_PROVIDER_ID,
-      name: 'DeepSeek',
-      modelCount: 2,
-      isDefault: natives.every((provider) => !provider.isDefault),
-    },
-    ...natives,
-  ]
-}
-
-function IconBox({ id, size }: { id: string; size: number }) {
-  return (
-    <span className="kv-cli-iconbox" style={{ width: size, height: size }}>
-      <AgentIcon id={id} size={Math.round(size * 0.62)} />
-    </span>
-  )
-}
-
-/** label + 说明在左、操作在右的一行。就是 ccgui 那张卡片里的行。 */
-function Row({
-  label,
-  desc,
-  children,
-}: {
-  label: string
-  desc?: string | null
-  children: React.ReactNode
-}) {
-  return (
-    <div className="kv-row">
-      <div className="kv-row-text">
-        <div className="kv-row-label">{label}</div>
-        {desc && <p className="kv-row-desc">{desc}</p>}
-      </div>
-      <div className="kv-row-control">{children}</div>
-    </div>
-  )
-}
-
-type ParsedCliVersion = {
-  core: number[]
-  pre: Array<number | string> | null
-}
-
-/** 抓 `x.y.z` 以及可选 `-rc.7`；解析失败时交回后端结果兜底。 */
-function parseCliVersion(value: string): ParsedCliVersion | null {
-  const match = value.match(/v?(\d+(?:\.\d+){2,})(?:-([0-9A-Za-z.-]+))?/)
-  if (!match) return null
-  const core = match[1].split('.').map(Number)
-  if (!core.every(Number.isSafeInteger)) return null
-  const pre = match[2]
-    ? match[2].replace(/[.-]+$/, '').split('.').map((ident) => (
-      /^\d+$/.test(ident) ? Number(ident) : ident
-    ))
-    : null
-  return { core, pre }
-}
-
-function compareCore(local: number[], latest: number[]): number {
-  const length = Math.max(local.length, latest.length)
-  for (let index = 0; index < length; index += 1) {
-    const currentPart = local[index] ?? 0
-    const latestPart = latest[index] ?? 0
-    if (currentPart !== latestPart) return currentPart < latestPart ? -1 : 1
-  }
-  return 0
-}
-
-function comparePreIdent(local: number | string, latest: number | string): number {
-  const localNum = typeof local === 'number'
-  const latestNum = typeof latest === 'number'
-  if (localNum && latestNum) return local === latest ? 0 : local < latest ? -1 : 1
-  if (localNum) return -1
-  if (latestNum) return 1
-  return local === latest ? 0 : String(local) < String(latest) ? -1 : 1
-}
-
-function comparePrerelease(
-  local: Array<number | string> | null,
-  latest: Array<number | string> | null,
-): number {
-  if (local == null) return latest == null ? 0 : 1
-  if (latest == null) return -1
-  const length = Math.min(local.length, latest.length)
-  for (let index = 0; index < length; index += 1) {
-    const order = comparePreIdent(local[index], latest[index])
-    if (order !== 0) return order
-  }
-  return local.length - latest.length
-}
-
-/** 比较 CLI 版本号（含 prerelease）；缺段按 0 处理，解析失败时交回后端结果兜底。 */
-function isVersionNewer(localVersion: string, latestVersion: string): boolean | null {
-  const local = parseCliVersion(localVersion)
-  const latest = parseCliVersion(latestVersion)
-  if (!local || !latest) return null
-  const core = compareCore(local.core, latest.core)
-  if (core !== 0) return core < 0
-  return comparePrerelease(local.pre, latest.pre) < 0
-}
 
 interface ExternalAgentsSettingsProps {
   lang: Lang
@@ -168,31 +26,40 @@ interface ExternalAgentsSettingsProps {
   updateChat: (updates: Partial<NonNullable<SettingsData['chat']>>) => void
 }
 
+/**
+ * 「本地 CLI 管理」页：左栏选 CLI，右栏是它的状态、供应商、模型、扩展和运行环境。
+ * 具体各区见 `externalAgents/`；这里只负责探测列表、选中项，以及把改动写回设置草稿。
+ */
 export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalAgentsSettingsProps) {
   const t = i18n[lang]
   const [agents, setAgents] = useState<DetectedExternalAgent[]>([])
   const [scanning, setScanning] = useState(false)
+  const [scanFailed, setScanFailed] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-  const [showPiExtensions, setShowPiExtensions] = useState(false)
-  const [showPiSkills, setShowPiSkills] = useState(false)
-  useCliInstallJobs()
+  const [subpage, setSubpage] = useState<'pi-extensions' | 'pi-skills' | null>(null)
+  useCliMaintenanceRevision()
 
   const overrides = useMemo(
     () => settings.chat?.externalCliAgents ?? {},
     [settings.chat?.externalCliAgents],
   )
+  const isDisabled = useCallback(
+    (agent: DetectedExternalAgent) => overrides[agent.id]?.disabled ?? agent.disabled ?? false,
+    [overrides],
+  )
 
   const loadAgents = useCallback(async (force = false) => {
     setScanning(true)
     try {
-      const list = await externalAgentSettingsApi.detectExternalAgents(force)
+      const list = await externalCliSettingsApi.detectExternalAgents(force)
       setAgents(list)
+      setScanFailed(false)
       setSelectedId((prev) => prev ?? list.find((a) => a.available)?.id ?? list[0]?.id ?? null)
     } catch (err) {
+      // 保留上一次的列表：一次扫描失败不该把用户正在看的 CLI 清空。
       console.error('[ExternalAgentsSettings] detect failed:', err)
-      setAgents([])
+      setScanFailed(true)
     } finally {
       setScanning(false)
     }
@@ -216,27 +83,62 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
     }
   }, [])
 
-  // 三组：已安装 / 已停用 / 未安装。停用单独成组，免得用户在已安装里找不到自己关掉的那个。
-  const groups = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    const installed: DetectedExternalAgent[] = []
-    const disabled: DetectedExternalAgent[] = []
-    const missing: DetectedExternalAgent[] = []
-    for (const agent of agents) {
-      if (needle && !agent.name.toLowerCase().includes(needle) && !agent.id.includes(needle)) continue
-      const off = overrides[agent.id]?.disabled ?? agent.disabled ?? false
-      if (off) disabled.push(agent)
-      else if (agent.available) installed.push(agent)
-      else missing.push(agent)
-    }
-    return [
-      { key: 'installed', label: t.externalAgentsInstalled, items: installed },
-      { key: 'disabled', label: t.externalAgentsDisabledGroup, items: disabled },
-      { key: 'missing', label: t.externalAgentsNotInstalled, items: missing },
-    ].filter((group) => group.items.length > 0)
-  }, [agents, overrides, query, t])
+  // 在用的 CLI 都查一遍版本，左栏才能标出谁有更新。没装的、停用的等选中时再查。
+  const activeIds = useMemo(
+    () => agents.filter((agent) => agent.available && !isDisabled(agent)).map((agent) => agent.id),
+    [agents, isDisabled],
+  )
+  const activeKey = activeIds.join(',')
+  useEffect(() => {
+    if (activeKey) void checkCliInstallInfoBatch(activeKey.split(','))
+  }, [activeKey])
 
-  const selected = agents.find((agent) => agent.id === selectedId) ?? null
+  // 已安装的排前面，其余保持探测顺序。停用的不挪位置：开关就在行上，拨一下不该让它跳走。
+  const rows = useMemo<AgentRow[]>(() => {
+    const needle = query.trim().toLowerCase()
+    const summarize = (agent: DetectedExternalAgent, disabled: boolean) => {
+      if (!agent.available) return { summary: t.externalAgentsNotInstalled, attention: false }
+      if (disabled) return { summary: t.externalAgentsDisabledGroup, attention: false }
+      const config = overrides[agent.id]
+      const provider = config?.providers?.find(
+        (item) => item.id === config.currentProvider && !item.disabled,
+      )
+      if (provider) return { summary: provider.name, attention: false }
+      const auth = agent.authStatus ?? agent.auth_status
+      if (auth === 'auth_required') return { summary: t.externalAgentsSignedOut, attention: true }
+      return {
+        summary: auth === 'ok' ? t.externalAgentsSignedIn : t.externalAgentsOwnConfig,
+        attention: false,
+      }
+    }
+    return agents
+      .filter(
+        (agent) =>
+          !needle || agent.name.toLowerCase().includes(needle) || agent.id.includes(needle),
+      )
+      .map((agent) => {
+        const disabled = isDisabled(agent)
+        return { agent, disabled, ...summarize(agent, disabled) }
+      })
+      .sort((a, b) => Number(b.agent.available) - Number(a.agent.available))
+  }, [agents, isDisabled, overrides, query, t])
+
+  const updatableIds = agents
+    .filter((agent) => activeIds.includes(agent.id))
+    .filter((agent) => {
+      const maintenance = deriveCliMaintenance(agent, getCliInstallInfo(agent.id))
+      return maintenance.state === 'outdated' && maintenance.actionable
+    })
+    .map((agent) => agent.id)
+
+  const rescan = async () => {
+    await loadAgents(true)
+    await checkCliInstallInfoBatch(activeIds, true)
+  }
+  const updateAll = async () => {
+    // 逐个来：并行跑多个 npm 全局安装会互相抢锁。
+    for (const id of updatableIds) await runCliInstall(id, loadAgents)
+  }
 
   const patchOverride = useCallback(
     (agentId: string, patch: Partial<ExternalCliAgentConfig>) => {
@@ -251,94 +153,33 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
     [settings.chat?.externalCliAgents, updateChat],
   )
 
-  if (showPiExtensions) {
-    return <PiExtensionsSettings lang={lang} onBack={() => setShowPiExtensions(false)} />
+  if (subpage === 'pi-extensions') {
+    return <PiExtensionsSettings lang={lang} onBack={() => setSubpage(null)} />
+  }
+  if (subpage === 'pi-skills') {
+    return <PiSkillsSettings lang={lang} onBack={() => setSubpage(null)} />
   }
 
-  if (showPiSkills) {
-    return <PiSkillsSettings lang={lang} onBack={() => setShowPiSkills(false)} />
-  }
+  const selected = agents.find((agent) => agent.id === selectedId) ?? null
 
   return (
     <div className="kv-providers-root">
-      <div className="kv-providers">
-        <div className="kv-provider-list kv-split-list">
-          {/* 搜索框 + 重新扫描。扫描按钮做成搜索行右边的一个图标：它原来是列表下方一个整
-              宽按钮，自带边框和分隔线，在左栏里显得像另一块面板。 */}
-          <div className="kv-cli-search">
-            <SearchInput
-              className="min-w-0 flex-1"
-              value={query}
-              onChange={setQuery}
-              placeholder={t.externalAgentsSearch}
-              aria-label={t.externalAgentsSearch}
-              clearLabel={t.dialogClear}
-            />
-            <IconButton
-              size="sm"
-              label={t.externalAgentsRescan}
-              onClick={() => void loadAgents(true)}
-              disabled={scanning}
-            >
-              <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
-            </IconButton>
-          </div>
-          <div className="kv-provider-list-items custom-scrollbar !flex-none">
-            {groups.map((group) => {
-              const isCollapsed = collapsed[group.key] ?? false
-              return (
-                <div key={group.key}>
-                  <button
-                    type="button"
-                    className="kv-cli-group-head"
-                    onClick={() => setCollapsed((prev) => ({ ...prev, [group.key]: !isCollapsed }))}
-                    data-tauri-drag-region="false"
-                  >
-                    {isCollapsed ? <ChevronRight /> : <ChevronDown />}
-                    {group.label}
-                  </button>
-                  {!isCollapsed &&
-                    group.items.map((agent) => {
-                      const off = overrides[agent.id]?.disabled ?? agent.disabled ?? false
-                      return (
-                        <button
-                          key={agent.id}
-                          type="button"
-                          onClick={() => setSelectedId(agent.id)}
-                          className={`kv-provider-item ${agent.id === selectedId ? 'active' : ''}`}
-                          data-tauri-drag-region="false"
-                        >
-                          <span className="kv-provider-item-select">
-                            <IconBox id={agent.id} size={22} />
-                            <span className="kv-provider-name">{agent.name}</span>
-                          </span>
-                          {getCliInstallJob(agent.id).running ? (
-                            <span
-                              className="kv-cli-updating-dot"
-                              aria-label={t.externalAgentsInstalling}
-                            />
-                          ) : (
-                            <span
-                              className={`kv-provider-dot ${
-                                off || !agent.available ? 'off' : 'on'
-                              }`}
-                            />
-                          )}
-                        </button>
-                      )
-                    })}
-                </div>
-              )
-            })}
-            {groups.length === 0 && (
-              <p className="kv-row-desc px-1 py-2">
-                {scanning ? t.externalAgentsRescanning : t.externalAgentsNoMatch}
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="kv-provider-detail">
+      <div className="kv-cli">
+        <AgentSidebar
+          lang={lang}
+          rows={rows}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onToggle={(id, enabled) => patchOverride(id, { disabled: !enabled })}
+          query={query}
+          onQuery={setQuery}
+          scanning={scanning}
+          scanFailed={scanFailed}
+          onRescan={() => void rescan()}
+          updatableIds={updatableIds}
+          onUpdateAll={() => void updateAll()}
+        />
+        <div className="kv-cli-detail">
           {selected ? (
             <AgentDetail
               key={selected.id}
@@ -347,11 +188,11 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
               config={overrides[selected.id] ?? EMPTY_CONFIG}
               onPatch={(patch) => patchOverride(selected.id, patch)}
               reloadAgents={loadAgents}
-              onOpenPiExtensions={() => setShowPiExtensions(true)}
-              onOpenPiSkills={() => setShowPiSkills(true)}
+              onOpenPiExtensions={() => setSubpage('pi-extensions')}
+              onOpenPiSkills={() => setSubpage('pi-skills')}
             />
           ) : (
-            <p className="kv-row-desc py-8 text-center">
+            <p className="kv-cli-nav-empty">
               {scanning ? t.externalAgentsRescanning : t.externalAgentsSelectHint}
             </p>
           )}
@@ -359,1011 +200,4 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
       </div>
     </div>
   )
-}
-
-function AgentDetail({
-  agent,
-  lang,
-  config,
-  onPatch,
-  reloadAgents,
-  onOpenPiExtensions,
-  onOpenPiSkills,
-}: {
-  agent: DetectedExternalAgent
-  lang: Lang
-  config: ExternalCliAgentConfig
-  onPatch: (patch: Partial<ExternalCliAgentConfig>) => void
-  reloadAgents: (force?: boolean) => Promise<void>
-  onOpenPiExtensions: () => void
-  onOpenPiSkills: () => void
-}) {
-  const t = i18n[lang]
-  const disabled = config.disabled ?? agent.disabled ?? false
-  const customModels = config.customModels ?? []
-  const [probedExpanded, setProbedExpanded] = useState(false)
-  const install = useInstall(agent.id, reloadAgents)
-
-  const [probedModels, setProbedModels] = useState<DetectedExternalAgent['models']>([])
-  const [showPlugins, setShowPlugins] = useState(false)
-  useEffect(() => {
-    setShowPlugins(false)
-  }, [agent.id])
-  useEffect(() => {
-    if (!agent.available) {
-      setProbedModels([])
-      return
-    }
-    let cancelled = false
-    void externalAgentSettingsApi
-      .detectExternalAgentModels(agent.id, null, false)
-      .then(({ models }) => {
-        if (!cancelled) setProbedModels(models)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [agent.id, agent.available])
-
-  const pickBinary = async () => {
-    const picked = await open({ multiple: false, directory: false })
-    if (typeof picked === 'string') onPatch({ path: picked })
-  }
-
-  const { info, checking, running, log, result, logRef, refresh, runInstall } = install
-  const localVersion = info?.localVersion ?? agent.version ?? null
-  const versionComparison =
-    localVersion && info?.latestVersion
-      ? isVersionNewer(localVersion, info.latestVersion)
-      : null
-  const updateAvailable = versionComparison ?? info?.updateAvailable ?? false
-  const needsRepair = Boolean(agent.available && !localVersion && info?.planId)
-  const versionStatus = !agent.available
-    ? null
-    : checking
-      ? { label: t.externalAgentsCheckingVersion, tone: '' }
-      : !info
-        ? { label: t.externalAgentsVersionCheckFailed, tone: 'warn' }
-        : !localVersion
-          ? { label: t.externalAgentsLocalVersionUnknown, tone: 'warn' }
-          : !info.latestVersion
-          ? { label: t.externalAgentsLatestVersionUnknown, tone: 'warn' }
-          : updateAvailable
-            ? {
-                label: (info.planId
-                  ? t.externalAgentsUpdateAvailable
-                  : t.externalAgentsManualUpdateAvailable
-                ).replace('{version}', info.latestVersion),
-                tone: 'warn',
-              }
-            : { label: t.externalAgentsUpToDate, tone: 'ok' }
-  const showInstallAction = Boolean(
-    running ||
-      (info?.planId && !checking && (!agent.available || updateAvailable || needsRepair)),
-  )
-
-  if (showPlugins && agent.id === 'dsh') {
-    return <DshPluginsSettings lang={lang} onBack={() => setShowPlugins(false)} />
-  }
-
-  const hasExtensions = agent.available && (agent.id === 'dsh' || agent.id === 'pi')
-  const shownProbed = probedExpanded ? probedModels : probedModels.slice(0, PROBED_MODELS_PREVIEW)
-
-  return (
-    <>
-      {/* 顶栏：是哪个 CLI、什么版本、是否最新、开没开。 */}
-      <div className="kv-cli-head">
-        <IconBox id={agent.id} size={36} />
-        <div className="kv-cli-head-main">
-          <span className="kv-cli-head-title">{agent.name}</span>
-          <span className="kv-cli-head-meta">
-            {localVersion
-              ? <span className="kv-cli-version">{localVersion}</span>
-              : !agent.available && <span className="kv-tag">{t.externalAgentsNotInstalled}</span>}
-            {versionStatus && (
-              <span className={`kv-tag ${versionStatus.tone}`}>{versionStatus.label}</span>
-            )}
-            <IconButton
-              size="xs"
-              label={t.externalAgentsCheckUpdate}
-              onClick={() => void refresh()}
-              disabled={checking}
-            >
-              <RefreshCw size={11} className={checking ? 'animate-spin' : ''} />
-            </IconButton>
-          </span>
-        </div>
-        {info && (
-          <a
-            className="kv-cli-docs"
-            href={info.docsUrl}
-            target="_blank"
-            rel="noreferrer"
-            title={t.externalAgentsDocs}
-            data-tauri-drag-region="false"
-          >
-            <ExternalLink size={12} />
-            {t.externalAgentsDocs}
-          </a>
-        )}
-        <span className="kv-cli-enable" title={t.externalAgentsEnableDesc}>
-          <span>{t.externalAgentsEnable}</span>
-          <Toggle
-            checked={!disabled}
-            onChange={(on) => onPatch({ disabled: !on })}
-            ariaLabel={`${agent.name} ${t.externalAgentsEnable}`}
-          />
-        </span>
-      </div>
-
-      {/* 需要动手时才出现的一条：安装 / 更新 / 修复，连同它会怎么装。 */}
-      {showInstallAction && (
-        <div className="kv-cli-action">
-          <p className="kv-row-desc break-all">
-            {info?.planId
-              ? [info.source, info.environment, info.targetVersion, info.binaryPath].filter(Boolean).join(' · ')
-              : ''}
-          </p>
-          <Button size="sm" variant="primary" onClick={() => void runInstall()} disabled={running}>
-            {running
-              ? t.externalAgentsInstalling
-              : agent.available
-                ? t.externalAgentsUpdate
-                : t.externalAgentsInstall}
-          </Button>
-        </div>
-      )}
-      {info?.manualReason && <p className="kv-row-desc kv-cli-note">{info.manualReason}</p>}
-      {(running || result) && (
-        <div
-          className={`kv-cli-install-banner ${running ? 'running' : result === 'ok' ? (needsRepair ? 'warn' : 'ok') : 'fail'}`}
-          role="status"
-        >
-          {running
-            ? t.externalAgentsInstalling
-            : result === 'ok'
-              ? installDoneLabel(agent.id, needsRepair, t)
-              : t.externalAgentsInstallFailed}
-        </div>
-      )}
-      {agent.id === 'dsh' && !agent.available && (
-        <p className="kv-row-desc kv-cli-note">{t.externalAgentsDshInstallHint}</p>
-      )}
-      {agent.id === 'antigravity' && (
-        <p className="kv-row-desc kv-cli-note">
-          {lang === 'zh'
-            ? '首次使用请在终端运行 agy 完成登录。默认遵循 CLI 权限配置，需要确认的操作可能被拒绝；可在聊天底栏选择权限模式。'
-            : 'Run agy in a terminal to sign in first. Native CLI permissions apply by default; operations requiring confirmation may be denied. Choose a permission mode in the chat composer.'}
-        </p>
-      )}
-      {(running || result === 'fail') && (
-        <div className="kv-cli-card">
-          <div className="kv-row-stack">
-            <div className="kv-row-text">
-              <div className="kv-row-label">{t.externalAgentsInstallLog}</div>
-            </div>
-            <pre ref={logRef} className="kv-cli-log">
-              {log.length > 0 ? log.join('\n') : t.externalAgentsInstalling}
-            </pre>
-          </div>
-        </div>
-      )}
-
-      {/* 以下各区对每个 CLI 顺序固定：供应商 → 模型 → 扩展 → 高级。
-          没装的 CLI 只留安装动作和「高级」里的路径：装好或指对路径之前，其余配置都用不上。 */}
-      {agent.available && (
-      <ProviderSection
-        lang={lang}
-        agentId={agent.id}
-        agentName={agent.name}
-        providers={config.providers ?? []}
-        nativeProviders={agent.nativeProviders ?? []}
-        current={config.currentProvider ?? ''}
-        onPatch={onPatch}
-        reloadAgents={reloadAgents}
-      />
-      )}
-
-      {agent.available && (
-      <section className="kv-cli-section">
-        <div className="kv-cli-section-head">
-          <div className="kv-cli-section-text">
-            <span className="kv-cli-section-title">{t.externalAgentsModelsSection}</span>
-            <p className="kv-row-desc">
-              {t.externalAgentsModelsSummary
-                .replace('{probed}', String(probedModels.length))
-                .replace('{custom}', String(customModels.length))}
-            </p>
-          </div>
-          <Button
-            size="sm"
-            onClick={() => onPatch({ customModels: [...customModels, { id: '', label: '' }] })}
-          >
-            <Plus size={12} />
-            {t.externalAgentsModelAdd}
-          </Button>
-        </div>
-        {(probedModels.length > 0 || customModels.length > 0) && (
-          <div className="kv-cli-card kv-cli-models">
-            {probedModels.length > 0 && (
-              <div className="kv-cli-model-chips">
-                {shownProbed.map((model) => (
-                  <span key={model.id} className="kv-chip" title={model.label || model.id}>{model.id}</span>
-                ))}
-                {probedModels.length > PROBED_MODELS_PREVIEW && (
-                  <Button size="sm" variant="ghost" onClick={() => setProbedExpanded((value) => !value)}>
-                    {probedExpanded
-                      ? t.externalAgentsCollapse
-                      : `+${probedModels.length - PROBED_MODELS_PREVIEW}`}
-                  </Button>
-                )}
-              </div>
-            )}
-            {customModels.map((model, idx) => (
-              <div key={idx} className="kv-cli-model-row">
-                <Input
-                  value={model.id}
-                  onChange={(value) =>
-                    onPatch({
-                      customModels: customModels.map((m, i) =>
-                        i === idx ? { ...m, id: value } : m,
-                      ),
-                    })
-                  }
-                  placeholder={t.externalAgentsModelId}
-                  aria-label={t.externalAgentsModelId}
-                  mono
-                />
-                <Input
-                  value={model.label}
-                  onChange={(value) =>
-                    onPatch({
-                      customModels: customModels.map((m, i) =>
-                        i === idx ? { ...m, label: value } : m,
-                      ),
-                    })
-                  }
-                  placeholder={t.externalAgentsModelLabel}
-                  aria-label={t.externalAgentsModelLabel}
-                />
-                <IconButton
-                  size="sm"
-                  label={t.externalAgentsRemove}
-                  onClick={() => onPatch({ customModels: customModels.filter((_, i) => i !== idx) })}
-                >
-                  <Trash2 size={13} />
-                </IconButton>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-      )}
-
-      {hasExtensions && (
-        <section className="kv-cli-section">
-          <div className="kv-cli-section-head">
-            <span className="kv-cli-section-title">{lang === 'zh' ? '扩展' : 'Extensions'}</span>
-          </div>
-          {agent.id === 'dsh' && (
-            <button
-              type="button"
-              onClick={() => setShowPlugins(true)}
-              className="kv-cli-card kv-dsh-plugins-entry"
-              data-tauri-drag-region="false"
-            >
-              <span className="kv-dsh-plugins-entry-icons" aria-hidden="true">
-                <span><Terminal size={13} /></span>
-                <span><Workflow size={13} /></span>
-                <span><Globe size={13} /></span>
-              </span>
-              <span className="kv-row-text">
-                <span className="kv-row-label">{t.externalAgentsDshPlugins}</span>
-                <span className="kv-row-desc">{t.externalAgentsDshPluginsHint}</span>
-              </span>
-              <span className="kv-subpage-entry-go">
-                {lang === 'zh' ? '配置' : 'Edit'}
-                <ChevronRight size={14} aria-hidden="true" />
-              </span>
-            </button>
-          )}
-          {agent.id === 'pi' && (
-            <>
-              <button
-                type="button"
-                onClick={onOpenPiExtensions}
-                className="kv-cli-card kv-pi-extensions-entry"
-                data-tauri-drag-region="false"
-              >
-                <span className="kv-pi-extensions-entry-icon" aria-hidden="true">
-                  <Blocks size={16} />
-                </span>
-                <span className="kv-row-text">
-                  <span className="kv-row-label">{t.externalAgentsPiExtensions}</span>
-                  <span className="kv-row-desc">{t.externalAgentsPiExtensionsHint}</span>
-                </span>
-                <span className="kv-subpage-entry-go">
-                  {lang === 'zh' ? '管理' : 'Manage'}
-                  <ChevronRight size={14} aria-hidden="true" />
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={onOpenPiSkills}
-                className="kv-cli-card kv-pi-skills-entry"
-                data-tauri-drag-region="false"
-              >
-                <span className="kv-pi-skills-entry-icon" aria-hidden="true">
-                  <BookOpen size={16} />
-                </span>
-                <span className="kv-row-text">
-                  <span className="kv-row-label">{t.externalAgentsPiSkills}</span>
-                  <span className="kv-row-desc">{t.externalAgentsPiSkillsHint}</span>
-                </span>
-                <span className="kv-subpage-entry-go">
-                  {lang === 'zh' ? '管理' : 'Manage'}
-                  <ChevronRight size={14} aria-hidden="true" />
-                </span>
-              </button>
-            </>
-          )}
-        </section>
-      )}
-
-      <section className="kv-cli-section">
-        <div className="kv-cli-section-head">
-          <span className="kv-cli-section-title">{lang === 'zh' ? '高级' : 'Advanced'}</span>
-        </div>
-        <div className="kv-cli-card">
-          <Row
-            label={t.externalAgentsBinaryPath}
-            desc={config.path || agent.path || t.externalAgentsUsePath}
-          >
-            {config.path && (
-              <Button size="sm" variant="ghost" onClick={() => onPatch({ path: '' })}>
-                {t.externalAgentsClear}
-              </Button>
-            )}
-            <Button size="sm" onClick={() => void pickBinary()}>
-              {t.externalAgentsConfigPath}
-            </Button>
-          </Row>
-        </div>
-      </section>
-    </>
-  )
-}
-
-function DshOfficialKeyCard({ lang }: { lang: Lang }) {
-  const t = i18n[lang]
-  const [status, setStatus] = useState<DshOfficialCredential | null>(null)
-  const [apiKey, setApiKey] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    void externalAgentSettingsApi
-      .dshOfficialCredentialStatus()
-      .then((next) => {
-        if (!cancelled) setStatus(next)
-      })
-      .catch(() => {
-        if (!cancelled) setStatus({ configured: false, writable: true })
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const writable = status?.writable ?? true
-  const save = async () => {
-    const key = apiKey.trim()
-    if (!key || !writable) return
-    setSaving(true)
-    setError(null)
-    try {
-      setStatus(await externalAgentSettingsApi.dshOfficialCredentialSave(key))
-      setApiKey('')
-    } catch (err) {
-      setError(String(err))
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="kv-cli-card kv-dsh-official-key">
-      <div className="kv-dsh-official-key-head">
-        <label htmlFor="dsh-official-key" className="kv-row-label">
-          {t.externalAgentsDshOfficialKey}
-        </label>
-        {status && !status.configured && writable && (
-          <span className="kv-tag warn">{t.externalAgentsDshOfficialKeyUnsetTag}</span>
-        )}
-        {status?.configured && (
-          <span className="kv-tag ok">{t.externalAgentsDshOfficialKeySetTag}</span>
-        )}
-        <a
-          className="kv-cli-docs"
-          href={DSH_OFFICIAL_KEY_URL}
-          target="_blank"
-          rel="noreferrer"
-          data-tauri-drag-region="false"
-        >
-          <ExternalLink size={12} />
-          {t.externalAgentsDshOfficialKeyGet}
-        </a>
-      </div>
-      <Input
-        id="dsh-official-key"
-        type="password"
-        value={apiKey}
-        onChange={setApiKey}
-        placeholder={
-          status?.configured
-            ? t.externalAgentsDshOfficialKeySet
-            : t.externalAgentsDshOfficialKeyUnset
-        }
-        mono
-        disabled={!writable}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') void save()
-        }}
-      />
-      <p className="kv-row-desc">
-        {writable ? t.externalAgentsDshOfficialKeyHint : t.externalAgentsDshOfficialKeyLocked}
-      </p>
-      {error && <p className="kv-row-desc kv-dsh-field-error">{error}</p>}
-      {writable && (
-        <div className="kv-dsh-official-key-actions">
-          <Button
-            size="sm"
-            variant="primary"
-            disabled={saving || !apiKey.trim()}
-            onClick={() => void save()}
-          >
-            {saving ? t.externalAgentsDshOfficialKeySaving : t.externalAgentsDshOfficialKeySave}
-          </Button>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function NativeProviderRow({
-  lang,
-  provider,
-  current,
-  coexisting,
-  onUseCliConfig,
-  onEdit,
-  onDelete,
-}: {
-  lang: Lang
-  provider: NativeProviderSummary
-  current: string
-  coexisting: boolean
-  onUseCliConfig: () => void
-  onEdit?: () => void
-  onDelete?: () => void
-}) {
-  const t = i18n[lang]
-  const official = provider.id === DSH_OFFICIAL_PROVIDER_ID
-  const usingCliConfig = !current
-  const inUse = usingCliConfig && provider.isDefault
-  const models =
-    provider.modelCount > 0
-      ? t.externalAgentsNativeProviderModels.replace('{count}', String(provider.modelCount))
-      : null
-  const subtitle = official
-    ? [t.externalAgentsDshOfficialProvider, models].filter(Boolean).join(' · ')
-    : [provider.id, provider.baseUrl, models].filter(Boolean).join(' · ')
-  return (
-    <div className="kv-row kv-cli-provider">
-      <span className="kv-cli-monogram">{monogram(provider.name)}</span>
-      <div className="kv-row-text">
-        <div className="kv-row-label">{provider.name}</div>
-        <p className="kv-row-desc truncate">{subtitle}</p>
-      </div>
-      <div className="kv-row-control">
-        {coexisting ? (
-          <>
-            <span className={`kv-tag ${inUse ? 'ok' : ''}`}>
-              {inUse
-                ? t.externalAgentsProviderDefault
-                : provider.isDefault
-                  ? t.externalAgentsNativeProviderDefault
-                  : official
-                    ? t.externalAgentsDshOfficialProvider
-                    : t.externalAgentsNativeProviderBadge}
-            </span>
-            {current && provider.isDefault && (
-              <Button size="sm" onClick={onUseCliConfig}>
-                {t.externalAgentsProviderSetDefault}
-              </Button>
-            )}
-          </>
-        ) : (
-          <span className={`kv-tag ${inUse ? 'ok' : ''}`}>
-            {provider.isDefault
-              ? t.externalAgentsNativeProviderDefault
-              : official
-                ? t.externalAgentsDshOfficialProvider
-                : t.externalAgentsNativeProviderBadge}
-          </span>
-        )}
-        {onEdit && (
-          <IconButton size="sm" label={t.externalAgentsProviderEdit} onClick={onEdit}>
-            <Pencil size={13} />
-          </IconButton>
-        )}
-        {onDelete && (
-          <IconButton size="sm" label={t.externalAgentsRemove} onClick={onDelete}>
-            <Trash2 size={13} />
-          </IconButton>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/**
- * 「同一时间只用一个」的 CLI 用单选圈选当前供应商；可并存的 CLI 不用它，改用每行的开关。
- */
-function ProviderRadio({
-  checked,
-  label,
-  onSelect,
-}: {
-  checked: boolean
-  label: string
-  onSelect: () => void
-}) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={checked}
-      aria-label={label}
-      className="kv-cli-radio"
-      onClick={() => {
-        if (!checked) onSelect()
-      }}
-      data-tauri-drag-region="false"
-    />
-  )
-}
-
-/** 一个供应商的展示副标题：备注 > base_url > codex 的 model_provider 行。 */
-function providerSubtitle(provider: ExternalCliProvider): string {
-  if (provider.remark) return provider.remark
-  const baseUrl = provider.env?.find((pair) => /BASE_URL$/i.test(pair.key))?.value
-  if (baseUrl) return baseUrl
-  const fromToml = provider.configToml?.match(/base_url\s*=\s*"([^"]+)"/)?.[1]
-  if (fromToml) return fromToml
-  try {
-    const config = JSON.parse(provider.configJson ?? '{}') as Record<string, unknown>
-    if (typeof config.baseUrl === 'string') return config.baseUrl
-    if (typeof config.baseURL === 'string') return config.baseURL
-    const options = config.options as Record<string, unknown> | undefined
-    if (typeof options?.baseURL === 'string') return options.baseURL
-  } catch {
-    // The edit modal will surface malformed Kivio-owned JSON; keep the list usable meanwhile.
-  }
-  return ''
-}
-
-/**
- * 行首那个小方块里的字。
- *
- * ponytail: 不学 ccgui 按 base_url 猜品牌图标（那要一整个图标包 + 一张域名映射表，
- * 而中转站域名千奇百怪，猜错比不猜更糟）。取首个字母/汉字就够把几十条区分开。
- */
-function monogram(name: string): string {
-  const first = name.trim().match(/[\p{L}\p{N}]/u)?.[0] ?? '·'
-  return first.toUpperCase()
-}
-
-/**
- * 「所有供应商」区块（仿 ccgui）：列表 + 导入 + 添加。
- *
- * 只改设置草稿，落地由后端在保存设置时统一做（`persist_settings` → `materialize_all`），
- * 所以这里不需要在每个操作后再调一次 apply 命令。
- */
-function ProviderSection({
-  lang,
-  agentId,
-  agentName,
-  providers,
-  nativeProviders,
-  current,
-  onPatch,
-  reloadAgents,
-}: {
-  lang: Lang
-  agentId: string
-  agentName: string
-  providers: ExternalCliProvider[]
-  nativeProviders: NonNullable<DetectedExternalAgent['nativeProviders']>
-  current: string
-  onPatch: (patch: Partial<ExternalCliAgentConfig>) => void
-  reloadAgents: (force?: boolean) => Promise<void>
-}) {
-  const t = i18n[lang]
-  const [editing, setEditing] = useState<ExternalCliProvider | null | undefined>(undefined)
-  const [importing, setImporting] = useState(false)
-  const adoptedNativeIds = new Set(
-    providers
-      .map((provider) => provider.nativeProviderId?.trim())
-      .filter((id): id is string => Boolean(id)),
-  )
-  const listedNatives = withOfficialDshProviders(agentId, nativeProviders).filter(
-    (provider) => provider.id === DSH_OFFICIAL_PROVIDER_ID || !adoptedNativeIds.has(provider.id),
-  )
-  const hideGenericLocal = agentId === 'dsh'
-
-  const save = (provider: ExternalCliProvider) => {
-    const existing = providers.find((item) => item.id === provider.id)
-    const saved = {
-      ...provider,
-      disabled: provider.disabled ?? existing?.disabled ?? false,
-    }
-    const adoptInUse =
-      agentId === 'dsh' &&
-      !current &&
-      !existing &&
-      !saved.disabled &&
-      Boolean(saved.nativeProviderId) &&
-      nativeProviders.some((native) => native.id === saved.nativeProviderId && native.isDefault)
-    onPatch({
-      providers: existing
-        ? providers.map((item) => (item.id === saved.id ? saved : item))
-        : [...providers, saved],
-      ...(adoptInUse ? { currentProvider: saved.id } : {}),
-    })
-    setEditing(undefined)
-  }
-
-  const setProviderEnabled = (provider: ExternalCliProvider, enabled: boolean) => {
-    onPatch({
-      providers: providers.map((item) =>
-        item.id === provider.id ? { ...item, disabled: !enabled } : item,
-      ),
-      ...(!enabled && current === provider.id ? { currentProvider: '' } : {}),
-    })
-  }
-  const remove = async (provider: ExternalCliProvider) => {
-    const deletesNativeFile = Boolean(
-      provider.nativeProviderId &&
-      nativeProviders.some((native) => native.id === provider.nativeProviderId),
-    )
-    const confirmText = deletesNativeFile
-      ? t.externalAgentsDshNativeDeleteConfirm
-      : t.externalAgentsProviderDeleteConfirm
-    if (!(await confirmDialog({ message: confirmText.replace('{name}', () => provider.name), confirmLabel: t.dialogDelete, danger: true }))) return
-    onPatch({
-      providers: providers.filter((p) => p.id !== provider.id),
-      ...(current === provider.id ? { currentProvider: '' } : {}),
-    })
-  }
-
-  const editNative = async (native: NativeProviderSummary) => {
-    try {
-      const detail = await externalAgentSettingsApi.dshNativeProviderGet(native.id)
-      setEditing(dshNativeDetailToProvider(detail))
-    } catch (err) {
-      void notifyError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
-  const removeNative = async (native: NativeProviderSummary) => {
-    if (!(await confirmDialog({
-      message: t.externalAgentsDshNativeDeleteConfirm.replace('{name}', () => native.name),
-      confirmLabel: t.dialogDelete,
-      danger: true,
-    }))) return
-    const adopted = providers.find((provider) => provider.nativeProviderId === native.id)
-    if (adopted) {
-      onPatch({
-        providers: providers.filter((provider) => provider.id !== adopted.id),
-        ...(current === adopted.id ? { currentProvider: '' } : {}),
-      })
-      return
-    }
-    try {
-      await externalAgentSettingsApi.dshNativeProviderDelete(native.id)
-    } catch (err) {
-      void notifyError(err instanceof Error ? err.message : String(err))
-      return
-    }
-    await reloadAgents(true)
-  }
-
-  const importFromCcSwitch = (items: ImportedCcSwitchProvider[]) => {
-    // 保留 cc-switch 的原 id：同一条再导一次是更新，不会堆出重复项。
-    const merged = [...providers]
-    for (const item of items) {
-      const idx = merged.findIndex((provider) => provider.id === item.id)
-      const next: ExternalCliProvider = {
-        id: item.id,
-        name: item.name,
-        remark: item.remark,
-        env: item.env,
-        configToml: item.configToml,
-        authJson: item.authJson,
-        disabled: idx >= 0 ? merged[idx].disabled : false,
-      }
-      if (idx >= 0) merged[idx] = next
-      else merged.push(next)
-    }
-    onPatch({ providers: merged })
-    setImporting(false)
-  }
-
-  // Pi / OpenCode 的全部供应商写进原生配置，dsh 的全部供应商挂进 Kivio profile；currentProvider 只选默认项。
-  const providersCoexist = agentId === 'pi' || agentId === 'opencode' || agentId === 'dsh'
-  const nativeOnDisk =
-    agentId === 'opencode' || agentId === 'pi' || agentId === 'grok' || agentId === 'kimi'
-  const envOnly = agentId !== 'claude' && agentId !== 'codex' && agentId !== 'dsh' && !nativeOnDisk
-
-  return (
-    <section className="kv-cli-section">
-      <div className="kv-cli-section-head">
-        <div className="kv-cli-section-text">
-          <span className="kv-cli-section-title">{t.externalAgentsProviderAll}</span>
-          <p className="kv-row-desc">
-            {providersCoexist
-              ? t.externalAgentsProviderCoexistScope
-              : nativeOnDisk
-                ? t.externalAgentsNativeScope
-                : envOnly
-                  ? t.externalAgentsProviderEnvOnly
-                  : t.externalAgentsProviderScope}
-          </p>
-        </div>
-        <Button size="sm" onClick={() => setImporting(true)}>
-          <Download size={12} />
-          {t.externalAgentsProviderImport}
-        </Button>
-        <Button size="sm" variant="primary" onClick={() => setEditing(null)}>
-          <Plus size={12} />
-          {t.externalAgentsProviderAdd}
-        </Button>
-      </div>
-      {agentId === 'dsh' && <DshOfficialKeyCard lang={lang} />}
-      <div
-        className="kv-cli-card"
-        role={providersCoexist ? undefined : 'radiogroup'}
-        aria-label={t.externalAgentsProviderAll}
-      >
-        {providers.length === 0 && listedNatives.length === 0 ? (
-          // 一条供应商都没有时只留这句话（同 ccgui）：此时「使用 CLI 自身配置」是唯一可能的
-          // 状态，把它渲染成一行可选项纯属噪音。
-          <p className="kv-row-desc px-3 py-5 text-center">{t.externalAgentsProviderEmpty}</p>
-        ) : (
-          <>
-            {!hideGenericLocal && (
-              <div className="kv-row kv-cli-provider">
-                {providersCoexist ? (
-                  <span className="kv-cli-monogram local">
-                    <Terminal size={13} />
-                  </span>
-                ) : (
-                  <ProviderRadio
-                    checked={!current}
-                    label={t.externalAgentsProviderNone}
-                    onSelect={() => onPatch({ currentProvider: '' })}
-                  />
-                )}
-                <div className="kv-row-text">
-                  <div className="kv-row-label">{t.externalAgentsProviderNone}</div>
-                  <p className="kv-row-desc">{t.externalAgentsProviderNoneDesc}</p>
-                </div>
-                {providersCoexist && (
-                  <div className="kv-row-control">
-                    {!current ? (
-                      <span className="kv-tag ok">{t.externalAgentsProviderDefault}</span>
-                    ) : (
-                      <Button size="sm" onClick={() => onPatch({ currentProvider: '' })}>
-                        {t.externalAgentsProviderSetDefault}
-                      </Button>
-                    )}
-                    <span className="kv-cli-provider-spacer" />
-                  </div>
-                )}
-              </div>
-            )}
-            {hideGenericLocal &&
-              listedNatives.map((provider) => (
-                <NativeProviderRow
-                  key={`native-${provider.id}`}
-                  lang={lang}
-                  provider={provider}
-                  current={current}
-                  coexisting={providersCoexist}
-                  onUseCliConfig={() => onPatch({ currentProvider: '' })}
-                  onEdit={
-                    provider.id === DSH_OFFICIAL_PROVIDER_ID
-                      ? undefined
-                      : () => void editNative(provider)
-                  }
-                  onDelete={
-                    provider.id === DSH_OFFICIAL_PROVIDER_ID
-                      ? undefined
-                      : () => void removeNative(provider)
-                  }
-                />
-              ))}
-            {providers.map((provider) => (
-              <div className="kv-row kv-cli-provider" key={provider.id}>
-                {providersCoexist ? (
-                  <span className="kv-cli-monogram">{monogram(provider.name)}</span>
-                ) : (
-                  <ProviderRadio
-                    checked={current === provider.id}
-                    label={provider.name}
-                    onSelect={() => onPatch({ currentProvider: provider.id })}
-                  />
-                )}
-                <div className="kv-row-text">
-                  <div className="kv-row-label">{provider.name}</div>
-                  <p className="kv-row-desc truncate">{providerSubtitle(provider)}</p>
-                </div>
-                <div className="kv-row-control">
-                  {providersCoexist && (
-                    <>
-                      <span
-                        className={`kv-tag ${!provider.disabled && current === provider.id ? 'ok' : ''}`}
-                      >
-                        {provider.disabled
-                          ? t.externalAgentsDisabledGroup
-                          : current === provider.id
-                            ? t.externalAgentsProviderDefault
-                            : t.externalAgentsProviderCoexisting}
-                      </span>
-                      {!provider.disabled && current !== provider.id && (
-                        <Button size="sm" onClick={() => onPatch({ currentProvider: provider.id })}>
-                          {t.externalAgentsProviderSetDefault}
-                        </Button>
-                      )}
-                      <Toggle
-                        checked={!provider.disabled}
-                        onChange={(enabled) => setProviderEnabled(provider, enabled)}
-                        ariaLabel={`${provider.name} ${t.externalAgentsEnable}`}
-                      />
-                    </>
-                  )}
-                  <IconButton
-                    size="sm"
-                    label={t.externalAgentsProviderEdit}
-                    onClick={() => setEditing(provider)}
-                  >
-                    <Pencil size={13} />
-                  </IconButton>
-                  <IconButton
-                    size="sm"
-                    label={t.externalAgentsRemove}
-                    onClick={() => void remove(provider)}
-                  >
-                    <Trash2 size={13} />
-                  </IconButton>
-                </div>
-              </div>
-            ))}
-            {!hideGenericLocal &&
-              listedNatives.map((provider) => (
-                <NativeProviderRow
-                  key={`native-${provider.id}`}
-                  lang={lang}
-                  provider={provider}
-                  current={current}
-                  coexisting={providersCoexist}
-                  onUseCliConfig={() => onPatch({ currentProvider: '' })}
-                />
-              ))}
-          </>
-        )}
-      </div>
-      {editing !== undefined && (
-        <CliProviderModal
-          lang={lang}
-          agentId={agentId}
-          agentName={agentName}
-          initial={editing}
-          onSave={save}
-          onClose={() => setEditing(undefined)}
-        />
-      )}
-      {importing && (
-        <CcSwitchImportModal
-          lang={lang}
-          agentId={agentId}
-          existingIds={providers.map((p) => p.id)}
-          onImport={importFromCcSwitch}
-          onClose={() => setImporting(false)}
-        />
-      )}
-    </section>
-  )
-}
-
-function useCliInstallJobs() {
-  const [, setVersion] = useState(0)
-  useEffect(() => subscribeCliInstallJobs(() => setVersion((n) => n + 1)), [])
-}
-
-function installDoneLabel(
-  agentId: string,
-  needsRepair: boolean,
-  t: (typeof i18n)[Lang],
-): string {
-  if (needsRepair) {
-    return agentId === 'dsh'
-      ? t.externalAgentsInstallNeedsRepair
-      : t.externalAgentsInstallNeedsRepairGeneric
-  }
-  return agentId === 'dsh' ? t.externalAgentsInstallDoneDsh : t.externalAgentsInstallDone
-}
-
-/** 版本检查 + 一键安装/更新。任务本身在 `cliInstallJobs`，切走详情不能把进度卸掉。 */
-function useInstall(agentId: string, reloadAgents: (force?: boolean) => Promise<void>) {
-  useCliInstallJobs()
-  const job = getCliInstallJob(agentId)
-  const [info, setInfo] = useState<ExternalCliInstallInfo | null>(null)
-  const [checking, setChecking] = useState(true)
-  const logRef = useRef<HTMLPreElement | null>(null)
-  const { running, log, result } = job
-
-  const refresh = useCallback(async () => {
-    setChecking(true)
-    try {
-      setInfo(await externalAgentSettingsApi.externalCliInstallInfo(agentId))
-    } catch {
-      setInfo(null)
-    } finally {
-      setChecking(false)
-    }
-  }, [agentId])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-
-  useEffect(() => {
-    const node = logRef.current
-    if (node && typeof node.scrollTo === 'function') {
-      node.scrollTo({ top: node.scrollHeight })
-    }
-  }, [log])
-
-  useEffect(() => {
-    if (!result && !running) return
-    const node = logRef.current
-    if (node && typeof node.scrollIntoView === 'function') {
-      node.scrollIntoView({ block: 'nearest' })
-    }
-  }, [result, running])
-
-  useEffect(() => {
-    if (result !== 'ok' || running) return
-    const timer = window.setTimeout(() => {
-      clearCliInstallJob(agentId)
-    }, 4000)
-    return () => window.clearTimeout(timer)
-  }, [agentId, result, running])
-
-  const runInstall = () => {
-    if (!info?.planId) return
-    return startCliInstall(agentId, info.planId, {
-      install: (id, planId) => externalAgentSettingsApi.externalCliInstall(id, planId),
-      afterDone: async () => {
-        await refresh()
-        await reloadAgents(true)
-      },
-    })
-  }
-
-  return { info, checking, running, log, result, logRef, refresh, runInstall }
 }

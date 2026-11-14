@@ -36,6 +36,7 @@ const CHAT_LAST_ROUTE_KEY = 'kivio-chat-last-route'
 const CHAT_SIDEBAR_COLLAPSED_KEY = 'kivio-chat-sidebar-collapsed'
 const CHAT_SIDEBAR_VIEW_KEY = 'kivio-chat-sidebar-view'
 const CHAT_RECENT_HIDES_PROJECTS_KEY = 'kivio-chat-recent-hides-projects'
+const CHAT_RECENT_HIDES_SETS_KEY = 'kivio-chat-recent-hides-sets'
 const CHAT_TASKS_TAB_KEY = 'kivio-chat-tasks-tab'
 const CHAT_WINDOW_GEOMETRY_KEY = 'kivio-chat-window-geometry'
 /** @deprecated 旧版仅持久化尺寸；读取时自动迁移到 geometry key */
@@ -90,6 +91,14 @@ export function getRememberedRecentHidesProjects(): boolean {
 
 export function rememberRecentHidesProjects(hide: boolean) {
   setLocalStorageItem(CHAT_RECENT_HIDES_PROJECTS_KEY, hide ? '1' : '0')
+}
+
+export function getRememberedRecentHidesSets(): boolean {
+  return getLocalStorageItem(CHAT_RECENT_HIDES_SETS_KEY) === '1'
+}
+
+export function rememberRecentHidesSets(hide: boolean) {
+  setLocalStorageItem(CHAT_RECENT_HIDES_SETS_KEY, hide ? '1' : '0')
 }
 
 function forgetRememberedChatGeometry() {

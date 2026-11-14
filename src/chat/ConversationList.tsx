@@ -76,7 +76,6 @@ interface ConversationListProps {
   compact?: boolean
   /** Flat sidebar: title first, with optional ownership below. */
   cardLayout?: boolean
-  indent?: boolean
   showAssistantName?: boolean
   // 「最近」平铺列表用：在每条对话右侧显示其所属「集 / 项目」标签（与搜索弹层一致）。
   // 项目/集 tab 的嵌套列表不传（已在该分组下，标签冗余）。
@@ -116,7 +115,6 @@ export const ConversationList = memo(function ConversationList({
   lang,
   compact = false,
   cardLayout = false,
-  indent = false,
   showAssistantName = true,
   showFolderLabel = false,
   groupPinned = false,
@@ -377,10 +375,10 @@ export const ConversationList = memo(function ConversationList({
                     }}
                     className={`min-w-0 flex-1 border-0 bg-transparent text-left outline-none focus:ring-0 ${
                       cardLayout
-                        ? 'h-[58px] px-2.5 pb-[30px] pt-2 text-[13px] leading-5'
+                        ? 'h-[58px] pl-8 pr-2.5 pb-[30px] pt-2 text-[13px] leading-5'
                         : compact
-                        ? `${indent ? 'pl-8' : 'pl-2.5'} h-7 pr-2 text-[13px] leading-5`
-                        : 'px-3 py-2 text-[13px]'
+                        ? 'pl-8 h-7 pr-2 text-[13px] leading-5'
+                        : 'pl-8 pr-3 py-2 text-[13px]'
                     } text-neutral-900`}
                     placeholder={t.chatLibUntitled}
                   />
@@ -417,6 +415,22 @@ export const ConversationList = memo(function ConversationList({
                   isDragging ? 'is-dragging ' : ''
                 }${active ? 'is-active' : ''}`}
               >
+              <span className={`pointer-events-none absolute left-2.5 flex h-5 w-3.5 items-center justify-center ${cardLayout ? 'top-2' : 'top-1/2 -translate-y-1/2'}`}>
+                <span
+                  className="kv-run-mark"
+                  data-running={isGenerating ? '' : undefined}
+                  aria-hidden={!isGenerating || undefined}
+                  aria-label={isGenerating ? t.chatGenerating : undefined}
+                  role={isGenerating ? 'status' : undefined}
+                >
+                  {/* 点阵只在运行时挂载：空闲行不多出 9 个节点，挂载即触发绽开动画 */}
+                  {isGenerating && (
+                    <span className="kv-run-mark-ring" aria-hidden="true">
+                      <i /><i /><i /><i /><i /><i /><i /><i /><i />
+                    </span>
+                  )}
+                </span>
+              </span>
               <button
                 type="button"
                 aria-label={cardLayout ? visibleTitle : undefined}
@@ -428,10 +442,10 @@ export const ConversationList = memo(function ConversationList({
                 }}
                 className={`kv-conv-title min-w-0 flex-1 text-left outline-none transition-colors ${
                   cardLayout
-                    ? 'px-2.5 py-2 text-[13px] leading-5'
+                    ? 'pl-8 pr-2.5 py-2 text-[13px] leading-5'
                     : compact
-                    ? `${indent ? 'pl-8' : 'pl-2.5'} h-7 pr-2 text-[13px] leading-5`
-                    : 'px-3 py-2 text-[13px]'
+                    ? 'pl-8 h-7 pr-2 text-[13px] leading-5'
+                    : 'pl-8 pr-3 py-2 text-[13px]'
                 }`}
                 onMouseEnter={showRowTooltip}
                 onFocus={showRowTooltip}
@@ -473,26 +487,16 @@ export const ConversationList = memo(function ConversationList({
                   </span>
                 )}
               </button>
-              {/* 行尾只放状态：[钉][定时][慢波][所属集/项目]，没有就不占位；时间与归属名称在行提示里。
+              {/* 行尾只放状态：[钉][定时][所属集/项目]，没有就不占位；时间与归属名称在行提示里。
                   悬停或键盘焦点时整体换成置顶 + 归档（槽宽由 CSS 撑开）。 */}
               <div
                 className={`kv-conv-trailing ${cardLayout ? 'absolute right-1.5 bottom-[7px]' : 'relative mr-1.5'} flex h-[22px] shrink-0 items-center justify-end`}
-                data-busy={isGenerating ? '' : undefined}
                 data-pinned={conv.pinned ? '' : undefined}
               >
                 <span className={`kv-conv-meta pointer-events-none flex items-center gap-1.5 pr-0.5 ${cardLayout ? 'text-neutral-500' : 'text-neutral-400 dark:text-neutral-500'}`}>
                   {conv.pinned && !groupPinned && <Pin size={12} strokeWidth={2} className="shrink-0" aria-hidden="true" />}
                   {scheduledTasksTitle && (
                     <Clock size={13} strokeWidth={1.75} className="shrink-0" aria-label={scheduledTasksTitle} />
-                  )}
-                  {isGenerating && (
-                    <span
-                      className="kv-conv-wave chat-gen-wave"
-                      aria-label={t.chatGenerating}
-                      role="status"
-                    >
-                      <span /><span /><span /><span />
-                    </span>
                   )}
                   {!cardLayout && folderGlyph && (
                     <span className="flex opacity-80" aria-label={folderLabel}>{folderGlyph}</span>

@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { externalCliSettingsApi, onExternalCliInstallLog } from '../api/externalCliSettings'
 import { resetCliInstallJobsForTests } from './cliInstallJobs'
+import { resetCliInstallInfoForTests } from './externalAgents/cliMaintenance'
 import type { Settings as SettingsData } from '../api/tauri'
 import type { ProviderCapabilities } from '../generated/chatProtocol'
 
@@ -113,6 +114,7 @@ function renderPanel(
 describe('ExternalAgentsSettings', () => {
   beforeEach(() => {
     resetCliInstallJobsForTests()
+    resetCliInstallInfoForTests()
     mockDetect.mockReset()
     mockInstallInfo.mockReset()
     mockInstall.mockReset()
@@ -157,21 +159,79 @@ describe('ExternalAgentsSettings', () => {
     mockOnInstallLog.mockResolvedValue(() => {})
   })
 
-  it('groups agents by install state and selects the first available one', async () => {
+  it('lists every CLI with its state and selects the first available one', async () => {
     renderPanel()
 
     await waitFor(() => {
       expect(screen.getAllByText('Claude Code').length).toBeGreaterThan(0)
     })
 
-    expect(screen.getByText('已安装')).toBeInTheDocument()
+    // 左栏第二行：装了的说登录态，没装的说未安装。没装的没有启用开关。
+    expect(screen.getAllByText('已登录').length).toBeGreaterThan(0)
     expect(screen.getByText('未安装')).toBeInTheDocument()
-    // 首个可用的进详情面板：自定义路径这一行只在选中项上渲染。
-    expect(screen.getByText('自定义路径')).toBeInTheDocument()
-    expect(screen.queryByText('环境变量')).not.toBeInTheDocument()
-    expect(screen.queryByText('配置目录')).not.toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Claude Code 启用' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.queryByRole('switch', { name: 'Codex 启用' })).not.toBeInTheDocument()
+    // 首个可用的进详情面板：运行环境这一区只在选中项上渲染。
+    expect(screen.getByText('可执行文件')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('/usr/local/bin/claude')).toHaveValue('')
+    expect(screen.getByText('环境变量')).toBeInTheDocument()
+    expect(await screen.findByText('/home/u/.claude')).toBeInTheDocument()
     expect(screen.queryByText('已检测到')).not.toBeInTheDocument()
     expect(mockDetect).toHaveBeenCalled()
+  })
+
+  it('flags a CLI that still needs a sign-in', async () => {
+    mockDetect.mockResolvedValue([
+      { id: 'claude', name: 'Claude Code', available: true, capabilities, models: [], authStatus: 'auth_required' },
+    ])
+    renderPanel()
+
+    expect(await screen.findByText('未登录')).toBeInTheDocument()
+    expect(screen.getByText('未登录。在终端运行该 CLI 完成登录，或在下方添加一个供应商。')).toBeInTheDocument()
+  })
+
+  it('commits a typed binary path only when the field loses focus', async () => {
+    const { updateChat } = renderPanel()
+    const input = await screen.findByPlaceholderText('/usr/local/bin/claude')
+
+    fireEvent.change(input, { target: { value: '/opt/claude' } })
+    expect(updateChat).not.toHaveBeenCalled()
+    fireEvent.blur(input)
+    expect(updateChat).toHaveBeenCalledWith({ externalCliAgents: { claude: { path: '/opt/claude' } } })
+  })
+
+  it('adds a custom model from the inline form and lists it once', async () => {
+    vi.mocked(externalCliSettingsApi.detectExternalAgentModels).mockResolvedValueOnce({
+      // 后端的探测结果里已经并入了保存过的自定义模型。
+      models: [{ id: 'sonnet', label: 'Sonnet' }, { id: 'mine', label: 'Mine' }],
+      reasoningOptions: [],
+      reasoningByModel: {},
+      source: 'probed',
+    })
+    const { updateChat } = renderPanel({
+      externalCliAgents: { claude: { customModels: [{ id: 'mine', label: 'Mine' }] } },
+    })
+
+    expect(await screen.findByText('sonnet')).toBeInTheDocument()
+    expect(screen.getAllByText('mine')).toHaveLength(1)
+    expect(screen.getByText('探测到 1 个 · 自定义 1 个')).toBeInTheDocument()
+
+    const add = screen.getByRole('button', { name: '添加模型' })
+    expect(add).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: 'sonnet' } })
+    expect(add).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('模型 ID'), { target: { value: ' opus-next ' } })
+    fireEvent.click(add)
+    expect(updateChat).toHaveBeenCalledWith({
+      externalCliAgents: {
+        claude: {
+          customModels: [
+            { id: 'mine', label: 'Mine' },
+            { id: 'opus-next', label: '' },
+          ],
+        },
+      },
+    })
   })
 
   it('removes an adopted provider through the settings draft without deleting native files early', async () => {
@@ -198,7 +258,8 @@ describe('ExternalAgentsSettings', () => {
       expect(screen.getByText('可更新到 1.1.0')).toBeInTheDocument()
     })
     expect(screen.getByRole('button', { name: '更新' })).toBeInTheDocument()
-    expect(screen.getByText([preparedInstall.source, preparedInstall.environment, preparedInstall.targetVersion, preparedInstall.binaryPath].join(' · '))).toBeInTheDocument()
+    expect(screen.getByText('npm install -g @anthropic-ai/claude-code@latest')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '复制命令' })).toBeInTheDocument()
   })
 
   it('rescans all agents after an update command finishes', async () => {
@@ -332,7 +393,7 @@ describe('ExternalAgentsSettings', () => {
     renderPanel()
 
     await waitFor(() => {
-      expect(screen.getByText('0.1.0-rc.6')).toBeInTheDocument()
+      expect(screen.getAllByText('0.1.0-rc.6').length).toBeGreaterThan(0)
     })
     expect(screen.getByText('可更新到 0.1.0-rc.7')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '更新' })).toBeInTheDocument()
@@ -366,7 +427,7 @@ describe('ExternalAgentsSettings', () => {
     renderPanel()
 
     await waitFor(() => {
-      expect(screen.getByText('0.1.0-rc.7')).toBeInTheDocument()
+      expect(screen.getAllByText('0.1.0-rc.7').length).toBeGreaterThan(0)
     })
     expect(screen.getByText('已是最新')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '更新' })).not.toBeInTheDocument()
@@ -419,7 +480,6 @@ describe('ExternalAgentsSettings', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '更新' })).toBeInTheDocument()
     })
-    expect(screen.getAllByText('已安装').length).toBeGreaterThan(0)
     expect(screen.getByText('已写入但无法启动')).toBeInTheDocument()
     expect(screen.queryByText('未安装')).not.toBeInTheDocument()
   })
@@ -461,10 +521,73 @@ describe('ExternalAgentsSettings', () => {
     renderPanel()
 
     await waitFor(() => {
-      expect(screen.getByText('可更新到 1.1.0，请按官方文档手动更新')).toBeInTheDocument()
+      expect(screen.getByText('可更新到 1.1.0')).toBeInTheDocument()
     })
     expect(screen.getByText('无法确认此安装的 npm 来源，请按官方文档维护')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '更新' })).not.toBeInTheDocument()
+    // 不能自动更新时，动作位换成通往文档的链接。
+    expect(screen.getAllByRole('link', { name: '官方文档' })).toHaveLength(2)
+  })
+
+  it('keeps the manual-update reason quiet while the CLI is already current', async () => {
+    mockInstallInfo.mockResolvedValue({
+      agentId: 'claude',
+      localVersion: '1.1.0',
+      latestVersion: '1.1.0',
+      updateAvailable: false,
+      command: null,
+      docsUrl: 'https://docs.claude.com',
+      ...preparedInstall,
+      configDir: null,
+      planId: null,
+      manualReason: '无法验证此 CLI 的 npm 安装归属，请按官方文档更新',
+    })
+
+    renderPanel()
+
+    expect(await screen.findByText('已是最新')).toBeInTheDocument()
+    expect(screen.queryByText('无法验证此 CLI 的 npm 安装归属，请按官方文档更新')).not.toBeInTheDocument()
+    expect(screen.queryByText('配置目录')).not.toBeInTheDocument()
+  })
+
+  it('edits the environment variables injected into the CLI', async () => {
+    const { updateChat } = renderPanel({
+      externalCliAgents: { claude: { env: [{ key: 'HTTPS_PROXY', value: 'http://127.0.0.1:7890' }] } },
+    })
+
+    expect(await screen.findByDisplayValue('HTTPS_PROXY')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '添加变量' }))
+    expect(updateChat).toHaveBeenCalledWith({
+      externalCliAgents: {
+        claude: {
+          env: [
+            { key: 'HTTPS_PROXY', value: 'http://127.0.0.1:7890' },
+            { key: '', value: '' },
+          ],
+        },
+      },
+    })
+  })
+
+  it('masks the value of a variable that looks like a secret', async () => {
+    renderPanel({
+      externalCliAgents: { claude: { env: [{ key: 'ANTHROPIC_API_KEY', value: 'sk-secret' }] } },
+    })
+
+    expect(await screen.findByDisplayValue('sk-secret')).toHaveAttribute('type', 'password')
+  })
+
+  it('keeps the previous list when a rescan fails', async () => {
+    renderPanel()
+    await screen.findByText('可执行文件')
+
+    mockDetect.mockRejectedValueOnce(new Error('boom'))
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    fireEvent.click(screen.getByRole('button', { name: '重新扫描' }))
+
+    await waitFor(() => expect(mockDetect).toHaveBeenCalledWith(true))
+    expect(screen.getAllByText('Claude Code').length).toBeGreaterThan(0)
+    expect(screen.getByText('Codex')).toBeInTheDocument()
   })
 
   it('shows only install and path for a CLI that is not installed', async () => {
@@ -478,17 +601,21 @@ describe('ExternalAgentsSettings', () => {
       expect(screen.queryByText('供应商')).not.toBeInTheDocument()
     })
     expect(screen.queryByText('模型')).not.toBeInTheDocument()
-    expect(screen.getByText('自定义路径')).toBeInTheDocument()
+    expect(screen.getByText('可执行文件')).toBeInTheDocument()
   })
 
-  it('moves a disabled agent into its own group', async () => {
-    renderPanel({ externalCliAgents: { claude: { disabled: true } } })
+  it('toggles a CLI from its list row without moving it', async () => {
+    const { updateChat } = renderPanel({ externalCliAgents: { claude: { disabled: true } } })
 
-    await waitFor(() => {
-      expect(screen.getByText('已停用')).toBeInTheDocument()
-    })
-    // 唯一的已安装项被停用了，左栏就不该再有「已安装」分组。
-    expect(screen.queryByText('已安装')).not.toBeInTheDocument()
+    expect(await screen.findByText('已停用')).toBeInTheDocument()
+    const toggle = screen.getByRole('switch', { name: 'Claude Code 启用' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    // 停用的仍排在没装的前面。
+    const names = [...document.querySelectorAll('.kv-cli-nav-name')].map((node) => node.textContent)
+    expect(names).toEqual(['Claude Code', 'Codex'])
+
+    fireEvent.click(toggle)
+    expect(updateChat).toHaveBeenCalledWith({ externalCliAgents: { claude: { disabled: false } } })
   })
 
   it('activating a provider writes currentProvider', async () => {
@@ -553,10 +680,15 @@ describe('ExternalAgentsSettings', () => {
       },
     })
 
-    const first = (await screen.findByText('Relay One')).closest<HTMLElement>('.kv-row')!
+    // 左栏第二行也写着当前默认供应商的名字，这里要的是供应商列表里的那一行。
+    const first = (await screen.findAllByText('Relay One'))
+      .map((element) => element.closest<HTMLElement>('.kv-row'))
+      .find((row) => row !== null)!
     const second = screen.getByText('Relay Two').closest<HTMLElement>('.kv-row')!
     expect(within(first).getByText('默认')).toBeInTheDocument()
-    expect(within(second).getByText('已并存')).toBeInTheDocument()
+    // 已启用但不是默认的那条：开关本身就是状态，不再另挂徽章。
+    expect(within(second).queryByText('默认')).not.toBeInTheDocument()
+    expect(within(second).getByRole('switch')).toHaveAttribute('aria-checked', 'true')
     expect(within(first).getByRole('switch')).toHaveAttribute('aria-checked', 'true')
 
     fireEvent.click(within(first).getByRole('switch'))
@@ -588,7 +720,7 @@ describe('ExternalAgentsSettings', () => {
     await waitFor(() => {
       expect(screen.getByText('供应商')).toBeInTheDocument()
     })
-    expect(screen.getByText('暂无供应商，点击上方「添加」创建一个。')).toBeInTheDocument()
+    expect(screen.getByText('当前沿用 CLI 自己的配置与登录态。添加供应商后，可让 Kivio 拉起的进程改走第三方中转。')).toBeInTheDocument()
   })
 
   it('lists official DeepSeek as the in-use dsh provider', async () => {
@@ -621,7 +753,7 @@ describe('ExternalAgentsSettings', () => {
     })
     expect(screen.getByText('默认')).toBeInTheDocument()
     expect(screen.queryByText('使用 CLI 自身配置')).not.toBeInTheDocument()
-    expect(screen.queryByText('暂无供应商，点击上方「添加」创建一个。')).not.toBeInTheDocument()
+    expect(screen.queryByText('当前沿用 CLI 自己的配置与登录态。添加供应商后，可让 Kivio 拉起的进程改走第三方中转。')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '编辑供应商' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '删除' })).not.toBeInTheDocument()
   })
@@ -823,11 +955,11 @@ describe('ExternalAgentsSettings', () => {
 
     expect(await screen.findByText('Pi Package')).toBeInTheDocument()
     expect(screen.queryByPlaceholderText('搜索 CLI')).not.toBeInTheDocument()
-    expect(screen.queryByText('自定义路径')).not.toBeInTheDocument()
+    expect(screen.queryByText('可执行文件')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /返回/ }))
     expect(await screen.findByPlaceholderText('搜索 CLI')).toBeInTheDocument()
-    expect(screen.getByText('自定义路径')).toBeInTheDocument()
+    expect(screen.getByText('可执行文件')).toBeInTheDocument()
   })
 
   it('opens Pi Skill management as a full secondary page', async () => {
@@ -860,11 +992,11 @@ describe('ExternalAgentsSettings', () => {
 
     expect(await screen.findByText('注册 /skill:name 命令')).toBeInTheDocument()
     expect(screen.queryByPlaceholderText('搜索 CLI')).not.toBeInTheDocument()
-    expect(screen.queryByText('自定义路径')).not.toBeInTheDocument()
+    expect(screen.queryByText('可执行文件')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /返回/ }))
     expect(await screen.findByPlaceholderText('搜索 CLI')).toBeInTheDocument()
-    expect(screen.getByText('自定义路径')).toBeInTheDocument()
+    expect(screen.getByText('可执行文件')).toBeInTheDocument()
   })
 
   it('saves the official DeepSeek API key on the dsh page', async () => {

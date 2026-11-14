@@ -28,7 +28,7 @@ import { useInsertionReorder } from '../utils/insertionReorder'
 import { applyConversationPins, withPinAt, type ConversationPin } from './conversationPins'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { chatTitlebarMacInsetClass, isMac, usesNativeTitlebar } from './platform'
-import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH, getRememberedRecentHidesProjects, getRememberedSidebarView, rememberRecentHidesProjects, rememberSidebarView } from './persistence'
+import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH, getRememberedRecentHidesProjects, getRememberedRecentHidesSets, getRememberedSidebarView, rememberRecentHidesProjects, rememberRecentHidesSets, rememberSidebarView } from './persistence'
 import { useChatPerfRenderProbe } from './chatPerformanceProbe'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import type { ChatUserProfile } from './types'
@@ -767,6 +767,12 @@ export const Sidebar = memo(function Sidebar({
     setRecentHidesProjects(next)
     rememberRecentHidesProjects(next)
   }
+  const [recentHidesSets, setRecentHidesSets] = useState(getRememberedRecentHidesSets)
+  const toggleRecentHidesSets = () => {
+    const next = !recentHidesSets
+    setRecentHidesSets(next)
+    rememberRecentHidesSets(next)
+  }
 
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(
     () => new Set(),
@@ -1427,11 +1433,10 @@ export const Sidebar = memo(function Sidebar({
   })
   const listedConversations = flatView
     ? flatConversations
-    : recentHidesProjects
-      // 只影响经典视图「最近」的显示；项目对话仍在「项目」里，搜索与清空不受影响。
-      ? recentConversations.filter(conversation =>
-        !projects.some(project => conversationBelongsToProject(conversation, project)))
-      : recentConversations
+    // 只影响经典视图「最近」的显示；分组列表、搜索与清空不受影响。
+    : recentConversations.filter(conversation =>
+      (!recentHidesProjects || !projects.some(project => conversationBelongsToProject(conversation, project)))
+      && (!recentHidesSets || !(conversation.set_id ?? conversation.setId)))
   const openFlatScope = (scope: string) => {
     setFlatScope(scope)
     const project = projects.find(item => scope === `project:${item.id}`)
@@ -1869,7 +1874,6 @@ export const Sidebar = memo(function Sidebar({
                           sets={sets}
                           lang={lang}
                           compact
-                          indent
                           showAssistantName={false}
                           onSelectConversation={(id, conversation) => {
                             onSelectConversation(id, conversation, { project, set: null })
@@ -2022,7 +2026,6 @@ export const Sidebar = memo(function Sidebar({
                               sets={sets}
                               lang={lang}
                               compact
-                              indent
                               showAssistantName={false}
                               onSelectConversation={(id, conversation) => {
                                 onSelectConversation(id, conversation, { project: null, set })
@@ -2069,12 +2072,12 @@ export const Sidebar = memo(function Sidebar({
                 <ChatSectionMenu
                   anchor={sectionMenuAnchor}
                   hasConversations={clearableConversationCount > 0}
-                  onNewConversation={newListedConversation}
-                  onOpenSearch={() => onSearchOpenChange(true)}
                   flatView={flatView}
                   onToggleView={toggleSidebarView}
                   recentHidesProjects={recentHidesProjects}
                   onToggleRecentHidesProjects={toggleRecentHidesProjects}
+                  recentHidesSets={recentHidesSets}
+                  onToggleRecentHidesSets={toggleRecentHidesSets}
                   onClearAll={() => void handleClearAllConversations()}
                   onClose={() => setSectionMenuAnchor(null)}
                   triggerRef={sectionMenuButtonRef}

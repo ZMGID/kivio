@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { RefObject } from 'react'
 import { createPortal } from 'react-dom'
-import { Check, PanelsTopLeft, Search, SquarePen, Trash2 } from 'lucide-react'
+import { Check, PanelsTopLeft, Trash2 } from 'lucide-react'
 import { useT } from '../components/i18n'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import { useCloseAnimation } from './useCloseAnimation'
@@ -9,13 +9,13 @@ import { useCloseAnimation } from './useCloseAnimation'
 interface ChatSectionMenuProps {
   anchor: ConversationMenuAnchor
   hasConversations: boolean
-  onNewConversation: () => void
-  onOpenSearch: () => void
   flatView: boolean
   onToggleView: () => void
   /** 仅经典视图显示：「最近」是否隐藏项目对话。 */
   recentHidesProjects: boolean
   onToggleRecentHidesProjects: () => void
+  recentHidesSets: boolean
+  onToggleRecentHidesSets: () => void
   onClearAll: () => void
   onClose: () => void
   triggerRef?: RefObject<HTMLElement | null>
@@ -24,12 +24,12 @@ interface ChatSectionMenuProps {
 export function ChatSectionMenu({
   anchor,
   hasConversations,
-  onNewConversation,
-  onOpenSearch,
   flatView,
   onToggleView,
   recentHidesProjects,
   onToggleRecentHidesProjects,
+  recentHidesSets,
+  onToggleRecentHidesSets,
   onClearAll,
   onClose: onCloseProp,
   triggerRef,
@@ -71,31 +71,6 @@ export function ChatSectionMenu({
         role="menuitem"
         className="kv-menu-item"
         onClick={() => {
-          onNewConversation()
-          onClose()
-        }}
-      >
-        <SquarePen strokeWidth={1.75} />
-        {t.chatNewChat}
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        className="kv-menu-item"
-        onClick={() => {
-          onOpenSearch()
-          onClose()
-        }}
-      >
-        <Search strokeWidth={1.75} />
-        {t.chatSearchConversations}
-      </button>
-
-      <button
-        type="button"
-        role="menuitem"
-        className="kv-menu-item"
-        onClick={() => {
           onToggleView()
           onClose()
         }}
@@ -119,6 +94,24 @@ export function ChatSectionMenu({
             {recentHidesProjects && <Check size={13} strokeWidth={2} />}
           </span>
           {t.chatSidebarRecentHideProjects}
+        </button>
+      )}
+
+      {!flatView && (
+        <button
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked={recentHidesSets}
+          className="kv-menu-item"
+          onClick={() => {
+            onToggleRecentHidesSets()
+            onClose()
+          }}
+        >
+          <span className="flex size-3.5 shrink-0 items-center justify-center">
+            {recentHidesSets && <Check size={13} strokeWidth={2} />}
+          </span>
+          {t.chatSidebarRecentHideSets}
         </button>
       )}
 
