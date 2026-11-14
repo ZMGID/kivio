@@ -113,6 +113,7 @@ struct MapSessionState {
     compact: Option<PendingCompact>,
     background_calls: HashMap<String, PendingBackground>,
     approval_calls: HashMap<(String, String), (String, Value)>,
+    stream_attempt: Option<String>,
     streamed_text: String,
     streamed_reasoning: String,
     streamed_usage: bool,
@@ -293,6 +294,7 @@ impl PendingSteers {
 struct ChildProgress {
     steps: Vec<String>,
     preview: String,
+    stream_attempt: Option<(String, String)>,
     last_emit: Option<Instant>,
     run_id: Option<String>,
     bound: bool,
@@ -2086,6 +2088,32 @@ fn map_session_event(
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) -> Option<Result<(), String>> {
     match event_type {
+        "kivio/assistant-start" => {
+            state.stream_attempt = data
+                .get("attemptId")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            state.streamed_text.clear();
+            state.streamed_reasoning.clear();
+            sink(UnifiedAgentEvent::StreamAttemptStarted);
+        }
+        "kivio/assistant-end" => {
+            if state.stream_attempt.is_none()
+                || state.stream_attempt.as_deref() != data.get("attemptId").and_then(Value::as_str)
+            {
+                return None;
+            }
+            state.stream_attempt = None;
+            let outcome = &data["outcome"];
+            if outcome["kind"] == "abandoned" || outcome["eventType"] == "assistant/attempt" {
+                sink(UnifiedAgentEvent::StreamAttemptDiscarded {
+                    text_chars: state.streamed_text.chars().count() as u32,
+                    reasoning_chars: state.streamed_reasoning.chars().count() as u32,
+                });
+                state.streamed_text.clear();
+                state.streamed_reasoning.clear();
+            }
+        }
         "step/start" => {
             state.streamed_text.clear();
             state.streamed_reasoning.clear();
@@ -2650,6 +2678,14 @@ fn fold_idle_parent_session(
         for event in mapped {
             match event {
                 UnifiedAgentEvent::TextDelta { delta } => wake.text.push_str(&delta),
+                UnifiedAgentEvent::StreamAttemptDiscarded { text_chars, .. } => {
+                    let keep = wake
+                        .text
+                        .chars()
+                        .count()
+                        .saturating_sub(text_chars as usize);
+                    wake.text = wake.text.chars().take(keep).collect();
+                }
                 UnifiedAgentEvent::Usage { usage } => wake.usage = Some(usage),
                 _ => {}
             }
@@ -2695,6 +2731,27 @@ fn fold_child_session_event(
     }
     let mut force = false;
     match event_type {
+        "kivio/assistant-start" => {
+            progress.stream_attempt = Some((
+                data.get("attemptId")?.as_str()?.to_owned(),
+                progress.preview.clone(),
+            ));
+            return None;
+        }
+        "kivio/assistant-end" => {
+            if progress.stream_attempt.as_ref().map(|(id, _)| id.as_str())
+                != data.get("attemptId").and_then(Value::as_str)
+            {
+                return None;
+            }
+            let (_, preview) = progress.stream_attempt.take()?;
+            let outcome = &data["outcome"];
+            if outcome["kind"] != "abandoned" && outcome["eventType"] != "assistant/attempt" {
+                return None;
+            }
+            progress.preview = preview;
+            force = true;
+        }
         "tool/call" => {
             let name = data.get("name").and_then(Value::as_str).unwrap_or("");
             if name.is_empty() {
@@ -3877,6 +3934,64 @@ mod tests {
     }
 
     #[test]
+    fn live_attempt_retry_discards_unicode_output_and_settles_without_duplicates() {
+        let events = map_events(&[
+            ("kivio/assistant-start", json!({"attemptId":"a"})),
+            (
+                "assistant/chunk",
+                json!({"chunk":{"type":"text-delta","text":"错🌱"}}),
+            ),
+            (
+                "assistant/chunk",
+                json!({"chunk":{"type":"reasoning-delta","text":"想"}}),
+            ),
+            ("assistant/attempt", json!({})),
+            (
+                "kivio/assistant-end",
+                json!({"attemptId":"a","outcome":{"kind":"committed","eventType":"assistant/attempt"}}),
+            ),
+            ("kivio/assistant-start", json!({"attemptId":"b"})),
+            (
+                "assistant/chunk",
+                json!({"chunk":{"type":"text-delta","text":"正确"}}),
+            ),
+            (
+                "kivio/assistant-end",
+                json!({"attemptId":"a","outcome":{"kind":"abandoned"}}),
+            ),
+            (
+                "assistant/message",
+                json!({"message":{"content":[{"type":"text","text":"正确！"}]}}),
+            ),
+            (
+                "kivio/assistant-end",
+                json!({"attemptId":"b","outcome":{"kind":"committed","eventType":"assistant/message"}}),
+            ),
+        ]);
+        let mut text = String::new();
+        let mut discarded = 0;
+        for event in events {
+            match event {
+                UnifiedAgentEvent::TextDelta { delta } => text.push_str(&delta),
+                UnifiedAgentEvent::StreamAttemptDiscarded {
+                    text_chars,
+                    reasoning_chars,
+                } => {
+                    assert_eq!((text_chars, reasoning_chars), (2, 1));
+                    text = text
+                        .chars()
+                        .take(text.chars().count() - text_chars as usize)
+                        .collect();
+                    discarded += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(discarded, 1);
+        assert_eq!(text, "正确！");
+    }
+
+    #[test]
     fn maps_todo_write_snapshot_to_the_conversation_list() {
         let mut emitted = Vec::new();
         let mut state = MapSessionState::default();
@@ -4404,6 +4519,41 @@ mod tests {
             })             if task_id == "child-9"
                 && status == "failed"
                 && summary.as_deref() == Some("boom")
+        ));
+    }
+
+    #[test]
+    fn child_failed_stream_restores_preview_before_retry() {
+        let mut progress = HashMap::from([(
+            "child".to_owned(),
+            ChildProgress {
+                preview: "previous".to_owned(),
+                bound: true,
+                ..Default::default()
+            },
+        )]);
+        fold_child_session_event(
+            "child",
+            "kivio/assistant-start",
+            &json!({"attemptId":"a"}),
+            &mut progress,
+        );
+        fold_child_session_event(
+            "child",
+            "assistant/chunk",
+            &json!({"chunk":{"type":"text-delta","text":"wrong"}}),
+            &mut progress,
+        );
+        let event = fold_child_session_event(
+            "child",
+            "kivio/assistant-end",
+            &json!({"attemptId":"a","outcome":{"kind":"abandoned"}}),
+            &mut progress,
+        );
+        assert_eq!(progress["child"].preview, "previous");
+        assert!(matches!(
+            event,
+            Some(UnifiedAgentEvent::SubagentProgress { .. })
         ));
     }
 

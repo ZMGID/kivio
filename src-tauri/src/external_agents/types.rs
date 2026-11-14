@@ -590,6 +590,11 @@ pub struct ExternalCliSlashCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UnifiedAgentEvent {
+    StreamAttemptStarted,
+    StreamAttemptDiscarded {
+        text_chars: u32,
+        reasoning_chars: u32,
+    },
     TextDelta {
         delta: String,
     },

@@ -5265,6 +5265,8 @@ mod tests {
 
     fn event_variant(event: &UnifiedAgentEvent) -> &'static str {
         match event {
+            UnifiedAgentEvent::StreamAttemptStarted => "StreamAttemptStarted",
+            UnifiedAgentEvent::StreamAttemptDiscarded { .. } => "StreamAttemptDiscarded",
             UnifiedAgentEvent::TextDelta { .. } => "TextDelta",
             UnifiedAgentEvent::TextItemDelta { .. } => "TextItemDelta",
             UnifiedAgentEvent::TextItemCompleted { .. } => "TextItemCompleted",

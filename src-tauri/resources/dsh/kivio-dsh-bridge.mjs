@@ -6,6 +6,19 @@ import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
 import * as McpClient from '@deepseek-ai/dsh-mcp-client'
 
 export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
+  subscribeAssistantStream() {
+    const revisions = new WeakMap()
+    return this.ctx.on('agent/assistant-stream', ({ agent, frame }) => {
+      if (frame.revision <= (revisions.get(agent) ?? -1)) return
+      revisions.set(agent, frame.revision)
+      this.transport.notify('session.event', {
+        sessionId: String(agent.session.id),
+        event: { type: frame.type === 'chunk' ? 'assistant/chunk' : `kivio/assistant-${frame.type}`,
+          time: frame.time, data: frame },
+      })
+    })
+  }
+
   subscribeSubagentLifecycle() {
     const transport = this.transport
     const forward = (method, carrier, info) => {
@@ -457,6 +470,7 @@ export function apply(ctx, config) {
   const server = new KivioHarnessSdkJsonRpcServer(ctx, transport, {
     maxTokensAsSuccess: config.maxTokensAsSuccess,
   })
+  ctx.effect(() => server.subscribeAssistantStream(), 'kivio-jsonrpc.assistant-stream')
   // SDK session/created notifications omit runId and miss resumed child runs.
   ctx.effect(() => server.subscribeSubagentLifecycle(), 'kivio-jsonrpc.subagents')
   const parentPid = process.ppid

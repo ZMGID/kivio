@@ -1249,12 +1249,39 @@ async fn run_external_cli_reply_owned(
 
 #[derive(Default)]
 struct StreamSegmentTracker {
+    attempt_start: Option<usize>,
     active_text_idx: Option<usize>,
     active_reasoning_idx: Option<usize>,
     native_text_items: HashMap<String, usize>,
 }
 
 impl StreamSegmentTracker {
+    fn start_attempt(&mut self, segments: &[ChatMessageSegment]) {
+        self.attempt_start = Some(segments.len());
+        self.reset_text();
+        self.reset_reasoning();
+    }
+    fn discard_attempt(&mut self, segments: &mut Vec<ChatMessageSegment>) -> Vec<String> {
+        let Some(start) = self.attempt_start.take() else {
+            return Vec::new();
+        };
+        let ids = segments
+            .iter()
+            .skip(start)
+            .filter(|segment| {
+                matches!(
+                    segment.kind,
+                    ChatMessageSegmentKind::Text | ChatMessageSegmentKind::Reasoning
+                )
+            })
+            .map(|segment| segment.id.clone())
+            .collect::<Vec<_>>();
+        segments.retain(|segment| !ids.contains(&segment.id));
+        self.reset_text();
+        self.reset_reasoning();
+        self.native_text_items.clear();
+        ids
+    }
     fn append_text_item(
         &mut self,
         id: &str,
@@ -4374,6 +4401,38 @@ fn apply_unified_event(
 ) {
     let now = Local::now().timestamp();
     match event {
+        UnifiedAgentEvent::StreamAttemptStarted => {
+            segment_tracker.start_attempt(segments);
+        }
+        UnifiedAgentEvent::StreamAttemptDiscarded {
+            text_chars,
+            reasoning_chars,
+        } => {
+            let segment_ids = segment_tracker.discard_attempt(segments);
+            *content = content
+                .chars()
+                .take(content.chars().count().saturating_sub(text_chars as usize))
+                .collect();
+            *reasoning = reasoning
+                .chars()
+                .take(
+                    reasoning
+                        .chars()
+                        .count()
+                        .saturating_sub(reasoning_chars as usize),
+                )
+                .collect();
+            crate::chat::protocol::emit_run_event(
+                app,
+                run_id,
+                crate::chat::protocol::ChatRunEvent::StreamAttemptDiscarded {
+                    text_chars,
+                    reasoning_chars,
+                    segment_ids,
+                    tool_ids: Vec::new(),
+                },
+            );
+        }
         UnifiedAgentEvent::TextDelta { delta } => {
             content.push_str(&delta);
             let segment = segment_tracker.append(
@@ -6460,6 +6519,50 @@ mod tests {
             "「每次确认」必须真的弹卡，不能被放行"
         );
         assert_eq!(permission_mode_from_args(&[]), None);
+    }
+
+    #[test]
+    fn stream_attempt_discard_preserves_earlier_output_and_tools() {
+        let mut segments = Vec::new();
+        let mut order = 0;
+        let mut tracker = StreamSegmentTracker::default();
+        tracker.append(
+            ChatMessageSegmentKind::Text,
+            &mut segments,
+            &mut order,
+            0,
+            "之前",
+        );
+        tracker.start_attempt(&segments);
+        tracker.append(
+            ChatMessageSegmentKind::Text,
+            &mut segments,
+            &mut order,
+            0,
+            "错🌱",
+        );
+        tracker.append(
+            ChatMessageSegmentKind::Reasoning,
+            &mut segments,
+            &mut order,
+            0,
+            "想",
+        );
+        let tool = push_tool_segment(&mut segments, &mut order, "tool-1");
+        assert_eq!(tracker.discard_attempt(&mut segments).len(), 2);
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text.as_deref(), Some("之前"));
+        assert_eq!(segments[1].id, tool.id);
+        assert!(tracker.discard_attempt(&mut segments).is_empty());
+        tracker.start_attempt(&segments);
+        tracker.append(
+            ChatMessageSegmentKind::Text,
+            &mut segments,
+            &mut order,
+            1,
+            "正确",
+        );
+        assert_eq!(segments[2].text.as_deref(), Some("正确"));
     }
 
     #[test]

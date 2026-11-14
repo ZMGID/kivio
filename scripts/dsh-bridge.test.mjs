@@ -30,7 +30,7 @@ function fixture(preset = 'standard', previous = { provider: 'deepseek-official'
   let selection = previous
   const agent = {
     id: 'session-1',
-    session: { header: { cwd: 'D:/project', agentPreset: preset }, permissionPreset: 'danger-full-access' },
+    session: { id: 'session-1', header: { cwd: 'D:/project', agentPreset: preset }, permissionPreset: 'danger-full-access' },
     model: { current: () => selection, select: value => { selection = value } },
     steer: message => injected.push(message),
     followup: () => { throw new Error('steering must not enqueue a follow-up') },
@@ -247,4 +247,53 @@ test('subagent lifecycle preserves exact parent, child and run identity', () => 
   assert.equal(sent[0].method, 'kivio/subagent.started')
   dispose()
   assert.equal(listeners.size, 0)
+})
+
+test('assistant chunks reach JSON-RPC before the durable message commits', () => {
+  const { server, agent } = fixture()
+  const listeners = new Map(), sent = []
+  server.ctx.on = (name, listener) => { listeners.set(name, listener); return () => listeners.delete(name) }
+  server.transport = { notify: (method, params) => sent.push(JSON.parse(JSON.stringify({ method, params }))) }
+  const dispose = server.subscribeAssistantStream()
+  const stream = listeners.get('agent/assistant-stream')
+  stream({ agent, frame: { type: 'start', attemptId: 'a', revision: 1, turn: 1, step: 1 } })
+  assert.equal(sent[0].params.event.type, 'kivio/assistant-start')
+
+  const chunk = { type: 'text-delta', text: '你' }
+  stream({ agent, frame: { type: 'chunk', attemptId: 'a', revision: 2, index: 0, time: 10, chunk } })
+  assert.deepEqual(sent.slice(1), [{ method: 'session.event', params: {
+    sessionId: agent.id,
+    event: { type: 'assistant/chunk', time: 10,
+      data: { type: 'chunk', attemptId: 'a', revision: 2, index: 0, time: 10, chunk } },
+  } }])
+  stream({ agent, frame: { type: 'chunk', attemptId: 'a', revision: 3, index: 1, time: 11,
+    chunk: { type: 'reasoning-delta', text: '想' } } })
+  stream({ agent, frame: { type: 'chunk', attemptId: 'a', revision: 4, index: 2, time: 12,
+    chunk: { type: 'text-delta', text: '好' } } })
+  stream({ agent: { session: { id: 'child-1' } }, frame: { type: 'chunk', time: 13,
+    chunk: { type: 'text-delta', text: 'child' } } })
+  stream({ agent, frame: { type: 'end', attemptId: 'a', revision: 5, index: 3,
+    outcome: { kind: 'committed', eventType: 'assistant/message', seq: 7 } } })
+  assert.deepEqual(sent.filter(({ params }) => params.event.type === 'assistant/chunk')
+    .map(({ params }) => [params.sessionId, params.event.data.chunk.text]), [
+    ['session-1', '你'], ['session-1', '想'], ['session-1', '好'], ['child-1', 'child'],
+  ])
+  dispose()
+  assert.equal(listeners.size, 0)
+})
+
+test('stream revisions are isolated per agent and duplicate frames are ignored', () => {
+  const { server, agent } = fixture()
+  let stream
+  const sent = []
+  server.ctx.on = (_name, listener) => { stream = listener; return () => {} }
+  server.transport = { notify: (_method, params) => sent.push(params) }
+  server.subscribeAssistantStream()
+  const frame = { type: 'chunk', attemptId: 'a', revision: 3, chunk: { type: 'text-delta', text: 'one' } }
+  stream({ agent, frame })
+  stream({ agent, frame })
+  stream({ agent, frame: { ...frame, revision: 2 } })
+  stream({ agent: { session: { id: 'child' } }, frame })
+  stream({ agent: { session: agent.session }, frame: { ...frame, revision: 1 } })
+  assert.deepEqual(sent.map(event => event.sessionId), ['session-1', 'child', 'session-1'])
 })
