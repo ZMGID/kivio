@@ -1463,7 +1463,7 @@ export type PluginInstallBrief = {
   userMessage: string
 }
 
-export type UsageRange = 'today' | '1d' | '7d' | '30d' | '365d'
+export type UsageRange = 'today' | '1d' | '7d' | '30d' | '90d' | '365d' | 'all'
 
 export type ConversationCost = {
   costUsd: number | null
@@ -1512,6 +1512,8 @@ export type UsageRecord = {
 }
 
 export type UsageSummary = {
+  sessionCount?: number
+  unpricedRequests?: number
   totalRequests: number
   successfulRequests: number
   failedRequests: number
@@ -1540,6 +1542,8 @@ export type UsageTrendPoint = {
 }
 
 export type UsageGroupStats = {
+  sessionCount?: number
+  unpricedRequests?: number
   id: string
   label: string
   providerId?: string | null
@@ -1936,6 +1940,7 @@ export const api = {
   usageGetConversationCost: (conversationId: string) =>
     invoke<ConversationCost>('usage_get_conversation_cost', { conversationId }),
   usageClear: () => invoke<void>('usage_clear'),
+  usageSyncCli: (forcePrices = false) => invoke<{ sources: { id: string; label: string; files: number; records: number; skipped: number; errors: string[] }[] }>('usage_sync_cli', { forcePrices }),
   getRequestDebugRecords: () =>
     invoke<RequestDebugRecord[]>('get_request_debug_records'),
   clearRequestDebugRecords: () => invoke<void>('clear_request_debug_records'),

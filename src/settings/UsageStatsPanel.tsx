@@ -23,6 +23,7 @@ export type UsageStatsPanelProps = {
 
 const SOURCE_OPTIONS = [
   'all',
+  'cli',
   'chat',
   'translator',
   'screenshot_translation',
@@ -42,6 +43,7 @@ const SEARCH_DEBOUNCE_MS = 250
 function sourceLabel(source: string, lang: string) {
   const zh: Record<string, string> = {
     all: '全部来源',
+    cli: '本地 CLI',
     chat: 'Chat',
     translator: '输入翻译',
     screenshot_translation: '快速翻译',
@@ -55,6 +57,7 @@ function sourceLabel(source: string, lang: string) {
   }
   const en: Record<string, string> = {
     all: 'All sources',
+    cli: 'Local CLI',
     chat: 'Chat',
     translator: 'Input translation',
     screenshot_translation: 'Quick translation',
@@ -166,18 +169,6 @@ const TREND_SERIES: {
 ]
 
 const HIT_RATE_COLOR = { stroke: '#7c3aed', darkStroke: '#a78bfa' }
-
-/// 环形图分类色(dataviz 参考色板,固定顺序不循环;第 7 片起折叠为「其他」灰)。
-const PIE_COLORS: { light: string; dark: string }[] = [
-  { light: '#2a78d6', dark: '#3987e5' },
-  { light: '#1baf7a', dark: '#34d399' },
-  { light: '#eda100', dark: '#fbbf24' },
-  { light: '#4a3aa7', dark: '#9085e9' },
-  { light: '#e34948', dark: '#e66767' },
-  { light: '#0891b2', dark: '#22d3ee' },
-]
-const PIE_OTHER_COLOR = { light: '#a8a29e', dark: '#78716c' }
-const PIE_MAX_SLICES = 6
 
 function trendHitRate(point: UsageTrendPoint): number | null {
   if (point.inputTokens <= 0) return null
@@ -528,205 +519,52 @@ function trendAxisLabels(points: UsageTrendPoint[], lang: string) {
   }))
 }
 
-type PieSlice = {
-  label: string
-  sub?: string
-  value: number
-  requests: number
-  cost: number
-  color: string
-}
-
-/// modelStats → 环形图切片:按 token 降序取前 N,余下折叠为「其他」。
-function buildPieSlices(rows: UsageGroupStats[], isDark: boolean, lang: string): PieSlice[] {
-  const sorted = rows.filter(row => row.totalTokens > 0)
-  if (sorted.length === 0) return []
-  const head = sorted.slice(0, PIE_MAX_SLICES)
-  const rest = sorted.slice(PIE_MAX_SLICES)
-  const slices: PieSlice[] = head.map((row, index) => ({
-    label: row.label,
-    sub: row.providerName ?? undefined,
-    value: row.totalTokens,
-    requests: row.requestCount,
-    cost: row.costUsd,
-    color: isDark ? PIE_COLORS[index].dark : PIE_COLORS[index].light,
-  }))
-  if (rest.length > 0) {
-    slices.push({
-      label: lang === 'zh' ? `其他 (${rest.length})` : `Other (${rest.length})`,
-      value: rest.reduce((sum, row) => sum + row.totalTokens, 0),
-      requests: rest.reduce((sum, row) => sum + row.requestCount, 0),
-      cost: rest.reduce((sum, row) => sum + row.costUsd, 0),
-      color: isDark ? PIE_OTHER_COLOR.dark : PIE_OTHER_COLOR.light,
-    })
-  }
-  return slices
-}
-
-function donutArcPath(cx: number, cy: number, rOuter: number, rInner: number, startAngle: number, endAngle: number): string {
-  // 单片占比 100% 时画整圆环(arc 命令无法画满 360°)。
-  const full = endAngle - startAngle >= Math.PI * 2 - 1e-4
-  if (full) {
-    return [
-      `M ${cx} ${cy - rOuter}`,
-      `A ${rOuter} ${rOuter} 0 1 1 ${cx} ${cy + rOuter}`,
-      `A ${rOuter} ${rOuter} 0 1 1 ${cx} ${cy - rOuter}`,
-      `M ${cx} ${cy - rInner}`,
-      `A ${rInner} ${rInner} 0 1 0 ${cx} ${cy + rInner}`,
-      `A ${rInner} ${rInner} 0 1 0 ${cx} ${cy - rInner}`,
-      'Z',
-    ].join(' ')
-  }
-  const p = (r: number, angle: number) => `${(cx + r * Math.sin(angle)).toFixed(2)} ${(cy - r * Math.cos(angle)).toFixed(2)}`
-  const large = endAngle - startAngle > Math.PI ? 1 : 0
-  return [
-    `M ${p(rOuter, startAngle)}`,
-    `A ${rOuter} ${rOuter} 0 ${large} 1 ${p(rOuter, endAngle)}`,
-    `L ${p(rInner, endAngle)}`,
-    `A ${rInner} ${rInner} 0 ${large} 0 ${p(rInner, startAngle)}`,
-    'Z',
-  ].join(' ')
-}
-
-function ModelDonut({ rows, lang }: { rows: UsageGroupStats[]; lang: string }) {
-  const [hover, setHover] = useState<number | null>(null)
-  const isDark = useDocumentDark()
-  const slices = useMemo(() => buildPieSlices(rows, isDark, lang), [rows, isDark, lang])
-  const total = useMemo(() => slices.reduce((sum, slice) => sum + slice.value, 0), [slices])
-
-  if (slices.length === 0) {
-    return (
-      <div className="flex h-36 items-center justify-center rounded-md border border-dashed border-[var(--border)] text-[12px] text-[var(--text-muted)]">
-        {lang === 'zh' ? '暂无模型数据' : 'No model data'}
-      </div>
-    )
-  }
-
-  const CX = 100
-  const CY = 100
-  const R_OUT = 84
-  const R_IN = 62
-  const gap = slices.length > 1 ? 0.035 : 0
-  let angle = -gap / 2
-  const arcs = slices.map((slice, index) => {
-    const sweep = (slice.value / total) * Math.PI * 2
-    const start = angle + gap / 2
-    const end = angle + sweep - gap / 2
-    angle += sweep
-    return { slice, index, path: donutArcPath(CX, CY, R_OUT, R_IN, start, Math.max(end, start + 0.01)) }
-  })
-  const active = hover != null ? slices[hover] : null
-
-  return (
-    <div className="@container">
-      {/* SettingsGroup 已是卡片外壳,这里不再套边框/背景(避免卡中卡)。
-          容器查询:≥28rem 环形图与表格同行(卡不被撑高),更窄才堆叠。 */}
-      <div className="flex flex-col items-center gap-6 @md:flex-row @md:items-center">
-        <div className="relative shrink-0">
-        <svg viewBox="0 0 200 200" className="h-40 w-40" role="img" aria-label="model token distribution">
-          <circle cx={CX} cy={CY} r={(R_OUT + R_IN) / 2} fill="none" stroke="var(--bg-input-subtle)" strokeWidth={R_OUT - R_IN} />
-          {arcs.map(arc => (
-            <path
-              key={arc.index}
-              d={arc.path}
-              fill={arc.slice.color}
-              opacity={hover == null || hover === arc.index ? 1 : 0.28}
-              onMouseEnter={() => setHover(arc.index)}
-              onMouseLeave={() => setHover(null)}
-              style={{ transition: 'opacity var(--kv-dur-fast) var(--kv-ease-out)' }}
-            />
-          ))}
-        </svg>
-        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-8 text-center">
-          <div className="max-w-[4.5rem] truncate text-[10px] text-[var(--text-muted)]">
-            {active ? active.label : (lang === 'zh' ? '合计' : 'Total')}
-          </div>
-          <div className="text-[18px] font-semibold leading-none tabular-nums text-[var(--text)]">
-            {formatTokens(active ? active.value : total)}
-          </div>
-          <div className="mt-1 text-[10px] text-[var(--text-faint)]">
-            {active
-              ? formatPercent(active.value / total)
-              : `${formatCount(slices.reduce((sum, slice) => sum + slice.requests, 0))} ${lang === 'zh' ? '次' : 'req'}`}
-          </div>
-        </div>
-      </div>
-      <div className="flex min-w-0 flex-1 flex-col justify-center">
-        {slices.map((slice, index) => (
-          <div
-            key={`${slice.label}-${index}`}
-            className={`flex items-center gap-3 py-1.5 ${hover === index ? 'bg-[var(--bg-hover)]' : ''}`}
-            onMouseEnter={() => setHover(index)}
-            onMouseLeave={() => setHover(null)}
-            title={slice.sub ? `${slice.label} · ${slice.sub}` : slice.label}
-          >
-            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[12px] font-medium text-neutral-800">{slice.label}</div>
-              <div className="truncate text-[11px] text-[var(--text-muted)]">
-                {formatTokens(slice.value)} tokens{slice.sub ? ` · ${slice.sub}` : ''}
-              </div>
-            </div>
-            <div className="shrink-0 text-right">
-              <div className="text-[12px] tabular-nums text-neutral-800">{formatPercent(slice.value / total)}</div>
-              <div className="text-[11px] tabular-nums text-[var(--text-muted)]">{formatCost(slice.cost)}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-      </div>
-    </div>
-  )
-}
-
 function GroupTable({ rows, lang, type }: { rows: UsageGroupStats[]; lang: string; type: 'provider' | 'model' }) {
-  if (rows.length === 0) {
-    return (
-      <div className="kv-panel">
-        <div className="kv-panel-body">{lang === 'zh' ? '暂无统计数据' : 'No usage data'}</div>
-      </div>
-    )
-  }
-  return (
-    <div className="custom-scrollbar overflow-x-auto rounded-md border border-[var(--border)] bg-[var(--bg-input)]">
-      <table className="min-w-[720px] w-full text-left text-[12px]">
-        <thead className="border-b border-[var(--border)] text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-          <tr>
-            <th className="px-3 py-2 font-semibold">{type === 'provider' ? 'Provider' : 'Model'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '请求' : 'Req'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '成功率' : 'Success'}</th>
-            <th className="px-3 py-2 font-semibold">Token</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '输入/输出' : 'In/Out'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '成本' : 'Cost'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '平均耗时' : 'Avg'}</th>
-            <th className="px-3 py-2 font-semibold">{lang === 'zh' ? '最近' : 'Last'}</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[var(--theme-surface-border)]">
-          {rows.map(row => {
-            const successRate = row.requestCount > 0 ? row.successCount / row.requestCount : 0
-            return (
-              <tr key={row.id} className="text-neutral-800">
-                <td className="max-w-[220px] px-3 py-2">
-                  <div className="truncate font-medium">{row.label}</div>
-                  {type === 'model' && row.providerName && (
-                    <div className="truncate text-[11px] text-[var(--text-muted)]">{row.providerName}</div>
-                  )}
-                </td>
-                <td className="px-3 py-2 tabular-nums">{formatCount(row.requestCount)}</td>
-                <td className="px-3 py-2 tabular-nums">{Math.round(successRate * 100)}%</td>
-                <td className="px-3 py-2 tabular-nums">{formatTokens(row.totalTokens)}</td>
-                <td className="px-3 py-2 tabular-nums">{formatTokens(row.inputTokens)} / {formatTokens(row.outputTokens)}</td>
-                <td className="px-3 py-2 tabular-nums">{formatCost(row.costUsd)}</td>
-                <td className="px-3 py-2 tabular-nums">{formatDuration(row.averageDurationMs)}</td>
-                <td className="px-3 py-2 tabular-nums">{formatTime(row.lastUsedAt, lang)}</td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
+  const zh = lang === 'zh'
+  const totalCost = rows.reduce((sum, row) => sum + row.costUsd, 0)
+  if (rows.length === 0) return <div className="py-12 text-center text-sm text-[var(--text-muted)]">{zh ? '这个范围内暂无用量，试试更长的时间范围或刷新本地 CLI。' : 'No usage in this range. Try a longer range or refresh local CLI history.'}</div>
+  return <div className="custom-scrollbar overflow-x-auto">
+    <table className="w-full min-w-[580px] text-left text-sm">
+      <thead className="border-b border-[var(--border)] text-xs text-[var(--text-muted)]"><tr>
+        <th className="py-3 pr-3 font-normal">#</th><th className="py-3 pr-3 font-normal">{type === 'model' ? (zh ? '模型' : 'Model') : (zh ? '来源' : 'Provider')}</th>
+        <th className="py-3 px-3 text-right font-normal">{zh ? '费用' : 'Cost'}</th><th className="py-3 px-3 text-right font-normal">{zh ? '费用占比' : 'Cost share'}</th><th className="py-3 px-3 text-right font-normal">Tokens</th><th className="py-3 pl-3 text-right font-normal">{zh ? '会话' : 'Sessions'}</th>
+      </tr></thead>
+      <tbody className="divide-y divide-[var(--border)]">{rows.map((row,index) => <tr key={row.id} className="text-[var(--text)]">
+        <td className="py-3 pr-3 text-xs text-[var(--text-faint)]">{index + 1}</td>
+        <td className="py-3 pr-3"><div className="font-medium">{row.label}</div>{type === 'model' && <div className="mt-1 text-xs text-[var(--text-muted)]">{row.providerName}</div>}</td>
+        <td className="py-3 px-3 text-right tabular-nums">{(row.unpricedRequests ?? 0) === row.requestCount ? '—' : formatCost(row.costUsd)}{(row.unpricedRequests ?? 0) > 0 && <div className="text-xs text-[var(--text-muted)]">{row.unpricedRequests} {zh ? '条未计价' : 'unpriced'}</div>}</td>
+        <td className="py-3 px-3 text-right tabular-nums text-[var(--text-muted)]">{formatPercent(row.costUsd / (totalCost || 1))}</td>
+        <td className="py-3 px-3 text-right tabular-nums">{formatTokens(row.totalTokens)}</td>
+        <td className="py-3 pl-3 text-right tabular-nums text-[var(--text-muted)]">{row.sessionCount ?? 0}</td>
+      </tr>)}</tbody>
+    </table>
+  </div>
+}
+
+function CostChart({ points, lang }: { points: UsageTrendPoint[]; lang: string }) {
+  const gradient = useId()
+  const width = 760, height = 245, left = 58, right = 12, top = 18, bottom = 30
+  const peak = Math.max(0.01, ...points.map(point => point.costUsd))
+  const max = Math.ceil(peak * 100) / 100
+  const x = (i: number) => left + i * (width - left - right) / Math.max(1, points.length - 1)
+  const y = (value: number) => height - bottom - value / max * (height - top - bottom)
+  const path = smoothPath(points.map((point, i) => ({ x: x(i), y: y(point.costUsd) })))
+  const [selected, setSelected] = useState<number | null>(null)
+  const point = selected === null ? undefined : points[selected]
+  return <div>
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full overflow-visible" role="img" aria-label={lang === 'zh' ? '费用趋势图（美元）' : 'Cost trend in USD'}>
+      <defs><linearGradient id={gradient} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--accent)" stopOpacity="0.22" /><stop offset="100%" stopColor="var(--accent)" stopOpacity="0.02" /></linearGradient></defs>
+      {[0, 1, 2, 3].map(tick => <g key={tick}><line x1={left} x2={width-right} y1={y(max*tick/3)} y2={y(max*tick/3)} stroke="var(--border)" /><text x={left-10} y={y(max*tick/3)+4} textAnchor="end" fontSize="11" fill="var(--text-muted)">${(max*tick/3).toFixed(2)}</text></g>)}
+      {points.length > 1 && <path d={`${path} L ${x(points.length-1)} ${height-bottom} L ${x(0)} ${height-bottom} Z`} fill={`url(#${gradient})`} />}
+      <path d={path} fill="none" stroke="var(--accent)" strokeWidth="2" />
+      {points.map((p,i) => <g key={p.date}>
+        {(i === 0 || i === points.length-1 || i === Math.floor(points.length/2)) && <text x={x(i)} y={height-6} textAnchor={i===0?'start':i===points.length-1?'end':'middle'} fontSize="11" fill="var(--text-muted)">{p.label}</text>}
+        <circle cx={x(i)} cy={y(p.costUsd)} r={selected === i ? 4 : 2} fill="var(--accent)" />
+        <rect x={x(i)-Math.max(6,(width-left-right)/Math.max(1,points.length-1)/2)} y={top} width={Math.max(12,(width-left-right)/Math.max(1,points.length-1))} height={height-top-bottom} fill="transparent" tabIndex={0} role="button" aria-label={`${p.date}: ${formatCost(p.costUsd)}`} onFocus={() => setSelected(i)} onBlur={() => setSelected(null)} onMouseEnter={() => setSelected(i)} onMouseLeave={() => setSelected(null)} onClick={() => setSelected(i)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelected(i) } }} />
+      </g>)}
+    </svg>
+    <div className="min-h-6 text-right text-xs tabular-nums text-[var(--text-muted)]" aria-live="polite">{point ? `${point.date} · ${formatCost(point.costUsd)} · ${formatTokens(point.totalTokens)} tokens` : (lang === 'zh' ? '悬停或聚焦图表查看明细' : 'Hover or focus the chart for details')}</div>
+  </div>
 }
 
 function UsageSeg<T extends string>({ options, value, onChange }: {
@@ -740,6 +578,7 @@ function UsageSeg<T extends string>({ options, value, onChange }: {
         <button
           key={option.id}
           type="button"
+          aria-pressed={value === option.id}
           className={`rounded-full px-2.5 py-0.5 text-[12px] leading-5 ${
             value === option.id
               ? 'bg-[var(--bg)] text-[var(--text)] shadow-sm'
@@ -755,188 +594,6 @@ function UsageSeg<T extends string>({ options, value, onChange }: {
   )
 }
 
-/// 0 档是空活动纸面；1–4 用 accent 混 surface，同明暗换色走 CSS，档差仍能分开。
-const ACTIVITY_LEVELS = [
-  'var(--theme-surface-muted)',
-  'color-mix(in srgb, var(--accent) 24%, var(--theme-surface))',
-  'color-mix(in srgb, var(--accent) 48%, var(--theme-surface))',
-  'color-mix(in srgb, var(--accent) 72%, var(--theme-surface))',
-  'color-mix(in srgb, var(--accent) 100%, var(--theme-surface))',
-]
-
-function dayKey(date: Date) {
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, '0')
-  const d = String(date.getDate()).padStart(2, '0')
-  return `${y}-${m}-${d}`
-}
-
-function mondayOf(date: Date) {
-  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  const offset = (next.getDay() + 6) % 7
-  next.setDate(next.getDate() - offset)
-  return next
-}
-
-function activityLevel(value: number, max: number) {
-  if (value <= 0 || max <= 0) return 0
-  const ratio = value / max
-  if (ratio < 0.25) return 1
-  if (ratio < 0.5) return 2
-  if (ratio < 0.75) return 3
-  return 4
-}
-
-function TokenActivity({ points, lang }: { points: UsageTrendPoint[]; lang: string }) {
-  const [mode, setMode] = useState<'day' | 'week' | 'total'>('day')
-  const [hover, setHover] = useState<{ key: string; x: number; y: number } | null>(null)
-  const zh = lang === 'zh'
-  const byDate = useMemo(() => {
-    const map = new Map<string, { tokens: number; requests: number }>()
-    for (const point of points) {
-      const key = point.date.slice(0, 10)
-      const current = map.get(key) ?? { tokens: 0, requests: 0 }
-      current.tokens += point.totalTokens
-      current.requests += point.requests
-      map.set(key, current)
-    }
-    return map
-  }, [points])
-
-  const weeks = useMemo(() => {
-    const today = new Date()
-    const end = mondayOf(today)
-    const start = new Date(end)
-    start.setDate(start.getDate() - 52 * 7)
-    const columns: Date[][] = []
-    for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 7)) {
-      const days: Date[] = []
-      for (let i = 0; i < 7; i += 1) {
-        const day = new Date(cursor)
-        day.setDate(cursor.getDate() + i)
-        days.push(day)
-      }
-      columns.push(days)
-    }
-    return columns
-  }, [])
-
-  const weekTotals = useMemo(() => weeks.map(days => days.reduce((sum, day) => sum + (byDate.get(dayKey(day))?.tokens ?? 0), 0)), [weeks, byDate])
-  const cumulative = useMemo(() => {
-    const map = new Map<string, number>()
-    let running = 0
-    for (const days of weeks) {
-      for (const day of days) {
-        running += byDate.get(dayKey(day))?.tokens ?? 0
-        map.set(dayKey(day), running)
-      }
-    }
-    return map
-  }, [weeks, byDate])
-  const max = useMemo(() => {
-    if (mode === 'week') return Math.max(0, ...weekTotals)
-    if (mode === 'total') return Math.max(0, ...cumulative.values())
-    return Math.max(0, ...[...byDate.values()].map(day => day.tokens))
-  }, [mode, weekTotals, cumulative, byDate])
-
-  const monthSpans = weeks.reduce<{ key: string; label: string; span: number }[]>((spans, days, index) => {
-    const first = days[0]
-    const prev = index > 0 ? weeks[index - 1][0] : null
-    const label = !prev || first.getMonth() !== prev.getMonth()
-      ? (zh ? `${first.getMonth() + 1}月` : first.toLocaleString('en-US', { month: 'short' }))
-      : ''
-    if (label || spans.length === 0) spans.push({ key: dayKey(first), label, span: 1 })
-    else spans[spans.length - 1].span += 1
-    return spans
-  }, [])
-
-  return (
-    <section className="relative rounded-xl border border-[var(--border)] bg-[var(--theme-surface)] px-4 py-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-[13px] font-medium text-[var(--text)]">{zh ? 'Token 活动' : 'Token activity'}</div>
-        <UsageSeg
-          value={mode}
-          onChange={setMode}
-          options={[
-            { id: 'day' as const, label: zh ? '每日' : 'Daily' },
-            { id: 'week' as const, label: zh ? '每周' : 'Weekly' },
-            { id: 'total' as const, label: zh ? '累计' : 'Total' },
-          ]}
-        />
-      </div>
-      <div className="custom-scrollbar overflow-x-auto">
-        <div className="flex min-w-[640px] gap-[3px]">
-          {weeks.map((days, weekIndex) => (
-            <div key={dayKey(days[0])} className="flex flex-1 flex-col gap-[3px]">
-              {days.map(day => {
-                const key = dayKey(day)
-                const dayStats = byDate.get(key)
-                const value = mode === 'total'
-                  ? (cumulative.get(key) ?? 0)
-                  : mode === 'week'
-                    ? weekTotals[weekIndex]
-                    : (dayStats?.tokens ?? 0)
-                const future = day.getTime() > Date.now()
-                const selected = hover?.key === key
-                return (
-                  <div
-                    key={key}
-                    className="aspect-square w-full rounded-[3px]"
-                    style={{
-                      backgroundColor: future ? 'transparent' : ACTIVITY_LEVELS[activityLevel(value, max)],
-                      boxShadow: selected ? '0 0 0 1px var(--theme-surface), 0 0 0 2.5px var(--accent)' : undefined,
-                      transform: selected ? 'scale(1.45)' : undefined,
-                      position: selected ? 'relative' : undefined,
-                      zIndex: selected ? 1 : undefined,
-                      cursor: future ? undefined : 'pointer',
-                    }}
-                    onMouseEnter={future ? undefined : (event) => {
-                      const rect = event.currentTarget.getBoundingClientRect()
-                      const card = event.currentTarget.closest('section')
-                      const cardRect = card?.getBoundingClientRect() ?? rect
-                      setHover({
-                        key,
-                        x: rect.left - cardRect.left + rect.width / 2,
-                        y: rect.top - cardRect.top,
-                      })
-                    }}
-                    onMouseLeave={future ? undefined : () => setHover(current => current?.key === key ? null : current)}
-                  />
-                )
-              })}
-            </div>
-          ))}
-        </div>
-        <div className="mt-1.5 flex min-w-[640px] text-[10px] text-[var(--text-muted)]">
-          {monthSpans.map(span => (
-            <div key={span.key} className="min-w-0 whitespace-nowrap" style={{ flex: span.span }}>
-              {span.label}
-            </div>
-          ))}
-        </div>
-      </div>
-      {hover && (() => {
-        const day = byDate.get(hover.key)
-        const [year, month, date] = hover.key.split('-').map(Number)
-        const label = zh ? `${year}年${month}月${date}日` : hover.key
-        const tokens = day?.tokens ?? 0
-        const requests = day?.requests ?? 0
-        return (
-          <div
-            className="pointer-events-none absolute z-30 whitespace-nowrap rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 py-1.5 text-[12px] shadow-md"
-            style={{ left: hover.x, top: hover.y - 8, transform: 'translate(-50%, -100%)' }}
-          >
-            <div className="font-medium text-[var(--text)]">{label}</div>
-            <div className="mt-0.5 text-[var(--text-muted)]">
-              {formatTokens(tokens)} tokens · {formatCount(requests)} {zh ? '次请求' : 'requests'}
-            </div>
-          </div>
-        )
-      })()}
-    </section>
-  )
-}
-
 function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
   if (logs.length === 0) {
     return (
@@ -948,13 +605,13 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
   return (
     <div className="divide-y divide-[var(--border)] rounded-md border border-[var(--border)] bg-[var(--bg-input)] text-[12px]">
       {logs.map(record => (
-        <div key={record.id} className="px-3 py-2 text-neutral-800">
+        <div key={record.id} className="px-3 py-2 text-[var(--text)]">
           <div className="flex min-w-0 items-center gap-2">
             <span className="shrink-0 tabular-nums text-[var(--text-muted)]">{formatTime(record.createdAt, lang)}</span>
             <span className="shrink-0 font-medium">{sourceLabel(record.source, lang)}</span>
             <span className="min-w-0 truncate font-mono text-[12px]" title={record.model}>{record.model}</span>
             <span className={`kv-tag ml-auto shrink-0 ${record.status === 'success' ? 'ok' : record.status === 'cancelled' ? 'warn' : 'danger'}`}>
-              {statusLabel(record.status, lang)}
+              {record.source === 'cli' ? (lang === 'zh' ? '已记录' : 'Recorded') : statusLabel(record.status, lang)}
             </span>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
@@ -962,14 +619,14 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
               {record.providerName || record.providerId}
               {record.operation ? ` · ${record.operation}` : ''}
             </span>
-            <span className="text-neutral-700">{formatReasoningEffort(record.reasoningEffort)}</span>
+            <span className="text-[var(--text-muted)]">{formatReasoningEffort(record.reasoningEffort)}</span>
             <span className="inline-flex items-center gap-1 text-success" title={lang === 'zh' ? '输入 Token' : 'Input tokens'}>
               <ArrowDown aria-hidden="true" size={12} strokeWidth={1.8} />
-              <span className="text-neutral-800">{formatOptionalTokens(record.inputTokens)}</span>
+              <span className="text-[var(--text)]">{formatOptionalTokens(record.inputTokens)}</span>
             </span>
             <span className="inline-flex items-center gap-1 text-violet-600 dark:text-violet-400" title={lang === 'zh' ? '输出 Token' : 'Output tokens'}>
               <ArrowUp aria-hidden="true" size={12} strokeWidth={1.8} />
-              <span className="text-neutral-800">
+              <span className="text-[var(--text)]">
                 {record.source === 'knowledge_base' ? '--' : formatOptionalTokens(record.outputTokens)}
               </span>
             </span>
@@ -986,7 +643,7 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
             <span className="tabular-nums text-[var(--text-muted)]">
               {lang === 'zh' ? '首字' : 'First'} {formatDuration(record.firstTokenMs)}
               {' · '}
-              {lang === 'zh' ? '总耗时' : 'Total'} {formatDuration(record.durationMs)}
+              {lang === 'zh' ? '总耗时' : 'Total'} {formatDuration(record.source === 'cli' ? null : record.durationMs)}
             </span>
             {record.usageSource === 'missing' && (
               <span className="text-warning">{lang === 'zh' ? 'Usage 缺失' : 'Usage missing'}</span>
@@ -999,8 +656,8 @@ function LogsTable({ logs, lang }: { logs: UsageRecord[]; lang: string }) {
 }
 
 export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
-  const [range, setRange] = useState<UsageRange>('7d')
-  const [viewMode, setViewMode] = useState<UsageView>('logs')
+  const [range, setRange] = useState<UsageRange>('1d')
+  const [viewMode, setViewMode] = useState<UsageView>(view === 'calls' ? 'logs' : 'models')
   const [source, setSource] = useState('all')
   const [status, setStatus] = useState('all')
   const [providerSearch, setProviderSearch] = useState('')
@@ -1009,7 +666,9 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
   const [debouncedModelSearch, setDebouncedModelSearch] = useState('')
   const [logPageIndex, setLogPageIndex] = useState(0)
   const [stats, setStats] = useState<UsageStatsResponse | null>(null)
-  const [activity, setActivity] = useState<UsageTrendPoint[]>([])
+  const [metric, setMetric] = useState<'cost' | 'tokens'>('cost')
+  const [syncing, setSyncing] = useState(false)
+  const [scan, setScan] = useState<Awaited<ReturnType<typeof api.usageSyncCli>> | null>(null)
   const [loading, setLoading] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [error, setError] = useState('')
@@ -1051,22 +710,32 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
     return () => { statsGeneration.current += 1 }
   }, [loadStats])
 
+  const loadStatsRef = useRef(loadStats)
+  useEffect(() => { loadStatsRef.current = loadStats }, [loadStats])
+  const refresh = useCallback(async () => {
+    setSyncing(true)
+    try {
+      setScan(await api.usageSyncCli(true))
+      await loadStatsRef.current()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally { setSyncing(false) }
+  }, [])
   useEffect(() => {
-    if (view !== 'app') return
+    if (view !== 'app') { setSyncing(false); return }
     let cancelled = false
-    void api.usageGetStats({ range: '365d', limit: 1, offset: 0 }).then(data => {
-      if (!cancelled) setActivity(data.trend)
-    }).catch(() => {
-      if (!cancelled) setActivity([])
-    })
-    return () => {
-      cancelled = true
-    }
+    setSyncing(true)
+    void api.usageSyncCli().then(async result => {
+      if (!cancelled) { setScan(result); await loadStatsRef.current() }
+    }).catch(err => {
+      if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+    }).finally(() => { if (!cancelled) setSyncing(false) })
+    return () => { cancelled = true }
   }, [view])
 
   const clearStats = useCallback(async () => {
     const ok = await confirmDialog({
-      message: lang === 'zh' ? '清空所有本地用量统计？' : 'Clear all local usage statistics?',
+      message: lang === 'zh' ? '清空统计账本？CLI 原生历史和 JSONL 备份会保留，已清空的历史不会再次自动导入。' : 'Clear the usage ledger? Native CLI history and JSONL backups are kept. Cleared history will not be imported again.',
       confirmLabel: lang === 'zh' ? '清空' : 'Clear',
       danger: true,
     })
@@ -1075,7 +744,7 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
     setError('')
     try {
       await api.usageClear()
-      setActivity([])
+      setScan(null)
       await loadStats()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -1092,21 +761,12 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
   const zh = lang === 'zh'
   const rangeOptions: { id: UsageRange; label: string }[] = [
     { id: 'today', label: zh ? '当天' : 'Today' },
-    { id: '1d', label: zh ? '近 1 日' : '1d' },
+    { id: '1d', label: zh ? '近 24 小时' : '24h' },
     { id: '7d', label: zh ? '近 7 日' : '7d' },
     { id: '30d', label: zh ? '近 30 日' : '30d' },
+    { id: '90d', label: zh ? '近 90 日' : '90d' },
+    { id: 'all', label: zh ? '全部' : 'All time' },
   ]
-  const metricItems = [
-    { label: zh ? '累计 Token' : 'Total tokens', value: formatTokens(summary?.totalTokens), sub: `${formatCount(summary?.totalRequests)} ${zh ? '次' : 'req'}` },
-    { label: zh ? '成本' : 'Cost', value: formatCost(summary?.totalCostUsd), sub: '' },
-    {
-      label: zh ? '缓存命中率' : 'Cache hit rate',
-      value: summary && summary.inputTokens > 0 ? formatPercent(summary.cachedInputTokens / summary.inputTokens) : '0%',
-      sub: '',
-    },
-    { label: zh ? '平均耗时' : 'Avg duration', value: formatDuration(summary?.averageDurationMs), sub: '' },
-  ]
-
   useEffect(() => {
     if (logPageIndex > 0 && (totalLogs === 0 || logPageIndex >= pageCount)) {
       setLogPageIndex(Math.max(0, pageCount - 1))
@@ -1128,25 +788,24 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
     setStatus(next)
   }, [])
 
-  const details = (
-    <SettingsGroup>
+  const toolbar = <>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <UsageSeg value={range} onChange={updateRange} options={rangeOptions} />
         <UsageSeg
           value={viewMode}
           onChange={setViewMode}
           options={[
-            { id: 'logs' as const, label: zh ? '请求日志' : 'Logs' },
-            { id: 'providers' as const, label: 'Provider' },
-            { id: 'models' as const, label: zh ? '模型' : 'Models' },
+            { id: 'logs', label: zh ? '请求日志' : 'Logs' },
+            { id: 'providers', label: 'Provider' },
+            { id: 'models', label: zh ? '模型' : 'Models' },
           ]}
         />
         <div className="ml-auto flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={() => void loadStats()} disabled={loading} data-tauri-drag-region="false">
-            <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
+          <Button variant="ghost" size="sm" onClick={() => void refresh()} disabled={loading || syncing} data-tauri-drag-region="false">
+            <RefreshCw size={11} className={loading || syncing ? 'animate-spin' : ''} />
             {zh ? '刷新' : 'Refresh'}
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => void clearStats()} disabled={clearing || loading} data-tauri-drag-region="false">
+          <Button variant="ghost" size="sm" onClick={() => void clearStats()} disabled={clearing || loading || syncing} data-tauri-drag-region="false">
             <Trash2 size={11} />
             {zh ? '清空' : 'Clear'}
           </Button>
@@ -1171,9 +830,13 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
         </div>
       </div>
 
+  </>
+
+  const details = (
+    <SettingsGroup>
       {viewMode === 'logs' && <LogsTable logs={stats?.logs ?? []} lang={lang} />}
-      {viewMode === 'providers' && <GroupTable rows={stats?.providerStats ?? []} lang={lang} type="provider" />}
-      {viewMode === 'models' && <GroupTable rows={stats?.modelStats ?? []} lang={lang} type="model" />}
+      {viewMode === 'providers' && <GroupTable rows={[...(stats?.providerStats ?? [])].sort((a, b) => metric === 'cost' ? b.costUsd - a.costUsd : b.totalTokens - a.totalTokens)} lang={lang} type="provider" />}
+      {viewMode === 'models' && <GroupTable rows={[...(stats?.modelStats ?? [])].sort((a, b) => metric === 'cost' ? b.costUsd - a.costUsd : b.totalTokens - a.totalTokens)} lang={lang} type="model" />}
 
       {stats && viewMode === 'logs' && (
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[var(--text-muted)]">
@@ -1212,67 +875,63 @@ export function UsageStatsPanel({ lang, view }: UsageStatsPanelProps) {
     </SettingsGroup>
   )
 
-  if (view === 'calls') {
-    return (
-      <div className="space-y-3">
-        {error && (
-          <ErrorNotice message={error} />
-        )}
-        {details}
-      </div>
-    )
-  }
-
   return (
-    <div className="space-y-3">
-      {error && (
-        <ErrorNotice message={error} />
-      )}
-
-      <div className="grid grid-cols-2 rounded-xl border border-[var(--border)] bg-[var(--theme-surface)] sm:grid-cols-4">
-        {metricItems.map(item => (
-          <div key={item.label} className="min-w-0 border-[var(--border)] px-3 py-3 text-center even:border-l sm:border-l sm:first:border-l-0">
-            <div className="text-[17px] font-semibold tabular-nums text-[var(--text)]">{item.value}</div>
-            <div className="mt-1 text-[11px] text-[var(--text-muted)]">{item.label}</div>
-            <div className="mt-0.5 min-h-[14px] text-[10px] text-[var(--text-faint)]">{item.sub}</div>
+    <div className="space-y-6" aria-busy={loading || syncing}>
+      {error && <ErrorNotice message={error} />}
+      {toolbar}
+      {view === 'app' && <>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-[var(--text)]">{zh ? '用量概览' : 'Usage overview'}</h2>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">{zh ? '内置模型与本机 CLI 的用量，统一查看。' : 'Built-in models and local CLI usage, together.'}</p>
           </div>
-        ))}
-      </div>
-
-      <TokenActivity points={activity.length > 0 ? activity : (stats?.trend ?? [])} lang={lang} />
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-[13px] text-[var(--text-muted)]">{zh ? '时间范围' : 'Range'}</div>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1.5">
-            <Button variant="ghost" size="sm" onClick={() => void loadStats()} disabled={loading} data-tauri-drag-region="false">
-              <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
-              {zh ? '刷新' : 'Refresh'}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => void clearStats()} disabled={clearing || loading} data-tauri-drag-region="false">
-              <Trash2 size={11} />
-              {zh ? '清空' : 'Clear'}
-            </Button>
+          <UsageSeg value={metric} onChange={setMetric} options={[{ id: 'cost', label: zh ? '费用' : 'Cost' }, { id: 'tokens', label: 'Tokens' }]} />
+        </div>
+        <div className={`grid gap-6 lg:grid-cols-[240px_minmax(0,1fr)] ${loading || syncing ? 'opacity-60' : ''}`}>
+          <div>
+            <div className="text-4xl font-semibold tracking-tight tabular-nums text-[var(--text)]">
+              {stats ? (metric === 'cost' ? (summary?.totalRequests && summary.unpricedRequests === summary.totalRequests ? '—' : formatCost(summary?.totalCostUsd)) : formatTokens(summary?.totalTokens)) : '—'}
+            </div>
+            <p className="mt-2 text-xs text-[var(--text-muted)]">
+              {formatCount(summary?.sessionCount)} {zh ? '个会话' : 'sessions'} · {zh ? 'LiteLLM API 估算 / CLI 上报' : 'LiteLLM API estimate / CLI reported'}
+            </p>
+            <p className="mt-1 text-xs text-[var(--text-faint)]">{zh ? '不代表订阅账单或实际扣费。' : 'Not a subscription bill or actual charge.'}</p>
+            <div className="mt-5 space-y-4">
+              {[...(stats?.providerStats ?? [])].sort((a, b) => metric === 'cost' ? b.costUsd - a.costUsd : b.totalTokens - a.totalTokens).map(row => (
+                <button type="button" key={row.id} onClick={() => setProviderSearch(row.providerId ?? row.id)} className="block w-full text-left" title={zh ? `筛选 ${row.label}` : `Filter ${row.label}`}>
+                  <div className="flex items-center justify-between gap-2 text-sm text-[var(--text)]">
+                    <span className="truncate font-medium">{row.label}</span>
+                    <span className="shrink-0 tabular-nums">{metric === 'cost' ? ((row.unpricedRequests ?? 0) === row.requestCount ? '—' : formatCost(row.costUsd)) : formatTokens(row.totalTokens)}</span>
+                  </div>
+                  <div className="mt-1 text-xs text-[var(--text-muted)]">{formatPercent(metric === 'cost' ? row.costUsd / (summary?.totalCostUsd || 1) : row.totalTokens / (summary?.totalTokens || 1))} · {formatTokens(row.totalTokens)} tokens · {row.sessionCount ?? 0} {zh ? '个会话' : 'sessions'}</div>
+                </button>
+              ))}
+            </div>
           </div>
-          <UsageSeg
-            value={range}
-            onChange={updateRange}
-            options={rangeOptions}
-          />
+          <section className="min-w-0" aria-label={zh ? '用量趋势' : 'Usage trend'}>
+            <h3 className="mb-3 text-sm font-medium text-[var(--text)]">{metric === 'cost' ? (zh ? '费用趋势' : 'Cost over time') : (zh ? 'Token 趋势' : 'Tokens over time')}</h3>
+            {metric === 'cost' ? <CostChart points={stats?.trend ?? []} lang={lang} /> : <TrendChart points={stats?.trend ?? []} lang={lang} />}
+          </section>
         </div>
-      </div>
-
-      <section className="rounded-xl border border-[var(--border)] bg-[var(--theme-surface)] px-4 py-3">
-        <div className="mb-2 text-[13px] font-medium text-[var(--text)]">
-          {range === 'today' ? (zh ? '今日 Token 趋势' : 'Today token trend') : (zh ? '每日 Token 趋势图' : 'Daily token trend')}
-        </div>
-        <TrendChart points={stats?.trend ?? []} lang={lang} />
-      </section>
-
-      <section className="rounded-xl border border-[var(--border)] bg-[var(--theme-surface)] px-4 py-3">
-        <div className="mb-2 text-[13px] font-medium text-[var(--text)]">{zh ? '模型用量' : 'Model usage'}</div>
-        <ModelDonut rows={stats?.modelStats ?? []} lang={lang} />
-      </section>
+        <section className="border-y border-[var(--border)] py-5" aria-label={zh ? 'Token 构成' : 'Token breakdown'}>
+          <div className="grid grid-cols-2 gap-5 sm:grid-cols-4">
+            {[
+              { label: zh ? '处理 Token' : 'Processed tokens', value: summary?.totalTokens },
+              { label: zh ? '缓存读取' : 'Cached input', value: summary?.cachedInputTokens },
+              { label: zh ? '非缓存输入' : 'Uncached input', value: Math.max(0, (summary?.inputTokens ?? 0) - (summary?.cachedInputTokens ?? 0) - (summary?.cacheCreationInputTokens ?? 0)) },
+              { label: zh ? '输出' : 'Output', value: summary?.outputTokens },
+             ].map(({label, value}) => <div key={label}><div className="text-xs text-[var(--text-muted)]">{label}</div><div className="mt-1 text-xl font-medium tabular-nums text-[var(--text)]">{formatTokens(typeof value === 'number' ? value : undefined)}</div></div>)}
+          </div>
+          <p className="mt-4 text-xs text-[var(--text-muted)]">{zh ? '缓存写入' : 'Cache writes'} {formatTokens(summary?.cacheCreationInputTokens)} · {zh ? '缓存命中率' : 'Cache hit rate'} {formatPercent((summary?.cachedInputTokens ?? 0) / (summary?.inputTokens || 1))}</p>
+        </section>
+        {(summary?.unpricedRequests ?? 0) > 0 && <p role="status" className="text-xs text-[var(--text-muted)]">{zh ? `${summary?.unpricedRequests} 条记录未计价；Token 已计入，费用合计不包含这些记录。` : `${summary?.unpricedRequests} records are unpriced. Tokens are included; their cost is not.`}</p>}
+        <details className="text-xs text-[var(--text-muted)]">
+          <summary className="cursor-pointer">{syncing ? (zh ? '正在同步本地 CLI…' : 'Syncing local CLI…') : (zh ? '本地 CLI 数据来源' : 'Local CLI data sources')}</summary>
+          <div className="mt-2 space-y-1" role="status">{scan?.sources.map(item => <div key={item.id}>{item.label} · {item.files} {zh ? '个历史文件' : 'history files'}{item.skipped > 0 ? ` · ${item.skipped} ${zh ? '行无法读取' : 'unreadable lines'}` : ''}{item.errors.map(message => <p key={message} className="break-all">{message}</p>)}</div>)}</div>
+          <p className="mt-2">{zh ? '读取本机原生历史，刷新时同步。未找到记录不表示零用量。Cursor、Antigravity 等尚未接入此历史扫描。' : 'Reads local native history on refresh. Missing history does not mean zero usage. Cursor, Antigravity and other sources are not scanned yet.'}</p>
+        </details>
+      </>}
+      <section aria-label={zh ? '用量明细' : 'Usage breakdown'}><h3 className="mb-3 text-sm font-medium text-[var(--text)]">{zh ? '明细' : 'Breakdown'}</h3>{details}</section>
     </div>
   )
 }

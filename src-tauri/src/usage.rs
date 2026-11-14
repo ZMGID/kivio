@@ -1,12 +1,10 @@
 use std::{
     collections::BTreeMap,
-    fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    fs,
     path::{Path, PathBuf},
-    sync::Mutex,
 };
 
-use chrono::{Datelike, Duration as ChronoDuration, Local, TimeZone, Timelike};
+use chrono::{Duration as ChronoDuration, Local, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -58,6 +56,8 @@ pub struct UsageRecord {
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     #[serde(default)]
+    pub service_tier: Option<String>,
+    #[serde(default)]
     pub cost_usd: Option<f64>,
     pub cost_source: String,
     #[serde(default)]
@@ -90,6 +90,8 @@ pub struct UsageStatsQuery {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
+    pub session_count: u64,
+    pub unpriced_requests: u64,
     pub total_requests: u64,
     pub successful_requests: u64,
     pub failed_requests: u64,
@@ -122,6 +124,8 @@ pub struct UsageTrendPoint {
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageGroupStats {
+    pub session_count: u64,
+    pub unpriced_requests: u64,
     pub id: String,
     pub label: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -233,12 +237,14 @@ pub fn record_model_call(state: &AppState, input: UsageRecordInput<'_>) {
             .and_then(|usage| usage.cache_creation_input_tokens_long),
         reasoning_tokens,
         reasoning_effort: input.reasoning_effort,
+        service_tier: None,
         cost_usd: None,
         cost_source: "unavailable".to_string(),
         conversation_id: input.conversation_id,
         message_id: input.message_id,
         error_kind: input.error_kind,
     };
+    pricing::ensure_loaded(&state.usage_dir);
     apply_cost(input.provider, &mut record);
     if let Err(err) = state.usage_ledger.append(&state.usage_dir, &record) {
         eprintln!("Failed to record usage: {err}");
@@ -252,26 +258,6 @@ pub fn reasoning_effort_for_request(request: &GenerateRequest) -> Option<String>
     } else {
         Some("none".to_string())
     }
-}
-
-fn append_record(dir: &Path, record: &UsageRecord) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|e| format!("create usage dir: {e}"))?;
-    let path = dir.join(monthly_file_name(record.created_at));
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| format!("open usage file: {e}"))?;
-    let line = serde_json::to_string(record).map_err(|e| format!("serialize usage: {e}"))?;
-    writeln!(file, "{line}").map_err(|e| format!("write usage file: {e}"))
-}
-
-fn monthly_file_name(timestamp: i64) -> String {
-    let date = Local
-        .timestamp_opt(timestamp, 0)
-        .single()
-        .unwrap_or_else(Local::now);
-    format!("usage-{:04}-{:02}.jsonl", date.year(), date.month())
 }
 
 fn apply_cost(provider: &ModelProvider, record: &mut UsageRecord) {
@@ -298,7 +284,12 @@ pub(crate) fn estimate_model_cost(
     model: &str,
     usage: &ModelUsage,
 ) -> Option<(f64, String)> {
-    let (pricing, source) = model_metadata::pricing_for_model(Some(provider), model)?;
+    let configured = model_metadata::pricing_for_model(Some(provider), model)
+        .filter(|(_, source)| source == "user_override");
+    let Some((pricing, source)) = configured else {
+        return pricing::estimate(model, usage, &provider.api_format, None)
+            .map(|cost| (cost, "litellm".into()));
+    };
     let input_price = pricing.input.unwrap_or(0.0);
     let output_price = pricing.output.unwrap_or(0.0);
     let cached_price = pricing.cached_input.unwrap_or(input_price);
@@ -352,65 +343,6 @@ pub(crate) fn estimate_model_cost(
     Some((cost, source))
 }
 
-fn read_records(dir: &Path, start: Option<i64>) -> (Vec<UsageRecord>, usize) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return (Vec::new(), 0);
-    };
-    let mut records = Vec::new();
-    let mut skipped = 0usize;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-            continue;
-        }
-        if usage_file_is_before_start(&path, start) {
-            continue;
-        }
-        let Ok(content) = fs::read_to_string(&path) else {
-            skipped = skipped.saturating_add(1);
-            continue;
-        };
-        for line in content.lines().filter(|line| !line.trim().is_empty()) {
-            match serde_json::from_str::<UsageRecord>(line) {
-                Ok(record) => records.push(record),
-                Err(_) => skipped = skipped.saturating_add(1),
-            }
-        }
-    }
-    (records, skipped)
-}
-
-fn usage_file_is_before_start(path: &Path, start: Option<i64>) -> bool {
-    let Some(start) = start else {
-        return false;
-    };
-    let Some(next_month_start) = usage_file_next_month_start(path) else {
-        return false;
-    };
-    next_month_start <= start
-}
-
-fn usage_file_next_month_start(path: &Path) -> Option<i64> {
-    let file_name = path.file_name()?.to_str()?;
-    let stem = file_name.strip_prefix("usage-")?.strip_suffix(".jsonl")?;
-    let (year, month) = stem.split_once('-')?;
-    let mut year = year.parse::<i32>().ok()?;
-    let mut month = month.parse::<u32>().ok()?;
-    if !(1..=12).contains(&month) {
-        return None;
-    }
-    if month == 12 {
-        year = year.saturating_add(1);
-        month = 1;
-    } else {
-        month += 1;
-    }
-    Local
-        .with_ymd_and_hms(year, month, 1, 0, 0, 0)
-        .single()
-        .map(|date| date.timestamp())
-}
-
 /// A small read-only snapshot for the desktop companion; shares the statistics
 /// page's local-day filter, token accounting and recorded cost values.
 pub struct TodayUsage {
@@ -421,29 +353,7 @@ pub struct TodayUsage {
 }
 
 pub fn today_usage(dir: &Path) -> Result<TodayUsage, String> {
-    match fs::read_dir(dir) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("Read usage directory: {error}")),
-    }
-    let date = Local::now().date_naive();
-    let (records, skipped_records) = read_records(dir, range_start("today"));
-    let records = filter_records(
-        records,
-        &UsageStatsQuery {
-            range: "today".into(),
-            ..UsageStatsQuery::default()
-        },
-    );
-    Ok(TodayUsage {
-        date,
-        summary: summarize(&records),
-        missing_cost_requests: records
-            .iter()
-            .filter(|record| record.cost_usd.is_none())
-            .count(),
-        skipped_records,
-    })
+    store::today(dir)
 }
 
 #[tauri::command]
@@ -469,223 +379,10 @@ pub struct ConversationCost {
     pub skipped_records: usize,
 }
 
-#[derive(Default)]
-struct CostIndex {
-    conversations: BTreeMap<String, ConversationCost>,
-    skipped: usize,
-}
-impl CostIndex {
-    fn add(&mut self, record: &UsageRecord) {
-        let Some(id) = &record.conversation_id else {
-            return;
-        };
-        let result = self.conversations.entry(id.clone()).or_default();
-        match record
-            .cost_usd
-            .filter(|cost| cost.is_finite() && *cost >= 0.0)
-            .filter(|_| record.usage_source != "missing")
-        {
-            Some(cost) => *result.cost_usd.get_or_insert(0.0) += cost,
-            None => result.unpriced_requests += 1,
-        }
-    }
-    fn recover(dir: &Path) -> Result<Self, String> {
-        let mut index = Self::default();
-        let entries = match fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(index),
-            Err(e) => return Err(e.to_string()),
-        };
-        for entry in entries {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                continue;
-            }
-            // Do not cache a partial aggregate after a transient I/O failure.
-            // Leave initialization retryable; malformed records still count as skipped.
-            let file = fs::File::open(&path)
-                .map_err(|error| format!("open usage file {}: {error}", path.display()))?;
-            // Recover once without retaining the global request history in memory.
-            for line in BufReader::new(file).lines() {
-                match line {
-                    Ok(line) if line.trim().is_empty() => {}
-                    Ok(line) => match serde_json::from_str::<UsageRecord>(&line) {
-                        Ok(record) => index.add(&record),
-                        Err(_) => index.skipped += 1,
-                    },
-                    Err(error) => {
-                        return Err(format!("read usage file {}: {error}", path.display()))
-                    }
-                }
-            }
-        }
-        Ok(index)
-    }
-}
-
-/// Owns append, clear and the process-local aggregate under one lock. The JSONL
-/// ledger stays authoritative; a restart rebuilds only on the first cost query.
-#[derive(Default)]
-pub(crate) struct UsageLedger(Mutex<Option<CostIndex>>, Mutex<Vec<StatsCache>>);
-
-struct StatsCache {
-    key: String,
-    files: Vec<(PathBuf, u64, Option<std::time::SystemTime>)>,
-    start: Option<i64>,
-    response: UsageStatsResponse,
-    records: Vec<UsageRecord>,
-}
-impl UsageLedger {
-    fn stats(&self, dir: &Path, mut query: UsageStatsQuery) -> Result<UsageStatsResponse, String> {
-        let start = range_start(&query.range);
-        let offset = query.offset.take().unwrap_or(0);
-        let limit = query
-            .limit
-            .take()
-            .unwrap_or(DEFAULT_LOG_LIMIT)
-            .min(MAX_LOG_LIMIT);
-        let key = format!(
-            "{}:{}:{}",
-            dir.display(),
-            Local::now().format("%Y-%m-%d-%H"),
-            serde_json::to_string(&query).map_err(|e| e.to_string())?
-        );
-        let mut files = fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if path.extension().and_then(|v| v.to_str()) != Some("jsonl")
-                    || usage_file_is_before_start(&path, start)
-                {
-                    return None;
-                }
-                let metadata = entry.metadata().ok()?;
-                Some((path, metadata.len(), metadata.modified().ok()))
-            })
-            .collect::<Vec<_>>();
-        files.sort_by(|a, b| a.0.cmp(&b.0));
-        // Separate from the append/cost lock: a slow report must not block recording model calls.
-        let mut cached = self.1.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(entry) = cached.iter().find(|entry| {
-            entry.key == key
-                && entry.files == files
-                && start >= entry.start
-                && !entry
-                    .records
-                    .last()
-                    .is_some_and(|record| start.is_some_and(|start| record.created_at < start))
-        }) {
-            let mut response = entry.response.clone();
-            response.logs = entry
-                .records
-                .iter()
-                .skip(offset)
-                .take(limit)
-                .cloned()
-                .collect();
-            return Ok(response);
-        }
-        let (records, skipped_records) = read_records(dir, start);
-        let filtered = filter_records(records, &query);
-        let total_logs = filtered.len();
-        let summary = summarize(&filtered);
-        let trend = build_trend(&filtered, &query.range);
-        let provider_stats = group_provider_stats(&filtered);
-        let model_stats = group_model_stats(&filtered);
-        let logs = filtered.iter().skip(offset).take(limit).cloned().collect();
-        let response = UsageStatsResponse {
-            summary,
-            trend,
-            logs: Vec::new(),
-            provider_stats,
-            model_stats,
-            total_logs,
-            skipped_records,
-        };
-        cached.retain(|entry| entry.key != key);
-        if cached.len() >= 2 {
-            cached.remove(0);
-        }
-        cached.push(StatsCache {
-            key,
-            files,
-            start,
-            response: response.clone(),
-            records: filtered,
-        });
-        Ok(UsageStatsResponse { logs, ..response })
-    }
-
-    fn append(&self, dir: &Path, record: &UsageRecord) -> Result<(), String> {
-        let mut index = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(error) = append_record(dir, record) {
-            // A partial append may have reached disk; rebuild rather than guess.
-            *index = None;
-            return Err(error);
-        }
-        if let Some(index) = index.as_mut() {
-            index.add(record);
-        }
-        Ok(())
-    }
-
-    fn conversation_cost(
-        &self,
-        dir: &Path,
-        conversation_id: &str,
-    ) -> Result<ConversationCost, String> {
-        let mut cached = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if cached.is_none() {
-            *cached = Some(CostIndex::recover(dir)?);
-        }
-        let index = cached.as_ref().unwrap();
-        let mut result = ConversationCost {
-            skipped_records: index.skipped,
-            ..Default::default()
-        };
-        // shortcut: prefix match can over-count when one non-UUID root id prefixes another; store root in usage records if that ever matters.
-        let prefix = format!("subagent-{conversation_id}-");
-        let children = index
-            .conversations
-            .range::<str, _>((
-                std::ops::Bound::Included(prefix.as_str()),
-                std::ops::Bound::Unbounded,
-            ))
-            .take_while(|(id, _)| id.starts_with(&prefix))
-            .map(|(_, cost)| cost);
-        for cost in index
-            .conversations
-            .get(conversation_id)
-            .into_iter()
-            .chain(children)
-        {
-            if let Some(value) = cost.cost_usd {
-                *result.cost_usd.get_or_insert(0.0) += value;
-            }
-            result.unpriced_requests += cost.unpriced_requests;
-        }
-        Ok(result)
-    }
-
-    fn clear(&self, dir: &Path) -> Result<(), String> {
-        let mut cached = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        // Invalidate first: a failed partial clear must never expose old totals.
-        *cached = None;
-        if !dir.exists() {
-            return Ok(());
-        }
-        for entry in fs::read_dir(dir).map_err(|e| format!("read usage dir: {e}"))? {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
-                fs::remove_file(&path).map_err(|e| format!("remove usage file: {e}"))?;
-            }
-        }
-        *cached = Some(CostIndex::default());
-        Ok(())
-    }
-}
+mod native;
+mod pricing;
+mod store;
+pub(crate) use store::UsageLedger;
 
 #[tauri::command]
 pub async fn usage_get_stats(
@@ -703,6 +400,32 @@ pub async fn usage_get_stats(
 }
 
 #[tauri::command]
+pub async fn usage_sync_cli(
+    app: AppHandle,
+    force_prices: Option<bool>,
+) -> Result<native::ScanReport, String> {
+    let dir = app.state::<AppState>().usage_dir.clone();
+    let price_error = pricing::refresh(&dir, force_prices.unwrap_or(false))
+        .await
+        .err();
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut report = native::scan(&dir)?;
+        pricing::reprice(&mut store::open(&dir)?)?;
+        if let Some(error) = price_error {
+            report.sources.push(native::SourceReport {
+                id: "prices".into(),
+                label: "LiteLLM".into(),
+                errors: vec![error],
+                ..Default::default()
+            });
+        }
+        Ok(report)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn usage_clear(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
@@ -712,6 +435,7 @@ pub async fn usage_clear(app: AppHandle) -> Result<(), String> {
     .map_err(|error| format!("usage_clear failed: {error}"))?
 }
 
+#[cfg(test)]
 fn filter_records(mut records: Vec<UsageRecord>, query: &UsageStatsQuery) -> Vec<UsageRecord> {
     let start = range_start(&query.range);
     let source = normalized_filter(query.source.as_deref());
@@ -789,8 +513,17 @@ fn normalized_search(value: Option<&str>) -> Option<String> {
         .map(|value| value.to_ascii_lowercase())
 }
 
+#[cfg(test)]
 fn summarize(records: &[UsageRecord]) -> UsageSummary {
-    let mut summary = UsageSummary::default();
+    let mut summary = UsageSummary {
+        session_count: records
+            .iter()
+            .filter_map(|r| r.conversation_id.as_ref())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len() as u64,
+        unpriced_requests: records.iter().filter(|r| r.cost_usd.is_none()).count() as u64,
+        ..Default::default()
+    };
     let mut duration_total = 0u64;
     let mut duration_count = 0u64;
     for record in records {
@@ -840,6 +573,7 @@ fn summarize(records: &[UsageRecord]) -> UsageSummary {
 /// cache_read + cache_creation（三者不相交）；OpenAI 系 input(=prompt_tokens)
 /// 已含 cached，直接用。聚合（summary/trend/分组）一律走这里，缓存命中率
 /// cached/input 才对两种口径同时成立。
+#[cfg(test)]
 fn record_effective_input_tokens(record: &UsageRecord) -> u64 {
     let input = record.input_tokens.unwrap_or(0);
     if record.api_format == "anthropic_messages" {
@@ -851,6 +585,7 @@ fn record_effective_input_tokens(record: &UsageRecord) -> u64 {
     }
 }
 
+#[cfg(test)]
 fn record_total_tokens(record: &UsageRecord) -> u64 {
     // Anthropic：不能用落盘的 total_tokens（= input+output，漏 cache，见
     // model_usage_from_anthropic_value）——显式加回缓存部分。
@@ -866,11 +601,25 @@ fn record_total_tokens(record: &UsageRecord) -> u64 {
     })
 }
 
-fn build_trend(records: &[UsageRecord], range: &str) -> Vec<UsageTrendPoint> {
+fn empty_trend(range: &str) -> Vec<UsageTrendPoint> {
     let mut points: BTreeMap<String, UsageTrendPoint> = BTreeMap::new();
     // 「当天」按小时分桶（今日 00:00 至当前小时），其余档位按天分桶。
-    let hourly = range == "today";
-    if hourly {
+    let hourly = matches!(range, "today" | "1d");
+    if range == "1d" {
+        let now = Local::now();
+        for offset in (0..=24).rev() {
+            let dt = now - ChronoDuration::hours(offset);
+            let key = dt.format("%Y-%m-%d %H").to_string();
+            points.insert(
+                key.clone(),
+                UsageTrendPoint {
+                    date: key,
+                    label: dt.format("%H:00").to_string(),
+                    ..Default::default()
+                },
+            );
+        }
+    } else if hourly {
         let now = Local::now();
         let today = now.date_naive();
         for hour in 0..=now.hour() {
@@ -899,6 +648,16 @@ fn build_trend(records: &[UsageRecord], range: &str) -> Vec<UsageTrendPoint> {
             );
         }
     }
+    points.into_values().collect()
+}
+
+#[cfg(test)]
+fn build_trend(records: &[UsageRecord], range: &str) -> Vec<UsageTrendPoint> {
+    let hourly = matches!(range, "today" | "1d");
+    let mut points: BTreeMap<_, _> = empty_trend(range)
+        .into_iter()
+        .map(|p| (p.date.clone(), p))
+        .collect();
     for record in records {
         let dt = Local
             .timestamp_opt(record.created_at, 0)
@@ -956,6 +715,7 @@ fn range_days(range: &str) -> Option<usize> {
     }
 }
 
+#[cfg(test)]
 fn group_provider_stats(records: &[UsageRecord]) -> Vec<UsageGroupStats> {
     let mut groups: BTreeMap<String, UsageGroupStatsAccumulator> = BTreeMap::new();
     for record in records {
@@ -967,6 +727,7 @@ fn group_provider_stats(records: &[UsageRecord]) -> Vec<UsageGroupStats> {
     finalize_groups(groups)
 }
 
+#[cfg(test)]
 fn group_model_stats(records: &[UsageRecord]) -> Vec<UsageGroupStats> {
     let mut groups: BTreeMap<String, UsageGroupStatsAccumulator> = BTreeMap::new();
     for record in records {
@@ -979,6 +740,7 @@ fn group_model_stats(records: &[UsageRecord]) -> Vec<UsageGroupStats> {
     finalize_groups(groups)
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct UsageGroupStatsAccumulator {
     stats: UsageGroupStats,
@@ -986,6 +748,7 @@ struct UsageGroupStatsAccumulator {
     duration_count: u64,
 }
 
+#[cfg(test)]
 impl UsageGroupStatsAccumulator {
     fn new_provider(record: &UsageRecord) -> Self {
         Self {
@@ -1021,6 +784,7 @@ impl UsageGroupStatsAccumulator {
     }
 
     fn add(&mut self, record: &UsageRecord) {
+        self.stats.unpriced_requests += u64::from(record.cost_usd.is_none());
         self.stats.request_count = self.stats.request_count.saturating_add(1);
         if record.status == "success" {
             self.stats.success_count = self.stats.success_count.saturating_add(1);
@@ -1057,6 +821,7 @@ impl UsageGroupStatsAccumulator {
     }
 }
 
+#[cfg(test)]
 fn finalize_groups(groups: BTreeMap<String, UsageGroupStatsAccumulator>) -> Vec<UsageGroupStats> {
     let mut stats = groups
         .into_values()
@@ -1281,7 +1046,7 @@ mod tests {
     #[test]
     fn filter_missing_usage_status() {
         let mut record = UsageRecord {
-            id: "usage_test".to_string(),
+            id: format!("usage_{}", Uuid::new_v4()),
             created_at: Local::now().timestamp(),
             completed_at: Local::now().timestamp(),
             duration_ms: 1,
@@ -1303,6 +1068,7 @@ mod tests {
             cache_creation_input_tokens_long: None,
             reasoning_tokens: None,
             reasoning_effort: None,
+            service_tier: None,
             cost_usd: None,
             cost_source: "unavailable".to_string(),
             conversation_id: None,
@@ -1320,7 +1086,7 @@ mod tests {
 
     fn base_record(api_format: &str) -> UsageRecord {
         UsageRecord {
-            id: "usage_test".to_string(),
+            id: format!("usage_{}", Uuid::new_v4()),
             created_at: Local::now().timestamp(),
             completed_at: Local::now().timestamp(),
             duration_ms: 1,
@@ -1342,6 +1108,7 @@ mod tests {
             cache_creation_input_tokens_long: None,
             reasoning_tokens: None,
             reasoning_effort: None,
+            service_tier: None,
             cost_usd: None,
             cost_source: "unavailable".to_string(),
             conversation_id: None,
@@ -1351,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn stats_pagination_and_cache_follow_append_and_clear() {
+    fn stats_pagination_follows_append_and_clear() {
         let dir = tempfile::tempdir().unwrap();
         let ledger = UsageLedger::default();
         let query = |offset| UsageStatsQuery {
@@ -1382,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_cost_cache_tracks_appends_and_clear() {
+    fn conversation_cost_tracks_appends_and_clear() {
         let dir = tempfile::tempdir().unwrap();
         let ledger = UsageLedger::default();
         let usage_dir = dir.path().join("usage");
@@ -1401,13 +1168,6 @@ mod tests {
         let cost = ledger.conversation_cost(&usage_dir, "parent").unwrap();
         assert_eq!(cost.cost_usd, Some(0.875));
         assert_eq!(cost.unpriced_requests, 1);
-        // Warm queries must use the aggregate, not reread the global ledger.
-        let ledger_path = usage_dir.join(monthly_file_name(Local::now().timestamp()));
-        let hidden = ledger_path.with_extension("held");
-        fs::rename(&ledger_path, &hidden).unwrap();
-        let cached = ledger.conversation_cost(&usage_dir, "parent").unwrap();
-        assert_eq!(cached.cost_usd, Some(0.875));
-        fs::rename(hidden, ledger_path).unwrap();
         let mut extra = base_record("openai_chat");
         extra.conversation_id = Some("subagent-parent-child-2".into());
         extra.cost_usd = Some(0.125);
@@ -1458,7 +1218,7 @@ mod tests {
         let other_child = format!("subagent-{other}-Worker");
         let similar_child = format!("subagent-{similar}-Worker");
         let missing_separator = format!("subagent-{root}");
-        // Initialize first so append updates the live index as well as the ledger.
+        // Query before writing, then verify both existing and restarted readers.
         ledger.conversation_cost(dir.path(), root).unwrap();
         for (id, cost) in [
             (root, Some(1.0)),
@@ -1504,7 +1264,9 @@ mod tests {
             for _ in 0..8 {
                 scope.spawn(|| {
                     for _ in 0..16 {
-                        ledger.append(dir.path(), &record).unwrap();
+                        let mut next = record.clone();
+                        next.id = Uuid::new_v4().to_string();
+                        ledger.append(dir.path(), &next).unwrap();
                     }
                 });
             }
@@ -1523,32 +1285,10 @@ mod tests {
                 .cost_usd,
             Some(16.0)
         );
-        // A failed append is not added to the aggregate and can recover afterward.
-        let path = dir.path().join(monthly_file_name(record.created_at));
-        let held = path.with_extension("held");
-        fs::rename(&path, &held).unwrap();
-        fs::create_dir(&path).unwrap();
-        assert!(ledger.append(dir.path(), &record).is_err());
-        let cold = UsageLedger::default();
-        assert!(
-            cold.conversation_cost(dir.path(), "parent").is_err(),
-            "an unreadable ledger must not become a permanent partial aggregate"
-        );
-        fs::remove_dir(&path).unwrap();
-        fs::rename(&held, &path).unwrap();
-        assert_eq!(
-            cold.conversation_cost(dir.path(), "parent")
-                .unwrap()
-                .cost_usd,
-            Some(16.0)
-        );
-        assert_eq!(
-            ledger
-                .conversation_cost(dir.path(), "parent")
-                .unwrap()
-                .cost_usd,
-            Some(16.0)
-        );
+        let invalid = dir.path().join("not-a-directory");
+        fs::write(&invalid, "").unwrap();
+        assert!(ledger.append(&invalid, &record).is_err());
+        assert!(ledger.conversation_cost(&invalid, "parent").is_err());
     }
 
     #[test]
@@ -1593,20 +1333,23 @@ mod tests {
     #[test]
     fn today_companion_snapshot_matches_local_day_and_preserves_missing_costs() {
         let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("unreadable.jsonl"), "{broken record}\n").unwrap();
         let mut old = base_record("openai_chat");
         old.created_at = range_start("today").unwrap() - 1;
         old.cost_usd = Some(900.0);
-        append_record(dir.path(), &old).unwrap();
+        UsageLedger::default().append(dir.path(), &old).unwrap();
         let mut known = base_record("anthropic_messages");
         known.cost_usd = Some(0.125);
-        append_record(dir.path(), &known).unwrap();
-        append_record(dir.path(), &base_record("openai_chat")).unwrap();
+        UsageLedger::default().append(dir.path(), &known).unwrap();
+        UsageLedger::default()
+            .append(dir.path(), &base_record("openai_chat"))
+            .unwrap();
         let snapshot = today_usage(dir.path()).unwrap();
         assert_eq!(snapshot.summary.total_requests, 2);
         assert_eq!(snapshot.summary.total_tokens, 3_050);
         assert_eq!(snapshot.summary.total_cost_usd, 0.125);
         assert_eq!(snapshot.missing_cost_requests, 1);
-        assert_eq!(snapshot.skipped_records, 0);
+        assert_eq!(snapshot.skipped_records, 1);
         fs::write(dir.path().join("unreadable.jsonl"), "{broken record}\n").unwrap();
         assert_eq!(today_usage(dir.path()).unwrap().skipped_records, 1);
         let not_directory = dir.path().join("file");
@@ -1650,32 +1393,187 @@ mod tests {
     }
 
     #[test]
-    fn skips_usage_file_before_range_start() {
-        let start = Local
-            .with_ymd_and_hms(2026, 6, 8, 0, 0, 0)
-            .single()
-            .expect("valid date")
-            .timestamp();
+    fn sqlite_reports_match_existing_accounting_and_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = UsageLedger::default();
+        let mut records = Vec::new();
+        for i in 0..24 {
+            let mut record = base_record(if i % 2 == 0 {
+                "anthropic_messages"
+            } else {
+                "openai_chat"
+            });
+            record.created_at -= i * 3700;
+            record.provider_id = format!("provider-{}", i % 3);
+            record.provider_name = format!("Name {}", i % 3);
+            record.model = format!("model_{}%", i % 4);
+            record.source = if i % 3 == 0 { "knowledge_base" } else { "chat" }.into();
+            record.status = if i % 5 == 0 { "error" } else { "success" }.into();
+            record.usage_source = if i % 7 == 0 {
+                "missing"
+            } else {
+                "provider_reported"
+            }
+            .into();
+            record.cost_usd = (i % 7 != 0).then_some(i as f64 / 8.0);
+            record.duration_ms = i as u64 + 1;
+            record.total_tokens = None;
+            ledger.append(dir.path(), &record).unwrap();
+            records.push(record);
+        }
+        for query in [
+            UsageStatsQuery {
+                range: "all".into(),
+                ..Default::default()
+            },
+            UsageStatsQuery {
+                range: "today".into(),
+                ..Default::default()
+            },
+            UsageStatsQuery {
+                source: Some("chat".into()),
+                ..Default::default()
+            },
+            UsageStatsQuery {
+                status: Some("missing_usage".into()),
+                ..Default::default()
+            },
+            UsageStatsQuery {
+                status: Some("error".into()),
+                ..Default::default()
+            },
+            UsageStatsQuery {
+                provider_search: Some("NAME 2".into()),
+                model_search: Some("_2%".into()),
+                ..Default::default()
+            },
+            UsageStatsQuery {
+                model_search: Some("absent".into()),
+                ..Default::default()
+            },
+        ] {
+            let filtered = filter_records(records.clone(), &query);
+            let actual = ledger.stats(dir.path(), query.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(&actual.summary).unwrap(),
+                serde_json::to_value(summarize(&filtered)).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&actual.trend).unwrap(),
+                serde_json::to_value(build_trend(&filtered, &query.range)).unwrap()
+            );
+            let canonical = |mut groups: Vec<UsageGroupStats>| {
+                groups.sort_by(|a, b| a.id.cmp(&b.id));
+                serde_json::to_value(groups).unwrap()
+            };
+            assert_eq!(
+                canonical(actual.provider_stats),
+                canonical(group_provider_stats(&filtered))
+            );
+            assert_eq!(
+                canonical(actual.model_stats),
+                canonical(group_model_stats(&filtered))
+            );
+            assert_eq!(actual.total_logs, filtered.len());
+        }
+    }
 
-        assert!(usage_file_is_before_start(
-            Path::new("usage-2026-05.jsonl"),
-            Some(start)
-        ));
-        assert!(!usage_file_is_before_start(
-            Path::new("usage-2026-06.jsonl"),
-            Some(start)
-        ));
-        assert!(!usage_file_is_before_start(
-            Path::new("usage-2026-07.jsonl"),
-            Some(start)
-        ));
-        assert!(!usage_file_is_before_start(
-            Path::new("other.jsonl"),
-            Some(start)
-        ));
-        assert!(!usage_file_is_before_start(
-            Path::new("usage-2026-05.jsonl"),
-            None
-        ));
+    #[test]
+    fn migration_is_atomic_idempotent_and_clear_does_not_resurrect_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let record = base_record("anthropic_messages");
+        let json = serde_json::to_string(&record).unwrap();
+        let legacy = dir.path().join("usage-2026-01.jsonl");
+        fs::write(&legacy, format!("{json}\n{json}\ninvalid\n")).unwrap();
+        let unreadable = dir.path().join("unreadable.jsonl");
+        fs::create_dir(&unreadable).unwrap();
+        let ledger = UsageLedger::default();
+        let query = UsageStatsQuery {
+            range: "all".into(),
+            ..Default::default()
+        };
+        assert!(ledger.stats(dir.path(), query.clone()).is_err());
+        fs::remove_dir(&unreadable).unwrap();
+        let report = ledger.stats(dir.path(), query.clone()).unwrap();
+        assert_eq!(report.total_logs, 1);
+        assert_eq!(report.skipped_records, 1);
+        assert_eq!(report.summary.total_tokens, 1950);
+        assert_eq!(
+            serde_json::to_value(&report.logs[0]).unwrap(),
+            serde_json::to_value(&record).unwrap()
+        );
+        ledger.append(dir.path(), &record).unwrap();
+        assert_eq!(
+            ledger.stats(dir.path(), query.clone()).unwrap().total_logs,
+            1
+        );
+        assert!(legacy.exists());
+        ledger.clear(dir.path()).unwrap();
+        let restarted = UsageLedger::default().stats(dir.path(), query).unwrap();
+        assert_eq!(restarted.total_logs, 0);
+        assert_eq!(restarted.skipped_records, 0);
+    }
+
+    #[test]
+    fn failed_database_write_and_clear_preserve_committed_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = UsageLedger::default();
+        ledger
+            .append(dir.path(), &base_record("openai_chat"))
+            .unwrap();
+        let db = rusqlite::Connection::open(dir.path().join("usage.sqlite3")).unwrap();
+        db.execute_batch("CREATE TRIGGER reject_insert BEFORE INSERT ON records BEGIN SELECT RAISE(ABORT,'test failure'); END; CREATE TRIGGER reject_clear BEFORE DELETE ON records BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        assert!(ledger
+            .append(dir.path(), &base_record("openai_chat"))
+            .is_err());
+        assert!(ledger.clear(dir.path()).is_err());
+        assert_eq!(
+            ledger
+                .stats(dir.path(), UsageStatsQuery::default())
+                .unwrap()
+                .total_logs,
+            1
+        );
+        db.execute_batch("DROP TRIGGER reject_insert; DROP TRIGGER reject_clear;")
+            .unwrap();
+        ledger.clear(dir.path()).unwrap();
+        assert_eq!(
+            ledger
+                .stats(dir.path(), UsageStatsQuery::default())
+                .unwrap()
+                .total_logs,
+            0
+        );
+    }
+    #[test]
+    fn pagination_is_stable_for_equal_timestamps_and_handles_empty_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = UsageLedger::default();
+        let mut record = base_record("openai_chat");
+        for id in ["b", "c", "a"] {
+            record.id = id.into();
+            ledger.append(dir.path(), &record).unwrap();
+        }
+        for (offset, expected) in [
+            (0, Some("c")),
+            (1, Some("b")),
+            (2, Some("a")),
+            (3, None),
+            (usize::MAX, None),
+        ] {
+            let report = ledger
+                .stats(
+                    dir.path(),
+                    UsageStatsQuery {
+                        range: "all".into(),
+                        limit: Some(1),
+                        offset: Some(offset),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(report.total_logs, 3);
+            assert_eq!(report.logs.first().map(|r| r.id.as_str()), expected);
+        }
     }
 }

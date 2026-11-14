@@ -50,6 +50,7 @@ schemars = "1.2.2"
 ts-rs = { version = "12.0.1", features = ["serde-json-impl"] }
 # gzip：api.rs 请求体压缩开关 + rapidocr 模型解包（跨平台）
 flate2 = "1"
+zstd = "0.13"
 tar = { version = "0.4", default-features = false }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-store = "2"

@@ -629,6 +629,7 @@ pub fn run() {
             usage::usage_get_stats,
             usage::usage_get_conversation_cost,
             usage::usage_clear,
+            usage::usage_sync_cli,
             chat::commands::interaction::get_request_debug_records,
             chat::commands::interaction::clear_request_debug_records,
             chat::protocol::chat_sync_state,
