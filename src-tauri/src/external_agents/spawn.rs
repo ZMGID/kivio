@@ -658,6 +658,31 @@ pub async fn resolve_binary(def: &RuntimeAgentDef) -> Option<PathBuf> {
             }
         }
     }
+    // Desktop ships a CLI even when the user has not registered its command on PATH.
+    #[cfg(any(windows, target_os = "macos"))]
+    if def.id == "dsh" {
+        #[cfg(windows)]
+        let roots = [
+            std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("Programs")),
+            std::env::var_os("ProgramFiles").map(PathBuf::from),
+            std::env::var_os("ProgramFiles(x86)").map(PathBuf::from),
+        ];
+        #[cfg(windows)]
+        let relative = "DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd";
+        #[cfg(target_os = "macos")]
+        let roots = [
+            Some(PathBuf::from("/Applications")),
+            directories::UserDirs::new().map(|d| d.home_dir().join("Applications")),
+        ];
+        #[cfg(target_os = "macos")]
+        let relative = "DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh";
+        for root in roots.into_iter().flatten() {
+            let path = root.join(relative);
+            if path.is_file() && probe_executable_cached(&path, def.version_args).await {
+                return Some(path);
+            }
+        }
+    }
     // The desktop process may still have the PATH from before the official agy install.
     if def.id == "antigravity" {
         let path = if cfg!(windows) {

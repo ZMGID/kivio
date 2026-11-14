@@ -613,8 +613,8 @@ async fn install_packages(bin: &Path, core_version: &str, home: &Path) -> Result
     use tokio::io::AsyncReadExt;
 
     crate::external_agents::installer::expose_node_on_path();
-    crate::external_agents::installer::ensure_pnpm_for_dsh().await?;
 
+    // Let dsh choose its package manager: Desktop carries its own pnpm.
     // Installation never needs model credentials. Build a clean command so pnpm and dependency
     // lifecycle scripts cannot inherit the active Kivio provider API key.
     let mut command = tokio::process::Command::new(bin);

@@ -483,15 +483,6 @@ pub(crate) fn expose_node_on_path() {
     prepend_path_dirs(&known_node_dirs());
 }
 
-pub(crate) async fn ensure_pnpm_for_dsh() -> Result<(), String> {
-    expose_node_on_path();
-    if pnpm_is_ready().await {
-        Ok(())
-    } else {
-        Err("DeepSeek Harness 需要 pnpm，请先按 https://pnpm.io/installation 安装后重试".into())
-    }
-}
-
 /// `npm install -g` 仍会读「当前项目」的 `.npmrc`。`tauri dev` 的 cwd 是仓库根，
 /// 仓库 `.npmrc` 写了 `legacy-peer-deps=true`，peer 整包不装。给全局安装一个
 /// 自带 package.json 的空项目，npm 就不会再往上走到仓库。

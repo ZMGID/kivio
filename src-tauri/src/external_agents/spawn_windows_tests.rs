@@ -4,6 +4,88 @@ use windows::Win32::System::Threading::{
     OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 
+#[tokio::test]
+async fn resolves_dsh_desktop_without_path_registration() {
+    const TEST: &str =
+        "external_agents::spawn::windows_tests::resolves_dsh_desktop_without_path_registration";
+    if let Some(root) = std::env::var_os("KIVIO_DSH_DESKTOP_FIXTURE") {
+        let root = PathBuf::from(root);
+        // Windows can restore ProgramFiles at process startup; set fixture roots inside the child.
+        std::env::set_var("ProgramFiles", root.join("system"));
+        std::env::set_var("ProgramFiles(x86)", root.join("system-x86"));
+        let desktop = root.join("Programs/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd");
+        let def = &super::super::providers::dsh::DSH_AGENT_DEF;
+        assert!(which_all("dsh").await.is_empty());
+        let resolved = resolve_binary(def).await.expect("desktop CLI");
+        assert_eq!(resolved, desktop);
+        assert_eq!(cached_cli_version(&resolved).as_deref(), Some("0.2.2"));
+
+        let system = root.join("system/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd");
+        std::fs::create_dir_all(system.parent().unwrap()).unwrap();
+        std::fs::copy(&desktop, &system).unwrap();
+        std::fs::remove_file(&desktop).unwrap();
+        assert_eq!(resolve_binary(def).await, Some(system));
+
+        let path_bin = root.join("path/dsh.cmd");
+        std::fs::create_dir_all(path_bin.parent().unwrap()).unwrap();
+        std::fs::write(&path_bin, "@echo off\r\necho 0.2.3\r\n").unwrap();
+        let original = std::env::var_os("PATH").unwrap();
+        let paths = std::iter::once(path_bin.parent().unwrap().to_path_buf())
+            .chain(std::env::split_paths(&original));
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+        assert_eq!(resolve_binary(def).await, Some(path_bin.clone()));
+
+        let mut settings = crate::settings::Settings::default();
+        let config = settings
+            .chat
+            .external_cli_agents
+            .entry("dsh".into())
+            .or_default();
+        config.path = root.join("missing/dsh.exe").to_string_lossy().into_owned();
+        super::super::overrides::sync_from_settings(&settings);
+        assert_eq!(
+            resolve_binary(def).await,
+            None,
+            "explicit paths must not fall back"
+        );
+        settings
+            .chat
+            .external_cli_agents
+            .get_mut("dsh")
+            .unwrap()
+            .path = path_bin.to_string_lossy().into_owned();
+        super::super::overrides::sync_from_settings(&settings);
+        assert_eq!(resolve_binary(def).await, Some(path_bin));
+        return;
+    }
+
+    // Isolate PATH and installation roots from other tests and real installations.
+    let directory = tempfile::tempdir().unwrap();
+    let bin = directory
+        .path()
+        .join("Programs/DeepSeek Harness/resources/runtime/cli/bin/dsh.cmd");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::write(&bin, "@echo off\r\necho 0.2.2\r\n").unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", TEST, "--nocapture"])
+        .env("KIVIO_DSH_DESKTOP_FIXTURE", directory.path())
+        .env("LOCALAPPDATA", directory.path())
+        .env(
+            "PATH",
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32"),
+        )
+        .no_console_window()
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 pub(crate) const FIXTURE: &str = "external_agents::spawn::windows_tests::process_fixture";
 
 pub(crate) struct FixtureProcess(HANDLE);
