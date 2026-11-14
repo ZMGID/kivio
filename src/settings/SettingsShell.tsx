@@ -217,6 +217,19 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
     apply: (id, updates) => editorController.edit((current) => applyProviderDraftIntent(current, { type: 'update', id, updates })),
   })
   const settingsBackup = useSettingsBackupController({
+    chatBackup: {
+      pickExport: () => save({ defaultPath: 'kivio-chat-backup.zip', filters: [{ name: 'Kivio chat backup', extensions: ['zip'] }] }),
+      pickImport: async () => {
+        const path = await open({ multiple: false, filters: [{ name: 'Kivio chat backup', extensions: ['zip'] }] })
+        return typeof path === 'string' ? path : null
+      },
+      export: api.exportChatBackup,
+      restore: api.restoreChatBackup,
+      confirmRestore: () => confirm(lang === 'zh'
+        ? '将整体替换项目记录、助手、集和全部聊天数据，并重启应用。供应商配置和项目代码不受影响。恢复前的数据会保留在本机。继续？'
+        : 'Replace project records, assistants, sets and all chat data, then restart? Provider settings and project files are unchanged. Previous chat data is retained locally.',
+      { title: lang === 'zh' ? '恢复聊天全量备份' : 'Restore full chat backup', kind: 'warning' }),
+    },
     webdav: {
       load: api.webdavLoad,
       save: api.webdavSave,
@@ -235,12 +248,12 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
         { title: lang === 'zh' ? '删除备份' : 'Delete backup', kind: 'warning' }),
     },
     pickImport: async () => {
-      const selected = await open({ multiple: false, filters: [{ name: 'Kivio backup', extensions: ['json'] }] })
+      const selected = await open({ multiple: false, filters: [{ name: 'Kivio backup', extensions: ['zip', 'json'] }] })
       return typeof selected === 'string' ? selected : null
     },
     pickExport: () => save({
-      defaultPath: 'kivio-configuration.json',
-      filters: [{ name: 'Kivio configuration', extensions: ['json'] }],
+      defaultPath: 'kivio-configuration.zip',
+      filters: [{ name: 'Kivio configuration', extensions: ['zip'] }],
     }),
     import: (path, trusted) => editorController.import(path, trusted),
     export: async (path) => {

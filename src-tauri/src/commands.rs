@@ -384,7 +384,7 @@ fn redact_shared_backup(value: &mut serde_json::Value) {
     }
 }
 
-/// 导出全部设置（含供应商/模型配置与 API Key）到指定路径的 JSON 备份文件。
+/// 普通备份直接打包配置文件；分享导出保留脱敏 JSON 格式。
 #[tauri::command]
 pub(crate) fn export_settings(
     app: AppHandle,
@@ -392,25 +392,21 @@ pub(crate) fn export_settings(
     path: String,
     share: Option<bool>,
 ) -> Result<(), String> {
-    let settings = sanitize_settings(state.settings_read().clone());
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if !share.unwrap_or(false) {
+        return crate::backup::export_configuration(&root, std::path::Path::new(&path));
+    }
+    let settings = sanitize_settings(state.settings_read().clone());
     let sets = crate::chat::storage::set_backup::export_catalog_in(&root)?;
-    let oauth = if share.unwrap_or(false) {
-        serde_json::json!({})
-    } else {
-        crate::provider_oauth::export_credentials(&settings)?
-    };
     let mut backup = serde_json::json!({
         "app": "kivio",
         "type": "settings-backup",
         "version": SETTINGS_BACKUP_VERSION,
         "settings": serde_json::to_value(&settings).map_err(|e| e.to_string())?,
         "sets": sets,
-        "providerOAuth": oauth,
+        "providerOAuth": {},
     });
-    if share.unwrap_or(false) {
-        redact_shared_backup(&mut backup);
-    }
+    redact_shared_backup(&mut backup);
     let json = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
     crate::chat::storage::atomic_write(std::path::Path::new(&path), &json, "backup")?;
     Ok(())
@@ -425,9 +421,7 @@ pub(crate) async fn import_settings(
     expected_version: SettingsVersion,
     trusted: Option<bool>,
 ) -> Result<SettingsSnapshot, SettingsError> {
-    let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取失败: {e}"))?;
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|_| "文件不是有效的 JSON".to_string())?;
+    let value = crate::backup::read_configuration(std::path::Path::new(&path))?;
     if value.get("type").and_then(|v| v.as_str()) != Some("settings-backup") {
         return Err("这不是 Kivio 设置备份文件".into());
     }

@@ -18,6 +18,13 @@ type WebDavAction = { type: 'load' | 'list' } | { type: 'save' | 'test'; input: 
   | { type: 'upload' } | { type: 'restore'; backup: WebDavBackup; trusted: boolean }
   | { type: 'delete'; name: string }
 export interface SettingsBackupPort {
+  chatBackup?: {
+    pickExport(): Promise<string | null>
+    pickImport(): Promise<string | null>
+    export(path: string): Promise<void>
+    restore(path: string): Promise<void>
+    confirmRestore(): Promise<boolean>
+  }
   webdav?: WebDavBackupPort
   pickImport(): Promise<string | null>
   pickExport(): Promise<string | null>
@@ -120,7 +127,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     }
   }, [])
 
-  const run = useCallback(async (action: 'import' | 'restore' | 'export'): Promise<void> => {
+  const run = useCallback(async (action: 'import' | 'restore' | 'export' | 'exportChat' | 'restoreChat'): Promise<void> => {
     if (inFlight.current) return
     inFlight.current = true
     setBusy(true)
@@ -128,6 +135,20 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
     setStatus(null)
     const zh = langRef.current === 'zh'
     try {
+      if (action === 'exportChat' || action === 'restoreChat') {
+        const chat = portRef.current.chatBackup
+        if (!chat) return
+        const path = action === 'exportChat' ? await chat.pickExport() : await chat.pickImport()
+        if (!path) return
+        if (action === 'restoreChat') {
+          if (!await chat.confirmRestore()) return
+          await chat.restore(path)
+        } else await chat.export(path)
+        if (live.current) setStatus({ kind: 'ok', msg: action === 'exportChat'
+          ? (zh ? '聊天全量备份已导出。' : 'Full chat backup exported.')
+          : (zh ? '聊天备份已准备完成，正在重启…' : 'Chat backup ready. Restarting…') })
+        return
+      }
       const importing = action === 'import' || action === 'restore'
       const path = importing ? await portRef.current.pickImport() : await portRef.current.pickExport()
       if (!path) return
@@ -157,5 +178,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
   const importBackup = useCallback(() => run('import'), [run])
   const restoreBackup = useCallback(() => run('restore'), [run])
   const exportBackup = useCallback(() => run('export'), [run])
-  return { busy, status, statusSource, webdavConfig, webdavFiles, webdavPhase, runWebDav, importBackup, restoreBackup, exportBackup }
+  const exportChatBackup = useCallback(() => run('exportChat'), [run])
+  const restoreChatBackup = useCallback(() => run('restoreChat'), [run])
+  return { busy, status, statusSource, webdavConfig, webdavFiles, webdavPhase, runWebDav, importBackup, restoreBackup, exportBackup, exportChatBackup, restoreChatBackup }
 }

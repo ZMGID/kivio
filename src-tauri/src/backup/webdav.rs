@@ -337,7 +337,7 @@ async fn bounded_bytes(mut response: Response, limit: usize) -> Result<Vec<u8>, 
 }
 fn validate_backup_name(name: &str) -> Result<(), String> {
     if name.starts_with("kivio-configuration-")
-        && name.ends_with(".json")
+        && (name.ends_with(".zip") || name.ends_with(".json"))
         && name
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"-._".contains(&c))
@@ -526,7 +526,7 @@ pub(crate) async fn webdav_upload(
     let dav = Dav::new(&load(&config_path(&app)?)?)?;
     let temporary = tempfile::tempdir().map_err(err)?;
     let name = format!(
-        "kivio-configuration-{}-{}.json",
+        "kivio-configuration-{}-{}.zip",
         chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
         uuid::Uuid::new_v4(),
     );
@@ -775,6 +775,7 @@ mod tests {
         .unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, "kivio-configuration-good.json");
+        assert!(validate_backup_name("kivio-configuration-good.zip").is_ok());
         assert!(validate_backup_name("../../kivio-configuration-good.json").is_err());
         assert!(validate_backup_name("kivio-full-old.kivio").is_err());
         assert!(parse_listing(

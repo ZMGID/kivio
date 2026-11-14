@@ -10,6 +10,31 @@ function deferred<T>() {
 }
 
 describe('useSettingsBackupController', () => {
+  it('confirms full chat replacement and permits retry after a failed restore', async () => {
+    let accepted = false
+    let attempts = 0
+    const port: SettingsBackupPort = {
+      pickImport: async () => null, pickExport: async () => null,
+      import: async () => {}, export: async () => {},
+      chatBackup: {
+        pickImport: async () => 'chat.zip', pickExport: async () => 'chat.zip',
+        confirmRestore: async () => accepted,
+        export: async () => {},
+        restore: async () => { if (++attempts === 1) throw new Error('invalid chat backup') },
+      },
+    }
+    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
+    await act(async () => { await result.current.restoreChatBackup() })
+    expect(attempts).toBe(0)
+    accepted = true
+    await act(async () => { await result.current.restoreChatBackup() })
+    expect(result.current.status).toEqual({ kind: 'err', msg: 'Operation failed: invalid chat backup' })
+    expect(result.current.busy).toBe(false)
+    await act(async () => { await result.current.restoreChatBackup() })
+    expect(result.current.status?.msg).toContain('Restarting')
+    await act(async () => { await result.current.exportChatBackup() })
+    expect(result.current.status?.msg).toBe('Full chat backup exported.')
+  })
   it('coalesces repeated imports and never reports success before the import commits', async () => {
     const pending = deferred<void>()
     const imported = vi.fn(() => pending.promise)

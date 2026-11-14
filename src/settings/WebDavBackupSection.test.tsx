@@ -13,7 +13,7 @@ beforeAll(() => {
 // Protects user-entered credentials and destination selection across a failed save.
 // The transport stub rejects persistence; the real controller and form own the behavior.
 describe('WebDAV configuration form', () => {
-  it('offers only configuration export and no restart or backup type selection', async () => {
+  it('offers separate configuration and full chat backups', async () => {
     const port: SettingsBackupPort = {
       pickImport: async () => null, pickExport: async () => null, import: async () => {}, export: async () => {},
     }
@@ -23,7 +23,8 @@ describe('WebDAV configuration form', () => {
     }
     render(<Fixture />)
     expect(screen.getByRole('button', { name: 'Export configuration' })).toBeEnabled()
-    expect(screen.queryByText(/Full backup|Full restore|Restart/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Export all chats' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Restore all chats' })).toBeEnabled()
     expect(screen.queryByRole('button', { name: 'Export everything' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Remote backup type')).not.toBeInTheDocument()
   })

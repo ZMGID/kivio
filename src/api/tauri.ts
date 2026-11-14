@@ -1942,6 +1942,8 @@ export const api = {
   webdavRelease: (id: string) => invoke<void>('webdav_release', { id }),
   webdavDelete: (name: string) => invoke<void>('webdav_delete', { name }),
   exportSettings: (path: string, share?: boolean) => invoke<void>('export_settings', { path, share }),
+  exportChatBackup: (path: string) => invoke<void>('export_chat_backup', { path }),
+  restoreChatBackup: (path: string) => invoke<void>('restore_chat_backup', { path }),
   importSettings: async (path: string, expectedVersion: SettingsVersion, trusted?: boolean) =>
     normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion, trusted })),
   usageGetStats: (query?: UsageStatsQuery) =>

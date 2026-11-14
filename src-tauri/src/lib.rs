@@ -576,6 +576,8 @@ pub fn run() {
             backup::webdav::webdav_release,
             backup::webdav::webdav_delete,
             commands::export_settings,
+            backup::export_chat_backup,
+            backup::restore_chat_backup,
             commands::import_settings,
             commands::open_settings_window,
             commands::close_translator_window,

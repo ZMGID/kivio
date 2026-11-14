@@ -865,6 +865,19 @@ impl ConversationRepository {
         Ok(target)
     }
 
+    pub async fn export_chat_backup(&self, app: &AppHandle, path: PathBuf) -> RepositoryResult<()> {
+        let barrier = self.barrier.clone().write_owned().await;
+        if app.state::<crate::state::AppState>().chat_runtime().has_running_chats() {
+            return Err("请等待聊天完成或停止生成后再备份 / Stop active chats before backing up".to_string().into());
+        }
+        let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        Self::spawn_storage(move || {
+            let _barrier = barrier;
+            let _catalog = super::storage::catalog_mutation_lock();
+            crate::backup::chat_archive::export(&root, &path)
+        }, "export chat backup").await
+    }
+
     pub async fn export_set_backup(
         &self,
         app: &AppHandle,

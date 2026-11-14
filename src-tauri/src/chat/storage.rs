@@ -85,7 +85,7 @@ use projects::reorder_by_ids;
 use sets::{normalize_set_name, validate_set_id};
 // Set backup commits touch the same catalogs as these individual mutations.
 // Lock order: repository barrier (when needed), then catalog mutation lock.
-fn catalog_mutation_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn catalog_mutation_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
     LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
