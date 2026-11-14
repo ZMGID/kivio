@@ -105,7 +105,27 @@ describe('manual WebDAV backup lifecycle', () => {
       },
     }
   }
-  const backup = { name: 'kivio-configuration-test.json', size: 10, modified: '' }
+  const backup = { kind: 'configuration' as const, name: 'kivio-configuration-test.json', size: 10, modified: '' }
+
+  it('routes cloud chats through chat confirmation and restore, with cleanup on failure', async () => {
+    const port = remotePort()
+    const confirmRestore = vi.fn(async () => false)
+    const restore = vi.fn(async () => { throw new Error('Invalid chat archive') })
+    port.chatBackup = { pickImport: async () => null, pickExport: async () => null, export: async () => {}, confirmRestore, restore }
+    const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
+    const action = { type: 'restore' as const, backup: { ...backup, kind: 'chat' as const, name: 'kivio-chat-test.zip' }, trusted: true }
+    await act(async () => { await result.current.runWebDav(action) })
+    expect(port.webdav!.download).not.toHaveBeenCalled()
+    confirmRestore.mockResolvedValue(true)
+    await act(async () => { await result.current.runWebDav(action) })
+    expect(restore).toHaveBeenCalledWith('/private/backup.json', 'download')
+    expect(port.import).not.toHaveBeenCalled()
+    expect(port.webdav!.release).toHaveBeenCalledWith('download')
+    expect(result.current.status?.msg).toContain('Invalid chat archive')
+    port.chatBackup.restore = vi.fn(async () => {})
+    await act(async () => { await result.current.runWebDav(action) })
+    expect(result.current.status?.msg).toContain('Restarting')
+  })
 
   it('requires confirmation before downloading and cleans temporary data after rejected configuration validation', async () => {
     const port = remotePort()
@@ -142,10 +162,10 @@ describe('manual WebDAV backup lifecycle', () => {
     port.webdav!.upload = vi.fn(() => pending.promise)
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
     let upload!: Promise<boolean>
-    act(() => { upload = result.current.runWebDav({ type: 'upload' }) })
+    act(() => { upload = result.current.runWebDav({ type: 'upload', kind: 'configuration' }) })
     await act(async () => {
       await result.current.exportBackup()
-      await result.current.runWebDav({ type: 'upload' })
+      await result.current.runWebDav({ type: 'upload', kind: 'configuration' })
     })
     expect(port.export).not.toHaveBeenCalled()
     expect(port.webdav!.upload).toHaveBeenCalledOnce()
@@ -160,7 +180,7 @@ describe('manual WebDAV backup lifecycle', () => {
     const port = remotePort()
     port.webdav!.list = async () => { throw new Error('Offline') }
     const { result } = renderHook(() => useSettingsBackupController(port, 'en'))
-    await act(async () => { await result.current.runWebDav({ type: 'upload' }) })
+    await act(async () => { await result.current.runWebDav({ type: 'upload', kind: 'configuration' }) })
     expect(result.current.status?.msg).toContain('Operation completed, but the list could not refresh')
     expect(result.current.webdavFiles).toBeNull()
     expect(port.webdav!.upload).toHaveBeenCalledOnce()

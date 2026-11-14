@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { WebDavConfig, WebDavConfigInput, WebDavBackup, WebDavDownload } from '../generated/webdav'
+import type { WebDavConfig, WebDavConfigInput, WebDavBackup, WebDavDownload, WebDavBackupKind } from '../generated/webdav'
 import type { Lang } from '../components/i18n'
 
 export interface WebDavBackupPort {
@@ -7,7 +7,7 @@ export interface WebDavBackupPort {
   save(input: WebDavConfigInput): Promise<WebDavConfig>
   test(input: WebDavConfigInput): Promise<void>
   list(): Promise<WebDavBackup[]>
-  upload(): Promise<void>
+  upload(kind: WebDavBackupKind): Promise<void>
   download(name: string): Promise<WebDavDownload>
   release(id: string): Promise<void>
   delete(name: string): Promise<void>
@@ -15,14 +15,14 @@ export interface WebDavBackupPort {
   confirmDelete(name: string): Promise<boolean>
 }
 type WebDavAction = { type: 'load' | 'list' } | { type: 'save' | 'test'; input: WebDavConfigInput }
-  | { type: 'upload' } | { type: 'restore'; backup: WebDavBackup; trusted: boolean }
+  | { type: 'upload'; kind: WebDavBackupKind } | { type: 'restore'; backup: WebDavBackup; trusted: boolean }
   | { type: 'delete'; name: string }
 export interface SettingsBackupPort {
   chatBackup?: {
     pickExport(): Promise<string | null>
     pickImport(): Promise<string | null>
     export(path: string): Promise<void>
-    restore(path: string): Promise<void>
+    restore(path: string, downloadId?: string): Promise<void>
     confirmRestore(): Promise<boolean>
   }
   webdav?: WebDavBackupPort
@@ -78,12 +78,15 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         phase(zh ? '正在测试读取、写入和删除权限…' : 'Testing read, write and delete access…')
         await remote.test(action.input)
       } else if (action.type === 'restore') {
-        if (!await remote.confirmRestore()) return false
+        const chat = action.backup.kind === 'chat' ? portRef.current.chatBackup : undefined
+        if (action.backup.kind === 'chat' && !chat) throw new Error('Chat restore unavailable')
+        if (!await (chat ? chat.confirmRestore() : remote.confirmRestore())) return false
         phase(zh ? '正在下载备份…' : 'Downloading backup…')
         const download = await remote.download(action.backup.name)
         try {
           phase(zh ? '正在校验并恢复备份…' : 'Validating and restoring backup…')
-          await portRef.current.import(download.path, action.trusted)
+          if (chat) await chat.restore(download.path, download.id)
+          else await portRef.current.import(download.path, action.trusted)
         } finally {
           try { await remote.release(download.id) }
           catch (error) {
@@ -93,7 +96,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
       } else {
         if (action.type === 'upload') {
           phase(zh ? '正在生成并上传备份，请稍候…' : 'Creating and uploading backup…')
-          await remote.upload()
+          await remote.upload(action.kind)
         } else if (action.type === 'delete') {
           if (!await remote.confirmDelete(action.name)) return false
           await remote.delete(action.name)
@@ -111,7 +114,7 @@ export function useSettingsBackupController(port: SettingsBackupPort, lang: Lang
         }
       }
       if (live.current) setStatus({ kind: 'ok', msg: (action.type === 'restore'
-        ? (zh ? '配置已恢复。' : 'Configuration restored.')
+        ? (action.backup.kind === 'chat' ? (zh ? '聊天备份已准备完成，正在重启…' : 'Chat backup ready. Restarting…') : (zh ? '配置已恢复。' : 'Configuration restored.'))
         : action.type === 'test' ? (zh ? '连接测试成功。' : 'Connection test succeeded.')
         : action.type === 'save' ? (zh ? 'WebDAV 配置已保存。' : 'WebDAV configuration saved.')
         : action.type === 'upload' ? (zh ? '备份已上传。' : 'Backup uploaded.')

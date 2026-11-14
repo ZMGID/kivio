@@ -3,7 +3,8 @@ import './backup.css'
 import { ArrowLeft, Cloud, Download, RefreshCw, Server, ShieldCheck, Trash2, Upload } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
 import type { Lang } from '../components/i18n'
-import { Input, Toggle } from './public/controls'
+import type { WebDavBackupKind } from '../generated/webdav'
+import { Input, Select, Toggle } from './public/controls'
 import { BackupDialog } from './BackupDialog'
 import type { useSettingsBackupController } from './useSettingsBackupController'
 
@@ -19,6 +20,7 @@ export function WebDavBackupSection({ controller, lang }: {
   const [choosing, setChoosing] = useState(false)
   const [browsing, setBrowsing] = useState(false)
   const [trusted, setTrusted] = useState(false)
+  const [kind, setKind] = useState<WebDavBackupKind>('configuration')
   const disabled = controller.busy
   const values = draft ?? (config ? { url: config.url, username: config.username, directory: config.directory, password: null } : null)
   const providers = [
@@ -57,9 +59,10 @@ export function WebDavBackupSection({ controller, lang }: {
         <Button size="sm" variant={config?.url ? 'default' : 'primary'} disabled={disabled} onClick={openEditor}>{config?.url ? (zh ? '管理连接' : 'Manage connection') : (zh ? '配置 WebDAV' : 'Configure WebDAV')}</Button>
       </div>
       {config?.url && <div className="backup-row backup-divider">
-        <div className="backup-copy"><p className="kv-row-label">{zh ? '远程备份' : 'Remote backups'}</p><p className="kv-row-desc">{zh ? '上传新版本，或选择已有备份恢复。' : 'Upload a new version or restore an existing backup.'}</p></div>
+        <div className="backup-copy"><p className="kv-row-label">{zh ? '远程备份' : 'Remote backups'}</p><p className="kv-row-desc">{zh ? '配置备份保存设置；聊天全量备份保存全部聊天，不包含供应商配置或项目代码。' : 'Configuration saves settings; full chat backup saves all chats, excluding provider settings and project files.'}</p></div>
         <div className="backup-actions">
-          <Button size="sm" disabled={disabled || !ready} onClick={() => void run({ type: 'upload' })}><Upload size={13} />{zh ? '上传备份' : 'Upload backup'}</Button>
+          <Select size="sm" ariaLabel={zh ? '远程备份类型' : 'Remote backup type'} value={kind} onChange={(value) => { if (value === 'configuration' || value === 'chat') setKind(value) }} disabled={disabled || !ready} options={[{ value: 'configuration', label: zh ? '配置备份' : 'Configuration' }, { value: 'chat', label: zh ? '聊天全量备份' : 'Full chat backup' }]} />
+          <Button size="sm" disabled={disabled || !ready} onClick={() => void run({ type: 'upload', kind })}><Upload size={13} />{zh ? '上传备份' : 'Upload backup'}</Button>
           <Button size="sm" disabled={disabled || !ready} onClick={() => { setBrowsing(true); void run({ type: 'list' }) }}><Download size={13} />{zh ? '恢复备份' : 'Restore backup'}</Button>
         </div>
       </div>}
@@ -94,20 +97,20 @@ export function WebDavBackupSection({ controller, lang }: {
       </>}
       {status}
     </BackupDialog>}
-    {browsing && <BackupDialog title={zh ? '恢复云端备份' : 'Restore a cloud backup'} description={zh ? '恢复将替换设置，并导入助手和集。' : 'Restore replaces settings and imports assistants and sets.'} closeLabel={zh ? '关闭' : 'Close'} locked={controller.busy} onClose={() => setBrowsing(false)}>
+    {browsing && <BackupDialog title={zh ? '恢复云端备份' : 'Restore a cloud backup'} description={zh ? '配置恢复会替换设置；聊天全量恢复会替换聊天数据并重启应用。' : 'Configuration restore replaces settings. Full chat restore replaces chat data and restarts the app.'} closeLabel={zh ? '关闭' : 'Close'} locked={controller.busy} onClose={() => setBrowsing(false)}>
       <div className="backup-row backup-divider">
         <div className="backup-copy"><p className="kv-row-label">{zh ? '从云端恢复' : 'Restore from the cloud'}</p><p className="kv-row-desc">{zh ? '选择一个备份恢复到当前电脑。' : 'Choose a backup to restore on this computer.'}</p></div>
         <Button size="sm" variant="ghost" disabled={disabled || !ready} onClick={() => void run({ type: 'list' })}><RefreshCw size={13} />{zh ? '刷新备份列表' : 'Refresh backups'}</Button>
       </div>
       <div className="backup-trust">
         <Toggle ariaLabel={zh ? '信任远程备份' : 'Trust remote backup'} checked={trusted} onChange={setTrusted} disabled={disabled} />
-        <span className="kv-row-desc">{zh ? '信任备份，恢复时保留执行权限' : 'Trust backup and retain execution permissions'}</span>
+        <span className="kv-row-desc">{zh ? '信任配置备份，恢复时保留执行权限' : 'Trust configuration backups and retain execution permissions'}</span>
       </div>
       {controller.webdavFiles === null && <p className="kv-row-desc backup-empty">{zh ? '刷新列表，查看此目录中的备份。' : 'Refresh to view backups in this directory.'}</p>}
       {controller.webdavFiles !== null && <div className="custom-scrollbar max-h-72 overflow-auto">
         {controller.webdavFiles.length === 0 ? <p className="kv-row-desc backup-empty">{zh ? '此目录暂无 Kivio 备份。' : 'No Kivio backups in this directory.'}</p> : controller.webdavFiles.map((backup) => <div key={backup.name} className="backup-file">
           <div className="backup-copy">
-            <p className="kv-row-label">{zh ? '配置备份' : 'Configuration'}</p>
+            <p className="kv-row-label">{backup.kind === 'chat' ? (zh ? '聊天全量备份' : 'Full chat backup') : (zh ? '配置备份' : 'Configuration')}</p>
             <p className="kv-row-desc backup-file-meta">{backup.modified && !Number.isNaN(Date.parse(backup.modified)) ? new Date(backup.modified).toLocaleString(zh ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : (zh ? '时间未知' : 'Unknown date')} · {backup.size < 1024 * 1024 ? `${(backup.size / 1024).toFixed(1)} KB` : `${(backup.size / 1024 / 1024).toFixed(1)} MB`}</p>
             <p className="kv-row-desc backup-ellipsis" title={backup.name}>{backup.name}</p>
           </div>

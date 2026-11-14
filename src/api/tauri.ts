@@ -24,7 +24,7 @@ import type { GoalState } from './goalContracts'
 import { normalizeGitDiffStat, normalizeGitRepoState, type GitSnapshot } from './dockContracts'
 import type { ThemeDefinition } from '../theme/types'
 
-import type { WebDavConfig, WebDavConfigInput, WebDavBackup, WebDavDownload } from '../generated/webdav'
+import type { WebDavConfig, WebDavConfigInput, WebDavBackup, WebDavDownload, WebDavBackupKind } from '../generated/webdav'
 
 // ========== 类型定义 ==========
 
@@ -1937,13 +1937,13 @@ export const api = {
   webdavSave: (input: WebDavConfigInput) => invoke<WebDavConfig>('webdav_save', { input }),
   webdavTest: (input: WebDavConfigInput) => invoke<void>('webdav_test', { input }),
   webdavList: () => invoke<WebDavBackup[]>('webdav_list'),
-  webdavUpload: () => invoke<void>('webdav_upload'),
+  webdavUpload: (kind: WebDavBackupKind) => invoke<void>('webdav_upload', { kind }),
   webdavDownload: (name: string) => invoke<WebDavDownload>('webdav_download', { name }),
   webdavRelease: (id: string) => invoke<void>('webdav_release', { id }),
   webdavDelete: (name: string) => invoke<void>('webdav_delete', { name }),
   exportSettings: (path: string, share?: boolean) => invoke<void>('export_settings', { path, share }),
   exportChatBackup: (path: string) => invoke<void>('export_chat_backup', { path }),
-  restoreChatBackup: (path: string) => invoke<void>('restore_chat_backup', { path }),
+  restoreChatBackup: (path: string, downloadId?: string) => invoke<void>('restore_chat_backup', { path, downloadId }),
   importSettings: async (path: string, expectedVersion: SettingsVersion, trusted?: boolean) =>
     normalizeSettingsSnapshot(await invoke<SettingsSnapshot>('import_settings', { path, expectedVersion, trusted })),
   usageGetStats: (query?: UsageStatsQuery) =>

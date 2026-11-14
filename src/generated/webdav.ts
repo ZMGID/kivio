@@ -7,6 +7,8 @@ export type WebDavConfigInput = { url: string, username: string, directory: stri
  */
 password: string | null, };
 
-export type WebDavBackup = { name: string, size: number, modified: string, };
+export type WebDavBackupKind = "configuration" | "chat";
+
+export type WebDavBackup = { kind: WebDavBackupKind, name: string, size: number, modified: string, };
 
 export type WebDavDownload = { id: string, path: string, };

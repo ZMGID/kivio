@@ -12,7 +12,7 @@ const DIRECTORIES: [&str; 4] = [
     "artifacts",
 ];
 const FORMAT: &str = "kivio-chat-backup";
-const MAX_BYTES: u64 = 50 * 1024 * 1024 * 1024;
+pub(super) const MAX_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 
 fn error(e: impl std::fmt::Display) -> String {
     e.to_string()

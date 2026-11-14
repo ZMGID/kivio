@@ -1,4 +1,4 @@
-//! Manual configuration backups. WebDAV credentials and transfer files are excluded.
+//! Manual configuration and chat backups. WebDAV credentials and transfer files are excluded.
 use crate::state::AppState;
 use reqwest::{Client, Method, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,7 @@ pub struct WebDavConfigInput {
 #[derive(Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WebDavBackup {
+    pub kind: WebDavBackupKind,
     pub name: String,
     pub size: u64,
     pub modified: String,
@@ -53,6 +54,27 @@ pub struct WebDavDownload {
     pub path: String,
 }
 
+#[derive(Clone, Copy, Default, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum WebDavBackupKind {
+    #[default]
+    Configuration,
+    Chat,
+}
+fn backup_kind(name: &str) -> WebDavBackupKind {
+    if name.starts_with("kivio-chat-") {
+        WebDavBackupKind::Chat
+    } else {
+        WebDavBackupKind::Configuration
+    }
+}
+fn transfer_limit(name: &str) -> u64 {
+    match backup_kind(name) {
+        WebDavBackupKind::Configuration => MAX_CONFIGURATION,
+        // ZIP headers and incompressible data can exceed the extracted-data limit.
+        WebDavBackupKind::Chat => super::chat_archive::MAX_BYTES + 1024 * 1024 * 1024,
+    }
+}
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
@@ -261,7 +283,7 @@ impl Dav {
         let result = async {
             let file = tokio::fs::File::open(path).await.map_err(err)?;
             let size = file.metadata().await.map_err(err)?.len();
-            if size > MAX_CONFIGURATION {
+            if size > transfer_limit(name) {
                 return Err("Backup exceeds size limit".into());
             }
             let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
@@ -285,7 +307,7 @@ impl Dav {
     }
     async fn download(&self, name: &str, path: &Path) -> Result<(), String> {
         validate_backup_name(name)?;
-        let limit = MAX_CONFIGURATION;
+        let limit = transfer_limit(name);
         let mut response = checked(
             self.request("GET", self.file(name)?)
                 .send()
@@ -336,15 +358,16 @@ async fn bounded_bytes(mut response: Response, limit: usize) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 fn validate_backup_name(name: &str) -> Result<(), String> {
-    if name.starts_with("kivio-configuration-")
-        && (name.ends_with(".zip") || name.ends_with(".json"))
+    if ((name.starts_with("kivio-configuration-")
+        && (name.ends_with(".zip") || name.ends_with(".json")))
+        || (name.starts_with("kivio-chat-") && name.ends_with(".zip")))
         && name
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || b"-._".contains(&c))
     {
         Ok(())
     } else {
-        Err("Invalid Kivio configuration backup name".into())
+        Err("Invalid Kivio backup name".into())
     }
 }
 #[derive(Deserialize)]
@@ -433,6 +456,7 @@ fn parse_listing(bytes: &[u8], directory: &Url) -> Result<Vec<WebDavBackup>, Str
                 results.insert(
                     name.clone(),
                     WebDavBackup {
+                        kind: backup_kind(&name),
                         name: name.clone(),
                         size,
                         modified: props.prop.getlastmodified,
@@ -458,6 +482,13 @@ fn parse_listing(bytes: &[u8], directory: &Url) -> Result<Vec<WebDavBackup>, Str
 fn downloads() -> &'static Mutex<HashMap<String, tempfile::TempDir>> {
     static DOWNLOADS: OnceLock<Mutex<HashMap<String, tempfile::TempDir>>> = OnceLock::new();
     DOWNLOADS.get_or_init(Mutex::default)
+}
+pub(super) fn take_download(id: &str) -> Result<tempfile::TempDir, String> {
+    downloads()
+        .lock()
+        .map_err(err)?
+        .remove(id)
+        .ok_or_else(|| "Downloaded backup no longer available".into())
 }
 #[tauri::command]
 pub(crate) fn webdav_load(app: AppHandle) -> Result<WebDavConfig, String> {
@@ -519,19 +550,32 @@ pub(crate) async fn webdav_list(app: AppHandle) -> Result<Vec<WebDavBackup>, Str
 pub(crate) async fn webdav_upload(
     app: AppHandle,
     state: State<'_, AppState>,
+    kind: Option<WebDavBackupKind>,
 ) -> Result<(), String> {
     let _guard = TRANSFER
         .try_lock()
         .map_err(|_| "WebDAV operation in progress")?;
     let dav = Dav::new(&load(&config_path(&app)?)?)?;
     let temporary = tempfile::tempdir().map_err(err)?;
+    let kind = kind.unwrap_or_default();
+    let prefix = match kind {
+        WebDavBackupKind::Configuration => "configuration",
+        WebDavBackupKind::Chat => "chat",
+    };
     let name = format!(
-        "kivio-configuration-{}-{}.zip",
+        "kivio-{prefix}-{}-{}.zip",
         chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
         uuid::Uuid::new_v4(),
     );
     let path = temporary.path().join(&name);
-    crate::commands::export_settings(app, state, path.to_string_lossy().into(), None)?;
+    match kind {
+        WebDavBackupKind::Configuration => {
+            crate::commands::export_settings(app, state, path.to_string_lossy().into(), None)?
+        }
+        WebDavBackupKind::Chat => {
+            super::export_chat_backup(app, path.to_string_lossy().into()).await?
+        }
+    }
     dav.upload(&path, &name).await?;
     Ok(())
 }
@@ -703,6 +747,36 @@ mod tests {
         assert_eq!(thread.join().unwrap()[2], b"backup");
     }
     #[tokio::test]
+    async fn chat_backup_upload_download_and_cleanup() {
+        let name = "kivio-chat-test.zip";
+        let (url, thread) = server(vec![
+            ("MKCOL", "/Kivio/", 201, "".into()),
+            ("PUT", "/Kivio/kivio-chat-test.zip.partial", 201, "".into()),
+            ("MOVE", "/Kivio/kivio-chat-test.zip.partial", 201, "".into()),
+            (
+                "GET",
+                "/Kivio/kivio-chat-test.zip",
+                200,
+                "chat archive".into(),
+            ),
+        ]);
+        let dav = Dav::new(&config(url)).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(name);
+        std::fs::write(&path, b"chat archive").unwrap();
+        dav.upload(&path, name).await.unwrap();
+        dav.download(name, &path).await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"chat archive");
+        assert_eq!(thread.join().unwrap()[1], b"chat archive");
+        let id = uuid::Uuid::new_v4().to_string();
+        downloads().lock().unwrap().insert(id.clone(), temp);
+        let owned = take_download(&id).unwrap();
+        assert!(path.exists());
+        drop(owned);
+        assert!(!path.exists());
+        webdav_release(id).unwrap();
+    }
+    #[tokio::test]
     async fn failed_publish_cleans_partial_file_and_reports_failure() {
         let (url, thread) = server(vec![
             ("MKCOL", "/Kivio/", 201, "".into()),
@@ -764,7 +838,8 @@ mod tests {
                     "404 Not Found",
                     ""
                 ),
-                response("/Kivio/kivio-configuration-good.json", "200 OK", "")
+                response("/Kivio/kivio-configuration-good.json", "200 OK", ""),
+                response("/Kivio/kivio-chat-good.zip", "200 OK", "")
             ]
             .join("")
         );
@@ -773,8 +848,18 @@ mod tests {
             &Url::parse("https://dav.test/Kivio/").unwrap(),
         )
         .unwrap();
-        assert_eq!(files.len(), 1);
+        assert_eq!(files.len(), 2);
         assert_eq!(files[0].name, "kivio-configuration-good.json");
+        assert!(matches!(files[0].kind, WebDavBackupKind::Configuration));
+        assert!(matches!(files[1].kind, WebDavBackupKind::Chat));
+        assert!(validate_backup_name("kivio-chat-good.zip").is_ok());
+        assert!(validate_backup_name("kivio-chat-bad.json").is_err());
+        assert!(validate_backup_name("../kivio-chat-bad.zip").is_err());
+        assert!(transfer_limit("kivio-chat-good.zip") > 50 * 1024 * 1024 * 1024);
+        assert_eq!(
+            transfer_limit("kivio-configuration-good.zip"),
+            MAX_CONFIGURATION
+        );
         assert!(validate_backup_name("kivio-configuration-good.zip").is_ok());
         assert!(validate_backup_name("../../kivio-configuration-good.json").is_err());
         assert!(validate_backup_name("kivio-full-old.kivio").is_err());

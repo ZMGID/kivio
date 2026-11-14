@@ -10,7 +10,11 @@ pub(crate) async fn export_chat_backup(app: tauri::AppHandle, path: String) -> R
 }
 
 #[tauri::command]
-pub(crate) async fn restore_chat_backup(app: tauri::AppHandle, path: String) -> Result<(), String> {
+pub(crate) async fn restore_chat_backup(
+    app: tauri::AppHandle,
+    path: String,
+    download_id: Option<String>,
+) -> Result<(), String> {
     use tauri::Manager;
     if app
         .state::<crate::state::AppState>()
@@ -20,9 +24,16 @@ pub(crate) async fn restore_chat_backup(app: tauri::AppHandle, path: String) -> 
         return Err("请等待聊天完成或停止生成后再恢复 / Stop active chats before restoring".into());
     }
     let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || chat_archive::prepare(&root, Path::new(&path)))
-        .await
-        .map_err(|e| e.to_string())??;
+    let download = download_id
+        .map(|id| webdav::take_download(&id))
+        .transpose()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        // Keep the source alive through extraction, then remove it before restart.
+        let _download = download;
+        chat_archive::prepare(&root, Path::new(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     app.restart();
 }
 

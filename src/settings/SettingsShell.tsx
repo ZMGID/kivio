@@ -235,9 +235,9 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
       save: api.webdavSave,
       test: api.webdavTest,
       list: api.webdavList,
-      upload: async () => {
-        if (!await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
-        return api.webdavUpload()
+      upload: async (kind) => {
+        if (kind === 'configuration' && !await editorController.flush()) throw new Error(lang === 'zh' ? '设置尚未保存，请先解决保存错误。' : 'Save your settings before exporting.')
+        return api.webdavUpload(kind)
       },
       download: api.webdavDownload,
       release: api.webdavRelease,
