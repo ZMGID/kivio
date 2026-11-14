@@ -1190,6 +1190,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pi_extension_calls_shared_server_with_scoped_credentials() {
+        use crate::proc::NoConsoleWindow;
+        let node = "node";
+        if !tokio::process::Command::new(node)
+            .arg("--version")
+            .no_console_window()
+            .output()
+            .await
+            .is_ok_and(|output| output.status.success())
+        {
+            eprintln!("Node.js is unavailable; skipping Pi extension integration");
+            return;
+        }
+        let server = server().await;
+        for conversation in ["pi-conversation-a", "pi-conversation-b"] {
+            let credential = server.issue(backend(conversation)).unwrap();
+            let extension = crate::external_agents::providers::pi::chat_mcp_extension().unwrap();
+            let output = tokio::time::timeout(
+                Duration::from_secs(30),
+                tokio::process::Command::new(node)
+                    .args(["--input-type=module", "-e", r#"
+                        import assert from 'node:assert/strict';
+                        import { pathToFileURL } from 'node:url';
+                        const { default: extension } = await import(pathToFileURL(process.env.KIVIO_TEST_EXTENSION));
+                        const tools = new Map();
+                        await extension({ on() {}, registerTool: tool => tools.set(tool.name, tool) });
+                        assert.equal(tools.size, 2);
+                        const preview = await tools.get('mcp__Kivio-server__html_preview').execute('preview', {});
+                        assert.equal(preview.content[0].text, process.env.KIVIO_TEST_CONVERSATION);
+                        assert.equal(preview.content[1].type, 'image');
+                        assert.equal(preview.content[1].data, 'aGVsbG8=');
+                        const render = await tools.get('mcp__Kivio-server__html_render').execute('render', {});
+                        assert.equal(render.structuredContent.structuredContent.type, 'html_render');
+                    "#])
+                    .env("KIVIO_TEST_EXTENSION", extension.path())
+                    .env("KIVIO_TEST_CONVERSATION", conversation)
+                    .env("KIVIO_MCP_URL", &credential.url)
+                    .env("KIVIO_MCP_AUTHORIZATION", &credential.authorization)
+                    .no_console_window()
+                    .kill_on_drop(true)
+                    .output(),
+            ).await.unwrap().unwrap();
+            assert!(
+                output.status.success(),
+                "Pi MCP integration failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert!(server.owner.state.sessions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn shared_service_isolates_tools_and_limits_and_keeps_chat_alive_after_hangup() {
         let service = KivioServer::default();
         let temp = tempfile::tempdir().unwrap();

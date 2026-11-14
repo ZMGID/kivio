@@ -359,6 +359,7 @@ impl DshJsonRpcSession {
         reasoning: Option<&str>,
         sandbox: Option<&str>,
         preset: Option<&str>,
+        mcp: Option<(&str, &str)>,
     ) -> Result<Self, String> {
         let _profile_boot_guard = DSH_PROFILE_BOOT_LOCK.lock().await;
         let route = resolve_model_route_for_turn(model)?;
@@ -447,6 +448,17 @@ impl DshJsonRpcSession {
                 "approvalRequests": true,
             });
             let mut init_params = init_params;
+            if let Some((url, authorization)) = mcp {
+                init_params["kivioMcp"] = json!({
+                    "transport": "streamable-http",
+                    "serverName": crate::app_mcp::SERVER_NAME,
+                    "url": url,
+                    "headers": {"Authorization": authorization},
+                    "toolCallTimeoutMs": 630_000,
+                    "startupTimeoutMs": 10_000,
+                    "failOnStartupError": true,
+                });
+            }
             if let Some(effort) = reasoning
                 .map(str::trim)
                 .filter(|s| !s.is_empty() && *s != "default")
@@ -4777,6 +4789,7 @@ mod tests {
             None,
             Some("read-only"),
             None,
+            None,
         )
         .await
         .expect("dsh profile handshake");
@@ -4808,6 +4821,7 @@ mod tests {
             Some("deepseek-v4-flash"),
             Some("off"),
             Some("read-only"),
+            None,
             None,
         )
         .await
@@ -4889,6 +4903,7 @@ mod tests {
             Some("high"),
             Some("read-only"),
             None,
+            None,
         )
         .await
         .expect("connect live dsh");
@@ -4919,6 +4934,7 @@ mod tests {
             Some("deepseek-v4-flash"),
             Some("high"),
             Some("read-only"),
+            None,
             None,
         )
         .await
@@ -4981,6 +4997,7 @@ mod tests {
             Some("deepseek-v4-flash"),
             Some("off"),
             Some("read-only"),
+            None,
             None,
         )
         .await

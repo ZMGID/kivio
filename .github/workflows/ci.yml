@@ -28,7 +28,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
 
       - name: Install frontend dependencies
@@ -71,6 +71,9 @@ jobs:
 
       - name: Frontend tests
         run: npm run test && node --test scripts/vite-watch.test.mjs
+
+      - name: CLI bridge tests
+        run: node --test scripts/pi-mcp.test.mjs scripts/dsh-bridge.test.mjs
 
       # tauri-build 会校验 externalBin（kivio-ocr-helper）对应当前 target triple 的二进制存在。
       # 上面的 build:swift 在 macOS 上构建真实 Swift sidecar 满足校验，否则这一步会在 build-script 阶段失败。

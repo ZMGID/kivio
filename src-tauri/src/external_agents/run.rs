@@ -1662,11 +1662,19 @@ where
     let (mut control, mut prompt) = if let Some(regenerate) =
         pi_regenerate.filter(|_| matches!(protocol, StreamFormat::PiRpc))
     {
+        let chat_credential = if !crate::external_agents::wsl::is_wsl_target(resolved_bin) {
+            Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
+        } else {
+            None
+        };
         let mut session = crate::external_agents::session::pi_rpc::PiRpcSession::connect(
             resolved_bin,
             &turn_args,
             cwd,
             resumable_native.as_deref(),
+            chat_credential
+                .as_ref()
+                .map(|credential| (credential.url.as_str(), credential.authorization.as_str())),
         )
         .await?;
         let forked = match session.fork_for_regenerate(&regenerate.visible_users).await {
@@ -1687,7 +1695,7 @@ where
             resolved_bin,
             LiveSession {
                 control: control.clone(),
-                _chat_credential: None,
+                _chat_credential: chat_credential,
                 agent_id: agent_id.into(),
                 cwd: cwd_str.clone(),
                 launch_config: launch_config.clone(),
@@ -3872,12 +3880,17 @@ async fn connect_persistent_session(
                 StreamFormat::ClaudeStreamJson
                     | StreamFormat::CodexAppServer
                     | StreamFormat::AcpJsonRpc
+                    | StreamFormat::PiRpc
+                    | StreamFormat::DshJsonRpc
             ) && !crate::external_agents::wsl::is_wsl_target(resolved_bin)
             {
                 Some(crate::app_mcp::issue_chat_credential(app, conversation_id).await?)
             } else {
                 None
             };
+            let mcp = chat_credential
+                .as_ref()
+                .map(|credential| (credential.url.as_str(), credential.authorization.as_str()));
 
             match protocol {
                 StreamFormat::AntigravityStreamJson => {
@@ -3969,9 +3982,6 @@ async fn connect_persistent_session(
                     .identified(&identity))
                 }
                 StreamFormat::CodexAppServer => {
-                    let mcp = chat_credential.as_ref().map(|credential| {
-                        (credential.url.as_str(), credential.authorization.as_str())
-                    });
                     if let Some(tid) = resume_native
                         .as_deref()
                         .map(str::trim)
@@ -4123,6 +4133,7 @@ async fn connect_persistent_session(
                             reasoning,
                             sandbox,
                             preset,
+                            mcp,
                         )
                         .await
                         .map_err(|err| {
@@ -4153,6 +4164,7 @@ async fn connect_persistent_session(
                         reasoning,
                         sandbox,
                         preset,
+                        mcp,
                     )
                     .await?;
                     let id = session.session_id().to_string();
@@ -4177,6 +4189,7 @@ async fn connect_persistent_session(
                         args,
                         cwd,
                         resume_native.as_deref(),
+                        mcp,
                     )
                     .await?;
                     let native_id = session.session_id().to_string();

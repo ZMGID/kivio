@@ -2291,6 +2291,7 @@ pub struct PiRpcSession {
     selection: PiSelection,
     stderr_tail: Arc<Mutex<String>>,
     _stderr_task: tokio::task::JoinHandle<()>,
+    _mcp_extension: Option<tempfile::NamedTempFile>,
 }
 
 impl Drop for PiRpcSession {
@@ -2305,6 +2306,7 @@ impl PiRpcSession {
         args: &[String],
         cwd: &Path,
         resume_native: Option<&str>,
+        mcp: Option<(&str, &str)>,
     ) -> Result<Self, String> {
         // The persisted live handle is the authoritative binding for this Kivio conversation.
         // It can exist even when the regular binding was not flushed before a crash.
@@ -2312,17 +2314,31 @@ impl PiRpcSession {
             persistent_session_args(args, resume_native)?;
         let resumed = claimed_resume && pi_resume_is_live(bin, &session_id, cwd);
 
-        let mut child = crate::external_agents::spawn::AgentChild::spawn(
-            crate::external_agents::spawn::cli_command(bin)
-                .args(&effective_args)
-                .current_dir(cwd)
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .no_console_window()
-                .kill_on_drop(true),
-        )
-        .map_err(|error| format!("start Pi RPC: {error}"))?;
+        let mut command = crate::external_agents::spawn::cli_command(bin);
+        command
+            .args(&effective_args)
+            .current_dir(cwd)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .no_console_window()
+            .kill_on_drop(true);
+        command
+            .env_remove("KIVIO_MCP_URL")
+            .env_remove("KIVIO_MCP_AUTHORIZATION");
+        let mcp_extension = mcp
+            .map(|(url, authorization)| {
+                let file = crate::external_agents::providers::pi::chat_mcp_extension()?;
+                command
+                    .arg("--extension")
+                    .arg(file.path())
+                    .env("KIVIO_MCP_URL", url)
+                    .env("KIVIO_MCP_AUTHORIZATION", authorization);
+                Ok::<_, String>(file)
+            })
+            .transpose()?;
+        let mut child = crate::external_agents::spawn::AgentChild::spawn(&mut command)
+            .map_err(|error| format!("start Pi RPC: {error}"))?;
         let stdin = child
             .stdin
             .take()
@@ -2362,6 +2378,7 @@ impl PiRpcSession {
             selection: pi_launch_selection(&effective_args),
             stderr_tail,
             _stderr_task: stderr_task,
+            _mcp_extension: mcp_extension,
         })
     }
 

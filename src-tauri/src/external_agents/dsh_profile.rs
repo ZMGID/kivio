@@ -23,6 +23,7 @@ const REQUIRED_PACKAGES: &[&str] = &[
     "@deepseek-ai/dsh-sdk-jsonrpc-server",
     "@deepseek-ai/dsh-sdk-protocol",
     "@deepseek-ai/dsh-web-app",
+    "@deepseek-ai/dsh-mcp-client",
 ];
 
 /// Remove the retired directory-discovery plugin from existing profiles.
@@ -760,6 +761,7 @@ mod tests {
                 "@deepseek-ai/dsh-sdk-jsonrpc-server@0.1.5-rc.2",
                 "@deepseek-ai/dsh-sdk-protocol@0.1.5-rc.2",
                 "@deepseek-ai/dsh-web-app@0.1.5-rc.2",
+                "@deepseek-ai/dsh-mcp-client@0.1.5-rc.2",
             ]
         );
     }

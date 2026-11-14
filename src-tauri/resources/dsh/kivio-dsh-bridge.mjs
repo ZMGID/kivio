@@ -3,6 +3,7 @@ import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server'
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
+import * as McpClient from '@deepseek-ai/dsh-mcp-client'
 
 export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   subscribeSubagentLifecycle() {
@@ -26,6 +27,7 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   }
 
   async initialize(params) {
+    this.kivioMcp = params.kivioMcp
     const result = await super.initialize(params)
     // Session tools read header.cwd; sandbox-policy falls back to process.cwd()
     // when a header has none. Align the process with initialize.cwd so this
@@ -150,6 +152,7 @@ export class KivioHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const presets = this.ctx.get('agentPresets')
     if (!presets) throw new Error('dsh agent preset registry is unavailable')
     await presets.mount(agentCtx, presetId === 'code' ? 'ptc' : presetId)
+    if (this.kivioMcp) await agentCtx.plugin(McpClient, McpClient.Config(this.kivioMcp))
   }
 
   applyPermissionPreset(agent) {

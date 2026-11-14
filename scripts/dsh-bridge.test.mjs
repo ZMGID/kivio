@@ -15,6 +15,7 @@ function fixture(preset = 'standard', previous = { provider: 'deepseek-official'
       }
     },
     Buffer,
+    McpClient: { Config: value => value },
     carrierKeyOf: carrier => carrier?.parent,
     createUserMessage: message => ({ ...message, id: 'message-1' }),
     process: { env: { DSH_AGENT_PRESET: preset, DSH_PERMISSION_MODE: 'read-only' } },
@@ -103,6 +104,29 @@ test('resume replaces stored full access with the current read-only selection', 
   const { server, agent } = fixture()
   await server.resumeSession('session-1')
   assert.equal(agent.session.permissionPreset, 'read-only')
+})
+
+test('fresh and resumed agents mount their conversation MCP client after the preset', async () => {
+  for (const resume of [false, true]) {
+    const { server, services } = fixture()
+    const config = { transport: 'streamable-http', serverName: 'Kivio-server', url: 'http://127.0.0.1:1234/mcp',
+      headers: { Authorization: 'Bearer conversation-only' }, toolCallTimeoutMs: 630_000 }
+    server.kivioMcp = config
+    const calls = []
+    services.agentPresets.mount = async () => calls.push('preset')
+    const agentCtx = { plugin: async (plugin, options) => {
+      assert.equal(plugin.Config(config), options)
+      calls.push(options)
+    } }
+    const agent = { id: 'session-1', session: { header: {} }, model: { current: () => ({}), select: () => {} } }
+    const create = async options => { await options.setup(agentCtx, agent); return { agent } }
+    server.ctx.agents = { create, resume: create }
+    if (resume) await server.resumeSession(agent.id)
+    else await server.createFreshSession(agent.id)
+    assert.equal(calls[0], 'preset')
+    assert.equal(calls[1], config)
+    assert.equal(calls.length, 2)
+  }
 })
 
 test('stop job passes the owning session id to the native registry', async () => {

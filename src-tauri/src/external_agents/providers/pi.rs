@@ -20,6 +20,19 @@ const REASONING: &[(&str, &str)] = &[
     ("max", "Max"),
 ];
 
+pub(crate) fn chat_mcp_extension() -> Result<tempfile::NamedTempFile, String> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("kivio-pi-mcp-")
+        .suffix(".mjs")
+        .tempfile()
+        .map_err(|error| format!("Create Pi MCP extension: {error}"))?;
+    file.write_all(include_bytes!("../../../resources/pi/kivio-pi-mcp.mjs"))
+        .and_then(|_| file.flush())
+        .map_err(|error| format!("Write Pi MCP extension: {error}"))?;
+    Ok(file)
+}
+
 pub fn build_pi_args(
     ctx: &RuntimeContext,
     options: &RuntimeBuildOptions,
@@ -143,6 +156,18 @@ pub fn pi_args_fresh_session(args: &[String], session_id: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_extension_is_temporary_and_contains_no_session_credentials() {
+        let file = chat_mcp_extension().unwrap();
+        let path = file.path().to_path_buf();
+        let source = std::fs::read_to_string(&path).unwrap();
+        assert!(source.contains("pi.registerTool"));
+        assert!(source.contains("process.env.KIVIO_MCP_AUTHORIZATION"));
+        assert!(!source.contains("Bearer "));
+        drop(file);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn pi_build_args_rpc_mode_and_thinking() {

@@ -18,6 +18,7 @@ async fn offline_replay_recorded_pi_turn_emits_text_usage_and_delivery() {
             ready(&mut reader).await;
             let stderr = crate::external_agents::spawn::spawn_stderr_tail(child.stderr.take());
             spawn_pi_rpc_session_actor(PiRpcSession {
+                _mcp_extension: None,
                 child,
                 stdin,
                 reader: Arc::new(Mutex::new(reader)),

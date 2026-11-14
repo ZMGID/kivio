@@ -266,6 +266,8 @@ pub struct SpawnedAgent {
 /// 只清这些**会话身份 / 代管标记**变量，绝不动 `ANTHROPIC_*` 本身——那些是用户配置的
 /// 凭据与端点，子进程需要它们来认证。
 const PARENT_SESSION_ENV_VARS: &[&str] = &[
+    "KIVIO_MCP_URL",
+    "KIVIO_MCP_AUTHORIZATION",
     "CLAUDECODE",
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_SSE_PORT",

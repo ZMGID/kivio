@@ -110,7 +110,7 @@ _Avoid_: 将聊天 MCP 和语音 MCP 命名为两个长期独立的 Kivio 服务
 ### 页面回复
 
 **页面回复**：
-代理用 `html_render` 发布一个自包含 HTML 页面（图表、表格、示意图、界面草图），页面无边框地显示在对话时间线里、回复正文上方，自动适配高度，跟随应用主题（T3 同名变量 `--background`、`--foreground`、`--card`、`--border`、`--chart-1..6`、`--radius` 等），悬停提供全屏与在浏览器打开。`html_preview` 先在无头浏览器里按回复栏宽度（默认 728px）截图，返回截图、内容高度与控制台输出供自查。页面存为会话附件 `htmlrender-<uuid>.html`，随会话删除、分叉复制、未被引用时由附件回收清理；以沙箱、无同源、独立预览源加载。拒收 CSS 中的视口高度单位；本地图片只从会话工作目录与附件目录内联并校验文件头，单图 10 MiB、整页 25 MiB。截图优先使用系统 Edge/Chrome，没有时从官方 Chrome for Testing 下载一次到应用数据目录 `html-preview-browser/`；浏览器不可用不影响发布。内置运行时进程内直接调用。Claude、Codex 与声明支持 HTTP MCP 的 ACP 代理经 `Kivio-server` 调用，凭据按会话签发、随常驻进程关闭作废；Pi、dsh、Antigravity 及 WSL 启动的代理不注入，仍可用 ```html 代码块预览。
+代理用 `html_render` 发布一个自包含 HTML 页面（图表、表格、示意图、界面草图），页面无边框地显示在对话时间线里、回复正文上方，自动适配高度，跟随应用主题（T3 同名变量 `--background`、`--foreground`、`--card`、`--border`、`--chart-1..6`、`--radius` 等），悬停提供全屏与在浏览器打开。`html_preview` 先在无头浏览器里按回复栏宽度（默认 728px）截图，返回截图、内容高度与控制台输出供自查。页面存为会话附件 `htmlrender-<uuid>.html`，随会话删除、分叉复制、未被引用时由附件回收清理；以沙箱、无同源、独立预览源加载。拒收 CSS 中的视口高度单位；本地图片只从会话工作目录与附件目录内联并校验文件头，单图 10 MiB、整页 25 MiB。截图优先使用系统 Edge/Chrome，没有时从官方 Chrome for Testing 下载一次到应用数据目录 `html-preview-browser/`；浏览器不可用不影响发布。内置运行时进程内直接调用。Claude、Codex、Pi、dsh 与声明支持 HTTP MCP 的 ACP 代理经 `Kivio-server` 调用，凭据按会话签发、随常驻进程关闭作废。Pi 使用随进程释放的临时扩展，dsh 在新建和恢复的 Agent 作用域挂载官方 MCP 客户端；两者保留文字与图片结果。Antigravity 及 WSL 启动的代理不注入，仍可用 ```html 代码块预览。
 _Avoid_: 网页卡片、artifact
 
 ### 语音编排
