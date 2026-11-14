@@ -1036,6 +1036,12 @@ pub(crate) fn web_search_provider_configured(
         WebSearchProvider::Kimi => !settings.lens.web_search.kimi_api_key.trim().is_empty(),
         // Keyless public endpoint: always usable.
         WebSearchProvider::Keenable => true,
+        WebSearchProvider::Specstream => !settings
+            .lens
+            .web_search
+            .specstream_api_key
+            .trim()
+            .is_empty(),
         WebSearchProvider::Unknown => false,
     }
 }

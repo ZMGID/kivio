@@ -63,6 +63,8 @@ export function isProviderConfigured(
     case 'keenable':
       // Keyless public endpoint; the key is optional.
       return true
+    case 'specstream':
+      return (webSearch.specstreamApiKey ?? '').trim() !== ''
     default:
       return false
   }
@@ -90,6 +92,7 @@ export function webSearchKeyField(
   | 'tinyfishApiKey'
   | 'kimiApiKey'
   | 'keenableApiKey'
+  | 'specstreamApiKey'
 > | null {
   switch (provider) {
     case 'tavily':
@@ -116,6 +119,8 @@ export function webSearchKeyField(
       return 'kimiApiKey'
     case 'keenable':
       return 'keenableApiKey'
+    case 'specstream':
+      return 'specstreamApiKey'
     case 'exa_mcp':
     case 'tinyfish_mcp':
     case 'searxng':

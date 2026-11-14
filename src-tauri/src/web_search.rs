@@ -274,6 +274,7 @@ pub fn provider_label(provider: WebSearchProvider) -> &'static str {
         WebSearchProvider::Searxng => "SearXNG",
         WebSearchProvider::Kimi => "Kimi",
         WebSearchProvider::Keenable => "Keenable",
+        WebSearchProvider::Specstream => "SpecStream",
         WebSearchProvider::Unknown => "Web",
     }
 }
@@ -331,6 +332,9 @@ pub async fn search_web(
         WebSearchProvider::Searxng => search_searxng(state, config, query, retry_attempts).await,
         WebSearchProvider::Kimi => search_kimi(state, config, query, retry_attempts).await,
         WebSearchProvider::Keenable => search_keenable(state, config, query, retry_attempts).await,
+        WebSearchProvider::Specstream => {
+            search_specstream(state, config, query, retry_attempts).await
+        }
         WebSearchProvider::Unknown => {
             Err("Selected web search provider is not supported yet".to_string())
         }
@@ -706,6 +710,89 @@ async fn search_keenable(
     .await?;
     let parsed: KeenableSearchResponse = read_search_json("Keenable search", response).await?;
     Ok(keenable_web_results(parsed, max_results as usize))
+}
+
+#[derive(Debug, Deserialize)]
+struct SpecstreamSearchResponse {
+    #[serde(default)]
+    data: Option<SpecstreamSearchPage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpecstreamSearchPage {
+    #[serde(default)]
+    sources: Vec<SpecstreamSearchSource>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SpecstreamSearchSource {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    snippet: String,
+    #[serde(default)]
+    published: Option<String>,
+}
+
+fn specstream_web_results(
+    parsed: SpecstreamSearchResponse,
+    max_results: usize,
+) -> Vec<WebSearchResult> {
+    parsed
+        .data
+        .map(|page| page.sources)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|source| !source.url.trim().is_empty())
+        .take(max_results)
+        .map(|source| WebSearchResult {
+            title: source.title.trim().to_string(),
+            url: source.url.trim().to_string(),
+            content: source.snippet.trim().to_string(),
+            published_date: source.published.filter(|d| !d.trim().is_empty()),
+            score: None,
+        })
+        .collect()
+}
+
+fn specstream_search_url(base: &str, query: &str, max_results: u8) -> String {
+    let num = max_results.to_string();
+    with_query(
+        &format!("{base}/v1/web-search"),
+        &[("q", query), ("num", &num)],
+    )
+}
+
+/// SpecStream Search API：`GET {base}/v1/web-search?q=&num=`，Bearer key，
+/// 结果在 `data.sources[]`（url / title / snippet / published）。
+async fn search_specstream(
+    state: &AppState,
+    config: &LensWebSearchConfig,
+    query: &str,
+    retry_attempts: usize,
+) -> Result<Vec<WebSearchResult>, String> {
+    let api_key = config.specstream_api_key.trim();
+    if api_key.is_empty() {
+        return Err("SpecStream API key is not configured".to_string());
+    }
+    let max_results = config.max_results.clamp(1, 10);
+    let base = normalized_base_url(&config.specstream_base_url, "https://api.specstream.ai");
+    let url = specstream_search_url(base, query, max_results);
+    let response = send_with_retry("SpecStream search", retry_attempts, || {
+        with_standard_request_timeout(
+            state
+                .http
+                .get(&url)
+                .bearer_auth(api_key)
+                .header("Accept", "application/json"),
+        )
+        .send()
+    })
+    .await?;
+    let parsed: SpecstreamSearchResponse = read_search_json("SpecStream search", response).await?;
+    Ok(specstream_web_results(parsed, max_results as usize))
 }
 
 /// TinyFish Search：`GET {base}?query=`，头 `X-API-Key`，结果在 `results[]`。
@@ -2140,6 +2227,37 @@ mod tests {
         assert_eq!(results[0].content, "snip a");
         assert_eq!(results[1].content, "desc b");
         assert_eq!(results[1].published_date.as_deref(), Some("2026-01-01"));
+    }
+
+    #[test]
+    fn specstream_builds_url_and_parses_sources() {
+        assert_eq!(
+            super::specstream_search_url("https://api.specstream.ai", "hello world", 5),
+            "https://api.specstream.ai/v1/web-search?q=hello+world&num=5"
+        );
+        let raw = r#"{"data":{"request_id":"r1","query":"q","kind":"fact","columns":[],
+            "answer":null,"rows":[],"handoff":null,"took_ms":900,"price_usd":0.005,"sources":[
+            {"url":"https://a.example","title":"A","site":"a.example","snippet":" snip a ","cited":true,"published":"2026-10-01"},
+            {"url":"","title":"skip","site":"","snippet":"","cited":false},
+            {"url":"https://b.example","title":"B","site":"b.example","snippet":"snip b","cited":false,"published":null},
+            {"url":"https://c.example","title":"C","site":"c.example","snippet":"snip c","cited":false}
+        ]}}"#;
+        let parsed: super::SpecstreamSearchResponse =
+            serde_json::from_str(raw).expect("specstream json");
+        let results = super::specstream_web_results(parsed, 2);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].url, "https://a.example");
+        assert_eq!(results[0].content, "snip a");
+        assert_eq!(results[0].published_date.as_deref(), Some("2026-10-01"));
+        assert_eq!(results[1].title, "B");
+        assert_eq!(results[1].published_date, None);
+        let empty: super::SpecstreamSearchResponse =
+            serde_json::from_str(r#"{"error":{"code":"x","message":"y"}}"#).expect("error json");
+        assert!(super::specstream_web_results(empty, 5).is_empty());
+        assert_eq!(
+            serde_json::to_string(&crate::settings::WebSearchProvider::Specstream).unwrap(),
+            "\"specstream\""
+        );
     }
 
     #[test]
