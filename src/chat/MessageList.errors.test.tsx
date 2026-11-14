@@ -8,6 +8,11 @@ afterEach(() => act(() => reset()))
 it.each([
   ['Goal mode does not support Orchestrate in this version', 'unknown', '调用失败'],
   ['Failed to generate response', 'unknown', '调用失败'],
+  ['context deadline exceeded', 'timeout', '超时 / 连接中断'],
+  ['DEADLINE_EXCEEDED', 'timeout', '超时 / 连接中断'],
+  ['request timed out', 'timeout', '超时 / 连接中断'],
+  ['maximum context length exceeded', 'context_overflow', '上下文超长'],
+  ['context_length_exceeded', 'context_overflow', '上下文超长'],
   ['Rate limit exceeded', 'rate_limited', '限流 / 配额'],
   ['rate_limit_exceeded', 'rate_limited', '限流 / 配额'],
   ['rate-limited', 'rate_limited', '限流 / 配额'],

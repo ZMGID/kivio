@@ -232,6 +232,8 @@ function streamErrorDegraded(error: string, t: I18n): DegradedAnswer {
     normalized.includes('stream_read_error')
       || normalized.includes('timeout')
       || normalized.includes('timed out')
+      || normalized.includes('deadline exceeded')
+      || normalized.includes('deadline_exceeded')
       || normalized.includes('连接')
       || normalized.includes('网络')
       || normalized.includes('without terminal')

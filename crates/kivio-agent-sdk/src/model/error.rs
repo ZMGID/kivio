@@ -229,7 +229,16 @@ fn classify(status: Option<u16>, message: &str) -> ModelErrorKind {
         Some(429) => ModelErrorKind::RateLimited,
         Some(400..=499) => ModelErrorKind::InvalidRequest,
         Some(500..=599) => ModelErrorKind::ProviderUnavailable,
-        None if has(&["timed out", "timeout", "请求超时"]) => ModelErrorKind::Timeout,
+        None if has(&[
+            "timed out",
+            "timeout",
+            "deadline exceeded",
+            "deadline_exceeded",
+            "请求超时",
+        ]) =>
+        {
+            ModelErrorKind::Timeout
+        }
         None if has(TRANSPORT_PATTERNS) => ModelErrorKind::Transport,
         _ => ModelErrorKind::Other,
     }
@@ -463,6 +472,22 @@ impl From<&str> for ModelError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deadline_exceeded_is_a_timeout_not_context_overflow() {
+        for message in ["context deadline exceeded", "DEADLINE_EXCEEDED"] {
+            assert_eq!(ModelError::new(message).kind, ModelErrorKind::Timeout);
+        }
+        assert_eq!(
+            ModelError::from_provider_stream(Some("DEADLINE_EXCEEDED"), "request expired".into())
+                .kind,
+            ModelErrorKind::Timeout
+        );
+        assert_eq!(
+            ModelError::new("maximum context length exceeded").kind,
+            ModelErrorKind::ContextOverflow
+        );
+    }
 
     #[test]
     fn error_kind_and_sse_retryability_are_independent() {
