@@ -9,14 +9,14 @@ import { createServer, loadConfigFromFile } from 'vite'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-test('Vite watches source but excludes all Cargo build directories', async () => {
+test('Vite watches source but excludes Cargo builds and scratch runtime files', async () => {
   const loaded = await loadConfigFromFile({ command: 'serve', mode: 'development' }, join(root, 'vite.config.ts'))
   assert.ok(loaded)
   const fixture = await mkdtemp(join(tmpdir(), 'kivio-vite-watch-'))
   let server
   let watcher
   try {
-    for (const relative of ['src', 'src-tauri/target/debug', 'crates/kivio-agent-sdk/target/debug', 'tests/fixtures/agent-sdk-consumer/target/debug']) {
+    for (const relative of ['src', '.scratch/omp-completion/smoke/run/conversation', 'src-tauri/target/debug', 'crates/kivio-agent-sdk/target/debug', 'tests/fixtures/agent-sdk-consumer/target/debug']) {
       const directory = join(fixture, relative)
       await mkdir(directory, { recursive: true })
       await writeFile(join(directory, 'fixture.txt'), relative)
@@ -38,6 +38,7 @@ test('Vite watches source but excludes all Cargo build directories', async () =>
     assert.equal(resolve(changedPath), join(fixture, 'src/fixture.txt'))
     const watched = watcher.getWatched()
     assert.deepEqual(Object.keys(watched).filter(path => path.split(/[\\/]/).includes('target')), [])
+    assert.deepEqual(Object.keys(watched).filter(path => path.split(/[\\/]/).includes('.scratch')), [])
   } finally {
     await watcher?.close()
     await server?.close()

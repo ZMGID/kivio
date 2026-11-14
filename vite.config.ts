@@ -74,8 +74,8 @@ export default defineConfig({
     target: 'esnext',
   },
   server: {
-    // 参考源码仓库（不提交）文件极多会触发持续整页重载；cargo 产物 exe 重编时被占用，监视会 EBUSY 崩溃。
-    watch: { ignored: ['**/task-GPUI/**', '**/target/**'] },
+    // 参考源码会触发持续重载；构建产物和临时日志被占用时，监听会因 EBUSY 崩溃。
+    watch: { ignored: ['**/task-GPUI/**', '**/target/**', '**/.scratch/**'] },
   },
   test: {
     // 路由底色回归需要真实 CSS；其余样式仍按默认跳过。
