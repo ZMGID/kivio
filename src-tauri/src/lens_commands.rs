@@ -17,7 +17,7 @@ use xcap::Monitor;
 
 use crate::api::{
     call_openai_ocr, call_openai_text, call_vision_api, effective_retry_attempts,
-    ocr_image_message, stream_chat_call, stream_translate_combined,
+    ocr_image_message, ThinkingChoice, stream_chat_call, stream_translate_combined,
 };
 #[cfg(target_os = "windows")]
 use crate::capture_geometry::{
@@ -863,7 +863,7 @@ pub(crate) async fn lens_capture_region(
 ///   - default_language：空 → 跟 settings.target_lang（"auto" 视为 "zh"）
 ///   - system_prompt / question_prompt：空 → default_system_prompt / default_question_prompt 模板
 ///   - provider_id / model：空 → fallback 到 translator_provider_id / translator_model
-///   - stream_enabled：lens 自身配置
+///   - 固定流式输出；推理强度来自 lens.thinking_level
 #[tauri::command]
 pub(crate) async fn lens_ask(
     app: AppHandle,
@@ -882,8 +882,20 @@ pub(crate) async fn lens_ask(
     } else {
         "zh".to_string()
     };
-    let stream_enabled = settings.lens.stream_enabled;
-    let thinking_enabled = settings.lens.thinking_enabled;
+    // Lens 固定流式输出；推理强度按实际调用的模型（空则回落到翻译模型）解析。
+    let thinking = {
+        let level = settings.lens.thinking_level.as_deref().unwrap_or("");
+        let provider_id = Some(settings.lens.provider_id.as_str())
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&settings.translator_provider_id);
+        let model = Some(settings.lens.model.as_str())
+            .filter(|model| !model.is_empty())
+            .unwrap_or(&settings.translator_model);
+        match settings.get_provider(provider_id) {
+            Some(provider) => ThinkingChoice::resolve(level, provider, model),
+            None => ThinkingChoice::MODEL_DEFAULT,
+        }
+    };
 
     let provider_override = if !settings.lens.provider_id.is_empty() {
         Some(settings.lens.provider_id.clone())
@@ -1086,7 +1098,7 @@ pub(crate) async fn lens_ask(
             first_user.content = format!("{}\n\n用户问题：{}", question_prompt, first_user.content);
         }
     }
-    if !thinking_enabled {
+    if !thinking.enabled {
         if let Some(last_user) = api_messages
             .iter_mut()
             .rev()
@@ -1119,13 +1131,13 @@ pub(crate) async fn lens_ask(
         api_messages,
         &language,
         retry_attempts,
-        stream_enabled,
+        true,
         "answer",
         "lens-stream",
         provider_override.as_deref(),
         model_override.as_deref(),
         system_prompt_override.as_deref(),
-        thinking_enabled,
+        thinking,
         "lens",
         "ask",
     )
@@ -1399,7 +1411,7 @@ async fn plan_lens_web_search_tool_call(
         provider_override,
         model_override,
         Some(system_prompt),
-        false,
+        ThinkingChoice::OFF,
         "lens",
         "web_search_planner",
     )
@@ -1538,7 +1550,11 @@ pub(crate) async fn lens_translate(
 
     let retry_attempts = effective_retry_attempts(&settings);
     let direct_translate = settings.screenshot_translation.direct_translate;
-    let st_thinking = settings.screenshot_translation.thinking_enabled;
+    let st_thinking = ThinkingChoice::resolve(
+        settings.screenshot_translation.thinking_level.as_deref().unwrap_or(""),
+        &ocr_provider,
+        &settings.screenshot_translation.model,
+    );
     let st_stream = settings.screenshot_translation.stream_enabled;
 
     let lang_name = language_name(&settings.reading_target_lang).to_string();
@@ -1781,7 +1797,11 @@ pub(crate) async fn lens_translate_text(
 
     let retry_attempts = effective_retry_attempts(&settings);
     let direct_translate = settings.screenshot_translation.direct_translate;
-    let st_thinking = settings.screenshot_translation.thinking_enabled;
+    let st_thinking = ThinkingChoice::resolve(
+        settings.screenshot_translation.thinking_level.as_deref().unwrap_or(""),
+        &provider,
+        &settings.screenshot_translation.model,
+    );
     let st_stream = settings.screenshot_translation.stream_enabled;
     let lang_name = language_name(&settings.reading_target_lang).to_string();
     // 选中文本是干净的带结构文本，不复用截图(OCR)提示词；用其独立的自定义 prompt。
@@ -1912,7 +1932,7 @@ async fn local_ocr_then_translate(
     lang_name: &str,
     direct_translate: bool,
     st_stream: bool,
-    st_thinking: bool,
+    st_thinking: ThinkingChoice,
     translate_provider: &settings::ModelProvider,
     translate_model: &str,
     retry_attempts: usize,
@@ -2156,7 +2176,11 @@ pub(crate) async fn lens_replace_translate(
         settings.screenshot_translation.replace_prompt.as_deref(),
     );
     let retry_attempts = effective_retry_attempts(&settings);
-    let st_thinking = settings.screenshot_translation.thinking_enabled;
+    let st_thinking = ThinkingChoice::resolve(
+        settings.screenshot_translation.thinking_level.as_deref().unwrap_or(""),
+        &provider,
+        &settings.screenshot_translation.model,
+    );
 
     let source_image = std::sync::Arc::new(source_image);
     let source_for_cleaning = source_image.clone();

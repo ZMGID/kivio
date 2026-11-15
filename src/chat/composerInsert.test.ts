@@ -6,8 +6,25 @@ import {
   onComposerTextInsert,
 } from './composerInsert'
 import { getComposerDraft, setComposerDraft } from './composerDraft'
+import type { PendingAttachment } from './types'
 
 describe('composer insertion across cached pages', () => {
+  it('restores images into an existing draft without losing text, quotes or attachments', () => {
+    const key = 'insert-images'
+    const image: PendingAttachment = { id: 'image', type: 'image', name: 'one.png', path: 'C:/chat/one.png' }
+    const existing: PendingAttachment = { id: 'file', type: 'file', name: 'draft.txt', path: 'C:/draft.txt' }
+    setComposerDraft(key, { input: 'draft', quotes: ['quote'], attachments: [existing] })
+    const leave = onComposerTextInsert(() => {}, key)
+    try {
+      insertTextIntoComposer('', [image])
+      insertTextIntoComposer('', [image])
+      expect(getComposerDraft(key)).toEqual({ input: 'draft', quotes: ['quote'], attachments: [existing, image] })
+    } finally {
+      leave()
+      setComposerDraft(key, { input: '', quotes: [], attachments: [] })
+    }
+  })
+
   it('returns quote insertion to the cached chat after the reading composer leaves', () => {
     const chat: string[] = [],
       reading: string[] = []

@@ -49,10 +49,12 @@ function conversation(id: string, title: string, project: ChatProject): Conversa
 
 afterEach(() => {
   vi.restoreAllMocks()
+  window.localStorage.removeItem('kivio-chat-sidebar-tab')
   act(() => getNotices().forEach(notice => dismissNotice(notice.id)))
 })
 
 beforeEach(() => {
+  window.localStorage.removeItem('kivio-chat-sidebar-tab')
   vi.spyOn(api, 'checkUpdate').mockResolvedValue({ available: false })
   vi.spyOn(api, 'onUpdateAvailable').mockResolvedValue(() => {})
   vi.mocked(getSettingsCached).mockResolvedValue({ chat: {} } as Awaited<ReturnType<typeof getSettingsCached>>)
@@ -583,6 +585,38 @@ describe('Sidebar view choice', () => {
     await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
   }
 
+  it.each(['最近', '集', '项目'])('restores the last selected %s tab after reopening', async label => {
+    const user = userEvent.setup()
+    const { props } = setup()
+    const view = render(<Sidebar {...props} />)
+    await user.click(await screen.findByRole('button', { name: '项目', current: false }))
+    await user.click(screen.getByRole('button', { name: label }))
+    view.unmount()
+    render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: label, current: true })).toBeInTheDocument()
+    expect(props.onSelectConversation).not.toHaveBeenCalled()
+    expect(props.onSelectProject).not.toHaveBeenCalled()
+    expect(props.onSelectSet).not.toHaveBeenCalled()
+  })
+
+  it.each([null, 'removed-tab'])('defaults to Recent for an absent or invalid saved tab (%s)', async value => {
+    if (value !== null) window.localStorage.setItem('kivio-chat-sidebar-tab', value)
+    const { props } = setup()
+    render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: '最近', current: true })).toBeInTheDocument()
+  })
+
+  it('keeps tab switching usable when local storage is unavailable', async () => {
+    const { props } = setup()
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('unavailable') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('unavailable') })
+    const user = userEvent.setup()
+    render(<Sidebar {...props} />)
+    expect(await screen.findByRole('button', { name: '最近', current: true })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '项目', current: false }))
+    expect(screen.getByRole('button', { name: '项目', current: true })).toBeInTheDocument()
+  })
+
   it.each(['classic', 'flat'])('omits new chat and search from the %s list menu', async sidebarView => {
     window.localStorage.setItem('kivio-chat-sidebar-view', sidebarView)
     const user = userEvent.setup()
@@ -615,6 +649,7 @@ describe('Sidebar view choice', () => {
     expect(await screen.findByRole('button', { name: setChat.title })).toBeInTheDocument()
     view.unmount()
     render(<Sidebar {...props} />)
+    await user.click(await screen.findByRole('button', { name: '最近', current: false }))
     expect(await screen.findByRole('button', { name: looseChat.title })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: setChat.title })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '对话列表操作' }))
@@ -659,7 +694,7 @@ describe('Sidebar view choice', () => {
     expect(await screen.findByText('写作')).toBeInTheDocument()
     restored.unmount()
     render(<Sidebar {...props} />)
-    expect(await screen.findByRole('button', { name: '最近', current: true })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '集', current: true })).toBeInTheDocument()
   })
 
   it('hides project chats from Recent when asked, keeps them under Projects, and remembers it', async () => {
@@ -682,6 +717,7 @@ describe('Sidebar view choice', () => {
 
     view.unmount()
     render(<Sidebar {...props} />)
+    await user.click(await screen.findByRole('button', { name: '最近', current: false }))
     expect(await screen.findByRole('button', { name: looseChat.title })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: projectChat.title })).not.toBeInTheDocument()
     window.localStorage.removeItem('kivio-chat-recent-hides-projects')

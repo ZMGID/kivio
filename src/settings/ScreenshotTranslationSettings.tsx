@@ -1,10 +1,11 @@
-import { Download, RefreshCw } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Download, Pencil, RefreshCw, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { listen } from '@tauri-apps/api/event'
 import { type DefaultPromptTemplates, type OfflineModelProgress, type RapidOcrStatus, type RapidOcrTier, type ReplaceTranslationPackStatus, type Settings } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
 import { formatBytes } from '../utils/formatBytes'
-import { ModelPairSelect } from './ModelPairSelect'
+import { ModelEffortSelect, ModelPairSelect } from './ModelPairSelect'
 import {
   Input,
   Select,
@@ -84,7 +85,7 @@ export function ScreenshotTranslationSettings({
 
   return (
     <>
-      <SettingsGroup title={t.sectionOptions}>
+      <SettingsGroup title={t.tabScreenshot}>
           <SettingRow label={t.enabled}>
             <Toggle
               checked={screenshot.enabled}
@@ -94,6 +95,69 @@ export function ScreenshotTranslationSettings({
 
           {screenshot.enabled && (
             <>
+              <SettingRow label={t.sectionModel}>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <ModelPairSelect
+                    providerId={screenshot.providerId}
+                    model={screenshot.model}
+                    providers={settings.providers}
+                    onChange={(providerId, model) => onUpdate({ providerId, model, thinkingLevel: '' })}
+                  />
+                  <ModelEffortSelect
+                    providerId={screenshot.providerId}
+                    model={screenshot.model}
+                    providers={settings.providers}
+                    value={screenshot.thinkingLevel ?? (screenshot.thinkingEnabled ? '' : 'off')}
+                    onChange={(thinkingLevel) => onUpdate({ thinkingLevel })}
+                  />
+                </div>
+              </SettingRow>
+
+              {hasSystemOcr && (
+                <SettingRow label={t.ocrEngine} description={t.ocrEngineHint}>
+                  <Select
+                    value={ocrMode}
+                    onChange={(value) =>
+                      onUpdate({
+                        ocrMode: value as ScreenshotTranslation['ocrMode'],
+                      })
+                    }
+                    options={[
+                      { value: 'cloud_vision', label: t.ocrEngineCloudVision },
+                      { value: 'system', label: t.ocrEngineSystem },
+                      { value: 'rapid_ocr', label: t.ocrEngineRapidOcr },
+                    ]}
+                    className="kv-ctl"
+                  />
+                </SettingRow>
+              )}
+
+              {hasSystemOcr && ocrMode === 'system' && (
+                <div className="kv-row-stack">
+                  <div className="kv-panel">
+                    <div className="kv-panel-body">
+                      {isMac ? t.ocrEngineMacHint : t.ocrEngineWindowsHint}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {hasSystemOcr && ocrMode === 'rapid_ocr' && (
+                <div className="kv-row-stack">
+                  <p className="kv-row-desc !mt-0 mb-2">{t.ocrEngineRapidOcrSharedNote}</p>
+                  <RapidOcrStatusPanel
+                    status={rapidOcrStatus}
+                    tier={screenshot?.rapidOcrTier ?? 'standard'}
+                    downloadState={rapidOcrDownloadState}
+                    downloadError={rapidOcrDownloadError}
+                    t={t}
+                    onRefresh={onRefreshRapidOcrStatus}
+                    onDownload={onDownloadRapidOcr}
+                    onChangeTier={(rapidOcrTier) => onUpdate({ rapidOcrTier })}
+                  />
+                </div>
+              )}
+
               <SettingRow
                 label={t.screenshotShowOriginal}
                 description={t.screenshotShowOriginalHint}
@@ -104,22 +168,6 @@ export function ScreenshotTranslationSettings({
                 />
               </SettingRow>
 
-              <SettingRow
-                label={t.screenshotTranslationThinking}
-                description={t.screenshotTranslationThinkingHint}
-              >
-                <Toggle
-                  checked={screenshot?.thinkingEnabled ?? false}
-                  onChange={(thinkingEnabled) => onUpdate({ thinkingEnabled })}
-                />
-              </SettingRow>
-
-              <SettingRow label={t.screenshotTranslationStream}>
-                <Toggle
-                  checked={screenshot?.streamEnabled !== false}
-                  onChange={(streamEnabled) => onUpdate({ streamEnabled })}
-                />
-              </SettingRow>
               <SettingRow label={t.lensKeepFullscreen} description={t.lensKeepFullscreenHint}>
                 <Toggle
                   checked={screenshot?.keepFullscreenAfterCapture !== false}
@@ -132,7 +180,7 @@ export function ScreenshotTranslationSettings({
                   min={360}
                   max={720}
                   step={10}
-                  className="w-24"
+                  className="kv-ctl-num"
                   value={widthDraft}
                   onChange={setWidthDraft}
                   onBlur={commitCardWidth}
@@ -172,69 +220,13 @@ export function ScreenshotTranslationSettings({
 
       {screenshot.enabled && (
         <>
-          {hasSystemOcr && (
-            <SettingsGroup title={t.ocrEngine}>
-                  <SettingRow label={t.ocrEngine} description={t.ocrEngineHint}>
-                    <Select
-                      value={ocrMode}
-                      onChange={(value) =>
-                        onUpdate({
-                          ocrMode: value as ScreenshotTranslation['ocrMode'],
-                        })
-                      }
-                      options={[
-                        { value: 'cloud_vision', label: t.ocrEngineCloudVision },
-                        { value: 'system', label: t.ocrEngineSystem },
-                        { value: 'rapid_ocr', label: t.ocrEngineRapidOcr },
-                      ]}
-                      className="w-44"
-                    />
-                  </SettingRow>
-
-                  {ocrMode === 'system' && (
-                    <div className="kv-panel mt-2">
-                      <div className="kv-panel-body">
-                      {isMac ? t.ocrEngineMacHint : t.ocrEngineWindowsHint}
-                      </div>
-                    </div>
-                  )}
-
-                  {ocrMode === 'rapid_ocr' && (
-                    <>
-                      <p className="kv-row-desc px-1 pb-1">{t.ocrEngineRapidOcrSharedNote}</p>
-                      <RapidOcrStatusPanel
-                        status={rapidOcrStatus}
-                        tier={screenshot?.rapidOcrTier ?? 'standard'}
-                        downloadState={rapidOcrDownloadState}
-                        downloadError={rapidOcrDownloadError}
-                        t={t}
-                        onRefresh={onRefreshRapidOcrStatus}
-                        onDownload={onDownloadRapidOcr}
-                        onChangeTier={(rapidOcrTier) => onUpdate({ rapidOcrTier })}
-                      />
-                    </>
-                  )}
-            </SettingsGroup>
-          )}
-
-          <SettingsGroup title={t.sectionModel}>
-              <SettingRow label={t.selectModelPair}>
-                <ModelPairSelect
-                  providerId={screenshot.providerId}
-                  model={screenshot.model}
-                  providers={settings.providers}
-                  onChange={(providerId, model) => onUpdate({ providerId, model })}
-                />
-              </SettingRow>
-          </SettingsGroup>
-
           <SettingsGroup title={t.sectionPrompt}>
               <PromptField
                 label={t.screenshotTranslationPrompt}
                 description={t.screenshotTranslationPromptHint}
                 value={screenshot?.prompt || ''}
                 defaultText={defaultPrompts?.screenshotTranslationTemplate || ''}
-                restoreLabel={t.restoreDefaultPrompt}
+                t={t}
                 onChange={(prompt) => onUpdate({ prompt })}
               />
               <PromptField
@@ -242,7 +234,7 @@ export function ScreenshotTranslationSettings({
                 description={t.selectedTextTranslationPromptHint}
                 value={screenshot?.textPrompt || ''}
                 defaultText={defaultPrompts?.selectedTextTranslationTemplate || ''}
-                restoreLabel={t.restoreDefaultPrompt}
+                t={t}
                 onChange={(textPrompt) => onUpdate({ textPrompt })}
               />
               <PromptField
@@ -250,7 +242,7 @@ export function ScreenshotTranslationSettings({
                 description={t.replaceTranslationPromptHint}
                 value={screenshot?.replacePrompt || ''}
                 defaultText={defaultPrompts?.replaceTranslationTemplate || ''}
-                restoreLabel={t.restoreDefaultPrompt}
+                t={t}
                 onChange={(replacePrompt) => onUpdate({ replacePrompt })}
               />
           </SettingsGroup>
@@ -281,7 +273,7 @@ function TierSelect({
           { value: 'standard', label: t.rapidOcrTierStandard },
           { value: 'high', label: t.rapidOcrTierHigh },
         ]}
-        className="w-56"
+        className="kv-ctl"
       />
     </div>
   )
@@ -394,57 +386,172 @@ function ReplaceTranslationPackPanel({
 }
 
 /**
- * 自定义提示词字段：空值时把默认模板预填进文本框（可编辑起点），
- * 用户未编辑前保存仍写空串（运行时用内置默认）；"恢复默认" 清空并复位预填。
+ * 自定义提示词字段：设置页只显示状态与操作，正文在弹窗中编辑。
+ * 空值表示使用内置默认（弹窗以默认模板作为编辑起点）；未改动直接保存不写入，
+ * 保持空串以继续跟随内置默认。"恢复默认" 写回空串。
  */
 export function PromptField({
   label,
   description,
   value,
   defaultText,
-  restoreLabel,
+  t,
   onChange,
 }: {
   label: string
   description?: string
   value: string
   defaultText: string
-  restoreLabel: string
+  t: I18n
   onChange: (value: string) => void
 }) {
-  const [interacted, setInteracted] = useState(false)
-  const shown = interacted ? value : value || defaultText
+  const [editing, setEditing] = useState(false)
+  const customized = value !== ''
 
   return (
-    <div className="py-2">
-      <div className="mb-2 flex items-start justify-between gap-2">
-        <div>
-          <div className="kv-row-label">{label}</div>
-          {description && <p className="kv-row-desc">{description}</p>}
-        </div>
+    <div className="kv-row">
+      <div className="kv-row-text">
+        <span className="kv-row-label">{label}</span>
+        {description && <p className="kv-row-desc">{description}</p>}
+      </div>
+      <div className="kv-row-control flex items-center gap-2">
+        <span className="text-[12px] text-neutral-500">
+          {customized ? t.promptCustomized : defaultText ? t.promptUsingDefault : t.promptNotSet}
+        </span>
         <Button
           size="sm"
-          className="shrink-0"
-          onClick={() => {
-            setInteracted(false)
-            onChange('')
-          }}
-          disabled={!defaultText || (!value && !interacted)}
+          onClick={() => onChange('')}
+          disabled={!defaultText || !customized}
           data-tauri-drag-region="false"
         >
           <RefreshCw size={10} />
-          {restoreLabel}
+          {t.restoreDefaultPrompt}
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => setEditing(true)}
+          aria-label={`${t.promptEdit} ${label}`}
+          data-tauri-drag-region="false"
+        >
+          <Pencil size={10} />
+          {t.promptEdit}
         </Button>
       </div>
-      <TextArea
-        value={shown}
-        onChange={(v) => {
-          setInteracted(true)
-          onChange(v)
-        }}
-        rows={4}
-      />
+      {editing && (
+        <PromptEditorModal
+          label={label}
+          description={description}
+          initial={value || defaultText}
+          defaultText={defaultText}
+          t={t}
+          onSave={(next) => {
+            if (next !== (value || defaultText)) onChange(next === defaultText ? '' : next)
+            setEditing(false)
+          }}
+          onClose={() => setEditing(false)}
+        />
+      )}
     </div>
+  )
+}
+
+function PromptEditorModal({
+  label,
+  description,
+  initial,
+  defaultText,
+  t,
+  onSave,
+  onClose,
+}: {
+  label: string
+  description?: string
+  initial: string
+  defaultText: string
+  t: I18n
+  onSave: (value: string) => void
+  onClose: () => void
+}) {
+  const [draft, setDraft] = useState(initial)
+  const modalRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const previous = document.activeElement
+    modalRef.current?.querySelector('textarea')?.focus()
+    return () => { if (previous instanceof HTMLElement) previous.focus() }
+  }, [])
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+      if (e.key === 'Tab') {
+        const controls = modalRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), textarea')
+        const first = controls?.[0]
+        const last = controls?.[controls.length - 1]
+        if (first && last && ((e.shiftKey && document.activeElement === first) || (!e.shiftKey && document.activeElement === last))) {
+          e.preventDefault()
+          const target = e.shiftKey ? last : first
+          target.focus()
+        }
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="kv-modal-backdrop kv-modal-backdrop--portal"
+      data-tauri-drag-region="false"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div
+        className="kv kv-modal kv-prompt-editor outline-none"
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        data-own-escape
+        tabIndex={-1}
+        data-tauri-drag-region="false"
+      >
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-[14px] font-semibold">{label}</h3>
+            {description && <p className="kv-row-desc">{description}</p>}
+          </div>
+          <IconButton size="xs" label={t.cancel} onClick={onClose} data-tauri-drag-region="false">
+            <X size={14} />
+          </IconButton>
+        </div>
+        <TextArea
+          value={draft}
+          onChange={setDraft}
+          rows={14}
+          aria-label={label}
+        />
+        <div className="flex items-center justify-between gap-2">
+          <Button
+            size="sm"
+            onClick={() => setDraft(defaultText)}
+            disabled={!defaultText || draft === defaultText}
+            data-tauri-drag-region="false"
+          >
+            <RefreshCw size={10} />
+            {t.restoreDefaultPrompt}
+          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={onClose} data-tauri-drag-region="false">{t.cancel}</Button>
+            <Button variant="primary" size="sm" onClick={() => onSave(draft)} data-tauri-drag-region="false">
+              {t.save}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body,
   )
 }
 

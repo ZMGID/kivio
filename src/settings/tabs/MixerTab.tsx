@@ -42,14 +42,12 @@ export function MixerTab({
   useModelDatabase()
   return (
     <>
-      <SettingsGroup title={t.mixerSection}>
-        <div className="mb-3 flex items-start justify-between gap-3">
-          {t.mixerSectionHint ? (
-            <p className="kv-row-desc max-w-[560px]">{t.mixerSectionHint}</p>
-          ) : <span />}
+      <SettingsGroup
+        title={t.mixerSection}
+        description={t.mixerSectionHint || undefined}
+        actions={
           <Button
             size="sm"
-            className="shrink-0"
             onClick={() => {
               onUpdateDefaultModel('vision', '', '')
               onUpdateDefaultModel('videoAnalysis', '', '')
@@ -62,7 +60,8 @@ export function MixerTab({
           >
             {t.mixerResetAuto}
           </Button>
-        </div>
+        }
+      >
         <SettingRow
           label={t.auxiliaryVisionModel}
         >
@@ -161,22 +160,22 @@ export function MixerTab({
           description={t.promptOptimizePromptHint}
           value={settings.chat?.promptOptimizePrompt || ''}
           defaultText={defaultPromptOptimize}
-          restoreLabel={t.restoreDefaultPrompt}
+          t={t}
           onChange={(promptOptimizePrompt) => onUpdateChat({ promptOptimizePrompt })}
         />
         {!hasChatProvider && (
-          <p className="kv-row-desc px-0 pb-2">
-            {lang === 'zh' ? '请先在「模型」中添加并配置供应商。' : 'Add and configure a provider under Models first.'}
+          <p className="kv-group-note">
+            {lang === 'zh' ? '请先在「供应商」中添加并配置供应商。' : 'Add and configure a provider under Providers first.'}
           </p>
         )}
       </SettingsGroup>
 
-      <SettingsGroup title={t.mixerSubAgentSection}>
-        <p className="kv-row-desc mb-3">
-          {lang === 'zh'
-            ? '为子代理角色一起选择模型与推理强度。未单独配置的角色跟随 TASK；TASK 跟随主对话。已有子代理继续使用启动时的配置。'
-            : 'Choose a model and reasoning effort for each role. Unassigned roles follow TASK, then the parent chat. Existing agents keep their launch configuration.'}
-        </p>
+      <SettingsGroup
+        title={t.mixerSubAgentSection}
+        description={lang === 'zh'
+          ? '为子代理角色一起选择模型与推理强度。未单独配置的角色跟随 TASK；TASK 跟随主对话。已有子代理继续使用启动时的配置。'
+          : 'Choose a model and reasoning effort for each role. Unassigned roles follow TASK, then the parent chat. Existing agents keep their launch configuration.'}
+      >
         {([
           ['task', 'TASK', lang === 'zh' ? '通用、编码代理' : 'General-purpose and coding agents'],
           ['smol', 'SMOL', lang === 'zh' ? '研究代理 · 只读搜索与调查' : 'Research agents · read-only investigation'],

@@ -155,7 +155,7 @@ describe('MixerTab', () => {
 
   it('未配供应商时显示引导文案', () => {
     renderTab()
-    expect(screen.queryByText(/请先在「模型」中添加并配置供应商/)).toBeNull()
+    expect(screen.queryByText(/请先在「供应商」中添加并配置供应商/)).toBeNull()
     render(
       <MixerTab
         settings={makeSettings({ providers: [] }) as never}
@@ -168,7 +168,7 @@ describe('MixerTab', () => {
         onUpdateChat={vi.fn()}
       />,
     )
-    expect(screen.getByText(/请先在「模型」中添加并配置供应商/)).toBeTruthy()
+    expect(screen.getByText(/请先在「供应商」中添加并配置供应商/)).toBeTruthy()
   })
 
   it('顾问开关关闭时不显示模型选择行', () => {
@@ -199,10 +199,12 @@ describe('MixerTab', () => {
     expect(props.onUpdateDefaultModel).toHaveBeenCalledWith('advisor', 'p1', 'gpt-4o')
   })
 
-  it('优化提示词写入 chat.promptOptimizePrompt', () => {
+  it('优化提示词写入 chat.promptOptimizePrompt', async () => {
     const props = renderTab()
-    const areas = screen.getAllByRole('textbox')
-    fireEvent.change(areas[areas.length - 1], { target: { value: '只改写问题' } })
+    await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.promptOptimizePrompt}` }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: '只改写问题' } })
+    await userEvent.click(within(dialog).getByRole('button', { name: t.save }))
     expect(props.onUpdateChat).toHaveBeenCalledWith({ promptOptimizePrompt: '只改写问题' })
   })
 })

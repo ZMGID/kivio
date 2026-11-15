@@ -1,4 +1,5 @@
-import { type ModelProvider } from '../api/tauri'
+import { useEffect, useState } from 'react'
+import { api, type ModelProvider, type ThinkingCapabilities } from '../api/tauri'
 import { useT } from '../components/i18n'
 import { Select } from './components'
 import { buildModelPairOptions, modelPairValue, parseModelPairValue } from './utils'
@@ -16,6 +17,49 @@ interface ModelPairSelectProps {
   filterModel?: (provider: ModelProvider, model: string) => boolean
 }
 
+/** Reuses the request layer's model capabilities, including provider overrides. */
+export function ModelEffortSelect({ providerId, model, providers, value, onChange }: {
+  providerId: string
+  model: string
+  providers: ModelProvider[]
+  value: string
+  onChange: (value: string) => void
+}) {
+  const t = useT()
+  const [result, setResult] = useState<{ key: string; capabilities: ThinkingCapabilities } | null>(null)
+  const key = JSON.stringify([providerId, model, providers])
+  useEffect(() => {
+    let active = true
+    if (providerId && model) {
+      void api.thinkingCapabilitiesForModel(model, providerId).then((capabilities) => {
+        if (active) setResult({ key, capabilities })
+      }).catch(() => {
+        if (active) setResult(null)
+      })
+    }
+    return () => { active = false }
+  }, [key, providerId, model])
+  const current = result?.key === key ? result.capabilities : null
+  if (!current) return null
+  const supportsOff = current.offMode !== 'unsupported' && current.offMode !== 'not_applicable'
+  if (!current.levels.length && !supportsOff) return null
+  const options = [
+    { value: '', label: t.promptUsingDefault },
+    ...(supportsOff ? [{ value: 'off', label: current.offMode === 'upfront_only' ? 'Off (up-front)' : 'Off' }] : []),
+    ...current.levels.map((level) => ({ value: level, label: level })),
+  ]
+  return (
+    <Select
+      className="w-32"
+      ariaLabel={t.reasoningEffort}
+      title={t.reasoningEffort}
+      value={options.some((option) => option.value === value) ? value : ''}
+      options={options}
+      onChange={onChange}
+    />
+  )
+}
+
 export function ModelPairSelect({
   providerId,
   model,
@@ -23,7 +67,7 @@ export function ModelPairSelect({
   onChange,
   inheritLabel,
   offOption,
-  className = 'w-52',
+  className = 'kv-ctl',
   ariaLabel,
   filterModel,
 }: ModelPairSelectProps) {

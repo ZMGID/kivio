@@ -146,13 +146,13 @@ export function ThemeTab({ settings, lang, draft, onDraftChange, onCommit }: {
 
   return (
     <div className="theme-page" aria-label={zh ? '主题管理' : 'Theme manager'} aria-busy={Boolean(busy)}>
-      {!draft && <SettingsGroup title={zh ? '显示模式与材质' : 'Mode & material'}>
-        <SettingRow label={zh ? '明暗模式' : 'Appearance'}>
-          <Select value={settings.theme} disabled={Boolean(busy)} className="w-40" ariaLabel={zh ? '明暗模式' : 'Appearance mode'}
+      {!draft && <SettingsGroup title={zh ? '外观' : 'Appearance'}>
+        <SettingRow label={zh ? '明暗模式' : 'Mode'}>
+          <Select value={settings.theme} disabled={Boolean(busy)} className="kv-ctl" ariaLabel={zh ? '明暗模式' : 'Appearance mode'}
             options={[{ value: 'system', label: zh ? '跟随系统' : 'System' }, { value: 'light', label: zh ? '浅色' : 'Light' }, { value: 'dark', label: zh ? '深色' : 'Dark' }]}
             onChange={value => void run('settings', () => onCommit(current => ({ ...current, theme: value as Settings['theme'] })))} />
         </SettingRow>
-        <SettingRow label={zh ? '半透明侧边栏' : 'Translucent sidebar'}>
+        <SettingRow label={zh ? '半透明侧边栏' : 'Translucent sidebar'} description={zh ? '侧边栏透出桌面背景。' : 'Lets the desktop show through the sidebar.'}>
           <Toggle checked={settings.translucentSidebar} disabled={Boolean(busy)} ariaLabel={zh ? '半透明侧边栏' : 'Translucent sidebar'}
             onChange={value => void run('settings', () => onCommit(current => ({ ...current, translucentSidebar: value })))} />
         </SettingRow>

@@ -31,11 +31,10 @@ export function TranslateTab({
   const outputLabel = lang === 'zh' ? '输入翻译输出语言' : 'Input translation language'
   return (
     <>
-      <div className="kv-section-title">{lang === 'zh' ? '翻译语言' : 'Translation languages'}</div>
-      <SettingsGroup>
+      <SettingsGroup title={lang === 'zh' ? '翻译语言' : 'Translation languages'}>
         <SettingRow label={readingLabel} description={lang === 'zh' ? '你想看的语言，用于划词、截图和替换翻译' : 'The language you read, used for selected text, screenshots, and in-place translation'}>
           <Select
-            className="w-40"
+            className="kv-ctl"
             ariaLabel={readingLabel}
             value={settings.readingTargetLang}
             onChange={(v) => onUpdateSettings({ readingTargetLang: v })}
@@ -44,7 +43,7 @@ export function TranslateTab({
         </SettingRow>
         <SettingRow label={outputLabel} description={lang === 'zh' ? '你准备发送的语言，用于输入翻译浮窗；自动仅用于中英互译' : 'The language you send from the input translator; Auto switches between Chinese and English'}>
           <Select
-            className="w-40"
+            className="kv-ctl"
             ariaLabel={outputLabel}
             value={settings.targetLang}
             onChange={(v) => onUpdateSettings({ targetLang: v })}
@@ -53,9 +52,8 @@ export function TranslateTab({
         </SettingRow>
       </SettingsGroup>
 
-      <div className="kv-section-title">{t.tabTranslate}</div>
-      <SettingsGroup title={t.sectionModel}>
-        <SettingRow label={t.selectModelPair}>
+      <SettingsGroup title={t.tabTranslate}>
+        <SettingRow label={t.sectionModel}>
           <ModelPairSelect
             providerId={settings.translatorProviderId}
             model={settings.translatorModel}
@@ -65,15 +63,12 @@ export function TranslateTab({
             }}
           />
         </SettingRow>
-      </SettingsGroup>
-
-      <SettingsGroup title={t.sectionPrompt}>
         <PromptField
           label={t.translatorPrompt}
           description={t.translatorPromptHint}
           value={settings.translatorPrompt || ''}
           defaultText={defaultPrompts?.translationTemplate || ''}
-          restoreLabel={t.restoreDefaultPrompt}
+          t={t}
           onChange={(v) => onUpdateSettings({ translatorPrompt: v })}
         />
       </SettingsGroup>

@@ -48,18 +48,18 @@ function MemoryEditor({
   const overLimit = maxBytes !== undefined && bytes > maxBytes
   const dirty = value !== savedValue
   return (
-    <div className="kv-panel mb-2">
-      <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="kv-panel-title !mb-1">
-            {title}
-            <span className={`kv-tag ${overLimit ? 'danger' : dirty ? 'warn' : 'ok'}`}>
-              {maxBytes ? `${bytes} / ${maxBytes} bytes` : `${bytes} bytes`}
-            </span>
-          </div>
-          <div className="kv-panel-body">{description}</div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+    <SettingsGroup
+      title={
+        <>
+          {title}
+          <span className={`kv-tag tabular-nums ${overLimit ? 'danger' : dirty ? 'warn' : ''}`}>
+            {maxBytes ? `${bytes} / ${maxBytes} bytes` : `${bytes} bytes`}
+          </span>
+        </>
+      }
+      description={description}
+      actions={
+        <>
           <Button
             size="sm"
             onClick={onReload}
@@ -78,13 +78,15 @@ function MemoryEditor({
           >
             {saving ? (lang === 'zh' ? '保存中' : 'Saving') : (lang === 'zh' ? '保存' : 'Save')}
           </Button>
-        </div>
-      </div>
+        </>
+      }
+    >
+      <div className="kv-row-stack">
       <textarea
         value={value}
         onChange={(event) => onChange(event.target.value)}
         rows={rows}
-        className="kv-textarea mono custom-scrollbar min-h-[160px]"
+        className="kv-textarea mono custom-scrollbar block min-h-[160px]"
         spellCheck={false}
         data-tauri-drag-region="false"
         aria-label={title}
@@ -96,7 +98,8 @@ function MemoryEditor({
             : `${layer.toUpperCase()} is over its byte limit.`}
         </p>
       )}
-    </div>
+      </div>
+    </SettingsGroup>
   )
 }
 
@@ -136,7 +139,7 @@ export function MemoryTab({
 }: MemoryTabProps) {
   return (
     <>
-      <SettingsGroup title={lang === 'zh' ? '记忆运行' : 'Memory runtime'}>
+      <SettingsGroup title={lang === 'zh' ? '运行' : 'Runtime'}>
         <SettingRow
           label={lang === 'zh' ? '启用记忆' : 'Enable memory'}
           description={lang === 'zh'
@@ -148,37 +151,33 @@ export function MemoryTab({
             onChange={(enabled) => onUpdateChatMemory({ enabled })}
           />
         </SettingRow>
-        <SettingRow label={lang === 'zh' ? '记忆文件夹' : 'Memory folder'} stack>
-          <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              onClick={onRefresh}
-              disabled={memoryLoading}
-              data-tauri-drag-region="false"
-            >
-              <RefreshCw size={10} className={memoryLoading ? 'animate-spin' : ''} />
-              {lang === 'zh' ? '刷新' : 'Refresh'}
-            </Button>
-            <Button
-              size="sm"
-              onClick={onOpenFolder}
-              data-tauri-drag-region="false"
-            >
-              <FolderOpen open size={11} />
-              {lang === 'zh' ? '打开文件夹' : 'Open folder'}
-            </Button>
-            {memoryDir && <span className="kv-row-desc min-w-0 break-all">{memoryDir}</span>}
-          </div>
+        <SettingRow label={lang === 'zh' ? '记忆文件夹' : 'Memory folder'} description={memoryDir || undefined}>
+          <Button
+            size="sm"
+            onClick={onRefresh}
+            disabled={memoryLoading}
+            data-tauri-drag-region="false"
+          >
+            <RefreshCw size={10} className={memoryLoading ? 'animate-spin' : ''} />
+            {lang === 'zh' ? '刷新' : 'Refresh'}
+          </Button>
+          <Button
+            size="sm"
+            onClick={onOpenFolder}
+            data-tauri-drag-region="false"
+          >
+            <FolderOpen open size={11} />
+            {lang === 'zh' ? '打开文件夹' : 'Open folder'}
+          </Button>
         </SettingRow>
         {memoryError && <ErrorNotice message={memoryError} />}
         {memorySuccess && (
-          <div className="kv-panel info">
+          <div className="kv-panel info my-3">
             <div className="kv-panel-body">{memorySuccess}</div>
           </div>
         )}
       </SettingsGroup>
 
-      {/* L1 / L2 编辑器自带标题+描述+按钮，面板间用 mb-2 直接留间距（无额外容器层） */}
       <MemoryEditor
         layer="l1"
         title={lang === 'zh' ? 'L1 在线记忆' : 'L1 Online Memory'}

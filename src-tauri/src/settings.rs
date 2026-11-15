@@ -482,10 +482,13 @@ pub struct ScreenshotTranslationConfig {
     pub model: String,
     #[serde(default = "default_false")]
     pub direct_translate: bool,
-    /// 是否启用思考模式（OCR 模型 + 翻译模型）。默认 false：截图翻译追求快，思考通常没必要。
+    /// 旧版思考开关，仅作 `thinking_level` 缺省时的迁移来源（false → "off"）。
     #[serde(default = "default_false")]
     pub thinking_enabled: bool,
-    /// 是否流式输出 OCR + 翻译。默认 true：用户看着字逐步出现的体感比等"加载完"更顺。
+    /// 推理强度："" 模型默认，"off" 关闭，其余为模型支持的档位。None 仅出现在迁移前。
+    #[serde(default)]
+    pub thinking_level: Option<String>,
+    /// 已从设置页移除，恒为 true（保留字段供旧版本读取）。
     #[serde(default = "default_true")]
     pub stream_enabled: bool,
     /// 截图后是否保留 lens 全屏覆盖。默认 true：选区高亮 + 译文卡同屏；false → lens 缩成浮动小窗，不挡下层 app。
@@ -539,6 +542,7 @@ impl Default for ScreenshotTranslationConfig {
             model: String::new(),
             direct_translate: false,
             thinking_enabled: false,
+            thinking_level: None,
             stream_enabled: true,
             keep_fullscreen_after_capture: true,
             card_width: default_translate_card_width(),
@@ -833,21 +837,23 @@ pub struct LensConfig {
     /// 响应语言（"zh"/"en"）。空字符串表示跟随 settings.target_lang，"auto" 则用 "zh"。
     #[serde(default)]
     pub default_language: String,
-    /// 是否流式返回，默认 true。
+    /// 已从设置页移除，恒为 true（保留字段供旧版本读取）。
     #[serde(default = "default_true")]
     pub stream_enabled: bool,
-    /// 是否启用思考模式（推理链）。默认 true。
-    /// false 时会向请求 body 注入各家厂商关闭思考的字段并集（不认识的会被 provider 忽略）。
+    /// 旧版思考开关，仅作 `thinking_level` 缺省时的迁移来源（false → "off"）。
     #[serde(default = "default_true")]
     pub thinking_enabled: bool,
+    /// 推理强度："" 模型默认，"off" 关闭，其余为模型支持的档位。None 仅出现在迁移前。
+    #[serde(default)]
+    pub thinking_level: Option<String>,
     /// 自定义 system prompt。空字符串使用 default_system_prompt 模板。
     #[serde(default)]
     pub system_prompt: String,
     /// 自定义 question prompt。空字符串使用 default_question_prompt 模板。
     #[serde(default)]
     pub question_prompt: String,
-    /// Lens 提问默认发送到 AI 客户端。关闭后保留旧的 Lens 浮窗内回答。
-    #[serde(default = "default_true")]
+    /// Lens 提问可选发送到 AI 客户端，默认关闭，在 Lens 浮窗内回答。
+    #[serde(default = "default_false")]
     pub send_to_chat: bool,
     /// 消息排序："asc" 老到新（默认），"desc" 新到老
     #[serde(default = "default_message_order")]
@@ -883,9 +889,10 @@ impl Default for LensConfig {
             default_language: String::new(),
             stream_enabled: true,
             thinking_enabled: true,
+            thinking_level: None,
             system_prompt: String::new(),
             question_prompt: String::new(),
-            send_to_chat: true,
+            send_to_chat: false,
             message_order: "asc".to_string(),
             show_capture_hint: true,
             web_search: LensWebSearchConfig::default(),
@@ -3015,6 +3022,26 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     // ponytail: 流式输出 / 思考模式的设置项已从 UI 移除，恒为开启（老配置里的 false 在此归位）
     settings.chat.stream_enabled = true;
     settings.chat.thinking_enabled = true;
+    // Lens / 截图翻译同样固定流式；思考开关迁移为推理强度（关 → "off"，开 → 模型默认）。
+    settings.lens.stream_enabled = true;
+    settings.screenshot_translation.stream_enabled = true;
+    for (level, enabled) in [
+        (
+            &mut settings.lens.thinking_level,
+            settings.lens.thinking_enabled,
+        ),
+        (
+            &mut settings.screenshot_translation.thinking_level,
+            settings.screenshot_translation.thinking_enabled,
+        ),
+    ] {
+        if level.is_none() {
+            *level = Some(if enabled { String::new() } else { "off".to_string() });
+        }
+    }
+    settings.lens.thinking_enabled = settings.lens.thinking_level.as_deref() != Some("off");
+    settings.screenshot_translation.thinking_enabled =
+        settings.screenshot_translation.thinking_level.as_deref() != Some("off");
 
     if !settings.chat_behavior_migrated_from_lens {
         if settings.lens.default_language.trim().is_empty() {
@@ -4082,6 +4109,33 @@ mod tests {
     use std::cell::RefCell;
 
     use crate::state::test_app_state;
+
+    #[test]
+    fn screen_tool_effort_migration_preserves_choices_and_retry_settings() {
+        for enabled in [true, false] {
+            let old: Settings = serde_json::from_value(serde_json::json!({
+                "lens": {"thinkingEnabled": enabled, "streamEnabled": false},
+                "screenshotTranslation": {"thinkingEnabled": enabled, "streamEnabled": false},
+                "retryEnabled": false, "retryAttempts": 2
+            })).unwrap();
+            let mut migrated = sanitize_settings(old);
+            let expected = Some(if enabled { "" } else { "off" });
+            assert_eq!(migrated.lens.thinking_level.as_deref(), expected);
+            assert_eq!(migrated.screenshot_translation.thinking_level.as_deref(), expected);
+            assert!(migrated.lens.stream_enabled);
+            assert!(migrated.screenshot_translation.stream_enabled);
+            assert!(!migrated.retry_enabled);
+            assert_eq!(migrated.retry_attempts, 2);
+            migrated.lens.thinking_level = Some("high".into());
+            migrated.screenshot_translation.thinking_level = Some(String::new());
+            let saved = serde_json::to_value(sanitize_settings(migrated)).unwrap();
+            let reopened = sanitize_settings(serde_json::from_value(saved).unwrap());
+            assert_eq!(reopened.lens.thinking_level.as_deref(), Some("high"));
+            assert_eq!(reopened.screenshot_translation.thinking_level.as_deref(), Some(""));
+            assert!(reopened.lens.thinking_enabled);
+            assert!(reopened.screenshot_translation.thinking_enabled);
+        }
+    }
 
     #[test]
     fn reading_translation_language_migrates_once_and_stays_independent() {
@@ -5935,12 +5989,19 @@ mod tests {
     }
 
     #[test]
-    fn lens_send_to_chat_defaults_to_enabled() {
+    fn lens_send_to_chat_defaults_to_disabled_and_preserves_explicit_choices() {
         let s = Settings::default();
-        assert!(s.lens.send_to_chat);
+        assert!(!s.lens.send_to_chat);
 
         let cfg: LensConfig = serde_json::from_str("{}").expect("empty lens config should load");
-        assert!(cfg.send_to_chat);
+        assert!(!cfg.send_to_chat);
+        for enabled in [true, false] {
+            let settings: Settings = serde_json::from_value(serde_json::json!({
+                "lens": {"sendToChat": enabled}
+            })).unwrap();
+            let saved = serde_json::to_value(sanitize_settings(settings)).unwrap();
+            assert_eq!(saved["lens"]["sendToChat"], enabled);
+        }
     }
 
     #[test]

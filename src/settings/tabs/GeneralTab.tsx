@@ -28,7 +28,7 @@ function FontPicker({ value, systemFonts, placeholder, defaultLabel, emptyText, 
     setQuery('')
   }
   return (
-    <div className="relative w-56">
+    <div className="relative kv-ctl">
       <Input
         value={open ? query : (value || defaultLabel)}
         onChange={(v) => { setQuery(v); if (!open) setOpen(true) }}
@@ -57,7 +57,7 @@ function FontPicker({ value, systemFonts, placeholder, defaultLabel, emptyText, 
             </button>
           ))}
           {filtered.length === 0 && (
-            <div className="px-3 py-2 text-[12px] text-neutral-400">{emptyText}</div>
+            <div className="px-3 py-2 text-[12px] text-[var(--text-faint)]">{emptyText}</div>
           )}
         </div>
       )}
@@ -65,16 +65,7 @@ function FontPicker({ value, systemFonts, placeholder, defaultLabel, emptyText, 
   )
 }
 
-function AppearanceSubsection({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="settings-appearance-subsection">
-      <div className="settings-appearance-subsection-title">{title}</div>
-      <div className="settings-appearance-subsection-body">{children}</div>
-    </div>
-  )
-}
-
-/** 通用外观：语言、界面字号、界面字体、代码字体。主题与材质由独立主题页管理。 */
+/** 界面：语言、界面字号、界面字体、代码字体。主题与材质由独立主题页管理。 */
 export function AppearanceGroup({
   settings,
   t,
@@ -95,11 +86,10 @@ export function AppearanceGroup({
   onCommitUiFontPx: (value: string, commit: boolean) => void
 }) {
   return (
-    <SettingsGroup title={lang === 'zh' ? '外观' : 'Appearance'} className="settings-appearance-group">
-      <AppearanceSubsection title={lang === 'zh' ? '界面' : 'Interface'}>
+    <SettingsGroup title={lang === 'zh' ? '界面' : 'Interface'}>
         <SettingRow label={t.language}>
           <Select
-            className="w-36"
+            className="kv-ctl"
             value={settings.settingsLanguage || 'zh'}
             onChange={(v) => onUpdateSettings({ settingsLanguage: v as 'zh' | 'en' })}
             options={[
@@ -108,10 +98,6 @@ export function AppearanceGroup({
             ]}
           />
         </SettingRow>
-      </AppearanceSubsection>
-
-
-      <AppearanceSubsection title={lang === 'zh' ? '字体' : 'Typography'}>
         <SettingRow
           label={lang === 'zh' ? '界面字号' : 'UI size'}
         >
@@ -123,9 +109,9 @@ export function AppearanceGroup({
               onBlur={() => onCommitUiFontPx(uiFontPxInput, true)}
               min={UI_FONT_PX_MIN}
               max={UI_FONT_PX_MAX}
-              className="!w-16 text-center"
+              className="kv-ctl-num"
             />
-            <span className="text-[13px] text-[var(--text-faint)]">px</span>
+            <span className="text-[12px] text-[var(--text-faint)]">px</span>
           </div>
         </SettingRow>
         <SettingRow
@@ -152,12 +138,11 @@ export function AppearanceGroup({
             onChange={(v) => onUpdateSettings({ uiFontMono: v })}
           />
         </SettingRow>
-      </AppearanceSubsection>
     </SettingsGroup>
   )
 }
 
-/** 行为：开机自启 / 启动后最小化到托盘 / 关闭时保持聊天窗口 / 回复完成通知 / 失败重试。 */
+/** 启动与窗口（开机自启 / 最小化到托盘 / 关闭时保持窗口）和对话（完成通知 / 失败重试）两组。 */
 export function BehaviorGroup({
   settings,
   t,
@@ -176,17 +161,20 @@ export function BehaviorGroup({
   onRetryAttemptsBlur: () => void
 }) {
   return (
-    <SettingsGroup title={lang === 'zh' ? '行为' : 'Behavior'}>
+    <>
+    <SettingsGroup title={lang === 'zh' ? '启动与窗口' : 'Startup & window'}>
       <SettingRow label={t.launchAtStartup}>
         <Toggle
           checked={settings.launchAtStartup}
           onChange={(v) => onUpdateSettings({ launchAtStartup: v })}
+          ariaLabel={t.launchAtStartup}
         />
       </SettingRow>
       <SettingRow label={t.launchMinimizedToTray} description={t.launchMinimizedToTrayDesc}>
         <Toggle
           checked={settings.launchMinimizedToTray}
           onChange={(v) => onUpdateSettings({ launchMinimizedToTray: v })}
+          ariaLabel={t.launchMinimizedToTray}
         />
       </SettingRow>
       <SettingRow label={t.keepChatWindowAlive} description={t.keepChatWindowAliveDesc}>
@@ -196,6 +184,9 @@ export function BehaviorGroup({
           ariaLabel={t.keepChatWindowAlive}
         />
       </SettingRow>
+    </SettingsGroup>
+
+    <SettingsGroup title={lang === 'zh' ? '对话' : 'Conversations'}>
       <SettingRow label={t.chatCompletionNotifications} description={t.chatCompletionNotificationsDesc}>
         <Toggle
           checked={settings.chatCompletionNotifications}
@@ -220,11 +211,12 @@ export function BehaviorGroup({
             placeholder="10"
             min={0}
             max={10}
-            className="!w-20 text-center"
+            className="kv-ctl-num"
           />
         </SettingRow>
       )}
     </SettingsGroup>
+    </>
   )
 }
 
@@ -260,7 +252,7 @@ export function PermissionsGroup({
         actionLabel={t.openSystemSettings}
         onOpen={() => onOpenPermissionSettings('screen-recording')}
       />
-      <div className="flex justify-end py-2">
+      <div className="kv-row justify-end">
         <Button
           size="sm"
           onClick={onRefreshPermissions}

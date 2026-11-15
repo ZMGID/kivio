@@ -137,36 +137,25 @@ export function HotkeysTab({
   return (
     <SettingsGroup
       className="kv-hotkey-list"
-      title={
-        <div className="flex items-center justify-between gap-2">
-          <span>{t.tabHotkeys}</span>
-          <div className="flex shrink-0 items-center gap-1.5 normal-case tracking-normal">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={handleCheckConflicts}
-              data-tauri-drag-region="false"
-            >
-              {t.hotkeyCheckConflicts}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={handleRestoreDefaults}
-              data-tauri-drag-region="false"
-            >
-              {t.hotkeyRestoreDefaults}
-            </Button>
-          </div>
-        </div>
+      title={t.hotkeysGroupTitle}
+      description={t.hotkeysGroupDesc}
+      actions={
+        <>
+          <Button size="sm" variant="ghost" onClick={handleCheckConflicts} data-tauri-drag-region="false">
+            {t.hotkeyCheckConflicts}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={handleRestoreDefaults} data-tauri-drag-region="false">
+            {t.hotkeyRestoreDefaults}
+          </Button>
+        </>
       }
     >
       {checkBanner && (
         <div
-          className={`mb-2 rounded-lg px-3 py-2 text-[12px] leading-5 ${
+          className={`my-3 rounded-lg px-3 py-2 text-[12px] leading-5 ${
             checkBanner.ok
-              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300'
-              : 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-300'
+              ? 'bg-[var(--success-soft)] text-[var(--success)]'
+              : 'bg-[var(--danger-soft)] text-[var(--danger)]'
           }`}
           role="status"
         >

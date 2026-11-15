@@ -93,20 +93,21 @@ export function HooksTab({ lang, hooks, onChange }: {
 
   return (
     <>
-      <SettingsGroup title={t.hooksSectionTitle}>
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <p className="kv-row-desc max-w-[560px]">{t.hooksSectionHint}</p>
-          <Button size="sm" className="shrink-0" onClick={() => setPicking(true)} data-tauri-drag-region="false">
+      <SettingsGroup
+        title={t.hooksSectionTitle}
+        description={t.hooksSectionHint}
+        actions={
+          <Button size="sm" onClick={() => setPicking(true)} data-tauri-drag-region="false">
             <Plus size={11} />
             {t.hooksAdd}
           </Button>
-        </div>
-
+        }
+      >
         {ordered.length === 0 ? (
-          <div className="flex flex-col items-center gap-2 py-8 text-center">
-            <Zap size={18} className="text-neutral-300 dark:text-neutral-600" strokeWidth={1.8} />
-            <div className="text-[12px] text-neutral-500">{t.hooksEmptyTitle}</div>
-            <p className="kv-row-desc max-w-[420px]">{t.hooksEmptyDesc}</p>
+          <div className="kv-group-empty">
+            <Zap size={20} strokeWidth={1.6} />
+            <div className="kv-group-empty-title">{t.hooksEmptyTitle}</div>
+            <p className="max-w-[420px]">{t.hooksEmptyDesc}</p>
           </div>
         ) : (
           ordered.map((hook) => {
@@ -114,13 +115,13 @@ export function HooksTab({ lang, hooks, onChange }: {
             const Icon = PHASE_ICONS[EVENT_PHASES[event] ?? 'agent'] ?? Bot
             return (
               <div key={hook.id} className="kv-row">
-                <span className="shrink-0 text-neutral-400 dark:text-neutral-500">
+                <span className="shrink-0 text-[var(--text-faint)]">
                   {hook.type === 'http' ? <Globe size={15} strokeWidth={1.8} /> : <Terminal size={15} strokeWidth={1.8} />}
                 </span>
                 <div className="kv-row-text">
                   <span className="kv-row-label flex items-center gap-1.5">
                     {hook.name}
-                    <span className="inline-flex items-center gap-1 rounded bg-neutral-900/[0.05] px-1.5 py-px text-[11px] font-normal text-neutral-500">
+                    <span className="kv-tag gap-1">
                       <Icon size={10} strokeWidth={2} />
                       {eventLabel(t, event)}
                     </span>
@@ -153,7 +154,7 @@ export function HooksTab({ lang, hooks, onChange }: {
         )}
 
         {hooks.length > 0 && (
-          <p className="kv-row-desc mt-2">
+          <p className="kv-group-note">
             {t.hooksCountSummary.replace('{total}', String(hooks.length)).replace('{enabled}', String(enabledCount))}
           </p>
         )}

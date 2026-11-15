@@ -140,7 +140,7 @@ export function RetrievalPanel({
         <summary className="kv-group-title cursor-pointer select-none">
           {t('高级', 'Advanced')}
         </summary>
-        <div className="mt-1 space-y-1">
+        <div className="kv-group-body mt-2">
           <SettingRow
             label={t('候选池大小', 'Candidate pool')}
             description={t('每库融合候选数 (20–200)，越大召回越全', 'Fused candidates per library (20–200)')}

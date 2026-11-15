@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { TranslateTab } from './TranslateTab'
@@ -46,8 +46,36 @@ describe('TranslateTab', () => {
     expect(props.onUpdateSettings).toHaveBeenCalledWith({ readingTargetLang: 'th' })
   })
 
-  it('提示词回显 translatorPrompt 而非默认模板', () => {
+  it('提示词回显 translatorPrompt 而非默认模板', async () => {
     renderTab()
+    await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.translatorPrompt}` }))
     expect(screen.getByDisplayValue('自定义翻译提示')).toBeTruthy()
+  })
+
+  it('在弹窗恢复默认并保存后继续跟随内置模板', async () => {
+    const props = renderTab()
+    await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.translatorPrompt}` }))
+    const dialog = within(screen.getByRole('dialog'))
+    await userEvent.click(dialog.getByRole('button', { name: t.restoreDefaultPrompt }))
+    expect(dialog.getByRole('textbox')).toHaveValue('默认翻译模板')
+    expect(props.onUpdateSettings).not.toHaveBeenCalled()
+    await userEvent.click(dialog.getByRole('button', { name: t.save }))
+    expect(props.onUpdateSettings).toHaveBeenCalledWith({ translatorPrompt: '' })
+  })
+
+  it('键盘焦点留在弹窗内，Esc 关闭后回到编辑按钮', async () => {
+    renderTab()
+    const edit = screen.getByRole('button', { name: `${t.promptEdit} ${t.translatorPrompt}` })
+    await userEvent.click(edit)
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByRole('textbox')).toHaveFocus()
+    dialog.getByRole('button', { name: t.save }).focus()
+    await userEvent.tab()
+    expect(dialog.getAllByRole('button', { name: t.cancel })[0]).toHaveFocus()
+    await userEvent.tab({ shift: true })
+    expect(dialog.getByRole('button', { name: t.save })).toHaveFocus()
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(edit).toHaveFocus()
   })
 })

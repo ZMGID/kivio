@@ -327,6 +327,61 @@ pub fn effective_retry_attempts(settings: &Settings) -> usize {
     }
 }
 
+/// 翻译 / OCR / Lens 单次调用的思考选择：是否请求推理 + 可选的推理强度。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThinkingChoice {
+    pub enabled: bool,
+    pub level: Option<&'static str>,
+}
+
+impl ThinkingChoice {
+    pub const OFF: Self = Self {
+        enabled: false,
+        level: None,
+    };
+    pub const MODEL_DEFAULT: Self = Self {
+        enabled: true,
+        level: None,
+    };
+
+    /// 把设置里的推理强度（`""` 模型默认 / `"off"` / 具体档位）按模型能力解析。
+    /// 与对话不同，这里宽松处理：模型不支持的选择退回模型默认，不让截图翻译 / Lens 报错。
+    pub fn resolve(configured: &str, provider: &settings::ModelProvider, model: &str) -> Self {
+        use crate::chat::model_metadata::{thinking_capabilities_for_model, ThinkingOffMode};
+        let configured = configured.trim();
+        if configured.is_empty() {
+            return Self::MODEL_DEFAULT;
+        }
+        let capabilities = thinking_capabilities_for_model(Some(provider), model);
+        if configured == "off" {
+            return match capabilities.off_mode {
+                ThinkingOffMode::Unsupported | ThinkingOffMode::NotApplicable => {
+                    Self::MODEL_DEFAULT
+                }
+                _ => Self::OFF,
+            };
+        }
+        let level = ["minimal", "low", "medium", "high", "xhigh", "max"]
+            .into_iter()
+            .find(|level| *level == configured);
+        match level {
+            Some(level) if capabilities.levels.iter().any(|allowed| allowed == level) => Self {
+                enabled: true,
+                level: Some(level),
+            },
+            _ => Self::MODEL_DEFAULT,
+        }
+    }
+
+    fn apply(self, options: GenerateOptions) -> GenerateOptions {
+        GenerateOptions {
+            thinking_enabled: self.enabled,
+            thinking_level: self.level.map(str::to_string),
+            ..options
+        }
+    }
+}
+
 /// 从响应头中解析 Retry-After 值（秒），转换为毫秒延迟
 fn parse_retry_after(headers: &HeaderMap) -> Option<u64> {
     headers
@@ -829,7 +884,7 @@ pub async fn call_openai_text(
     model: &str,
     prompt: String,
     retry_attempts: usize,
-    thinking_enabled: bool,
+    thinking: ThinkingChoice,
     usage_source: &str,
     usage_operation: &str,
 ) -> Result<String, String> {
@@ -841,10 +896,7 @@ pub async fn call_openai_text(
         system: String::new(),
         messages: vec![ModelMessage::text(ModelRole::User, prompt)],
         tools: Vec::new(),
-        options: GenerateOptions {
-            thinking_enabled,
-            ..GenerateOptions::default()
-        },
+        options: thinking.apply(GenerateOptions::default()),
         metadata: legacy_request_metadata("Text API", usage_source, usage_operation),
     };
     let output = generate_with_chat_provider(state.inner(), config, retry_attempts, request)
@@ -862,7 +914,7 @@ pub async fn call_openai_ocr(
     image_path: &Path,
     prompt: &str,
     retry_attempts: usize,
-    thinking_enabled: bool,
+    thinking: ThinkingChoice,
     usage_source: &str,
     usage_operation: &str,
 ) -> Result<String, String> {
@@ -874,10 +926,7 @@ pub async fn call_openai_ocr(
         system: String::new(),
         messages: vec![ocr_image_message(image_path, prompt)?],
         tools: Vec::new(),
-        options: GenerateOptions {
-            thinking_enabled,
-            ..GenerateOptions::default()
-        },
+        options: thinking.apply(GenerateOptions::default()),
         metadata: legacy_request_metadata("OCR API", usage_source, usage_operation),
     };
     let output = generate_with_chat_provider(state.inner(), config, retry_attempts, request)
@@ -903,7 +952,7 @@ pub async fn call_vision_api(
     provider_id_override: Option<&str>,
     model_override: Option<&str>,
     system_prompt_override: Option<&str>,
-    thinking_enabled: bool,
+    thinking: ThinkingChoice,
     usage_source: &str,
     usage_operation: &str,
 ) -> Result<String, String> {
@@ -926,7 +975,7 @@ pub async fn call_vision_api(
             Some(s) => s.to_string(),
             None => default_lens_system_prompt(language, has_image),
         };
-        if !thinking_enabled {
+        if !thinking.enabled {
             format!("{}{}", base, no_think_instruction(language))
         } else {
             base
@@ -973,10 +1022,7 @@ pub async fn call_vision_api(
         system: system_prompt_to_use,
         messages: api_messages,
         tools: Vec::new(),
-        options: GenerateOptions {
-            thinking_enabled,
-            ..GenerateOptions::default()
-        },
+        options: thinking.apply(GenerateOptions::default()),
         metadata: legacy_request_metadata("Vision API", usage_source, usage_operation),
     };
 
@@ -1031,7 +1077,7 @@ pub async fn stream_chat_call(
     system: String,
     messages: Vec<ModelMessage>,
     retry_attempts: usize,
-    thinking_enabled: bool,
+    thinking: ThinkingChoice,
     image_id: &str,
     kind: &str,
     event_name: &str,
@@ -1046,10 +1092,7 @@ pub async fn stream_chat_call(
         system,
         messages,
         tools: Vec::new(),
-        options: GenerateOptions {
-            thinking_enabled,
-            ..GenerateOptions::default()
-        },
+        options: thinking.apply(GenerateOptions::default()),
         metadata: legacy_request_metadata("Stream chat", usage_source, usage_operation),
     };
     let generation = state.lens().begin_stream();
@@ -1095,7 +1138,7 @@ pub async fn stream_translate_combined(
     system: String,
     messages: Vec<ModelMessage>,
     retry_attempts: usize,
-    thinking_enabled: bool,
+    thinking: ThinkingChoice,
     image_id: &str,
     event_name: &str,
     usage_source: &str,
@@ -1109,10 +1152,7 @@ pub async fn stream_translate_combined(
         system,
         messages,
         tools: Vec::new(),
-        options: GenerateOptions {
-            thinking_enabled,
-            ..GenerateOptions::default()
-        },
+        options: thinking.apply(GenerateOptions::default()),
         metadata: legacy_request_metadata(
             "Stream translate combined",
             usage_source,
@@ -1465,6 +1505,28 @@ impl<F: FnMut(serde_json::Value) + Send> StreamSink for CombinedTranslateEventSi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_tool_effort_respects_model_capabilities_and_reaches_request_options() {
+        let provider: settings::ModelProvider = serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "Test", "baseUrl": "https://example.invalid",
+            "apiFormat": "openai_chat", "models": [], "enabledModels": [],
+            "modelOverrides": {"gpt-5.5": {"reasoningEfforts": ["low", "high"]}}
+        })).unwrap();
+        let choice = ThinkingChoice::resolve("high", &provider, "gpt-5.5");
+        let options = choice.apply(GenerateOptions::default());
+        assert!(options.thinking_enabled);
+        assert_eq!(options.thinking_level.as_deref(), Some("high"));
+        for value in ["", "medium", "invalid"] {
+            assert_eq!(ThinkingChoice::resolve(value, &provider, "gpt-5.5"), ThinkingChoice::MODEL_DEFAULT);
+        }
+        let off = ThinkingChoice::resolve("off", &provider, "claude-haiku-5.99-synthetic")
+            .apply(GenerateOptions::default());
+        assert!(!off.thinking_enabled);
+        assert_eq!(off.thinking_level, None);
+        assert_eq!(ThinkingChoice::resolve("off", &provider, "o3"), ThinkingChoice::MODEL_DEFAULT);
+        assert_eq!(ThinkingChoice::resolve("high", &provider, "gpt-4o"), ThinkingChoice::MODEL_DEFAULT);
+    }
 
     #[test]
     fn retry_after_is_capped_at_max_delay() {

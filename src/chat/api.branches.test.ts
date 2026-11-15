@@ -19,6 +19,12 @@ beforeEach(() => {
 })
 
 describe('branch command adapter', () => {
+  it('returns rewound attachments so they can be sent again', async () => {
+    const attachments = [{ id: 'a1', type: 'image', name: 'one.png', path: 'C:/chat/att_one.png' }]
+    vi.mocked(invoke).mockResolvedValue({ success: true, conversation, content: 'question', attachments })
+    expect(await chatApi.rewindToMessage('c1', 'm1')).toEqual({ conversation, content: 'question', attachments })
+  })
+
   it('loads only presentation IDs, labels and active state', async () => {
     const branches = [{ id: 'app-a', label: 'Original', active: false }, { id: 'app-b', label: 'Edited', active: true }]
     vi.mocked(invoke).mockResolvedValue({ success: true, branches })

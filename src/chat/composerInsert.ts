@@ -1,4 +1,5 @@
 import { getComposerDraft, setComposerDraft } from './composerDraft'
+import type { PendingAttachment } from './types'
 
 type Listener = (text: string) => void
 
@@ -30,8 +31,8 @@ export function onComposerTextInsert(cb: Listener, draftKey?: string): () => voi
   }
 }
 
-export function insertTextIntoComposer(text: string): void {
-  if (!text) return
+export function insertTextIntoComposer(text: string, attachments: PendingAttachment[] = []): void {
+  if (!text && attachments.length === 0) return
   const active = textListeners[textListeners.length - 1]
   const textDraftKey = active?.draftKey
   // 文本信号和会话切换可能发生在同一次 React 更新里（首条「回到这里」会从底栏
@@ -39,12 +40,15 @@ export function insertTextIntoComposer(text: string): void {
   // 当前草稿，使新挂载的 InputBar 也能读到。随后 listener 仍负责即时更新未卸载的输入框。
   if (textDraftKey) {
     const current = getComposerDraft(textDraftKey) ?? { input: '', quotes: [], attachments: [] }
-    const needsSpace = current.input.length > 0
+    const needsSpace = text.length > 0 && current.input.length > 0
       && !current.input.endsWith(' ')
       && !current.input.endsWith('\n')
     setComposerDraft(textDraftKey, {
       ...current,
       input: `${current.input}${needsSpace ? ' ' : ''}${text}`,
+      attachments: [...current.attachments, ...attachments.filter(
+        attachment => !current.attachments.some(existing => existing.path === attachment.path),
+      )],
     })
   }
   active?.listener(text)

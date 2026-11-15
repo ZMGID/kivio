@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi, type Mock } from 'vitest'
 import { ChatTab } from './ChatTab'
@@ -45,14 +45,11 @@ function renderTab(overrides: Partial<MockedProps> = {}) {
       chatMode: { systemPrompt: '' },
     } as Props['chatConfig'],
     chatTools: { enabled: false, servers: [], nativeTools: { workingDirectory: '/w' } } as unknown as Props['chatTools'],
-    chatMemory: { enabled: false } as Props['chatMemory'],
     chatDefaults: 'You are the AI assistant inside Kivio.',
     chatRuntimeDefaults: 'Chat runtime (internal runtime mode): this conversation uses Kivio Chat.',
     effectiveChatMaxOutput: { maxOutput: 131072, source: 'override' },
     chatMaxOutputSourceLabel: '来自模型覆盖',
     chatMaxOutputModelLabel: 'p1 / gpt-4o',
-    skillRuntimeEnabled: true,
-    nativeBuiltinToolsEnabled: false,
     onUpdateChatTools: vi.fn(),
     onUpdateChat: vi.fn(),
     onUpdateVoice: vi.fn(),
@@ -71,6 +68,9 @@ describe('ChatTab', () => {
     expect(toggle).toHaveAttribute('aria-checked', 'true')
     await userEvent.click(toggle)
     expect(props.onUpdateChatTools).toHaveBeenCalledWith({ toolsOnDemand: false })
+    expect(screen.queryByText('MCP 工具')).toBeNull()
+    expect(screen.queryByText('Skill 运行时')).toBeNull()
+    expect(screen.queryByText('内置工具')).toBeNull()
   })
 
 
@@ -93,8 +93,8 @@ describe('ChatTab', () => {
     expect(screen.getByText('131,072 tokens')).toBeTruthy()
     expect(screen.getByText('来自模型覆盖')).toBeTruthy()
     expect(screen.getByText(/p1 \/ gpt-4o/)).toBeTruthy()
-    expect(screen.getByText('兜底')).toBeTruthy()
-    expect(screen.getByText('16,384 tokens')).toBeTruthy()
+    // 兜底值并入同一行说明
+    expect(screen.getByText(/兜底 16,384 tokens/)).toBeTruthy()
   })
 
   it('source=fallback 时生效值与兜底值一致', () => {
@@ -102,19 +102,28 @@ describe('ChatTab', () => {
       effectiveChatMaxOutput: { maxOutput: 16384, source: 'fallback' },
       chatMaxOutputSourceLabel: '兜底设置',
     })
-    expect(screen.getAllByText('16,384 tokens')).toHaveLength(2)
-    expect(screen.getByText('兜底')).toBeTruthy()
+    expect(screen.getByText('16,384 tokens')).toBeTruthy()
+    expect(screen.getByText(/兜底 16,384 tokens/)).toBeTruthy()
+    expect(screen.getByText('兜底设置')).toBeTruthy()
   })
 
-  it('Agent 提示词为空时显示内置 defaultText（英文原文）', () => {
-    renderTab()
-    expect(screen.getByDisplayValue('You are the AI assistant inside Kivio.')).toBeTruthy()
+  it('Agent 提示词不在设置页直接展开，空值时弹窗以内置 defaultText 为起点', async () => {
+    const props = renderTab()
+    expect(screen.queryByDisplayValue('You are the AI assistant inside Kivio.')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.kivioChatAgentSystemPrompt}` }))
+    const dialog = screen.getByRole('dialog', { name: t.kivioChatAgentSystemPrompt })
+    expect(within(dialog).getByRole('textbox')).toHaveValue('You are the AI assistant inside Kivio.')
+    // 未改动直接保存不写入，继续跟随内置默认
+    await userEvent.click(within(dialog).getByRole('button', { name: t.save }))
+    expect(props.onUpdateChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('Chat runtime 提示词为空时显示内置 defaultText（英文原文）', () => {
+  it('Chat runtime 提示词为空时弹窗显示内置 defaultText（英文原文）', async () => {
     renderTab()
+    await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.kivioChatSystemPrompt}` }))
     expect(
-      screen.getByDisplayValue('Chat runtime (internal runtime mode): this conversation uses Kivio Chat.'),
+      within(screen.getByRole('dialog')).getByDisplayValue('Chat runtime (internal runtime mode): this conversation uses Kivio Chat.'),
     ).toBeTruthy()
   })
 
@@ -166,8 +175,22 @@ describe('ChatTab', () => {
         chatMode: { systemPrompt: '' },
       } as Props['chatConfig'],
     })
-    await userEvent.type(screen.getByDisplayValue('自定义 Agent 提示'), 'z')
-    expect(props.onUpdateChat).toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.kivioChatAgentSystemPrompt}` }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.type(within(dialog).getByDisplayValue('自定义 Agent 提示'), 'z')
+    expect(props.onUpdateChat).not.toHaveBeenCalled()
+    await userEvent.click(within(dialog).getByRole('button', { name: t.save }))
+    expect(props.onUpdateChat).toHaveBeenCalledWith({ systemPrompt: '自定义 Agent 提示z' })
+  })
+
+  it('取消编辑不写回', async () => {
+    const props = renderTab()
+    await userEvent.click(screen.getByRole('button', { name: `${t.promptEdit} ${t.kivioChatAgentSystemPrompt}` }))
+    const dialog = screen.getByRole('dialog')
+    await userEvent.type(within(dialog).getByRole('textbox'), 'z')
+    await userEvent.click(within(dialog).getByText(t.cancel))
+    expect(props.onUpdateChat).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
 

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { vi } from 'vitest'
 import { useMessageQueue } from './hooks/useMessageQueue'
 import { chatApi } from './api'
-import type { Conversation } from './types'
+import type { Conversation, PendingAttachment } from './types'
 import { InputBar } from './InputBar'
 import { insertTextIntoComposer } from './composerInsert'
 import { draftKey, getComposerDraft, migrateNewChatDraft, setComposerDraft } from './composerDraft'
@@ -35,16 +35,21 @@ function UnmountOnSend({ conversationId }: { conversationId: string }) {
 }
 
 /** 复现首条「回到这里」：消息页输入框在回填信号发出后切成欢迎页输入框。 */
-function RewindFirstMessage({ conversationId }: { conversationId: string }) {
+function RewindFirstMessage({ conversationId, content = '原始首条消息', attachments = [], onSend = () => {} }: {
+  conversationId: string
+  content?: string
+  attachments?: PendingAttachment[]
+  onSend?: (content: string, attachments: PendingAttachment[]) => void
+}) {
   const [hasMessage, setHasMessage] = useState(true)
-  const inputBar = <InputBar onSend={() => {}} conversationId={conversationId} />
+  const inputBar = <InputBar onSend={onSend} conversationId={conversationId} />
   return (
     <>
       <button
         type="button"
         onClick={() => {
           setHasMessage(false)
-          insertTextIntoComposer('原始首条消息')
+          insertTextIntoComposer(content, attachments)
         }}
       >
         回到这里
@@ -56,7 +61,7 @@ function RewindFirstMessage({ conversationId }: { conversationId: string }) {
         </>
       ) : (
         <div data-testid="empty-hero">
-          <InputBar onSend={() => {}} conversationId={conversationId} layout="inline" />
+          <InputBar onSend={onSend} conversationId={conversationId} layout="inline" />
         </div>
       )}
     </>
@@ -214,6 +219,36 @@ describe('InputBar 发送清草稿', () => {
     fireEvent.click(screen.getByRole('button', { name: '回到这里' }))
 
     expect(screen.getByRole('textbox')).toHaveValue('已有草稿 原始首条消息')
+  })
+
+  it.each(['question', ''])('restores both images across composer remount and resends them with %j', async (content) => {
+    const attachments: PendingAttachment[] = [
+      { id: 'a1', type: 'image', name: 'one.png', path: 'C:/chat/att_one.png' },
+      { id: 'a2', type: 'image', name: 'two.png', path: 'C:/chat/att_two.png' },
+    ]
+    const onSend = vi.fn()
+    render(<RewindFirstMessage conversationId={`rewind-images-${content}`} content={content} attachments={attachments} onSend={onSend} />)
+    fireEvent.click(screen.getByRole('button', { name: '回到这里' }))
+    expect(screen.getByRole('textbox')).toHaveValue(content)
+    expect(screen.getAllByRole('button', { name: '移除' })).toHaveLength(2)
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith(content, attachments, expect.any(Object)))
+  })
+
+  it('keeps restored images with their draft when switching conversations', async () => {
+    const image: PendingAttachment = { id: 'restored', type: 'image', name: 'one.png', path: 'C:/chat/att_one.png' }
+    const onSend = vi.fn()
+    const { rerender } = render(<InputBar onSend={onSend} conversationId="rewind-switch" />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'existing draft' } })
+    act(() => insertTextIntoComposer('restored question', [image]))
+    expect(screen.getByRole('button', { name: '移除' })).toBeVisible()
+    rerender(<InputBar onSend={onSend} conversationId="other-conversation" />)
+    expect(screen.queryByRole('button', { name: '移除' })).toBeNull()
+    rerender(<InputBar onSend={onSend} conversationId="rewind-switch" />)
+    expect(screen.getByRole('textbox')).toHaveValue('existing draft restored question')
+    expect(screen.getByRole('button', { name: '移除' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('existing draft restored question', [image], expect.any(Object)))
   })
 
   it('上下键遍历用户历史，跳过空文字并恢复未发送草稿', () => {

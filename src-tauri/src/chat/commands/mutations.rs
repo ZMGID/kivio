@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::chat::agent::execute::truncate_chars;
 use crate::chat::attachments::{
-    compose_text_attachments_for_api, compose_user_content_for_api,
+    attachments_for_composer, compose_text_attachments_for_api, compose_user_content_for_api,
     stored_image_paths_for_attachments, text_attachments_from_attachments,
 };
 use crate::state::AppState;
@@ -775,12 +775,16 @@ pub(crate) async fn chat_rewind_to_message(
     };
     let mut attempt = 0;
     let mut warning = None;
-    let (mut conversation, content) = loop {
+    let (mut conversation, content, attachments) = loop {
         let idx = find_message_index(&snapshot, &message_id)?;
         if snapshot.messages[idx].role != "user" {
             return Err("仅支持回到用户提问".to_string());
         }
         let content = snapshot.messages[idx].content.clone();
+        let attachments = attachments_for_composer(
+            &snapshot.messages[idx].attachments,
+            &conversation_attachments_dir(&app, &conversation_id)?,
+        );
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
                 let latest_idx = find_message_index(latest, &message_id)?;
@@ -824,13 +828,13 @@ pub(crate) async fn chat_rewind_to_message(
                 state
                     .chat_runtime()
                     .set_auto_compact_failures(&conversation_id, 0);
-                break (latest, content);
+                break (latest, content, attachments);
             }
             Err(error @ crate::chat::repository::ConversationRepositoryError::Committed { .. }) => {
                 let (latest, message) =
                     crate::chat::repository::recover_committed(&app, error).await?;
                 warning = Some(message);
-                break (latest, content);
+                break (latest, content, attachments);
             }
             Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. })
                 if attempt == 0 =>
@@ -847,8 +851,8 @@ pub(crate) async fn chat_rewind_to_message(
 
     state.invalidate_chat_context_notifications(&conversation_id);
     // rewind 一次砍掉一整段历史，是孤儿附件最容易堆积的地方。GC 托管的文件
-    // 没人引用就回收；用户上传的 `att_*` 一律保留（原文回输入框但附件不回，
-    // 删掉就找不回来了）。传 id 不传对象：GC 自己从磁盘重读完整转录算引用集合。
+    // 没人引用就回收；用户上传的 `att_*` 一律保留，供输入框恢复与再次发送。
+    // 传 id 不传对象：GC 自己从磁盘重读完整转录算引用集合。
     let (removed_files, freed) =
         crate::chat::gc::sweep_conversation_attachments(&app, &conversation_id);
     if removed_files > 0 {
@@ -863,6 +867,7 @@ pub(crate) async fn chat_rewind_to_message(
         "success": true,
         "conversation": conversation,
         "content": content,
+        "attachments": attachments,
         "warning": warning,
     }))
 }

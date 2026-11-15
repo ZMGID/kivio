@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Info, Loader2, Play, SlidersHorizontal } from 'lucide-react'
 import { api, type Settings, type WebSearchMcpAuth, type WebSearchProviderId } from '../api/tauri'
 import type { I18n, Lang } from '../components/i18n'
-import { Input, Select, SettingRow, SettingsGroup, TextArea, Toggle } from './components'
+import { Input, Select, SettingRow, SettingsGroup, Toggle } from './components'
+import { PromptField } from './ScreenshotTranslationSettings'
 import { Button, IconButton } from '../components/Button'
 import { isProviderConfigured, providerSupportsFetch, resolvedFetchProvider } from './webSearch'
 
@@ -243,6 +244,7 @@ const PROVIDERS: ProviderDef[] = [
     keyPlaceholder: 'specstream key',
     baseUrlField: 'specstreamBaseUrl',
     baseUrlPlaceholder: 'https://api.specstream.ai',
+    icon: '/search-icons/specstream.svg',
   },
   {
     id: 'tavily',
@@ -548,7 +550,7 @@ function TestSearch({ t, config }: { t: I18n; config: WebSearchConfig }) {
 const FETCH_FOLLOW = 'follow'
 
 const NAV_ITEM =
-  'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition'
+  'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition'
 const NAV_ITEM_ACTIVE =
   'bg-accent-soft font-medium text-accent'
 const NAV_ITEM_IDLE =
@@ -565,7 +567,7 @@ function ConfigureLink({
     <button
       type="button"
       onClick={onClick}
-      className="px-1 text-[12px] text-accent hover:underline"
+      className="shrink-0 whitespace-nowrap text-[12px] text-accent hover:underline"
       data-tauri-drag-region="false"
     >
       {t.webSearchConfigureProvider} →
@@ -610,18 +612,13 @@ function DefaultsPage({
 
   return (
     <>
-      <div className="mb-5 border-b border-zinc-200/70 pb-4">
-        <div className="text-[16px] font-semibold text-zinc-800">
-          {t.webSearchDefaultsTitle}
-        </div>
-        <p className="mt-1 text-xs text-zinc-400">{t.webSearchRolesHint}</p>
-      </div>
-
-      <div className="space-y-6">
-        <SettingsGroup title={t.webSearchDefaultsSection}>
+        <SettingsGroup title={t.webSearchDefaultsTitle} description={t.webSearchRolesHint}>
           <SettingRow label={t.webSearchSearchProvider}>
+            {!searchReady && (
+              <ConfigureLink t={t} onClick={() => onOpenProvider(config.provider)} />
+            )}
             <Select
-              className="w-52"
+              className="kv-ctl"
               value={config.provider}
               onChange={(value) => onChange({
                 provider: value as ProviderId,
@@ -633,16 +630,16 @@ function DefaultsPage({
               }))}
             />
           </SettingRow>
-          {!searchReady && (
-            <ConfigureLink t={t} onClick={() => onOpenProvider(config.provider)} />
-          )}
 
           <SettingRow
             label={t.webSearchFetchProvider}
             description={!resolvedFetch ? t.webSearchFetchDirectHint : undefined}
           >
+            {resolvedFetch && !fetchReady && (
+              <ConfigureLink t={t} onClick={() => onOpenProvider(resolvedFetch)} />
+            )}
             <Select
-              className="w-52"
+              className="kv-ctl"
               value={fetchValue}
               onChange={(value) => {
                 if (value === FETCH_FOLLOW || value === config.provider) {
@@ -654,9 +651,6 @@ function DefaultsPage({
               options={fetchOptions}
             />
           </SettingRow>
-          {resolvedFetch && !fetchReady && (
-            <ConfigureLink t={t} onClick={() => onOpenProvider(resolvedFetch)} />
-          )}
         </SettingsGroup>
 
         <SettingsGroup title={t.webSearchGeneralSection}>
@@ -665,7 +659,7 @@ function DefaultsPage({
               type="number"
               min={1}
               max={10}
-              className="w-24"
+              className="kv-ctl-num"
               value={String(config.maxResults ?? 5)}
               onChange={(value) => onChange({
                 maxResults: Math.min(10, Math.max(1, Number.parseInt(value, 10) || 1)),
@@ -683,12 +677,11 @@ function DefaultsPage({
           </SettingRow>
         </SettingsGroup>
 
-        <p className="kv-row-desc px-1">
+        <p className="kv-row-desc mt-3 px-0.5">
           {lang === 'zh'
             ? 'Chat 联网开关在 MCP → 内置工具。'
             : 'Chat web toggles: MCP → Built-in tools.'}
         </p>
-      </div>
     </>
   )
 }
@@ -708,7 +701,7 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
     <div className="websearch-panel-root flex min-h-full items-stretch gap-0">
       <nav className="relative flex h-full min-h-full w-44 shrink-0 flex-col self-stretch pr-3">
         <div
-          className="pointer-events-none absolute inset-y-0 right-0 w-px bg-zinc-200/80"
+          className="pointer-events-none absolute inset-y-0 right-0 w-px bg-[var(--divider)]"
           aria-hidden
         />
         <div className="space-y-0.5">
@@ -722,7 +715,7 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
             <span className="min-w-0 flex-1 truncate">{t.webSearchDefaultsNav}</span>
           </button>
         </div>
-        <div className="px-2 pb-1 pt-3 text-[11px] font-medium uppercase tracking-wide text-zinc-400">
+        <div className="px-2 pb-1 pt-3 text-[11px] font-medium text-[var(--text-faint)]">
           {t.webSearchApiSection}
         </div>
         <div className="space-y-0.5">
@@ -755,11 +748,11 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
           />
         ) : (
           <>
-            <div className="mb-5 flex items-center gap-3 border-b border-zinc-200/70 pb-4">
+            <div className="mb-5 flex items-center gap-3 px-0.5">
               <ProviderMark name={selected.name} icon={selected.icon} size={32} />
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
-                  <span className="text-[16px] font-semibold text-zinc-800">
+                  <span className="text-[15px] font-semibold text-[var(--text)]">
                     {selected.name}
                   </span>
                   <button
@@ -772,17 +765,19 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
                     <ExternalLink size={13} />
                   </button>
                 </div>
-                <div className="truncate text-xs text-zinc-400">{hostname(selected.site)}</div>
+                <div className="truncate text-[12px] text-[var(--text-muted)]">{hostname(selected.site)}</div>
               </div>
             </div>
 
         <div className="space-y-6">
           <SettingsGroup title={t.webSearchCapabilities}>
-            <p className="text-sm text-zinc-700">
-              {providerSupportsFetch(selected.id)
-                ? t.webSearchCapabilitySearchFetch
-                : t.webSearchCapabilitySearch}
-            </p>
+            <div className="kv-row">
+              <span className="kv-row-label">
+                {providerSupportsFetch(selected.id)
+                  ? t.webSearchCapabilitySearchFetch
+                  : t.webSearchCapabilitySearch}
+              </span>
+            </div>
           </SettingsGroup>
 
           <SettingsGroup title={t.webSearchProviderSection}>
@@ -876,13 +871,13 @@ export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelP
                     className="w-full"
                   />
                 </SettingRow>
-                <SettingRow label={t.webSearchSystemPrompt} stack>
-                  <TextArea
-                    value={String(config[selected.systemPromptField] || '')}
-                    onChange={(value) => onChange({ [selected.systemPromptField!]: value } as Partial<WebSearchConfig>)}
-                    rows={4}
-                  />
-                </SettingRow>
+                <PromptField
+                  label={t.webSearchSystemPrompt}
+                  value={String(config[selected.systemPromptField] || '')}
+                  defaultText=""
+                  t={t}
+                  onChange={(value) => onChange({ [selected.systemPromptField!]: value } as Partial<WebSearchConfig>)}
+                />
               </>
             )}
 

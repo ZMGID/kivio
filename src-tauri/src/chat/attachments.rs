@@ -1254,6 +1254,23 @@ fn stored_attachment_path_for_prompt(
         .unwrap_or_else(|| attachment.path.clone())
 }
 
+pub(crate) fn attachments_for_composer(
+    attachments: &[Attachment],
+    attachment_dir: &Path,
+) -> Vec<Attachment> {
+    attachments
+        .iter()
+        .cloned()
+        .map(|mut attachment| {
+            if !is_memory_text_attachment(&attachment) {
+                attachment.path =
+                    stored_attachment_path_for_prompt(&attachment, Some(attachment_dir));
+            }
+            attachment
+        })
+        .collect()
+}
+
 fn attachment_processing_hint(attachment: &Attachment) -> String {
     if is_folder_attachment(attachment) {
         return "此文件夹按本机路径附加，未复制。用 glob/read/grep 等工具按该绝对路径查看内容，不要仅凭文件夹名臆测。".to_string();
@@ -1647,6 +1664,43 @@ mod tests {
         assert!(is_attachable_file_name("archive.zip"));
         assert!(is_attachable_file_name("main.rs"));
         assert!(!is_attachable_file_name("   "));
+    }
+
+    #[test]
+    fn composer_attachments_preserve_files_for_resend_and_virtual_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stored = Vec::new();
+        for name in ["one.png", "two.png"] {
+            let source = dir.path().join(name);
+            fs::write(&source, name).unwrap();
+            stored.push(persist_source_attachment(&source, dir.path()).unwrap());
+        }
+        stored.push(Attachment {
+            id: "text".into(),
+            attachment_type: "file".into(),
+            name: "notes.txt".into(),
+            path: "memory://notes.txt".into(),
+            content: Some("virtual notes".into()),
+        });
+        stored.push(persist_source_attachment(dir.path(), dir.path()).unwrap());
+        let restored = attachments_for_composer(&stored, dir.path());
+        for attachment in &restored[..2] {
+            assert!(Path::new(&attachment.path).is_absolute());
+            assert_eq!(
+                fs::read_to_string(&attachment.path).unwrap(),
+                attachment.name
+            );
+            let resent =
+                persist_source_attachment(Path::new(&attachment.path), dir.path()).unwrap();
+            assert_eq!(
+                fs::read_to_string(dir.path().join(resent.path)).unwrap(),
+                attachment.name
+            );
+        }
+        assert_eq!(restored[2].path, "memory://notes.txt");
+        assert_eq!(restored[2].content.as_deref(), Some("virtual notes"));
+        assert_eq!(restored[3].path, stored[3].path);
+        assert!(!Path::new(&stored[0].path).is_absolute());
     }
 
     #[test]

@@ -70,7 +70,6 @@ import type { ThemeDefinition } from '../theme/types'
 import { resolveModelInfo } from '../data/modelMatching'
 import { loadLastModel, resolvePreferredChatModel } from '../data/chatModelPreference'
 import { useWindowInteractionFocus } from '../api/windowFocus'
-import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../api/chatTools'
 import { UI_FONT_PX_MIN, UI_FONT_PX_MAX } from './uiFont'
 import {
   SettingRow,
@@ -276,9 +275,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const visibleSaveError = providerCatalog.error
     ? `${lang === 'zh' ? '获取模型失败：' : 'Could not fetch models: '}${providerCatalog.error}`
     : controllerSaveError
-  const chatTools = settings?.chatTools
-  const nativeBuiltinToolsEnabled = chatTools ? hasEnabledNativeBuiltinTool(chatTools.nativeTools) : false
-  const skillRuntimeEnabled = chatTools ? hasEnabledSkillRuntime(chatTools.nativeTools) : false
 
   // 客户端热键冲突检测:在保存前发现"两个启用功能用了同一个组合"。
   // OS 层面的冲突(Spotlight 占用 Cmd+Space 等)仍需保存后从后端拿到结果。
@@ -487,8 +483,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (recordingTarget) return
-      // 应用内确认框（原生 <dialog>）自己处理 Esc；捕获阶段在这里先接住会把整个设置页关掉。
-      if (e.target instanceof Element && e.target.closest('dialog[open]')) return
+      // 应用内确认框（原生 <dialog>）和自带 Esc 处理的弹窗自己处理 Esc；捕获阶段在这里先接住会把整个设置页关掉。
+      if (e.target instanceof Element && e.target.closest('dialog[open], [data-own-escape]')) return
 
       if (modelPickerProviderId) {
         if (e.key === 'Escape') {
@@ -1145,7 +1141,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   onRetryAttemptsBlur={handleRetryAttemptsBlur}
                 />
 
-                <SettingsGroup title={lang === 'zh' ? '首次使用' : 'First-time setup'}>
+                <SettingsGroup title={lang === 'zh' ? '其他' : 'Other'}>
                   <SettingRow
                     label={lang === 'zh' ? '首次使用引导' : 'Setup wizard'}
                     description={t.onboardingRestartDesc}
@@ -1158,7 +1154,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                     >
                       {t.onboardingRestart}
                     </Button>
-                    {onboarding.error && <span className="text-[12px] text-red-500" role="status">{onboarding.error}</span>}
+                    {onboarding.error && <span className="text-[12px] text-[var(--danger)]" role="status">{onboarding.error}</span>}
                   </SettingRow>
                 </SettingsGroup>
 
@@ -1185,7 +1181,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   onUpdateSettings={updateSettings}
                 />
 
-                <div className="kv-section-title">{t.tabScreenshot}</div>
                 <ScreenshotTranslationSettings
                   settings={settings}
                   isMac={isMac}
@@ -1244,14 +1239,11 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                 lang={lang}
                 chatConfig={chatConfig}
                 chatTools={settings.chatTools}
-                chatMemory={chatMemory}
                 chatDefaults={chatDefaults}
                 chatRuntimeDefaults={chatRuntimeDefaults}
                 effectiveChatMaxOutput={effectiveChatMaxOutput}
                 chatMaxOutputSourceLabel={chatMaxOutputSourceLabel}
                 chatMaxOutputModelLabel={chatMaxOutputModelLabel}
-                skillRuntimeEnabled={skillRuntimeEnabled}
-                nativeBuiltinToolsEnabled={nativeBuiltinToolsEnabled}
                 onUpdateChat={updateChat}
                 onUpdateVoice={updateVoice}
                 onUpdateNativeTools={updateNativeTools}

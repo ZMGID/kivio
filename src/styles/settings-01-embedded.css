@@ -81,7 +81,7 @@
 }
 
 .settings-embedded-header {
-  padding: 20px 28px 8px;
+  padding: 24px 28px 12px;
 }
 
 .settings-embedded-header .kv-page-title {
@@ -93,14 +93,14 @@
 .settings-embedded-header .kv-page-sub {
   font-size: 13px;
   margin-top: 4px;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 .settings-embedded-scroll {
   /* 与 header / content 同色：原先 --bg-savebar（soft）会比顶栏 --bg（surface）深一档，
      亮色下读成「顶栏一块、底下一块」。暗色同样走 --bg，避免标题条单独一块。 */
   background: var(--bg);
-  padding: 8px 28px 20px;
+  padding: 8px 28px 40px;
 }
 
 .kv-scroll > .websearch-panel-root,
@@ -127,42 +127,6 @@
   flex: 1 1 auto;
   min-height: 100%;
   align-items: stretch;
-}
-
-/* 卡片式分组（Jan 白卡片 + 圆角） */
-.settings-embedded .kv-group {
-  margin-bottom: 12px;
-  padding: 4px 16px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  background: var(--bg);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-}
-
-.settings-embedded .kv-group + .kv-group {
-  border-top: 1px solid var(--border);
-  margin-top: 0;
-}
-
-.dark .chat-window-shell .settings-embedded .kv-group {
-  box-shadow: none;
-}
-
-.settings-embedded .kv-group-title {
-  padding-top: 10px;
-  margin-bottom: 2px;
-  font-size: 12px;
-  font-weight: 600;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--text-muted);
-}
-
-.settings-embedded .kv-row + .kv-row,
-.settings-embedded .kv-row + .kv-row-stack,
-.settings-embedded .kv-row-stack + .kv-row,
-.settings-embedded .kv-row-stack + .kv-row-stack {
-  border-top-color: var(--divider);
 }
 
 .settings-embedded .kv-panel {
@@ -209,28 +173,6 @@
   gap: 1px;
   margin-bottom: 4px;
   position: relative;
-}
-
-/* ponytail: 模型页右侧详情去卡片化——只在 .kv-provider-detail 内覆盖通用 .kv-group 卡片样式,
-   不影响其它设置标签页。布局不变,仅去掉边框/圆角/底色/阴影,侧边内边距归零让内容对齐面板。 */
-.settings-embedded .kv-provider-detail .kv-group {
-  margin-bottom: 0;
-  padding: 6px 0 10px;
-  border: none;
-  border-radius: 0;
-  background: none;
-  box-shadow: none;
-}
-
-/* 暗色 + chat 内嵌的 .kv-group 底色规则特异性更高,这里同等限定覆盖掉 */
-.dark .chat-window-shell .settings-embedded .kv-provider-detail .kv-group {
-  background: none;
-}
-
-/* 分组之间用一条细线分隔,替代原来的卡片边界 */
-.settings-embedded .kv-provider-detail .kv-group + .kv-group {
-  border-top: 1px solid var(--divider);
-  margin-top: 0;
 }
 
 .kv-provider-preset-tile {

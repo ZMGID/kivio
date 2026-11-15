@@ -741,15 +741,29 @@ export function FieldBlock({
   )
 }
 
-export function SettingsGroup({ title, children, className = '' }: {
+/**
+ * 设置分组：标题、说明、右侧操作在卡片外，卡片里只放设置行。
+ * 所有设置页都用这一种分组，不在页面里另写标题或卡片。
+ */
+export function SettingsGroup({ title, description, actions, children, className = '' }: {
   title?: ReactNode
+  description?: ReactNode
+  actions?: ReactNode
   children: ReactNode
   className?: string
 }) {
   return (
     <section className={`kv-group ${className}`}>
-      {title && <div className="kv-group-title">{title}</div>}
-      {children}
+      {(title || description || actions) && (
+        <header className="kv-group-head">
+          <div className="kv-group-head-text">
+            {title && <div className="kv-group-title">{title}</div>}
+            {description && <p className="kv-group-desc">{description}</p>}
+          </div>
+          {actions && <div className="kv-group-actions">{actions}</div>}
+        </header>
+      )}
+      <div className="kv-group-body">{children}</div>
     </section>
   )
 }
@@ -769,7 +783,7 @@ export function SliderField({ label, value, min, max, step = 1, onChange, hint, 
     <div className="kv-row-stack">
       <div className="flex items-center justify-between gap-3">
         <span className="kv-row-label">{label}</span>
-        <span className="rounded-md border border-zinc-200 bg-neutral-50 px-2 py-0.5 font-mono text-xs text-zinc-700">
+        <span className="kv-tag tabular-nums">
           {value}{suffix}
         </span>
       </div>
@@ -783,7 +797,7 @@ export function SliderField({ label, value, min, max, step = 1, onChange, hint, 
         className="mt-2 w-full"
         style={{ accentColor: 'var(--accent)' }}
       />
-      <div className="flex justify-between text-[11px] text-zinc-400">
+      <div className="flex justify-between text-[11px] text-[var(--text-faint)]">
         <span>{min}</span>
         <span>{max}</span>
       </div>

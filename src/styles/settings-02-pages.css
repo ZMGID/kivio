@@ -208,7 +208,7 @@
   --settings-content-gutter: 28px;
 }
 .kv-page-header {
-  padding: 14px var(--settings-content-inset) 10px;
+  padding: 14px var(--settings-content-inset) 12px;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -263,19 +263,80 @@
   }
 }
 
-.kv-group { padding: 10px 0 6px; }
-.kv-group + .kv-group {
-  border-top: 1px solid var(--divider);
-  margin-top: 4px;
+/* ===== 设置版式 =====
+   唯一的一套：分组标题（可带说明、右侧操作）在卡片外，卡片里只放设置行；
+   行 = 左侧名称与说明 + 右侧控件。页面不再另写标题、卡片或行。 */
+.kv-group { min-width: 0; }
+.kv-group + .kv-group { margin-top: 24px; }
+.kv-group-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 0 2px;
 }
+.kv-group-head-text { min-width: 0; }
 .kv-group-title {
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-faint);
-  margin-bottom: 4px;
+  line-height: 1.4;
+  color: var(--text);
 }
+/* 可折叠分组（details > summary）：保留展开箭头 */
+summary.kv-group-title {
+  display: list-item;
+  padding: 0 2px;
+}
+.kv-group-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+.kv-group-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+}
+.kv-group-body {
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+}
+/* 卡片内的补充说明（放在最后一行之后） */
+.kv-group-note {
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--divider);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+/* 卡片内的空态 */
+.kv-group-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.kv-group-empty svg { color: var(--text-faint); }
+.kv-group-empty-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* 行内控件的统一宽度：下拉与文本输入同宽，数字输入同宽，右缘才能对齐 */
+.kv-ctl { width: 240px; max-width: 100%; }
+.kv-ctl-num { width: 88px; text-align: center; }
 /* 二级页入口（如供应商详情「请求配置」）：与上方 kv-row 同系的分隔行，
    不用大图标方块/灰底卡片，避免像移动端列表项。 */
 .kv-subpage-entry {
@@ -368,37 +429,22 @@
   color: var(--text);
 }
 
-/* 组标题里的说明文字与计数标签不跟着大写（可折叠分组的标题行） */
-.kv-group-title .kv-row-desc,
-.kv-group-title .kv-tag {
-  text-transform: none;
-  letter-spacing: normal;
-}
-/* 组标题里的操作按钮（如快捷键「恢复默认 / 检查冲突」）不受 uppercase 影响 */
-.kv-group-title .kv-btn {
-  text-transform: none;
-  letter-spacing: normal;
-  font-weight: 500;
-  font-size: 12px;
-}
-/* 分区大标题：合并页里区隔「输入翻译 / 快速翻译」等顶层板块 */
+/* 分区大标题：一页里有多个板块时（如「输入翻译 / 快速翻译」），比分组标题高一级 */
 .kv-section-title {
-  font-size: 13px;
-  font-weight: 700;
+  margin: 36px 2px 14px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
   color: var(--text);
-  padding-bottom: 6px;
-  margin: 18px 0 2px;
-  border-bottom: 1px solid var(--divider);
 }
-.kv-section-title:first-child { margin-top: 2px; }
-/* 分区标题下的第一个 group 不再画自己的上分隔线，避免双线 */
-.kv-section-title + .kv-group { border-top: none; margin-top: 4px; }
+.kv-section-title:first-child { margin-top: 0; }
+.kv-section-title + .kv-group { margin-top: 0; }
 .kv-row {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 9px 0;
-  min-height: 32px;
+  gap: 16px;
+  padding: 10px 0;
+  min-height: 48px;
 }
 .kv-row + .kv-row,
 .kv-row + .kv-row-stack,
@@ -409,6 +455,7 @@
 .kv-row-text { flex: 1; min-width: 0; }
 .kv-row-label {
   font-size: 13px;
+  line-height: 1.4;
   color: var(--text);
   font-weight: 450;
 }
@@ -416,7 +463,7 @@
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 2px;
-  line-height: 1.35;
+  line-height: 1.45;
 }
 .kv-row-control {
   flex-shrink: 0;
@@ -426,27 +473,25 @@
 }
 
 /* 电脑操控：实现细节留在后台，页面只呈现能力、状态和一个动作。 */
-.computer-control-section {
-  padding-top: 10px;
-}
 .computer-control-section + .computer-control-section {
-  margin-top: 22px;
-  padding-top: 0;
+  margin-top: 24px;
 }
 .computer-control-heading {
-  margin: 0 0 12px;
+  margin: 0 2px 8px;
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1.4;
 }
 .computer-control-card {
-  padding: 10px 14px 8px;
-  border: 1px solid var(--divider);
-  border-radius: 14px;
+  padding: 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
 }
 .computer-control-row {
   display: flex;
-  min-height: 62px;
+  min-height: 60px;
   align-items: center;
   gap: 12px;
 }
@@ -454,13 +499,13 @@
   border-top: 1px solid var(--divider);
 }
 .computer-control-extension {
-  margin: 0 0 10px 48px;
+  margin: 0 0 12px 44px;
 }
 .computer-control-icon {
   display: inline-flex;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
   align-items: center;
   justify-content: center;
   border-radius: 10px;
@@ -497,7 +542,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 3px;
+  margin-top: 2px;
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.35;
@@ -507,7 +552,8 @@
   height: 6px;
   flex: 0 0 6px;
   border-radius: 50%;
-  background: #ef4444;
+  /* 未安装是中性状态，不是错误 */
+  background: var(--text-faint);
 }
 .computer-control-status-dot.is-ready {
   background: #16a34a;
@@ -529,54 +575,9 @@
   font-size: 12px;
 }
 
-/* 外观设置按分区纵向堆叠，字段本身保持左标签、右控件的横向行。 */
-.settings-appearance-group {
-  display: block;
-}
-.settings-appearance-subsection {
-  min-width: 0;
-  padding: 0;
-}
-.settings-appearance-subsection + .settings-appearance-subsection {
-  margin-top: 6px;
-  padding-top: 9px;
-  border-top: 1px solid var(--divider);
-}
-.settings-appearance-subsection-title {
-  margin-bottom: 3px;
-  color: var(--text-faint);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.settings-appearance-subsection-body .kv-row {
-  min-height: 0;
-  padding: 7px 0;
-  flex-direction: row;
-  align-items: center;
-}
-.settings-appearance-subsection-body .kv-row-control {
-  width: auto;
-  justify-content: flex-end;
-}
-.settings-appearance-subsection-body .kv-seg button {
-  min-width: 0;
-  padding-left: 6px;
-  padding-right: 6px;
-  white-space: nowrap;
-}
-.settings-appearance-subsection-body .settings-appearance-toggle-row {
-  flex-direction: row;
-  align-items: center;
-}
-.settings-appearance-toggle-row .kv-row-control {
-  width: auto;
-  margin-left: auto;
-}
-
 .kv-row-stack {
   display: block;
-  padding: 9px 0;
+  padding: 12px 0 14px;
 }
 .kv-row-stack .kv-row-text { margin-bottom: 8px; }
 
@@ -1704,20 +1705,6 @@ html[data-focus-source="keyboard"] .kv-provider-card:focus-visible {
 .kv-provider-icon-cell:hover { background: var(--bg-hover); }
 .kv-provider-icon-cell[aria-selected="true"] { background: var(--bg-active); color: var(--text); }
 
-/* 分区标题带计数和动作（模型区）。 */
-.kv-provider-section-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-top: 10px;
-  margin-bottom: 8px;
-}
-.kv-provider-section-head > .kv-btn { margin-left: auto; }
-.kv-provider-section-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
 .kv-provider-link {
   display: inline-flex;
   width: fit-content;
@@ -3611,6 +3598,16 @@ dialog.kv-modal::backdrop {
 }
 
 
+/* 设置页提示词编辑弹窗：正文不在设置列表中直接展开 */
+.kv-modal.kv-prompt-editor {
+  max-width: min(720px, calc(100vw - 32px));
+  max-height: min(86vh, 720px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* 虚拟文本附件编辑弹窗（粘贴长文本转虚拟 txt 后点击打开） */
 .kv-modal.kv-pasted-text-editor {
   max-width: min(720px, calc(100vw - 32px));
@@ -3795,6 +3792,13 @@ dialog.kv-modal::backdrop {
   border-radius: 10px;
   background: var(--bg-input-subtle);
   overflow: hidden;
+}
+/* 放在设置卡片里时，列表就是卡片内容本身，不再套一层框 */
+.kv-group-body > .kv-enabled-model-list {
+  margin: 0 -16px;
+  border: none;
+  border-radius: 11px;
+  background: none;
 }
 
 .kv-enabled-model-empty {
@@ -4135,14 +4139,16 @@ dialog.kv-modal::backdrop {
 }
 
 /* Theme page: layout and theme-library content only; controls keep their shared styles. */
-.theme-page { display: flex; flex-direction: column; gap: 22px; min-width: 0; container: theme-page / inline-size; }
-.theme-section-heading, .theme-workspace-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-.theme-page h3, .theme-json-dialog h3 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.theme-page { display: flex; flex-direction: column; gap: 24px; min-width: 0; container: theme-page / inline-size; }
+.theme-section-heading, .theme-workspace-header { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.theme-page h3 { margin: 0; font-size: 13px; font-weight: 600; line-height: 1.4; }
+.theme-json-dialog h3 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.5; }
+.theme-section-heading { padding: 0 2px; }
 .theme-page h4 { margin: 0; font-size: 12px; font-weight: 600; }
 .theme-section-heading p, .theme-workspace-header p, .theme-live-preview > p, .theme-json-dialog > p {
-  margin: 4px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.6;
+  margin: 2px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.45;
 }
-.theme-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; margin-top: 12px; }
+.theme-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 10px; margin-top: 8px; }
 .theme-card {
   display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 12px; text-align: left;
   border: 1px solid var(--theme-surface-border); border-radius: 10px;
@@ -4166,7 +4172,7 @@ dialog.kv-modal::backdrop {
 .theme-card-name > svg { flex-shrink: 0; color: var(--accent); }
 .theme-card-meta { color: var(--text-muted); font-size: 11px; }
 .theme-workspace { min-width: 0; border-top: 1px solid var(--theme-surface-border); scroll-margin-top: 12px; }
-.theme-workspace-header { position: sticky; top: 0; z-index: 2; padding: 14px 0; background: var(--theme-surface); }
+.theme-workspace-header { position: sticky; top: 0; z-index: 2; padding: 20px 2px 12px; background: var(--theme-surface); }
 .theme-workspace-header > .min-w-0 { flex: 1 1 170px; }
 .theme-workspace-actions, .theme-share-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .theme-share-actions { justify-content: space-between; margin-top: 12px; }

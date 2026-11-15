@@ -116,11 +116,11 @@ export function useMessageActions({
     const t = tRef.current
     if (!(await confirmDialog({ message: t.chatMessageRewindConfirm, confirmLabel: t.dialogRewind, danger: true }))) return
     try {
-      const { conversation, content } = await chatApi.rewindToMessage(conv.id, messageId)
+      const { conversation, content, attachments } = await chatApi.rewindToMessage(conv.id, messageId)
       if (applyConversationIfCurrent(conv.id, conversation)) {
         setAssistantStreamStatsByMessageId({})
         setStreamError('')
-        insertTextIntoComposer(content)
+        insertTextIntoComposer(content, attachments)
       }
       refreshSidebar()
       // 上下文用量后台补算（后端 rewind 故意不算，见那边注释）：几秒的 MCP 列表不该挡住 UI。

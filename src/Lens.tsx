@@ -301,7 +301,7 @@ export default function Lens() {
   const selectRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const selectRevealedRef = useRef(false)
   const captureHintEnabledRef = useRef(true)
-  const sendToChatRef = useRef(true)
+  const sendToChatRef = useRef(false)
   const screenshotKeepFullscreenRef = useRef(true)
   // 快速翻译结果卡宽度（截图翻译 + 选中文本翻译共用，来自设置，默认 480）
   const cardWidthRef = useRef(480)
@@ -359,7 +359,7 @@ export default function Lens() {
       cardWidthRef.current = settings.screenshotTranslation?.cardWidth ?? 480
       setKeepFullscreen(keepFullscreenForMode(curMode, screenshotKeepFullscreenRef.current))
       captureHintEnabledRef.current = settings.lens?.showCaptureHint !== false
-      sendToChatRef.current = settings.lens?.sendToChat !== false
+      sendToChatRef.current = settings.lens?.sendToChat === true
     } catch (err) { console.error('Failed to load settings', err) }
   }, [])
 

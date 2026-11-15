@@ -43,8 +43,8 @@ describe('MemoryTab', () => {
 
   it('只有 L1 显示字节上限', () => {
     renderTab()
-    const l1 = screen.getByRole('textbox', { name: 'L1 在线记忆' }).closest<HTMLElement>('.kv-panel')!
-    const l2 = screen.getByRole('textbox', { name: 'L2 长期记忆' }).closest<HTMLElement>('.kv-panel')!
+    const l1 = screen.getByRole('textbox', { name: 'L1 在线记忆' }).closest<HTMLElement>('.kv-group')!
+    const l2 = screen.getByRole('textbox', { name: 'L2 长期记忆' }).closest<HTMLElement>('.kv-group')!
     expect(within(l1).getByText(/\/ 5000 bytes/)).toBeTruthy()
     expect(within(l2).queryByText(/\/ 5000 bytes/)).toBeNull()
   })
@@ -98,8 +98,8 @@ describe('MemoryTab', () => {
       memorySavingLayer: 'l2',
       memoryDrafts: { l1: 'L1 changed', l2: 'L2 changed' },
     })
-    const l1 = screen.getByRole('textbox', { name: 'L1 在线记忆' }).closest<HTMLElement>('.kv-panel')!
-    const l2 = screen.getByRole('textbox', { name: 'L2 长期记忆' }).closest<HTMLElement>('.kv-panel')!
+    const l1 = screen.getByRole('textbox', { name: 'L1 在线记忆' }).closest<HTMLElement>('.kv-group')!
+    const l2 = screen.getByRole('textbox', { name: 'L2 长期记忆' }).closest<HTMLElement>('.kv-group')!
     expect(within(l1).getByRole('button', { name: '保存' })).toBeEnabled()
     expect(within(l2).getByRole('button', { name: '保存中' })).toBeDisabled()
   })

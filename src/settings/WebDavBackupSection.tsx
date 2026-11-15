@@ -48,10 +48,10 @@ export function WebDavBackupSection({ controller, lang }: {
   const openEditor = () => { setChoosing(!config?.url); setEditing(true); if (!config) void run({ type: 'load' }) }
   const status = controller.statusSource === 'webdav' && (controller.busy || controller.status) ? <p role="status" aria-live="polite" className="backup-status whitespace-pre-wrap [overflow-wrap:anywhere]" style={{ color: controller.status?.kind === 'err' ? 'var(--danger)' : 'var(--text-muted)' }}>{controller.busy ? controller.webdavPhase || (zh ? '正在处理…' : 'Processing…') : controller.status?.msg}</p> : null
   return <section className="backup-section">
-    <h3 className="backup-section-title"><Cloud size={16} />{zh ? '云端备份' : 'Cloud backup'}<span className="backup-tag">WebDAV</span></h3>
+    <h3 className="backup-section-title">{zh ? '云端备份' : 'Cloud backup'}<span className="backup-tag">WebDAV</span></h3>
     <div className="backup-surface">
       <div className="backup-row">
-        <div className="backup-service-icon"><Cloud size={22} /></div>
+        <div className="backup-service-icon"><Cloud size={18} /></div>
         <div className="backup-copy"><p className="kv-row-label">{config?.url ? (zh ? '已配置 WebDAV' : 'WebDAV configured') : (zh ? '连接你的云端存储' : 'Connect your cloud storage')}</p>
           <p className="kv-row-desc backup-ellipsis" title={config?.url}>{config?.url || (zh ? '通过 WebDAV，在多台电脑间手动备份与恢复。' : 'Back up and restore between computers using WebDAV.')}</p>
           {config?.url && <p className="kv-row-desc">{zh ? '手动备份' : 'Manual backup'} · {config.directory || '/'}</p>}

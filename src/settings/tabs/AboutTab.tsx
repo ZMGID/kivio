@@ -19,22 +19,21 @@ export function AppInfoGroup({
 }) {
   return (
     <SettingsGroup title={lang === 'zh' ? '应用' : 'Application'}>
-      <div className="kv-panel mb-2">
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-[10px] overflow-hidden shrink-0">
-            <img src="/icon.png" alt="Kivio Desktop" className="w-full h-full object-contain" />
-          </div>
-          <div className="min-w-0">
-            <div className="kv-page-title">Kivio Desktop</div>
-            <div className="kv-panel-body">{lang === 'zh' ? '屏幕级 AI 助手' : 'Screen-level AI Assistant'}</div>
-          </div>
+      <div className="kv-row">
+        <div className="h-10 w-10 shrink-0 overflow-hidden rounded-[10px]">
+          <img src="/icon.png" alt="Kivio Desktop" className="h-full w-full object-contain" />
+        </div>
+        <div className="kv-row-text">
+          <span className="kv-row-label !font-semibold">Kivio Desktop</span>
+          <p className="kv-row-desc">{lang === 'zh' ? '屏幕级 AI 助手' : 'Screen-level AI Assistant'}</p>
+        </div>
+        <div className="kv-row-control">
+          <span className="kv-row-desc !mt-0">{t.currentVersion}</span>
+          <span className="kv-tag tabular-nums">v{appVersion}</span>
         </div>
       </div>
-      <SettingRow label={t.currentVersion}>
-        <span className="kv-tag">v{appVersion}</span>
-      </SettingRow>
       <SettingRow label={lang === 'zh' ? '开发者' : 'Developer'}>
-        <span className="kv-row-desc">ZM</span>
+        <span className="text-[13px] text-[var(--text-muted)]">ZM</span>
       </SettingRow>
     </SettingsGroup>
   )
@@ -83,7 +82,7 @@ export function UpdateGroup({
   const { status, info, downloadState, downloadPercent, downloadError } = update
 
   return (
-    <SettingsGroup title={t.checkUpdate}>
+    <SettingsGroup title={t.updatesGroupTitle}>
       <SettingRow label={t.autoCheckUpdate}>
         <Toggle
           checked={settings?.autoCheckUpdate ?? true}
@@ -108,7 +107,7 @@ export function UpdateGroup({
       <ModelDatabaseUpdateRow />
 
       {status === 'check-failed' && (
-        <div className="kv-panel mt-2">
+        <div className="kv-panel my-3">
           <div className="kv-panel-body mb-2 text-warning">
             {t.updateCheckFailed}
           </div>
@@ -123,7 +122,7 @@ export function UpdateGroup({
       )}
 
       {status === 'available' && info && (
-        <div className="kv-panel info mt-2">
+        <div className="kv-panel info my-3">
           <div className="kv-panel-title">
             {t.updateAvailable}
             <span className="kv-tag accent ml-auto">v{info.version}</span>
@@ -262,7 +261,7 @@ function ModelDatabaseUpdateRow() {
         {status === 'updating' ? (zh ? '正在更新…' : 'Updating…') : (zh ? '更新模型库' : 'Update model database')}
       </Button>
     </SettingRow>
-    {status === 'failed' && <div className="kv-inline-error mt-2" role="alert">
+    {status === 'failed' && <div className="kv-inline-error mb-3" role="alert">
       {zh ? '更新失败，已保留原模型库。请重试。' : 'Update failed. Your current database is unchanged. Please retry.'}
       <div>{error}</div>
     </div>}

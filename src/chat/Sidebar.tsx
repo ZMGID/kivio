@@ -28,7 +28,7 @@ import { useInsertionReorder } from '../utils/insertionReorder'
 import { applyConversationPins, withPinAt, type ConversationPin } from './conversationPins'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
 import { chatTitlebarMacInsetClass, isMac, usesNativeTitlebar } from './platform'
-import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH, getRememberedRecentHidesProjects, getRememberedRecentHidesSets, getRememberedSidebarView, rememberRecentHidesProjects, rememberRecentHidesSets, rememberSidebarView } from './persistence'
+import { clampSidebarWidth, SIDEBAR_DEFAULT_WIDTH, getRememberedRecentHidesProjects, getRememberedRecentHidesSets, getRememberedSidebarView, getRememberedSidebarTab, rememberRecentHidesProjects, rememberRecentHidesSets, rememberSidebarView, rememberSidebarTab } from './persistence'
 import { useChatPerfRenderProbe } from './chatPerformanceProbe'
 import type { ConversationMenuAnchor } from './ConversationContextMenu'
 import type { ChatUserProfile } from './types'
@@ -752,7 +752,7 @@ export const Sidebar = memo(function Sidebar({
   // 后端全量索引搜索结果（覆盖所有对话，不止已加载的前 80）；空查询/非 Tauri 时为空，回退客户端过滤。
   const [fullSearchResults, setFullSearchResults] = useState<ConversationSearchHit[]>([])
   // 侧栏三块改为横排标签页：同一时刻只显示一块（对话/集/项目）。
-  const [activeTab, setActiveTab] = useState<'conversations' | 'sets' | 'projects'>('conversations')
+  const [activeTab, setActiveTab] = useState(getRememberedSidebarTab)
   const [sidebarView, setSidebarView] = useState(getRememberedSidebarView)
   const flatView = sidebarView === 'flat'
   const [flatScope, setFlatScope] = useState('all')
@@ -1643,7 +1643,10 @@ export const Sidebar = memo(function Sidebar({
                     <button
                       key={tab}
                       type="button"
-                      onClick={() => setActiveTab(tab)}
+                      onClick={() => {
+                        setActiveTab(tab)
+                        rememberSidebarTab(tab)
+                      }}
                       className={`shrink-0 rounded-md px-1 py-0.5 transition-colors ${
                         activeTab === tab
                           ? 'text-neutral-900'

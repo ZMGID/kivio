@@ -538,7 +538,7 @@ pub(crate) async fn translate_text(
         &settings.translator_model,
         prompt,
         retry_attempts,
-        false,
+        crate::api::ThinkingChoice::OFF,
         "translator",
         "translate_text",
     )

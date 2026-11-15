@@ -173,11 +173,11 @@ describe('useMessageActions', () => {
   })
 
   it('rewinds: puts the text back in the composer, clears the error and recomputes context', async () => {
-    vi.mocked(chatApi.rewindToMessage).mockResolvedValue({ conversation: conversation({ revision: 3 }), content: 'hello' })
+    vi.mocked(chatApi.rewindToMessage).mockResolvedValue({ conversation: conversation({ revision: 3 }), content: 'hello', attachments: [] })
     setCoarse({ streamError: 'old' })
     const { result, setAssistantStreamStatsByMessageId, refreshContextStats } = setup()
     await act(async () => { await result.current.rewindToMessage('m1') })
-    expect(insertTextIntoComposer).toHaveBeenCalledWith('hello')
+    expect(insertTextIntoComposer).toHaveBeenCalledWith('hello', [])
     expect(setAssistantStreamStatsByMessageId).toHaveBeenCalledWith({})
     expect(getCoarse().streamError).toBe('')
     expect(refreshContextStats).toHaveBeenCalledWith('c1')
@@ -188,6 +188,35 @@ describe('useMessageActions', () => {
     const { result, setStreamErrorForConversation } = setup()
     await act(async () => { await result.current.rewindToMessage('m1') })
     expect(setStreamErrorForConversation).toHaveBeenCalledWith('c1', 'nope')
+    expect(insertTextIntoComposer).not.toHaveBeenCalled()
+  })
+
+  it('restores every rewound image, including an attachment-only message', async () => {
+    const attachments = [
+      { id: 'a1', type: 'image' as const, name: 'one.png', path: 'C:/chat/att_one.png' },
+      { id: 'a2', type: 'image' as const, name: 'two.png', path: 'C:/chat/att_two.png' },
+    ]
+    vi.mocked(chatApi.rewindToMessage).mockResolvedValue({ conversation: conversation(), content: '', attachments })
+    const { result } = setup()
+    await act(async () => { await result.current.rewindToMessage('m1') })
+    expect(insertTextIntoComposer).toHaveBeenCalledWith('', attachments)
+  })
+
+  it('does not restore a delayed rewind into another conversation', async () => {
+    const response = { conversation: conversation(), content: 'old question', attachments: [] }
+    let finish = () => {}
+    vi.mocked(chatApi.rewindToMessage).mockImplementation(() => new Promise(resolve => {
+      finish = () => resolve(response)
+    }))
+    const view = setup()
+    let pending = Promise.resolve()
+    act(() => { pending = view.result.current.rewindToMessage('m1') })
+    await act(async () => {
+      await Promise.resolve()
+      view.currentConversationRef.current = conversation({ id: 'c2' })
+      finish()
+      await pending
+    })
     expect(insertTextIntoComposer).not.toHaveBeenCalled()
   })
 

@@ -35,6 +35,7 @@ export type ChatWindowGeometry = {
 const CHAT_LAST_ROUTE_KEY = 'kivio-chat-last-route'
 const CHAT_SIDEBAR_COLLAPSED_KEY = 'kivio-chat-sidebar-collapsed'
 const CHAT_SIDEBAR_VIEW_KEY = 'kivio-chat-sidebar-view'
+const CHAT_SIDEBAR_TAB_KEY = 'kivio-chat-sidebar-tab'
 const CHAT_RECENT_HIDES_PROJECTS_KEY = 'kivio-chat-recent-hides-projects'
 const CHAT_RECENT_HIDES_SETS_KEY = 'kivio-chat-recent-hides-sets'
 const CHAT_TASKS_TAB_KEY = 'kivio-chat-tasks-tab'
@@ -82,6 +83,15 @@ export function getRememberedSidebarView(): 'classic' | 'flat' {
 
 export function rememberSidebarView(view: 'classic' | 'flat') {
   setLocalStorageItem(CHAT_SIDEBAR_VIEW_KEY, view)
+}
+
+export function getRememberedSidebarTab(): 'conversations' | 'sets' | 'projects' {
+  const tab = getLocalStorageItem(CHAT_SIDEBAR_TAB_KEY)
+  return tab === 'sets' || tab === 'projects' ? tab : 'conversations'
+}
+
+export function rememberSidebarTab(tab: ReturnType<typeof getRememberedSidebarTab>) {
+  setLocalStorageItem(CHAT_SIDEBAR_TAB_KEY, tab)
 }
 
 /** 经典视图「最近」是否隐藏归属项目的对话（它们仍在「项目」里）。默认显示。 */

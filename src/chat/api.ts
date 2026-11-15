@@ -985,7 +985,7 @@ const mockChatApi = {
   async rewindToMessage(
     conversationId: string,
     messageId: string,
-  ): Promise<{ conversation: Conversation; content: string }> {
+  ): Promise<{ conversation: Conversation; content: string; attachments: PendingAttachment[] }> {
     const conversations = loadMockConversations()
     const index = conversations.findIndex((item) => item.id === conversationId)
     if (index < 0) throw new Error('Conversation not found')
@@ -1001,7 +1001,7 @@ const mockChatApi = {
     conversation.contextState = contextState
     conversations[index] = conversation
     saveMockConversations(conversations)
-    return { conversation, content: target.content }
+    return { conversation, content: target.content, attachments: target.attachments ?? [] }
   },
 
   async getContextStats(conversationId: string): Promise<{ contextState: ConversationContextState }> {
@@ -1907,11 +1907,11 @@ export const chatApi = {
     return result.conversation
   },
 
-  // 一键 rewind：删掉该用户提问及其之后的消息，返回新会话 + 被删掉的原文（前端塞回输入框）。
+  // 一键 rewind：删掉该用户提问及其之后的消息，返回新会话、原文和附件供输入框恢复。
   async rewindToMessage(
     conversationId: string,
     messageId: string,
-  ): Promise<{ conversation: Conversation; content: string }> {
+  ): Promise<{ conversation: Conversation; content: string; attachments: PendingAttachment[] }> {
     if (!isTauriRuntime()) {
       return mockChatApi.rewindToMessage(conversationId, messageId)
     }
@@ -1919,6 +1919,7 @@ export const chatApi = {
       success: boolean
       conversation?: Conversation
       content?: string
+      attachments?: PendingAttachment[]
       warning?: string
       error?: string
     }>('chat_rewind_to_message', { conversationId, messageId })
@@ -1926,7 +1927,7 @@ export const chatApi = {
       throw new Error(result.error || 'Failed to rewind conversation')
     }
     if (result.warning) notifyError(result.warning)
-    return { conversation: result.conversation, content: result.content ?? '' }
+    return { conversation: result.conversation, content: result.content ?? '', attachments: result.attachments ?? [] }
   },
 
   // 对话分支（方案 B）：把源对话某消息及其之前的消息复制进一个新对话，返回新对话。不自动发送。

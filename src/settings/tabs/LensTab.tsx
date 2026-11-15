@@ -1,7 +1,7 @@
 import { open } from '@tauri-apps/plugin-dialog'
 import { Toggle, Select, Input, SettingRow, SettingsGroup } from '../components'
 import { Button } from '../../components/Button'
-import { ModelPairSelect } from '../ModelPairSelect'
+import { ModelEffortSelect, ModelPairSelect } from '../ModelPairSelect'
 import { PromptField } from '../ScreenshotTranslationSettings'
 import type { I18n, Lang } from '../../components/i18n'
 import type { Settings as SettingsData } from '../../api/tauri'
@@ -37,9 +37,29 @@ export function LensTab({
 
         {settings.lens.enabled && (
           <>
+            <SettingRow label={lang === 'zh' ? '模型' : 'Model'}>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <ModelPairSelect
+                  providerId={settings.lens?.providerId || ''}
+                  model={settings.lens?.model || ''}
+                  providers={settings.providers}
+                  inheritLabel={t.lensLanguageInherit}
+                  onChange={(providerId, model) => {
+                    onUpdateLens({ providerId, model, thinkingLevel: '' })
+                  }}
+                />
+                <ModelEffortSelect
+                  providerId={settings.lens.providerId || settings.translatorProviderId}
+                  model={settings.lens.model || settings.translatorModel}
+                  providers={settings.providers}
+                  value={settings.lens.thinkingLevel ?? (settings.lens.thinkingEnabled === false ? 'off' : '')}
+                  onChange={(thinkingLevel) => onUpdateLens({ thinkingLevel })}
+                />
+              </div>
+            </SettingRow>
             <SettingRow label={t.lensResponseLanguage}>
               <Select
-                className="w-44"
+                className="kv-ctl"
                 value={settings.lens?.defaultLanguage || ''}
                 onChange={(v) => onUpdateLens({ defaultLanguage: v })}
                 options={[
@@ -48,18 +68,6 @@ export function LensTab({
                   { value: 'zh-Hant', label: '繁體中文' },
                   { value: 'en', label: 'English' },
                 ]}
-              />
-            </SettingRow>
-            <SettingRow label={t.lensStreamEnabled}>
-              <Toggle
-                checked={settings.lens?.streamEnabled !== false}
-                onChange={(v) => onUpdateLens({ streamEnabled: v })}
-              />
-            </SettingRow>
-            <SettingRow label={t.lensThinkingEnabled} description={t.lensThinkingHint}>
-              <Toggle
-                checked={settings.lens?.thinkingEnabled !== false}
-                onChange={(v) => onUpdateLens({ thinkingEnabled: v })}
               />
             </SettingRow>
           </>
@@ -71,13 +79,13 @@ export function LensTab({
           <SettingsGroup title={lang === 'zh' ? '对话' : 'Conversation'}>
             <SettingRow label={t.lensSendToChat}>
               <Toggle
-                checked={settings.lens?.sendToChat !== false}
+                checked={settings.lens?.sendToChat === true}
                 onChange={(v) => onUpdateLens({ sendToChat: v })}
               />
             </SettingRow>
             <SettingRow label={t.lensMessageOrder}>
               <Select
-                className="w-52"
+                className="kv-ctl"
                 value={settings.lens?.messageOrder ?? 'asc'}
                 onChange={(v) => onUpdateLens({ messageOrder: v as 'asc' | 'desc' })}
                 options={[
@@ -94,21 +102,7 @@ export function LensTab({
             </SettingRow>
           </SettingsGroup>
 
-          <SettingsGroup title={t.engine}>
-            <SettingRow label={t.selectModelPair}>
-              <ModelPairSelect
-                providerId={settings.lens?.providerId || ''}
-                model={settings.lens?.model || ''}
-                providers={settings.providers}
-                inheritLabel={t.lensLanguageInherit}
-                onChange={(providerId, model) => {
-                  onUpdateLens({ providerId, model })
-                }}
-              />
-            </SettingRow>
-          </SettingsGroup>
-
-          <SettingsGroup title={t.imageArchive}>
+          <SettingsGroup title={lang === 'zh' ? '截图归档' : 'Screenshot archive'}>
             <SettingRow label={t.imageArchive}>
               <Toggle
                 checked={settings.imageArchiveEnabled ?? false}
@@ -148,14 +142,14 @@ export function LensTab({
               label={t.lensSystemPrompt}
               value={settings.lens?.systemPrompt || ''}
               defaultText={lensDefaults?.system || ''}
-              restoreLabel={t.restoreDefaultPrompt}
+              t={t}
               onChange={(v) => onUpdateLens({ systemPrompt: v })}
             />
             <PromptField
               label={t.lensQuestionPrompt}
               value={settings.lens?.questionPrompt || ''}
               defaultText={lensDefaults?.question || ''}
-              restoreLabel={t.restoreDefaultPrompt}
+              t={t}
               onChange={(v) => onUpdateLens({ questionPrompt: v })}
             />
           </SettingsGroup>

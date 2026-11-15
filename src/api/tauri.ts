@@ -1289,8 +1289,10 @@ export type Settings = {
     providerId: string
     model: string
     directTranslate?: boolean
-    /** 思考模式开关（默认 false）。OCR 模型 + 翻译模型都会注入对应字段 */
+    /** 旧版迁移字段。 */
     thinkingEnabled?: boolean
+    /** 空串跟随模型默认，off 关闭，其余为模型支持的推理强度。 */
+    thinkingLevel?: string | null
     /** 流式输出开关（默认 true）。OCR + 翻译两步都用 SSE，token 逐字到达 */
     streamEnabled?: boolean
     /** 截图后是否保持全屏覆盖（默认 true）。false 时截图后窗口缩小为浮动 */
@@ -1330,11 +1332,12 @@ export type Settings = {
     model?: string
     defaultLanguage?: string
     streamEnabled?: boolean
-    /** 思考模式开关（默认 true）。false 时 body 注入各厂商关闭思考的字段并集 */
+    /** 旧版迁移字段。 */
     thinkingEnabled?: boolean
+    thinkingLevel?: string | null
     systemPrompt?: string
     questionPrompt?: string
-    /** 默认把 Lens 提问发送到 AI 客户端；关闭后使用旧的 Lens 浮窗内回答 */
+    /** 可选把 Lens 提问发送到 AI 客户端，默认关闭，在 Lens 浮窗内回答。 */
     sendToChat?: boolean
     /** 消息排序：'asc' 老到新（默认），'desc' 新到老 */
     messageOrder?: 'asc' | 'desc'

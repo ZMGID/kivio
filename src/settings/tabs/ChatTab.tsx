@@ -10,11 +10,10 @@ import { PromptField } from '../ScreenshotTranslationSettings'
 import type { I18n, Lang } from '../../components/i18n'
 import type { SettingsTab } from '../SettingsShell'
 import { AvatarField } from './AvatarField'
-import { ChatToolsStatusGroup } from './ChatToolsStatusGroup'
+import { MemoryIcon, AgentIcon, ProvidersIcon } from '../NavIcons'
 import type {
   Settings as SettingsData,
   ChatToolsConfig,
-  ChatMemoryConfig,
   ChatModeConfig,
 } from '../../api/tauri'
 
@@ -43,7 +42,6 @@ interface ChatTabProps {
   lang: Lang
   chatConfig: NonNullable<SettingsData['chat']>
   chatTools: ChatToolsConfig
-  chatMemory: ChatMemoryConfig
   /** Built-in Agent system prompt (exact string used when systemPrompt is empty). */
   chatDefaults: string | undefined
   /** Built-in Chat runtime prompt (exact string used when chatMode.systemPrompt is empty). */
@@ -51,8 +49,6 @@ interface ChatTabProps {
   effectiveChatMaxOutput: { maxOutput: number; source: string }
   chatMaxOutputSourceLabel: string
   chatMaxOutputModelLabel: string
-  skillRuntimeEnabled: boolean
-  nativeBuiltinToolsEnabled: boolean
   onUpdateChat: (updates: Partial<NonNullable<SettingsData['chat']>>) => void
   onUpdateVoice: (updates: Partial<NonNullable<SettingsData['voice']>>) => void
   onUpdateNativeTools: (updates: Partial<NonNullable<ChatToolsConfig['nativeTools']>>) => void
@@ -67,14 +63,11 @@ export function ChatTab({
   lang,
   chatConfig,
   chatTools,
-  chatMemory,
   chatDefaults,
   chatRuntimeDefaults,
   effectiveChatMaxOutput,
   chatMaxOutputSourceLabel,
   chatMaxOutputModelLabel,
-  skillRuntimeEnabled,
-  nativeBuiltinToolsEnabled,
   onUpdateChat,
   onUpdateVoice,
   onUpdateNativeTools,
@@ -96,14 +89,18 @@ export function ChatTab({
   return (
     <>
       <SettingsGroup title={lang === 'zh' ? '个人资料' : 'Profile'}>
-        <div className="flex items-center gap-3 py-1">
+        <div className="kv-row">
           <AvatarField
             value={chatConfig.userAvatar || ''}
             onChange={(userAvatar) => onUpdateChat({ userAvatar })}
             zh={lang === 'zh'}
           />
+          <div className="kv-row-text">
+            <span className="kv-row-label">{lang === 'zh' ? '头像与名称' : 'Avatar and name'}</span>
+            <p className="kv-row-desc">{lang === 'zh' ? '显示在你发送的消息旁；点击头像更换。' : 'Shown next to your messages. Click the avatar to change it.'}</p>
+          </div>
           <Input
-            className="min-w-0 flex-1"
+            className="kv-ctl shrink-0"
             value={chatConfig.userDisplayName || ''}
             onChange={(userDisplayName) => onUpdateChat({ userDisplayName })}
             placeholder={lang === 'zh' ? '用户名（选填）' : 'Display name (optional)'}
@@ -114,7 +111,7 @@ export function ChatTab({
       <SettingsGroup title={t.voiceTitle}>
         <SettingRow label={t.voiceChannel}>
           <Select
-            className="w-72 max-w-full"
+            className="kv-ctl"
             ariaLabel={t.voiceChannel}
             value={settings.voice?.channel ?? 'auto'}
             onChange={(channel) => onUpdateVoice({ channel: channel === 'auto' ? null : channel as 'codex' | 'live' })}
@@ -127,7 +124,7 @@ export function ChatTab({
         </SettingRow>
         <SettingRow label={t.voiceLiveProvider}>
           <Select
-            className="w-72 max-w-full"
+            className="kv-ctl"
             ariaLabel={t.voiceLiveProvider}
             value={settings.voice?.liveProviderId ?? ''}
             onChange={(liveProviderId) => onUpdateVoice({ liveProviderId: liveProviderId || null })}
@@ -141,7 +138,7 @@ export function ChatTab({
         </SettingRow>
         <SettingRow label={t.voiceOrchestratorModel}>
           <ModelPairSelect
-            className="w-72 max-w-full"
+            className="kv-ctl"
             ariaLabel={t.voiceOrchestratorModel}
             providerId={settings.voice?.orchestratorProviderId ?? ''}
             model={settings.voice?.orchestratorModel ?? ''}
@@ -156,14 +153,15 @@ export function ChatTab({
       </SettingsGroup>
 
       {/* ─── Kivio Agent ─── */}
-      <SettingsGroup title={t.kivioAgentSection}>
-        {t.kivioAgentSectionHint ? (
-          <p className="kv-row-desc mb-2 px-0">{t.kivioAgentSectionHint}</p>
-        ) : null}
-
-        <SettingRow label={lang === 'zh' ? '普通对话工作目录' : 'Conversation workspace'} stack>
-          <div className="flex w-full flex-col gap-2">
-            <div className="flex gap-2">
+      <SettingsGroup title={t.kivioAgentSection} description={t.kivioAgentSectionHint || undefined}>
+        <SettingRow
+          label={lang === 'zh' ? '普通对话工作目录' : 'Conversation workspace'}
+          description={lang === 'zh'
+            ? '新建的非项目 Agent 对话共用此目录，内置与外部 Agent 均适用；已有独立目录继续保留。'
+            : 'New non-project chats share this directory across built-in and external agents. Existing separate directories are preserved.'}
+          stack
+        >
+            <div className="kv-path-row">
               <Input
                 className="min-w-0 flex-1"
                 value={chatTools.nativeTools?.workingDirectory ?? ''}
@@ -171,7 +169,6 @@ export function ChatTab({
                 onChange={(workingDirectory) => onUpdateNativeTools({ workingDirectory })}
               />
               <Button
-                size="sm"
                 className="shrink-0"
                 onClick={async () => {
                   const selected = await open({ directory: true, multiple: false })
@@ -184,7 +181,6 @@ export function ChatTab({
                 {lang === 'zh' ? '选择' : 'Choose'}
               </Button>
               <Button
-                size="sm"
                 className="shrink-0"
                 onClick={async () => {
                   const defaultPath = await join(await homeDir(), 'Kivio', 'workspace')
@@ -196,44 +192,23 @@ export function ChatTab({
                 {lang === 'zh' ? '恢复默认' : 'Reset'}
               </Button>
             </div>
-            <p className="kv-row-desc">
-              {lang === 'zh'
-                ? '新建的非项目 Agent 对话共用此目录，内置与外部 Agent 均适用；已有独立目录继续保留。'
-                : 'New non-project chats share this directory across built-in and external agents. Existing separate directories are preserved.'}
-            </p>
-          </div>
         </SettingRow>
 
-        <SettingRow label={t.chatMaxOutputTokens} stack>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[15px] font-medium text-neutral-900">
-                  {formatTokenCount(effectiveChatMaxOutput.maxOutput)}
-                </span>
-                <span className={`kv-tag ${effectiveChatMaxOutput.source === 'fallback' ? 'warn' : 'ok'}`}>
-                  {chatMaxOutputSourceLabel}
-                </span>
-              </div>
-              <p className="kv-row-desc mt-1 min-w-0 break-all">
-                {lang === 'zh' ? '聊天所选模型：' : 'Chat model: '}
-                {chatMaxOutputModelLabel}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <span className="kv-row-desc whitespace-nowrap">
-                {lang === 'zh' ? '兜底' : 'Fallback'}
-              </span>
-              <span className="text-[13px] tabular-nums text-neutral-800">
-                {formatTokenCount(CHAT_FALLBACK_MAX_OUTPUT_TOKENS)}
-              </span>
-            </div>
-          </div>
+        <SettingRow
+          label={t.chatMaxOutputTokens}
+          description={`${lang === 'zh' ? '聊天所选模型：' : 'Chat model: '}${chatMaxOutputModelLabel} · ${lang === 'zh' ? '兜底' : 'fallback'} ${formatTokenCount(CHAT_FALLBACK_MAX_OUTPUT_TOKENS)}`}
+        >
+          <span className={`kv-tag ${effectiveChatMaxOutput.source === 'fallback' ? 'warn' : 'ok'}`}>
+            {chatMaxOutputSourceLabel}
+          </span>
+          <span className="text-[13px] font-medium tabular-nums text-[var(--text)]">
+            {formatTokenCount(effectiveChatMaxOutput.maxOutput)}
+          </span>
         </SettingRow>
 
         <SettingRow label={t.chatDefaultLanguage}>
           <Select
-            className="w-44"
+            className="kv-ctl"
             value={chatConfig.defaultLanguage || ''}
             onChange={(defaultLanguage) => onUpdateChat({ defaultLanguage })}
             options={[
@@ -250,39 +225,41 @@ export function ChatTab({
           description={t.chatSystemPromptHint}
           value={chatConfig.systemPrompt || ''}
           defaultText={chatDefaults || ''}
-          restoreLabel={t.restoreDefaultPrompt}
+          t={t}
           onChange={(systemPrompt) => onUpdateChat({ systemPrompt })}
         />
       </SettingsGroup>
 
-      <ChatToolsStatusGroup
-        onUpdateChatTools={onUpdateChatTools}
-        settings={settings}
-        t={t}
-        lang={lang}
-        chatTools={chatTools}
-        chatMemory={chatMemory}
-        skillRuntimeEnabled={skillRuntimeEnabled}
-        nativeBuiltinToolsEnabled={nativeBuiltinToolsEnabled}
-        onNavigateTab={onNavigateTab}
-      />
+      <SettingsGroup
+        title={t.chatToolsSection}
+        actions={
+          <>
+            <Button size="sm" variant="ghost" onClick={() => onNavigateTab('memory')} data-tauri-drag-region="false">
+              <MemoryIcon size={11} />
+              {t.tabMemory}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => onNavigateTab('externalAgents')} data-tauri-drag-region="false">
+              <AgentIcon size={11} />
+              {t.chatOpenExternalAgents}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => onNavigateTab('providers')} data-tauri-drag-region="false">
+              <ProvidersIcon size={11} />
+              {t.chatOpenProviders}
+            </Button>
+          </>
+        }
+      >
+        <SettingRow label={t.toolsOnDemand} description={t.toolsOnDemandHint}>
+          <Toggle
+            ariaLabel={t.toolsOnDemand}
+            checked={chatTools.toolsOnDemand ?? true}
+            onChange={(toolsOnDemand) => onUpdateChatTools({ toolsOnDemand })}
+          />
+        </SettingRow>
+      </SettingsGroup>
 
       {/* ─── Kivio Chat ─── */}
-      <SettingsGroup title={t.kivioChatSection}>
-        {t.kivioChatSectionHint ? (
-          <p className="kv-row-desc mb-1 px-0">{t.kivioChatSectionHint}</p>
-        ) : null}
-
-        <PromptField
-          label={t.kivioChatSystemPrompt}
-          description={t.kivioChatSystemPromptHint}
-          value={chatMode.systemPrompt || ''}
-          defaultText={chatRuntimeDefaults || ''}
-          restoreLabel={t.restoreDefaultPrompt}
-          onChange={(systemPrompt) => updateChatMode({ systemPrompt })}
-        />
-
-
+      <SettingsGroup title={t.kivioChatSection} description={t.kivioChatSectionHint || undefined}>
         <SettingRow
           label={t.kivioChatWebSearch}
           description={t.kivioChatWebSearchHint}
@@ -328,7 +305,15 @@ export function ChatTab({
             onChange={(mcpReadOnly) => updateChatMode({ mcpReadOnly })}
           />
         </SettingRow>
-        <p className="kv-row-desc px-0 pb-1 pt-1">
+        <PromptField
+          label={t.kivioChatSystemPrompt}
+          description={t.kivioChatSystemPromptHint}
+          value={chatMode.systemPrompt || ''}
+          defaultText={chatRuntimeDefaults || ''}
+          t={t}
+          onChange={(systemPrompt) => updateChatMode({ systemPrompt })}
+        />
+        <p className="kv-group-note">
           {lang === 'zh'
             ? '以上开关仅影响 Kivio Chat。写文件 / Shell / Subagent 始终只在 Kivio Agent 中可用。'
             : 'These toggles only affect Kivio Chat. Write / shell / sub-agents stay Agent-only.'}

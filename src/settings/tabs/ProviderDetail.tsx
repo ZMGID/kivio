@@ -205,10 +205,14 @@ export function ProviderDetail({
 
     <ProviderUsageCard key={provider.id} provider={provider} lang={lang} />
 
-    <SettingsGroup>
-      <div className="kv-provider-section-head">
-        <span className="kv-provider-section-title">{lang === 'zh' ? '模型' : 'Models'}</span>
-        <span className="kv-tag tabular-nums">{provider.enabledModels.length}</span>
+    <SettingsGroup
+      title={
+        <>
+          {lang === 'zh' ? '模型' : 'Models'}
+          <span className="kv-tag tabular-nums">{provider.enabledModels.length}</span>
+        </>
+      }
+      actions={
         <Button
           size="sm"
           onClick={() => onOpenModelPicker(provider.id)}
@@ -217,7 +221,8 @@ export function ProviderDetail({
           <List size={12} />
           {lang === 'zh' ? '管理模型' : 'Manage models'}
         </Button>
-      </div>
+      }
+    >
         <ul className="kv-enabled-model-list">
           {provider.enabledModels.length === 0 && (
             <li className="kv-enabled-model-empty">
