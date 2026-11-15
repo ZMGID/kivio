@@ -545,7 +545,7 @@ mod tests {
             for body in ["{}".to_owned(), body] {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut buffer = [0; 4096];
-                stream.read(&mut buffer).await.unwrap();
+                assert!(stream.read(&mut buffer).await.unwrap() > 0);
                 stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
             }
         });
