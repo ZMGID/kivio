@@ -17,7 +17,7 @@ import { createConversationWarmCache } from './conversationWarmCache'
 import { EMPTY_HISTORY_DIRECTORY, isPartialConversation } from './conversationHistoryWindow'
 import { keepNewerTodoState, patchTodoState } from './agentTodoState'
 import { keepNewerContextMeasurement } from './contextPanel'
-import { forgetChatReadingPosition, recallChatReadingPosition } from './chatReadingPosition'
+import { forgetChatReadingPosition, readingPositionNeedsFullHistory, recallChatReadingPosition } from './chatReadingPosition'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
 import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
@@ -982,10 +982,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
         .catch(() => null)
       if (cached) return cached
-      const readingPosition = recallChatReadingPosition(conversationId)
-      return readingPosition && !readingPosition.following
+      // Most readers leave inside the latest turns; only a row outside the
+      // first window needs the full history to restore.
+      const firstWindow = await chatApi.getConversationWindow(conversationId)
+      return readingPositionNeedsFullHistory(
+        recallChatReadingPosition(conversationId), firstWindow.messages, previewOwner.summary(conversationId)?.messageId,
+      )
         ? chatApi.getConversation(conversationId)
-        : chatApi.getConversationWindow(conversationId)
+        : firstWindow
     },
     readHistoryPage: chatApi.getConversationPage,
     showHistoryPage: applyConversation,
@@ -1041,7 +1045,16 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     prepareSelection: (focusMessageId, fresh) => {
       if (fresh) {
         const leaving = currentConversationRef.current
-        if (leaving && !executionOwner.snapshot(leaving.id).inFlight) warmConversationCache.rememberSoon(leaving)
+        // A running conversation is remembered too: its stored history does not
+        // change until the run settles, and every reuse re-checks the revision.
+        // That snapshot is only reused while the same run is still going.
+        if (leaving) {
+          const { id } = leaving
+          const epoch = executionOwner.turnEpoch(id)
+          warmConversationCache.rememberSoon(leaving, executionOwner.snapshot(id).inFlight
+            ? () => executionOwner.snapshot(id).inFlight && executionOwner.turnEpoch(id) === epoch
+            : undefined)
+        }
         setAssistantStreamStatsByMessageId({})
         setHookWarning(null)
       }

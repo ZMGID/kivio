@@ -1,16 +1,21 @@
 import type { Conversation } from './types'
 
-const TTL_MS = 30_000
+const TTL_MS = 5 * 60_000
 const MAX_ENTRIES = 4
 const MAX_BYTES = 24 * 1024 * 1024
 
-type Entry = { conversation: Conversation; bytes: number; expiresAt: number; timer: ReturnType<typeof setTimeout> }
+/** Extra validity beyond the stored revision, e.g. a snapshot taken during a run. */
+type StillCurrent = () => boolean
+type Entry = {
+  conversation: Conversation; bytes: number; expiresAt: number
+  timer: ReturnType<typeof setTimeout>; stillCurrent?: StillCurrent
+}
 
 /** Owns loaded display windows between short navigation round trips.
  * Every hit must be checked against the repository index revision first. */
 export function createConversationWarmCache(now = Date.now) {
   const entries = new Map<string, Entry>()
-  const pending = new Map<string, { conversation: Conversation; cancel: () => void }>()
+  const pending = new Map<string, { conversation: Conversation; cancel: () => void; stillCurrent?: StillCurrent }>()
   let usedBytes = 0
 
   const remove = (id: string) => {
@@ -47,7 +52,7 @@ export function createConversationWarmCache(now = Date.now) {
     }
   }
 
-  const remember = (conversation: Conversation) => {
+  const remember = (conversation: Conversation, stillCurrent?: StillCurrent) => {
     cancelPending(conversation.id)
     remove(conversation.id)
     // A complete JSON snapshot is the transport representation. Measuring it
@@ -55,29 +60,37 @@ export function createConversationWarmCache(now = Date.now) {
     const bytes = JSON.stringify(conversation).length * 2
     if (bytes > MAX_BYTES) return
     const id = conversation.id
-    entries.set(id, { conversation, bytes, expiresAt: now() + TTL_MS, timer: setTimeout(() => remove(id), TTL_MS) })
+    entries.set(id, {
+      conversation, bytes, expiresAt: now() + TTL_MS, timer: setTimeout(() => remove(id), TTL_MS), stillCurrent,
+    })
     usedBytes += bytes
     prune()
   }
 
   return {
     remember,
-    rememberSoon(conversation: Conversation) {
+    rememberSoon(conversation: Conversation, stillCurrent?: StillCurrent) {
       cancelPending(conversation.id)
       const cancel = scheduleAfterPaint(() => {
         if (pending.get(conversation.id)?.conversation !== conversation) return
         pending.delete(conversation.id)
-        remember(conversation)
+        remember(conversation, stillCurrent)
       })
-      pending.set(conversation.id, { conversation, cancel })
+      pending.set(conversation.id, { conversation, cancel, stillCurrent })
       while (pending.size > MAX_ENTRIES) cancelPending(pending.keys().next().value!)
     },
     async get(id: string, revision: (id: string) => Promise<number | null>): Promise<Conversation | null> {
       prune()
       // A rapid A → B → A return may precede the idle cache bookkeeping.
       // Reuse that already-loaded window instead of loading the full history.
-      const conversation = pending.get(id)?.conversation ?? entries.get(id)?.conversation
+      const held = pending.get(id) ?? entries.get(id)
+      const conversation = held?.conversation
       if (!conversation) return null
+      if (held.stillCurrent && !held.stillCurrent()) {
+        cancelPending(id)
+        remove(id)
+        return null
+      }
       const currentRevision = await revision(id)
       const current = pending.get(id)?.conversation ?? entries.get(id)?.conversation
       if (current !== conversation) return null

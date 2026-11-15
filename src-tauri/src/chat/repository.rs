@@ -143,6 +143,20 @@ fn apply_context_state_update(
     increment_revision(conversation)
 }
 
+/// Measuring an unchanged conversation again only moves the measurement time.
+/// That alone is not a new version: every reader of the revision would reload.
+pub(crate) fn context_state_changed(
+    current: &ConversationContextState,
+    next: &ConversationContextState,
+) -> bool {
+    let comparable = |state: &ConversationContextState| {
+        let mut state = state.clone();
+        state.last_measured_at = 0;
+        serde_json::to_value(state).ok()
+    };
+    comparable(current) != comparable(next)
+}
+
 fn apply_upserts(conversation: &mut Conversation, messages: Vec<ChatMessage>) {
     for mut message in messages {
         if let Some(position) = conversation
@@ -1622,6 +1636,15 @@ mod tests {
         assert_eq!(current.context_state.estimated_input_tokens, 12_345);
         assert_eq!(current.context_state.context_window_tokens, Some(200_000));
         assert_eq!(current.context_state.last_measured_at, 99);
+    }
+
+    #[test]
+    fn remeasuring_an_unchanged_conversation_is_not_a_context_change() {
+        let stored = context_state(12_345);
+        let mut remeasured = stored.clone();
+        remeasured.last_measured_at = 100;
+        assert!(!context_state_changed(&stored, &remeasured));
+        assert!(context_state_changed(&stored, &context_state(12_346)));
     }
 
     #[test]

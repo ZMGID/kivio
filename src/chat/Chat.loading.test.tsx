@@ -1,5 +1,5 @@
 import { Profiler } from 'react'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { api } from '../api/tauri'
 import type { ChatContextPayload, ChatStreamPayload } from '../api/tauri'
@@ -34,14 +34,17 @@ it('commits conversation history and its live preview together when switching', 
     messages: [{ id: `${id}-question`, role: 'user', content: `${id} question`, timestamp: 1 }],
   }))
   const read = async (id: string) => conversations.find(conversation => conversation.id === id)!
-  vi.spyOn(chatApi, 'getConversations').mockResolvedValue([])
+  vi.spyOn(chatApi, 'getConversations').mockResolvedValue(conversations.map(({ id }) => ({
+    id, title: id, preview: '', provider_id: '', model: '', message_count: 1, created_at: 1, updated_at: 1,
+  })))
   vi.spyOn(chatApi, 'getProjects').mockResolvedValue([])
   vi.spyOn(chatApi, 'getSets').mockResolvedValue([])
   vi.spyOn(chatApi, 'getAssistants').mockResolvedValue([])
   vi.spyOn(chatApi, 'getConversationPins').mockResolvedValue({})
-  vi.spyOn(chatApi, 'getConversationWindow').mockImplementation(read)
+  const windowReads = vi.spyOn(chatApi, 'getConversationWindow').mockImplementation(read)
+  vi.spyOn(chatApi, 'getConversationRevision').mockResolvedValue(1)
   vi.spyOn(chatApi, 'getConversation').mockImplementation(read)
-  vi.spyOn(chatApi, 'getContextStats').mockImplementation(async id => ({ contextState: {}, conversation: await read(id) }))
+  vi.spyOn(chatApi, 'getContextStats').mockResolvedValue({ contextState: {} })
   const mixedCommits: string[] = []
   const observeCommit = () => {
     const liveMessageId = getSnapshot().messageId
@@ -72,6 +75,17 @@ it('commits conversation history and its live preview together when switching', 
     await waitFor(() => expect(getSnapshot().messageId).toBe(`${id}-answer`))
   }
   expect(mixedCommits).toEqual([])
+  // Both conversations are still running. Leaving one from the sidebar keeps
+  // its loaded window, so coming back while it is unchanged reads nothing.
+  windowReads.mockClear()
+  for (const id of ['switch-b', 'switch-a', 'switch-b']) {
+    fireEvent.click(await screen.findByRole('button', { name: id }))
+    await screen.findByText(`${id} question`)
+    await waitFor(() => expect(getSnapshot().messageId).toBe(`${id}-answer`))
+  }
+  expect(mixedCommits).toEqual([])
+  expect(windowReads.mock.calls.map(([id]) => id)).toEqual(['switch-b'])
+  expect(chatApi.getConversation).not.toHaveBeenCalled()
   view.unmount()
 })
 
@@ -99,7 +113,7 @@ it('keeps sidebar reads idle while the open conversation receives context update
     messages: [], created_at: 1, updated_at: 1,
   }
   vi.spyOn(chatApi, 'getConversationWindow').mockResolvedValue(conversation)
-  vi.spyOn(chatApi, 'getContextStats').mockResolvedValue({ contextState: {}, conversation })
+  vi.spyOn(chatApi, 'getContextStats').mockResolvedValue({ contextState: {} })
   window.history.replaceState(null, '', '#chat/conv_loading_test')
   const view = render(<Chat onSettingsChange={() => {}} />)
   await screen.findByText('Loading regression')

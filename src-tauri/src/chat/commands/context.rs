@@ -30,7 +30,7 @@ pub(crate) async fn chat_get_context_stats(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
-    let mut conversation = load_conversation(&app, &conversation_id)?;
+    let conversation = load_conversation(&app, &conversation_id)?;
     let context_state = if conversation.agent_runtime.is_external() {
         let cwd = crate::external_agents::workspace::resolve_effective_cwd(
             &app,
@@ -49,19 +49,23 @@ pub(crate) async fn chat_get_context_stats(
     } else {
         compute_context_state(&app, &state, &conversation, None, &[]).await?
     };
-    conversation = persist_context_state_best_effort(
-        &app,
-        &conversation_id,
-        conversation,
-        context_state.clone(),
-    )
-    .await?;
-    let context_state = conversation.context_state.clone();
-    strip_transcripts_for_frontend(&mut conversation);
+    let (conversation, stored) =
+        persist_context_state(&app, &conversation_id, conversation, context_state).await?;
+    // A changed measurement is a new revision. Announce it, so the window that
+    // asked does not mistake its own refresh for someone else's edit and reload.
+    if stored {
+        emit_chat_context_state(
+            &app,
+            &conversation.id,
+            conversation.revision,
+            &conversation.context_state,
+        );
+    }
+    // Only the measurement goes back: the caller already shows this conversation,
+    // and its history is megabytes for a long run.
     Ok(serde_json::json!({
         "success": true,
-        "contextState": crate::chat::protocol::ChatContextStatePayload::from(&context_state),
-        "conversation": conversation,
+        "contextState": crate::chat::protocol::ChatContextStatePayload::from(&conversation.context_state),
     }))
 }
 
@@ -73,23 +77,36 @@ pub(super) async fn persist_context_state_best_effort(
     conversation: crate::chat::Conversation,
     context_state: crate::chat::ConversationContextState,
 ) -> Result<crate::chat::Conversation, String> {
+    persist_context_state(app, conversation_id, conversation, context_state)
+        .await
+        .map(|(conversation, _)| conversation)
+}
+
+/// Also reports whether this call stored the measurement as a new revision.
+async fn persist_context_state(
+    app: &AppHandle,
+    conversation_id: &str,
+    conversation: crate::chat::Conversation,
+    context_state: crate::chat::ConversationContextState,
+) -> Result<(crate::chat::Conversation, bool), String> {
+    // Opening a conversation measures it again. An unchanged result must not
+    // rewrite the file or advance the revision that caches and sync compare.
+    if !crate::chat::repository::context_state_changed(&conversation.context_state, &context_state)
+    {
+        return Ok((conversation, false));
+    }
     let repository = crate::chat::repository::repository(app);
     match repository
-        .update_context(
-            app,
-            conversation_id,
-            conversation.revision,
-            context_state.clone(),
-        )
+        .update_context(app, conversation_id, conversation.revision, context_state)
         .await
     {
-        Ok(updated) => Ok(updated),
+        Ok(updated) => Ok((updated, true)),
         Err(crate::chat::repository::ConversationRepositoryError::Conflict { .. }) => {
             let latest = repository
                 .get(app, conversation_id)
                 .await
                 .map_err(crate::chat::repository::repository_error)?;
-            Ok(latest)
+            Ok((latest, false))
         }
         Err(err) => Err(crate::chat::repository::repository_error(err)),
     }

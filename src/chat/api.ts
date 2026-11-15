@@ -1004,14 +1004,14 @@ const mockChatApi = {
     return { conversation, content: target.content }
   },
 
-  async getContextStats(conversationId: string): Promise<{ contextState: ConversationContextState; conversation: Conversation }> {
+  async getContextStats(conversationId: string): Promise<{ contextState: ConversationContextState }> {
     const conversations = loadMockConversations()
     const index = conversations.findIndex((item) => item.id === conversationId)
     if (index < 0) throw new Error('Conversation not found')
     const conversation = withMockContext(conversations[index])
     conversations[index] = conversation
     saveMockConversations(conversations)
-    return { contextState: conversation.context_state ?? {}, conversation }
+    return { contextState: conversation.context_state ?? {} }
   },
 
   async compressContext(conversationId: string): Promise<{ contextState: ConversationContextState; conversation: Conversation }> {
@@ -1947,18 +1947,17 @@ export const chatApi = {
     return result.conversation
   },
 
-  async getContextStats(conversationId: string): Promise<{ contextState: ConversationContextState; conversation: Conversation }> {
+  async getContextStats(conversationId: string): Promise<{ contextState: ConversationContextState }> {
     if (!isTauriRuntime()) return mockChatApi.getContextStats(conversationId)
     const result = await invoke<{
       success: boolean
       contextState?: ConversationContextState
-      conversation?: Conversation
       error?: string
     }>('chat_get_context_stats', { conversationId })
-    if (!result.success || !result.contextState || !result.conversation) {
+    if (!result.success || !result.contextState) {
       throw new Error(result.error || 'Failed to get context stats')
     }
-    return { contextState: result.contextState, conversation: result.conversation }
+    return { contextState: result.contextState }
   },
 
   async compressContext(conversationId: string): Promise<{ contextState: ConversationContextState; conversation: Conversation }> {

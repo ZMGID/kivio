@@ -238,7 +238,9 @@ export function createChatNavigationController(ports: NavigationPorts) {
     }
     if (ports.isConversationInFlight(conversationId) && !options?.force) return
     try {
-      const conversation = await (options?.initialWindow && !ports.isConversationInFlight(conversationId)
+      // A run appends drafts to its own journal; the stored history a window
+      // is cut from is the same whether or not the conversation is running.
+      const conversation = await (options?.initialWindow
         ? (ports.readConversationWindow?.(conversationId) ?? ports.readConversation(conversationId))
         : ports.readConversation(conversationId))
       const transition = getConversationTransitionSnapshot()
@@ -322,7 +324,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
     }
     ports.prepareSelection(hint?.focusMessageId ?? null, true)
     try {
-      const conversation = await ((hint?.focusMessageId || ports.isConversationInFlight(conversationId))
+      const conversation = await (hint?.focusMessageId
         ? ports.readConversation(conversationId)
         : (ports.readConversationWindow?.(conversationId) ?? ports.readConversation(conversationId)))
       if (!isCurrentConversationTransition(requestId, conversationId)) return

@@ -8,12 +8,36 @@ const conversation = (id: string, revision = 1): Conversation => ({
 })
 
 describe('conversation warm cache', () => {
+  it('reuses a conversation after a minute away while still validating its revision', async () => {
+    vi.useFakeTimers()
+    try {
+      const cache = createConversationWarmCache()
+      const snapshot = conversation('returning')
+      cache.remember(snapshot)
+      vi.advanceTimersByTime(60_000)
+      expect(await cache.get(snapshot.id, async () => 1)).toBe(snapshot)
+      expect(await cache.get(snapshot.id, async () => 2)).toBeNull()
+      cache.clear()
+    } finally { vi.useRealTimers() }
+  })
+  it('drops a snapshot whose own validity ended, even at an unchanged revision', async () => {
+    const cache = createConversationWarmCache()
+    let running = true
+    cache.remember(conversation('run'), () => running)
+    cache.rememberSoon(conversation('soon'), () => running)
+    expect(await cache.get('run', async () => 1)).not.toBeNull()
+    running = false
+    expect(await cache.get('run', async () => 1)).toBeNull()
+    expect(await cache.get('soon', async () => 1)).toBeNull()
+    expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
+    cache.clear()
+  })
   it('releases idle snapshots without another cache operation', () => {
     vi.useFakeTimers()
     try {
       const cache = createConversationWarmCache(() => 0)
       cache.remember(conversation('idle'))
-      vi.advanceTimersByTime(30_000)
+      vi.advanceTimersByTime(5 * 60_000)
       expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
       cache.clear()
       expect(vi.getTimerCount()).toBe(0)
@@ -46,7 +70,7 @@ describe('conversation warm cache', () => {
     expect(head).toHaveBeenCalledWith('a')
     expect(await cache.get('a', async () => 2)).toBeNull()
     cache.remember(a)
-    clock = 30_000
+    clock = 5 * 60_000
     expect(await cache.get('a', head)).toBeNull()
   })
 

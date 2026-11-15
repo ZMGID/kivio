@@ -75,7 +75,7 @@ import {
 import { createLiveRowModel } from './liveRowModel'
 import { useLiveRowMeasurement } from './hooks/useLiveRowMeasurement'
 import { useChatWidthLayout } from './hooks/useChatWidthLayout'
-import { recallChatReadingPosition, rememberChatReadingPosition } from './chatReadingPosition'
+import { readingGroupRowKey, recallChatReadingPosition, rememberChatReadingPosition } from './chatReadingPosition'
 import { EMPTY_HISTORY_ARTIFACTS, EMPTY_HISTORY_DIRECTORY } from './conversationHistoryWindow'
 
 
@@ -207,7 +207,7 @@ type RenderItem = HistoryRenderItem | LiveRenderItem
 function readingRowKey(item: RenderItem): string {
   if (item.kind === 'message') return item.message.id
   if (item.kind === 'streaming') return item.messageId
-  if (item.kind === 'group' || item.kind === 'live-group') return `group-${item.groupId}`
+  if (item.kind === 'group' || item.kind === 'live-group') return readingGroupRowKey(item.groupId)
   return item.key
 }
 

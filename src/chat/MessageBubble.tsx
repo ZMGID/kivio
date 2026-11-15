@@ -1074,7 +1074,7 @@ function TimelineSegments({
     const processGroups = groupItems.filter(item => item.type === 'group')
     const allProcessSegments = processGroups.flatMap(item => item.segments)
     const referencedIds = referencedArtifactIds(groupItems
-      .filter(item => item.type === 'text').map(item => segmentText(item.segment)).join('\n\n'))
+      .filter(item => item.type === 'text').map(item => segmentText(item.segment)))
     const presentedIds = new Set<string>()
     const presentationExclusions = new Map<string, ReadonlySet<string>>()
     for (const item of groupItems) {
@@ -1301,14 +1301,15 @@ function MessageBubbleComponent({
     const hasTimelineSegments = timelineSegments.length > 0
     const messageArtifacts = message.artifacts ?? []
     const toolArtifacts = toolCalls.flatMap((toolCall) => toolCall.artifacts ?? [])
-    const artifactReferenceContent = [
+    const artifactReferenceTexts = [
       message.content,
       ...timelineSegments.map((segment) => segmentText(segment)),
-    ].join('\n\n')
+    ]
+    const artifactReferenceContent = artifactReferenceTexts.join('\n\n')
     const localArtifacts = [...messageArtifacts, ...toolArtifacts]
     const localIds = new Set(localArtifacts.map(artifactId))
     const selectedIds = new Set([
-      ...referencedArtifactIds(artifactReferenceContent),
+      ...referencedArtifactIds(artifactReferenceTexts),
       ...toolCalls.flatMap(tool => artifactPresentationFromToolCall(tool)?.artifactIds ?? []),
     ])
     const earlierReferencedArtifacts = [...selectedIds]

@@ -246,6 +246,30 @@ describe('chat navigation controller', () => {
     expect(state.reads.size).toBe(0)
   })
 
+  it('uses the first window for a conversation that is still running', async () => {
+    const state = setup(true)
+    state.setInFlight(true)
+    const selecting = state.controller.selectConversation('a')
+    state.ownership.resolve(new Set())
+    expect(await state.windowStarted.promise).toBe('a')
+    state.windowReads.get('a')!.resolve(conversation('a'))
+    await selecting
+    expect(state.shown).toEqual(['a'])
+    expect(state.reads.size).toBe(0)
+  })
+
+  it('uses the first window when a restored route is still running', async () => {
+    const state = setup(true)
+    state.setInFlight(true)
+    const loading = state.controller.loadRouteConversation('a')
+    state.ownership.resolve(new Set())
+    expect(await state.windowStarted.promise).toBe('a')
+    state.windowReads.get('a')!.resolve(conversation('a'))
+    await loading
+    expect(state.shown).toEqual(['a'])
+    expect(state.reads.size).toBe(0)
+  })
+
   it('loads full history for a search target outside the first window', async () => {
     const state = setup(true)
     const selecting = state.controller.selectConversation('a', { focusMessageId: 'old' })

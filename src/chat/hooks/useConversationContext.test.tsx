@@ -102,7 +102,7 @@ describe('useConversationContext: stats', () => {
   })
 
   it('loads stats for the current conversation and mirrors them into the conversation object', async () => {
-    mockStats.mockResolvedValue({ contextState: state({ estimated_input_tokens: 42 }), conversation: conversation() })
+    mockStats.mockResolvedValue({ contextState: state({ estimated_input_tokens: 42 }) })
     const { result } = setup()
     await act(async () => { await result.current.ctx.refreshContextStats('c1') })
     expect(result.current.ctx.contextState?.estimated_input_tokens).toBe(42)
@@ -112,7 +112,7 @@ describe('useConversationContext: stats', () => {
   })
 
   it('drops late results after the user switched conversations', async () => {
-    let resolveStats: (value: { contextState: ConversationContextState; conversation: Conversation }) => void = () => {}
+    let resolveStats: (value: { contextState: ConversationContextState }) => void = () => {}
     mockStats.mockImplementation(() => new Promise((resolve) => { resolveStats = resolve }))
     const { result, currentConversationIdRef } = setup()
     let pending: Promise<void> = Promise.resolve()
@@ -120,7 +120,7 @@ describe('useConversationContext: stats', () => {
     expect(result.current.ctx.contextLoading).toBe(true)
     currentConversationIdRef.current = 'c2'
     await act(async () => {
-      resolveStats({ contextState: state({ estimated_input_tokens: 999 }), conversation: conversation() })
+      resolveStats({ contextState: state({ estimated_input_tokens: 999 }) })
       await pending
     })
     expect(result.current.ctx.contextState).toBeNull()
@@ -238,7 +238,7 @@ describe('useConversationContext: clear + live usage', () => {
   })
 
   it('applies live token usage on top of the existing snapshot for the current conversation only', async () => {
-    mockStats.mockResolvedValue({ contextState: state({ estimated_input_tokens: 100 } as Partial<ConversationContextState>), conversation: conversation() })
+    mockStats.mockResolvedValue({ contextState: state({ estimated_input_tokens: 100 } as Partial<ConversationContextState>) })
     const { result } = setup()
     await act(async () => { await result.current.ctx.refreshContextStats('c1') })
     act(() => {
@@ -267,7 +267,6 @@ describe('useConversationContext: clear + live usage', () => {
         token_count_source: 'provider_context_reported',
         measurement_seq: 4,
       }),
-      conversation: conversation(),
     })
     await act(async () => { await result.current.ctx.refreshContextStats('c1') })
     expect(result.current.ctx.contextState?.reported_context_tokens).toBe(53_000)

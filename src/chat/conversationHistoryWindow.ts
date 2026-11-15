@@ -23,7 +23,7 @@ export function historyReferenceArtifacts(messages: ChatMessage[], start: number
     ...(message.tool_calls ?? message.toolCalls ?? []).flatMap(tool => tool.artifacts ?? []),
   ]
   for (const message of messages.slice(start, end)) {
-    for (const id of referencedArtifactIds([message.content, ...(message.segments ?? []).map(segment => segment.text ?? '')].join('\n\n'))) needed.add(id)
+    for (const id of referencedArtifactIds([message.content, ...(message.segments ?? []).map(segment => segment.text ?? '')])) needed.add(id)
     for (const tool of message.tool_calls ?? message.toolCalls ?? []) {
       for (const id of artifactPresentationFromToolCall(tool)?.artifactIds ?? []) needed.add(id)
     }
