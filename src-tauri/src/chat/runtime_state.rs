@@ -45,7 +45,10 @@ struct ChatRunIndexes {
 impl ChatRuntimeState {
     pub(crate) fn has_running_chats(&self) -> bool {
         let indexes = self.indexes();
-        indexes.active_generations.values().any(|runs| !runs.is_empty())
+        indexes
+            .active_generations
+            .values()
+            .any(|runs| !runs.is_empty())
             || indexes.active_replies.values().any(|runs| !runs.is_empty())
     }
     pub(crate) async fn skill_registry(

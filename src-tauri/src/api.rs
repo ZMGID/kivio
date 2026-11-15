@@ -1512,20 +1512,30 @@ mod tests {
             "id": "p", "name": "Test", "baseUrl": "https://example.invalid",
             "apiFormat": "openai_chat", "models": [], "enabledModels": [],
             "modelOverrides": {"gpt-5.5": {"reasoningEfforts": ["low", "high"]}}
-        })).unwrap();
+        }))
+        .unwrap();
         let choice = ThinkingChoice::resolve("high", &provider, "gpt-5.5");
         let options = choice.apply(GenerateOptions::default());
         assert!(options.thinking_enabled);
         assert_eq!(options.thinking_level.as_deref(), Some("high"));
         for value in ["", "medium", "invalid"] {
-            assert_eq!(ThinkingChoice::resolve(value, &provider, "gpt-5.5"), ThinkingChoice::MODEL_DEFAULT);
+            assert_eq!(
+                ThinkingChoice::resolve(value, &provider, "gpt-5.5"),
+                ThinkingChoice::MODEL_DEFAULT
+            );
         }
         let off = ThinkingChoice::resolve("off", &provider, "claude-haiku-5.99-synthetic")
             .apply(GenerateOptions::default());
         assert!(!off.thinking_enabled);
         assert_eq!(off.thinking_level, None);
-        assert_eq!(ThinkingChoice::resolve("off", &provider, "o3"), ThinkingChoice::MODEL_DEFAULT);
-        assert_eq!(ThinkingChoice::resolve("high", &provider, "gpt-4o"), ThinkingChoice::MODEL_DEFAULT);
+        assert_eq!(
+            ThinkingChoice::resolve("off", &provider, "o3"),
+            ThinkingChoice::MODEL_DEFAULT
+        );
+        assert_eq!(
+            ThinkingChoice::resolve("high", &provider, "gpt-4o"),
+            ThinkingChoice::MODEL_DEFAULT
+        );
     }
 
     #[test]

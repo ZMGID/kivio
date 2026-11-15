@@ -17,7 +17,7 @@ use xcap::Monitor;
 
 use crate::api::{
     call_openai_ocr, call_openai_text, call_vision_api, effective_retry_attempts,
-    ocr_image_message, ThinkingChoice, stream_chat_call, stream_translate_combined,
+    ocr_image_message, stream_chat_call, stream_translate_combined, ThinkingChoice,
 };
 #[cfg(target_os = "windows")]
 use crate::capture_geometry::{
@@ -1551,7 +1551,11 @@ pub(crate) async fn lens_translate(
     let retry_attempts = effective_retry_attempts(&settings);
     let direct_translate = settings.screenshot_translation.direct_translate;
     let st_thinking = ThinkingChoice::resolve(
-        settings.screenshot_translation.thinking_level.as_deref().unwrap_or(""),
+        settings
+            .screenshot_translation
+            .thinking_level
+            .as_deref()
+            .unwrap_or(""),
         &ocr_provider,
         &settings.screenshot_translation.model,
     );
@@ -1798,7 +1802,11 @@ pub(crate) async fn lens_translate_text(
     let retry_attempts = effective_retry_attempts(&settings);
     let direct_translate = settings.screenshot_translation.direct_translate;
     let st_thinking = ThinkingChoice::resolve(
-        settings.screenshot_translation.thinking_level.as_deref().unwrap_or(""),
+        settings
+            .screenshot_translation
+            .thinking_level
+            .as_deref()
+            .unwrap_or(""),
         &provider,
         &settings.screenshot_translation.model,
     );
@@ -2177,7 +2185,11 @@ pub(crate) async fn lens_replace_translate(
     );
     let retry_attempts = effective_retry_attempts(&settings);
     let st_thinking = ThinkingChoice::resolve(
-        settings.screenshot_translation.thinking_level.as_deref().unwrap_or(""),
+        settings
+            .screenshot_translation
+            .thinking_level
+            .as_deref()
+            .unwrap_or(""),
         &provider,
         &settings.screenshot_translation.model,
     );

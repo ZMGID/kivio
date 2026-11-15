@@ -3036,7 +3036,11 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
         ),
     ] {
         if level.is_none() {
-            *level = Some(if enabled { String::new() } else { "off".to_string() });
+            *level = Some(if enabled {
+                String::new()
+            } else {
+                "off".to_string()
+            });
         }
     }
     settings.lens.thinking_enabled = settings.lens.thinking_level.as_deref() != Some("off");
@@ -4117,11 +4121,15 @@ mod tests {
                 "lens": {"thinkingEnabled": enabled, "streamEnabled": false},
                 "screenshotTranslation": {"thinkingEnabled": enabled, "streamEnabled": false},
                 "retryEnabled": false, "retryAttempts": 2
-            })).unwrap();
+            }))
+            .unwrap();
             let mut migrated = sanitize_settings(old);
             let expected = Some(if enabled { "" } else { "off" });
             assert_eq!(migrated.lens.thinking_level.as_deref(), expected);
-            assert_eq!(migrated.screenshot_translation.thinking_level.as_deref(), expected);
+            assert_eq!(
+                migrated.screenshot_translation.thinking_level.as_deref(),
+                expected
+            );
             assert!(migrated.lens.stream_enabled);
             assert!(migrated.screenshot_translation.stream_enabled);
             assert!(!migrated.retry_enabled);
@@ -4131,7 +4139,10 @@ mod tests {
             let saved = serde_json::to_value(sanitize_settings(migrated)).unwrap();
             let reopened = sanitize_settings(serde_json::from_value(saved).unwrap());
             assert_eq!(reopened.lens.thinking_level.as_deref(), Some("high"));
-            assert_eq!(reopened.screenshot_translation.thinking_level.as_deref(), Some(""));
+            assert_eq!(
+                reopened.screenshot_translation.thinking_level.as_deref(),
+                Some("")
+            );
             assert!(reopened.lens.thinking_enabled);
             assert!(reopened.screenshot_translation.thinking_enabled);
         }
@@ -5998,7 +6009,8 @@ mod tests {
         for enabled in [true, false] {
             let settings: Settings = serde_json::from_value(serde_json::json!({
                 "lens": {"sendToChat": enabled}
-            })).unwrap();
+            }))
+            .unwrap();
             let saved = serde_json::to_value(sanitize_settings(settings)).unwrap();
             assert_eq!(saved["lens"]["sendToChat"], enabled);
         }

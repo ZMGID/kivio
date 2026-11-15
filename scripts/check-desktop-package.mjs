@@ -42,7 +42,7 @@ export function checkMacApp(appDirectory, identifier) {
   const bundleId = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier',
     path.join(appDirectory, 'Contents/Info.plist')], { encoding: 'utf8' }).trim()
   assert.equal(bundleId, identifier, 'macOS bundle identifier must match the app configuration')
-  execFileSync('/usr/bin/codesign', ['--verify', '-R', `identifier "${identifier}"`, appDirectory], { stdio: 'pipe' })
+  execFileSync('/usr/bin/codesign', ['--verify', '-R', `=identifier "${identifier}"`, appDirectory], { stdio: 'pipe' })
 }
 
 function manifest(directory, prefix = '') {
