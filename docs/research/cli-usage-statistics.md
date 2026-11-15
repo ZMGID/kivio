@@ -8,7 +8,7 @@ T3 Code [使用说明](https://github.com/pingdotgg/t3code/blob/main/docs/user/u
 
 ## 数据流
 
-打开用量概览 / 刷新 → `usage_sync_cli` → 原生历史只读扫描 → SQLite 用量账本 → 现有统计查询。分页、来源筛选和搜索不触发扫描。扫描复用一个数据库连接；按文件长度与修改时间跳过未变的 transcript。OpenCode 使用只读连接，每次刷新读取数据库以涵盖 WAL 中的数据。
+打开用量概览 / 刷新 → `usage_sync_cli` → 原生历史只读扫描 → SQLite 用量账本 → 现有统计查询。分页、来源筛选和搜索不触发扫描。扫描复用一个数据库连接；按文件长度与修改时间跳过未变的 transcript。OpenCode 使用只读连接，每次刷新读取数据库以涵盖 WAL 中的数据。2026-11-15 起，价格另由 usage 领域的单个后台任务在启动和缓存过期时刷新；模型调用遇到缺价型号时通知它提前检查，不等待下载。
 
 - Codex：默认及当前配置的 `CODEX_HOME` 下 sessions / archived_sessions，支持普通 JSONL 和 Zstandard 压缩历史，读取请求账本或旧 token_count 的单次用量，不累加累计快照。带 response_id 的账本优先，同一 turn 已先写入的快照会在账本到达时撤销；撤销 ID 持久化，旧副本不会重新计入。重复累计快照跳过，分叉复制的初始记录不计入。
 - Claude Code：projects 下 assistant 的 usage。按消息 ID 与 request ID 去重，流式部分字段按通道取最大值；缓存读取、写入与普通输入先分开，再统一成包含缓存的输入总量。
@@ -21,7 +21,7 @@ T3 Code [使用说明](https://github.com/pingdotgg/t3code/blob/main/docs/user/u
 
 ## 费用与覆盖边界
 
-有有效 CLI 上报费用时优先使用；否则使用 LiteLLM 的自动价格表（输入、输出、缓存读写、长上下文档位和原生 Codex 记录的服务档位）。价格与更新时间保存在统计 SQLite 数据库，24 小时过期；手动刷新绕过日缓存，但至少间隔 60 秒。下载失败保留缓存并显示诊断，没有缓存的未知模型保持未计价。刷新后在事务中重新计算历史自动估算，保留 CLI 上报费用和显式用户价格。没有完整输入/输出单价的模型保留 token、标为未计价。API 估算不代表订阅账单或实际扣费。现有配置覆盖与默认目录都参与发现；不枚举任意未配置账号目录、远程机器或 WSL 私有目录。
+有有效 CLI 上报费用时优先使用；否则使用 LiteLLM 的自动价格表（输入、输出、缓存读写、长上下文档位和原生 Codex 记录的服务档位）。价格与更新时间保存在统计 SQLite 数据库，24 小时过期；提前刷新至少间隔 60 秒，失败也遵守这个间隔。下载失败保留缓存并记录诊断，没有缓存的未知模型保持未计价。后台刷新只在事务中补算未计价记录；用量页刷新还会重算历史自动估算，二者都保留 CLI 上报费用和已经记录的显式用户价格。没有完整输入/输出单价或缺少 Token 实报时不算作免费。API 估算不代表订阅账单或实际扣费。现有配置覆盖与默认目录都参与发现；不枚举任意未配置账号目录、远程机器或 WSL 私有目录。
 
 尚不扫描 Cursor / Antigravity 等来源，不新接订阅额度 API。OpenCode 支持 message 和 session_message 表，读入模型引用并将独立 reasoning 计入输出，网关明确标记的免费模型保留零价。历史缺失不代表免费或零消耗。LiteLLM 来源：https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json 。现有模型库仍负责能力和上下文信息，用量自动计价不再依赖其人工维护价格。
 
@@ -42,3 +42,11 @@ T3 Code [使用说明](https://github.com/pingdotgg/t3code/blob/main/docs/user/u
 本机 OpenCode 读取到 session_message 新表，Grok 的首次完成记录和 Pi 用量也已核对。Rust 忽略测试 `usage::native::tests::audit_real_cli_history` 可显式重跑：只读原生文件并写临时统计库；设置 `KIVIO_USAGE_AUDIT_OUTPUT` 可导出 Codex 计费元数据用于差分，不含对话正文。普通测试不读取用户目录、不联网。
 
 费用源实现依据：[usagePricing.ts](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/usage/usagePricing.ts) 和 [UsageService.ts](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/usage/UsageService.ts)。自动定价与 Kivio 原模型库解耦；现有显式模型价格覆盖继续生效。
+
+## 2026-11-15 通用计价修复
+
+源码对照还覆盖 [T3 的通用型号别名](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/usage/usageAggregation.ts)、[OMP 模型构建时的价格补全](https://github.com/can1357/oh-my-pi/blob/main/packages/catalog/src/build.ts)及[请求时计价说明](https://github.com/can1357/oh-my-pi/blob/main/docs/models.md#usage-costs-and-time-based-pricing)。使用隔离计价函数验证了未知价、显式覆盖、型号别名、价格冲突和请求时间选择；没有运行两项目的完整应用。
+
+Kivio 的新调用和历史补算共用 usage 的价格解析入口。每个供应商可在 `modelOverrides.<请求型号>.pricingModel` 指定一个直接的价表型号，优先于内置的已确认别名；此字段不进入供应商请求。明确填写的完整用户价格优先于价表，未填写价格时才按参考型号查询。模型详情编辑其他参数不会把界面展示的目录参考价格保存成用户价格。后台只发送缺价通知，不在模型请求中等待价格网络请求；同一缺价型号成功检查后不重复强刷，失败保留待检查项并限频重试。
+
+已确认的默认型号对应关系集中在 `src-tauri/src/usage/model_aliases.json`。裸型号仅在同等优先级来源的有效价格一致时建立别名，比较包括缓存、加速和长上下文档位；不同供应商的歧义价格不合并。新调用、历史补价和刷新失败回退使用临时 SQLite 与本机 HTTP 端点验证，普通测试不访问用户账本或公网；桌面实测与实际供应商扣款对账未执行。

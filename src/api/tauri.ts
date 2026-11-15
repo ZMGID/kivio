@@ -990,6 +990,8 @@ export type ModelInfo = {
   dimensions?: number
   /** 是否多语言（嵌入模型尤其关心）。 */
   multilingual?: boolean
+  /** Price-table identifier; does not change the request model. */
+  pricingModel?: string
   pricing?: {
     input?: number
     output?: number

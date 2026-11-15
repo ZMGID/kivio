@@ -393,6 +393,7 @@ pub fn run() {
                 rapidocr::RapidOcrClient::new(offline_models),
             ));
             app.manage(chat::repository::ConversationRepository::default());
+            usage::start_price_refresh(app.handle().clone());
             app.manage(scheduled_tasks::ScheduledTasks::load(
                 app.path()
                     .app_data_dir()

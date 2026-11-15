@@ -229,6 +229,7 @@ export function resolveModelInfo(
       cacheWrite: override.pricing?.cacheWrite ?? defaults.pricing?.cacheWrite,
       cacheWriteLong: override.pricing?.cacheWriteLong ?? defaults.pricing?.cacheWriteLong,
     },
+    pricingModel: override.pricingModel,
     reasoningEfforts: override.reasoningEfforts ?? defaults.reasoningEfforts,
     // extraBody 只来自用户 override（模型库无此字段）。
     extraBody: override.extraBody ?? defaults.extraBody,

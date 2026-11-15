@@ -1010,7 +1010,7 @@ mod tests {
                 source.id, source.files, source.records, source.skipped, source.errors
             );
         }
-        pricing::reprice(&mut store::open(temp.path()).unwrap()).unwrap();
+        pricing::reprice(&mut store::open(temp.path()).unwrap(), &[], false).unwrap();
         let stats = UsageLedger::default()
             .stats(
                 temp.path(),

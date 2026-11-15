@@ -391,6 +391,9 @@ pub struct ModelInfo {
     pub omit_temperature: Option<bool>,
     pub capabilities: Option<ModelCapabilities>,
     pub pricing: Option<ModelPricing>,
+    /// Price-table identifier only; never changes the model sent to the provider.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing_model: Option<String>,
     /// 每模型「思考等级」白名单，覆盖模型库的 `reasoningEfforts`。
     /// `None` = 跟随模型库；`Some([])` = 该模型没有 effort 旋钮（请求不带任何等级字段）；
     /// `Some([..])` = 只这几档可选可下发。仅用于 model_overrides。
@@ -2553,6 +2556,9 @@ pub fn sanitize_settings(mut settings: Settings) -> Settings {
     // 1b. 单 key → 多 key 迁移（v2.3.1 → v2.4 升级路径）
     for provider in &mut settings.providers {
         provider.api_format = provider.api_format_kind().as_str().to_string();
+        for info in provider.model_overrides.values_mut() {
+            info.pricing_model = normalize_optional_text(info.pricing_model.take());
+        }
         if let Some(legacy) = provider.api_key_legacy.take() {
             let trimmed = legacy.trim().to_string();
             if !trimmed.is_empty() && !provider.api_keys.contains(&trimmed) {
@@ -4694,6 +4700,29 @@ mod tests {
         let mut s = Settings::default();
         s.ui_font_scale = f32::NAN;
         assert_eq!(sanitize_settings(s).ui_font_scale, 1.0);
+    }
+
+    #[test]
+    fn sanitize_settings_normalizes_billing_references_without_changing_request_models() {
+        let provider: ModelProvider = serde_json::from_value(serde_json::json!({
+            "id":"p","name":"p","baseUrl":"https://example.test",
+            "availableModels":["gateway"],"enabledModels":["gateway"],
+            "modelOverrides":{"gateway":{"pricingModel":"  reference-model  "},"empty":{"pricingModel":"  "}}
+        })).unwrap();
+        let mut settings = Settings::default();
+        settings.providers = vec![provider];
+        let settings = sanitize_settings(settings);
+        assert_eq!(settings.providers[0].enabled_models, vec!["gateway"]);
+        assert_eq!(
+            settings.providers[0].model_overrides["gateway"]
+                .pricing_model
+                .as_deref(),
+            Some("reference-model")
+        );
+        assert_eq!(
+            settings.providers[0].model_overrides["empty"].pricing_model,
+            None
+        );
     }
 
     #[test]

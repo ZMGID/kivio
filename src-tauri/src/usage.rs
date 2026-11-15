@@ -260,6 +260,19 @@ pub fn record_model_call(state: &AppState, input: UsageRecordInput<'_>) {
     apply_cost(input.provider, &mut record);
     if let Err(err) = state.usage_ledger.append(&state.usage_dir, &record) {
         eprintln!("Failed to record usage: {err}");
+    } else if record.cost_usd.is_none()
+        && [
+            record.input_tokens,
+            record.output_tokens,
+            record.cached_input_tokens,
+            record.cache_creation_input_tokens,
+        ]
+        .iter()
+        .any(Option::is_some)
+    {
+        if let Some(sender) = state.usage_ledger.price_refresh.get() {
+            let _ = sender.send(pricing::model_id(input.provider, &record.model).to_owned());
+        }
     }
 }
 
@@ -273,7 +286,7 @@ pub fn reasoning_effort_for_request(request: &GenerateRequest) -> Option<String>
 }
 
 fn apply_cost(provider: &ModelProvider, record: &mut UsageRecord) {
-    if let Some((cost, source)) = estimate_model_cost(
+    if let Some((cost, source)) = estimate_model_cost_with_options(
         provider,
         &record.model,
         &ModelUsage {
@@ -284,6 +297,8 @@ fn apply_cost(provider: &ModelProvider, record: &mut UsageRecord) {
             cache_creation_input_tokens_long: record.cache_creation_input_tokens_long,
             ..Default::default()
         },
+        &record.api_format,
+        record.service_tier.as_deref(),
     ) {
         record.cost_usd = Some(cost);
         record.cost_source = source;
@@ -296,19 +311,67 @@ pub(crate) fn estimate_model_cost(
     model: &str,
     usage: &ModelUsage,
 ) -> Option<(f64, String)> {
+    estimate_model_cost_with_options(provider, model, usage, &provider.api_format, None)
+}
+
+fn estimate_model_cost_with_options(
+    provider: &ModelProvider,
+    model: &str,
+    usage: &ModelUsage,
+    api_format: &str,
+    service_tier: Option<&str>,
+) -> Option<(f64, String)> {
+    if [
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cached_input_tokens,
+        usage.cache_creation_input_tokens,
+    ]
+    .iter()
+    .all(Option::is_none)
+    {
+        return None;
+    }
+    let pricing_model = pricing::model_id(provider, model);
     let configured = model_metadata::pricing_for_model(Some(provider), model)
-        .filter(|(_, source)| source == "user_override");
-    let Some((pricing, source)) = configured else {
-        return pricing::estimate(model, usage, &provider.api_format, None)
+        .filter(|(_, source)| source == "user_override")
+        .map(|(pricing, _)| pricing)
+        .filter(|pricing| {
+            [
+                pricing.input,
+                pricing.output,
+                pricing.cached_input,
+                pricing.cache_write,
+                pricing.cache_write_long,
+            ]
+            .iter()
+            .any(Option::is_some)
+        });
+    let Some(pricing) = configured else {
+        return pricing::estimate(pricing_model, usage, api_format, service_tier)
             .map(|cost| (cost, "litellm".into()));
     };
-    let input_price = pricing.input.unwrap_or(0.0);
-    let output_price = pricing.output.unwrap_or(0.0);
+    if [pricing.input, pricing.output].iter().any(Option::is_none)
+        || [
+            pricing.input,
+            pricing.output,
+            pricing.cached_input,
+            pricing.cache_write,
+            pricing.cache_write_long,
+        ]
+        .into_iter()
+        .flatten()
+        .any(|price| !price.is_finite() || price < 0.0)
+    {
+        return None;
+    }
+    let input_price = pricing.input?;
+    let output_price = pricing.output?;
     let cached_price = pricing.cached_input.unwrap_or(input_price);
-    let model = model
+    let model = pricing_model
         .rsplit('/')
         .next()
-        .unwrap_or(model)
+        .unwrap_or(pricing_model)
         .to_ascii_lowercase();
     let (short_multiplier, long_multiplier) = if model.starts_with("claude-") {
         (1.25, 2.0)
@@ -326,7 +389,7 @@ pub(crate) fn estimate_model_cost(
     let input = usage.input_tokens.unwrap_or(0);
     let mut read = usage.cached_input_tokens.unwrap_or(0);
     let mut write = usage.cache_creation_input_tokens.unwrap_or(0);
-    let ordinary = if provider.api_format == "anthropic_messages" {
+    let ordinary = if api_format == "anthropic_messages" {
         input
     } else {
         read = read.min(input);
@@ -338,7 +401,7 @@ pub(crate) fn estimate_model_cost(
         .unwrap_or_else(|| {
             if provider.cache_retention() == crate::settings::CacheRetention::Long
                 && !(kivio_agent_sdk::model::openai::supports_explicit_prompt_cache(&model)
-                    && provider.api_format == "openai_chat")
+                    && api_format == "openai_chat")
             {
                 write
             } else {
@@ -352,7 +415,7 @@ pub(crate) fn estimate_model_cost(
         + long as f64 * long_price
         + usage.output_tokens.unwrap_or(0) as f64 * output_price)
         / 1_000_000.0;
-    Some((cost, source))
+    cost.is_finite().then(|| (cost, "user_override".into()))
 }
 
 /// A small read-only snapshot for the desktop companion; shares the statistics
@@ -396,6 +459,67 @@ mod pricing;
 mod store;
 pub(crate) use store::UsageLedger;
 
+pub(crate) fn start_price_refresh(app: AppHandle) {
+    let (sender, mut requests) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let state = app.state::<AppState>();
+    if state.usage_ledger.price_refresh.set(sender).is_err() {
+        return;
+    }
+    let dir = state.usage_dir.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut timer = tokio::time::interval(std::time::Duration::from_secs(60));
+        timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut next_regular = std::time::Instant::now();
+        let mut pending = std::collections::BTreeSet::new();
+        let mut checked = std::collections::BTreeSet::new();
+        let mut backfilled = false;
+        loop {
+            tokio::select! {
+                request = requests.recv() => {
+                    let Some(model) = request else { break; };
+                    if checked.contains(&model) || !pending.insert(model) { continue; }
+                }
+                _ = timer.tick() => {
+                    if pending.is_empty() && std::time::Instant::now() < next_regular { continue; }
+                }
+            }
+            let prices_ready = match pricing::refresh(&dir, !pending.is_empty()).await {
+                Ok(fetched) => {
+                    let age = Local::now().timestamp().saturating_sub(fetched).max(0);
+                    if !pending.is_empty() && age >= 60 {
+                        false
+                    } else {
+                        checked.append(&mut pending);
+                        next_regular = std::time::Instant::now()
+                            + std::time::Duration::from_secs((86400 - age).max(60) as u64);
+                        true
+                    }
+                }
+                Err(error) => {
+                    eprintln!("Failed to refresh model prices: {error}");
+                    false
+                }
+            };
+            if !prices_ready && backfilled {
+                continue;
+            }
+            let providers = app.state::<AppState>().settings_read().providers.clone();
+            let target = dir.clone();
+            match tauri::async_runtime::spawn_blocking(move || {
+                pricing::reprice(&mut store::open(&target)?, &providers, true)
+            })
+            .await
+            {
+                Ok(Ok(())) => backfilled = true,
+                result => {
+                    eprintln!("Failed to backfill model prices: {result:?}");
+                    next_regular = std::time::Instant::now();
+                }
+            }
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn usage_get_stats(
     app: AppHandle,
@@ -422,7 +546,8 @@ pub async fn usage_sync_cli(
         .err();
     tauri::async_runtime::spawn_blocking(move || {
         let mut report = native::scan(&dir)?;
-        pricing::reprice(&mut store::open(&dir)?)?;
+        let providers = app.state::<AppState>().settings_read().providers.clone();
+        pricing::reprice(&mut store::open(&dir)?, &providers, false)?;
         if let Some(error) = price_error {
             report.sources.push(native::SourceReport {
                 id: "prices".into(),

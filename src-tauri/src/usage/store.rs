@@ -420,7 +420,9 @@ fn trend(
 }
 
 #[derive(Default)]
-pub(crate) struct UsageLedger;
+pub(crate) struct UsageLedger {
+    pub(super) price_refresh: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>>,
+}
 
 impl UsageLedger {
     pub(super) fn append(&self, dir: &Path, record: &UsageRecord) -> Result<(), String> {

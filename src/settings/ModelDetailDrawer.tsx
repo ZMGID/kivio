@@ -42,6 +42,7 @@ export function ModelDetailDrawer({
   const [baseline, setBaseline] = useState<ModelInfo>(resolved)
   const [form, setForm] = useState<ModelInfo>(resolved)
   const [videoInputEdited, setVideoInputEdited] = useState(false)
+  const [pricingEdited, setPricingEdited] = useState(false)
   const [temperatureInput, setTemperatureInput] = useState(
     resolved.temperature?.toString() ?? '',
   )
@@ -66,6 +67,7 @@ export function ModelDetailDrawer({
     setBaseline(next)
     setForm(next)
     setVideoInputEdited(false)
+    setPricingEdited(false)
     setTemperatureInput(next.temperature?.toString() ?? '')
     setExtraBodyInput(next.extraBody ? JSON.stringify(next.extraBody, null, 2) : '')
   }, [modelName, overrides, provider, database.revision])
@@ -83,6 +85,7 @@ export function ModelDetailDrawer({
   }, [])
 
   const updatePricing = useCallback((key: keyof NonNullable<ModelInfo['pricing']>, value: string) => {
+    setPricingEdited(true)
     const num = value === '' ? undefined : Number(value)
     setForm(prev => ({
       ...prev,
@@ -158,20 +161,29 @@ export function ModelDetailDrawer({
     }
   })()
 
+  const hasPricing = Object.values(form.pricing ?? {}).some(value => value != null)
+  const pricingInvalid = hasPricing && (
+    form.pricing?.input == null || form.pricing?.output == null
+    || Object.values(form.pricing ?? {}).some(value => value != null && (!Number.isFinite(value) || value < 0))
+  )
+
   const handleSave = useCallback(() => {
-    if (temperatureInvalid || extraBodyInvalid) return
+    if (temperatureInvalid || extraBodyInvalid || pricingInvalid) return
     onSave(modelName, {
       ...form,
+      pricingModel: form.pricingModel?.trim() || undefined,
+      pricing: pricingEdited ? form.pricing : overrides?.[modelName]?.pricing,
       advertisedVideoInput: overrides?.[modelName]?.advertisedVideoInput,
       capabilities: {
         ...form.capabilities,
         videoInput: videoInputEdited ? form.capabilities?.videoInput : overrides?.[modelName]?.capabilities?.videoInput,
       },
     })
-  }, [modelName, form, onSave, temperatureInvalid, extraBodyInvalid, videoInputEdited, overrides])
+  }, [modelName, form, onSave, temperatureInvalid, extraBodyInvalid, pricingInvalid, pricingEdited, videoInputEdited, overrides])
 
   const handleReset = useCallback(() => {
     onReset(modelName)
+    setPricingEdited(false)
     if (dbDefaults) {
       setForm(dbDefaults)
       setTemperatureInput(dbDefaults.temperature?.toString() ?? '')
@@ -211,6 +223,13 @@ export function ModelDetailDrawer({
       ? '只有勾选的等级可选、可下发。发错等级会被上游直接 400，不做静默降级。'
       : 'Only checked levels are selectable and sent. A wrong level 400s upstream; no silent downgrade.',
     pricing: lang === 'zh' ? '定价 (per 1M tokens, USD)' : 'Pricing (per 1M tokens, USD)',
+    pricingModel: lang === 'zh' ? '计费参考型号' : 'Billing reference model',
+    pricingModelHint: lang === 'zh'
+      ? '型号名称与价格表不一致时，填写价格表中的完整型号。留空自动匹配，实际调用型号不变。'
+      : 'Enter the full price-table model ID when names differ. Leave blank for automatic matching; the request model stays the same.',
+    pricingInvalid: lang === 'zh'
+      ? '自定义价格需同时填写输入和输出单价，所有单价必须是非负数。'
+      : 'Custom pricing requires both input and output rates. All rates must be non-negative.',
     input: lang === 'zh' ? '输入' : 'Input',
     output: lang === 'zh' ? '输出' : 'Output',
     cachedInput: lang === 'zh' ? '缓存输入' : 'Cached Input',
@@ -358,6 +377,15 @@ export function ModelDetailDrawer({
 
           <div className="kv-drawer-section">
             <label className="kv-drawer-label">{t.pricing}</label>
+            <label className="kv-drawer-sublabel" htmlFor="model-pricing-reference">{t.pricingModel}</label>
+            <Input
+              id="model-pricing-reference"
+              value={form.pricingModel ?? ''}
+              onChange={value => updateField('pricingModel', value || undefined)}
+              placeholder="deepseek-flash"
+              mono
+            />
+            <p className="kv-drawer-hint">{t.pricingModelHint}</p>
             <div className="kv-drawer-row">
               <div className="kv-drawer-section flex-1">
                 <label className="kv-drawer-sublabel">{t.input}</label>
@@ -402,6 +430,7 @@ export function ModelDetailDrawer({
             </div>
           </div>
 
+          {pricingInvalid && <p className="kv-drawer-hint" role="alert">{t.pricingInvalid}</p>}
           <div className="kv-drawer-section">
             <label className="kv-drawer-label">{t.extraBody}</label>
             <textarea
@@ -434,7 +463,7 @@ export function ModelDetailDrawer({
           <Button
             variant="primary"
             onClick={handleSave}
-            disabled={!isDirty || temperatureInvalid || extraBodyInvalid}
+            disabled={!isDirty || temperatureInvalid || extraBodyInvalid || pricingInvalid}
             data-tauri-drag-region="false"
           >
             {t.save}
