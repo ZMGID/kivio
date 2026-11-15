@@ -419,6 +419,7 @@ fn lens_clear_interactive_region(window: &WebviewWindow) {
     use ::windows::Win32::Graphics::Gdi::SetWindowRgn;
 
     if let Ok(hwnd) = window.hwnd() {
+        let hwnd = ::windows::Win32::Foundation::HWND(hwnd.0);
         unsafe {
             let _ = SetWindowRgn(hwnd, None, false);
         }
@@ -439,6 +440,7 @@ fn lens_set_interactive_region(
     use ::windows::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
 
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let hwnd = ::windows::Win32::Foundation::HWND(hwnd.0);
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let left = (x * scale).round() as i32;
     let top = (y * scale).round() as i32;

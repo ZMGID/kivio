@@ -145,6 +145,7 @@ fn apply_windows_chat_window_frame(window: &WebviewWindow) {
     let Ok(hwnd) = window.hwnd() else {
         return;
     };
+    let hwnd = windows::Win32::Foundation::HWND(hwnd.0);
 
     unsafe {
         let corner = DWMWCP_ROUND;
