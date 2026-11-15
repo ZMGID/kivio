@@ -92,9 +92,12 @@ export function createConversationWarmCache(now = Date.now) {
         return null
       }
       const currentRevision = await revision(id)
-      const current = pending.get(id)?.conversation ?? entries.get(id)?.conversation
-      if (current !== conversation) return null
-      if (currentRevision === null || currentRevision !== conversation.revision) {
+      const current = pending.get(id) ?? entries.get(id)
+      if (current?.conversation !== conversation) return null
+      if (
+        currentRevision === null || currentRevision !== conversation.revision
+        || (current.stillCurrent && !current.stillCurrent())
+      ) {
         cancelPending(id)
         remove(id)
         return null

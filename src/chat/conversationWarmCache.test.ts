@@ -32,6 +32,44 @@ describe('conversation warm cache', () => {
     expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
     cache.clear()
   })
+  it.each(['remember', 'rememberSoon'] as const)('rejects a run that ends during revision validation (%s)', async (remember) => {
+    vi.useFakeTimers()
+    const cache = createConversationWarmCache()
+    try {
+      let running = true
+      cache[remember](conversation('run'), () => running)
+      let complete!: (revision: number) => void
+      const pending = cache.get('run', () => new Promise(resolve => { complete = resolve }))
+      running = false
+      complete(1)
+      expect(await pending).toBeNull()
+      vi.advanceTimersByTime(100)
+      expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
+    } finally {
+      cache.clear()
+      vi.useRealTimers()
+    }
+  })
+  it.each([true, false])('rechecks run validity after idle registration during validation (valid=%s)', async (stillRunning) => {
+    vi.useFakeTimers()
+    const cache = createConversationWarmCache()
+    try {
+      let running = true
+      const snapshot = conversation('run')
+      cache.rememberSoon(snapshot, () => running)
+      let complete!: (revision: number) => void
+      const pending = cache.get('run', () => new Promise(resolve => { complete = resolve }))
+      vi.advanceTimersByTime(100)
+      expect(cache.stats().entries).toBe(1)
+      running = stillRunning
+      complete(1)
+      expect(await pending).toBe(stillRunning ? snapshot : null)
+      expect(cache.stats().entries).toBe(stillRunning ? 1 : 0)
+    } finally {
+      cache.clear()
+      vi.useRealTimers()
+    }
+  })
   it('releases idle snapshots without another cache operation', () => {
     vi.useFakeTimers()
     try {
