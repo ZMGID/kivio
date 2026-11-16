@@ -21,6 +21,7 @@ export type CodexPresetId =
   | 'longcat'
   | 'opencode-go'
   | 'openrouter'
+  | 'teapotrouter'
 
 /** 与 Claude 预设共用品牌图标映射键 */
 export type CodexPresetBrand =
@@ -33,6 +34,7 @@ export type CodexPresetBrand =
   | 'longcat'
   | 'opencode'
   | 'openrouter'
+  | 'teapotrouter'
   | 'custom'
   | 'atlas'
 
@@ -253,6 +255,21 @@ export const CODEX_RELAY_PRESETS: CodexProviderPreset[] = [
       'openrouter',
       'https://openrouter.ai/api/v1',
       'gpt-5.6-sol',
+    ),
+    authJson: DEFAULT_CODEX_AUTH_JSON,
+  },
+]
+  {
+    id: 'teapotrouter',
+    name: 'TeaPotRouter',
+    nameKey: 'teapotrouter',
+    brand: 'teapotrouter',
+    configToml: buildCodexProviderConfigToml(
+      'teapotrouter',
+      'https://api.teapotrouter.com/v1',
+      'gpt-6.1-sol',
+      'responses',
+      'teapotrouter',
     ),
     authJson: DEFAULT_CODEX_AUTH_JSON,
   },
