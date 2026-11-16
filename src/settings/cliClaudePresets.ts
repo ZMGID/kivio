@@ -22,6 +22,7 @@ export type ClaudePresetId =
   | 'longcat'
   | 'opencode-go'
   | 'openrouter'
+  | 'teapotrouter'
 
 export type ClaudePresetBrand =
   | 'claude'
@@ -34,6 +35,7 @@ export type ClaudePresetBrand =
   | 'longcat'
   | 'opencode'
   | 'openrouter'
+  | 'teapotrouter'
   | 'custom'
 
 export interface ClaudeProviderPreset {
@@ -187,6 +189,19 @@ export const CLAUDE_RELAY_PRESETS: ClaudeProviderPreset[] = [
       ANTHROPIC_DEFAULT_HAIKU_MODEL: 'anthropic/claude-haiku-4.5',
       ANTHROPIC_DEFAULT_SONNET_MODEL: 'anthropic/claude-sonnet-5.5',
       ANTHROPIC_DEFAULT_OPUS_MODEL: 'anthropic/claude-opus-5.5',
+    },
+  },
+]
+  {
+    id: 'teapotrouter',
+    nameKey: 'teapotrouter',
+    brand: 'teapotrouter',
+    env: {
+      ANTHROPIC_BASE_URL: 'https://api.teapotrouter.com',
+      ANTHROPIC_DEFAULT_FABLE_MODEL: 'claude-fable-5-2',
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5',
+      ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5-5',
+      ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-5-5',
     },
   },
 ]

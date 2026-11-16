@@ -129,6 +129,7 @@ const BRAND_ICON: Record<PresetBrand, Glyph | null> = {
   opencode: G(OpenCode),
   openrouter: G(OpenRouter),
   atlas: G(OpenAI),
+  teapotrouter: null,
   custom: null,
 }
 
@@ -220,6 +221,7 @@ function presetLabel(t: I18nDict, nameKey: string): string {
     opencodeGo: t.externalAgentsPresetOpencodeGo,
     openrouter: t.externalAgentsPresetOpenrouter,
     atlasCloud: t.externalAgentsPresetAtlasCloud,
+    teapotrouter: t.externalAgentsPresetTeapotrouter,
   }
   return map[nameKey] ?? nameKey
 }
