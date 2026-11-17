@@ -51,6 +51,8 @@ const DEFAULT_WEB_SEARCH: WebSearchConfig = {
   keenableBaseUrl: 'https://api.keenable.ai',
   specstreamApiKey: '',
   specstreamBaseUrl: 'https://api.specstream.ai',
+  sofyaApiKey: '',
+  sofyaBaseUrl: 'https://sofya.co',
   maxResults: 5,
   searchDepth: 'basic',
 }
@@ -75,6 +77,7 @@ type ProviderDef = {
     | 'kimiApiKey'
     | 'keenableApiKey'
     | 'specstreamApiKey'
+    | 'sofyaApiKey'
   /** API Key 输入框占位符。 */
   keyPlaceholder?: string
   /** 可编辑的 API base 字段（代理/自建网关可改）；写入对应 *BaseUrl 设置。 */
@@ -93,6 +96,7 @@ type ProviderDef = {
     | 'kimiBaseUrl'
     | 'keenableBaseUrl'
     | 'specstreamBaseUrl'
+    | 'sofyaBaseUrl'
   /** base 输入框占位符（也是官方默认值）。 */
   baseUrlPlaceholder?: string
   /** 可编辑 MCP endpoint（写入 exaMcpUrl / tinyfishMcpUrl）。 */
@@ -234,6 +238,17 @@ const PROVIDERS: ProviderDef[] = [
     baseUrlField: 'serperBaseUrl',
     baseUrlPlaceholder: 'https://google.serper.dev',
     icon: '/search-icons/serper.png',
+  },
+  {
+    id: 'sofya',
+    name: 'Sofya',
+    site: 'https://sofya.co',
+    apiKeyUrl: 'https://sofya.co/dashboard',
+    keyField: 'sofyaApiKey',
+    keyPlaceholder: 'sofya_live_...',
+    baseUrlField: 'sofyaBaseUrl',
+    baseUrlPlaceholder: 'https://sofya.co',
+    icon: '/search-icons/sofya.svg',
   },
   {
     id: 'specstream',

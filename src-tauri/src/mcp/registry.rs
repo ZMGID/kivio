@@ -1042,6 +1042,7 @@ pub(crate) fn web_search_provider_configured(
             .specstream_api_key
             .trim()
             .is_empty(),
+        WebSearchProvider::Sofya => !settings.lens.web_search.sofya_api_key.trim().is_empty(),
         WebSearchProvider::Unknown => false,
     }
 }

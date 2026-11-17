@@ -1185,6 +1185,7 @@ export type WebSearchProviderId =
   | 'kimi'
   | 'keenable'
   | 'specstream'
+  | 'sofya'
 
 export type WebSearchMcpAuth = NonNullable<ChatMcpServer['auth']>
 
@@ -1225,6 +1226,8 @@ export type WebSearchConfig = {
   keenableBaseUrl?: string
   specstreamApiKey?: string
   specstreamBaseUrl?: string
+  sofyaApiKey?: string
+  sofyaBaseUrl?: string
   maxResults: number
   searchDepth: 'ultra-fast' | 'fast' | 'basic' | 'advanced'
 }
