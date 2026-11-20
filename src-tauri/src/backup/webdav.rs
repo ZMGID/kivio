@@ -14,6 +14,8 @@ use ts_rs::TS;
 
 static TRANSFER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const MAX_CONFIGURATION: u64 = 64 * 1024 * 1024;
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(60);
+const BACKUP_UPLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,6 +81,9 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 fn network_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        return "WebDAV: 请求超时 / Request timed out".into();
+    }
     format!("WebDAV: {}", e.without_url())
 }
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -120,6 +125,7 @@ fn resolve(input: WebDavConfigInput, previous: Config) -> Result<Config, String>
 
 struct Dav {
     client: Client,
+    put_client: Client,
     base: Url,
     directory: Url,
     username: String,
@@ -166,14 +172,21 @@ impl Dav {
             }
             segments.push("");
         }
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(15))
-            .read_timeout(Duration::from_secs(60))
+        let client_builder = || {
+            Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(15))
+        };
+        let client = client_builder()
+            .read_timeout(REQUEST_READ_TIMEOUT)
             .build()
             .map_err(network_error)?;
+        // reqwest starts its read timer before sending the request body. PUT
+        // uses a separate client so its per-request deadline covers the upload.
+        let put_client = client_builder().build().map_err(network_error)?;
         Ok(Self {
             client,
+            put_client,
             base,
             directory,
             parts,
@@ -182,7 +195,12 @@ impl Dav {
         })
     }
     fn request(&self, method: &str, url: Url) -> reqwest::RequestBuilder {
-        self.client
+        let client = if method == "PUT" {
+            &self.put_client
+        } else {
+            &self.client
+        };
+        client
             .request(
                 Method::from_bytes(method.as_bytes()).expect("static method"),
                 url,
@@ -277,7 +295,7 @@ impl Dav {
         let bytes = bounded_bytes(checked(response)?, 8 * 1024 * 1024).await?;
         parse_listing(&bytes, &self.directory)
     }
-    async fn upload(&self, path: &Path, name: &str) -> Result<(), String> {
+    async fn upload(&self, path: &Path, name: &str, timeout: Duration) -> Result<(), String> {
         self.ensure_directory().await?;
         let temporary = format!("{name}.partial");
         let result = async {
@@ -289,6 +307,7 @@ impl Dav {
             let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
             checked(
                 self.request("PUT", self.file(&temporary)?)
+                    .timeout(timeout)
                     .header("Content-Length", size)
                     .header("Content-Type", "application/octet-stream")
                     .header("If-None-Match", "*")
@@ -521,7 +540,7 @@ pub(crate) async fn webdav_test(app: AppHandle, input: WebDavConfigInput) -> Res
     let path = temp.path().join("probe");
     std::fs::write(&path, b"Kivio WebDAV connection test").map_err(err)?;
     let name = format!(".kivio-probe-{}", uuid::Uuid::new_v4());
-    dav.upload(&path, &name).await?;
+    dav.upload(&path, &name, REQUEST_READ_TIMEOUT).await?;
     let result = async {
         let response = checked(
             dav.request("GET", dav.file(&name)?)
@@ -576,7 +595,7 @@ pub(crate) async fn webdav_upload(
             super::export_chat_backup(app, path.to_string_lossy().into()).await?
         }
     }
-    dav.upload(&path, &name).await?;
+    dav.upload(&path, &name, BACKUP_UPLOAD_TIMEOUT).await?;
     Ok(())
 }
 #[tauri::command]
@@ -625,6 +644,13 @@ mod tests {
     // Real HTTP boundary; responses model server behavior, not the backup implementation.
     fn server(
         script: Vec<(&'static str, &'static str, u16, String)>,
+    ) -> (String, std::thread::JoinHandle<Vec<Vec<u8>>>) {
+        server_with_response_hook(script, |_| {})
+    }
+
+    fn server_with_response_hook(
+        script: Vec<(&'static str, &'static str, u16, String)>,
+        mut before_response: impl FnMut(&str) + Send + 'static,
     ) -> (String, std::thread::JoinHandle<Vec<Vec<u8>>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -682,6 +708,7 @@ mod tests {
                     bytes.extend_from_slice(&chunk[..count]);
                 }
                 bodies.push(bytes[header_end..].to_vec());
+                before_response(method);
                 write!(socket, "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
             bodies
@@ -735,7 +762,9 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let source = temp.path().join("source");
         std::fs::write(&source, b"backup").unwrap();
-        dav.upload(&source, name).await.unwrap();
+        dav.upload(&source, name, BACKUP_UPLOAD_TIMEOUT)
+            .await
+            .unwrap();
         let files = dav.list().await.unwrap();
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].name, name);
@@ -747,24 +776,44 @@ mod tests {
         assert_eq!(thread.join().unwrap()[2], b"backup");
     }
     #[tokio::test]
-    async fn chat_backup_upload_download_and_cleanup() {
+    async fn slow_chat_backup_upload_download_and_cleanup() {
         let name = "kivio-chat-test.zip";
-        let (url, thread) = server(vec![
-            ("MKCOL", "/Kivio/", 201, "".into()),
-            ("PUT", "/Kivio/kivio-chat-test.zip.partial", 201, "".into()),
-            ("MOVE", "/Kivio/kivio-chat-test.zip.partial", 201, "".into()),
-            (
-                "GET",
-                "/Kivio/kivio-chat-test.zip",
-                200,
-                "chat archive".into(),
-            ),
-        ]);
+        let (put_received, wait_for_put) = tokio::sync::oneshot::channel();
+        let (release_put, wait_for_release) = std::sync::mpsc::channel();
+        let mut put_received = Some(put_received);
+        let (url, thread) = server_with_response_hook(
+            vec![
+                ("MKCOL", "/Kivio/", 201, "".into()),
+                ("PUT", "/Kivio/kivio-chat-test.zip.partial", 201, "".into()),
+                ("MOVE", "/Kivio/kivio-chat-test.zip.partial", 201, "".into()),
+                (
+                    "GET",
+                    "/Kivio/kivio-chat-test.zip",
+                    200,
+                    "chat archive".into(),
+                ),
+            ],
+            move |method| {
+                if method == "PUT" {
+                    put_received.take().unwrap().send(()).unwrap();
+                    wait_for_release
+                        .recv_timeout(Duration::from_secs(5))
+                        .unwrap();
+                }
+            },
+        );
         let dav = Dav::new(&config(url)).unwrap();
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join(name);
         std::fs::write(&path, b"chat archive").unwrap();
-        dav.upload(&path, name).await.unwrap();
+        let (upload, ()) = tokio::join!(dav.upload(&path, name, BACKUP_UPLOAD_TIMEOUT), async {
+            wait_for_put.await.unwrap();
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(61)).await;
+            tokio::time::resume();
+            release_put.send(()).unwrap();
+        });
+        upload.expect("a PUT taking longer than a minute should still be published");
         dav.download(name, &path).await.unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"chat archive");
         assert_eq!(thread.join().unwrap()[1], b"chat archive");
@@ -804,7 +853,11 @@ mod tests {
         std::fs::write(&source, b"backup").unwrap();
         let error = Dav::new(&config(url))
             .unwrap()
-            .upload(&source, "kivio-configuration-test.json")
+            .upload(
+                &source,
+                "kivio-configuration-test.json",
+                BACKUP_UPLOAD_TIMEOUT,
+            )
             .await
             .unwrap_err();
         assert!(error.contains("507"));
