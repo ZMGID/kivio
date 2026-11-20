@@ -192,7 +192,7 @@ fn usage_has_token_numbers(usage: &ModelUsage) -> bool {
 pub fn collect_external_session_usage(
     conversation: &Conversation,
     agent_id: &str,
-    work_dir: Option<&Path>,
+    wire_session: Option<(&Path, Option<&str>)>,
 ) -> ExternalSessionUsage {
     let mut latest: Option<&ModelUsage> = None;
     let mut latest_index: Option<usize> = None;
@@ -252,28 +252,31 @@ pub fn collect_external_session_usage(
         .context_state
         .compaction_boundaries
         .iter()
-        .filter(|boundary| boundary.token_estimate_after > 0)
         .max_by_key(|boundary| boundary.created_at);
     if let Some(boundary) = newest_boundary {
-        let anchor_index = boundary
+        let anchor = boundary
             .display_after_message_id
             .as_deref()
-            .and_then(|anchor| {
-                conversation
-                    .messages
-                    .iter()
-                    .position(|message| message.id == anchor)
-            });
+            .unwrap_or(&boundary.source_until_message_id);
+        let anchor_index = conversation
+            .messages
+            .iter()
+            .position(|message| message.id == anchor);
         let boundary_is_newer = match (anchor_index, latest_index) {
             (Some(anchor), Some(usage_at)) => anchor >= usage_at,
-            (_, None) => true,
-            (None, Some(_)) => false,
+            (Some(_), None) => true,
+            (None, _) => false,
         };
         if boundary_is_newer {
             return ExternalSessionUsage {
                 input_tokens: boundary.token_estimate_after,
                 output_tokens: 0,
-                token_count_source: TOKEN_COUNT_CLI,
+                // Legacy boundary records encoded a missing post-count as zero.
+                token_count_source: if boundary.token_estimate_after == 0 {
+                    "unknown"
+                } else {
+                    TOKEN_COUNT_CLI
+                },
                 reported_context_window: reported_window,
             };
         }
@@ -292,18 +295,30 @@ pub fn collect_external_session_usage(
         .map(|def| def.usage_fallback)
         .unwrap_or(UsageFallbackStrategy::None);
     if usage_fallback == UsageFallbackStrategy::KimiWireLog {
-        if let Some(usage) = work_dir.and_then(kimi_usage::latest_turn_usage) {
-            return ExternalSessionUsage {
-                // kimi 的 input_tokens 已含 cache（inputOther + CacheRead + CacheCreation），
-                // 加上 output 才与上面 CLI 实报分支的「上下文占用」口径一致。
-                input_tokens: usage
-                    .input_tokens
-                    .saturating_add(usage.output_tokens)
-                    .min(usize::MAX as u64) as usize,
-                output_tokens: usage.output_tokens as usize,
-                token_count_source: TOKEN_COUNT_CLI,
-                reported_context_window: None,
-            };
+        if let Some((cwd, native_id)) = wire_session {
+            // A shared project or default directory can contain many unrelated chats.
+            let dedicated = conversation.project_id.is_none()
+                && cwd.file_name() == Some(std::ffi::OsStr::new(&conversation.id));
+            if native_id.is_some() || dedicated {
+                if let Some(reading) = kimi_usage::latest_measurement(cwd, native_id) {
+                    let tokens = reading.context_tokens();
+                    return ExternalSessionUsage {
+                        input_tokens: tokens.unwrap_or(0) as usize,
+                        output_tokens: match reading {
+                            kimi_usage::WireMeasurement::Request(usage) => {
+                                usage.output_tokens as usize
+                            }
+                            _ => 0,
+                        },
+                        token_count_source: if tokens.is_some() {
+                            TOKEN_COUNT_CLI
+                        } else {
+                            "unknown"
+                        },
+                        reported_context_window: reported_window,
+                    };
+                }
+            }
         }
     }
 
@@ -340,6 +355,31 @@ pub(crate) fn reset_changed_external_meter(
     state.measurement_seq = state.measurement_seq.saturating_add(1);
     set_external_meter_values(state, None, None);
     true
+}
+
+/// A rewound native session can have a different context from every retained request.
+pub(crate) fn invalidate_external_history_meter(conversation: &mut Conversation) {
+    let state = &mut conversation.context_state;
+    let agent = conversation.agent_runtime.external_agent_id.as_ref();
+    let model = normalized_external_model(
+        conversation
+            .agent_runtime
+            .external_model
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    let same_model = state.context_source.as_deref() == Some(CONTEXT_SOURCE_EXTERNAL)
+        && state.external_agent_id.as_ref() == agent
+        && state.external_model == model;
+    state.context_source = Some(CONTEXT_SOURCE_EXTERNAL.into());
+    state.external_agent_id = agent.cloned();
+    state.external_model = model;
+    state.measurement_seq = state.measurement_seq.saturating_add(1);
+    state.lifecycle_id = state.lifecycle_id.saturating_add(1);
+    let window = state
+        .context_window_tokens
+        .filter(|_| same_model && !state.context_window_estimated);
+    set_external_meter_values(state, None, window.map(|n| n as u64));
 }
 
 fn set_external_meter_values(
@@ -432,7 +472,7 @@ pub fn compute_external_context_state(
     model: &str,
     detected_models: Option<&[RuntimeModelOption]>,
     compact_usage: Option<&ModelUsage>,
-    work_dir: Option<&Path>,
+    wire_session: Option<(&Path, Option<&str>)>,
 ) -> ConversationContextState {
     // New streaming measurements are authoritative, including an explicit unknown
     // after compaction. Re-reading older message billing must not revive stale usage.
@@ -469,7 +509,7 @@ pub fn compute_external_context_state(
             token_count_source: TOKEN_COUNT_CLI,
             reported_context_window: item.context_window_tokens,
         })
-        .unwrap_or_else(|| collect_external_session_usage(conversation, agent_id, work_dir));
+        .unwrap_or_else(|| collect_external_session_usage(conversation, agent_id, wire_session));
 
     let (context_window_tokens, context_window_estimated) = context_window_for_external_model(
         agent_id,
@@ -477,20 +517,14 @@ pub fn compute_external_context_state(
         detected_models,
         usage.reported_context_window,
     );
-    // **CLI 还没报过任何数 ⇒ 什么都不显示**（分子分母全空，前端就地退回「—」）。
-    //
-    // 走到这里的只有首轮（`collect_external_session_usage` 的最后一条兜底：拿会话转录估算
-    // 的那个分支 —— 第二轮起总有上一条 assistant 消息的实报值）。此前那一档显示的是
-    // 「0% · ~19 / 200.0K」：分子是转录估算（不含 CLI 的系统提示 / 工具表 / 读过的文件，
-    // 差一个数量级），分母是静态表编的（`claude-sonnet-5` 表里 200K，而 CLI 实报 1M
-    // ——`[1m]` beta）。两个数都是假的，凑出来的百分比也是假的。
-    //
-    // 首轮答完就有真值了（轮末权威计算 = CLI 实报），空一小会儿比给个错的强。代价：**从不
-    // 上报用量的 CLI** 会一直显示「—」；那也比一个差一个数量级的估算诚实。
+    // Without a measured numerator we can retain a reported capacity, but no ratio.
     if usage.token_count_source != TOKEN_COUNT_CLI {
         return ConversationContextState {
             estimated_input_tokens: 0,
-            context_window_tokens: None,
+            context_window_tokens: usage
+                .reported_context_window
+                .filter(|n| *n > 0)
+                .map(|n| n as usize),
             context_window_estimated: false,
             auto_compact_threshold_tokens: None,
             usage_ratio: None,
@@ -599,6 +633,7 @@ fn external_context_segments(usage: &ExternalSessionUsage) -> Vec<ContextUsageSe
 /// （`workspace::resolve_effective_cwd`），只用于按 workDir 关联 kimi 的落盘日志。
 /// 两者语义不同（见 spec 第 11b 条），故分开传，不复用同一个参数。
 pub async fn compute_external_context_state_with_probe(
+    app: &tauri::AppHandle,
     conversation: &Conversation,
     probe_models: bool,
     compact_usage: Option<&ModelUsage>,
@@ -642,13 +677,16 @@ pub async fn compute_external_context_state_with_probe(
     } else {
         cached_models.map(|models| models.to_vec())
     };
+    let native_id = (agent_id == "kimi" && !settled)
+        .then(|| super::session::bound_native_session_id(app, &conversation.id))
+        .flatten();
     compute_external_context_state(
         conversation,
         agent_id,
         model,
         detected_models.as_ref().map(|models| models.as_slice()),
         compact_usage,
-        work_dir,
+        work_dir.map(|cwd| (cwd, native_id.as_deref())),
     )
 }
 
@@ -1034,6 +1072,51 @@ mod tests {
     }
 
     #[test]
+    fn legacy_refresh_uses_the_latest_compaction_even_when_its_count_is_missing() {
+        use crate::chat::types::CompactionBoundaryRecord;
+        let mut conversation = empty_conversation();
+        let usage = ModelUsage {
+            context_tokens: Some(190000),
+            context_window_tokens: Some(200000),
+            ..Default::default()
+        };
+        conversation
+            .messages
+            .push(message("a1", "assistant", "", Some(usage.clone())));
+        for (id, tokens) in [("older", 8000), ("latest", 0)] {
+            conversation
+                .context_state
+                .compaction_boundaries
+                .push(CompactionBoundaryRecord {
+                    id: id.into(),
+                    display_after_message_id: Some("a1".into()),
+                    source_until_message_id: String::new(),
+                    token_estimate_before: 190000,
+                    token_estimate_after: tokens,
+                    summary_content: String::new(),
+                    trigger: "auto".into(),
+                    created_at: 42,
+                });
+        }
+        let read =
+            |c: &Conversation| compute_external_context_state(c, "pi", "default", None, None, None);
+        let state = read(&conversation);
+        assert_eq!(state.token_count_source, None);
+        assert_eq!(state.context_window_tokens, Some(200000));
+        assert_eq!(state.usage_ratio, None);
+        conversation.messages.push(message(
+            "a2",
+            "assistant",
+            "",
+            Some(ModelUsage {
+                context_tokens: Some(7000),
+                ..usage
+            }),
+        ));
+        assert_eq!(read(&conversation).estimated_input_tokens, 7000);
+    }
+
+    #[test]
     fn settled_context_keeps_newer_compaction_measurement_instead_of_old_billing() {
         for tokens in [Some(8_000), Some(0), None] {
             let mut conversation = empty_conversation();
@@ -1329,7 +1412,11 @@ mod tests {
             .messages
             .push(message("a1", "assistant", "好的", None));
 
-        let usage = collect_external_session_usage(&conversation, "kimi", Some(&work_dir));
+        let usage = collect_external_session_usage(
+            &conversation,
+            "kimi",
+            Some((&work_dir, Some("session-a"))),
+        );
         // wire.jsonl 的 input 已含 cache（565 + 23040），再加 output 228 = 上下文占用。
         assert_eq!(usage.input_tokens, 23_833);
         assert_eq!(usage.output_tokens, 228);
@@ -1341,10 +1428,14 @@ mod tests {
             "kimi-code/k3-256k",
             None,
             None,
-            Some(&work_dir),
+            Some((&work_dir, Some("session-a"))),
         );
         assert_eq!(state.estimated_input_tokens, 23_833);
         assert_eq!(state.context_window_tokens, Some(262_144));
+
+        let unbound =
+            collect_external_session_usage(&conversation, "kimi", Some((&work_dir, None)));
+        assert_eq!(unbound.token_count_source, TOKEN_COUNT_ESTIMATED);
 
         // 不给 work_dir 时退回字符估算（几个字，绝不会是万级）。
         let fallback = collect_external_session_usage(&conversation, "kimi", None);
@@ -1352,7 +1443,11 @@ mod tests {
         assert!(fallback.input_tokens < 100);
 
         // 其它 agent 即便给了同一个 work_dir 也不该走 kimi 日志。
-        let other = collect_external_session_usage(&conversation, "cursor", Some(&work_dir));
+        let other = collect_external_session_usage(
+            &conversation,
+            "cursor",
+            Some((&work_dir, Some("session-a"))),
+        );
         assert_eq!(other.token_count_source, TOKEN_COUNT_ESTIMATED);
 
         match original {
@@ -1525,7 +1620,7 @@ mod tests {
         let usage = collect_external_session_usage(
             &conversation,
             "kimi",
-            Some(Path::new("/nonexistent/workdir")),
+            Some((Path::new("/nonexistent/workdir"), None)),
         );
         assert_eq!(usage.input_tokens, 780);
         assert_eq!(usage.token_count_source, TOKEN_COUNT_CLI);

@@ -416,6 +416,7 @@ pub(crate) fn apply_regenerate_truncation(
         }
         _ => return Err("仅支持重新生成助手回复或重试用户消息".to_string()),
     };
+    crate::external_agents::context::invalidate_external_history_meter(conversation);
     let removed = conversation.messages.split_off(keep);
     if current_turn {
         conversation
@@ -794,6 +795,7 @@ pub(crate) async fn chat_rewind_to_message(
                 if latest.agent_runtime.is_external() {
                     mark_summary_stale_if_needed(latest, latest_idx);
                     latest.messages.truncate(latest_idx);
+                    crate::external_agents::context::invalidate_external_history_meter(latest);
                     latest.external_cwd = original_cwd.clone();
                     latest.external_history =
                         Some(crate::chat::types::ExternalHistoryTransition::new(

@@ -16,6 +16,7 @@ async fn offline_replay_adapted_grok_acp_turn_uses_production_reader() {
         &mut terminals,
         7,
         "00000000-0000-4000-8000-000000000001",
+        false,
         &events,
         &mut control,
         None,

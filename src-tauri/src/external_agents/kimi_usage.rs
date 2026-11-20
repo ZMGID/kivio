@@ -1,38 +1,16 @@
-//! 从 kimi CLI 自己的落盘日志里读真实 token 用量。
-//!
-//! **为什么需要这一层**：kimi 走 ACP，但其上游什么用量都不给——实测 `session/new` 无 token
-//! 字段、`session/prompt` 结果只有 `{"stopReason":"end_turn"}`、也不发 ACP 官方的
-//! `usage_update` 通知。没有这一层，kimi 会话的分子只能靠字符估算，实测把 23605 估成 ~24
-//! （差三个数量级，主因是 `inputCacheRead` 占了 97.6%）。
-//!
-//! **数据源**：`<kimi_home>/sessions/<wd_hash>/<session_id>/agents/main/wire.jsonl`，每轮一条
-//! ```json
-//! {"type":"usage.record","model":"kimi-code/k3-256k",
-//!  "usage":{"inputOther":565,"output":228,"inputCacheRead":23040,"inputCacheCreation":0},
-//!  "usageScope":"turn","time":1784987956825}
-//! ```
-//! 真实 input = `inputOther + inputCacheRead + inputCacheCreation`。
-//!
-//! **关联方式：workDir，不是 session id。** kimi 的 session id 由 kimi 侧生成，Kivio 走 ACP
-//! 时根本没存（实测 `external-agent-sessions/` 里 18 个 claude + 3 个 pi + **0 个 kimi**）。
-//! 改用 `<kimi_home>/session_index.jsonl` 的 `workDir` 字段——它恰好等于 Kivio 的
-//! `workspace::resolve_effective_cwd()`（`chat-workspaces/<conversation_id>`）。
-//!
-//! **必须跳过空壳会话**：Kivio 的斜杠命令探测每次 `session/new` 都会在 kimi 侧留下一个没有
-//! 任何 turn 的会话（探测残渣）。
-//! 实测某个 workDir 下 53 个 session 里 52 个是空壳。判据：wire.jsonl 里存在
-//! `type == "usage.record"` 且 `usageScope == "turn"` 的记录。有效候选按 wire.jsonl mtime 取最新。
-//!
-//! **全程只读**，绝不写/删/改 kimi 的任何文件；任何失败（目录不存在、JSON 损坏、字段缺）
-//! 一律静默返回 `None`，由调用方退回字符估算。
+//! Kimi ACP normally publishes the current context through `usage_update`.
+//! When that notification is absent, its main-agent wire log contains per-request
+//! `usage.record` and `context.apply_compaction` events in protocol order.
+//! Shared workspaces require a native session id. Old conversations can also
+//! identify their dedicated conversation directory.
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use serde_json::Value;
 
-/// 单个 wire.jsonl 的读取上限。实测最大 116KB，8MB 足够宽松；纯粹是防御一个异常大的日志
-/// 把整个用量条卡住/吃满内存。
+/// Limit the amount read from the tail of a long-running session.
 const MAX_WIRE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// session_index.jsonl 的读取上限（每行约 300B，8MB ≈ 2.7 万条会话）。
@@ -62,24 +40,83 @@ pub fn kimi_home() -> Option<PathBuf> {
     directories::BaseDirs::new().map(|base| base.home_dir().join(".kimi-code"))
 }
 
-/// 读某个 Kivio 执行 cwd 对应的最近一轮 kimi 用量。找不到任何有效会话时 `None`。
-pub fn latest_turn_usage(work_dir: &Path) -> Option<KimiTurnUsage> {
-    latest_turn_usage_in(&kimi_home()?, work_dir)
+pub(super) enum WireMeasurement {
+    Request(KimiTurnUsage),
+    Compacted {
+        before: Option<u64>,
+        after: Option<u64>,
+    },
 }
 
-/// `latest_turn_usage` 的可注入 home 版本（单测用临时目录造 index + wire）。
-pub fn latest_turn_usage_in(home: &Path, work_dir: &Path) -> Option<KimiTurnUsage> {
-    let mut candidates = wire_paths_for_work_dir(home, work_dir);
-    // 新的在前：同一个 workDir 下会堆很多会话，只有最新那个有 turn 的才是当前对话。
+impl WireMeasurement {
+    pub(super) fn context_tokens(&self) -> Option<u64> {
+        match self {
+            Self::Request(usage) => Some(usage.input_tokens.saturating_add(usage.output_tokens)),
+            Self::Compacted { after, .. } => *after,
+        }
+    }
+}
+
+pub(super) fn latest_measurement(
+    work_dir: &Path,
+    session: Option<&str>,
+) -> Option<WireMeasurement> {
+    read_measurement(&kimi_home()?, work_dir, session, None)
+}
+
+fn read_measurement(
+    home: &Path,
+    work_dir: &Path,
+    session: Option<&str>,
+    since_ms: Option<i64>,
+) -> Option<WireMeasurement> {
+    let mut candidates = wire_paths_for_work_dir(home, work_dir, session);
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
     candidates
         .into_iter()
-        .find_map(|(path, _)| last_turn_usage_in_wire(&path))
+        .find_map(|(path, _)| last_measurement_in_wire(&path, since_ms))
+}
+
+/// Only a record from this prompt may advance a sequenced context snapshot.
+pub(super) async fn completed_turn_context(
+    app: tauri::AppHandle,
+    conversation_id: String,
+    cwd: PathBuf,
+    since_ms: i64,
+) -> Option<super::types::UnifiedAgentEvent> {
+    tokio::task::spawn_blocking(move || {
+        let id = super::session::bound_native_session_id(&app, &conversation_id)?;
+        let reading = read_measurement(&kimi_home()?, &cwd, Some(&id), Some(since_ms))?;
+        Some(match reading {
+            WireMeasurement::Compacted { before, after } => {
+                super::types::UnifiedAgentEvent::CliCompacted {
+                    trigger: "auto".into(),
+                    pre_tokens: before,
+                    post_tokens: after,
+                    dropped_tokens: None,
+                    duration_ms: None,
+                }
+            }
+            WireMeasurement::Request(_) => super::types::UnifiedAgentEvent::Usage {
+                usage: crate::chat::model::ModelUsage {
+                    context_tokens: reading.context_tokens(),
+                    ..Default::default()
+                },
+            },
+        })
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// 扫 `session_index.jsonl`，返回 workDir 匹配的会话的 `(wire.jsonl 路径, mtime)`。
 /// 只保留 wire.jsonl 真实存在的候选；空壳判定留给 `last_turn_usage_in_wire`（读到内容才知道）。
-fn wire_paths_for_work_dir(home: &Path, work_dir: &Path) -> Vec<(PathBuf, SystemTime)> {
+fn wire_paths_for_work_dir(
+    home: &Path,
+    work_dir: &Path,
+    session: Option<&str>,
+) -> Vec<(PathBuf, SystemTime)> {
     let index = match read_capped(&home.join("session_index.jsonl"), MAX_INDEX_FILE_BYTES) {
         Some(text) => text,
         None => return Vec::new(),
@@ -99,6 +136,9 @@ fn wire_paths_for_work_dir(home: &Path, work_dir: &Path) -> Vec<(PathBuf, System
         if entry_work_dir.is_empty() || Path::new(entry_work_dir) != work_dir {
             continue;
         }
+        if session.is_some_and(|id| entry.get("sessionId").and_then(Value::as_str) != Some(id)) {
+            continue;
+        }
         let session_dir = match entry.get("sessionDir").and_then(|v| v.as_str()) {
             Some(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
             _ => continue,
@@ -113,21 +153,35 @@ fn wire_paths_for_work_dir(home: &Path, work_dir: &Path) -> Vec<(PathBuf, System
     out
 }
 
-/// 取一个 wire.jsonl 里最后一条 `type=="usage.record" && usageScope=="turn"` 的记录。
-/// 没有任何这类记录 = 空壳会话（斜杠探测残渣），返回 `None` 让调用方看下一个候选。
-fn last_turn_usage_in_wire(path: &Path) -> Option<KimiTurnUsage> {
-    let text = read_capped(path, MAX_WIRE_FILE_BYTES)?;
-    text.lines().rev().find_map(|line| {
-        let line = line.trim();
-        if line.is_empty() {
-            return None;
+fn last_measurement_in_wire(path: &Path, since_ms: Option<i64>) -> Option<WireMeasurement> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let offset = length.saturating_sub(MAX_WIRE_FILE_BYTES);
+    // Include the previous byte so a partial first line cannot become a record.
+    let start = offset.saturating_sub(1);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut tail = Vec::new();
+    file.take(length - start).read_to_end(&mut tail).ok()?;
+    let mut lines = tail.split(|byte| *byte == b'\n');
+    if offset > 0 {
+        lines.next();
+    }
+    lines.rev().find_map(|line| {
+        let record: Value = serde_json::from_slice(line).ok()?;
+        if let Some(since) = since_ms {
+            if record.get("time")?.as_i64()? < since {
+                return None;
+            }
         }
-        let record: Value = serde_json::from_str(line).ok()?;
-        if record.get("type").and_then(|v| v.as_str()) != Some("usage.record") {
-            return None;
-        }
-        if record.get("usageScope").and_then(|v| v.as_str()) != Some("turn") {
-            return None;
+        match record.get("type")?.as_str()? {
+            "context.apply_compaction" => {
+                return Some(WireMeasurement::Compacted {
+                    before: record.get("tokensBefore").and_then(Value::as_u64),
+                    after: record.get("tokensAfter").and_then(Value::as_u64),
+                })
+            }
+            "usage.record" if record.get("usageScope")?.as_str()? == "turn" => {}
+            _ => return None,
         }
         let usage = record.get("usage")?;
         let field = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
@@ -140,7 +194,7 @@ fn last_turn_usage_in_wire(path: &Path) -> Option<KimiTurnUsage> {
         if input == 0 && output == 0 {
             return None;
         }
-        Some(KimiTurnUsage {
+        Some(WireMeasurement::Request(KimiTurnUsage {
             input_tokens: input,
             output_tokens: output,
             cache_read_tokens: cache_read,
@@ -151,7 +205,7 @@ fn last_turn_usage_in_wire(path: &Path) -> Option<KimiTurnUsage> {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_string),
-        })
+        }))
     })
 }
 
@@ -162,6 +216,14 @@ fn read_capped(path: &Path, max_bytes: u64) -> Option<String> {
         return None;
     }
     std::fs::read_to_string(path).ok()
+}
+
+#[cfg(test)]
+fn latest_turn_usage_in(home: &Path, work_dir: &Path) -> Option<KimiTurnUsage> {
+    match read_measurement(home, work_dir, None, None)? {
+        WireMeasurement::Request(usage) => Some(usage),
+        WireMeasurement::Compacted { .. } => None,
+    }
 }
 
 #[cfg(test)]
@@ -229,6 +291,31 @@ mod tests {
 
     /// 本机实测样本（`conv_2c0108ea.../agents/main/wire.jsonl` 末条，2026-07-26）。
     const REAL_RECORD: &str = r#"{"type":"usage.record","model":"kimi-code/k3-256k","usage":{"inputOther":565,"output":228,"inputCacheRead":23040,"inputCacheCreation":0},"usageScope":"turn","time":1784987956825}"#;
+
+    #[test]
+    fn bound_turn_ignores_other_sessions_and_usage_predating_the_prompt() {
+        let home = TempHome::new("bound-turn");
+        let cwd = "/tmp/shared-kimi-project";
+        home.add_session("current", cwd, REAL_RECORD);
+        home.add_session(
+            "other",
+            cwd,
+            &REAL_RECORD.replace("1784987956825", "1784987956835"),
+        );
+        let read = |at| read_measurement(home.path(), Path::new(cwd), Some("current"), Some(at));
+        assert!(read(1784987956826).is_none());
+        assert_eq!(read(1784987956825).unwrap().context_tokens(), Some(23833));
+        let wire = home.add_session("current", cwd, &format!("{REAL_RECORD}\n{{\"type\":\"context.apply_compaction\",\"tokensAfter\":4000,\"time\":1784987956826}}"));
+        assert_eq!(read(1784987956825).unwrap().context_tokens(), Some(4000));
+        fs::write(
+            wire,
+            format!(
+                "{REAL_RECORD}\n{{\"type\":\"context.apply_compaction\",\"time\":1784987956826}}"
+            ),
+        )
+        .unwrap();
+        assert_eq!(read(1784987956825).unwrap().context_tokens(), None);
+    }
 
     #[test]
     fn reads_latest_turn_usage_including_cache() {
@@ -339,12 +426,21 @@ mod tests {
     }
 
     #[test]
-    fn oversized_wire_file_is_refused() {
+    fn reads_the_latest_measurement_from_a_large_wire_log() {
         let home = TempHome::new("cap");
         let work_dir = "/tmp/kivio-ws/conv-6";
         let wire = home.add_session("session-a", work_dir, &format!("{REAL_RECORD}\n"));
-        assert!(read_capped(&wire, MAX_WIRE_FILE_BYTES).is_some());
-        assert!(read_capped(&wire, 4).is_none());
+        let mut file = fs::File::create(&wire).unwrap();
+        file.set_len(MAX_WIRE_FILE_BYTES + 100).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        use std::io::Write;
+        writeln!(file, "\n{REAL_RECORD}").unwrap();
+        assert_eq!(
+            last_measurement_in_wire(&wire, None)
+                .unwrap()
+                .context_tokens(),
+            Some(23833)
+        );
     }
 
     #[test]

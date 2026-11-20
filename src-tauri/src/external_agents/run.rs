@@ -982,7 +982,9 @@ async fn run_external_cli_reply_owned(
                         )
                         .map(|prompt| prompt.full_prompt)
                     });
-                run_persistent_turn(
+                let mut wire_since = (!is_slash && def.usage_fallback == super::types::UsageFallbackStrategy::KimiWireLog)
+                    .then(|| chrono::Utc::now().timestamp_millis());
+                let result = run_persistent_turn(
                     app,
                     state,
                     lease,
@@ -1030,11 +1032,26 @@ async fn run_external_cli_reply_owned(
                     history_transition.as_ref().map(|history| history.id.clone()),
                     recover_antigravity_prompt,
                     &mut history_attempt,
-                    &mut emit_event,
+                    &mut |event, actor| {
+                        if matches!(&event, UnifiedAgentEvent::Usage { usage } if usage.context_tokens.is_some())
+                            || matches!(&event, UnifiedAgentEvent::CliCompacted { .. })
+                        {
+                            wire_since = None;
+                        }
+                        emit_event(event, actor);
+                    },
                     &cancel_check,
                     approval_host.as_ref(),
                 )
-                .await
+                .await;
+                if let Some(start) = wire_since.filter(|_| result.is_ok() && !cancel_check()) {
+                    if let Some(event) = super::kimi_usage::completed_turn_context(
+                        app.clone(), conversation_id.clone(), cwd.clone(), start,
+                    ).await {
+                        if !cancel_check() { emit_event(event, None); }
+                    }
+                }
+                result
             } else {
                 // Defensive fallback for any future protocol intentionally left outside the live registry.
                 debug_assert_eq!(def.stream_format, StreamFormat::PiRpc);

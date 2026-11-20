@@ -38,6 +38,7 @@ pub(crate) async fn chat_get_context_stats(
             conversation.project_id.as_deref(),
         )?;
         crate::external_agents::context::compute_external_context_state_with_probe(
+            &app,
             &conversation,
             true,
             None,
@@ -632,6 +633,7 @@ pub(super) async fn compute_context_state(
         .ok();
         return Ok(
             crate::external_agents::context::compute_external_context_state_with_probe(
+                app,
                 conversation,
                 false,
                 None,

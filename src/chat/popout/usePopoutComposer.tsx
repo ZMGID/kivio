@@ -1,5 +1,5 @@
 import { isPlainBlankConversation } from '../conversationFields'
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import {
   api,
   builtinWebSearchSupported,
@@ -12,7 +12,7 @@ import { isPluginManagedServer, preservePluginManagedServers } from '../../setti
 import { i18n, type Lang } from '../../components/i18n'
 import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../api/chatTools'
 import { chatApi, type AgentRuntimeConfig } from '../api'
-import { keepNewerContextMeasurement, mergeContextMeasurement } from '../contextPanel'
+import { keepNewerContextMeasurement, mergeContextMeasurement, type ContextMeasurementIncoming } from '../contextPanel'
 import { ContextIndicator } from '../ContextIndicator'
 import { useTauriEvent } from '../hooks/useTauriEvent'
 import { keepNewerTodoState } from '../agentTodoState'
@@ -141,9 +141,11 @@ export function usePopoutComposer({
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
 
-  const [contextState, setContextState] = useState<ConversationContextState | null>(
-    () => conversation?.context_state ?? conversation?.contextState ?? null,
-  )
+  const loadedId = conversation?.id
+  const contextState = loadedId === conversationId ? conversation?.context_state ?? conversation?.contextState ?? null : null
+  // A run can publish before getConversation resolves on a newly opened window.
+  const pendingContext = useRef<{ id: string; updates: ContextMeasurementIncoming[] } | null>(null)
+  const loadedIdRef = useRef(loadedId)
   const [contextLoading, setContextLoading] = useState(false)
   const [contextError, setContextError] = useState('')
   const [contextCompressing, setContextCompressing] = useState(false)
@@ -179,23 +181,38 @@ export function usePopoutComposer({
   const setId = conversation?.set_id ?? conversation?.setId ?? null
   const storedActiveSkillId = conversation?.active_skill_id ?? conversation?.activeSkillId ?? null
 
-  const patchContextState = useCallback((nextState: ConversationContextState) => {
-    setContextState((prev) => {
-      const merged = mergeContextMeasurement(prev, { kind: 'snapshot', state: nextState })
-      setConversation((current) => current
-        ? { ...current, context_state: merged, contextState: merged }
-        : current)
-      return merged
+  const applyMeasurement = useCallback((id: string, ...updates: ContextMeasurementIncoming[]) => {
+    if (loadedIdRef.current !== id) {
+      const pending = pendingContext.current
+      if (pending?.id === id) pending.updates.push(...updates)
+      else pendingContext.current = { id, updates }
+      return
+    }
+    setConversation(current => {
+      if (current?.id !== id) return current
+      const previous = current.context_state ?? current.contextState
+      let next = previous
+      for (const update of updates) next = mergeContextMeasurement(next, update)
+      return next === previous ? current : { ...current, context_state: next, contextState: next }
     })
   }, [setConversation])
 
+  useLayoutEffect(() => {
+    loadedIdRef.current = loadedId
+    const pending = pendingContext.current
+    if (pending && pending.id === loadedId) {
+      pendingContext.current = null
+      applyMeasurement(loadedId, ...pending.updates)
+    }
+  }, [applyMeasurement, loadedId])
+
+  const patchContextState = useCallback((state: ConversationContextState) => {
+    applyMeasurement(conversationIdRef.current, { kind: 'snapshot', state })
+  }, [applyMeasurement])
+
   const refreshContextStats = useCallback(async () => {
     const targetId = conversationIdRef.current
-    if (!targetId) {
-      setContextState(null)
-      setContextError('')
-      return
-    }
+    if (!targetId) return
     setContextLoading(true)
     setContextError('')
     try {
@@ -357,19 +374,13 @@ export function usePopoutComposer({
   useTauriEvent(api.onChatContext, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
     if (payload.live) {
-      setContextState((prev) => {
-        const next = mergeContextMeasurement(prev, { kind: 'live', usage: payload.live! })
-        setConversation((current) => current
-          ? { ...current, context_state: next, contextState: next }
-          : current)
-        return next
-      })
+      applyMeasurement(payload.conversationId, { kind: 'live', usage: payload.live })
       return
     }
     if (!payload.contextState) return
     patchContextState(payload.contextState as ConversationContextState)
     setContextError('')
-  }, [patchContextState, setConversation])
+  }, [applyMeasurement, patchContextState])
 
   useTauriEvent(api.onChatCompaction, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
@@ -393,7 +404,7 @@ export function usePopoutComposer({
     try {
       const result = await chatApi.compressContext(conversationId)
       if (conversationIdRef.current === conversationId) {
-        setConversation(result.conversation)
+        setConversation(current => keepNewerContextMeasurement(result.conversation, current))
         patchContextState(result.contextState)
       }
     } catch (err) {
@@ -410,7 +421,7 @@ export function usePopoutComposer({
     try {
       const result = await chatApi.clearContext(conversationId)
       if (conversationIdRef.current === conversationId) {
-        setConversation(result.conversation)
+        setConversation(current => keepNewerContextMeasurement(result.conversation, current))
         patchContextState(result.contextState)
       }
     } catch (err) {

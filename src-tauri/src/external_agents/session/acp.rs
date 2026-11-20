@@ -1722,6 +1722,7 @@ pub struct AcpSession {
     stdin: AgentStdin,
     reader: Lines<BufReader<AgentStdout>>,
     session_id: String,
+    trailing_usage_update: bool,
     next_id: u64,
     /// Ring-buffered stderr tail (N1): drained for the process lifetime, joined on close / error
     /// so a silent handshake/turn failure surfaces the CLI's stderr.
@@ -2088,6 +2089,10 @@ impl AcpSession {
 
             Ok::<_, String>((
                 session_id,
+                init_result
+                    .pointer("/agentInfo/name")
+                    .and_then(Value::as_str)
+                    == Some("Kimi Code CLI"),
                 next_id,
                 model_config_id,
                 reasoning_config_id,
@@ -2100,6 +2105,7 @@ impl AcpSession {
         match handshake {
             Ok((
                 session_id,
+                trailing_usage_update,
                 next_id,
                 model_config_id,
                 reasoning_config_id,
@@ -2117,6 +2123,7 @@ impl AcpSession {
                     stdin,
                     reader,
                     session_id,
+                    trailing_usage_update,
                     next_id,
                     stderr_tail,
                     model_config_id,
@@ -2241,6 +2248,7 @@ impl AcpSession {
             &mut self.terminals,
             prompt_id,
             &self.session_id,
+            self.trailing_usage_update,
             events,
             control,
             approvals.as_mut(),
@@ -2265,11 +2273,13 @@ async fn acp_read_prompt(
     terminals: &mut AcpTerminalHost,
     prompt_id: u64,
     session_id: &str,
+    trailing_usage_update: bool,
     events: &mpsc::Sender<UnifiedAgentEvent>,
     control: &mut mpsc::Receiver<SessionCommand>,
     mut approvals: Option<&mut ApprovalBridge>,
 ) -> Result<(), String> {
     let mut update_state = AcpUpdateState::default();
+    let mut usage_deadline = None;
     loop {
         match control.try_recv() {
             Ok(SessionCommand::Cancel) => {
@@ -2289,7 +2299,16 @@ async fn acp_read_prompt(
             }
         }
         flush_terminal_side_effects(stdin, terminals).await?;
-        match acp_next_message(reader).await? {
+        let next = if let Some(deadline) = usage_deadline {
+            // The prompt already succeeded. Missing optional telemetry must not fail it.
+            match tokio::time::timeout_at(deadline, acp_next_message(reader)).await {
+                Ok(Ok(AcpNext::Eof) | Err(_)) | Err(_) => return Ok(()),
+                Ok(Ok(frame)) => frame,
+            }
+        } else {
+            acp_next_message(reader).await?
+        };
+        match next {
             AcpNext::Frame(AcpFrame::Request { id, method, params }) => {
                 if method.starts_with("cursor/")
                     || (approvals.is_some() && cursor_extension_is_blocking(&method))
@@ -2313,6 +2332,12 @@ async fn acp_read_prompt(
             AcpNext::Frame(AcpFrame::Notification { method, params }) => match method.as_str() {
                 "session/update" => {
                     if let Some(update) = acp_session_update(&params, session_id) {
+                        if usage_deadline.is_some()
+                            && update.get("sessionUpdate").and_then(Value::as_str)
+                                != Some("usage_update")
+                        {
+                            continue;
+                        }
                         let mut buffer = Vec::new();
                         acp_apply_session_update_ex(
                             update,
@@ -2322,6 +2347,9 @@ async fn acp_read_prompt(
                         );
                         for event in buffer {
                             let _ = events.send(event).await;
+                        }
+                        if usage_deadline.is_some() && update_state.context_tokens.is_some() {
+                            return Ok(());
                         }
                     }
                 }
@@ -2353,6 +2381,12 @@ async fn acp_read_prompt(
                 if let Some(usage) = usage_from_prompt_result(&result, update_state.context_tokens)
                 {
                     let _ = events.send(UnifiedAgentEvent::Usage { usage }).await;
+                }
+                // Kimi computes usage asynchronously after sending PromptResponse.
+                if trailing_usage_update && outcome.is_ok() && usage_deadline.is_none() {
+                    update_state.context_tokens = None;
+                    usage_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(500));
+                    continue;
                 }
                 return outcome;
             }
@@ -2999,6 +3033,7 @@ mod tests {
             &mut terminals,
             7,
             "ours",
+            true,
             &events,
             &mut control,
             Some(&mut bridge),
@@ -3084,6 +3119,14 @@ mod tests {
             )
             .await
             .unwrap();
+            // Kimi acknowledges the prompt, then asynchronously reports context.
+            for (session, used) in [("other", 9999), ("ours", 80)] {
+                write_rpc_line(&mut agent_write, json!({
+                    "jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": session, "update": { "sessionUpdate": "usage_update", "used": used, "size": 100000 }
+                    }
+                })).await.unwrap();
+            }
         };
         let (result, ()) = timeout(Duration::from_secs(3), async { tokio::join!(live, peer) })
             .await
@@ -3092,6 +3135,10 @@ mod tests {
         result.unwrap();
         assert!(
             matches!(output.try_recv().unwrap(), UnifiedAgentEvent::TextDelta { delta } if delta == "visible")
+        );
+        assert!(
+            matches!(output.try_recv().unwrap(), UnifiedAgentEvent::Usage { usage }
+            if usage.context_tokens == Some(80) && usage.context_window_tokens == Some(100000))
         );
         assert!(output.try_recv().is_err());
     }
@@ -3146,6 +3193,7 @@ mod tests {
                     &mut terminals,
                     7,
                     "ours",
+                    false,
                     &events,
                     &mut control,
                     None,
@@ -3175,6 +3223,7 @@ mod tests {
                 &mut terminals,
                 7,
                 "ours",
+                false,
                 &events,
                 &mut control,
                 None,

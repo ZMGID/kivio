@@ -2554,6 +2554,35 @@ fn regenerate_truncation_edits_user_content_and_truncates_after() {
 }
 
 #[test]
+fn regenerating_external_history_discards_the_removed_turns_context() {
+    let mut conversation = test_conversation_with_summary(false);
+    conversation.agent_runtime.kind = crate::chat::types::AgentRuntimeKind::External;
+    conversation.agent_runtime.external_agent_id = Some("pi".into());
+    conversation.agent_runtime.external_model = None;
+    conversation.context_state = crate::chat::types::ConversationContextState {
+        context_source: Some("external_cli".into()),
+        external_agent_id: Some("pi".into()),
+        token_count_source: Some("cli_reported".into()),
+        estimated_input_tokens: 190000,
+        context_window_tokens: Some(200000),
+        measurement_seq: 7,
+        ..Default::default()
+    };
+    apply_regenerate_truncation(&mut conversation, 2, None).unwrap();
+    let state = crate::external_agents::context::compute_external_context_state(
+        &conversation,
+        "pi",
+        "default",
+        None,
+        None,
+        None,
+    );
+    assert_eq!(state.token_count_source, None);
+    assert!(state.measurement_seq > 7);
+    assert_eq!(state.context_window_tokens, Some(200000));
+}
+
+#[test]
 fn regenerate_preserves_folded_reports_for_the_current_turn() {
     let mut conversation = test_conversation_with_summary(false);
     conversation.context_state = Default::default();
