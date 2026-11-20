@@ -84,14 +84,14 @@ describe('InputBar 发送清草稿', () => {
     expect(stopWaiting).toHaveBeenCalledTimes(1)
   })
 
-  it.each(['enter', 'button'])('running %s sends directly to steering and clears the draft', async (trigger) => {
+  it.each(['enter', 'button'])('running %s queues without inserting and clears the draft', async (trigger) => {
     const onSend = vi.fn().mockResolvedValue(true)
     function RunningComposer() {
       const queue = useMessageQueue({ onSendMessage: onSend, onRestoreToComposer: vi.fn() })
       return <InputBar disabled cancelVisible onCancel={() => {}} onSend={onSend}
         conversationId={`direct-steer-${trigger}`}
         onSendWhileRunning={(content, attachments) => queue.commands.sendWhileRunning(
-          { id: 'running' } as Conversation, content, attachments, { canSteer: true, canFollowUp: true },
+          { id: 'running' } as Conversation, content, attachments,
         )} />
     }
     vi.mocked(chatApi.steerMessage).mockClear()
@@ -100,8 +100,7 @@ describe('InputBar 发送清草稿', () => {
     fireEvent.change(input, { target: { value: '继续，但先检查测试' } })
     if (trigger === 'enter') fireEvent.keyDown(input, { key: 'Enter' })
     else fireEvent.click(screen.getByRole('button', { name: '发送' }))
-    await waitFor(() => expect(chatApi.steerMessage).toHaveBeenCalledTimes(1))
-    expect(chatApi.steerMessage).toHaveBeenCalledWith('running', expect.any(String), '继续，但先检查测试', [])
+    expect(chatApi.steerMessage).not.toHaveBeenCalled()
     expect(input).toHaveValue('')
     expect(onSend).not.toHaveBeenCalled()
   })

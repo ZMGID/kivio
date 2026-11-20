@@ -457,45 +457,19 @@ pub(crate) async fn chat_steer_message(
     conversation_id: String,
     steer_id: String,
     content: String,
+    attachments: Option<Vec<String>>,
     text_attachments: Option<Vec<TextAttachmentInput>>,
 ) -> Result<bool, String> {
-    if defer_command_injection(&content) {
-        return Ok(false);
-    }
-    let content = compose_text_attachments_for_api(&content, &text_attachments.unwrap_or_default());
-    let Some(message) = crate::chat::agent::SteeringMessage::new(steer_id, &content) else {
-        return Ok(false);
-    };
-    // 常驻 CLI 会话优先：这条对话由外部 CLI 在跑时，内置信箱根本没人来取。
-    if let Some((control, definition)) = state
-        .external_live_sessions()
-        .injection_control(&conversation_id)
-    {
-        if definition.steering != CapabilitySupport::Native {
-            return Ok(false);
-        }
-        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
-        let sent = control
-            .send(
-                crate::external_agents::session::live::SessionCommand::Steer {
-                    id: message.id,
-                    text: message.text,
-                    images: Vec::new(),
-                    kind: crate::external_agents::session::live::MessageInjectionKind::Steer,
-                    accepted: accepted_tx,
-                },
-            )
-            .await
-            .is_ok();
-        if !sent {
-            return Ok(false);
-        }
-        // actor 每条命令都会答复；真丢了（actor 中途没了）按未受理处理。
-        return Ok(accepted_rx.await.unwrap_or(false));
-    }
-    Ok(state
-        .chat_runtime()
-        .push_steering(&conversation_id, message))
+    inject_running_message(
+        &state,
+        conversation_id,
+        steer_id,
+        content,
+        attachments.unwrap_or_default(),
+        text_attachments,
+        crate::external_agents::session::live::MessageInjectionKind::Steer,
+    )
+    .await
 }
 
 // Commands need the normal send path's skill/protocol resolution. Returning false
@@ -508,6 +482,99 @@ fn defer_command_injection(content: &str) -> bool {
 #[cfg(test)]
 mod command_injection_tests {
     use super::defer_command_injection;
+
+    #[tokio::test]
+    async fn native_injection_preserves_attachments_and_requires_the_actor_receipt() {
+        use crate::external_agents::session::live::{
+            LaunchConfig, LiveSession, MessageInjectionKind, SessionCommand, SessionControl,
+        };
+        use std::sync::{atomic::AtomicBool, Arc};
+        for (agent, kind, receipt) in [
+            ("codex", MessageInjectionKind::Steer, true),
+            ("codex", MessageInjectionKind::Steer, false),
+            ("pi", MessageInjectionKind::FollowUp, true),
+        ] {
+            let state = crate::state::test_app_state();
+            let (sender, mut commands) = tokio::sync::mpsc::channel(1);
+            let (observed, observation) = tokio::sync::oneshot::channel();
+            let control = SessionControl::spawn(sender, async move {
+                let Some(SessionCommand::Steer {
+                    id,
+                    text,
+                    images,
+                    kind,
+                    accepted,
+                }) = commands.recv().await
+                else {
+                    panic!("missing input command");
+                };
+                let _ = observed.send((id, text, images.len(), kind));
+                let _ = accepted.send(receipt);
+            });
+            state.external_live_sessions().register(
+                "injection".into(),
+                LiveSession {
+                    control,
+                    _chat_credential: None,
+                    agent_id: agent.into(),
+                    cwd: "/tmp".into(),
+                    launch_config: LaunchConfig::default(),
+                    last_activity: std::time::Instant::now(),
+                    child_pid: None,
+                    turns_served: 1,
+                    busy: Arc::new(AtomicBool::new(true)),
+                },
+            );
+            let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("icons/32x32.png");
+            let accepted = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                super::inject_running_message(
+                    &state,
+                    "injection".into(),
+                    "q1".into(),
+                    "Look".into(),
+                    vec![
+                        image.to_string_lossy().into_owned(),
+                        "/tmp/notes.pdf".into(),
+                    ],
+                    Some(vec![crate::chat::attachments::TextAttachmentInput {
+                        name: "paste.txt".into(),
+                        content: "source material".into(),
+                    }]),
+                    kind,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(accepted, receipt);
+            let (id, text, images, actual_kind) = observation.await.unwrap();
+            assert_eq!(id, "q1");
+            assert_eq!(actual_kind, kind);
+            assert_eq!(images, 1);
+            assert!(
+                text.contains("Look")
+                    && text.contains("source material")
+                    && text.contains("/tmp/notes.pdf")
+            );
+        }
+        let state = crate::state::test_app_state();
+        let _generation = state.chat_runtime().begin_generation("builtin");
+        assert!(
+            !super::inject_running_message(
+                &state,
+                "builtin".into(),
+                "q1".into(),
+                "Look".into(),
+                vec!["/tmp/notes.pdf".into()],
+                None,
+                MessageInjectionKind::Steer,
+            )
+            .await
+            .unwrap(),
+            "a text-only runtime must preserve disk attachments for normal delivery"
+        );
+    }
 
     #[tokio::test(start_paused = true)]
     async fn cancellation_releases_a_pending_request_without_poll_delay() {
@@ -564,6 +631,28 @@ pub(crate) async fn chat_follow_up_message(
     attachments: Vec<String>,
     text_attachments: Option<Vec<TextAttachmentInput>>,
 ) -> Result<bool, String> {
+    inject_running_message(
+        &state,
+        conversation_id,
+        follow_up_id,
+        content,
+        attachments,
+        text_attachments,
+        crate::external_agents::session::live::MessageInjectionKind::FollowUp,
+    )
+    .await
+}
+
+/// One delivery owner for both injection intents: preserve attachments and await the actor receipt.
+async fn inject_running_message(
+    state: &AppState,
+    conversation_id: String,
+    message_id: String,
+    content: String,
+    attachments: Vec<String>,
+    text_attachments: Option<Vec<TextAttachmentInput>>,
+    kind: crate::external_agents::session::live::MessageInjectionKind,
+) -> Result<bool, String> {
     if defer_command_injection(&content) {
         return Ok(false);
     }
@@ -577,7 +666,15 @@ pub(crate) async fn chat_follow_up_message(
         .external_live_sessions()
         .injection_control(&conversation_id)
     {
-        if definition.follow_up != CapabilitySupport::Native {
+        let support = match kind {
+            crate::external_agents::session::live::MessageInjectionKind::Steer => {
+                definition.steering
+            }
+            crate::external_agents::session::live::MessageInjectionKind::FollowUp => {
+                definition.follow_up
+            }
+        };
+        if support != CapabilitySupport::Native {
             return Ok(false);
         }
         let (images, degraded_images) = if definition.image_input == CapabilitySupport::Native {
@@ -597,17 +694,17 @@ pub(crate) async fn chat_follow_up_message(
         if content.trim().is_empty() && images.is_empty() {
             return Ok(false);
         }
-        let text = crate::chat::agent::SteeringMessage::new(follow_up_id.clone(), &content)
+        let text = crate::chat::agent::SteeringMessage::new(message_id.clone(), &content)
             .map(|message| message.text)
             .unwrap_or_default();
         let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
         let sent = control
             .send(
                 crate::external_agents::session::live::SessionCommand::Steer {
-                    id: follow_up_id,
+                    id: message_id,
                     text,
                     images,
-                    kind: crate::external_agents::session::live::MessageInjectionKind::FollowUp,
+                    kind,
                     accepted: accepted_tx,
                 },
             )
@@ -622,12 +719,17 @@ pub(crate) async fn chat_follow_up_message(
     if !image_paths.is_empty() || !file_paths.is_empty() {
         return Ok(false);
     }
-    let Some(message) = crate::chat::agent::SteeringMessage::new(follow_up_id, &content) else {
+    let Some(message) = crate::chat::agent::SteeringMessage::new(message_id, &content) else {
         return Ok(false);
     };
-    Ok(state
-        .chat_runtime()
-        .push_follow_up(&conversation_id, message))
+    Ok(match kind {
+        crate::external_agents::session::live::MessageInjectionKind::Steer => state
+            .chat_runtime()
+            .push_steering(&conversation_id, message),
+        crate::external_agents::session::live::MessageInjectionKind::FollowUp => state
+            .chat_runtime()
+            .push_follow_up(&conversation_id, message),
+    })
 }
 
 pub(super) fn emit_chat_plan_state(

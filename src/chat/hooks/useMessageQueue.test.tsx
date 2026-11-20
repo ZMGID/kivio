@@ -35,43 +35,25 @@ beforeEach(() => {
 })
 
 describe('useMessageQueue', () => {
-  it('running send steers immediately even when native follow-up is available', async () => {
+  it('running send queues without injecting; promotion retries without losing or duplicating the message', async () => {
     const { result, onSendMessage } = setup()
     await act(async () => {
-      result.current.commands.sendWhileRunning(conversation, '改用 rg', [], {
-        canSteer: true, canFollowUp: true,
-      })
+      result.current.commands.sendWhileRunning(conversation, '改用 rg', [])
     })
     const message = result.current.queued['conv-1'][0]
-    expect(mockSteer).toHaveBeenCalledWith('conv-1', message.id, '改用 rg', [])
+    expect(mockSteer).not.toHaveBeenCalled()
     expect(mockFollowUp).not.toHaveBeenCalled()
-    expect(message.steering).toBe(true)
-    expect(onSendMessage).not.toHaveBeenCalled()
+    expect(message.steering).toBe(false)
+    mockSteer.mockResolvedValueOnce(false)
+    await act(async () => { await result.current.steer('conv-1', message.id) })
+    expect(result.current.queued['conv-1'][0].steerRejected).toBe(true)
+    await act(async () => { await result.current.steer('conv-1', message.id) })
+    expect(result.current.queued['conv-1'][0].steering).toBe(true)
     act(() => result.current.confirm('conv-1', message.id))
     await act(async () => { await result.current.settleAfterRun('conv-1', conversation) })
     expect(onSendMessage).not.toHaveBeenCalled()
     expect(result.current.queued['conv-1']).toBeUndefined()
   })
-
-  it.each(['unsupported', 'rejected', 'attachments'] as const)(
-    'running send preserves %s input for delivery after the run', async (kind) => {
-      mockSteer.mockResolvedValue(false)
-      const { result, onSendMessage } = setup()
-      const attachments = kind === 'attachments'
-        ? [{ id: 'image', type: 'image' as const, name: 'a.png', path: '/tmp/a.png' }] : []
-      await act(async () => {
-        result.current.commands.sendWhileRunning(conversation, '请检查', attachments, {
-          canSteer: kind !== 'unsupported', canFollowUp: false,
-        })
-      })
-      expect(result.current.queued['conv-1'][0]).toMatchObject({
-        content: '请检查', attachments, steering: false, steerRejected: true,
-      })
-      await act(async () => { await result.current.settleAfterRun('conv-1', conversation) })
-      expect(onSendMessage).toHaveBeenCalledTimes(1)
-      expect(onSendMessage).toHaveBeenCalledWith('请检查', attachments, { conversationOverride: conversation })
-    },
-  )
 
   it.each(['steer', 'followUp'] as const)('deferred skill %s preserves the original task and attachments for normal sending', async (kind) => {
     mockSteer.mockResolvedValue(false)
@@ -156,6 +138,18 @@ describe('useMessageQueue', () => {
 
     await act(async () => { await result.current.followUp(conversation, id) })
     expect(onPendingChange).toHaveBeenLastCalledWith('conv-1', false)
+  })
+
+  it('sending a selected queued message leaves earlier messages queued', async () => {
+    const { result, onSendMessage } = setup()
+    let selected = ''
+    act(() => {
+      result.current.enqueue('conv-1', 'first', [])
+      selected = result.current.enqueue('conv-1', 'selected', [])!.id
+    })
+    await act(async () => { await result.current.drain(conversation, selected) })
+    expect(onSendMessage).toHaveBeenCalledWith('selected', [], { conversationOverride: conversation })
+    expect(result.current.queued['conv-1'].map(item => item.content)).toEqual(['first'])
   })
 
   it('入队后 drain 只发队首一条', async () => {
@@ -313,7 +307,7 @@ describe('useMessageQueue', () => {
     expect(result.current.queued['conv-1'][0].steering).toBe(true)
   })
 
-  it('磁盘附件不能通过文本 steering 时留在队列等待正常发送', async () => {
+  it('磁盘附件交给后端插入接口，不在前端拦截', async () => {
     const { result } = setup()
     let id = ''
     act(() => {
@@ -327,9 +321,9 @@ describe('useMessageQueue', () => {
 
     const accepted = await act(async () => await result.current.steer('conv-1', id))
 
-    expect(accepted).toBe(false)
-    expect(mockSteer).not.toHaveBeenCalled()
-    expect(result.current.queued['conv-1'][0].steerRejected).toBe(true)
+    expect(accepted).toBe(true)
+    expect(mockSteer).toHaveBeenCalledWith('conv-1', id, '看附件', [expect.objectContaining({ path: '/tmp/report.pdf' })])
+    expect(result.current.queued['conv-1'][0].steering).toBe(true)
   })
 
   it('没有活跃 run 时引导失败，条目留着并仍能被自动发送', async () => {

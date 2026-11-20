@@ -220,9 +220,54 @@ impl LaunchIdentity {
     }
 
     pub(crate) fn still_current(&self, def: &RuntimeAgentDef, bin: &Path) -> bool {
-        self.revision.is_some()
-            && self == &Self::capture(def, bin)
-            && self.revision == launch_revision(def.id)
+        self.ensure_current(def, bin).is_ok()
+    }
+
+    pub(crate) fn ensure_current(&self, def: &RuntimeAgentDef, bin: &Path) -> Result<(), String> {
+        self.compare_current(def, bin, false).map(|_| ())
+    }
+
+    /// Codex reads its native profile at process launch. A pre-dispatch reconnect may use a
+    /// newer profile, but must never reuse arguments prepared for different host settings.
+    pub(crate) fn refreshed_native_profile(
+        &self,
+        def: &RuntimeAgentDef,
+        bin: &Path,
+    ) -> Result<Self, String> {
+        self.compare_current(def, bin, true)
+    }
+
+    fn compare_current(
+        &self,
+        def: &RuntimeAgentDef,
+        bin: &Path,
+        allow_profile_change: bool,
+    ) -> Result<Self, String> {
+        let current = Self::capture(def, bin);
+        let changed = if self.revision.is_none()
+            || current.revision.is_none()
+            || self.revision != current.revision
+            || current.revision != launch_revision(def.id)
+        {
+            Some("settings")
+        } else if self.agent != current.agent
+            || self.binary != current.binary
+            || self.executable != current.executable
+        {
+            Some("executable")
+        } else if self.environment != current.environment {
+            Some("environment")
+        } else if !allow_profile_change && self.profile != current.profile {
+            Some("native profile")
+        } else {
+            None
+        };
+        match changed {
+            Some(reason) => Err(format!(
+                "external CLI launch configuration changed ({reason}); retry"
+            )),
+            None => Ok(current),
+        }
     }
 }
 
@@ -493,7 +538,14 @@ mod tests {
                 json!({
                     "sub": user, "exp": rotation, "iat": rotation, "jti": rotation,
                     "at_hash": format!("access-hash-{rotation}"), "rat": rotation,
-                    "https://api.openai.com/auth": {"chatgpt_user_id": user}
+                    "https://api.openai.com/auth": {
+                        "chatgpt_user_id": user,
+                        "chatgpt_account_id": workspace,
+                        "chatgpt_plan_type": "pro",
+                        "chatgpt_subscription_last_checked": rotation,
+                        "chatgpt_subscription_active_until": rotation + 100,
+                        "organizations": [{"id": workspace, "title": format!("Workspace {rotation}")}]
+                    }
                 })
                 .to_string(),
             );

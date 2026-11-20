@@ -793,9 +793,17 @@ async fn run_external_cli_reply_owned(
     {
         return Err("cancelled".into());
     }
-    if !launch_identity.still_current(def, &resolved_bin) {
+    if crate::external_agents::overrides::launch_revision(def.id) != Some(launch_revision) {
         return Err("external CLI configuration changed; retry".into());
     }
+    // Codex reads its native profile at launch; refresh that profile after prompt preparation.
+    // Other CLIs may already have resolved model aliases into argv, so keep their full guard.
+    let launch_identity = if def.stream_format == StreamFormat::CodexAppServer {
+        launch_identity.refreshed_native_profile(def, &resolved_bin)?
+    } else {
+        launch_identity.ensure_current(def, &resolved_bin)?;
+        launch_identity
+    };
     let mut spawned_opt = if persistent {
         None
     } else {
@@ -1317,13 +1325,14 @@ impl StreamSegmentTracker {
         segments: &mut Vec<ChatMessageSegment>,
         segment_order: &mut u32,
         tool_calls_len: usize,
-        is_answer: bool,
+        phase: Option<ChatMessageSegmentPhase>,
     ) -> Option<(ChatMessageSegment, Option<String>)> {
         if let Some(index) = self.native_text_items.get(id).copied() {
-            let phase_changed =
-                is_answer && segments[index].phase != ChatMessageSegmentPhase::Answer;
-            if is_answer {
-                segments[index].phase = ChatMessageSegmentPhase::Answer;
+            let phase_changed = phase
+                .as_ref()
+                .is_some_and(|phase| &segments[index].phase != phase);
+            if let Some(phase) = phase {
+                segments[index].phase = phase;
             }
             let previous = segments[index].text.as_deref().unwrap_or_default();
             if previous == text {
@@ -1345,9 +1354,9 @@ impl StreamSegmentTracker {
             return None;
         }
         let mut segment = self.append_text_item(id, text, segments, segment_order, tool_calls_len);
-        if is_answer {
-            segment.phase = ChatMessageSegmentPhase::Answer;
-            segments.last_mut().unwrap().phase = ChatMessageSegmentPhase::Answer;
+        if let Some(phase) = phase {
+            segment.phase = phase.clone();
+            segments.last_mut().unwrap().phase = phase;
         }
         Some((segment, Some(text.to_string())))
     }
@@ -1621,6 +1630,7 @@ where
 
     let cwd_str = cwd.to_string_lossy().to_string();
     let protocol_tag = persistent_protocol_tag(protocol);
+    let mut launch_config = launch_config.clone();
 
     // 本轮实际使用的启动参数。resume 失效时会被改写成「开新会话」（见
     // `drop_resume_for_fresh_session`），所以不能直接用调用方那份不可变的 `args`。
@@ -1670,7 +1680,7 @@ where
         conversation_id,
         agent_id,
         &cwd_str,
-        launch_config,
+        &launch_config,
     )? {
         Some((control, claimed, true)) if !force_reconnect => {
             _busy = Some(claimed);
@@ -1770,6 +1780,7 @@ where
                     resume_native.clone(),
                     additional_directories,
                     rewind.codex_visible_users.as_deref(),
+                    &mut launch_config,
                 )
                 .await
                 {
@@ -1800,6 +1811,7 @@ where
                             None,
                             additional_directories,
                             None,
+                            &mut launch_config,
                         )
                         .await?
                     }
@@ -1824,6 +1836,7 @@ where
                             None,
                             additional_directories,
                             None,
+                            &mut launch_config,
                         )
                         .await?
                     }
@@ -1910,11 +1923,12 @@ where
         let outcome = drive_persistent_turn(
             &control,
             &delivery,
-            &|| {
-                launch_config.identity.as_ref().is_none_or(|identity| {
-                    get_agent_def(agent_id)
-                        .is_some_and(|def| identity.still_current(def, resolved_bin))
-                })
+            &|| match launch_config.identity.as_ref() {
+                Some(identity) => identity.ensure_current(
+                    get_agent_def(agent_id).ok_or("unknown external CLI")?,
+                    resolved_bin,
+                ),
+                None => Ok(()),
             },
             state
                 .chat_runtime()
@@ -2028,7 +2042,7 @@ where
             reasoning.as_deref(),
             sandbox.as_deref(),
             preset.as_deref(),
-            launch_config,
+            &mut launch_config,
             resumable_native.clone(),
             additional_directories,
         )
@@ -2070,16 +2084,11 @@ async fn publish_live_session(
             if cancel() {
                 return Err("cancelled".into());
             }
-            if session
-                .launch_config
-                .identity
-                .as_ref()
-                .is_some_and(|identity| {
-                    get_agent_def(&session.agent_id)
-                        .is_none_or(|def| !identity.still_current(def, resolved_bin))
-                })
-            {
-                return Err("external CLI launch configuration changed; retry".into());
+            if let Some(identity) = session.launch_config.identity.as_ref() {
+                identity.ensure_current(
+                    get_agent_def(&session.agent_id).ok_or("unknown external CLI")?,
+                    resolved_bin,
+                )?;
             }
             lease.publish(session, || {
                 crate::external_agents::session::save_live_handle(app, conversation_id, &handle)?;
@@ -2134,7 +2143,7 @@ async fn reconnect_fresh<C: Fn() -> bool>(
     reasoning: Option<&str>,
     sandbox: Option<&str>,
     preset: Option<&str>,
-    launch_config: &LaunchConfig,
+    launch_config: &mut LaunchConfig,
     resume_native: Option<String>,
     additional_directories: &[String],
 ) -> Result<
@@ -2168,6 +2177,7 @@ async fn reconnect_fresh<C: Fn() -> bool>(
         resume_native,
         additional_directories,
         None,
+        launch_config,
     )
     .await?;
     publish_live_session(
@@ -2410,6 +2420,11 @@ fn persistent_failure_action(
     if possibly_sent {
         return PersistentFailureAction::Fatal;
     }
+    // Replaying the same launch recipe cannot repair an invalid identity. Native-profile
+    // changes during Codex connect are already handled before publication, with a fresh recipe.
+    if crate::external_agents::errors::is_launch_configuration_error(err) {
+        return PersistentFailureAction::Fatal;
+    }
     if err == crate::external_agents::session::acp::NEEDS_RECONNECT {
         // Only relaunch once for a config change; a repeat means the relaunch didn't help.
         return if reconnected_for_config {
@@ -2587,7 +2602,7 @@ pub(crate) struct HistoryDispatch<'a> {
 pub(crate) async fn drive_persistent_turn<E, C>(
     control: &crate::external_agents::session::live::SessionControl,
     delivery: &crate::external_agents::session::live::TurnDelivery,
-    launch_is_current: &impl Fn() -> bool,
+    validate_launch: &impl Fn() -> Result<(), String>,
     cancelled: Option<tokio_util::sync::CancellationToken>,
     state: &AppState,
     conversation_id: &str,
@@ -2641,9 +2656,7 @@ where
     if cancel() {
         return Err("cancelled".into());
     }
-    if !launch_is_current() {
-        return Err("external CLI launch configuration changed; retry".into());
-    }
+    validate_launch()?;
     if let Some(history) = history {
         if history
             .attempt
@@ -3872,6 +3885,97 @@ async fn connect_persistent_session(
     reasoning: Option<&str>,
     sandbox: Option<&str>,
     preset: Option<&str>,
+    mut resume_native: Option<String>,
+    additional_directories: &[String],
+    mut codex_rewind: Option<&[String]>,
+    launch_config: &mut LaunchConfig,
+) -> Result<PersistentConnection, String> {
+    if protocol != StreamFormat::CodexAppServer {
+        return connect_persistent_session_once(
+            app,
+            conversation_id,
+            protocol,
+            resolved_bin,
+            args,
+            cwd,
+            model,
+            reasoning,
+            sandbox,
+            preset,
+            resume_native,
+            additional_directories,
+            codex_rewind,
+        )
+        .await;
+    }
+    let def = get_agent_def("codex").ok_or("unknown external CLI")?;
+    if let Some(identity) = &launch_config.identity {
+        launch_config.identity = Some(identity.refreshed_native_profile(def, resolved_bin)?);
+    }
+
+    let mut original_resumed = None;
+    for attempt in 0..2 {
+        let mut connection = connect_persistent_session_once(
+            app,
+            conversation_id,
+            protocol,
+            resolved_bin,
+            args,
+            cwd,
+            model,
+            reasoning,
+            sandbox,
+            preset,
+            resume_native.clone(),
+            additional_directories,
+            codex_rewind,
+        )
+        .await?;
+        let validation = launch_config.identity.as_ref().map_or(Ok(()), |identity| {
+            identity.ensure_current(def, resolved_bin)
+        });
+        match validation {
+            Ok(()) => {
+                // Resuming the empty thread created by our own retry is still a first turn:
+                // it must receive the composed system prompt and attachments exactly once.
+                connection.resumed = original_resumed.unwrap_or(connection.resumed);
+                return Ok(connection);
+            }
+            Err(error) => {
+                close_live_control(&connection.control).await?;
+                if attempt == 1 {
+                    return Err(error);
+                }
+                let identity = launch_config
+                    .identity
+                    .as_ref()
+                    .ok_or(error)?
+                    .refreshed_native_profile(def, resolved_bin)?;
+                original_resumed = Some(connection.resumed);
+                resume_native = Some(connection.native_id.clone());
+                codex_rewind = None;
+                // Drop the old credential before opening its replacement. No user prompt has
+                // reached this connection, so resuming the thread cannot replay tool work.
+                drop(connection);
+                launch_config.identity = Some(identity);
+            }
+        }
+    }
+    unreachable!("bounded Codex connection attempts")
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn connect_persistent_session_once(
+    app: &AppHandle,
+    conversation_id: &str,
+    protocol: StreamFormat,
+    resolved_bin: &std::path::Path,
+    args: &[String],
+    cwd: &std::path::Path,
+    model: Option<&str>,
+    reasoning: Option<&str>,
+    sandbox: Option<&str>,
+    preset: Option<&str>,
     resume_native: Option<String>,
     additional_directories: &[String],
     // Codex only: after resuming, revert the thread to these visible prompts (see
@@ -4477,18 +4581,14 @@ fn apply_unified_event(
                 );
             }
         }
-        UnifiedAgentEvent::TextItemCompleted {
-            id,
-            text,
-            is_answer,
-        } => {
+        UnifiedAgentEvent::TextItemCompleted { id, text, phase } => {
             if let Some((segment, delta)) = segment_tracker.complete_text_item(
                 &id,
                 &text,
                 segments,
                 segment_order,
                 tool_calls.len(),
-                is_answer,
+                phase,
             ) {
                 if let Some(delta) = delta {
                     content.push_str(&delta);
@@ -6608,7 +6708,7 @@ mod tests {
         tracker.append_text_item("second", "后续", &mut segments, &mut order, 1);
         let ids: Vec<_> = segments.iter().map(|s| s.id.clone()).collect();
         let (_, delta) = tracker
-            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1, false)
+            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1, None)
             .unwrap();
         assert!(delta.is_none());
         assert_eq!(
@@ -6623,14 +6723,14 @@ mod tests {
             vec!["最终🌱", "thought", "后续"]
         );
         assert!(tracker
-            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1, false)
+            .complete_text_item("first", "最终🌱", &mut segments, &mut order, 1, None)
             .is_none());
         let (_, delta) = tracker
-            .complete_text_item("second", "后续补全", &mut segments, &mut order, 1, false)
+            .complete_text_item("second", "后续补全", &mut segments, &mut order, 1, None)
             .unwrap();
         assert_eq!(delta.as_deref(), Some("补全"));
         let (_, delta) = tracker
-            .complete_text_item("first", "最终🌱追加", &mut segments, &mut order, 1, false)
+            .complete_text_item("first", "最终🌱追加", &mut segments, &mut order, 1, None)
             .unwrap();
         assert!(
             delta.is_none(),
@@ -6647,19 +6747,53 @@ mod tests {
         tracker.append_text_item("reply", "Answer", &mut segments, &mut order, 0);
         push_tool_segment(&mut segments, &mut order, "todo");
         let (answer, delta) = tracker
-            .complete_text_item("reply", "Answer", &mut segments, &mut order, 1, true)
+            .complete_text_item(
+                "reply",
+                "Answer",
+                &mut segments,
+                &mut order,
+                1,
+                Some(ChatMessageSegmentPhase::Answer),
+            )
             .unwrap();
         assert_eq!(answer.phase, ChatMessageSegmentPhase::Answer);
         assert_eq!(delta.as_deref(), Some(""));
         assert_eq!(segments[0].phase, ChatMessageSegmentPhase::Answer);
         assert_eq!(segments[1].kind, ChatMessageSegmentKind::Tool);
         assert!(tracker
-            .complete_text_item("reply", "Answer", &mut segments, &mut order, 1, true)
+            .complete_text_item(
+                "reply",
+                "Answer",
+                &mut segments,
+                &mut order,
+                1,
+                Some(ChatMessageSegmentPhase::Answer)
+            )
             .is_none());
         let (answer, _) = tracker
-            .complete_text_item("cold", "Cold answer", &mut segments, &mut order, 1, true)
+            .complete_text_item(
+                "cold",
+                "Cold answer",
+                &mut segments,
+                &mut order,
+                1,
+                Some(ChatMessageSegmentPhase::Answer),
+            )
             .unwrap();
         assert_eq!(answer.phase, ChatMessageSegmentPhase::Answer);
+        tracker.append_text_item("note", "Progress", &mut segments, &mut order, 1);
+        let (note, delta) = tracker
+            .complete_text_item(
+                "note",
+                "Progress",
+                &mut segments,
+                &mut order,
+                1,
+                Some(ChatMessageSegmentPhase::ToolLoop),
+            )
+            .unwrap();
+        assert_eq!(note.phase, ChatMessageSegmentPhase::ToolLoop);
+        assert_eq!(delta.as_deref(), Some(""));
     }
 
     #[test]
@@ -6863,12 +6997,15 @@ mod tests {
 
         let state = crate::state::test_app_state();
         let generation = state.chat_runtime().begin_generation("conversation");
-        for (write_prompt, report_outcome, expected) in [
-            (false, true, PersistentFailureAction::ReconnectConfig),
-            (true, true, PersistentFailureAction::Fatal),
-            (false, false, PersistentFailureAction::Fatal),
+        for (write_prompt, report_outcome, valid_launch, expected) in [
+            (false, true, true, PersistentFailureAction::ReconnectConfig),
+            (true, true, true, PersistentFailureAction::Fatal),
+            (false, false, true, PersistentFailureAction::Fatal),
+            (false, true, false, PersistentFailureAction::Fatal),
         ] {
             let (sender, mut commands) = tokio::sync::mpsc::channel(1);
+            let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let received = dispatched.clone();
             let control = SessionControl::spawn(sender, async move {
                 let Some(SessionCommand::RunTurn {
                     delivery,
@@ -6878,8 +7015,9 @@ mod tests {
                     ..
                 }) = commands.recv().await
                 else {
-                    panic!("expected a user turn");
+                    return;
                 };
+                received.store(true, std::sync::atomic::Ordering::Release);
                 assert_eq!(prompt, "execute this prompt once");
                 if write_prompt {
                     delivery.mark_possibly_sent();
@@ -6898,7 +7036,16 @@ mod tests {
             let error = drive_persistent_turn(
                 &control,
                 &delivery,
-                &|| true,
+                &|| {
+                    if valid_launch {
+                        Ok(())
+                    } else {
+                        Err(
+                            "external CLI launch configuration changed (native profile); retry"
+                                .into(),
+                        )
+                    }
+                },
                 None,
                 &state,
                 "conversation",
@@ -6930,6 +7077,11 @@ mod tests {
                 emitted.is_empty(),
                 "resolved interactions must be consumed even during done drain"
             );
+            assert_eq!(
+                dispatched.load(std::sync::atomic::Ordering::Acquire),
+                valid_launch
+            );
+            control.close().await.unwrap();
         }
     }
 

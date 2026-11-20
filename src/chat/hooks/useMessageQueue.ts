@@ -48,8 +48,7 @@ function nextQueuedId(): string {
 }
 
 /**
- * 运行中的消息队列（Codex 式）：生成期间默认直接注入当前运行；
- * 仅不支持注入或未受理的消息保留到轮末发送。
+ * 运行中发送先排队；用户可将其中一条提升为当前运行的插入消息。
  *
  * 只在内存里。`steer` / `followUp` 成功只标记已提交，**不出队**；出队等插话卡
  * （实时事件或落库对账）。收尾一律走 `settleAfterRun`。
@@ -157,11 +156,11 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
    * 一轮结束后发出队首一条。已提交的条目留给 `settleAfterRun` 先对账/解开，
    * 运行中不能把 CLI 已接住的那条再发一遍。
    */
-  const drain = useCallback(async (conversation: Conversation): Promise<void> => {
+  const drain = useCallback(async (conversation: Conversation, messageId?: string): Promise<void> => {
     const conversationId = conversation.id
     if (deliveringRef.current.has(conversationId)) return
     const next = (queuedRef.current[conversationId] ?? [])
-      .find((item) => !isQueuedSubmitted(item))
+      .find((item) => !isQueuedSubmitted(item) && (!messageId || item.id === messageId))
     if (!next) return
     const clearedEpoch = clearedEpochRef.current.get(conversationId) ?? 0
     deliveringRef.current.set(conversationId, next.id)
@@ -208,17 +207,12 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     const submitted = find(conversationId, messageId)
     let accepted = false
     try {
-      const hasUnsupportedAttachments = message.attachments.some(
-        (attachment) => attachment.content === undefined,
+      accepted = await chatApi.steerMessage(
+        conversationId,
+        message.id,
+        message.content,
+        message.attachments,
       )
-      if (!hasUnsupportedAttachments) {
-        accepted = await chatApi.steerMessage(
-          conversationId,
-          message.id,
-          message.content,
-          message.attachments,
-        )
-      }
     } catch (err) {
       console.error('Failed to steer the running turn:', err)
     }
@@ -303,25 +297,12 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     releaseSubmitted(conversationId)
   }, [confirm, drain, releaseSubmitted])
 
-  /** One entry point for messages sent while running: steering takes priority over follow-up. */
+  /** Sending queues the message; only an explicit promotion steers the current run. */
   const sendWhileRunning = useCallback((
     conversation: Conversation,
     content: string,
     attachments: PendingAttachment[],
-    capabilities: { canSteer: boolean; canFollowUp: boolean },
-  ) => {
-    const message = enqueue(conversation.id, content, attachments)
-    if (!message) return
-    if (capabilities.canSteer) {
-      void steer(conversation.id, message.id)
-    } else if (capabilities.canFollowUp) {
-      void followUp(conversation, message.id)
-    } else {
-      patch(conversation.id, (items) => items.map((item) => (
-        item.id === message.id ? { ...item, steerRejected: true } : item
-      )))
-    }
-  }, [enqueue, steer, followUp, patch])
+  ) => enqueue(conversation.id, content, attachments), [enqueue])
 
   const commands = useMemo(() => ({
     enqueue, enqueueCompact, remove, restoreToComposer, restoreClearedQueue, clearConversation,

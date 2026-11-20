@@ -27,8 +27,8 @@ it.each([
   expect(screen.getByText(error)).toBeVisible()
 })
 
-it('shows submitted input immediately in the transcript and reconciles a delivered record once', () => {
-  const pending = [{ id: 'q1', content: '就是 codex 占用什么的', attachments: [], steering: true }]
+it('shows queued input immediately in the transcript and reconciles a delivered record once', () => {
+  const pending = [{ id: 'q1', content: '就是 codex 占用什么的', attachments: [], steering: false }]
   const { container, rerender } = render(<MessageList conversationId="steering" messages={[]} pendingInjections={pending} />)
   const text = screen.getByText(pending[0].content)
   expect(text).toBeVisible()

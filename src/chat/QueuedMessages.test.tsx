@@ -16,15 +16,17 @@ function queued(overrides: Partial<QueuedMessage> = {}): QueuedMessage {
 function setup(messages: QueuedMessage[]) {
   const onRemove = vi.fn()
   const onRestore = vi.fn()
+  const onInsert = vi.fn()
   render(
     <QueuedMessages
       messages={messages}
       onRemove={onRemove}
       onRestore={onRestore}
+      onInsert={onInsert}
       lang="zh"
     />,
   )
-  return { onRemove, onRestore }
+  return { onRemove, onRestore, onInsert }
 }
 
 describe('QueuedMessages', () => {
@@ -40,34 +42,33 @@ describe('QueuedMessages', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('逐条列出，无需手动引导，未提交条目可以删除', () => {
-    const { onRemove } = setup([queued(), queued({ id: 'q2', content: '再看下测试' })])
-    expect(screen.getByText('改用 rg')).toBeTruthy()
-    expect(screen.getByText('再看下测试')).toBeTruthy()
-    expect(screen.queryByLabelText(/立刻引导/)).toBeNull()
+  it('shows queued user bubbles with an insert action below each message', () => {
+    const { onInsert, onRemove } = setup([queued(), queued({ id: 'q2', content: '再看下测试' })])
+    expect(screen.getByText('改用 rg').closest('.chat-user-bubble')).not.toBeNull()
+    expect(screen.getByText('再看下测试').closest('.chat-user-bubble')).not.toBeNull()
+    screen.getAllByLabelText('立即插入')[1].click()
+    expect(onInsert).toHaveBeenCalledWith('q2')
     screen.getAllByLabelText('移出队列')[0].click()
     expect(onRemove).toHaveBeenCalledWith('q1')
   })
 
-  it.each([{ steering: true }, { followingUp: true }])('submitted messages leave the composer strip: %j', (state) => {
+  it.each([{ steering: true }, { followingUp: true }])('submitted messages remain visible without queue controls: %j', (state) => {
     setup([queued(state)])
-    expect(screen.queryByText('改用 rg')).toBeNull()
+    expect(screen.getByText('改用 rg')).toBeVisible()
     expect(screen.queryByLabelText('移出队列')).toBeNull()
   })
 
-  // 撤回只把文字还给输入框，所以带附件的不给撤——否则附件会静默消失。
-  it('带附件的条目不能撤回，但仍标出附件数', () => {
+  it('keeps attachments visible and allows restoring the whole draft', () => {
     const { onRestore } = setup([queued({
       attachments: [{ id: 'a1', type: 'image', name: 'a.png', path: '/tmp/a.png' }],
     })])
-    expect(screen.getByText('+1')).toBeTruthy()
-    screen.getByTitle(/不能撤回/).click()
-    expect(onRestore).not.toHaveBeenCalled()
+    screen.getByLabelText('点击撤回到输入框').click()
+    expect(onRestore).toHaveBeenCalledWith('q1')
   })
 
-  it('引导被拒时说明轮末发送并允许删除', () => {
+  it('插入被拒后仍显示排队状态并允许重试和删除', () => {
     setup([queued({ steerRejected: true })])
-    expect(screen.getByText('暂不能插入，将在本轮结束后发送')).toBeTruthy()
+    expect(screen.getByText('未能插入，仍在排队，可重试')).toBeTruthy()
     expect(screen.getByLabelText('移出队列')).toBeTruthy()
   })
 
@@ -77,9 +78,5 @@ describe('QueuedMessages', () => {
     expect(screen.getByLabelText('移出队列')).toBeTruthy()
   })
 
-  it('普通条目点文本即撤回', () => {
-    const { onRestore } = setup([queued()])
-    screen.getByTitle('点击撤回到输入框').click()
-    expect(onRestore).toHaveBeenCalledWith('q1')
-  })
+
 })

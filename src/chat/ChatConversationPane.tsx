@@ -10,7 +10,6 @@ import { InputBar, type InputBarProps } from './InputBar'
 import { KivioBlob, type KivioBlobHandle } from './KivioBlob'
 import { useEmptyHeroJab, useEmptyHeroLine } from './emptyHero'
 import { TypewriterText } from './TypewriterText'
-import { QueuedMessages } from './QueuedMessages'
 import { IconButton } from '../components/Button'
 import type { QueuedMessage } from './hooks/useMessageQueue'
 import type { MessageListProps } from './MessageList'
@@ -99,6 +98,8 @@ export interface ChatConversationPaneProps {
   pendingSlot: ReactNode
   goalSlot?: ReactNode
   queuedMessages: QueuedMessage[]
+  canInsertQueuedMessage: boolean
+  onInsertQueuedMessage: (id: string) => void
   onRemoveQueuedMessage: (id: string) => void
   onRestoreQueuedMessage: (messageId: string) => void
   lang: Lang
@@ -137,6 +138,8 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   pendingSlot,
   goalSlot,
   queuedMessages,
+  canInsertQueuedMessage,
+  onInsertQueuedMessage,
   onRemoveQueuedMessage,
   onRestoreQueuedMessage,
   lang,
@@ -250,24 +253,16 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>
                 {/* 不按会话 key 重建：切换时复用同一列表，避免整块卸载重挂造成的闪烁。 */}
-                <MessageList {...messageListProps} pendingInjections={queuedMessages} waitingForBackgroundTasks={Boolean(stopBackgroundWait)} />
+                <MessageList {...messageListProps} pendingInjections={queuedMessages}
+                  canInsertQueuedMessage={canInsertQueuedMessage}
+                  onInsertQueuedMessage={onInsertQueuedMessage}
+                  onRemoveQueuedMessage={onRemoveQueuedMessage}
+                  onRestoreQueuedMessage={onRestoreQueuedMessage}
+                  waitingForBackgroundTasks={Boolean(stopBackgroundWait)} />
               </Profiler>
             </Suspense>
 
             {pendingSlot}
-
-            {queuedMessages.length > 0 && (
-              <div className="chat-content-inset shrink-0 px-6">
-                <div className="mx-auto w-full max-w-4xl">
-                  <QueuedMessages
-                    messages={queuedMessages}
-                    onRemove={onRemoveQueuedMessage}
-                    onRestore={onRestoreQueuedMessage}
-                    lang={lang}
-                  />
-                </div>
-              </div>
-            )}
 
             <VoiceComposerOrb lang={lang} conversationId={currentConversationId} />
             <InputBar {...inputBarProps} goalSlot={goalSlot} onStopBackgroundWait={stopBackgroundWait} />

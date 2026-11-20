@@ -136,7 +136,7 @@ async fn dispatch(
     crate::external_agents::run::drive_persistent_turn(
         &control,
         &TurnDelivery::default(),
-        &|| true,
+        &|| Ok(()),
         None,
         &app.state::<crate::state::AppState>(),
         &conversation.id,

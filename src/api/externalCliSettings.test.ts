@@ -56,6 +56,52 @@ describe('external CLI settings transport', () => {
     expect(invoke).toHaveBeenCalledTimes(1)
   })
 
+  it('shares a pending model refresh and replays its snapshot to a later subscriber', async () => {
+    const snapshot = { models: [{ id: 'saved', label: 'Saved' }], refreshing: true }
+    const finishes: Array<(value: unknown) => void> = []
+    vi.mocked(invoke).mockImplementation((_command, args) => {
+      if ((args as { snapshotOnly?: boolean }).snapshotOnly) return Promise.resolve(snapshot)
+      return new Promise((resolve) => { finishes.push(resolve) })
+    })
+    const firstSnapshot = vi.fn()
+    const first = externalCliSettingsApi.detectExternalAgentModels('codex', 'shared', false, firstSnapshot)
+    await vi.waitFor(() => expect(firstSnapshot).toHaveBeenCalledOnce())
+    const secondSnapshot = vi.fn()
+    const second = externalCliSettingsApi.detectExternalAgentModels('codex', 'shared', false, secondSnapshot)
+    await vi.waitFor(() => expect(secondSnapshot).toHaveBeenCalledWith(expect.objectContaining(snapshot)))
+    for (const finish of finishes) finish({ models: [{ id: 'new', label: 'New' }], source: 'probed' })
+    const results = await Promise.all([first, second])
+    expect(results.map((result) => result.models[0].id)).toEqual(['new', 'new'])
+    expect(invoke).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases a failed shared probe so a retry can discover models', async () => {
+    const failures: Array<(reason: Error) => void> = []
+    vi.mocked(invoke).mockImplementation(() => new Promise((_resolve, reject) => { failures.push(reject) }))
+    const first = externalCliSettingsApi.detectExternalAgentModels('codex', 'failed')
+    const second = externalCliSettingsApi.detectExternalAgentModels('codex', 'failed')
+    const settled = Promise.allSettled([first, second])
+    await vi.waitFor(() => expect(failures.length).toBeGreaterThan(0))
+    for (const fail of failures) fail(new Error('CLI unavailable'))
+    expect((await settled).map((result) => result.status)).toEqual(['rejected', 'rejected'])
+    expect(invoke).toHaveBeenCalledTimes(1)
+    vi.mocked(invoke).mockResolvedValueOnce({ models: [{ id: 'recovered', label: 'Recovered' }] })
+    expect((await externalCliSettingsApi.detectExternalAgentModels('codex', 'failed')).models[0].id).toBe('recovered')
+  })
+
+  it('keeps forced refreshes and different conversation catalogs independent', async () => {
+    vi.mocked(invoke).mockImplementation(async (_command, args) => {
+      const { conversationId, force } = args as { conversationId: string; force: boolean }
+      return { models: [{ id: `${conversationId}-${force}`, label: 'Model' }] }
+    })
+    const results = await Promise.all([
+      externalCliSettingsApi.detectExternalAgentModels('codex', 'a'),
+      externalCliSettingsApi.detectExternalAgentModels('codex', 'a', true),
+      externalCliSettingsApi.detectExternalAgentModels('codex', 'b'),
+    ])
+    expect(results.map((result) => result.models[0].id)).toEqual(['a-false', 'a-true', 'b-false'])
+  })
+
   it('executes the displayed plan and reads only selected cc-switch records', async () => {
     await externalCliSettingsApi.externalCliInstall('claude', 'displayed-plan')
     expect(invoke).toHaveBeenCalledWith('chat_external_cli_install', {

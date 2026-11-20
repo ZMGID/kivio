@@ -873,10 +873,15 @@ fn emit_thread_item(
                     sink(UnifiedAgentEvent::TextItemCompleted {
                         id,
                         text: text.to_string(),
-                        is_answer: matches!(
-                            item.get("phase").and_then(Value::as_str),
-                            Some("final_answer" | "partial_answer")
-                        ),
+                        phase: match item.get("phase").and_then(Value::as_str) {
+                            Some("final_answer" | "partial_answer") => {
+                                Some(crate::chat::types::ChatMessageSegmentPhase::Answer)
+                            }
+                            Some("commentary") => {
+                                Some(crate::chat::types::ChatMessageSegmentPhase::ToolLoop)
+                            }
+                            _ => None,
+                        },
                     });
                 }
             }
@@ -4083,10 +4088,19 @@ mod tests {
     #[test]
     fn completed_message_preserves_explicit_answer_classification() {
         for (phase, expected) in [
-            ("final_answer", true),
-            ("partial_answer", true),
-            ("commentary", false),
-            ("unknown", false),
+            (
+                "final_answer",
+                Some(crate::chat::types::ChatMessageSegmentPhase::Answer),
+            ),
+            (
+                "partial_answer",
+                Some(crate::chat::types::ChatMessageSegmentPhase::Answer),
+            ),
+            (
+                "commentary",
+                Some(crate::chat::types::ChatMessageSegmentPhase::ToolLoop),
+            ),
+            ("unknown", None),
         ] {
             let mut events = Vec::new();
             map_codex_notification(
@@ -4097,7 +4111,7 @@ mod tests {
                 &mut |event| events.push(event),
             );
             assert!(
-                matches!(&events[0], UnifiedAgentEvent::TextItemCompleted { is_answer, .. } if *is_answer == expected)
+                matches!(&events[0], UnifiedAgentEvent::TextItemCompleted { phase, .. } if *phase == expected)
             );
         }
     }

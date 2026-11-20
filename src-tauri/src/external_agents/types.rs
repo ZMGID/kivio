@@ -606,7 +606,7 @@ pub enum UnifiedAgentEvent {
     TextItemCompleted {
         id: String,
         text: String,
-        is_answer: bool,
+        phase: Option<crate::chat::types::ChatMessageSegmentPhase>,
     },
     /// The CLI has cleared this request; withdraw its existing host card and waiter.
     InteractionResolved {

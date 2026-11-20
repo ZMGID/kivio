@@ -19,6 +19,16 @@ describe('message body compatibility', () => {
       { id: 'step-1', kind: 'text', phase: 'tool_loop', order: 1 })
     expect(messageBodyText({ ...snapshot, role: 'assistant' })).toBe('Question?\n\nAnswer. More.')
   })
+  it('does not repeat persisted commentary-only text as a synthesized answer', () => {
+    const segments: ChatMessageSegment[] = [
+      { id: 'first', kind: 'text', phase: 'tool_loop', order: 1, text: 'Checking.\n' },
+      { id: 'second', kind: 'text', phase: 'tool_loop', order: 2, text: 'Still working.' },
+      { id: 'seg_3_synthesis_text', kind: 'text', phase: 'synthesis', order: 3, text: 'Checking.\nStill working.' },
+    ]
+    const message = { role: 'assistant' as const, content: 'Checking.\nStill working.', segments }
+    expect(messageBodyText(message)).toBe('Checking.\n\nStill working.')
+    expect(messageBodySegments(message).map(s => s.id)).toEqual(['first', 'second'])
+  })
   for (const fixture of cases) {
     it(fixture.name, () => {
       const message = { role: 'assistant' as const, content: fixture.content, segments: fixture.segments as ChatMessageSegment[] }

@@ -1300,6 +1300,17 @@ fn codex_launch_auth(content: &[u8]) -> Option<Value> {
         .or_else(|| identity.get("user_id"))?
         .as_str()
         .filter(|s| !s.trim().is_empty())?;
+    // Subscription checks, plan metadata and organization labels can change on an ordinary
+    // token refresh. Only ownership belongs to the process reuse identity.
+    claims
+        .get_mut("https://api.openai.com/auth")?
+        .as_object_mut()?
+        .retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "chatgpt_user_id" | "user_id" | "chatgpt_account_id"
+            )
+        });
     // Compare known ownership, not rotating secrets; Codex still validates the actual credentials.
     claims.retain(|key, _| {
         matches!(

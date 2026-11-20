@@ -14,6 +14,8 @@ use crate::external_agents::{
 /// Coarse category of an external-agent failure, chosen for the recovery action it implies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternalAgentErrorKind {
+    /// Host launch settings changed before a prompt could be dispatched.
+    Configuration,
     /// Not logged in / token expired (401 / "Authentication required"). Needs user re-login;
     /// never auto-retried (a doomed retry could trigger a login storm).
     Auth,
@@ -91,7 +93,22 @@ fn contains_token(hay: &str, needle: &str) -> bool {
     false
 }
 
+pub(crate) fn is_launch_configuration_error(raw: &str) -> bool {
+    [
+        "external CLI launch configuration changed",
+        "external CLI configuration changed",
+        "external CLI configuration is updating",
+        "CLI configuration changed before spawn",
+        "CLI executable changed before spawn",
+    ]
+    .iter()
+    .any(|prefix| raw.contains(prefix))
+}
+
 fn detect_kind(raw: &str, exit_code: Option<i32>, stderr_tail: &str) -> ExternalAgentErrorKind {
+    if is_launch_configuration_error(raw) {
+        return ExternalAgentErrorKind::Configuration;
+    }
     let hay = format!("{raw}\n{stderr_tail}").to_lowercase();
     if hay.contains("authentication required")
         || hay.contains("authentication expired")
@@ -164,6 +181,9 @@ pub fn classify(
     let (name, policy) = agent_error_policy(agent_id);
 
     let user_message = match kind {
+        ExternalAgentErrorKind::Configuration => format!(
+            "{name} 的启动配置在连接期间发生变化，本轮消息尚未发送。请等待配置更新完成后重试。"
+        ),
         ExternalAgentErrorKind::Auth => {
             match policy.auth_recovery {
                 AgentAuthRecovery::SettingsApiKey => format!(
@@ -270,6 +290,22 @@ pub fn is_archived_codex_thread_error(raw: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_changes_explain_unsent_messages_without_a_login_hint() {
+        for raw in [
+            "external CLI launch configuration changed; retry",
+            "external CLI launch configuration changed (native profile); retry",
+            "external CLI configuration is updating; retry",
+            "spawn: CLI executable changed before spawn",
+        ] {
+            let error = classify(raw, None, "", "codex");
+            assert!(error.user_message.contains("启动配置"), "{raw}");
+            assert!(error.user_message.contains("尚未发送"), "{raw}");
+            assert!(!error.user_message.contains("登录"), "{raw}");
+            assert!(error.detail.contains(raw));
+        }
+    }
 
     #[test]
     fn archived_codex_thread_is_recognized() {

@@ -53,6 +53,17 @@ function modelResult(result: Partial<ExternalAgentModels>): ExternalAgentModels 
   }
 }
 
+type ModelSnapshotListener = (result: ExternalAgentModels) => void
+interface PendingModelProbe {
+  result: Promise<ExternalAgentModels>
+  listeners: Set<ModelSnapshotListener>
+  snapshot?: ExternalAgentModels
+}
+
+// Retained pages and the composer can request the same catalog together.
+// Keep only in-flight work here; the native discovery owner controls cache freshness.
+const pendingModelProbes = new Map<string, PendingModelProbe>()
+
 /** `chat_external_cli_scan_cc_switch` response; secret keys are never returned. */
 export interface CcSwitchProvider {
   agentId: string
@@ -263,16 +274,40 @@ export const externalCliSettingsApi = {
     if (!isTauriRuntime()) {
       return { models: [], reasoningOptions: [], reasoningByModel: {}, source: 'probed' }
     }
-    if (onSnapshot) {
-      const snapshot = modelResult(await invoke<Partial<ExternalAgentModels>>(
-        'chat_detect_external_agent_models', { agentId, conversationId, force, snapshotOnly: true },
-      ))
-      if (!snapshot.refreshing) return snapshot
-      onSnapshot(snapshot)
+    const key = JSON.stringify([agentId, conversationId ?? null, force])
+    let pending = pendingModelProbes.get(key)
+    if (!pending) {
+      const listeners = new Set<ModelSnapshotListener>()
+      if (onSnapshot) listeners.add(onSnapshot)
+      const request: PendingModelProbe = {
+        listeners,
+        result: Promise.resolve().then(async () => {
+          if (onSnapshot) {
+            const snapshot = modelResult(await invoke<Partial<ExternalAgentModels>>(
+              'chat_detect_external_agent_models', { agentId, conversationId, force, snapshotOnly: true },
+            ))
+            if (!snapshot.refreshing) return snapshot
+            request.snapshot = snapshot
+            for (const listener of listeners) listener(snapshot)
+          }
+          return modelResult(await invoke<Partial<ExternalAgentModels>>(
+            'chat_detect_external_agent_models', { agentId, conversationId, force },
+          ))
+        }).finally(() => {
+          if (pendingModelProbes.get(key) === request) pendingModelProbes.delete(key)
+        }),
+      }
+      pending = request
+      pendingModelProbes.set(key, request)
+    } else if (onSnapshot) {
+      pending.listeners.add(onSnapshot)
+      if (pending.snapshot) onSnapshot(pending.snapshot)
     }
-    return modelResult(await invoke<Partial<ExternalAgentModels>>(
-      'chat_detect_external_agent_models', { agentId, conversationId, force },
-    ))
+    try {
+      return await pending.result
+    } finally {
+      if (onSnapshot) pending.listeners.delete(onSnapshot)
+    }
   },
 
   async externalCliInstallInfo(agentId: string): Promise<ExternalCliInstallInfo | null> {

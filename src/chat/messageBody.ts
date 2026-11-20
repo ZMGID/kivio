@@ -8,14 +8,14 @@ export function messageBodySegments(message: Pick<ChatMessage, 'content' | 'segm
   const finalParts: string[] = []
   const segments = [...(message.segments ?? [])].sort(compareTimelineSegments).filter(segment => {
     if (segment.kind !== 'text') return true
-    rawParts.push(segment.text ?? '')
-    if (!segment.text?.trim()) return true
-    const text = segment.text.trim()
+    const text = segment.text?.trim() ?? ''
     // normalize_assistant_segments appended this known fallback when there was no
     // Plain/Synthesis text. Only suppress a proven copy of preceding body text.
     if (/^seg_\d+_synthesis_text$/.test(segment.id)
       && (segment.phase === 'plain' || segment.phase === 'synthesis' || segment.phase === 'answer')
-      && text === parts.join('\n\n')) return false
+      && text && (text === parts.join('\n\n') || text === rawParts.join('').trim())) return false
+    rawParts.push(segment.text ?? '')
+    if (!text) return true
     parts.push(text)
     if (segment.phase === 'plain' || segment.phase === 'synthesis' || segment.phase === 'answer') finalParts.push(text)
     return !/^seg_\d+_cancelled_synthesis$/.test(segment.id)

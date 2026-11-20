@@ -14,7 +14,8 @@ import {
   type Virtualizer,
 } from '@tanstack/react-virtual'
 import type { AgentPlanState, ChatMessage, ChatToolArtifact, Conversation, ConversationContextState, DegradedAnswer } from './types'
-import { isQueuedSubmitted, type QueuedMessage } from './hooks/useMessageQueue'
+import type { QueuedMessage } from './hooks/useMessageQueue'
+import { QueuedMessages } from './QueuedMessages'
 import { isNativeTaskToolCall, isSubagentTimelineSegment, userSteerId, userFollowUpId } from './segments'
 import { MessageBubble, type TurnWorkDisclosure } from './MessageBubble'
 import { DegradedAnswerCard } from './DegradedAnswerCard'
@@ -105,6 +106,10 @@ export interface MessageListProps {
   conversationId?: string | null
   messages: ChatMessage[]
   pendingInjections?: QueuedMessage[]
+  canInsertQueuedMessage?: boolean
+  onInsertQueuedMessage?: (id: string) => void
+  onRemoveQueuedMessage?: (id: string) => void
+  onRestoreQueuedMessage?: (id: string) => void
   historyStart?: number
   historyDirectory?: NonNullable<Conversation['history_directory']>
   historyArtifacts?: ChatToolArtifact[]
@@ -336,6 +341,10 @@ function MessageListBase({
   conversationId,
   messages: storedMessages,
   pendingInjections,
+  canInsertQueuedMessage,
+  onInsertQueuedMessage,
+  onRemoveQueuedMessage,
+  onRestoreQueuedMessage,
   renderRequestId = 0,
   onInitialRender,
   agentPlanState = null,
@@ -2750,7 +2759,7 @@ function MessageListBase({
       .flatMap(tool => [userSteerId(tool), userFollowUpId(tool)].filter(Boolean)),
   ]), [liveEdges.injectionIds, messages])
   const visibleInjections = (pendingInjections ?? []).filter(message =>
-    isQueuedSubmitted(message) && !deliveredInjectionIds.has(message.id))
+    !deliveredInjectionIds.has(message.id))
 
   const renderTail = () => (
     <div ref={tailWrapRef}>
@@ -2787,14 +2796,11 @@ function MessageListBase({
             waitingInBackground={!streaming && !streamFrozen && waitingForBackgroundTasks} lang={lang} />
         </div>
       )}
-      {visibleInjections.map(message => (
-        <div key={message.id} className="chat-reading-content" data-chat-message-list-item="injected-user">
-          <MessageBubble conversationId={conversationId} message={{
-            id: message.id, role: 'user', content: message.content, timestamp: 0,
-            attachments: message.attachments,
-          }} />
-        </div>
-      ))}
+      <div className="chat-reading-content">
+        <QueuedMessages messages={visibleInjections} conversationId={conversationId} lang={lang}
+          canInsert={canInsertQueuedMessage} onInsert={onInsertQueuedMessage}
+          onRemove={onRemoveQueuedMessage} onRestore={onRestoreQueuedMessage} />
+      </div>
       <div ref={tailSpacerRef} aria-hidden="true" style={{ height: LIST_EDGE_PADDING_PX }} />
     </div>
   )

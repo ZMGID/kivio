@@ -1622,7 +1622,7 @@ export const chatApi = {
   /**
    * 运行中「立刻引导」：把这条消息投进后端 steering 信箱，等当前 run 的下一个轮次边界注入。
    *
-   * 返回 false = 没进信箱（该会话此刻没有活跃 run / 文本为空），调用方应改走普通发送。
+   * 返回 false = 未受理（没有活跃 run / 当前运行时不支持这类输入），调用方应改走普通发送。
    * 返回 true 只表示**已投递**，不表示已生效——真正生效的信号是那张 `user_steer` 工具卡事件
    * （模型可能已经在写终答、后面再没有轮次边界，那条就得由运行结束后的队列自动发送兜住）。
    */
@@ -1633,6 +1633,8 @@ export const chatApi = {
     attachments: PendingAttachment[] = [],
   ): Promise<boolean> {
     if (!isTauriRuntime()) return false
+    const diskPaths = attachments.filter((attachment) => attachment.content === undefined)
+      .map((attachment) => attachment.path)
     const textAttachments = attachments
       .filter((attachment): attachment is PendingAttachment & { content: string } => (
         attachment.content !== undefined
@@ -1642,6 +1644,7 @@ export const chatApi = {
       conversationId,
       steerId,
       content,
+      attachments: diskPaths,
       textAttachments,
     })
   },

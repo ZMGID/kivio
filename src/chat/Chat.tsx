@@ -577,7 +577,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onCompactContext: (conversation) => compressConversation(conversation.id),
     onSendMessage: (content, attachments, options) =>
       handleSendMessage(content, attachments, options),
-    onRestoreToComposer: (message) => insertTextIntoComposer(message.content),
+    onRestoreToComposer: (message) => insertTextIntoComposer(message.content, message.attachments),
     onPendingChange: (conversationId, pending) => {
       void chatApi.setGoalUserQueuePending(conversationId, pending)
     },
@@ -2066,19 +2066,20 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const canSteerCurrentConversation =
     (!usesExternalRuntime || activeExternalAgent?.capabilities.steering === 'native')
     && activeReplyModels.length < 2
-  // Prefer steering even for goals/Pi; native follow-up is only a compatibility fallback.
-  const canFollowUpCurrentConversation =
-    ((usesExternalRuntime && activeExternalAgent?.capabilities.followUp === 'native') || goalActive)
-    && activeReplyModels.length < 2
-
   const handleSendWhileRunning = useCallback((content: string, attachments: PendingAttachment[]) => {
     const conversation = currentConversationRef.current
+    if (conversation) queueCommands.sendWhileRunning(conversation, content, attachments)
+  }, [queueCommands])
+
+  const handleInsertQueuedMessage = useCallback(async (messageId: string) => {
+    const conversation = currentConversationRef.current
     if (!conversation) return
-    queueCommands.sendWhileRunning(conversation, content, attachments, {
-      canSteer: canSteerCurrentConversation,
-      canFollowUp: canFollowUpCurrentConversation,
-    })
-  }, [canSteerCurrentConversation, canFollowUpCurrentConversation, queueCommands])
+    if (!generatingConversationIdsRef.current.has(conversation.id)) {
+      await queueCommands.drain(conversation, messageId)
+    } else if (canSteerCurrentConversation) {
+      await queueCommands.steer(conversation.id, messageId)
+    }
+  }, [canSteerCurrentConversation, queueCommands])
 
   const [closedAsyncQuestions, setClosedAsyncQuestions] = useState<Record<string, string[]>>({})
   const asyncQuestionsValue = useMemo(() => {
@@ -3183,6 +3184,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
               />
             ) : null}
             queuedMessages={currentQueuedMessages}
+            canInsertQueuedMessage={canSteerCurrentConversation || !currentConversation || !generatingConversationIds.has(currentConversation.id)}
+            onInsertQueuedMessage={handleInsertQueuedMessage}
             onRemoveQueuedMessage={handleRemoveQueuedMessage}
             onRestoreQueuedMessage={handleRestoreQueuedMessage}
             lang={uiLang}

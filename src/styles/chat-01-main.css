@@ -551,41 +551,6 @@
   overflow-wrap: anywhere;
 }
 
-/* 排队中的消息使用 soft 底和 faint 字，不抢走正在生成的回答的注意力。 */
-.chat-composer-queue {
-  margin-bottom: 6px;
-  border-radius: 6px;
-  background: var(--theme-surface-soft);
-  font-size: 12px;
-  color: var(--text-faint);
-}
-
-
-
-/* 一条排队消息。动作键平时透明（不占注意力也不跳版：仍然挂载、只是不可见），
-   指针悬停或键盘聚焦到行内任意控件时才现出来。 */
-.chat-composer-queue-row:hover {
-  background: color-mix(in srgb, var(--text) 4%, transparent);
-}
-
-
-.chat-composer-queue-actions {
-  opacity: 0;
-  transition: opacity var(--kv-dur-instant) var(--kv-ease-out);
-}
-
-.chat-composer-queue-row:hover .chat-composer-queue-actions,
-.chat-composer-queue-row:focus-within .chat-composer-queue-actions {
-  opacity: 1;
-}
-
-/* 指针不可用（触屏）时没有 hover 可言，一律显形。 */
-@media (hover: none) {
-  .chat-composer-queue-actions {
-    opacity: 1;
-  }
-}
-
 /* 状态条内的一格（项目、集、知识库…）：图标 + 文字，可点则有 hover */
 .chat-composer-status-item {
   display: inline-flex;

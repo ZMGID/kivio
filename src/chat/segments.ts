@@ -522,8 +522,14 @@ export function groupTimelineSegments(
   const presentations = new Set(orderedSegments.filter(segment =>
     segment.kind === 'tool' && isPresentation?.(segment)))
   let lastProcessIndex = -1
+  // Native CLIs can persist commentary as Plain/Synthesis. An explicit delivered answer
+  // gives us a reliable boundary; keep all delivered answers and unknown trailing text.
+  let lastAnswerIndex = -1
   orderedSegments.forEach((segment, index) => {
     if (presentations.has(segment) || isSubagentTimelineSegment(segment)) return
+    if (segment.kind === 'text' && segment.phase === 'answer' && segmentHasContent(segment)) {
+      lastAnswerIndex = index
+    }
     if (segmentHasContent(segment) && (segment.kind !== 'text'
       || segment.phase === 'tool_loop' || segment.phase === 'auxiliary')) {
       lastProcessIndex = index
@@ -544,17 +550,18 @@ export function groupTimelineSegments(
     body.push({ type: 'group', segments: process })
     process = []
   }
-  orderedSegments.forEach((segment) => {
+  orderedSegments.forEach((segment, index) => {
     if (!segmentHasContent(segment)) return
     if (presentations.has(segment)) {
       flushProcess()
       body.push({ type: 'presentation', segment })
       return
     }
-    // Unknown legacy text stays readable; tool order alone does not prove commentary.
+    // Without an explicit answer, tool order alone cannot classify legacy body text.
     const foldText = state !== 'running'
-      && (segment.phase === 'tool_loop' || segment.phase === 'auxiliary')
-      && (state === 'stopped' || hasCancellationNotice || hasFinalAnswer)
+      && ((index < lastAnswerIndex && segment.phase !== 'answer')
+        || ((segment.phase === 'tool_loop' || segment.phase === 'auxiliary')
+          && (state === 'stopped' || hasCancellationNotice || hasFinalAnswer)))
     if (segment.kind === 'text' && !foldText) {
       flushProcess()
       body.push({ type: 'text', segment })
