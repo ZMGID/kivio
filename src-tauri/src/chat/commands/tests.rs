@@ -4361,6 +4361,36 @@ fn empty_delta_with_segment_still_emits_a_placeholder_event() {
 }
 
 #[test]
+fn external_context_settlement_keeps_live_measurement_and_rejects_late_history() {
+    let mut source =
+        test_conversation_with_messages(vec![test_chat_message("u1", "user", "continue", 1)]);
+    source.agent_runtime.kind = crate::chat::types::AgentRuntimeKind::External;
+    source.agent_runtime.external_agent_id = Some("pi".into());
+    source.context_state.context_source = Some("external_cli".into());
+    source.context_state.measurement_seq = 5;
+    source.context_state.estimated_input_tokens = 8_000;
+    source.context_state.token_count_source = Some("cli_reported".into());
+    let mut latest = source.clone();
+    latest.context_state = Default::default();
+    latest.title = "renamed during run".into();
+    super::messages::adopt_compacted_context(&mut latest, &source, "reply");
+    assert_eq!(latest.context_state.estimated_input_tokens, 8_000);
+    assert_eq!(latest.context_state.measurement_seq, 5);
+    assert_eq!(latest.title, "renamed during run");
+    for newer_measurement in [false, true] {
+        let mut latest = source.clone();
+        latest.context_state.estimated_input_tokens = 123;
+        if newer_measurement {
+            latest.context_state.measurement_seq = 6;
+        } else {
+            latest.messages[0].content = "edited meanwhile".into();
+        }
+        super::messages::adopt_compacted_context(&mut latest, &source, "reply");
+        assert_eq!(latest.context_state.estimated_input_tokens, 123);
+    }
+}
+
+#[test]
 fn late_compaction_preserves_concurrent_edits_but_allows_title_changes() {
     let mut source = test_conversation_with_summary(false);
     source.context_state.summary.as_mut().unwrap().replay =

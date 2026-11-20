@@ -852,13 +852,31 @@ async fn run_external_cli_reply_owned(
         crate::external_agents::workspace::resolve_detection_cwd(app, Some(&conversation.id))
             .map(|detection_cwd| slash::cache_key(&agent_id, &detection_cwd.to_string_lossy()))
             .unwrap_or_else(|_| slash::cache_key(&agent_id, &cwd.to_string_lossy()));
-    // 实时用量推送：**只推分子**。分母不实时——它在一轮内是常量，且唯一权威来源是 CLI 轮末
-    // 实报的 `result.modelUsage[model].contextWindow`（claude 的 `[1m]` beta / 环境覆盖 /
-    // 第三方 router 都只有它知道）。这里若拿静态表算个兜底分母下发，就会出现「回答中
-    // `claude-sonnet-5` ⇒ 200K、答完跳回 1M」。前端 `contextPanel.ts::applyLiveContextUsage`
-    // 对 `null` 分母保留已知旧窗口，所以不下发就是「沿用上一轮的分母」——正是要的语义。
+    let mut context_state = conversation.context_state.clone();
+    let context_model = conversation
+        .agent_runtime
+        .external_model
+        .clone()
+        .unwrap_or_default();
 
+    crate::external_agents::context::reset_changed_external_meter(
+        &mut context_state,
+        &agent_id,
+        &context_model,
+    );
     let mut emit_event = |event: UnifiedAgentEvent, actor_id: Option<Uuid>| {
+        if let Some(usage) = crate::external_agents::context::apply_external_context_event(
+            &mut context_state,
+            &agent_id,
+            &context_model,
+            &event,
+        ) {
+            crate::chat::protocol::emit_run_event(
+                app,
+                &run_id,
+                crate::chat::protocol::ChatRunEvent::ContextUsageUpdated { usage },
+            );
+        }
         if let Some(commands) = slash::slash_commands_from_event(&event) {
             state
                 .external_discovery()
@@ -1205,6 +1223,8 @@ async fn run_external_cli_reply_owned(
             })
             .await?;
     }
+
+    conversation.context_state = context_state;
 
     // A7：把 CLI 自压的边界落到会话上。此前只发了实时压缩更新、从不落盘，
     // 于是「已压缩 N 次」永远不涨、刷新或重开会话后分隔线消失（那条注释说要记一次压缩，
@@ -4790,14 +4810,7 @@ fn apply_unified_event(
             }
         }
         UnifiedAgentEvent::Usage { usage: u } => {
-            // 只累积，不下发。上下文占用**一轮更新一次**，由轮末那次权威计算发出
-            // （`compute_context_state` → `context_updated`）。
-            //
-            // 曾经这里有一条 350ms 节流的「实时」通道，删掉的理由是它三分之二不是真值：
-            // 分子是**单次请求**的快照（工具循环里每请求一变、压缩后还会掉，看着就是在跳），
-            // 分母是上一轮留下的粘滞值（claude 只在轮末 `result` 里报窗口），进度条里的分段
-            // 构成则是前端按比例硬缩放出来的。而这个数字唯一能驱动的动作（压缩 / 换会话）
-            // 只发生在两轮之间 —— 轮中看到也用不上。要改回来先想清楚这三点。
+            // Billing is accumulated separately; the context owner publishes request snapshots.
             *usage = Some(merge_cli_usage(usage.as_ref(), u));
         }
         UnifiedAgentEvent::Error { message, .. } => {
@@ -4834,8 +4847,7 @@ fn apply_unified_event(
             //      「对话突然变短了」而没有任何解释；
             //   2. 把同一条记录攒起来，读流结束后落到 `context_state`
             //      （计数 + 边界持久化，见调用方注释）。
-            // 分子仍由 `message_start.message.usage` / `result` 上报（服务端算的），
-            // 这里不推算用量。
+            // 上下文负责人已采用 post_tokens；没有新数值时使旧占用失效。
             if cfg!(debug_assertions) {
                 eprintln!(
                     "[external-agent] cli compaction trigger={trigger} pre={pre_tokens:?} post={post_tokens:?} dropped={dropped_tokens:?} duration_ms={duration_ms:?}"

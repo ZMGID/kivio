@@ -73,6 +73,30 @@ describe('provider-only context meter', () => {
     expect(switched.usage_ratio).toBe(0.25)
   })
 
+  it('updates CLI occupancy during a turn and rejects a stale pre-compaction refresh', () => {
+    const previous: ConversationContextState = {
+      context_source: 'external_cli', external_agent_id: 'pi',
+      estimated_input_tokens: 190_000, token_count_source: 'cli_reported',
+      context_window_tokens: 200_000, context_window_estimated: true, measurement_seq: 4,
+    }
+    const compacted = applyLiveContextUsage(previous, {
+      usedTokens: 8_000, tokenCountSource: 'cli_reported', contextWindowTokens: 100_000, measurementSeq: 5,
+    })
+    expect(reportedContextTokens(compacted)).toBe(8_000)
+    expect(compacted.context_source).toBe('external_cli')
+    expect(compacted.usage_ratio).toBe(0.08)
+    expect(compacted.context_window_estimated).toBe(false)
+    expect(mergeContextSnapshot(compacted, previous)).toBe(compacted)
+    const unknown = applyLiveContextUsage(compacted, { usedTokens: 0, measurementSeq: 6 })
+    expect(reportedContextTokens(unknown)).toBeNull()
+    expect(unknown.context_source).toBe('external_cli')
+    expect(unknown.context_window_tokens).toBe(100_000)
+    const empty = applyLiveContextUsage(unknown, {
+      usedTokens: 0, tokenCountSource: 'cli_reported', measurementSeq: 7,
+    })
+    expect(reportedContextTokens(empty)).toBe(0)
+  })
+
   it('keeps CLI reports but does not promote CLI estimates to measurements', () => {
     expect(reportedContextTokens({ estimated_input_tokens: 42, token_count_source: 'cli_reported' })).toBe(42)
     expect(reportedContextTokens({ estimated_input_tokens: 42, token_count_source: 'estimated' })).toBeNull()

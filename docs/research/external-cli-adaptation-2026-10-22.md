@@ -173,3 +173,16 @@ T3 Code 的服务等级选择、多账号管理、额度展示、目标持续执
 
 第二轮验证：Rust 外部 CLI 测试 836 通过、45 忽略（需真实 CLI）；前端 8 个相关测试文件 129 项通过；`npm run protocol:generate` 重新生成协议绑定；`tsc --noEmit` 通过。未在桌面应用实机点测，Pi 无本机实测。
 
+## 2026-11-21 上下文用量与压缩刷新
+
+核对了 T3 Code 主线 `338352dee2f43079482e054e8229a2ba055641d9` 的三个适配器。Kivio 通过现有的 `context_usage_updated` 事件更新底部仪表，用单次请求占用计算百分比，另行记录整轮计费用量。
+
+| CLI | T3 Code 的取数位置 | Kivio 的处理 |
+| --- | --- | --- |
+| Codex | [CodexAdapterV2](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts#L216-L228) 采用 `tokenUsage.last.totalTokens` | app-server 在 `item/completed` 之前就可能上报压缩后的重算值。按压缩项保留这条读数，明确的零也有效。若只收到生成摘要时的请求用量，完成时等待新的上下文测量。 |
+| Claude Code | [ClaudeAdapterV2](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts#L11360-L11386) 用主线完整消息补齐流式输入 | 压缩边界的 `post_tokens` 到达即生效。同一消息补报输入时保留已收到的较大输出值，重复快照只计一次。子代理、合成提示和压缩前请求的迟到帧均不能覆盖主线读数。 |
+| Pi | [Pi adapter](https://github.com/pingdotgg/t3code/blob/338352dee2f43079482e054e8229a2ba055641d9/packages/provider-pi/src/server/adapter.ts#L997-L1051) 读取流式 `usage.totalTokens` 和轮末 `get_session_stats` | 流中跳过占位零和重复读数，压缩完成先应用 `estimatedTokensAfter`。常驻会话在手动压缩后也查询统计；若统计只返回容量，保留刚收到的压缩后占用。 |
+
+运行中和落盘的测量共用序号，迟到的旧刷新无法覆盖新读数。切换外部模型时同时清除旧占用和旧容量，只改推理强度时保留测量。已有容量或正在等待压缩后占用时，刷新无需等待模型列表探测。
+
+在临时会话中运行本机 CLI，模型响应由回环地址上的模拟服务提供。Codex 0.162.0 先报 32,005，接着在压缩项完成前报 3,176，窗口 258,400。Claude Code 2.1.325 在压缩边界报出 45,008 → 132。Pi 1.5.2 从 92,000 / 100,000 压缩到估计 2,056；随后会话统计保留了 100,000 的容量，占用字段为 null。以上数字用于验证事件顺序和取数逻辑。

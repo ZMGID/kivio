@@ -20,13 +20,24 @@ use super::{
     ChatMessageSegmentPhase, Conversation, ToolCallRecord, ToolCallStatus,
 };
 
-/// Commit a compaction only if the history it read is still current. Title and
-/// statistics updates may race it; edits and clears must win over a late summary.
+/// Commit reply context only while its history and runtime are current. Renames
+/// may race it; edits, clears, and newer measurements must win over a late reply.
 pub(super) fn adopt_compacted_context(
     latest: &mut Conversation,
     source: &Conversation,
     reply_id: &str,
 ) {
+    if source.agent_runtime.is_external()
+        && latest.agent_runtime.is_external()
+        && source.context_state.context_source.as_deref() == Some("external_cli")
+        && source.agent_runtime.external_agent_id == latest.agent_runtime.external_agent_id
+        && source.agent_runtime.external_model == latest.agent_runtime.external_model
+        && source.context_state.measurement_seq >= latest.context_state.measurement_seq
+        && history_unchanged(latest, source, Some(reply_id))
+    {
+        latest.context_state = source.context_state.clone();
+        return;
+    }
     let Some(summary) = source.context_state.summary.as_ref() else {
         return;
     };

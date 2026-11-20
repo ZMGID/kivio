@@ -398,6 +398,16 @@ pub(crate) async fn set_agent_runtime(
     let persist_reasoning = agent_runtime.external_reasoning.clone();
     let conversation = crate::chat::repository::repository(app)
         .mutate(app, conversation_id, |conversation| {
+            if agent_runtime.is_external() {
+                crate::external_agents::context::reset_changed_external_meter(
+                    &mut conversation.context_state,
+                    agent_runtime
+                        .external_agent_id
+                        .as_deref()
+                        .unwrap_or_default(),
+                    agent_runtime.external_model.as_deref().unwrap_or_default(),
+                );
+            }
             conversation.agent_runtime = agent_runtime;
             Ok(())
         })

@@ -169,8 +169,7 @@ pub struct ExternalSessionUsage {
 ///
 /// `total_tokens` 缺失时退回 `input + output`（改动前落盘的旧会话没有 total）。
 ///
-/// **分子口径只有这一个真源**：轮末的权威计算走它。曾经那条实时通道也走它（正是为了不让
-/// 生成过程中的数字与轮末的权威值分叉），那条通道已删 —— 外部 CLI 的占用现在一轮只更新一次。
+/// 用于旧消息的兼容读取；实时显示只采用独立的 context_tokens，不从累计计费推算。
 pub(crate) fn cli_reported_context_tokens(usage: &ModelUsage) -> usize {
     usage
         .context_tokens
@@ -322,6 +321,111 @@ pub fn collect_external_session_usage(
     }
 }
 
+/// A model change invalidates both sides of the meter. Keep the sequence and timeline
+/// so a delayed snapshot from the previous model cannot become current again.
+pub(crate) fn reset_changed_external_meter(
+    state: &mut ConversationContextState,
+    agent_id: &str,
+    model: &str,
+) -> bool {
+    if state.context_source.as_deref() != Some(CONTEXT_SOURCE_EXTERNAL)
+        || (state.external_agent_id.as_deref() == Some(agent_id)
+            && state.external_model == normalized_external_model(model))
+    {
+        return false;
+    }
+    state.external_agent_id = Some(agent_id.to_owned());
+    state.external_model = normalized_external_model(model);
+    state.lifecycle_id = state.lifecycle_id.saturating_add(1);
+    state.measurement_seq = state.measurement_seq.saturating_add(1);
+    set_external_meter_values(state, None, None);
+    true
+}
+
+fn set_external_meter_values(
+    state: &mut ConversationContextState,
+    tokens: Option<u64>,
+    window: Option<u64>,
+) {
+    state.estimated_input_tokens = tokens.unwrap_or(0).min(usize::MAX as u64) as usize;
+    state.token_count_source = tokens.map(|_| TOKEN_COUNT_CLI.to_owned());
+    state.context_window_tokens = window.map(|tokens| tokens.min(usize::MAX as u64) as usize);
+    state.context_window_estimated = false;
+    state.usage_ratio = tokens
+        .zip(window)
+        .filter(|(_, window)| *window > 0)
+        .map(|(tokens, window)| tokens as f32 / window as f32);
+    state.status = external_context_status(state.usage_ratio);
+    state.session_input_tokens = tokens.map(|_| state.estimated_input_tokens);
+    state.session_output_tokens = None;
+    state.reported_context_tokens = None;
+    state.cache_hit_rate = None;
+    state.request_measurement = None;
+    state.segments.clear();
+    state.last_measured_at = chrono::Local::now().timestamp();
+}
+
+/// One ordered display measurement, independent of accumulated billing. The run owns
+/// this snapshot until message settlement; the same sequence travels live and to disk.
+pub(crate) fn apply_external_context_event(
+    state: &mut ConversationContextState,
+    agent_id: &str,
+    model: &str,
+    event: &crate::external_agents::types::UnifiedAgentEvent,
+) -> Option<crate::chat::protocol::ChatContextUsagePayload> {
+    use crate::external_agents::types::UnifiedAgentEvent;
+    let (tokens, window, compacted) = match event {
+        UnifiedAgentEvent::Usage { usage }
+            if usage.context_tokens.is_some() || usage.context_window_tokens.is_some() =>
+        {
+            (
+                usage.context_tokens.or_else(|| {
+                    (state.token_count_source.as_deref() == Some(TOKEN_COUNT_CLI))
+                        .then_some(state.estimated_input_tokens as u64)
+                }),
+                usage.context_window_tokens.filter(|window| *window > 0),
+                false,
+            )
+        }
+        UnifiedAgentEvent::CliCompacted { post_tokens, .. } => (*post_tokens, None, true),
+        _ => return None,
+    };
+    let window = window.or_else(|| {
+        (!state.context_window_estimated)
+            .then_some(state.context_window_tokens.map(|tokens| tokens as u64))
+            .flatten()
+    });
+    if !compacted
+        && state.context_source.as_deref() == Some(CONTEXT_SOURCE_EXTERNAL)
+        && state.external_agent_id.as_deref() == Some(agent_id)
+        && state.external_model == normalized_external_model(model)
+        && state.measurement_seq > 0
+        && state.token_count_source.as_deref() == tokens.map(|_| TOKEN_COUNT_CLI)
+        && tokens.unwrap_or(0) == state.estimated_input_tokens as u64
+        && window == state.context_window_tokens.map(|tokens| tokens as u64)
+    {
+        return None;
+    }
+    state.measurement_seq = state.measurement_seq.saturating_add(1);
+    if compacted {
+        state.lifecycle_id = state.lifecycle_id.saturating_add(1);
+    }
+    state.context_source = Some(CONTEXT_SOURCE_EXTERNAL.into());
+    state.external_agent_id = Some(agent_id.into());
+    state.external_model = normalized_external_model(model);
+    set_external_meter_values(state, tokens, window);
+    Some(crate::chat::protocol::ChatContextUsagePayload {
+        used_tokens: tokens.unwrap_or(0),
+        token_count_source: state.token_count_source.clone(),
+        context_window_tokens: window,
+        cache_input_tokens: None,
+        cache_read_tokens: None,
+        measurement_seq: state.measurement_seq,
+        lifecycle_id: state.lifecycle_id,
+        segments: Some(Vec::new()),
+    })
+}
+
 pub fn compute_external_context_state(
     conversation: &Conversation,
     agent_id: &str,
@@ -330,6 +434,32 @@ pub fn compute_external_context_state(
     compact_usage: Option<&ModelUsage>,
     work_dir: Option<&Path>,
 ) -> ConversationContextState {
+    // New streaming measurements are authoritative, including an explicit unknown
+    // after compaction. Re-reading older message billing must not revive stale usage.
+    let stored = &conversation.context_state;
+    if compact_usage.is_none() && stored.context_source.as_deref() == Some(CONTEXT_SOURCE_EXTERNAL)
+    {
+        let mut snapshot = stored.clone();
+        if reset_changed_external_meter(&mut snapshot, agent_id, model) {
+            return snapshot;
+        }
+        if stored.measurement_seq > 0 {
+            if stored.context_window_tokens.is_none()
+                && stored.token_count_source.as_deref() == Some(TOKEN_COUNT_CLI)
+            {
+                let (window, estimated) =
+                    context_window_for_external_model(agent_id, model, detected_models, None);
+                if let Some(window) = window.filter(|n| *n > 0 && !estimated) {
+                    set_external_meter_values(
+                        &mut snapshot,
+                        Some(stored.estimated_input_tokens as u64),
+                        Some(window as u64),
+                    );
+                }
+            }
+            return snapshot;
+        }
+    }
     let usage = compact_usage
         .map(|item| ExternalSessionUsage {
             // 与 collect_external_session_usage 同口径（含 cache），否则压缩后那一次刷新
@@ -488,7 +618,17 @@ pub async fn compute_external_context_state_with_probe(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("default");
-    let detected_models = if probe_models {
+    // A model-list subprocess cannot improve a reported capacity or recover an
+    // unknown post-compaction numerator. Do not wait for it on refresh or /compact.
+    let stored = &conversation.context_state;
+    let settled = compact_usage.is_none()
+        && stored.context_source.as_deref() == Some(CONTEXT_SOURCE_EXTERNAL)
+        && stored.measurement_seq > 0;
+    let needs_probe = !settled
+        || (stored.context_window_tokens.is_none()
+            && stored.token_count_source.as_deref() == Some(TOKEN_COUNT_CLI)
+            && model != "default");
+    let detected_models = if probe_models && needs_probe {
         if let Some(def) = get_agent_def(agent_id) {
             let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
             Some(
@@ -775,6 +915,170 @@ mod tests {
         assert_eq!(state.status, "unknown");
         // 分子仍然照常显示。
         assert_eq!(state.estimated_input_tokens, 5010);
+    }
+
+    #[test]
+    fn claude_compaction_updates_context_before_settlement_without_reviving_old_usage() {
+        for post in [Some(8_000u64), Some(0), None] {
+            let mut parser = crate::external_agents::stream::claude::ClaudeStreamState::default();
+            let mut state = ConversationContextState {
+                context_window_tokens: Some(200_000),
+                ..Default::default()
+            };
+            let mut reports = Vec::new();
+            let mut feed = |value: serde_json::Value| {
+                parser.handle_value(&value, &mut |event| {
+                    if let Some(report) =
+                        apply_external_context_event(&mut state, "claude", "default", &event)
+                    {
+                        reports.push(report);
+                    }
+                });
+            };
+            feed(serde_json::json!({"type":"stream_event","event":{
+                "type":"message_start","message":{"id":"before","usage":{"input_tokens":190000}}
+            }}));
+            feed(
+                serde_json::json!({"type":"system","subtype":"compact_boundary",
+                "compact_metadata":{"trigger":"auto","pre_tokens":190000,"post_tokens":post}}),
+            );
+            feed(serde_json::json!({"type":"assistant","message":{
+                "id":"before","usage":{"input_tokens":190000,"output_tokens":10}
+            }}));
+            feed(serde_json::json!({"type":"stream_event","event":{
+                "type":"message_delta","usage":{"output_tokens":12}
+            }}));
+            // Result still carries accumulated billing; it must not undo the compacted meter.
+            feed(
+                serde_json::json!({"type":"result","usage":{"input_tokens":190000},
+                "modelUsage":{"model":{"contextWindow":200000}}}),
+            );
+            assert_eq!(reports.len(), 2, "result must not republish stale context");
+            assert_eq!(reports[0].used_tokens, 190_000);
+            assert_eq!(reports[1].used_tokens, post.unwrap_or(0));
+            assert_eq!(
+                reports[1].token_count_source.as_deref(),
+                post.map(|_| TOKEN_COUNT_CLI)
+            );
+            assert!(reports[1].measurement_seq > reports[0].measurement_seq);
+            assert_eq!(state.lifecycle_id, 1);
+            assert_eq!(state.context_window_tokens, Some(200_000));
+            assert_eq!(
+                state.token_count_source.as_deref(),
+                post.map(|_| TOKEN_COUNT_CLI)
+            );
+            assert!(apply_external_context_event(
+                &mut state,
+                "claude",
+                "default",
+                &crate::external_agents::types::UnifiedAgentEvent::Usage {
+                    usage: ModelUsage {
+                        total_tokens: Some(999_999),
+                        ..Default::default()
+                    }
+                }
+            )
+            .is_none());
+            let next = apply_external_context_event(
+                &mut state,
+                "claude",
+                "default",
+                &crate::external_agents::types::UnifiedAgentEvent::Usage {
+                    usage: ModelUsage {
+                        context_tokens: Some(9_000),
+                        context_window_tokens: Some(100_000),
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+            assert_eq!(next.used_tokens, 9_000);
+            assert_eq!(state.usage_ratio, Some(0.09));
+        }
+    }
+
+    #[test]
+    fn switching_external_models_waits_for_the_new_models_measurement() {
+        let mut conversation = empty_conversation();
+        conversation.context_state = ConversationContextState {
+            context_source: Some(CONTEXT_SOURCE_EXTERNAL.into()),
+            external_agent_id: Some("codex".into()),
+            external_model: Some("previous".into()),
+            context_window_tokens: Some(200_000),
+            estimated_input_tokens: 190_000,
+            token_count_source: Some(TOKEN_COUNT_CLI.into()),
+            measurement_seq: 7,
+            ..Default::default()
+        };
+        let mut state =
+            compute_external_context_state(&conversation, "codex", "next", None, None, None);
+        assert_eq!(state.measurement_seq, 8);
+        assert_eq!(state.token_count_source, None);
+        assert_eq!(state.context_window_tokens, None);
+        assert!(!reset_changed_external_meter(&mut state, "codex", "next"));
+        let report = apply_external_context_event(
+            &mut state,
+            "codex",
+            "next",
+            &crate::external_agents::types::UnifiedAgentEvent::Usage {
+                usage: ModelUsage {
+                    context_window_tokens: Some(100_000),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap();
+        assert_eq!(report.token_count_source, None);
+        assert_eq!(report.context_window_tokens, Some(100_000));
+        assert_eq!(report.measurement_seq, 9);
+    }
+
+    #[test]
+    fn settled_context_keeps_newer_compaction_measurement_instead_of_old_billing() {
+        for tokens in [Some(8_000), Some(0), None] {
+            let mut conversation = empty_conversation();
+            conversation.messages.push(message(
+                "a1",
+                "assistant",
+                "done",
+                Some(ModelUsage {
+                    total_tokens: Some(190_000),
+                    context_tokens: Some(190_000),
+                    context_window_tokens: Some(200_000),
+                    ..Default::default()
+                }),
+            ));
+            conversation.context_state = ConversationContextState {
+                context_source: Some(CONTEXT_SOURCE_EXTERNAL.into()),
+                external_agent_id: conversation.agent_runtime.external_agent_id.clone(),
+                external_model: conversation.agent_runtime.external_model.clone(),
+                measurement_seq: 5,
+                lifecycle_id: 1,
+                estimated_input_tokens: tokens.unwrap_or(0),
+                token_count_source: tokens.map(|_| TOKEN_COUNT_CLI.into()),
+                context_window_tokens: Some(200_000),
+                ..Default::default()
+            };
+            // Reopening and refreshing must retain the compacted report, including unknown/zero.
+            let restored: Conversation =
+                serde_json::from_value(serde_json::to_value(&conversation).unwrap()).unwrap();
+            let state = compute_external_context_state(
+                &restored,
+                "pi",
+                "anthropic/claude-sonnet-4-5",
+                None,
+                None,
+                None,
+            );
+            assert_eq!(state.estimated_input_tokens, tokens.unwrap_or(0));
+            assert_eq!(
+                state.token_count_source.as_deref(),
+                tokens.map(|_| TOKEN_COUNT_CLI)
+            );
+            assert_eq!(state.context_window_tokens, Some(200_000));
+            assert_eq!(state.measurement_seq, 5);
+            assert_eq!(state.lifecycle_id, 1);
+        }
     }
 
     #[test]

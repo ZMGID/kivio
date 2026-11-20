@@ -86,7 +86,7 @@ fn replace_usage_parts(
         .saturating_add(next.cache_creation);
 }
 
-fn claude_usage_has_input(usage: &Value, zero_is_known: bool) -> bool {
+fn claude_usage_has_input(usage: &Value) -> bool {
     [
         "input_tokens",
         "cache_read_input_tokens",
@@ -97,7 +97,7 @@ fn claude_usage_has_input(usage: &Value, zero_is_known: bool) -> bool {
         usage
             .get(*key)
             .and_then(Value::as_u64)
-            .is_some_and(|value| zero_is_known || value > 0)
+            .is_some_and(|value| value > 0)
     })
 }
 
@@ -974,6 +974,7 @@ struct LaneState {
     /// 本车道当前请求的最新快照；新请求开始时，旧快照已留在整轮总量中。
     request_input: Option<CliUsageParts>,
     request_context_known: bool,
+    request_closed: bool,
 }
 
 impl LaneState {
@@ -1083,6 +1084,44 @@ impl ClaudeStreamState {
         let mut usage = usage_from_parts(self.turn_usage.clone());
         usage.context_tokens = self.context_tokens;
         sink(UnifiedAgentEvent::Usage { usage });
+    }
+
+    fn report_assistant_snapshot(
+        &mut self,
+        message: &serde_json::Map<String, Value>,
+        sink: &mut dyn FnMut(UnifiedAgentEvent),
+    ) {
+        let (Some(id), Some(usage)) = (
+            message.get("id").and_then(Value::as_str),
+            message.get("usage"),
+        ) else {
+            return;
+        };
+        if message.get("model").and_then(Value::as_str) == Some("<synthetic>")
+            || !claude_usage_has_input(usage)
+        {
+            return;
+        }
+        let mut parts = claude_usage_parts(usage);
+        let lane = self.lane(None);
+        if lane.current_message_id.as_deref() == Some(id) {
+            if lane.request_closed {
+                return;
+            }
+            if let Some(previous) = &lane.request_input {
+                // A complete message may fill missing input while its output lags the stream.
+                if previous.input > 0 || previous.cache_read > 0 || previous.cache_creation > 0 {
+                    return;
+                }
+                parts.output = parts.output.max(previous.output);
+            }
+        } else {
+            lane.current_message_id = Some(id.to_owned());
+            lane.request_input = None;
+            lane.request_context_known = false;
+            lane.request_closed = false;
+        }
+        self.record_request_usage(None, parts, true, sink);
     }
 
     /// 发一段**正文**（模型回答 / 本地命令输出），并置位 per-turn 的 `any_text_emitted`。
@@ -1221,6 +1260,13 @@ impl ClaudeStreamState {
         let sidechain = lane.is_some();
         let kind = obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
         match kind {
+            "conversation_reset" if !sidechain => {
+                self.context_tokens = Some(0);
+                self.lane(None).request_closed = true;
+                let mut usage = usage_from_parts(self.turn_usage.clone());
+                usage.context_tokens = Some(0);
+                sink(UnifiedAgentEvent::Usage { usage });
+            }
             // `system` 帧实测恒为主线。真要出现带 parent 的（子会话自己的 init / 压缩 /
             // 本地命令输出），也**不能**照主线处理：`resolved_model` 会被子 agent 的模型
             // （常是 haiku）覆盖，A8 的分母就会从当前模型的窗口跳到子 agent 的窗口。
@@ -1268,6 +1314,11 @@ impl ClaudeStreamState {
                             .and_then(|v| v.as_str())
                             .unwrap_or("auto")
                             .to_string();
+                        // The old request no longer describes the active context. Keep the
+                        // CLI's post-compaction report until the next main request replaces it.
+                        self.context_tokens = number("post_tokens");
+                        let lane = self.lane(None);
+                        lane.request_closed = true;
                         sink(UnifiedAgentEvent::CliCompacted {
                             trigger,
                             pre_tokens: number("pre_tokens"),
@@ -1424,6 +1475,9 @@ impl ClaudeStreamState {
                     }
                 }
                 if let Some(message) = obj.get("message").and_then(|v| v.as_object()) {
+                    if !sidechain {
+                        self.report_assistant_snapshot(message, sink);
+                    }
                     if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                         for block in content {
                             let block = match block.as_object() {
@@ -1596,6 +1650,9 @@ impl ClaudeStreamState {
                 if usage.is_some() || context_window.is_some() {
                     let mut usage =
                         usage.unwrap_or_else(|| usage_from_parts(CliUsageParts::default()));
+                    if self.lane(None).request_closed {
+                        usage.context_tokens = self.context_tokens;
+                    }
                     usage.context_window_tokens = context_window;
                     sink(UnifiedAgentEvent::Usage { usage });
                 }
@@ -1716,6 +1773,7 @@ impl ClaudeStreamState {
                 let state = self.lane(lane);
                 state.text_streamed = false;
                 state.current_message_id = message_id;
+                state.request_closed = false;
                 // 旧请求已计入整轮总量；只复位本车道的当前快照。
                 state.request_input = None;
                 state.request_context_known = false;
@@ -1723,7 +1781,7 @@ impl ClaudeStreamState {
                 let mut reported = false;
                 if let Some(usage) = event.get("message").and_then(|v| v.get("usage")) {
                     let parts = claude_usage_parts(usage);
-                    let input_known = claude_usage_has_input(usage, true);
+                    let input_known = claude_usage_has_input(usage);
                     if usage_parts_all_zero(&parts) {
                         let state = self.lane(lane);
                         state.request_input = Some(parts);
@@ -1744,15 +1802,13 @@ impl ClaudeStreamState {
                 let Some(usage) = event.get("usage") else {
                     return;
                 };
+                if self.lane(lane).request_closed {
+                    return;
+                }
                 let request_input = self.lane(lane).request_input.clone();
                 // delta 里的零输入可能只是占位，不能据此推断完整上下文。
                 if let Some(parts) = message_delta_usage(request_input.as_ref(), usage) {
-                    self.record_request_usage(
-                        lane,
-                        parts,
-                        claude_usage_has_input(usage, false),
-                        sink,
-                    );
+                    self.record_request_usage(lane, parts, claude_usage_has_input(usage), sink);
                 }
             }
             "content_block_start" => {
@@ -2202,6 +2258,30 @@ mod tests {
     }
 
     #[test]
+    fn standalone_compaction_and_reset_survive_result_only_billing() {
+        for (boundary, expected) in [
+            (
+                r#"{"type":"system","subtype":"compact_boundary","compact_metadata":{"post_tokens":132}}"#,
+                Some(132),
+            ),
+            (r#"{"type":"system","subtype":"compact_boundary"}"#, None),
+            (
+                r#"{"type":"conversation_reset","trigger":"clear"}"#,
+                Some(0),
+            ),
+        ] {
+            let events = run(&[
+                boundary,
+                r#"{"type":"result","usage":{"iterations":[{"input_tokens":45000,"output_tokens":8}]}}"#,
+            ]);
+            let reports = usages(&events);
+            let result = reports.last().unwrap();
+            assert_eq!(result.context_tokens, expected);
+            assert_eq!(result.total_tokens, Some(45008));
+        }
+    }
+
+    #[test]
     fn other_system_subtypes_do_not_look_like_compaction() {
         // `system` 下还有 turn_duration / stop_hook_summary 等一堆 subtype
         // （本机 claude 历史里实测到 7 种），不得被误判成压缩。
@@ -2224,8 +2304,7 @@ mod tests {
 
     /// 压缩后用量条的自愈路径：压缩后的真实占用靠紧随其后的
     /// `message_start.message.usage`（服务端算的）上报。
-    /// `compact_boundary` 自己的 `post_tokens` 是给**分隔线文案**用的，不是分子来源
-    /// （它是 CLI 自己的估算，而 message_start 是服务端对下一次请求的真实计量）。
+    /// `compact_boundary.post_tokens` 先更新 CLI 占用；后续请求的服务端计量再替换它。
     /// 这条钉住「压缩后能拿到新数字」。
     #[test]
     fn usage_recovers_from_message_start_after_compaction() {
@@ -2256,6 +2335,26 @@ mod tests {
             state.handle_value(&value, &mut |e| events.push(e));
         }
         events
+    }
+
+    #[test]
+    fn complete_message_repairs_missing_stream_input_without_double_billing() {
+        let events = run(&[
+            r#"{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","usage":{"input_tokens":0}}}}"#,
+            r#"{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":12}}}"#,
+            r#"{"type":"assistant","message":{"id":"m","usage":{"input_tokens":5,"cache_read_input_tokens":1000,"output_tokens":8}}}"#,
+            r#"{"type":"assistant","message":{"id":"m","usage":{"input_tokens":5,"cache_read_input_tokens":1000,"output_tokens":8}}}"#,
+            r#"{"type":"assistant","message":{"id":"notice","model":"<synthetic>","usage":{"input_tokens":100}}}"#,
+            r#"{"type":"result","modelUsage":{"model":{"contextWindow":200000}}}"#,
+        ]);
+        let reports = usages(&events);
+        assert_eq!(reports[0].total_tokens, Some(12));
+        assert_eq!(reports[0].context_tokens, None);
+        assert_eq!(reports.last().unwrap().context_tokens, Some(1017));
+        assert_eq!(reports.last().unwrap().total_tokens, Some(1017));
+        assert!(reports[..reports.len() - 1]
+            .iter()
+            .any(|usage| usage.context_tokens == Some(1017)));
     }
 
     fn usages(events: &[UnifiedAgentEvent]) -> Vec<crate::chat::model::ModelUsage> {

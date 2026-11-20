@@ -458,13 +458,19 @@ impl CodexUsageTotals {
     }
 }
 
+#[derive(Default)]
+struct CodexTurnUsage {
+    billing_base: Option<CodexUsageTotals>,
+    compaction_item: Option<String>,
+    recount: Option<u64>,
+}
+
 /// Map a single codex app-server notification to zero or more `UnifiedAgentEvent`s.
-/// `turn_usage_base` 是本轮开始前的 thread 累计用量；每轮开始时由调用方清成 `None`。
 fn map_codex_notification(
     method: &str,
     params: &Value,
     emitted_tools: &mut HashSet<String>,
-    turn_usage_base: &mut Option<CodexUsageTotals>,
+    turn_usage: &mut CodexTurnUsage,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) -> CodexMapResult {
     match method {
@@ -501,12 +507,39 @@ fn map_codex_notification(
         }
         "item/started" => {
             if let Some(item) = params.get("item").and_then(|v| v.as_object()) {
-                emit_thread_item(item, emitted_tools, sink, false);
+                if map_str(item, "type") == Some("contextCompaction") {
+                    turn_usage.compaction_item = item_id(item);
+                    turn_usage.recount = None;
+                } else {
+                    emit_thread_item(item, emitted_tools, sink, false);
+                }
             }
         }
         "item/completed" => {
             if let Some(item) = params.get("item").and_then(|v| v.as_object()) {
-                emit_thread_item(item, emitted_tools, sink, true);
+                if map_str(item, "type") == Some("contextCompaction") {
+                    let id = item_id(item);
+                    if id
+                        .as_ref()
+                        .is_some_and(|id| !emitted_tools.insert(format!("codex-compact-{id}")))
+                    {
+                        return CodexMapResult::Continue;
+                    }
+                    let post_tokens = turn_usage
+                        .recount
+                        .take()
+                        .filter(|_| turn_usage.compaction_item == id);
+                    turn_usage.compaction_item = id;
+                    sink(UnifiedAgentEvent::CliCompacted {
+                        trigger: "auto".into(),
+                        pre_tokens: None,
+                        post_tokens,
+                        dropped_tokens: None,
+                        duration_ms: None,
+                    });
+                } else {
+                    emit_thread_item(item, emitted_tools, sink, true);
+                }
             }
         }
         "turn/plan/updated" => emit_plan_update(params, sink),
@@ -545,34 +578,55 @@ fn map_codex_notification(
                 .filter(|tokens| *tokens > 0);
             let last = token_usage
                 .and_then(|v| v.get("last"))
-                .and_then(|v| v.as_object())
-                .map(CodexUsageTotals::parse);
+                .and_then(Value::as_object);
             let total = token_usage
                 .and_then(|v| v.get("total"))
-                .and_then(|v| v.as_object())
+                .and_then(Value::as_object)
                 .map(CodexUsageTotals::parse);
-            let usage = match (last, total) {
+            let last_parts = last.map(CodexUsageTotals::parse);
+            let billing = match (last_parts, total) {
                 (Some(last), Some(total)) => {
-                    let base = *turn_usage_base.get_or_insert_with(|| total.minus(last));
-                    let mut usage = usage_from_parts(total.minus(base).parts(model_context_window));
-                    usage.context_tokens = usage_from_parts(last.parts(None)).total_tokens;
-                    Some(usage)
+                    let base = *turn_usage
+                        .billing_base
+                        .get_or_insert_with(|| total.minus(last));
+                    total.minus(base)
                 }
-                // 旧版 codex 只给其中一份：退回单快照（既当计费也当占用）。
-                (Some(only), None) | (None, Some(only)) => {
-                    Some(usage_from_parts(only.parts(model_context_window)))
-                }
-                (None, None) => None,
+                (Some(only), None) | (None, Some(only)) => only,
+                (None, None) => CodexUsageTotals::default(),
             };
-            if let Some(usage) = usage {
-                // 窗口本身也是有效信息：一轮还没产生 token 时先把分母立起来，
-                // 好过让用量条继续吃静态表的近似值。
-                if !crate::external_agents::run::usage_tokens_all_zero(&usage)
-                    || usage.context_tokens.unwrap_or(0) > 0
-                    || usage.context_window_tokens.is_some()
-                {
-                    sink(UnifiedAgentEvent::Usage { usage });
+            let mut usage = usage_from_parts(billing.parts(model_context_window));
+            usage.context_tokens = last.and_then(|fields| {
+                fields
+                    .get("totalTokens")
+                    .and_then(Value::as_u64)
+                    .or_else(|| {
+                        // Older servers omit the aggregate. Only reconstruct a complete request.
+                        fields.get("inputTokens")?.as_u64()?;
+                        fields.get("outputTokens")?.as_u64()?;
+                        usage_from_parts(last_parts?.parts(None)).total_tokens
+                    })
+            });
+            // app-server recounts the retained conversation before completing the item.
+            // That snapshot has a total but no billed input or output. The summary
+            // request itself also reports usage, so it cannot stand in for this recount.
+            if turn_usage.compaction_item.is_some() {
+                if let Some(parts) = last_parts {
+                    turn_usage.recount = last
+                        .and_then(|fields| fields.get("totalTokens"))
+                        .and_then(Value::as_u64)
+                        .filter(|_| {
+                            parts.input == 0
+                                && parts.output == 0
+                                && parts.cached == 0
+                                && parts.cache_write == 0
+                        });
                 }
+            }
+            if usage.context_tokens.is_some()
+                || usage.context_window_tokens.is_some()
+                || !crate::external_agents::run::usage_tokens_all_zero(&usage)
+            {
+                sink(UnifiedAgentEvent::Usage { usage });
             }
         }
         // 0.155+：Codex 对弃用行为（如 paginated 线程整段加载历史）和 config.toml 问题的提示。
@@ -619,7 +673,7 @@ fn map_codex_notification(
             });
             return CodexMapResult::Continue;
         }
-        "thread/compacted" => {
+        "thread/compacted" if turn_usage.compaction_item.is_none() => {
             // Deprecated in current app-server; still emitted by older CLIs.
             sink(UnifiedAgentEvent::CliCompacted {
                 trigger: "auto".to_string(),
@@ -1062,17 +1116,6 @@ fn emit_thread_item(
             emit_collab_tool_call(item, emitted_tools, sink, include_result);
         }
         Some("subAgentActivity") => emit_subagent_activity(item, emitted_tools, sink),
-        Some("contextCompaction") => {
-            if include_result {
-                sink(UnifiedAgentEvent::CliCompacted {
-                    trigger: "auto".to_string(),
-                    pre_tokens: None,
-                    post_tokens: None,
-                    dropped_tokens: None,
-                    duration_ms: None,
-                });
-            }
-        }
         // `/review` 进出审查模式（0.160 `enteredReviewMode` / `exitedReviewMode {review}`）。
         // 退出那一项带的是审查结论本身，丢掉的话 `/review` 跑完界面上什么都没有。
         Some("exitedReviewMode") if include_result => {
@@ -2046,7 +2089,7 @@ impl CodexAppServerSession {
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
         let chosen_effort = normalize_codex_effort(reasoning);
         // 本轮计费基线：由本轮第一条 tokenUsage 定下，轮次之间不复用。
-        let mut turn_usage_base: Option<CodexUsageTotals> = None;
+        let mut turn_usage = CodexTurnUsage::default();
         let mut input = if codex_skill_command(prompt).is_some() {
             // Resolve against this live session's working directory. The picker cache
             // is presentation data; only the runtime can authorize the skill path.
@@ -2359,7 +2402,7 @@ impl CodexAppServerSession {
                     method,
                     &params,
                     &mut self.emitted_tools,
-                    &mut turn_usage_base,
+                    &mut turn_usage,
                     &mut |e| buf.push(e),
                 );
                 for mut e in buf {
@@ -4107,7 +4150,7 @@ mod tests {
                 "item/completed",
                 &json!({"item": {"type": "agentMessage", "id": "answer", "text": "Body", "phase": phase}}),
                 &mut HashSet::new(),
-                &mut None,
+                &mut Default::default(),
                 &mut |event| events.push(event),
             );
             assert!(
@@ -4127,9 +4170,13 @@ mod tests {
         let mut events = Vec::new();
         for method in ["item/started", "item/completed", "item/completed"] {
             assert_eq!(
-                map_codex_notification(method, &params, &mut emitted, &mut None, &mut |event| {
-                    events.push(event)
-                }),
+                map_codex_notification(
+                    method,
+                    &params,
+                    &mut emitted,
+                    &mut Default::default(),
+                    &mut |event| { events.push(event) }
+                ),
                 CodexMapResult::Continue
             );
             if method == "item/started" {
@@ -4393,9 +4440,13 @@ mod tests {
         let params: Value = serde_json::from_str(raw).unwrap();
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        let mapped = map_codex_notification(method, &params, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
+        let mapped = map_codex_notification(
+            method,
+            &params,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
         (events, mapped)
     }
 
@@ -4943,14 +4994,14 @@ mod tests {
             "item/started",
             &started_val,
             &mut tools,
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         map_codex_notification(
             "item/completed",
             &completed_val,
             &mut tools,
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         assert!(matches!(
@@ -4987,14 +5038,18 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/started",
+            &started,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
         map_codex_notification(
             "item/completed",
             &completed,
             &mut tools,
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         assert!(matches!(
@@ -5032,6 +5087,39 @@ mod tests {
                 _ => None,
             })
             .expect("应产出 Usage 事件")
+    }
+
+    #[test]
+    fn compact_item_keeps_the_context_recount_delivered_before_completion() {
+        let item = json!({"item":{"type":"contextCompaction","id":"c"}});
+        let summary_request = json!({"tokenUsage":{"last":{
+            "totalTokens":32005,"inputTokens":32000,"outputTokens":5}}});
+        for recount in [Some(3176u64), Some(0), None] {
+            let mut frames = vec![
+                ("item/started", item.clone()),
+                ("thread/tokenUsage/updated", summary_request.clone()),
+            ];
+            if let Some(n) = recount {
+                frames.push((
+                    "thread/tokenUsage/updated",
+                    json!({"tokenUsage":{"last":{
+                    "totalTokens":n,"inputTokens":0,"outputTokens":0}}}),
+                ));
+            }
+            frames.extend([
+                ("item/completed", item.clone()),
+                ("thread/compacted", json!({})),
+            ]);
+            let events = map_codex_frames(&frames);
+            let boundaries: Vec<_> = events
+                .iter()
+                .filter_map(|event| match event {
+                    UnifiedAgentEvent::CliCompacted { post_tokens, .. } => Some(*post_tokens),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(boundaries, vec![recount]);
+        }
     }
 
     #[test]
@@ -5106,7 +5194,7 @@ mod tests {
     #[test]
     fn token_usage_bills_whole_turn_but_reports_last_request_as_context() {
         // 一轮两次请求（中间有工具往返），且 thread 在本轮前已累计 100K（resume 的历史）。
-        let mut base = None;
+        let mut base = CodexTurnUsage::default();
         let mut tools = HashSet::new();
         let mut events = Vec::new();
         for raw in [
@@ -5158,7 +5246,9 @@ mod tests {
             r#"{"threadId":"t","turnId":"u","tokenUsage":{
                  "last":{"cachedInputTokens":52000,"inputTokens":0,"outputTokens":0,"totalTokens":52000}}}"#,
         );
-        assert!(only_usage(&events).cached_input_tokens == Some(52_000));
+        let usage = only_usage(&events);
+        assert_eq!(usage.cached_input_tokens, Some(52_000));
+        assert_eq!(usage.context_tokens, Some(52_000));
     }
 
     #[test]
@@ -5939,7 +6029,7 @@ mod tests {
                 "secondary": {"usedPercent": 100, "resetsAt": later}
             }}),
             &mut HashSet::new(),
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         match events.as_slice() {
@@ -5981,14 +6071,14 @@ mod tests {
             "item/completed",
             &json!({"item": {"type": "exitedReviewMode", "id": "r1", "review": "No issues found."}}),
             &mut seen,
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         map_codex_notification(
             "configWarning",
             &json!({"summary": "Unknown key `foo`", "path": "/h/.codex/config.toml"}),
             &mut seen,
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         match events.as_slice() {
@@ -6009,7 +6099,7 @@ mod tests {
                 "item/completed",
                 &json!({"item": {"type": "plan", "id": "p1", "text": "# Plan\n1. Do it"}}),
                 &mut seen,
-                &mut None,
+                &mut Default::default(),
                 &mut |e| events.push(e),
             );
         }
@@ -6153,14 +6243,18 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/started",
+            &started,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
         map_codex_notification(
             "item/completed",
             &completed,
             &mut tools,
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         assert!(matches!(
@@ -6199,14 +6293,18 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/started",
+            &started,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
         map_codex_notification(
             "item/completed",
             &completed,
             &mut tools,
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         assert!(matches!(
@@ -6243,18 +6341,34 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &image, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
-        map_codex_notification("item/completed", &image, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
-        map_codex_notification("item/started", &sleep, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
-        map_codex_notification("item/completed", &sleep, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/started",
+            &image,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
+        map_codex_notification(
+            "item/completed",
+            &image,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
+        map_codex_notification(
+            "item/started",
+            &sleep,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
+        map_codex_notification(
+            "item/completed",
+            &sleep,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
         assert!(events.iter().any(|event| matches!(
             event,
             UnifiedAgentEvent::ToolUse { name, .. } if name == "image_generation"
@@ -6287,12 +6401,20 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &clock, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
-        map_codex_notification("item/completed", &clock, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/started",
+            &clock,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
+        map_codex_notification(
+            "item/completed",
+            &clock,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
         assert!(events.iter().any(|event| matches!(
             event,
             UnifiedAgentEvent::ToolUse { name, .. } if name == "clock"
@@ -6327,14 +6449,18 @@ mod tests {
         });
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        map_codex_notification("item/started", &started, &mut tools, &mut None, &mut |e| {
-            events.push(e)
-        });
+        map_codex_notification(
+            "item/started",
+            &started,
+            &mut tools,
+            &mut Default::default(),
+            &mut |e| events.push(e),
+        );
         map_codex_notification(
             "item/completed",
             &completed,
             &mut tools,
-            &mut None,
+            &mut Default::default(),
             &mut |e| events.push(e),
         );
         assert!(matches!(
@@ -6366,8 +6492,9 @@ mod tests {
     fn map_codex_frames(frames: &[(&str, Value)]) -> Vec<UnifiedAgentEvent> {
         let mut events = Vec::new();
         let mut tools = HashSet::new();
+        let mut usage = CodexTurnUsage::default();
         for (method, params) in frames {
-            map_codex_notification(method, params, &mut tools, &mut None, &mut |e| {
+            map_codex_notification(method, params, &mut tools, &mut usage, &mut |e| {
                 events.push(e)
             });
         }

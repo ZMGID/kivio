@@ -107,7 +107,7 @@ export function keepNewerContextMeasurement<T extends Conversation>(
   return { ...incoming, context_state: merged, contextState: merged }
 }
 
-/** Only provider reports fill the meter. A source-less event leaves it unknown
+/** Provider and CLI reports fill the meter. A source-less event leaves it unknown
  * and never imports the internal budget. Request segments on that event still
  * show; omitted segments stay, and an empty array replaces them. */
 function mergeLive(
@@ -120,11 +120,17 @@ function mergeLive(
   const prevLifecycle = readLifecycleId(prev)
   const newLifecycle = prevLifecycle != null && incomingLifecycle != null && incomingLifecycle > prevLifecycle
   const lifecycle = incomingLifecycle ?? prevLifecycle ?? undefined
-  const reported = live.tokenCountSource === 'provider_context_reported'
+  const external = live.tokenCountSource === 'cli_reported'
+    || (live.tokenCountSource == null && (prev?.context_source ?? prev?.contextSource) === 'external_cli')
+  const reported = (live.tokenCountSource === 'provider_context_reported' || live.tokenCountSource === 'cli_reported')
     && Number.isFinite(live.usedTokens) && live.usedTokens >= 0
   const tokens = reported ? Math.round(live.usedTokens) : undefined
-  const window = live.contextWindowTokens
-    ?? prev?.context_window_tokens ?? prev?.contextWindowTokens ?? null
+  const reportedWindow = live.contextWindowTokens != null
+    && Number.isFinite(live.contextWindowTokens) && live.contextWindowTokens > 0
+    ? live.contextWindowTokens : null
+  const window = reportedWindow ?? prev?.context_window_tokens ?? prev?.contextWindowTokens ?? null
+  const windowEstimated = reportedWindow != null
+    ? false : prev?.context_window_estimated ?? prev?.contextWindowEstimated
   const ratio = tokens != null && window != null && window > 0 ? tokens / window : null
   const cacheMissing = live.cacheInputTokens == null && live.cacheReadTokens == null
   const cacheInput = live.cacheInputTokens
@@ -143,18 +149,21 @@ function mergeLive(
     : live.segments
   return {
     ...prev,
-    context_source: 'kivio_builtin',
-    contextSource: 'kivio_builtin',
+    context_source: external ? 'external_cli' : 'kivio_builtin',
+    contextSource: external ? 'external_cli' : 'kivio_builtin',
+    ...(external ? { estimated_input_tokens: tokens, estimatedInputTokens: tokens } : {}),
     context_window_tokens: window,
     contextWindowTokens: window,
+    context_window_estimated: windowEstimated,
+    contextWindowEstimated: windowEstimated,
     reported_context_tokens: tokens,
     reportedContextTokens: tokens,
     cache_hit_rate: cacheRate,
     cacheHitRate: cacheRate,
     usage_ratio: ratio,
     usageRatio: ratio,
-    token_count_source: reported ? 'provider_context_reported' : undefined,
-    tokenCountSource: reported ? 'provider_context_reported' : undefined,
+    token_count_source: reported ? live.tokenCountSource : undefined,
+    tokenCountSource: reported ? live.tokenCountSource : undefined,
     measurement_seq: incomingSeq ?? undefined,
     measurementSeq: incomingSeq ?? undefined,
     lifecycle_id: lifecycle,

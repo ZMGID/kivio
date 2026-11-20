@@ -703,6 +703,19 @@ pub fn map_pi_rpc_event(value: &Value, sink: &mut dyn FnMut(UnifiedAgentEvent)) 
             }
         }
         "message_update" => {
+            if let Some(tokens) = value
+                .pointer("/usage/totalTokens")
+                .and_then(Value::as_u64)
+                .filter(|n| *n > 0)
+            {
+                // The stream repeats a cumulative request footprint. Billing arrives at turn_end.
+                sink(UnifiedAgentEvent::Usage {
+                    usage: crate::chat::model::ModelUsage {
+                        context_tokens: Some(tokens),
+                        ..Default::default()
+                    },
+                });
+            }
             if let Some(ev) = obj.get("assistantMessageEvent").and_then(|v| v.as_object()) {
                 let ev_type = ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match ev_type {
@@ -1481,6 +1494,7 @@ where
 {
     // 每次 drain 对应一次 Kivio prompt；Pi 的 turn_end 则对应单次模型请求。
     let mut turn_usage = crate::chat::model::ModelUsage::default();
+    let mut last_live_tokens = None;
     let mut sink = |event| match event {
         UnifiedAgentEvent::Usage { usage } if usage.total_tokens.is_some() => {
             for (total, request) in [
@@ -1502,9 +1516,20 @@ where
                 }
             }
             turn_usage.context_tokens = usage.total_tokens;
+            last_live_tokens = turn_usage.context_tokens;
             sink(UnifiedAgentEvent::Usage {
                 usage: turn_usage.clone(),
             });
+        }
+        UnifiedAgentEvent::Usage { usage } => {
+            if usage.context_window_tokens.is_some() || usage.context_tokens != last_live_tokens {
+                last_live_tokens = usage.context_tokens;
+                sink(UnifiedAgentEvent::Usage { usage });
+            }
+        }
+        event @ UnifiedAgentEvent::CliCompacted { post_tokens, .. } => {
+            last_live_tokens = post_tokens;
+            sink(event);
         }
         event => sink(event),
     };
@@ -1735,6 +1760,36 @@ where
                     compaction_emitted = true;
                 }
                 if persistent {
+                    if let Some(waiters) = pending_controls {
+                        // Pi may send a late copy of the compact boundary while stats
+                        // are in flight. Keep its updated count without a second divider.
+                        let resumed = collect_pi_context_stats(
+                            reader,
+                            stdin,
+                            &mut |event| match event {
+                                UnifiedAgentEvent::CliCompacted { post_tokens, .. } => {
+                                    if let Some(tokens) = post_tokens {
+                                        sink(UnifiedAgentEvent::Usage {
+                                            usage: crate::chat::model::ModelUsage {
+                                                context_tokens: Some(tokens),
+                                                ..Default::default()
+                                            },
+                                        });
+                                    }
+                                }
+                                other => sink(other),
+                            },
+                            approvals.as_deref_mut(),
+                            waiters,
+                            &cancel_check,
+                        )
+                        .await;
+                        if resumed {
+                            run_started = true;
+                            agent_ended = false;
+                            continue;
+                        }
+                    }
                     break;
                 }
                 agent_ended = true;
@@ -3840,6 +3895,9 @@ mod tests {
                 events.extend([json!({"type":"agent_start"}), json!({"type":"turn_start"})]);
                 if turn == 0 {
                     events.extend([
+                        json!({"type":"message_update","usage":{"totalTokens":0}}),
+                        json!({"type":"message_update","usage":{"totalTokens":94},"assistantMessageEvent":{"type":"text_delta","delta":"hi"}}),
+                        json!({"type":"message_update","usage":{"totalTokens":94},"assistantMessageEvent":{"type":"text_end"}}),
                         json!({"type":"turn_end","message":{"usage":{
                             "input":100,"output":20,"cacheRead":30,"cacheWrite":5,
                             "reasoning":4,"totalTokens":155
@@ -3908,6 +3966,9 @@ mod tests {
             .expect("prompt must settle")
             .expect("prompt succeeded");
             if turn == 0 {
+                let live = usages.remove(0);
+                assert_eq!(live.context_tokens, Some(94));
+                assert_eq!(live.total_tokens, None);
                 assert_eq!(usages.len(), 3);
                 assert_eq!(usages[0].total_tokens, Some(155));
                 assert_eq!(usages[0].context_tokens, Some(155));
@@ -5119,31 +5180,34 @@ mod tests {
                             .write_all(b"{\"type\":\"agent_settled\"}\n")
                             .await
                             .unwrap();
+                        let stats: Value =
+                            serde_json::from_str(&requests.next_line().await.unwrap().unwrap())
+                                .unwrap();
+                        assert_eq!(stats["type"], "get_session_stats");
+                        let response = json!({"id":stats["id"],"type":"response","command":"get_session_stats",
+                            "success":true,"data":{"contextUsage":{"tokens":123,"contextWindow":1000}}});
+                        server_stdout
+                            .write_all(format!("{response}\n").as_bytes())
+                            .await
+                            .unwrap();
                     }
                 }
-                let Ok(Ok(Some(stats))) =
-                    timeout(Duration::from_millis(200), requests.next_line()).await
-                else {
-                    return;
-                };
-                let stats: Value = serde_json::from_str(&stats).unwrap();
-                assert_eq!(stats["type"], "get_session_stats");
-                let response = json!({"id":stats["id"],"type":"response","command":"get_session_stats","success":true,"data":{}});
-                server_stdout
-                    .write_all(format!("{response}\n").as_bytes())
-                    .await
-                    .unwrap();
             });
             let mut reader = BufReader::new(client_stdout).lines();
             let stdin = Arc::new(Mutex::new(client_stdin));
             let waiters: PiControlWaiters = Arc::new(Mutex::new(HashMap::new()));
+            let mut context = None;
             run_pi_rpc_io(
                 &TurnDelivery::default(),
                 &mut reader,
                 &stdin,
                 "/compact",
                 &[],
-                &mut |_| {},
+                &mut |event| {
+                    if let UnifiedAgentEvent::Usage { usage } = event {
+                        context = usage.context_tokens;
+                    }
+                },
                 None,
                 Some(&waiters),
                 || false,
@@ -5151,6 +5215,7 @@ mod tests {
             )
             .await
             .unwrap();
+            assert_eq!(context, Some(123));
             let result = run_pi_rpc_io(
                 &TurnDelivery::default(),
                 &mut reader,
