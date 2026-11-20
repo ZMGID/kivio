@@ -151,6 +151,17 @@ pub(crate) fn measure_prepared_request(
                         MessagePart::AnthropicNativeBlock { block, .. } => {
                             utf16_content_chars(block)
                         }
+                        MessagePart::GeminiNativePart { part, .. } => [
+                            "text",
+                            "toolCall",
+                            "toolResponse",
+                            "executableCode",
+                            "codeExecutionResult",
+                        ]
+                        .iter()
+                        .filter_map(|key| part.get(*key))
+                        .map(utf16_content_chars)
+                        .sum(),
                         _ => 0,
                     })
                     .sum(),

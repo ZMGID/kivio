@@ -785,6 +785,8 @@ pub(crate) fn normalize_stream_output(
                 crate::model::MessagePart::Text { .. } | crate::model::MessagePart::ToolCall { .. }
             ) && !matches!(part, crate::model::MessagePart::AnthropicNativeBlock { block, .. }
             if block["type"] == "text")
+                && !matches!(part, crate::model::MessagePart::GeminiNativePart { part, .. }
+                    if part.get("text").is_some() && part["thought"] != true)
         });
         if !cleaned.is_empty() {
             replay.content.push(crate::model::MessagePart::Text {

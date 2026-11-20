@@ -91,6 +91,7 @@ impl RuntimeMessage {
             "tool_calls",
             "tool_call_id",
             "anthropic_content",
+            "gemini_content",
             "reasoning_items",
             "is_error",
             "artifacts",

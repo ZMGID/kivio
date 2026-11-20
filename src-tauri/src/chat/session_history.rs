@@ -80,8 +80,11 @@ pub(crate) fn import_legacy(value: &Value) -> Result<RuntimeMessage, String> {
     if !matches!(role, "system" | "user" | "assistant" | "developer" | "tool") {
         return Err(format!("Unsupported legacy message role: {role}"));
     }
-    if let Some(content) = value.get("anthropic_content") {
-        serde_json::from_value::<Vec<MessagePart>>(content.clone()).map_err(|e| e.to_string())?;
+    for key in ["anthropic_content", "gemini_content"] {
+        if let Some(content) = value.get(key) {
+            serde_json::from_value::<Vec<MessagePart>>(content.clone())
+                .map_err(|e| e.to_string())?;
+        }
     }
     if let Some(content) = value.get("content") {
         match content {
@@ -936,6 +939,9 @@ pub(crate) fn edit_message(
         model.content.retain(|part| match part {
             MessagePart::Text { .. } => false,
             MessagePart::AnthropicNativeBlock { block, .. } => block["type"] != "text",
+            MessagePart::GeminiNativePart { part, .. } => {
+                part.get("text").is_none() || part["thought"] == true
+            }
             _ => true,
         });
         model.content.push(MessagePart::Text {

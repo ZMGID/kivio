@@ -102,6 +102,20 @@ pub(crate) fn runtime_message_image_tokens(
             MessagePart::AnthropicNativeBlock { block, .. } => {
                 request_image_tokens(block, provider, model)
             }
+            MessagePart::GeminiNativePart { part, .. }
+                if part["inlineData"]["mimeType"]
+                    .as_str()
+                    .is_some_and(|mime| mime.starts_with("image/")) =>
+            {
+                estimate_image_tokens(
+                    provider,
+                    model,
+                    part["inlineData"]["data"]
+                        .as_str()
+                        .and_then(image_header_dimensions),
+                    None,
+                )
+            }
             _ => 0,
         })
         .sum()

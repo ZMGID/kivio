@@ -30,8 +30,9 @@ pub struct GeminiOptions {
     pub thinking: GeminiThinkingMode,
     pub zero_budget_when_disabled: bool,
     pub image_output: bool,
+    /// Force IDs for compatible non-Gemini models; Gemini 3+ enables them automatically.
     pub include_tool_ids: bool,
-    /// Opaque host identity for native signature replay isolation.
+    /// Opaque host identity for native response and signature replay isolation.
     pub provider_id: Option<String>,
     pub response_format: GeminiResponseFormat,
     pub extra_body: Value,
@@ -83,6 +84,7 @@ impl GeminiProvider {
             ..self.config.options.clone()
         };
         let body = request_body(request, &options);
+        validate_request_body(&request.model, &body)?;
         if request.messages.iter().any(|message| {
             message
                 .content
@@ -172,7 +174,7 @@ pub fn request_body(request: &GenerateRequest, options: &GeminiOptions) -> Value
     }
     body["contents"] = Value::Array(contents_with_tool_ids(
         request,
-        options.include_tool_ids,
+        options.include_tool_ids || gemini_major_version(&request.model).is_some_and(|v| v >= 3),
         options.provider_id.as_deref(),
     ));
     if !body["generationConfig"].is_object() {
@@ -223,8 +225,79 @@ pub fn request_body(request: &GenerateRequest, options: &GeminiOptions) -> Value
     if request.options.tool_choice == super::ToolChoice::None {
         body.as_object_mut().unwrap().remove("tools");
         body["toolConfig"] = serde_json::json!({"functionCallingConfig":{"mode":"NONE"}});
+    } else if has_combined_tools(&body) {
+        // Normalize final wire tools, including overrides. AUTO is unsupported
+        // with tool context circulation; explicit ANY/NONE choices remain intact.
+        if !body["toolConfig"].is_object() {
+            body["toolConfig"] = serde_json::json!({});
+        }
+        body["toolConfig"]["includeServerSideToolInvocations"] = Value::Bool(true);
+        if !body["toolConfig"]["functionCallingConfig"].is_object() {
+            body["toolConfig"]["functionCallingConfig"] = serde_json::json!({});
+        }
+        let mode = &mut body["toolConfig"]["functionCallingConfig"]["mode"];
+        if mode.is_null() || matches!(mode.as_str(), Some("AUTO" | "MODE_UNSPECIFIED")) {
+            *mode = Value::String("VALIDATED".into());
+        }
     }
     body
+}
+
+fn gemini_major_version(model: &str) -> Option<u32> {
+    let lower = model.to_ascii_lowercase();
+    let name = lower
+        .trim_start_matches("models/")
+        .strip_prefix("gemini-")?;
+    let name = name.strip_prefix("live-").unwrap_or(name);
+    name.chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .ok()
+}
+
+fn has_combined_tools(body: &Value) -> bool {
+    let Some(tools) = body["tools"].as_array() else {
+        return false;
+    };
+    let functions = tools.iter().any(|tool| {
+        tool.get("functionDeclarations")
+            .or_else(|| tool.get("function_declarations"))
+            .and_then(Value::as_array)
+            .is_some_and(|declarations| !declarations.is_empty())
+    });
+    functions
+        && tools.iter().any(|tool| {
+            [
+                "googleSearch",
+                "google_search",
+                "googleMaps",
+                "google_maps",
+                "urlContext",
+                "url_context",
+                "fileSearch",
+                "file_search",
+            ]
+            .iter()
+            .any(|key| tool.get(*key).is_some())
+        })
+}
+
+/// Known older models cannot combine built-in tools and function declarations.
+/// Unknown gateway aliases remain server-resolved; do not guess their capabilities.
+pub fn validate_request_body(model: &str, body: &Value) -> Result<(), ModelError> {
+    if has_combined_tools(body) && gemini_major_version(model).is_some_and(|v| v < 3) {
+        return Err(ModelError::new("当前 Gemini 模型不支持内置搜索与函数工具混用。请切换到 Gemini 3 或更新模型，或关闭内置联网搜索。"));
+    }
+    Ok(())
+}
+
+fn native_part(part: &Value, model: &str, provider_id: Option<&str>) -> MessagePart {
+    MessagePart::GeminiNativePart {
+        part: part.clone(),
+        source_model: model.into(),
+        source_provider_id: provider_id.map(str::to_string),
+    }
 }
 
 pub fn decode_gemini_body(
@@ -245,6 +318,20 @@ pub fn decode_gemini_body(
     for call in &mut output.tool_calls {
         scope_signature(call, model, provider_id);
     }
+    let mut calls = output.tool_calls.iter();
+    let content = gemini_response_parts(&value)
+        .filter_map(|part| {
+            if part.get("functionCall").is_some() {
+                calls.next().map(PendingToolCall::replay_part)
+            } else {
+                Some(native_part(part, model, provider_id))
+            }
+        })
+        .collect();
+    output.canonical_message = Some(ModelMessage {
+        role: ModelRole::Assistant,
+        content,
+    });
     Ok(output)
 }
 
@@ -281,8 +368,7 @@ pub async fn decode_gemini_stream(
     let mut full = String::new();
     let mut reasoning_full = String::new();
     let mut tool_calls: Vec<PendingToolCall> = Vec::new();
-    // thoughtSignature 兜底（跨 chunk 记住，functionCall 自身没有时回退用它）。
-    let mut carry_sig: Option<String> = None;
+    let mut replay = Vec::new();
     let mut finish_reason = None;
     let mut usage: Option<ModelUsage> = None;
     let mut saw_terminal = false;
@@ -315,18 +401,15 @@ pub async fn decode_gemini_stream(
                 let code = provider_error_code(&value["error"]);
                 return Err(ModelError::from_provider_stream(code.as_deref(), err));
             }
-            // 逐 part：text/thought → 增量；functionCall → 完整工具调用。
-            // 先整块预扫一个候选签名（thoughtSignature 可能在 functionCall 兄弟 part 上、
-            // 且顺序不定），functionCall 自身无签名时回退用它。
-            if let Some(sig) = gemini_candidate_signature(&value) {
-                carry_sig = Some(sig);
-            }
+            // Keep signed parts in order. Server tools are replay data, never
+            // local executable calls; signatures must not move between parts.
             for part in gemini_response_parts(&value) {
+                if part.get("functionCall").is_none() {
+                    replay.push(native_part(part, model, provider_id));
+                }
                 if let Some(mut call) = gemini_tool_call_from_part(part) {
-                    if call.signature.is_none() {
-                        call.signature = carry_sig.clone().map(Into::into);
-                    }
                     scope_signature(&mut call, model, provider_id);
+                    replay.push(call.replay_part());
                     sink.emit(StreamPart::ToolCallStart {
                         id: call.id.clone(),
                         name: call.function_name.clone(),
@@ -396,6 +479,10 @@ pub async fn decode_gemini_stream(
     let mut output = stream_output(full, reasoning_full, tool_calls, finish_reason, usage);
     output.web_search = web_search;
     output.images = images;
+    output.canonical_message = Some(ModelMessage {
+        role: ModelRole::Assistant,
+        content: replay,
+    });
     Ok(output)
 }
 
@@ -471,6 +558,24 @@ fn gemini_parts_from_message(
     let mut parts = Vec::new();
     for part in &message.content {
         match part {
+            MessagePart::GeminiNativePart {
+                part,
+                source_model,
+                source_provider_id,
+            } => {
+                let same_origin = source_model == model
+                    && !source_provider_id
+                        .as_deref()
+                        .zip(provider_id)
+                        .is_some_and(|(source, current)| source != current);
+                if same_origin && message.role == ModelRole::Assistant {
+                    parts.push(part.clone());
+                } else if part["thought"] != true {
+                    if let Some(text) = part["text"].as_str().filter(|text| !text.is_empty()) {
+                        parts.push(serde_json::json!({"text":text}));
+                    }
+                }
+            }
             MessagePart::Video {
                 mime_type, data, ..
             } => {
@@ -732,13 +837,8 @@ fn output_from_gemini_response(value: &Value, label: &str) -> Result<GenerateOut
     let mut reasoning_parts: Vec<String> = Vec::new();
     let mut tool_calls: Vec<PendingToolCall> = Vec::new();
     let mut images: Vec<GeneratedImageData> = Vec::new();
-    // thoughtSignature 可能在 functionCall 兄弟 part 上：先扫全 parts 取一个候选签名兜底。
-    let carry_sig = gemini_candidate_signature(value);
     for part in gemini_response_parts(value) {
-        if let Some(mut call) = gemini_tool_call_from_part(part) {
-            if call.signature.is_none() {
-                call.signature = carry_sig.clone().map(Into::into);
-            }
+        if let Some(call) = gemini_tool_call_from_part(part) {
             tool_calls.push(call);
         } else if let Some(image) = gemini_image_from_part(part) {
             images.push(image);
@@ -977,12 +1077,6 @@ fn gemini_part_thought_signature(part: &Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// 扫一个候选（或流片段）里所有 part，取第一个 thoughtSignature——签名可能不在
-/// functionCall part 自身上，而在同轮兄弟 part 上，且顺序不定。
-fn gemini_candidate_signature(value: &Value) -> Option<String> {
-    gemini_response_parts(value).find_map(gemini_part_thought_signature)
-}
-
 fn gemini_finish_reason_str(value: &Value) -> Option<String> {
     value
         .get("candidates")
@@ -1144,9 +1238,9 @@ mod tests {
             output
                 .tool_calls
                 .iter()
-                .map(|call| call.signature.as_ref().unwrap().value())
+                .map(|call| call.signature.as_ref().map(ProviderSignature::value))
                 .collect::<Vec<_>>(),
-            ["one", "two", "fallback"]
+            [Some("one"), Some("two"), None]
         );
         let saved = serde_json::to_vec(&output.replay_message()).unwrap();
         let mut request = GenerateRequest {
@@ -1171,7 +1265,12 @@ mod tests {
                     ..Default::default()
                 },
             );
-            let call = &body["contents"][0]["parts"][0];
+            let call = body["contents"][0]["parts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|part| part.get("functionCall").is_some())
+                .unwrap();
             assert_eq!(call["thoughtSignature"].as_str(), expected);
             assert_eq!(call["functionCall"]["name"], "echo");
         }
@@ -1282,7 +1381,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_carries_signatures_and_preserves_images_reasoning_and_usage() {
+    async fn stream_keeps_signatures_on_their_parts_and_preserves_images_reasoning_and_usage() {
         let (parts, output) = streamed(vec![
             serde_json::json!({"response":{"candidates":[{"content":{"parts":[{"text":"plan", "thought":true, "thoughtSignature":"previous"}]}}]}}),
             serde_json::json!({"response":{"candidates":[{"content":{"parts":[
@@ -1309,13 +1408,7 @@ mod tests {
                 }
             })
             .unwrap();
-        assert_eq!(
-            call.signature
-                .as_ref()
-                .unwrap()
-                .replay_for("custom-model", Some("account-a")),
-            Some("previous")
-        );
+        assert!(call.signature.is_none());
         assert_eq!(
             parts
                 .iter()

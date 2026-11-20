@@ -67,6 +67,13 @@ Rules:
   Ordered native history and the final finish reason survive the continuation.
   `GenerateOutput.usage` belongs to the final HTTP request;
   optional `billing_usage` sums hidden continuation requests for billing only.
+- `GeminiNativePart` preserves ordered server tool context and signed response parts,
+  including empty signed text. Source model/provider checks guard replay; other
+  protocols receive visible text only. Function calls remain typed local calls,
+  with matching IDs for Gemini 3+, and signatures stay on their original parts.
+  The legacy history bridge carries canonical parts in `gemini_content`, which
+  never reaches another provider's wire request. Mixed built-in/function tools
+  enable context circulation after request overrides; `ToolChoice::None` wins last.
 - Model adapters share SSE data framing: blank lines dispatch events, multiple `data`
   fields join with newlines, and CRLF/CR/LF and split UTF-8 bytes are accepted. EOF does
   not dispatch an unfinished event. Each adapter owns its terminal/usage semantics.

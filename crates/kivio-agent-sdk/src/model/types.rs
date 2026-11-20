@@ -117,6 +117,14 @@ pub enum MessagePart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
+    /// Ordered Gemini response part (including empty signed text and server
+    /// tool context). Only the source model/provider can replay its opaque data.
+    GeminiNativePart {
+        part: Value,
+        source_model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_provider_id: Option<String>,
+    },
     Text {
         text: String,
     },
@@ -234,6 +242,16 @@ pub struct ModelMessage {
 
 impl ModelMessage {
     pub fn text_content(&self) -> String {
+        // Gemini streaming parts are consecutive deltas, not separate paragraphs.
+        let separator = if self
+            .content
+            .iter()
+            .any(|part| matches!(part, MessagePart::GeminiNativePart { .. }))
+        {
+            ""
+        } else {
+            "\n"
+        };
         self.content
             .iter()
             .filter_map(|part| match part {
@@ -243,10 +261,13 @@ impl ModelMessage {
                 MessagePart::AnthropicNativeBlock { block, .. } if block["type"] == "text" => {
                     block["text"].as_str()
                 }
+                MessagePart::GeminiNativePart { part, .. } if part["thought"] != true => {
+                    part["text"].as_str()
+                }
                 _ => None,
             })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join(separator)
     }
 
     pub fn text(role: ModelRole, text: impl Into<String>) -> Self {
@@ -990,6 +1011,7 @@ pub(crate) fn openai_messages_with_provider(
             obj.remove("reasoning_items");
             obj.remove("anthropic_content");
             obj.remove("chat_content");
+            obj.remove("gemini_content");
         }
     }
     messages
@@ -1064,8 +1086,13 @@ pub fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage
             content: parts,
         });
     }
-    // Legacy history carries ordered canonical Anthropic content at this compatibility seam.
+    // Legacy history carries ordered provider-native content at this compatibility seam.
     if role == ModelRole::Assistant {
+        if let Some(content) = message.get("gemini_content") {
+            if let Ok(content) = serde_json::from_value::<Vec<MessagePart>>(content.clone()) {
+                return Some(ModelMessage { role, content });
+            }
+        }
         if let Some(content) = message.get("chat_content") {
             if let Ok(content) = serde_json::from_value::<Vec<MessagePart>>(content.clone()) {
                 return Some(ModelMessage { role, content });
@@ -1394,6 +1421,14 @@ fn openai_messages_from_model_message(
                     }
                 }
             }
+            MessagePart::GeminiNativePart { part, .. } => {
+                if part["thought"] != true {
+                    if let Some(text) = part["text"].as_str().filter(|text| !text.is_empty()) {
+                        text_parts.push(text.to_string());
+                        multimodal_parts.push(serde_json::json!({"type":"text", "text":text}));
+                    }
+                }
+            }
             MessagePart::ChatReasoning { .. }
             | MessagePart::AnthropicRedactedThinking { .. }
             | MessagePart::ToolResult { .. } => {}
@@ -1408,6 +1443,12 @@ fn openai_messages_from_model_message(
         Value::Array(multimodal_parts)
     } else if text_parts.is_empty() && !tool_calls.is_empty() {
         Value::Null
+    } else if message
+        .content
+        .iter()
+        .any(|part| matches!(part, MessagePart::GeminiNativePart { .. }))
+    {
+        Value::String(message.text_content())
     } else {
         Value::String(text_parts.join("\n"))
     };
@@ -1441,6 +1482,14 @@ fn openai_messages_from_model_message(
         )
     }) {
         out["anthropic_content"] = serde_json::to_value(&message.content).unwrap_or(Value::Null);
+    }
+    if preserve_legacy_metadata
+        && message
+            .content
+            .iter()
+            .any(|part| matches!(part, MessagePart::GeminiNativePart { .. }))
+    {
+        out["gemini_content"] = serde_json::json!(message.content);
     }
     vec![out]
 }
@@ -1576,6 +1625,13 @@ fn responses_items_from_model_message(
             MessagePart::AnthropicNativeBlock { block, .. } => {
                 if block["type"] == "text" {
                     if let Some(text) = block["text"].as_str() {
+                        content_parts.push(serde_json::json!({"type":text_part_type, "text":text}));
+                    }
+                }
+            }
+            MessagePart::GeminiNativePart { part, .. } => {
+                if part["thought"] != true {
+                    if let Some(text) = part["text"].as_str().filter(|text| !text.is_empty()) {
                         content_parts.push(serde_json::json!({"type":text_part_type, "text":text}));
                     }
                 }

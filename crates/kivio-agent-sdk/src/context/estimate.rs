@@ -178,6 +178,21 @@ fn estimate_model_message_tokens(message: &ModelMessage) -> usize {
                     })
             }
             MessagePart::ToolResult { content, .. } => estimate_tokens(content),
+            MessagePart::GeminiNativePart { part, .. } => {
+                part.get("text")
+                    .and_then(Value::as_str)
+                    .map_or(0, estimate_tokens)
+                    + [
+                        "toolCall",
+                        "toolResponse",
+                        "executableCode",
+                        "codeExecutionResult",
+                    ]
+                    .iter()
+                    .filter_map(|key| part.get(*key))
+                    .map(|value| estimate_tokens(&value.to_string()))
+                    .sum::<usize>()
+            }
             MessagePart::AnthropicNativeBlock { block, .. } => block
                 .get("text")
                 .and_then(Value::as_str)

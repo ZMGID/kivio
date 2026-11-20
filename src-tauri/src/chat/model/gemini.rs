@@ -66,6 +66,7 @@ impl GeminiProvider<'_> {
         let started_at = chrono::Local::now().timestamp();
         let started = std::time::Instant::now();
         let body = self.request_body(&request, false);
+        kivio_agent_sdk::model::gemini::validate_request_body(&request.model, &body)?;
         if crate::chat::video::has_video(&request) {
             crate::chat::video::validate_request(self.config.source, &request)?;
             crate::chat::video::validate_body(&body)?;
@@ -185,6 +186,7 @@ impl GeminiProvider<'_> {
         let mut measured_sink = FirstTokenStreamSink::new(sink, started);
         let sink = &mut measured_sink;
         let body = self.request_body(&request, true);
+        kivio_agent_sdk::model::gemini::validate_request_body(&request.model, &body)?;
         if crate::chat::video::has_video(&request) {
             crate::chat::video::validate_request(self.config.source, &request)?;
             crate::chat::video::validate_body(&body)?;

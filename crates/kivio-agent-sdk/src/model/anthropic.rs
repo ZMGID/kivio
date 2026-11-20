@@ -1598,6 +1598,14 @@ fn anthropic_content_blocks(
                     blocks.push(serde_json::json!({"type":"thinking", "thinking":text}));
                 }
             }
+            MessagePart::GeminiNativePart { part, .. } => {
+                if part["thought"] != true {
+                    if let Some(text) = part["text"].as_str().filter(|text| !text.trim().is_empty())
+                    {
+                        blocks.push(serde_json::json!({"type":"text", "text":text}));
+                    }
+                }
+            }
             MessagePart::ReasoningItem { .. } | MessagePart::ChatReasoning { .. } => {}
         }
     }
