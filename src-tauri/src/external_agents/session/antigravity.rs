@@ -23,6 +23,9 @@ use crate::proc::NoConsoleWindow;
 const INIT_TIMEOUT: Duration = Duration::from_secs(45);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const STDERR_CHARS: usize = 8192;
+const RESUME_ID_MISMATCH: &str =
+    "Antigravity resumed a different conversation; refusing to replace the binding";
+pub(crate) const MISSING_RESUME_TARGET: &str = "Antigravity native conversation not found";
 
 fn antigravity_session_command(bin: &Path) -> tokio::process::Command {
     let mut command = cli_command(bin);
@@ -92,6 +95,18 @@ impl Usage {
             context_window_tokens: None,
             context_tokens: None,
         }
+    }
+}
+
+#[derive(Debug)]
+enum TurnFailure {
+    Reported(String),
+    SessionLost(String),
+}
+
+impl From<String> for TurnFailure {
+    fn from(error: String) -> Self {
+        Self::SessionLost(error)
     }
 }
 
@@ -200,7 +215,7 @@ impl TurnStream {
         result: &Value,
         previous: &mut Option<Usage>,
         sink: &mut dyn FnMut(UnifiedAgentEvent),
-    ) -> Result<(), String> {
+    ) -> Result<(), TurnFailure> {
         // result.response repeats the streamed text. Only use it when no text was streamed.
         if self.text.is_empty() {
             if let Some(text) = result["response"].as_str().filter(|s| !s.is_empty()) {
@@ -233,6 +248,7 @@ impl TurnStream {
         if cumulative.is_some() {
             *previous = cumulative;
         }
+        let status = result["status"].as_str();
         if let Some(denied) = result["denied_actions"]
             .as_array()
             .filter(|v| !v.is_empty())
@@ -242,25 +258,31 @@ impl TurnStream {
                 .filter_map(|v| v["display_name"].as_str().or_else(|| v["action"].as_str()))
                 .collect();
             let message = format!("Antigravity CLI 权限配置拒绝了操作：{}。请调整 CLI 的 permissions.allow 或聊天底栏权限模式。", names.join(", "));
-            if self.text.trim().is_empty()
+            if status == Some("SUCCESS")
+                && self.text.trim().is_empty()
                 && result["response"].as_str().unwrap_or("").trim().is_empty()
             {
-                return Err(message);
+                return Err(TurnFailure::Reported(message));
             }
             sink(UnifiedAgentEvent::StatusNote { text: message });
         }
-        match result["status"].as_str() {
-            Some("SUCCESS") => Ok(()),
-            Some("CANCELED" | "INTERRUPTED") => Err("cancelled".into()),
-            status => Err(result["error"]
+        let error = || {
+            result["error"]
                 .as_str()
+                .filter(|error| !error.trim().is_empty())
                 .map(str::to_string)
                 .unwrap_or_else(|| {
                     format!(
                         "Antigravity turn ended with {}",
                         status.unwrap_or("missing status")
                     )
-                })),
+                })
+        };
+        match status {
+            Some("SUCCESS") => Ok(()),
+            Some("CANCELED" | "INTERRUPTED") => Err(TurnFailure::Reported("cancelled".into())),
+            Some("ERROR") => Err(TurnFailure::Reported(error())),
+            _ => Err(TurnFailure::SessionLost(error())),
         }
     }
 }
@@ -351,17 +373,39 @@ impl AntigravitySession {
         };
         let init = timeout(INIT_TIMEOUT, async {
             loop {
-                let line = session.reader.next_line().await.map_err(|e| e.to_string())?.ok_or("Antigravity exited before init")?;
-                if line.trim().is_empty() { continue; }
-                let value: Value = serde_json::from_str(&line).map_err(|e| format!("Invalid Antigravity init: {e}"))?;
+                let line = session
+                    .reader
+                    .next_line()
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .ok_or("Antigravity exited before init")?;
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let value: Value = serde_json::from_str(&line)
+                    .map_err(|e| format!("Invalid Antigravity init: {e}"))?;
                 if value["event"] == "init" {
-                    let id = value["conversation_id"].as_str().filter(|id| !id.is_empty()).ok_or("Antigravity init missing conversation_id")?;
-                    if resume.is_some_and(|expected| expected != id) { return Err("Antigravity resumed a different conversation; refusing to replace the binding".into()); }
+                    let id = value["conversation_id"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .ok_or("Antigravity init missing conversation_id")?;
+                    if resume.is_some_and(|expected| expected != id) {
+                        return Err(RESUME_ID_MISMATCH.into());
+                    }
                     return Ok::<String, String>(id.into());
                 }
-                if value["event"] == "result" { return Err(value["result"]["error"].as_str().unwrap_or("Antigravity failed before init").into()); }
+                if value["event"] == "result" {
+                    return Err(value["result"]["error"]
+                        .as_str()
+                        .unwrap_or("Antigravity failed before init")
+                        .into());
+                }
             }
-        }).await.unwrap_or_else(|_| Err("Antigravity init timed out; check agy version and sign-in".into()));
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err("Antigravity init timed out; check agy version and sign-in".into())
+        });
         match init {
             Ok(id) => {
                 session.native_id = id;
@@ -369,12 +413,22 @@ impl AntigravitySession {
             }
             Err(error) => {
                 session.shutdown().await;
+                let stderr = session
+                    .stderr_tail
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                // agy can exit successfully after silently allocating a fresh ID for a missing
+                // conversation. Require the warning for the exact requested ID before recovering.
+                if error == RESUME_ID_MISMATCH
+                    && resume.is_some_and(|id| {
+                        let warning = format!("warning: conversation {id:?} not found");
+                        stderr.lines().any(|line| line.trim() == warning)
+                    })
+                {
+                    return Err(MISSING_RESUME_TARGET.into());
+                }
                 Err(crate::external_agents::antigravity_slash::fold_error(
-                    error,
-                    &session
-                        .stderr_tail
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner()),
+                    error, &stderr,
                 ))
             }
         }
@@ -404,7 +458,7 @@ impl AntigravitySession {
         prompt: &str,
         events: &mpsc::Sender<UnifiedAgentEvent>,
         commands: &mut mpsc::Receiver<SessionCommand>,
-    ) -> Result<(), String> {
+    ) -> Result<(), TurnFailure> {
         use crate::external_agents::antigravity_slash::{
             command_name, is_report, is_terminal_only, report,
         };
@@ -443,7 +497,7 @@ impl AntigravitySession {
                         command = commands.recv() => match command {
                             Some(SessionCommand::Steer { accepted, .. }) => { let _ = accepted.send(false); }
                             Some(SessionCommand::StopTask { .. }) => {}
-                            _ => return Err(CANCELLED_SESSION_LOST.into()),
+                            _ => return Err(TurnFailure::SessionLost(CANCELLED_SESSION_LOST.into())),
                         }
                     }
                 };
@@ -462,6 +516,14 @@ impl AntigravitySession {
             // Skill slash commands are expanded by agy, preserving native arguments
             // and the existing conversation. Do not prepend Kivio instructions.
         }
+        // Keep earlier stderr from becoming the diagnosis for a later pipe failure.
+        for _ in 0..self.stderr_rx.len() {
+            let _ = self.stderr_rx.try_recv();
+        }
+        self.stderr_tail
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         let line = format!("{}\n", json!({"event":"user","message":{"content":prompt}}));
         delivery.mark_possibly_sent();
         self.stdin
@@ -474,7 +536,7 @@ impl AntigravitySession {
         loop {
             tokio::select! {
                 command = commands.recv() => match command {
-                    Some(SessionCommand::Cancel | SessionCommand::Close) | None => return Err(CANCELLED_SESSION_LOST.into()),
+                    Some(SessionCommand::Cancel | SessionCommand::Close) | None => return Err(TurnFailure::SessionLost(CANCELLED_SESSION_LOST.into())),
                     Some(SessionCommand::Steer { accepted, .. }) => { let _ = accepted.send(false); }
                     Some(SessionCommand::RunTurn { done, .. }) => { let _ = done.send(Err("Antigravity session already busy".into())); }
                     Some(SessionCommand::StopTask { .. }) => {}
@@ -489,7 +551,7 @@ impl AntigravitySession {
                     _ => {}
                 },
                 line = self.reader.next_line() => {
-                    let line = line.map_err(|e| e.to_string())?.ok_or("Antigravity exited before result")?;
+                    let line = line.map_err(|e| e.to_string())?.ok_or_else(|| "Antigravity exited before result".to_string())?;
                     if line.trim().is_empty() { continue; }
                     let value: Value = serde_json::from_str(&line).map_err(|e| format!("Invalid Antigravity stream: {e}"))?;
                     let payload = match value["event"].as_str() {
@@ -498,7 +560,7 @@ impl AntigravitySession {
                         _ => &value,
                     };
                     if payload["conversation_id"].as_str().is_some_and(|id| !id.is_empty() && id != self.native_id) {
-                        return Err("Antigravity event belongs to a different conversation".into());
+                        return Err(TurnFailure::SessionLost("Antigravity event belongs to a different conversation".into()));
                     }
                     let mut emitted = Vec::new();
                     stream.handle(&value, &mut |event| emitted.push(event));
@@ -525,8 +587,9 @@ pub fn spawn_antigravity_session_actor(
     crate::external_agents::session::live::SessionControl::spawn(tx, async move {
         loop {
             let command = tokio::select! {
-                command = rx.recv() => match command { Some(command) => command, None => break },
+                biased;
                 _ = session.child.wait() => break,
+                command = rx.recv() => match command { Some(command) => command, None => break },
             };
             match command {
                 SessionCommand::RunTurn {
@@ -547,28 +610,37 @@ pub fn spawn_antigravity_session_actor(
                     let result = if images.is_empty() {
                         session.run_turn(&delivery, &prompt, &events, &mut rx).await
                     } else {
-                        Err("Antigravity stream accepts text only; images must be supplied as file paths".into())
+                        Err(TurnFailure::SessionLost(
+                            "Antigravity stream accepts text only; images must be supplied as file paths".into(),
+                        ))
                     };
-                    if let Err(error) = result {
-                        session.shutdown().await;
-                        let error = if error == CANCELLED_SESSION_LOST
-                            || error == "cancelled"
-                            || error == "closed"
-                        {
-                            error
-                        } else {
-                            crate::external_agents::antigravity_slash::fold_error(
-                                error,
-                                &session
-                                    .stderr_tail
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner()),
-                            )
-                        };
-                        let _ = done.send(Err(error));
-                        return;
+                    match result {
+                        Ok(()) => {
+                            let _ = done.send(Ok(()));
+                        }
+                        Err(TurnFailure::Reported(error)) => {
+                            // A valid result settles the turn even when the model request failed.
+                            let _ = done.send(Err(error));
+                        }
+                        Err(TurnFailure::SessionLost(error)) => {
+                            // Publish the loss before reporting the failure to the registry owner.
+                            rx.close();
+                            session.shutdown().await;
+                            let error = if error == CANCELLED_SESSION_LOST || error == "closed" {
+                                error
+                            } else {
+                                crate::external_agents::antigravity_slash::fold_error(
+                                    error,
+                                    &session
+                                        .stderr_tail
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner()),
+                                )
+                            };
+                            let _ = done.send(Err(error));
+                            return;
+                        }
                     }
-                    let _ = done.send(Ok(()));
                 }
                 SessionCommand::Close | SessionCommand::Cancel => break,
                 SessionCommand::Steer { accepted, .. } => {
@@ -577,6 +649,7 @@ pub fn spawn_antigravity_session_actor(
                 SessionCommand::StopTask { .. } => {}
             }
         }
+        rx.close();
         session.shutdown().await;
     })
 }
@@ -598,7 +671,10 @@ mod tests {
         assert_eq!(value, Some("true"));
     }
 
-    async fn ask(control: &mpsc::Sender<SessionCommand>, prompt: &str) -> Vec<UnifiedAgentEvent> {
+    async fn ask_turn(
+        control: &mpsc::Sender<SessionCommand>,
+        prompt: &str,
+    ) -> (Result<(), String>, Vec<UnifiedAgentEvent>) {
         let (events, mut rx) = mpsc::channel(256);
         let (done, completion) = tokio::sync::oneshot::channel();
         control
@@ -616,15 +692,20 @@ mod tests {
             })
             .await
             .unwrap();
-        timeout(Duration::from_secs(90), completion)
+        let result = timeout(Duration::from_secs(90), completion)
             .await
             .expect("turn timeout")
-            .unwrap()
             .unwrap();
         let mut events = vec![];
         while let Some(event) = rx.recv().await {
             events.push(event);
         }
+        (result, events)
+    }
+
+    async fn ask(control: &mpsc::Sender<SessionCommand>, prompt: &str) -> Vec<UnifiedAgentEvent> {
+        let (result, events) = ask_turn(control, prompt).await;
+        result.unwrap();
         events
     }
 
@@ -645,6 +726,66 @@ mod tests {
             }
         }
         text
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn antigravity_resume_requires_the_requested_id_in_the_missing_warning() {
+        let requested = "0d40e615-24df-4eb0-ad0b-ff6dcb562432";
+        let script = r#"
+            printf 'warning: conversation "%s" not found\n' "$0" >&2
+            printf '%s\n' '{"event":"init","conversation_id":"f63ce175-ab12-4459-91f5-d70c0f4dca6a"}'
+        "#;
+        for (warning_id, missing) in [(requested, true), ("someone-else", false)] {
+            let error = AntigravitySession::connect(
+                Path::new("/bin/sh"),
+                &["-c".into(), script.into(), warning_id.into()],
+                &std::env::temp_dir(),
+                Some(requested),
+            )
+            .await
+            .err()
+            .expect("a different init ID must never replace the binding");
+            assert_eq!(
+                error.starts_with("Antigravity native conversation not found"),
+                missing,
+                "{error}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reported_antigravity_failure_keeps_the_process_until_the_stream_is_lost() {
+        let script = r#"
+            printf '%s\n' '{"event":"init","conversation_id":"native"}'
+            IFS= read -r input || exit 1
+            printf '%s\n' \
+                '{"event":"step_update","step_update":{"conversation_id":"native","step_index":1,"step_type":"agent_response","state":"ACTIVE","text_delta":"partial"}}' \
+                '{"event":"result","result":{"conversation_id":"native","status":"ERROR","error":"request failed: EOF"}}'
+            IFS= read -r input || exit 1
+            printf '%s\n' '{"event":"result","result":{"conversation_id":"native","status":"SUCCESS","response":"second turn"}}'
+            IFS= read -r input || exit 1
+        "#;
+        let session = AntigravitySession::connect(
+            Path::new("/bin/sh"),
+            &["-c".into(), script.into()],
+            &std::env::temp_dir(),
+            None,
+        )
+        .await
+        .unwrap();
+        let control = spawn_antigravity_session_actor(session);
+
+        let (result, events) = ask_turn(&control, "first prompt").await;
+        assert_eq!(result.unwrap_err(), "request failed: EOF");
+        assert_eq!(text(&events), "partial");
+        assert!(!control.is_closed());
+        assert_eq!(text(&ask(&control, "second prompt").await), "second turn");
+
+        let (result, _) = ask_turn(&control, "third prompt").await;
+        assert!(result.unwrap_err().contains("exited before result"));
+        assert!(control.is_closed());
     }
 
     #[tokio::test]
@@ -891,29 +1032,35 @@ mod tests {
             ..Default::default()
         });
         let mut events = vec![];
-        assert!(stream.finish(&json!({"status":"ERROR","error":"invalid model","usage":{"input_tokens":120,"output_tokens":13,"total_tokens":133}}), &mut previous, &mut |e| events.push(e)).unwrap_err().contains("invalid model"));
+        assert!(matches!(
+            stream.finish(
+                &json!({"status":"ERROR","error":"invalid model","usage":{"input_tokens":120,"output_tokens":13,"total_tokens":133}}),
+                &mut previous,
+                &mut |e| events.push(e),
+            ),
+            Err(TurnFailure::Reported(error)) if error == "invalid model"
+        ));
         assert!(
             matches!(&events[0], UnifiedAgentEvent::Usage { usage } if usage.total_tokens == Some(23))
         );
-        assert_eq!(
-            stream
-                .finish(&json!({"status":"INTERRUPTED"}), &mut previous, &mut |_| {})
-                .unwrap_err(),
-            "cancelled"
-        );
-        assert!(stream
-            .finish(&json!({"status":"WAITING"}), &mut previous, &mut |_| {})
-            .is_err());
+        assert!(matches!(
+            stream.finish(&json!({"status":"INTERRUPTED"}), &mut previous, &mut |_| {}),
+            Err(TurnFailure::Reported(error)) if error == "cancelled"
+        ));
+        assert!(matches!(
+            stream.finish(&json!({"status":"WAITING"}), &mut previous, &mut |_| {}),
+            Err(TurnFailure::SessionLost(_))
+        ));
     }
 
     #[test]
     fn soft_denial_with_success_status_never_becomes_an_empty_success() {
         let stream = TurnStream::default();
         let result = json!({"status":"SUCCESS","response":"","denied_actions":[{"action":"read_file","display_name":"ListDir"}]});
-        assert!(stream
-            .finish(&result, &mut None, &mut |_| {})
-            .unwrap_err()
-            .contains("ListDir"));
+        assert!(matches!(
+            stream.finish(&result, &mut None, &mut |_| {}),
+            Err(TurnFailure::Reported(error)) if error.contains("ListDir")
+        ));
     }
 
     #[test]

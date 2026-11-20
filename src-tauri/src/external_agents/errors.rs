@@ -147,6 +147,9 @@ fn detect_kind(raw: &str, exit_code: Option<i32>, stderr_tail: &str) -> External
         || hay.contains("forcibly closed by the remote host")
         || hay.contains("connection reset by peer")
         || hay.contains("unexpected eof")
+        || hay
+            .lines()
+            .any(|line| line.contains("request failed:") && line.trim_end().ends_with(": eof"))
     {
         ExternalAgentErrorKind::Transport
     } else if hay.contains("exited")
@@ -320,6 +323,14 @@ mod tests {
         let transport = classify("API error (attempt 1): read tcp: wsarecv: An existing connection was forcibly closed by the remote host.", None, "", "antigravity");
         assert_eq!(transport.kind, ExternalAgentErrorKind::Transport);
         assert!(!transport.user_message.contains("登录"));
+        let eof = classify(
+            r#"API error (attempt 1): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": EOF"#,
+            None,
+            "",
+            "antigravity",
+        );
+        assert_eq!(eof.kind, ExternalAgentErrorKind::Transport);
+        assert!(eof.user_message.contains("流式响应中途断开"));
         assert_eq!(
             classify(
                 "Authentication expired. Please log back in.",

@@ -945,12 +945,31 @@ async fn run_external_cli_reply_owned(
                         conversation.agent_runtime.external_service_tier.as_deref(),
                     );
                 }
+                let recover_antigravity_prompt = (!is_slash
+                    && def.stream_format == StreamFormat::AntigravityStreamJson)
+                    .then_some(|recovery: &Conversation| {
+                        let request = format!("{latest_user_message}{attachment_note}");
+                        let first_prompt = compose_external_prompt(
+                            &daemon_instructions,
+                            skill_body.as_deref(),
+                            skill_dir.as_deref(),
+                            skill_folder.as_deref(),
+                            false,
+                            &request,
+                        );
+                        crate::external_agents::prompt::compose_history_handoff(
+                            recovery,
+                            first_prompt,
+                            &request,
+                        )
+                        .map(|prompt| prompt.full_prompt)
+                    });
                 run_persistent_turn(
                     app,
                     state,
                     lease,
                     run_generation,
-                    &conversation_id,
+                    conversation,
                     &agent_id,
                     def.stream_format,
                     &resolved_bin,
@@ -990,7 +1009,8 @@ async fn run_external_cli_reply_owned(
                         codex_visible_users: (rewind == Some(NativeRewind::CodexRevert))
                             .then(|| visible_user_prompts(conversation)),
                     },
-                    history_transition.as_ref().map(|history| history.id.as_str()),
+                    history_transition.as_ref().map(|history| history.id.clone()),
+                    recover_antigravity_prompt,
                     &mut history_attempt,
                     &mut emit_event,
                     &cancel_check,
@@ -1480,9 +1500,7 @@ pub(crate) async fn prepare_history_transition(
     run_generation: u64,
     is_slash: bool,
 ) -> Result<Option<crate::chat::types::ExternalHistoryTransition>, String> {
-    use crate::chat::types::{
-        ExternalHistoryDelivery, ExternalHistoryMethod, ExternalHistoryTransition,
-    };
+    use crate::chat::types::ExternalHistoryDelivery;
     if crate::external_agents::session::has_legacy_rewind(app, &conversation.id)
         && crate::chat::repository::repository(app)
             .get(app, &conversation.id)
@@ -1507,38 +1525,45 @@ pub(crate) async fn prepare_history_transition(
             || (conversation.external_history.is_none()
                 && crate::external_agents::session::has_legacy_rewind(app, &conversation.id)))
     {
-        let expected_history = conversation.external_history.clone();
-        let updated = crate::chat::repository::repository(app)
-            .mutate_expected(
-                app,
-                &conversation.id,
-                Some(conversation.revision),
-                |latest| {
-                    if !app
-                        .state::<AppState>()
-                        .chat_runtime()
-                        .is_generation_active(&conversation.id, run_generation)
-                        || latest.external_history != expected_history
-                    {
-                        return Err("External history transition changed".into());
-                    }
-                    let mut history =
-                        ExternalHistoryTransition::new(latest, ExternalHistoryMethod::Replay);
-                    history.through_message_id = history_before_request(&latest.messages)
-                        .last()
-                        .map(|message| message.id.clone());
-                    latest.external_history = Some(history);
-                    Ok(())
-                },
-            )
-            .await
-            .map_err(crate::chat::repository::repository_error)?;
-        *conversation = updated;
+        *conversation = persist_visible_history_replay(app, conversation, run_generation).await?;
         crate::external_agents::session::clear_history_rewound(app, &conversation.id);
     }
     Ok((!is_slash)
         .then(|| conversation.external_history.clone())
         .flatten())
+}
+
+async fn persist_visible_history_replay(
+    app: &AppHandle,
+    conversation: &Conversation,
+    run_generation: u64,
+) -> Result<Conversation, String> {
+    use crate::chat::types::{ExternalHistoryMethod, ExternalHistoryTransition};
+    crate::chat::repository::repository(app)
+        .mutate_expected(
+            app,
+            &conversation.id,
+            Some(conversation.revision),
+            |latest| {
+                if !app
+                    .state::<AppState>()
+                    .chat_runtime()
+                    .is_generation_active(&conversation.id, run_generation)
+                    || latest.external_history != conversation.external_history
+                {
+                    return Err("External history transition changed".into());
+                }
+                let mut history =
+                    ExternalHistoryTransition::new(latest, ExternalHistoryMethod::Replay);
+                history.through_message_id = history_before_request(&latest.messages)
+                    .last()
+                    .map(|message| message.id.clone());
+                latest.external_history = Some(history);
+                Ok(())
+            },
+        )
+        .await
+        .map_err(crate::chat::repository::repository_error)
 }
 
 /// The visible history before the request being sent (everything before the last user message).
@@ -1595,7 +1620,7 @@ async fn run_persistent_turn<E, C>(
     state: &State<'_, AppState>,
     lease: &crate::external_agents::session::live::SessionLease<'_>,
     run_generation: u64,
-    conversation_id: &str,
+    conversation: &Conversation,
     agent_id: &str,
     protocol: StreamFormat,
     resolved_bin: &std::path::Path,
@@ -1613,7 +1638,8 @@ async fn run_persistent_turn<E, C>(
     additional_directories: &[String],
     pi_regenerate: Option<&PiRegenerateRequest>,
     rewind: PersistentRewind,
-    history_transition: Option<&str>,
+    mut history_transition: Option<String>,
+    recover_antigravity_prompt: Option<impl FnOnce(&Conversation) -> Result<String, String>>,
     history_attempt: &mut Option<crate::external_agents::session::HistoryAttempt>,
     emit: &mut E,
     cancel: &C,
@@ -1625,9 +1651,11 @@ where
     E: FnMut(UnifiedAgentEvent, Option<Uuid>),
     C: Fn() -> bool,
 {
+    use crate::external_agents::session::antigravity::MISSING_RESUME_TARGET;
     use crate::external_agents::session::live::LiveSession;
     use crate::external_agents::session::{load_live_handle, LiveSessionHandle};
 
+    let conversation_id = conversation.id.as_str();
     let cwd_str = cwd.to_string_lossy().to_string();
     let protocol_tag = persistent_protocol_tag(protocol);
     let mut launch_config = launch_config.clone();
@@ -1649,7 +1677,7 @@ where
         .map(|h| h.native_id);
 
     if let (Some(transition), Some(native_id)) = (
-        history_transition,
+        history_transition.as_deref(),
         crate::external_agents::session::bound_native_session_id(app, conversation_id),
     ) {
         *history_attempt = Some(
@@ -1766,6 +1794,7 @@ where
                 // persisted. If the resume then fails and we fall back to fresh, the prior context
                 // is lost and the user must be told (R4) rather than silently getting a blank slate.
                 let mut intended_resume = resume_native.is_some();
+                let mut recovered_prompt = None;
                 let connected = match connect_persistent_session(
                     app,
                     conversation_id,
@@ -1785,18 +1814,35 @@ where
                 .await
                 {
                     Ok(connected) => connected,
-                    // Resume can fail during connect before the first turn: Claude reports a missing
-                    // conversation on stderr; dsh returns `session \"...\" not found` from session/open.
-                    // Clear the stale handle and retry fresh exactly once, with the normal reset notice.
-                    Err(err) if !dropped_resume && is_missing_resume_target(&err, agent_id) => {
+                    Err(err)
+                        if !dropped_resume
+                            && (is_missing_resume_target(&err, agent_id)
+                                || (protocol == StreamFormat::AntigravityStreamJson
+                                    && resume_native.is_some()
+                                    && err == MISSING_RESUME_TARGET)) =>
+                    {
                         dropped_resume = true;
-                        turn_args = drop_resume_for_fresh_session(
-                            app,
-                            conversation_id,
-                            agent_id,
-                            protocol,
-                            &turn_args,
-                        );
+                        if protocol == StreamFormat::AntigravityStreamJson {
+                            let recover = recover_antigravity_prompt.ok_or(
+                                "Antigravity 原生会话已不存在。请先发送一条普通消息恢复上下文，再运行命令。",
+                            )?;
+                            // Persist delivery intent before publishing a replacement binding.
+                            // The existing history delivery path settles it with the saved reply.
+                            let recovery =
+                                persist_visible_history_replay(app, conversation, run_generation)
+                                    .await?;
+                            recovered_prompt = Some(recover(&recovery)?);
+                            history_transition =
+                                recovery.external_history.map(|history| history.id);
+                        } else {
+                            turn_args = drop_resume_for_fresh_session(
+                                app,
+                                conversation_id,
+                                agent_id,
+                                protocol,
+                                &turn_args,
+                            );
+                        }
                         connect_persistent_session(
                             app,
                             conversation_id,
@@ -1880,16 +1926,21 @@ where
                 // A resumed session already holds history → send only the latest message.
                 let prompt = if resumed {
                     reuse_prompt.to_string()
+                } else if let Some(prompt) = recovered_prompt {
+                    emit(
+                        UnifiedAgentEvent::StatusNote {
+                            text: "Antigravity 原生会话已不存在，正在用最近的可见文字历史继续。"
+                                .into(),
+                        },
+                        None,
+                    );
+                    prompt
                 } else {
+                    if intended_resume || dropped_resume {
+                        emit(context_reset_notice_event(), None);
+                    }
                     first_prompt.to_string()
                 };
-                // Intended to resume but ended up fresh → warn about the lost context.
-                // `dropped_resume` 走的也是这一条：resume 的目标会话被 claude 清理掉了，我们换了个
-                // 新会话继续 —— 用户该看到的正是这条**已有的**「上下文已重置」提示，
-                // 而不是 claude 那句英文原文（别为它新写一条文案，spec 第 2 条）。
-                if !resumed && (intended_resume || dropped_resume) {
-                    emit(context_reset_notice_event(), None);
-                }
                 (control, prompt)
             }
         }
@@ -1944,12 +1995,14 @@ where
             emit,
             cancel,
             approvals,
-            history_transition.map(|transition_id| HistoryDispatch {
-                app,
-                transition_id,
-                native_id: resumable_native.as_deref().unwrap_or_default(),
-                attempt: &mut *history_attempt,
-            }),
+            history_transition
+                .as_deref()
+                .map(|transition_id| HistoryDispatch {
+                    app,
+                    transition_id,
+                    native_id: resumable_native.as_deref().unwrap_or_default(),
+                    attempt: &mut *history_attempt,
+                }),
         )
         .await;
 
@@ -1958,10 +2011,12 @@ where
             Err(e) => e,
         };
 
-        // 会话是否还能留在注册表里。默认丢弃（entry 落地 ⇒ control sender 关闭 ⇒ actor 关停
-        // 子进程）；只有「协议级取消之后会话仍可用」的协议例外 —— 否则用户点一次「停止」
-        // 就把常驻进程连带杀掉，上下文延续与 0.1s 冷启动全部作废（见 `cancel_keeps_live_session`）。
-        if !cancel_keeps_live_session(&err, protocol) {
+        // Antigravity closes its command channel before returning a failure that loses the
+        // stream. A failed result for a dispatched turn can leave the channel open for the next.
+        let antigravity_turn_settled = protocol == StreamFormat::AntigravityStreamJson
+            && delivery.possibly_sent()
+            && !control.is_closed();
+        if !antigravity_turn_settled && !cancel_keeps_live_session(&err, protocol) {
             state
                 .external_live_sessions()
                 .remove_exact(conversation_id, &control);

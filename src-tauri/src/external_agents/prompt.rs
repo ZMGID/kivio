@@ -95,14 +95,12 @@ fn assemble_prompt(
     }
 }
 
-/// Upper bound for the history carried into a fresh native session after a rewind. Newest
+/// Upper bound for the visible history carried into a fresh native session. Newest
 /// messages are kept; the CLI still receives the full latest request.
 const REWIND_HISTORY_MAX_CHARS: usize = 60_000;
 
-/// After a rewind, a CLI without native branching starts a fresh native session. This is the one
-/// exception to "no history replay" (R3): the visible Kivio history that remains is carried once
-/// as text, so the CLI knows what the user still sees and nothing that was removed. Tool calls are
-/// represented only by the text around them.
+/// When a native session has to be replaced, carry the retained Kivio history once as text.
+/// Tool calls are represented only by the text around them.
 ///
 /// `messages` is the visible history before the request being sent.
 pub fn rewind_history_block(messages: &[ChatMessage]) -> String {
@@ -167,7 +165,7 @@ pub fn compose_history_handoff(
     ))
 }
 
-/// Compose the first prompt of a fresh native session that replaces a rewound one.
+/// Compose the first prompt that carries visible history into a replacement native session.
 pub fn compose_external_prompt_with_history(
     composed: ComposedExternalPrompt,
     history_block: &str,
