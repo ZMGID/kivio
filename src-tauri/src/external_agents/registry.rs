@@ -233,7 +233,7 @@ mod tests {
                 Native,
                 Fallback,
                 Native,
-                Unavailable,
+                Native,
             ),
             (
                 "pi",
@@ -278,7 +278,7 @@ mod tests {
                 Fallback,
                 Fallback,
                 Unavailable,
-                Unavailable,
+                Native,
             ),
         ];
         assert_eq!(cases.len(), AGENT_DEFS.len());

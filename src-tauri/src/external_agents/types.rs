@@ -176,6 +176,8 @@ pub enum AccountProtocol {
     ClaudeControl,
     CodexAppServer,
     GrokBilling,
+    KimiWeb,
+    AntigravityUsage,
 }
 
 #[derive(Debug, Clone, Copy)]

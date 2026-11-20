@@ -266,7 +266,7 @@ function AccountRow({ agentId, t }: { agentId: string; t: Strings }) {
     : identity ||
       (loading && !account
         ? t.externalAgentsAccountLoading
-        : account?.account?.type ?? t.externalAgentsAccountUnknown)
+        : account?.account?.type ?? account?.unavailable ?? t.externalAgentsAccountUnknown)
   return (
     <Row
       lead={

@@ -1,7 +1,7 @@
 use super::super::types::{
-    AgentErrorPolicy, AgentImportPolicy, AgentInstallSpec, ContextWindowStrategy,
-    CurrentConfigStrategy, LatestVersionStrategy, PostInstallStrategy, ProviderProfileStrategy,
-    RuntimeAgentDef, UpdateStrategy, UsageFallbackStrategy,
+    AccountProbe, AccountProtocol, AgentErrorPolicy, AgentImportPolicy, AgentInstallSpec,
+    ContextWindowStrategy, CurrentConfigStrategy, LatestVersionStrategy, PostInstallStrategy,
+    ProviderProfileStrategy, RuntimeAgentDef, UpdateStrategy, UsageFallbackStrategy,
 };
 use super::acp::{acp_def, build_acp_args};
 
@@ -39,6 +39,19 @@ const KIMI_MODELS: &[(&str, &str)] = &[
 pub const KIMI_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     current_config: CurrentConfigStrategy::Kimi,
     provider_profile: ProviderProfileStrategy::Kimi,
+    account: Some(AccountProbe {
+        args: &[
+            "web",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "0",
+            "--no-open",
+            "--log-level",
+            "fatal",
+        ],
+        protocol: AccountProtocol::KimiWeb,
+    }),
     context_window: ContextWindowStrategy::Kimi,
     usage_fallback: UsageFallbackStrategy::KimiWireLog,
     error_policy: AgentErrorPolicy::login("kimi"),

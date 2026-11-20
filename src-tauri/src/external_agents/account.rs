@@ -1,7 +1,10 @@
 //! Read-only native account/usage discovery. Never starts a conversation or returns credentials.
 use crate::{
     external_agents::{
-        spawn::{agent_cli_command, join_stderr_tail, spawn_stderr_tail, AgentChild},
+        spawn::{
+            agent_cli_command, agent_probe_command, join_stderr_tail, spawn_stderr_tail,
+            AgentChild, CliProcessOutput,
+        },
         types::{AccountProbe, AccountProtocol, RuntimeAgentDef},
     },
     proc::NoConsoleWindow,
@@ -9,6 +12,8 @@ use crate::{
 use serde_json::{json, Value};
 use std::{path::Path, process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::time::timeout;
 
 async fn exchange(
     input: &mut super::diagnostics::AgentStdin,
@@ -72,6 +77,117 @@ pub async fn probe(
 ) -> Result<Value, String> {
     let identity = super::overrides::LaunchIdentity::capture(def, bin);
     let protocol = probe.protocol;
+    let result = match protocol {
+        AccountProtocol::AntigravityUsage | AccountProtocol::KimiWeb => {
+            let mut command = agent_probe_command(def, bin);
+            command.args(probe.args).current_dir(cwd);
+            let usage = if protocol == AccountProtocol::AntigravityUsage {
+                antigravity_usage(command).await
+            } else {
+                kimi_usage(command).await
+            };
+            let (usage, unavailable) = match usage {
+                Ok(usage) => (usage, None),
+                Err(error) => (Value::Null, Some(error)),
+            };
+            Ok(normalize(
+                def.id,
+                protocol,
+                &Value::Null,
+                &usage,
+                unavailable,
+            ))
+        }
+        AccountProtocol::ClaudeControl
+        | AccountProtocol::CodexAppServer
+        | AccountProtocol::GrokBilling => probe_stdio(def, probe, bin, cwd).await,
+    };
+    if !identity.still_current(def, bin) {
+        return Err("Account settings changed; retry".into());
+    }
+    result
+}
+
+async fn antigravity_usage(mut command: Command) -> Result<Value, String> {
+    let output = timeout(Duration::from_secs(25), command.group_output())
+        .await
+        .map_err(|_| "Antigravity 额度查询超时")?
+        .map_err(|_| "Antigravity 启动失败")?;
+    if !output.status.success() {
+        return Err("Antigravity 额度查询失败，请确认本地 CLI 已登录".into());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|_| "Antigravity 未返回结构化额度报告".into())
+}
+
+async fn kimi_usage(mut command: Command) -> Result<Value, String> {
+    // The CLI owns OAuth and token refresh. This client only talks to the
+    // loopback server started for this probe, including on Kimi Code 2.6.2.
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "无法连接本地 Kimi Code 服务")?;
+    let mut child = AgentChild::spawn(command.stdout(Stdio::piped()).stderr(Stdio::null()))
+        .map_err(|_| "Kimi Code 启动失败")?;
+    let stdout = child.stdout.take().ok_or("无法读取 Kimi Code 启动状态")?;
+    let mut lines = BufReader::new(stdout).lines();
+    let (port, token) = timeout(Duration::from_secs(15), async {
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(ready) = kimi_web_ready(&line) {
+                return Ok(ready);
+            }
+        }
+        Err("Kimi Code 未启动本地额度服务")
+    })
+    .await
+    .map_err(|_| "Kimi Code 本地额度服务启动超时")??;
+    let api = format!("http://127.0.0.1:{port}/api/v1");
+    let usage = async {
+        let response = client
+            .get(format!("{api}/oauth/usage"))
+            .bearer_auth(&token)
+            .timeout(Duration::from_secs(8))
+            .send()
+            .await?
+            .error_for_status()?;
+        response.json::<Value>().await
+    }
+    .await
+    .map_err(|_| "Kimi Code 额度接口暂不可用".into());
+
+    // Let the CLI close its own Web server and unregister it. AgentChild
+    // terminates the process tree if an older or unresponsive CLI stays alive.
+    let _ = client
+        .post(format!("{api}/shutdown"))
+        .bearer_auth(&token)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await;
+    let _ = timeout(Duration::from_secs(2), child.wait()).await;
+    usage
+}
+
+fn kimi_web_ready(line: &str) -> Option<(u16, String)> {
+    let url = line.trim().strip_prefix("Kimi server: http://127.0.0.1:")?;
+    let (port, token) = url.split_once("/#token=")?;
+    let port = port.parse::<u16>().ok().filter(|port| *port != 0)?;
+    if token.is_empty()
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    Some((port, token.to_owned()))
+}
+
+async fn probe_stdio(
+    def: &RuntimeAgentDef,
+    probe: AccountProbe,
+    bin: &Path,
+    cwd: &Path,
+) -> Result<Value, String> {
+    let protocol = probe.protocol;
     let claude = protocol == AccountProtocol::ClaudeControl;
     let grok = protocol == AccountProtocol::GrokBilling;
     let mut command = agent_cli_command(def, bin);
@@ -119,9 +235,6 @@ pub async fn probe(
     }).await.unwrap_or_else(|_| Err("账号查询超时，请确认 CLI 可正常启动".into()));
     let _ = join_stderr_tail(&mut child, tail).await;
     let _ = child.wait().await;
-    if !identity.still_current(def, bin) {
-        return Err("Account settings changed; retry".into());
-    }
     result
 }
 
@@ -148,7 +261,60 @@ fn normalize(
                 "windowDurationMins":window["windowDurationMins"].as_u64()}));
         }
     };
-    if protocol == AccountProtocol::GrokBilling {
+    if protocol == AccountProtocol::KimiWeb {
+        let data = &usage["data"];
+        if usage["code"] == 0 && data["kind"] == "ok" {
+            let usages = &data["quota"]["usages"];
+            for (key, name) in [
+                ("limit5h", "5-hour limit"),
+                ("limit7d", "Weekly limit"),
+                ("monthTotal", "Monthly limit"),
+            ] {
+                let entry = &usages[key];
+                add_window(
+                    name.into(),
+                    &json!({"usedPercent": entry["usedRatio"].as_f64().map(|ratio| ratio * 100.0),
+                            "resetsAt": entry["resetAt"]}),
+                    false,
+                );
+            }
+        } else if unavailable.is_none() {
+            unavailable = Some("Kimi Code 未返回订阅额度，请确认本地 CLI 已登录".into());
+        }
+    } else if protocol == AccountProtocol::AntigravityUsage {
+        let command = &usage["command"];
+        if usage["status"] == "SUCCESS" && usage["num_turns"] == 0 && command["name"] == "usage" {
+            if let Some(groups) = command["data"]["groups"].as_array() {
+                for group in groups {
+                    let Some(group_name) = group["name"].as_str() else {
+                        continue;
+                    };
+                    let Some(buckets) = group["buckets"].as_array() else {
+                        continue;
+                    };
+                    for bucket in buckets {
+                        let name = match bucket["window"].as_str() {
+                            Some("5h") => Some("5h"),
+                            Some("weekly") => Some("7d"),
+                            _ => bucket["name"].as_str(),
+                        };
+                        let Some(name) = name else {
+                            continue;
+                        };
+                        let remaining = bucket["remaining_fraction"]
+                            .as_f64()
+                            .filter(|value| (0.0..=1.0).contains(value));
+                        add_window(
+                            format!("{group_name} · {name}"),
+                            &json!({"usedPercent": remaining.map(|ratio| (1.0 - ratio) * 100.0),
+                                    "resetsAt": bucket["reset_time"]}),
+                            false,
+                        );
+                    }
+                }
+            }
+        }
+    } else if protocol == AccountProtocol::GrokBilling {
         let config = &usage["config"];
         let mins = |key: &str| {
             chrono::DateTime::parse_from_rfc3339(config[key].as_str().unwrap_or("")).ok()
@@ -208,6 +374,92 @@ fn normalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn antigravity_preserves_grouped_windows_and_zero_remaining() {
+        let report = json!({
+            "status": "SUCCESS",
+            "num_turns": 0,
+            "command": {"name": "usage", "data": {"groups": [
+                {"name": "Gemini Models", "buckets": [
+                    {"name": "Five Hour Limit Remaining", "window": "5h", "remaining_fraction": 0.875,
+                     "reset_time": "2026-11-21T09:00:00Z"},
+                    {"name": "Missing quota"},
+                ]},
+                {"name": "Gemini 4 Argon", "buckets": [
+                    {"name": "Gemini 4 Argon Weekly Limit", "window": "weekly", "remaining_fraction": 0},
+                ]},
+            ]}}
+        });
+        let status = normalize(
+            "antigravity",
+            AccountProtocol::AntigravityUsage,
+            &Value::Null,
+            &report,
+            None,
+        );
+        let windows = status["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0]["name"], "Gemini Models · 5h");
+        assert_eq!(windows[0]["usedPercent"], 12.5);
+        assert_eq!(windows[0]["resetsAt"], "2026-11-21T09:00:00Z");
+        assert_eq!(windows[1]["name"], "Gemini 4 Argon · 7d");
+        assert_eq!(windows[1]["usedPercent"], 100.0);
+    }
+
+    #[test]
+    fn kimi_reports_subscription_windows_and_omits_monthly_breakdown() {
+        let payload = json!({
+            "code": 0,
+            "data": {"kind": "ok", "quota": {"usages": {
+                "limit5h": {"usedRatio": 0},
+                "limit7d": {"usedRatio": 1, "resetAt": "2026-11-28T00:00:00Z"},
+                "monthTotal": {"usedRatio": 0.25},
+                "monthCode": {"usedRatio": 0.125}
+            }}}
+        });
+        let status = normalize(
+            "kimi",
+            AccountProtocol::KimiWeb,
+            &Value::Null,
+            &payload,
+            None,
+        );
+        let windows = status["windows"].as_array().unwrap();
+        assert_eq!(windows.len(), 3);
+        assert_eq!(windows[0]["usedPercent"], 0.0);
+        assert_eq!(windows[1]["usedPercent"], 100.0);
+        assert_eq!(windows[1]["resetsAt"], "2026-11-28T00:00:00Z");
+        assert_eq!(windows[2]["usedPercent"], 25.0);
+
+        let unavailable = normalize(
+            "kimi",
+            AccountProtocol::KimiWeb,
+            &Value::Null,
+            &json!({"code": 0, "data": {"kind": "error", "message": "provider diagnostic"}}),
+            None,
+        );
+        assert!(unavailable["windows"].as_array().unwrap().is_empty());
+        assert!(unavailable["unavailable"].is_string());
+        assert!(!unavailable.to_string().contains("provider diagnostic"));
+    }
+
+    #[test]
+    fn kimi_accepts_only_authenticated_loopback_startup_urls() {
+        assert_eq!(
+            kimi_web_ready("Kimi server: http://127.0.0.1:12345/#token=abc-123_"),
+            Some((12345, "abc-123_".into()))
+        );
+        for line in [
+            "Kimi server: http://app.example.test:12345/#token=abc",
+            "Kimi server: http://127.0.0.1:12345@elsewhere.test/#token=abc",
+            "Kimi server: http://127.0.0.1:0/#token=abc",
+            "Kimi server: http://127.0.0.1:12345/",
+        ] {
+            assert!(kimi_web_ready(line).is_none());
+        }
+    }
+
     #[test]
     fn native_account_payloads_keep_all_windows_without_exposing_credentials() {
         let account = json!({"type":"chatgpt","email":"a@example.test","planType":"pro","accessToken":"SECRET"});

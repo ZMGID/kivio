@@ -1,4 +1,4 @@
-use super::super::types::{CapabilitySupport, RewindStrategy};
+use super::super::types::{AccountProbe, AccountProtocol, CapabilitySupport, RewindStrategy};
 use super::super::types::{
     PromptInputFormat, RuntimeAgentDef, RuntimeBuildOptions, RuntimeContext, SlashStrategy,
     StreamFormat,
@@ -124,7 +124,17 @@ pub const ANTIGRAVITY_AGENT_DEF: RuntimeAgentDef = RuntimeAgentDef {
     steering: CapabilitySupport::Unavailable,
     follow_up: CapabilitySupport::Fallback,
     rewind: RewindStrategy::Replay,
-    account: None,
+    account: Some(AccountProbe {
+        args: &[
+            "-p",
+            "/usage",
+            "--output-format",
+            "json",
+            "--print-timeout",
+            "20s",
+        ],
+        protocol: AccountProtocol::AntigravityUsage,
+    }),
     image_mime_whitelist: &[],
     build_args: build_antigravity_args,
 };
