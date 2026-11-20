@@ -89,16 +89,29 @@ pub async fn chat_detect_external_agents(
             }));
         }
     }
-    let agents = detect_availability_all().await;
+    let agents = publish_availability(&app, &state, detect_availability_all().await);
+    Ok(serde_json::json!({
+        "success": true,
+        "agents": agents,
+        "cached": false,
+    }))
+}
+
+fn publish_availability(
+    app: &AppHandle,
+    state: &AppState,
+    agents: Vec<DetectedAgent>,
+) -> Vec<DetectedAgent> {
     state
         .external_discovery()
         .set_cached_detected_agents(AVAILABILITY_CACHE_KEY.to_string(), agents.clone());
-    save_availability_snapshot(&state, &agents);
-    Ok(serde_json::json!({
-        "success": true,
-        "agents": stamp_availability(agents),
-        "cached": false,
-    }))
+    save_availability_snapshot(state, &agents);
+    let agents = stamp_availability(agents);
+    let _ = app.emit(
+        "external-agents-updated",
+        serde_json::json!({ "agents": &agents }),
+    );
+    agents
 }
 
 /// 后台重探可用性并广播结果。single-flight 锁用 `try_lock`：已经有人在探就直接算了，
@@ -109,15 +122,7 @@ fn spawn_availability_refresh(app: AppHandle) {
         let Some(_guard) = state.external_discovery().try_acquire_availability_probe() else {
             return;
         };
-        let agents = detect_availability_all().await;
-        state
-            .external_discovery()
-            .set_cached_detected_agents(AVAILABILITY_CACHE_KEY.to_string(), agents.clone());
-        save_availability_snapshot(&state, &agents);
-        let _ = app.emit(
-            "external-agents-updated",
-            serde_json::json!({ "agents": stamp_availability(agents) }),
-        );
+        publish_availability(&app, &state, detect_availability_all().await);
     });
 }
 
@@ -684,15 +689,53 @@ pub fn chat_external_native_session_id(app: AppHandle, conversation_id: String) 
 #[tauri::command]
 pub async fn chat_external_cli_account(
     app: AppHandle,
+    state: tauri::State<'_, AppState>,
     agent_id: String,
     conversation_id: Option<String>,
-) -> Result<serde_json::Value, String> {
+    mode: Option<super::account::AccountSnapshotMode>,
+) -> Result<Option<serde_json::Value>, String> {
+    use super::{
+        account::{self, AccountSnapshotMode},
+        overrides::LaunchIdentity,
+        types::AccountProtocol,
+    };
+    let requested = std::time::Instant::now();
+    let mode = mode.unwrap_or_default();
     let def = get_agent_def(&agent_id).ok_or("未知 CLI")?;
     let probe = def.account.ok_or("此 CLI 未提供账号额度查询")?;
-    let _resource = super::session::live::ResourceLease::pending(def.id)?;
-    let cwd = resolve_detection_cwd(&app, conversation_id.as_deref())?;
+    // These two reports read the CLI profile's account, independent of the chat workspace.
+    let project = match probe.protocol {
+        AccountProtocol::KimiWeb | AccountProtocol::AntigravityUsage => None,
+        _ => conversation_id.as_deref(),
+    };
+    let cwd = resolve_detection_cwd(&app, project)?;
+    let scope = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+    if mode != AccountSnapshotMode::Refresh {
+        let cached = state.external_accounts.peek(def, &scope, mode, requested);
+        if cached.is_some() || mode == AccountSnapshotMode::Cached {
+            return Ok(cached);
+        }
+    }
     let bin = crate::external_agents::spawn::resolve_binary(def)
         .await
         .ok_or("CLI 未安装或不在 PATH")?;
-    crate::external_agents::account::probe(def, probe, &bin, &cwd).await
+    let identity = LaunchIdentity::capture(def, &bin);
+    let (snapshot, updated) = state
+        .external_accounts
+        .read(
+            def.id,
+            (identity.clone(), scope),
+            mode,
+            requested,
+            || identity.ensure_current(def, &bin),
+            || async {
+                let _resource = super::session::live::ResourceLease::pending(def.id)?;
+                account::probe(def, probe, &bin, &cwd).await
+            },
+        )
+        .await?;
+    if updated {
+        let _ = app.emit("external-cli-account-updated", def.id);
+    }
+    Ok(snapshot)
 }

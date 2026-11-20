@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { RefreshCw } from 'lucide-react'
 import { Button, IconButton } from '../components/Button'
-import { useLang } from '../components/i18n'
-import { externalCliSettingsApi, type DetectedExternalAgent, type ExternalCliAccount as Account } from '../api/externalCliSettings'
-import { peekSettings, subscribeSettings } from '../api/settingsCache'
+import { i18n, useLang } from '../components/i18n'
+import type { DetectedExternalAgent } from '../api/externalCliSettings'
+import { cliCreditAmount, cliRemaining, cliResetTime, cliWindowLabel } from '../api/cliAccountFormat'
+import { useCliAccount } from '../api/useCliAccount'
 import { usePopoverMenu } from './usePopoverMenu'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
 
@@ -14,71 +15,24 @@ export function ExternalCliAccount({ agent, conversationId }: {
   conversationId?: string | null
 }) {
   const agentId = agent?.capabilities.account === 'native' ? agent.id : undefined
-  const zh = useLang() === 'zh'
+  const lang = useLang()
+  const zh = lang === 'zh'
+  const t = i18n[lang]
   const [open, setOpen] = useState(false)
-  const [status, setStatus] = useState<Account | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
-  const request = useRef({ version: 0 })
+  const { account: status, loading, error, refresh } = useCliAccount(agentId, conversationId)
   const [anchor, setAnchor] = useState({ left: 0, top: 0 })
   const menu = useRef<HTMLDivElement>(null)
+  const hasWindows = Boolean(status?.windows.length)
   const position = useClampedMenuPosition(menu, anchor)
   usePopoverMenu(open, () => setOpen(false), menu)
-  useEffect(() => {
-    const tracker = request.current
-    tracker.version++
-    setStatus(null)
-    setLoading(false)
-    setError('')
-    setOpen(false)
-    return () => { tracker.version++ }
-  }, [agentId, conversationId])
-  const refresh = useCallback(async () => {
-    if (!agentId) return
-    const id = ++request.current.version
-    setLoading(true)
-    setError('')
-    try {
-      const result = await externalCliSettingsApi.getExternalCliAccount(agentId, conversationId)
-      if (request.current.version === id) setStatus(result)
-    } catch (error) {
-      if (request.current.version === id) setError(error instanceof Error ? error.message : String(error))
-    } finally {
-      if (request.current.version === id) setLoading(false)
-    }
-  }, [agentId, conversationId])
-  // 圆环要有数据才能画：进会话 / 换 CLI 就读一次，不等用户点开。
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
-  useEffect(() => {
-    if (!agentId) return
-    let config = JSON.stringify(peekSettings()?.chat?.externalCliAgents?.[agentId])
-    return subscribeSettings((settings) => {
-      const next = JSON.stringify(settings.chat?.externalCliAgents?.[agentId])
-      if (next === config) return
-      config = next
-      request.current.version++
-      setStatus(null)
-      setOpen(false)
-      void refresh()
-    })
-  }, [agentId, refresh])
-  if (!agentId) return null
+  useEffect(() => { setOpen(false) }, [agentId, conversationId, hasWindows])
   // 非账号登录（API key 等）读不到额度：圆环没有可画的数据，整个不显示。
   if (!status?.windows.length) return null
   const resetLabel = (value: string | number | null) => {
-    if (value == null) return zh ? '重置时间未知' : 'Reset time unavailable'
-    const date = new Date(typeof value === 'number' ? value * 1000 : value)
-    return Number.isNaN(date.getTime()) ? (zh ? '重置时间未知' : 'Reset time unavailable')
-      : `${zh ? '重置于' : 'Resets'} ${date.toLocaleString()}`
+    const time = cliResetTime(value)
+    return time === null ? t.cliLimitsResetUnknown : t.cliLimitsResetAt.replace('{time}', new Date(time).toLocaleString())
   }
-  const windowName = (name: string, mins: number | null) => {
-    const labels: Record<string, string> = zh ? { five_hour: '5 小时', seven_day: '7 天', seven_day_opus: 'Opus · 7 天', seven_day_sonnet: 'Sonnet · 7 天', seven_day_oauth_apps: 'OAuth 应用 · 7 天', Weekly: '每周' } : {}
-    return labels[name] ?? (mins ? `${name.replace(/primary|secondary/g, '').trim()} · ${mins < 1440 ? `${mins / 60}h` : `${mins / 1440}d`}` : name)
-  }
-  const remaining = (usedPercent: number) => Math.max(0, Math.min(100, 100 - usedPercent))
-  const minRemaining = Math.min(...status.windows.map(w => remaining(w.usedPercent)))
+  const minRemaining = Math.min(...status.windows.map(w => cliRemaining(w.usedPercent)))
   const tone = (left: number) => left <= 10 ? '#ef4444' : left <= 30 ? '#f59e0b' : 'var(--accent)'
   const circumference = 2 * Math.PI * 8
   return <div className="relative" data-tauri-drag-region="false">
@@ -89,7 +43,6 @@ export function ExternalCliAccount({ agent, conversationId }: {
         const rect = event.currentTarget.getBoundingClientRect()
         setAnchor({ left: rect.left, top: rect.bottom + 8 })
         setOpen(!open)
-        if (!open) void refresh()
       }}>
       <svg viewBox="0 0 20 20" className="size-5 -rotate-90" aria-hidden="true">
         <circle cx="10" cy="10" r="8" fill="none" strokeWidth="3" className="stroke-black/[0.16] dark:stroke-white/[0.20]" />
@@ -111,18 +64,18 @@ export function ExternalCliAccount({ agent, conversationId }: {
         </div>
         <IconButton size="xs" variant="ghost" label={zh ? '刷新账号与额度' : 'Refresh account and usage'} disabled={loading} onClick={() => void refresh()}><RefreshCw size={13} /></IconButton>
       </div>
-      {error && <div role="alert"><p>{error}</p><Button size="sm" onClick={() => void refresh()}>{zh ? '重试' : 'Retry'}</Button></div>}
+      {error && <div role="status" title={error}><p>{t.cliLimitsStale}</p><Button size="sm" disabled={loading} onClick={() => void refresh()}>{zh ? '重试' : 'Retry'}</Button></div>}
       {status.windows.map((window, index) => {
-        const left = remaining(window.usedPercent)
+        const left = cliRemaining(window.usedPercent)
         return <div key={`${window.name}-${index}`} className="flex flex-col gap-1">
-          <div className="flex justify-between gap-3"><span>{windowName(window.name, window.windowDurationMins)}</span><span className="tabular-nums">{Math.round(left)}% {zh ? '剩余' : 'remaining'}</span></div>
+          <div className="flex justify-between gap-3"><span>{cliWindowLabel(window, zh)}</span><span className="tabular-nums">{Math.round(left)}% {zh ? '剩余' : 'remaining'}</span></div>
           <div className="h-1.5 overflow-hidden rounded-full bg-neutral-200/80 dark:bg-white/15" role="progressbar" aria-valuenow={Math.round(left)} aria-valuemin={0} aria-valuemax={100}>
             <div className="h-full rounded-full transition-[width] duration-500 ease-kv-out" style={{ width: `${left}%`, background: tone(left) }} />
           </div>
           <p className="text-[11px] text-neutral-500">{resetLabel(window.resetsAt)}</p>
         </div>
       })}
-      {status.credits && <p className="flex justify-between gap-3"><span>{status.credits.label}</span><span className="tabular-nums">{status.credits.unlimited ? (zh ? '不限量' : 'Unlimited') : status.credits.balance != null ? Number(status.credits.balance).toLocaleString(undefined, { maximumFractionDigits: 2 }) : `${status.credits.used ?? '—'} / ${status.credits.limit ?? '—'} ${status.credits.currency ?? ''}`}</span></p>}
+      {status.credits && <p className="flex justify-between gap-3"><span>{status.credits.label}</span><span className="tabular-nums">{cliCreditAmount(status.credits, zh)}</span></p>}
       {status.unavailable && <p className="text-neutral-500">{status.unavailable}</p>}
       <p className="text-[11px] text-neutral-500">{zh ? '更新于' : 'Updated'} {new Date(status.checkedAt * 1000).toLocaleTimeString()}</p>
     </section></>, document.body)}

@@ -115,7 +115,7 @@ impl Drop for LaunchUpdate {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct LaunchIdentity {
     agent: &'static str,
     binary: PathBuf,
@@ -125,7 +125,7 @@ pub(crate) struct LaunchIdentity {
     profile: u64,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct ExecutableRevision {
     len: u64,
     modified: Option<SystemTime>,
@@ -167,6 +167,10 @@ impl std::fmt::Debug for LaunchIdentity {
 }
 
 impl LaunchIdentity {
+    pub(super) fn binary_for(&self, agent: &str) -> Option<&Path> {
+        (self.agent == agent).then_some(self.binary.as_path())
+    }
+
     pub(crate) fn capture(def: &RuntimeAgentDef, bin: &Path) -> Self {
         let (config, revision) = OVERRIDES
             .read()

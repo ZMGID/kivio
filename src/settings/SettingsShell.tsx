@@ -41,6 +41,7 @@ import { type ProviderPreset } from './providerPresets'
 import { ProviderModelsPicker } from './ProviderModelsPicker'
 import { ScreenshotTranslationSettings } from './ScreenshotTranslationSettings'
 import { UsageStatsPanel } from './UsageStatsPanel'
+import { UsageLimitsPanel } from './UsageLimitsPanel'
 import { RequestDebugPanel } from './RequestDebugPanel'
 import { ExternalAgentsSettings } from './ExternalAgentsSettings'
 import { HotkeysTab } from './tabs/HotkeysTab'
@@ -171,8 +172,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab ?? 'general')
 
   const [themeDraft, setThemeDraft] = useState<ThemeDefinition | null>(null)
-  // 使用统计页内的视图：应用用量 / 调用明细 / 请求调试
-  const [usageView, setUsageView] = useState<'app' | 'calls' | 'debug'>('app')
+  const [usageView, setUsageView] = useState<'app' | 'limits' | 'calls' | 'debug'>('app')
   useEffect(() => {
     if (initialTab) setActiveTab(initialTab)
   }, [initialTab])
@@ -1077,12 +1077,13 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             onMouseDown={handleSettingsDragMouseDown}
           >
             <div key={activeTab} className={`settings-section-title-enter${activeTab === 'usage' ? ' settings-usage-title' : ''}`}>
-              <div className="flex items-center gap-3">
+              <div className={`flex items-center gap-3${activeTab === 'usage' ? ' flex-wrap' : ''}`}>
                 <div className="kv-page-title">{pageMeta[activeTab].title}</div>
                 {activeTab === 'usage' && (
                   <div className="kv-seg" data-tauri-drag-region="false">
                     {([
                       { id: 'app' as const, label: lang === 'zh' ? '应用用量' : 'App usage' },
+                      { id: 'limits' as const, label: t.cliLimitsTitle },
                       { id: 'calls' as const, label: lang === 'zh' ? '调用明细' : 'Call details' },
                       { id: 'debug' as const, label: lang === 'zh' ? '请求调试' : 'Request debug' },
                     ]).map(option => (
@@ -1320,7 +1321,7 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
               />
             )}
 
-            {/* ===== 使用统计：应用用量 / 调用明细 / 请求调试 ===== */}
+            {/* ===== 使用统计 ===== */}
             {activeTab === 'usage' && (
               usageView === 'debug' ? (
                 <RequestDebugPanel
@@ -1328,6 +1329,8 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
                   enabled={settings.chatTools.requestDebugEnabled ?? false}
                   onToggleEnabled={(v) => updateChatTools({ requestDebugEnabled: v })}
                 />
+              ) : usageView === 'limits' ? (
+                <UsageLimitsPanel lang={lang} />
               ) : (
                 <UsageStatsPanel lang={lang} view={usageView} />
               )

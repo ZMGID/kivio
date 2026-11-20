@@ -1,4 +1,7 @@
 //! Read-only native account/usage discovery. Never starts a conversation or returns credentials.
+mod snapshot;
+pub(crate) use snapshot::{AccountSnapshotMode, AccountSnapshots};
+
 use crate::{
     external_agents::{
         spawn::{
@@ -14,6 +17,37 @@ use std::{path::Path, process::Stdio, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
+
+pub(super) struct ProbeReading {
+    snapshot: Value,
+    definitively_unavailable: bool,
+}
+
+fn reading(
+    agent: &str,
+    protocol: AccountProtocol,
+    account: &Value,
+    usage: &Value,
+    error: Option<String>,
+) -> ProbeReading {
+    let definitively_unavailable = match protocol {
+        AccountProtocol::CodexAppServer => account.is_null() || account["type"] == "apiKey",
+        AccountProtocol::ClaudeControl => usage["rate_limits_available"] == false,
+        AccountProtocol::KimiWeb => {
+            let data = &usage["data"];
+            data["status"] == 401
+                || data["message"].as_str().is_some_and(|message| {
+                    message.starts_with("No token for ")
+                        && message.ends_with("Run /login to authenticate.")
+                })
+        }
+        _ => false,
+    };
+    ProbeReading {
+        snapshot: normalize(agent, protocol, account, usage, error),
+        definitively_unavailable,
+    }
+}
 
 async fn exchange(
     input: &mut super::diagnostics::AgentStdin,
@@ -69,15 +103,14 @@ async fn exchange(
     Err("CLI 在账号查询期间退出".into())
 }
 
-pub async fn probe(
+pub(super) async fn probe(
     def: &RuntimeAgentDef,
     probe: AccountProbe,
     bin: &Path,
     cwd: &Path,
-) -> Result<Value, String> {
-    let identity = super::overrides::LaunchIdentity::capture(def, bin);
+) -> Result<ProbeReading, String> {
     let protocol = probe.protocol;
-    let result = match protocol {
+    match protocol {
         AccountProtocol::AntigravityUsage | AccountProtocol::KimiWeb => {
             let mut command = agent_probe_command(def, bin);
             command.args(probe.args).current_dir(cwd);
@@ -90,22 +123,12 @@ pub async fn probe(
                 Ok(usage) => (usage, None),
                 Err(error) => (Value::Null, Some(error)),
             };
-            Ok(normalize(
-                def.id,
-                protocol,
-                &Value::Null,
-                &usage,
-                unavailable,
-            ))
+            Ok(reading(def.id, protocol, &Value::Null, &usage, unavailable))
         }
         AccountProtocol::ClaudeControl
         | AccountProtocol::CodexAppServer
         | AccountProtocol::GrokBilling => probe_stdio(def, probe, bin, cwd).await,
-    };
-    if !identity.still_current(def, bin) {
-        return Err("Account settings changed; retry".into());
     }
-    result
 }
 
 async fn antigravity_usage(mut command: Command) -> Result<Value, String> {
@@ -186,7 +209,7 @@ async fn probe_stdio(
     probe: AccountProbe,
     bin: &Path,
     cwd: &Path,
-) -> Result<Value, String> {
+) -> Result<ProbeReading, String> {
     let protocol = probe.protocol;
     let claude = protocol == AccountProtocol::ClaudeControl;
     let grok = protocol == AccountProtocol::GrokBilling;
@@ -231,11 +254,44 @@ async fn probe_stdio(
             Ok(Err(error)) => (Value::Null, Some(error)),
             Err(_) => (Value::Null, Some("额度查询超时，可稍后刷新".to_string())),
         };
-        Ok(normalize(def.id, protocol, &account, &usage, unavailable))
+        Ok(reading(def.id, protocol, &account, &usage, unavailable))
     }).await.unwrap_or_else(|_| Err("账号查询超时，请确认 CLI 可正常启动".into()));
     let _ = join_stderr_tail(&mut child, tail).await;
     let _ = child.wait().await;
     result
+}
+
+fn grok_usage_window(usage: &Value) -> Option<(&'static str, Value)> {
+    let config = &usage["config"];
+    let period = &config["currentPeriod"];
+    let name = match period["type"].as_str() {
+        Some("USAGE_PERIOD_TYPE_WEEKLY") => "Weekly",
+        Some("USAGE_PERIOD_TYPE_MONTHLY") => "Monthly",
+        _ => "Subscription",
+    };
+    let timestamp = |value: &Value| chrono::DateTime::parse_from_rfc3339(value.as_str()?).ok();
+    let start = timestamp(&period["start"]);
+    let end = timestamp(&period["end"]);
+    let complete_period = start.zip(end).is_some_and(|(start, end)| start < end);
+    // Grok omits a zero percentage while still reporting the subscription period.
+    let used = config["creditUsagePercent"].as_f64().or_else(|| {
+        (config["creditUsagePercent"].is_null() && name != "Subscription" && complete_period)
+            .then_some(0.0)
+    })?;
+    let start = start.or_else(|| timestamp(&config["billingPeriodStart"]));
+    let end = end.or_else(|| timestamp(&config["billingPeriodEnd"]));
+    let duration = start.zip(end).and_then(|(start, end)| {
+        let minutes = ((end - start).num_milliseconds() as f64 / 60_000.0).round() as i64;
+        (minutes > 0).then_some(minutes)
+    });
+    Some((
+        name,
+        json!({
+            "usedPercent": used,
+            "resetsAt": end.map(|time| time.to_utc().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+            "windowDurationMins": duration,
+        }),
+    ))
 }
 
 fn normalize(
@@ -265,16 +321,16 @@ fn normalize(
         let data = &usage["data"];
         if usage["code"] == 0 && data["kind"] == "ok" {
             let usages = &data["quota"]["usages"];
-            for (key, name) in [
-                ("limit5h", "5-hour limit"),
-                ("limit7d", "Weekly limit"),
-                ("monthTotal", "Monthly limit"),
+            for (key, name, duration) in [
+                ("limit5h", "5-hour limit", Some(300)),
+                ("limit7d", "Weekly limit", Some(10080)),
+                ("monthTotal", "Monthly limit", None),
             ] {
                 let entry = &usages[key];
                 add_window(
                     name.into(),
                     &json!({"usedPercent": entry["usedRatio"].as_f64().map(|ratio| ratio * 100.0),
-                            "resetsAt": entry["resetAt"]}),
+                            "resetsAt": entry["resetAt"], "windowDurationMins": duration}),
                     false,
                 );
             }
@@ -293,10 +349,10 @@ fn normalize(
                         continue;
                     };
                     for bucket in buckets {
-                        let name = match bucket["window"].as_str() {
-                            Some("5h") => Some("5h"),
-                            Some("weekly") => Some("7d"),
-                            _ => bucket["name"].as_str(),
+                        let (name, duration) = match bucket["window"].as_str() {
+                            Some("5h") => (Some("5h"), Some(300)),
+                            Some("weekly") => (Some("7d"), Some(10080)),
+                            _ => (bucket["name"].as_str(), None),
                         };
                         let Some(name) = name else {
                             continue;
@@ -307,7 +363,7 @@ fn normalize(
                         add_window(
                             format!("{group_name} · {name}"),
                             &json!({"usedPercent": remaining.map(|ratio| (1.0 - ratio) * 100.0),
-                                    "resetsAt": bucket["reset_time"]}),
+                                    "resetsAt": bucket["reset_time"], "windowDurationMins": duration}),
                             false,
                         );
                     }
@@ -315,18 +371,9 @@ fn normalize(
             }
         }
     } else if protocol == AccountProtocol::GrokBilling {
-        let config = &usage["config"];
-        let mins = |key: &str| {
-            chrono::DateTime::parse_from_rfc3339(config[key].as_str().unwrap_or("")).ok()
-        };
-        let duration = mins("billingPeriodStart")
-            .zip(mins("billingPeriodEnd"))
-            .map(|(start, end)| (end - start).num_minutes());
-        add_window(
-            "Weekly".into(),
-            &json!({"usedPercent":config["creditUsagePercent"],"resetsAt":config["billingPeriodEnd"],"windowDurationMins":duration}),
-            false,
-        );
+        if let Some((name, window)) = grok_usage_window(usage) {
+            add_window(name.into(), &window, false);
+        }
     } else if protocol == AccountProtocol::ClaudeControl {
         if let Some(limits) = usage["rate_limits"].as_object() {
             for (name, window) in limits {
@@ -374,6 +421,54 @@ fn normalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grok_keeps_zero_usage_for_complete_periods_and_hides_incomplete_reports() {
+        let billing = |period| json!({"config": {"currentPeriod": period}});
+        let report = |payload: Value| {
+            normalize(
+                "grok",
+                AccountProtocol::GrokBilling,
+                &Value::Null,
+                &payload,
+                None,
+            )
+        };
+        for (kind, name, end, days) in [
+            (
+                "USAGE_PERIOD_TYPE_WEEKLY",
+                "Weekly",
+                "2026-02-08T00:00:00Z",
+                7,
+            ),
+            (
+                "USAGE_PERIOD_TYPE_MONTHLY",
+                "Monthly",
+                "2026-03-01T00:00:00Z",
+                28,
+            ),
+        ] {
+            let snapshot = report(billing(json!({
+                "type": kind, "start": "2026-02-01T00:00:00Z", "end": end,
+            })));
+            let windows = snapshot["windows"].as_array().unwrap();
+            assert_eq!(windows.len(), 1);
+            assert_eq!(windows[0]["name"], name);
+            assert_eq!(windows[0]["usedPercent"], 0.0);
+            assert_eq!(windows[0]["windowDurationMins"], days * 24 * 60);
+            assert_eq!(windows[0]["resetsAt"], end.replace('Z', ".000Z"));
+        }
+        for period in [
+            Value::Null,
+            json!({"type":"USAGE_PERIOD_TYPE_WEEKLY","end":"2026-02-08T00:00:00Z"}),
+            json!({"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-02-30T00:00:00Z","end":"2026-03-08T00:00:00Z"}),
+        ] {
+            assert!(report(billing(period))["windows"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        }
+    }
 
     #[test]
     fn antigravity_preserves_grouped_windows_and_zero_remaining() {

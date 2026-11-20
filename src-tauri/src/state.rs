@@ -49,6 +49,7 @@ pub struct AppState {
     /// 组合根只负责生命周期，调用方只能走原子行为方法。
     chat_interactions: crate::chat::interaction_state::ChatInteractionState,
     external_discovery: crate::external_agents::discovery_state::ExternalDiscoveryState,
+    pub(crate) external_accounts: crate::external_agents::account::AccountSnapshots,
     /// Phase 2 持久会话注册表：conversation_id → 活会话（仅持有控制通道，不持有 Child）。
     /// 仅在 get/insert/remove 时短暂持锁，绝不跨 turn await 持锁。
     external_live_sessions: crate::external_agents::session::live::LiveSessionRegistry,
@@ -211,6 +212,7 @@ impl AppState {
             chat_interactions: crate::chat::interaction_state::ChatInteractionState::default(),
             external_discovery:
                 crate::external_agents::discovery_state::ExternalDiscoveryState::default(),
+            external_accounts: Default::default(),
             external_live_sessions:
                 crate::external_agents::session::live::LiveSessionRegistry::default(),
             pending_chat_external_sends:

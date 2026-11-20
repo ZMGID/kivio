@@ -25,7 +25,7 @@ import {
   type CliMaintenanceState,
 } from './cliMaintenance'
 import { Row } from './shared'
-import { useCliAccount } from './useCliAccount'
+import { useCliAccount } from '../../api/useCliAccount'
 
 type Strings = (typeof i18n)[Lang]
 
@@ -261,12 +261,9 @@ export function MaintenanceCard({
 function AccountRow({ agentId, t }: { agentId: string; t: Strings }) {
   const { account, loading, error, refresh } = useCliAccount(agentId)
   const identity = [account?.account?.email, account?.account?.plan].filter(Boolean).join(' · ')
-  const desc = error
-    ? error
-    : identity ||
-      (loading && !account
-        ? t.externalAgentsAccountLoading
-        : account?.account?.type ?? account?.unavailable ?? t.externalAgentsAccountUnknown)
+  const status = identity || account?.account?.type || account?.unavailable ||
+    (loading && !account ? t.externalAgentsAccountLoading : t.externalAgentsAccountUnknown)
+  const desc = error ? (account?.windows.length ? `${status} · ${t.cliLimitsStale}` : error) : status
   return (
     <Row
       lead={

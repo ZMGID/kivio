@@ -236,14 +236,18 @@ export interface ExternalCliAccount {
   windows: Array<{ name: string; usedPercent: number; resetsAt: string | number | null; windowDurationMins: number | null }>
   credits: { label: string; unlimited?: boolean; balance?: string | null; used?: number | null; limit?: number | null; currency?: string | null } | null
   unavailable: string | null
+  refreshError?: string
   checkedAt: number
+  nextRefreshAt?: number
 }
+
+export type AccountSnapshotMode = 'cached' | 'automatic' | 'refresh'
 
 /** Settings and Chat share one transport owner for external CLI configuration. */
 export const externalCliSettingsApi = {
-  async getExternalCliAccount(agentId: string, conversationId?: string | null): Promise<ExternalCliAccount> {
+  async getExternalCliAccount(agentId: string, conversationId?: string | null, mode: AccountSnapshotMode = 'automatic'): Promise<ExternalCliAccount | null> {
     if (!isTauriRuntime()) throw new Error('Account discovery requires the desktop app')
-    return invoke<ExternalCliAccount>('chat_external_cli_account', { agentId, conversationId })
+    return invoke<ExternalCliAccount | null>('chat_external_cli_account', { agentId, conversationId, mode })
   },
   async detectExternalAgents(forceRefresh = false, conversationId?: string | null): Promise<DetectedExternalAgent[]> {
     if (!isTauriRuntime()) {
@@ -485,4 +489,10 @@ export async function onExternalAgentsUpdated(
     'external-agents-updated',
     (event) => handler(event.payload.agents ?? []),
   )
+}
+
+export async function onExternalCliAccountUpdated(handler: (agentId: string) => void): Promise<() => void> {
+  if (!isTauriRuntime()) return () => {}
+  const { listen } = await import('@tauri-apps/api/event')
+  return listen<string>('external-cli-account-updated', (event) => handler(event.payload))
 }

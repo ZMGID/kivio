@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react'
 import { i18n, type Lang } from '../../components/i18n'
 import { api, type ModelProvider } from '../../api/tauri'
 import { peekSettings } from '../../api/settingsCache'
-import { externalCliSettingsApi } from '../../api/externalCliSettings'
+import { cliRemaining, cliResetTime, cliWindowLabel } from '../../api/cliAccountFormat'
+import { useCliAccount } from '../../api/useCliAccount'
 import { reportedContextTokens, CONTEXT_CRITICAL_PERCENT, CONTEXT_WARNING_PERCENT } from '../contextPanel'
 import { formatTokens } from '../../utils/tokens'
 import type { ConversationContextState } from '../types'
@@ -55,42 +56,43 @@ function Heading({ children }: { children: string }) {
 
 /** 读取当前模型账号的额度窗口；不支持额度的供应商返回空数组。 */
 function useUsageWindows(source: WorkspaceUsageSource, conversationId: string | null, active: boolean, lang: Lang) {
-  const [windows, setWindows] = useState<UsageWindow[] | null>(null)
+  const [oauthWindows, setOauthWindows] = useState<UsageWindow[] | null>(null)
   const zh = lang === 'zh'
+  const t = i18n[lang]
   const { providerId, externalAgentId, externalAccount } = source
+  const { account, error, loading } = useCliAccount(active && externalAccount ? externalAgentId : null, conversationId)
   useEffect(() => {
-    setWindows(null)
-    if (!active) return
+    setOauthWindows(null)
+    if (!active || externalAgentId) return
     let cancelled = false
     const resetText = (value: string | number | null | undefined) => {
-      if (value == null) return ''
-      const date = new Date(typeof value === 'number' ? value * 1000 : value)
-      return Number.isNaN(date.getTime()) ? '' : `${zh ? '重置于' : 'Resets'} ${date.toLocaleString()}`
+      const time = cliResetTime(value ?? null)
+      return time === null ? '' : t.cliLimitsResetAt.replace('{time}', new Date(time).toLocaleString())
     }
     const load = async (): Promise<UsageWindow[]> => {
-      if (externalAgentId) {
-        if (!externalAccount) return []
-        const account = await externalCliSettingsApi.getExternalCliAccount(externalAgentId, conversationId)
-        return account.windows.map((window) => ({
-          label: window.name,
-          remaining: Math.max(0, Math.min(100, 100 - window.usedPercent)),
-          detail: resetText(window.resetsAt),
-        }))
-      }
       const provider = peekSettings()?.providers?.find((item: ModelProvider) => item.id === providerId)
       const oauth = provider?.request.oauth
       if (!provider || !oauth?.credentialId || !OAUTH_USAGE_PROVIDERS.has(oauth.provider ?? '')) return []
       const usage = await api.providerOAuthUsage(provider)
       return usage.windows.map((window) => ({
         label: window.label,
-        remaining: window.usedPercent === null ? null : Math.max(0, Math.min(100, 100 - window.usedPercent)),
+        remaining: window.usedPercent === null ? null : cliRemaining(window.usedPercent),
         detail: resetText(window.resetsAt) || window.resetHint || '',
       }))
     }
-    load().then((next) => { if (!cancelled) setWindows(next) }).catch(() => { if (!cancelled) setWindows([]) })
+    load().then((next) => { if (!cancelled) setOauthWindows(next) }).catch(() => { if (!cancelled) setOauthWindows([]) })
     return () => { cancelled = true }
-  }, [active, conversationId, externalAccount, externalAgentId, providerId, zh])
-  return windows
+  }, [active, externalAgentId, providerId, t])
+  if (!active || !externalAgentId) return { windows: active ? oauthWindows : null, error: null }
+  const windows = account?.windows.map(window => {
+    const reset = cliResetTime(window.resetsAt)
+    return {
+      label: cliWindowLabel(window, zh),
+      remaining: cliRemaining(window.usedPercent),
+      detail: reset === null ? '' : t.cliLimitsResetAt.replace('{time}', new Date(reset).toLocaleString()),
+    }
+  }) ?? (loading ? null : [])
+  return { windows, error: error ?? account?.unavailable ?? null }
 }
 
 export function WorkspaceUsageSection({ source, conversationId, active, lang }: {
@@ -100,13 +102,13 @@ export function WorkspaceUsageSection({ source, conversationId, active, lang }: 
   lang: Lang
 }) {
   const t = i18n[lang]
-  const windows = useUsageWindows(source, conversationId, active, lang)
+  const { windows, error } = useUsageWindows(source, conversationId, active, lang)
   if (windows === null) return null
   return (
     <PanelSection>
       <Heading>{t.workspaceItemUsage}</Heading>
       {windows.length === 0 ? (
-        <div className="px-2.5 pb-1.5 text-[12px] text-neutral-400">{t.workspaceUsageUnavailable}</div>
+        <div className="px-2.5 pb-1.5 text-[12px] text-neutral-400">{error ?? t.workspaceUsageUnavailable}</div>
       ) : windows.map((window, index) => (
         <MeterRow
           key={`${window.label}-${index}`}
@@ -117,6 +119,9 @@ export function WorkspaceUsageSection({ source, conversationId, active, lang }: 
           detail={window.detail || undefined}
         />
       ))}
+      {windows.length > 0 && error && (
+        <div className="px-2.5 pb-1.5 text-[12px] text-neutral-500" title={error}>{t.cliLimitsStale}</div>
+      )}
     </PanelSection>
   )
 }
