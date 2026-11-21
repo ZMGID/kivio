@@ -1,7 +1,7 @@
 use super::AnthropicThinkingMode;
 
 /// Claude 思考线格式。对照官方 per-model 表：
-/// https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
+/// <https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaudeThinkingKind {
     /// Claude 3 / 3.5：没有 thinking，发任何 type 都会 400。
