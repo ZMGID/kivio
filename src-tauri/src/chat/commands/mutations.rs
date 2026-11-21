@@ -1350,7 +1350,23 @@ async fn forget_subagents(
     state
         .forget_chat_conversation_runtime(conversation_id)
         .await?;
-    match std::fs::remove_dir_all(&dir) {
+    let result = std::fs::remove_dir_all(&dir);
+    #[cfg(windows)]
+    let result = {
+        use windows::Win32::Foundation::ERROR_SHARING_VIOLATION;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut result = result;
+        while result
+            .as_ref()
+            .is_err_and(|error| error.raw_os_error() == Some(ERROR_SHARING_VIOLATION.0 as i32))
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            result = std::fs::remove_dir_all(&dir);
+        }
+        result
+    };
+    match result {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(format!(
