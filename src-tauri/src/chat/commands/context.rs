@@ -124,13 +124,13 @@ pub(crate) async fn chat_compress_context(
             .ok_or(super::reply_runtime::CHAT_REPLY_BUSY_ERROR)?;
     let mut conversation = load_conversation(&app, &conversation_id)?;
     if conversation.agent_runtime.is_external() {
-        crate::external_agents::compact::request_external_compaction(
-            &app,
-            &state,
-            &mut conversation,
-        )
-        .await?;
-        let context_state_after_compact = conversation.context_state.clone();
+        let context_state_after_compact =
+            crate::external_agents::compact::request_external_compaction(
+                &app,
+                &state,
+                &mut conversation,
+            )
+            .await?;
         // 同 `chat_get_context_stats`：压缩**已经发生**了，落盘缓存抢不到版本不该报错。
         conversation = persist_context_state_best_effort(
             &app,

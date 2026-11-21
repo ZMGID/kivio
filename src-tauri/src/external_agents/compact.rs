@@ -1,6 +1,6 @@
 use tauri::{AppHandle, State};
 
-use crate::chat::types::Conversation;
+use crate::chat::types::{Conversation, ConversationContextState};
 use crate::external_agents::context::compute_external_context_state_with_probe;
 use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::run::run_external_cli_slash_command;
@@ -15,7 +15,7 @@ pub async fn request_external_compaction(
     app: &AppHandle,
     state: &State<'_, AppState>,
     conversation: &mut Conversation,
-) -> Result<(), String> {
+) -> Result<ConversationContextState, String> {
     let agent_id = conversation
         .agent_runtime
         .external_agent_id
@@ -38,16 +38,8 @@ pub async fn request_external_compaction(
         .await?
         .require_completed()?;
 
-    conversation.context_state.summary = None;
-    // **不在这里自增 compression_count**：`/compact` 走的是 `run_external_cli_slash_command`
-    // → `run_external_cli_reply`，CLI 回的 `system/compact_boundary` 已经在那里逐条计了数
-    // （claude 的手动压缩 trigger 是 `manual`）。两处都加会让计数永远比
-    // `compaction_boundaries` 多一，从第一次压缩起就对不上。boundary 帧是唯一来源。
-    conversation.context_state.last_compressed_at = Some(chrono::Local::now().timestamp());
-    conversation.context_state.warning = None;
-
     let cwd = resolve_effective_cwd(app, &conversation.id, conversation.project_id.as_deref())?;
-    conversation.context_state = compute_external_context_state_with_probe(
+    let mut updated = compute_external_context_state_with_probe(
         app,
         conversation,
         true,
@@ -58,7 +50,10 @@ pub async fn request_external_compaction(
     )
     .await;
 
-    Ok(())
+    updated.summary = None;
+    updated.last_compressed_at = Some(chrono::Local::now().timestamp());
+    updated.warning = None;
+    Ok(updated)
 }
 
 #[cfg(test)]
