@@ -223,6 +223,14 @@
                             "name"
                           ],
                           "properties": {
+                            "name": {
+                              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
+                              "type": "string"
+                            },
+                            "cmd": {
+                              "description": "The command name. It can start with a variable that resolves to a system base directory. The variables are: `$AUDIO`, `$CACHE`, `$CONFIG`, `$DATA`, `$LOCALDATA`, `$DESKTOP`, `$DOCUMENT`, `$DOWNLOAD`, `$EXE`, `$FONT`, `$HOME`, `$PICTURE`, `$PUBLIC`, `$RUNTIME`, `$TEMPLATE`, `$VIDEO`, `$RESOURCE`, `$LOG`, `$TEMP`, `$APPCONFIG`, `$APPDATA`, `$APPLOCALDATA`, `$APPCACHE`, `$APPLOG`.",
+                              "type": "string"
+                            },
                             "args": {
                               "description": "The allowed arguments for the command execution.",
                               "allOf": [
@@ -230,14 +238,6 @@
                                   "$ref": "#/definitions/ShellScopeEntryAllowedArgs"
                                 }
                               ]
-                            },
-                            "cmd": {
-                              "description": "The command name. It can start with a variable that resolves to a system base directory. The variables are: `$AUDIO`, `$CACHE`, `$CONFIG`, `$DATA`, `$LOCALDATA`, `$DESKTOP`, `$DOCUMENT`, `$DOWNLOAD`, `$EXE`, `$FONT`, `$HOME`, `$PICTURE`, `$PUBLIC`, `$RUNTIME`, `$TEMPLATE`, `$VIDEO`, `$RESOURCE`, `$LOG`, `$TEMP`, `$APPCONFIG`, `$APPDATA`, `$APPLOCALDATA`, `$APPCACHE`, `$APPLOG`.",
-                              "type": "string"
-                            },
-                            "name": {
-                              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
-                              "type": "string"
                             }
                           },
                           "additionalProperties": false
@@ -249,6 +249,10 @@
                             "sidecar"
                           ],
                           "properties": {
+                            "name": {
+                              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
+                              "type": "string"
+                            },
                             "args": {
                               "description": "The allowed arguments for the command execution.",
                               "allOf": [
@@ -256,10 +260,6 @@
                                   "$ref": "#/definitions/ShellScopeEntryAllowedArgs"
                                 }
                               ]
-                            },
-                            "name": {
-                              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
-                              "type": "string"
                             },
                             "sidecar": {
                               "description": "If this command is a sidecar command.",
@@ -283,6 +283,14 @@
                             "name"
                           ],
                           "properties": {
+                            "name": {
+                              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
+                              "type": "string"
+                            },
+                            "cmd": {
+                              "description": "The command name. It can start with a variable that resolves to a system base directory. The variables are: `$AUDIO`, `$CACHE`, `$CONFIG`, `$DATA`, `$LOCALDATA`, `$DESKTOP`, `$DOCUMENT`, `$DOWNLOAD`, `$EXE`, `$FONT`, `$HOME`, `$PICTURE`, `$PUBLIC`, `$RUNTIME`, `$TEMPLATE`, `$VIDEO`, `$RESOURCE`, `$LOG`, `$TEMP`, `$APPCONFIG`, `$APPDATA`, `$APPLOCALDATA`, `$APPCACHE`, `$APPLOG`.",
+                              "type": "string"
+                            },
                             "args": {
                               "description": "The allowed arguments for the command execution.",
                               "allOf": [
@@ -290,14 +298,6 @@
                                   "$ref": "#/definitions/ShellScopeEntryAllowedArgs"
                                 }
                               ]
-                            },
-                            "cmd": {
-                              "description": "The command name. It can start with a variable that resolves to a system base directory. The variables are: `$AUDIO`, `$CACHE`, `$CONFIG`, `$DATA`, `$LOCALDATA`, `$DESKTOP`, `$DOCUMENT`, `$DOWNLOAD`, `$EXE`, `$FONT`, `$HOME`, `$PICTURE`, `$PUBLIC`, `$RUNTIME`, `$TEMPLATE`, `$VIDEO`, `$RESOURCE`, `$LOG`, `$TEMP`, `$APPCONFIG`, `$APPDATA`, `$APPLOCALDATA`, `$APPCACHE`, `$APPLOG`.",
-                              "type": "string"
-                            },
-                            "name": {
-                              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
-                              "type": "string"
                             }
                           },
                           "additionalProperties": false
@@ -309,6 +309,10 @@
                             "sidecar"
                           ],
                           "properties": {
+                            "name": {
+                              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
+                              "type": "string"
+                            },
                             "args": {
                               "description": "The allowed arguments for the command execution.",
                               "allOf": [
@@ -316,10 +320,6 @@
                                   "$ref": "#/definitions/ShellScopeEntryAllowedArgs"
                                 }
                               ]
-                            },
-                            "name": {
-                              "description": "The name for this allowed shell command configuration.\n\nThis name will be used inside of the webview API to call this command along with any specified arguments.",
-                              "type": "string"
                             },
                             "sidecar": {
                               "description": "If this command is a sidecar command.",
@@ -435,10 +435,10 @@
           "markdownDescription": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`"
         },
         {
-          "description": "Default permissions for the plugin.\n#### This default permission set includes:\n\n- `allow-version`\n- `allow-name`\n- `allow-tauri-version`\n- `allow-identifier`\n- `allow-bundle-type`\n- `allow-register-listener`\n- `allow-remove-listener`",
+          "description": "Default permissions for the plugin.\n#### This default permission set includes:\n\n- `allow-version`\n- `allow-name`\n- `allow-tauri-version`\n- `allow-identifier`\n- `allow-bundle-type`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-supports-multiple-windows`",
           "type": "string",
           "const": "core:app:default",
-          "markdownDescription": "Default permissions for the plugin.\n#### This default permission set includes:\n\n- `allow-version`\n- `allow-name`\n- `allow-tauri-version`\n- `allow-identifier`\n- `allow-bundle-type`\n- `allow-register-listener`\n- `allow-remove-listener`"
+          "markdownDescription": "Default permissions for the plugin.\n#### This default permission set includes:\n\n- `allow-version`\n- `allow-name`\n- `allow-tauri-version`\n- `allow-identifier`\n- `allow-bundle-type`\n- `allow-register-listener`\n- `allow-remove-listener`\n- `allow-supports-multiple-windows`"
         },
         {
           "description": "Enables the app_hide command without any pre-configured scope.",
@@ -463,6 +463,12 @@
           "type": "string",
           "const": "core:app:allow-default-window-icon",
           "markdownDescription": "Enables the default_window_icon command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the exit command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:app:allow-exit",
+          "markdownDescription": "Enables the exit command without any pre-configured scope."
         },
         {
           "description": "Enables the fetch_data_store_identifiers command without any pre-configured scope.",
@@ -513,6 +519,12 @@
           "markdownDescription": "Enables the set_dock_visibility command without any pre-configured scope."
         },
         {
+          "description": "Enables the supports_multiple_windows command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:app:allow-supports-multiple-windows",
+          "markdownDescription": "Enables the supports_multiple_windows command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tauri_version command without any pre-configured scope.",
           "type": "string",
           "const": "core:app:allow-tauri-version",
@@ -547,6 +559,12 @@
           "type": "string",
           "const": "core:app:deny-default-window-icon",
           "markdownDescription": "Denies the default_window_icon command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the exit command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:app:deny-exit",
+          "markdownDescription": "Denies the exit command without any pre-configured scope."
         },
         {
           "description": "Denies the fetch_data_store_identifiers command without any pre-configured scope.",
@@ -595,6 +613,12 @@
           "type": "string",
           "const": "core:app:deny-set-dock-visibility",
           "markdownDescription": "Denies the set_dock_visibility command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the supports_multiple_windows command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:app:deny-supports-multiple-windows",
+          "markdownDescription": "Denies the supports_multiple_windows command without any pre-configured scope."
         },
         {
           "description": "Denies the tauri_version command without any pre-configured scope.",
@@ -1119,10 +1143,10 @@
           "markdownDescription": "Denies the close command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the plugin, which enables all commands.\n#### This default permission set includes:\n\n- `allow-new`\n- `allow-get-by-id`\n- `allow-remove-by-id`\n- `allow-set-icon`\n- `allow-set-menu`\n- `allow-set-tooltip`\n- `allow-set-title`\n- `allow-set-visible`\n- `allow-set-temp-dir-path`\n- `allow-set-icon-as-template`\n- `allow-set-show-menu-on-left-click`",
+          "description": "Default permissions for the plugin, which enables all commands.\n#### This default permission set includes:\n\n- `allow-new`\n- `allow-get-by-id`\n- `allow-remove-by-id`\n- `allow-set-icon`\n- `allow-set-menu`\n- `allow-set-tooltip`\n- `allow-set-title`\n- `allow-set-visible`\n- `allow-set-temp-dir-path`\n- `allow-set-icon-as-template`\n- `allow-set-icon-with-as-template`\n- `allow-set-show-menu-on-left-click`",
           "type": "string",
           "const": "core:tray:default",
-          "markdownDescription": "Default permissions for the plugin, which enables all commands.\n#### This default permission set includes:\n\n- `allow-new`\n- `allow-get-by-id`\n- `allow-remove-by-id`\n- `allow-set-icon`\n- `allow-set-menu`\n- `allow-set-tooltip`\n- `allow-set-title`\n- `allow-set-visible`\n- `allow-set-temp-dir-path`\n- `allow-set-icon-as-template`\n- `allow-set-show-menu-on-left-click`"
+          "markdownDescription": "Default permissions for the plugin, which enables all commands.\n#### This default permission set includes:\n\n- `allow-new`\n- `allow-get-by-id`\n- `allow-remove-by-id`\n- `allow-set-icon`\n- `allow-set-menu`\n- `allow-set-tooltip`\n- `allow-set-title`\n- `allow-set-visible`\n- `allow-set-temp-dir-path`\n- `allow-set-icon-as-template`\n- `allow-set-icon-with-as-template`\n- `allow-set-show-menu-on-left-click`"
         },
         {
           "description": "Enables the get_by_id command without any pre-configured scope.",
@@ -1153,6 +1177,12 @@
           "type": "string",
           "const": "core:tray:allow-set-icon-as-template",
           "markdownDescription": "Enables the set_icon_as_template command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_icon_with_as_template command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:tray:allow-set-icon-with-as-template",
+          "markdownDescription": "Enables the set_icon_with_as_template command without any pre-configured scope."
         },
         {
           "description": "Enables the set_menu command without any pre-configured scope.",
@@ -1219,6 +1249,12 @@
           "type": "string",
           "const": "core:tray:deny-set-icon-as-template",
           "markdownDescription": "Denies the set_icon_as_template command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_icon_with_as_template command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:tray:deny-set-icon-with-as-template",
+          "markdownDescription": "Denies the set_icon_with_as_template command without any pre-configured scope."
         },
         {
           "description": "Denies the set_menu command without any pre-configured scope.",
@@ -1479,10 +1515,16 @@
           "markdownDescription": "Denies the webview_size command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the plugin.\n#### This default permission set includes:\n\n- `allow-get-all-windows`\n- `allow-scale-factor`\n- `allow-inner-position`\n- `allow-outer-position`\n- `allow-inner-size`\n- `allow-outer-size`\n- `allow-is-fullscreen`\n- `allow-is-minimized`\n- `allow-is-maximized`\n- `allow-is-focused`\n- `allow-is-decorated`\n- `allow-is-resizable`\n- `allow-is-maximizable`\n- `allow-is-minimizable`\n- `allow-is-closable`\n- `allow-is-visible`\n- `allow-is-enabled`\n- `allow-title`\n- `allow-current-monitor`\n- `allow-primary-monitor`\n- `allow-monitor-from-point`\n- `allow-available-monitors`\n- `allow-cursor-position`\n- `allow-theme`\n- `allow-is-always-on-top`\n- `allow-internal-toggle-maximize`",
+          "description": "Default permissions for the plugin.\n#### This default permission set includes:\n\n- `allow-get-all-windows`\n- `allow-scale-factor`\n- `allow-inner-position`\n- `allow-outer-position`\n- `allow-inner-size`\n- `allow-outer-size`\n- `allow-is-fullscreen`\n- `allow-is-minimized`\n- `allow-is-maximized`\n- `allow-is-focused`\n- `allow-is-decorated`\n- `allow-is-resizable`\n- `allow-is-maximizable`\n- `allow-is-minimizable`\n- `allow-is-closable`\n- `allow-is-visible`\n- `allow-is-enabled`\n- `allow-title`\n- `allow-current-monitor`\n- `allow-primary-monitor`\n- `allow-monitor-from-point`\n- `allow-available-monitors`\n- `allow-cursor-position`\n- `allow-theme`\n- `allow-is-always-on-top`\n- `allow-activity-name`\n- `allow-scene-identifier`\n- `allow-internal-toggle-maximize`",
           "type": "string",
           "const": "core:window:default",
-          "markdownDescription": "Default permissions for the plugin.\n#### This default permission set includes:\n\n- `allow-get-all-windows`\n- `allow-scale-factor`\n- `allow-inner-position`\n- `allow-outer-position`\n- `allow-inner-size`\n- `allow-outer-size`\n- `allow-is-fullscreen`\n- `allow-is-minimized`\n- `allow-is-maximized`\n- `allow-is-focused`\n- `allow-is-decorated`\n- `allow-is-resizable`\n- `allow-is-maximizable`\n- `allow-is-minimizable`\n- `allow-is-closable`\n- `allow-is-visible`\n- `allow-is-enabled`\n- `allow-title`\n- `allow-current-monitor`\n- `allow-primary-monitor`\n- `allow-monitor-from-point`\n- `allow-available-monitors`\n- `allow-cursor-position`\n- `allow-theme`\n- `allow-is-always-on-top`\n- `allow-internal-toggle-maximize`"
+          "markdownDescription": "Default permissions for the plugin.\n#### This default permission set includes:\n\n- `allow-get-all-windows`\n- `allow-scale-factor`\n- `allow-inner-position`\n- `allow-outer-position`\n- `allow-inner-size`\n- `allow-outer-size`\n- `allow-is-fullscreen`\n- `allow-is-minimized`\n- `allow-is-maximized`\n- `allow-is-focused`\n- `allow-is-decorated`\n- `allow-is-resizable`\n- `allow-is-maximizable`\n- `allow-is-minimizable`\n- `allow-is-closable`\n- `allow-is-visible`\n- `allow-is-enabled`\n- `allow-title`\n- `allow-current-monitor`\n- `allow-primary-monitor`\n- `allow-monitor-from-point`\n- `allow-available-monitors`\n- `allow-cursor-position`\n- `allow-theme`\n- `allow-is-always-on-top`\n- `allow-activity-name`\n- `allow-scene-identifier`\n- `allow-internal-toggle-maximize`"
+        },
+        {
+          "description": "Enables the activity_name command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:window:allow-activity-name",
+          "markdownDescription": "Enables the activity_name command without any pre-configured scope."
         },
         {
           "description": "Enables the available_monitors command without any pre-configured scope.",
@@ -1677,6 +1719,12 @@
           "markdownDescription": "Enables the scale_factor command without any pre-configured scope."
         },
         {
+          "description": "Enables the scene_identifier command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:window:allow-scene-identifier",
+          "markdownDescription": "Enables the scene_identifier command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_always_on_bottom command without any pre-configured scope.",
           "type": "string",
           "const": "core:window:allow-set-always-on-bottom",
@@ -1777,6 +1825,12 @@
           "type": "string",
           "const": "core:window:allow-set-fullscreen",
           "markdownDescription": "Enables the set_fullscreen command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_fullscreen_on_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:window:allow-set-fullscreen-on-monitor",
+          "markdownDescription": "Enables the set_fullscreen_on_monitor command without any pre-configured scope."
         },
         {
           "description": "Enables the set_icon command without any pre-configured scope.",
@@ -1939,6 +1993,12 @@
           "type": "string",
           "const": "core:window:allow-unminimize",
           "markdownDescription": "Enables the unminimize command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the activity_name command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:window:deny-activity-name",
+          "markdownDescription": "Denies the activity_name command without any pre-configured scope."
         },
         {
           "description": "Denies the available_monitors command without any pre-configured scope.",
@@ -2133,6 +2193,12 @@
           "markdownDescription": "Denies the scale_factor command without any pre-configured scope."
         },
         {
+          "description": "Denies the scene_identifier command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:window:deny-scene-identifier",
+          "markdownDescription": "Denies the scene_identifier command without any pre-configured scope."
+        },
+        {
           "description": "Denies the set_always_on_bottom command without any pre-configured scope.",
           "type": "string",
           "const": "core:window:deny-set-always-on-bottom",
@@ -2233,6 +2299,12 @@
           "type": "string",
           "const": "core:window:deny-set-fullscreen",
           "markdownDescription": "Denies the set_fullscreen command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_fullscreen_on_monitor command without any pre-configured scope.",
+          "type": "string",
+          "const": "core:window:deny-set-fullscreen-on-monitor",
+          "markdownDescription": "Denies the set_fullscreen_on_monitor command without any pre-configured scope."
         },
         {
           "description": "Denies the set_icon command without any pre-configured scope.",
@@ -2864,6 +2936,22 @@
         }
       ]
     },
+    "ShellScopeEntryAllowedArgs": {
+      "description": "A set of command arguments allowed to be executed by the webview API.\n\nA value of `true` will allow any arguments to be passed to the command. `false` will disable all arguments. A list of [`ShellScopeEntryAllowedArg`] will set those arguments as the only valid arguments to be passed to the attached command configuration.",
+      "anyOf": [
+        {
+          "description": "Use a simple boolean to allow all or disable all arguments to this command configuration.",
+          "type": "boolean"
+        },
+        {
+          "description": "A specific set of [`ShellScopeEntryAllowedArg`] that are valid to call for the command configuration.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ShellScopeEntryAllowedArg"
+          }
+        }
+      ]
+    },
     "ShellScopeEntryAllowedArg": {
       "description": "A command argument allowed to be executed by the webview API.",
       "anyOf": [
@@ -2878,33 +2966,17 @@
             "validator"
           ],
           "properties": {
+            "validator": {
+              "description": "[regex] validator to require passed values to conform to an expected input.\n\nThis will require the argument value passed to this variable to match the `validator` regex before it will be executed.\n\nThe regex string is by default surrounded by `^...$` to match the full string. For example the `https?://\\w+` regex would be registered as `^https?://\\w+$`.\n\n[regex]: <https://docs.rs/regex/latest/regex/#syntax>",
+              "type": "string"
+            },
             "raw": {
               "description": "Marks the validator as a raw regex, meaning the plugin should not make any modification at runtime.\n\nThis means the regex will not match on the entire string by default, which might be exploited if your regex allow unexpected input to be considered valid. When using this option, make sure your regex is correct.",
               "default": false,
               "type": "boolean"
-            },
-            "validator": {
-              "description": "[regex] validator to require passed values to conform to an expected input.\n\nThis will require the argument value passed to this variable to match the `validator` regex before it will be executed.\n\nThe regex string is by default surrounded by `^...$` to match the full string. For example the `https?://\\w+` regex would be registered as `^https?://\\w+$`.\n\n[regex]: <https://docs.rs/regex/latest/regex/#syntax>",
-              "type": "string"
             }
           },
           "additionalProperties": false
-        }
-      ]
-    },
-    "ShellScopeEntryAllowedArgs": {
-      "description": "A set of command arguments allowed to be executed by the webview API.\n\nA value of `true` will allow any arguments to be passed to the command. `false` will disable all arguments. A list of [`ShellScopeEntryAllowedArg`] will set those arguments as the only valid arguments to be passed to the attached command configuration.",
-      "anyOf": [
-        {
-          "description": "Use a simple boolean to allow all or disable all arguments to this command configuration.",
-          "type": "boolean"
-        },
-        {
-          "description": "A specific set of [`ShellScopeEntryAllowedArg`] that are valid to call for the command configuration.",
-          "type": "array",
-          "items": {
-            "$ref": "#/definitions/ShellScopeEntryAllowedArg"
-          }
         }
       ]
     }
