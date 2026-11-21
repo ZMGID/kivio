@@ -48,3 +48,12 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- 'chat::model::
 | 兼容网关 Responses，gpt-6-luna，以及另一条 Chat 线路的 glm-5.3-flash | 503，网关无可用模型渠道 |
 
 OpenAI 官方、Anthropic 官方、xAI 官方及 Antigravity OAuth 的真实服务未在本次调用中验证。上述线路的本地测试覆盖请求格式或适配逻辑。Gemini 和 Responses 的真实调用也未覆盖所有图片输入、原生搜索和长时间运行场景。
+
+## 第二轮复核
+
+- **Responses 工具调用的完成边界。** 本地 HTTP 用例复现两种相反的错误：只收到参数增量时，外层完成事件会把未确认的调用交给 Agent；完整调用只出现在最后的输出快照时，Agent 又会漏掉它。现在按工具项标识合并流事件与最终快照，每个已确认的调用只交付一次。普通 JSON 响应也检查工具项的完成状态。触达输出长度上限时，保留原有截断标记，由 Agent 拒绝执行这一批工具。[Pi 流处理](https://github.com/earendil-works/pi/blob/v1.6.0/packages/ai/src/api/openai-responses-shared.ts) · [OpenAI 流事件参考](https://developers.openai.com/api/reference/resources/responses/streaming-events)
+- **Responses 最终正文。** 本地 HTTP 用例分别发送完整增量、部分增量和仅含最终输出的 SSE。最终快照的可见正文可以包含 output_text 和 refusal。现在当快照与已发送的文字前缀吻合时，适配器将剩余后缀交给流式界面，并在最终输出中保留完整文字。[OpenAI 流事件参考](https://developers.openai.com/api/reference/resources/responses/streaming-events)
+- **Gemini 工具失败。** 在包含拒绝授权、参数校验失败和成功执行的真实 SDK 会话循环测试中，失败结果原先也会以普通输出回传。现在通过 functionResponse.response.error 告知模型失败原因，保留调用 ID、函数名及成功结果原有的 JSON 结构。[Google FunctionResponse 协议定义](https://github.com/googleapis/googleapis/blob/master/google/ai/generativelanguage/v1beta/content.proto) · [Pi 的 Gemini 适配](https://github.com/earendil-works/pi/blob/v1.6.0/packages/ai/src/api/google-shared.ts)
+- **Claude 缓存断点。** 已包含四个用户断点的合法请求，过去仍会被追加默认断点；不同缓存时长也可能被覆盖或排错顺序。现在显式断点或顶层缓存设置优先，长缓存兼容头根据最终请求中实际出现的时长生成。没有显式配置时继续使用 Kivio 的默认断点布局。[Anthropic 缓存文档](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+
+第二轮验证通过 SDK 307 项、独立消费端 183 项、桌面适配器及 Agent 循环 240 项。桌面套件在独立工作树执行，两项需专门配置的 DeepSeek 联网测试按仓库设置跳过。本轮新增场景使用本地 HTTP 服务和请求体断言复现。

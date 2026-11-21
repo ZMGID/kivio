@@ -725,6 +725,7 @@ fn gemini_parts_from_message(
             MessagePart::ToolResult {
                 tool_call_id,
                 content,
+                is_error,
                 ..
             } => {
                 // Gemini 按函数名关联；用 id→name 映射还原，回退用 id 本身。
@@ -733,10 +734,15 @@ fn gemini_parts_from_message(
                     .cloned()
                     .unwrap_or_else(|| tool_call_id.clone());
                 // response 必须是 JSON 对象；字符串输出包进 { output }。
-                let response = serde_json::from_str::<Value>(content)
+                let object = serde_json::from_str::<Value>(content)
                     .ok()
-                    .filter(|v| v.is_object())
-                    .unwrap_or_else(|| serde_json::json!({ "output": content }));
+                    .filter(Value::is_object);
+                let response = match object {
+                    Some(object) if !is_error || object.get("error").is_some() => object,
+                    Some(object) => serde_json::json!({ "error": object }),
+                    None if *is_error => serde_json::json!({ "error": content }),
+                    None => serde_json::json!({ "output": content }),
+                };
                 let mut part = serde_json::json!({
                     "functionResponse": { "name": name, "response": response }
                 });

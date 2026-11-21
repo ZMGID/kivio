@@ -333,12 +333,17 @@ pub fn feature_betas(
     feature_betas_for_body(&request_body(request, false, options), options.cache)
 }
 
-pub fn feature_betas_for_body(body: &Value, cache: Option<AnthropicCacheTtl>) -> Vec<&'static str> {
+/// The assembled body determines required headers, including when the caller
+/// supplies its own TTLs. Keep the previous cache parameter for SDK callers.
+pub fn feature_betas_for_body(
+    body: &Value,
+    _cache: Option<AnthropicCacheTtl>,
+) -> Vec<&'static str> {
     let mut betas = Vec::new();
     if body["thinking"]["type"] == "enabled" {
         betas.push(INTERLEAVED_THINKING_BETA);
     }
-    if cache == Some(AnthropicCacheTtl::OneHour) {
+    if cache_controls(body).any(|control| control["ttl"] == "1h") {
         betas.push(EXTENDED_CACHE_TTL_BETA);
     }
     betas
@@ -779,6 +784,11 @@ pub async fn complete_anthropic_turn(
 /// 前两个是每轮不变的长前缀（省钱的大头），第三个把本轮的对话历史也一起缓存进去，
 /// 下一轮就能直接命中。Anthropic 上限 4 个断点，这里最多用 3 个。
 fn apply_prompt_cache_breakpoints(body: &mut Value, cache_control: &Value) {
+    // A caller's breakpoint layout can already use all four slots or mix TTLs.
+    // Adding defaults to that layout could invalidate a previously valid request.
+    if cache_controls(body).next().is_some() {
+        return;
+    }
     if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
         if let Some(last) = tools.last_mut().and_then(Value::as_object_mut) {
             last.insert("cache_control".to_string(), cache_control.clone());
@@ -805,6 +815,17 @@ fn apply_prompt_cache_breakpoints(body: &mut Value, cache_control: &Value) {
             mark_last_cacheable_block(content, cache_control);
         }
     }
+}
+
+fn cache_controls(body: &Value) -> impl Iterator<Item = &Value> {
+    fn blocks(value: &Value) -> impl Iterator<Item = &Value> {
+        value.as_array().into_iter().flatten()
+    }
+    std::iter::once(body)
+        .chain(blocks(&body["tools"]))
+        .chain(blocks(&body["system"]))
+        .chain(blocks(&body["messages"]).flat_map(|message| blocks(&message["content"])))
+        .filter_map(|block| block.get("cache_control").filter(|value| value.is_object()))
 }
 
 /// 给最后一个可缓存的块加断点。`thinking` 块与空 text 块不能带 cache_control。
@@ -2091,6 +2112,37 @@ mod tests {
         assert!(body.get("tools").is_none());
         assert_eq!(body["tool_choice"], serde_json::json!({"type":"none"}));
     }
+    #[test]
+    fn explicit_cache_breakpoints_keep_their_positions_and_ttls() {
+        let mut request = cache_test_request();
+        let marked =
+            serde_json::json!({"type":"text","text":"prefix","cache_control":{"type":"ephemeral"}});
+        request.options.provider_options = serde_json::json!({
+            "system":[marked, marked, marked, marked, {"type":"text","text":"volatile"}],
+            "tools":[{"name":"echo","input_schema":{"type":"object"}}],
+        });
+        let options = AnthropicMessagesOptions {
+            cache: Some(AnthropicCacheTtl::OneHour),
+            ..Default::default()
+        };
+        let body = request_body(&request, false, &options);
+        assert_eq!(body["system"], request.options.provider_options["system"]);
+        assert!(body["tools"][0].get("cache_control").is_none());
+        assert!(body["messages"][0]["content"][0]
+            .get("cache_control")
+            .is_none());
+        request.options.provider_options =
+            serde_json::json!({"cache_control":{"type":"ephemeral"}});
+        let body = request_body(&request, false, &options);
+        assert!(body["system"][0].get("cache_control").is_none());
+        assert!(!feature_betas_for_body(&body, options.cache).contains(&EXTENDED_CACHE_TTL_BETA));
+        request.options.provider_options["cache_control"]["ttl"] = "1h".into();
+        assert!(
+            feature_betas(&request, &AnthropicMessagesOptions::default())
+                .contains(&EXTENDED_CACHE_TTL_BETA)
+        );
+    }
+
     fn cache_test_request() -> GenerateRequest {
         GenerateRequest {
             model: "test-model".into(),

@@ -1188,6 +1188,16 @@ async fn session_tool_authorization_and_later_prompt_do_not_reexecute_history() 
             let requests = server.requests.lock().unwrap();
             for received in &requests[1..] {
                 case.assert_tool_replay(&received.body, expected);
+                if matches!(case, ProtocolCase::Gemini) {
+                    let response = received.body["contents"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .flat_map(|message| message["parts"].as_array().unwrap())
+                        .find_map(|part| part.get("functionResponse"))
+                        .unwrap();
+                    assert_eq!(response["response"].get("error").is_some(), executions == 0);
+                }
             }
             let replay = requests[2].body.to_string();
             assert!(replay.contains("continue"), "{case:?}");

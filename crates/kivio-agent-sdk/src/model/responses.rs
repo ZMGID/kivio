@@ -989,18 +989,59 @@ impl ResponsesStreamState {
         })
     }
 
-    fn finalize_tool_call(
+    fn read_tool_item(
         &mut self,
-        item_id: &str,
+        item: &Value,
+        complete: bool,
         sink: &mut (dyn StreamSink + Send),
     ) -> Result<(), ModelError> {
-        if let Some(partial) = self.tool_calls.iter_mut().find(|p| p.item_id == item_id) {
-            if partial.done {
-                return Ok(());
+        let item_id = item["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .or_else(|| item["call_id"].as_str().filter(|id| !id.is_empty()))
+            .ok_or_else(|| ModelError::new("Responses function_call is missing its identifier"))?;
+        let call_id = item["call_id"].as_str().unwrap_or(item_id);
+        let name = item["name"].as_str().unwrap_or_default();
+        let existing = self
+            .tool_calls
+            .iter_mut()
+            .find(|call| call.item_id == item_id || call.call_id == call_id);
+        let call = match existing {
+            Some(call) => call,
+            None => {
+                sink.emit(StreamPart::ToolCallStart {
+                    id: call_id.into(),
+                    name: name.into(),
+                })?;
+                self.tool_calls.push(ResponsesToolPartial {
+                    item_id: item_id.into(),
+                    call_id: call_id.into(),
+                    name: name.into(),
+                    arguments: String::new(),
+                    done: false,
+                });
+                self.tool_calls.last_mut().unwrap()
             }
-            partial.done = true;
-            let call = pending_tool_call_from_partial(partial);
-            sink.emit(StreamPart::ToolCallDone { call })?;
+        };
+        if call.done {
+            return Ok(());
+        }
+        if !name.is_empty() {
+            call.name = name.into();
+        }
+        if let Some(arguments) = item["arguments"].as_str().filter(|args| !args.is_empty()) {
+            call.arguments = arguments.into();
+        }
+        if complete && function_item_is_complete(item) {
+            if call.name.is_empty() {
+                return Err(ModelError::new(
+                    "Responses completed a function_call without a name",
+                ));
+            }
+            call.done = true;
+            sink.emit(StreamPart::ToolCallDone {
+                call: pending_tool_call_from_partial(call),
+            })?;
         }
         Ok(())
     }
@@ -1014,15 +1055,19 @@ impl ResponsesStreamState {
                 .collect::<String>();
             self.push_reasoning_delta(&reasoning, sink)?;
         }
-        // Flush any function calls that never received an explicit output_item.done.
-        let pending_ids: Vec<String> = self
-            .tool_calls
-            .iter()
-            .filter(|partial| !partial.done)
-            .map(|partial| partial.item_id.clone())
-            .collect();
-        for item_id in pending_ids {
-            self.finalize_tool_call(&item_id, sink)?;
+        // The Agent handles length-truncated batches without executing them. On a
+        // successful turn each executable call must have a completed provider item.
+        if !self
+            .finish_reason
+            .as_ref()
+            .is_some_and(|reason| reason.kind == FinishKind::Length)
+        {
+            if let Some(call) = self.tool_calls.iter().find(|call| !call.done) {
+                return Err(ModelError::new(format!(
+                    "Responses stream ended with an unfinished function_call ({})",
+                    call.call_id
+                )));
+            }
         }
         let tool_calls: Vec<PendingToolCall> = self
             .tool_calls
@@ -1195,34 +1240,7 @@ fn handle_responses_stream_event(
         "response.output_item.added" => {
             if let Some(item) = value.get("item") {
                 match item.get("type").and_then(Value::as_str) {
-                    Some("function_call") => {
-                        let item_id = item
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        let call_id = item
-                            .get("call_id")
-                            .and_then(Value::as_str)
-                            .unwrap_or(&item_id)
-                            .to_string();
-                        let name = item
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        sink.emit(StreamPart::ToolCallStart {
-                            id: call_id.clone(),
-                            name: name.clone(),
-                        })?;
-                        state.tool_calls.push(ResponsesToolPartial {
-                            item_id,
-                            call_id,
-                            name,
-                            arguments: String::new(),
-                            done: false,
-                        });
-                    }
+                    Some("function_call") => state.read_tool_item(item, false, sink)?,
                     // 内置搜索开始：查询词此刻还没到，发一帧空快照 = 立即开一张 Running 卡。
                     Some("web_search_call") => {
                         state.emit_web_search_snapshot(sink)?;
@@ -1234,7 +1252,7 @@ fn handle_responses_stream_event(
         "response.function_call_arguments.delta" => {
             let item_id = value.get("item_id").and_then(Value::as_str).unwrap_or("");
             if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                if let Some(partial) = state.partial_mut(item_id) {
+                if let Some(partial) = state.partial_mut(item_id).filter(|call| !call.done) {
                     partial.arguments.push_str(delta);
                     sink.emit(StreamPart::ToolCallDelta {
                         id: partial.call_id.clone(),
@@ -1246,7 +1264,7 @@ fn handle_responses_stream_event(
         "response.function_call_arguments.done" => {
             let item_id = value.get("item_id").and_then(Value::as_str).unwrap_or("");
             if let Some(arguments) = value.get("arguments").and_then(Value::as_str) {
-                if let Some(partial) = state.partial_mut(item_id) {
+                if let Some(partial) = state.partial_mut(item_id).filter(|call| !call.done) {
                     // The `done` event carries the full argument string — prefer it over
                     // the accumulated deltas to avoid any drift.
                     partial.arguments = arguments.to_string();
@@ -1257,17 +1275,7 @@ fn handle_responses_stream_event(
             if let Some(item) = value.get("item") {
                 finish_refusal_parts(state, item, sink)?;
                 match item.get("type").and_then(Value::as_str) {
-                    Some("function_call") => {
-                        let item_id = item.get("id").and_then(Value::as_str).unwrap_or("");
-                        if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
-                            if let Some(partial) = state.partial_mut(item_id) {
-                                if !arguments.is_empty() {
-                                    partial.arguments = arguments.to_string();
-                                }
-                            }
-                        }
-                        state.finalize_tool_call(item_id, sink)?;
-                    }
+                    Some("function_call") => state.read_tool_item(item, true, sink)?,
                     // 内置搜索：hosted web_search 的查询词在此事件到达（completed 的 output 里不重现）。
                     Some("web_search_call") => {
                         if let Some(action) = item.get("action") {
@@ -1344,13 +1352,6 @@ fn handle_responses_stream_event(
                     }
                     state.usage = Some(usage);
                 }
-                if let Some(status) = response.get("status").and_then(Value::as_str) {
-                    state.finish_reason = Some(responses_finish_reason(
-                        status,
-                        response,
-                        !state.tool_calls.is_empty(),
-                    ));
-                }
                 // 完整 output 里若还带 web_search_call / message 注解，合并进已流式累加的结果
                 // （不覆盖：hosted web_search_call 通常只在 output_item.done 里出现，不重现在此）。
                 if let Some(output) = response.get("output").and_then(Value::as_array) {
@@ -1362,13 +1363,37 @@ fn handle_responses_stream_event(
                             state.push_web_search_citation(&c.url, &c.title);
                         }
                     }
-                    // Some endpoints supply replay data only in the terminal snapshot.
+                    // A gateway can deliver some or all of the text only in response.output.
+                    // Replay the missing suffix when the snapshot agrees with published deltas.
+                    let text = output
+                        .iter()
+                        .flat_map(message_text_parts)
+                        .collect::<String>();
+                    let suffix = text.strip_prefix(&state.text);
+                    if let Some(delta) = suffix.filter(|text| !text.is_empty()) {
+                        state.text.push_str(delta);
+                        sink.emit(StreamPart::TextDelta {
+                            delta: delta.into(),
+                        })?;
+                    }
                     for item in output {
-                        finish_refusal_parts(state, item, sink)?;
-                        if item["type"] == "reasoning" {
+                        if suffix.is_none() {
+                            // Partial terminal snapshots may still contain a new refusal block.
+                            finish_refusal_parts(state, item, sink)?;
+                        }
+                        if item["type"] == "function_call" {
+                            state.read_tool_item(item, response["status"] == "completed", sink)?;
+                        } else if item["type"] == "reasoning" {
                             state.preserve_reasoning_item(item);
                         }
                     }
+                }
+                if let Some(status) = response.get("status").and_then(Value::as_str) {
+                    state.finish_reason = Some(responses_finish_reason(
+                        status,
+                        response,
+                        !state.tool_calls.is_empty(),
+                    ));
                 }
             }
         }
@@ -1453,6 +1478,11 @@ impl StreamSink for DiscardSink {
     }
 }
 
+// Compatible endpoints may omit item status in their final snapshot.
+fn function_item_is_complete(item: &Value) -> bool {
+    item["status"].is_null() || item["status"] == "completed"
+}
+
 fn pending_tool_call_from_partial(partial: &ResponsesToolPartial) -> PendingToolCall {
     let raw = if partial.arguments.trim().is_empty() {
         "{}".to_string()
@@ -1512,21 +1542,13 @@ fn output_from_responses_payload(
     let mut reasoning_items: Vec<Value> = Vec::new();
     for item in output {
         match item.get("type").and_then(Value::as_str) {
-            Some("message") => {
-                if let Some(content) = item.get("content").and_then(Value::as_array) {
-                    for part in content {
-                        let field = match part["type"].as_str() {
-                            Some("output_text") => "text",
-                            Some("refusal") => "refusal",
-                            _ => continue,
-                        };
-                        if let Some(part_text) = part.get(field).and_then(Value::as_str) {
-                            text.push_str(part_text);
-                        }
-                    }
-                }
-            }
+            Some("message") => text.extend(message_text_parts(item)),
             Some("function_call") => {
+                if !function_item_is_complete(item) && value["status"] != "incomplete" {
+                    return Err(ModelError::new(format!(
+                        "{label}: unfinished function_call in final response"
+                    )));
+                }
                 let call_id = item
                     .get("call_id")
                     .or_else(|| item.get("id"))
@@ -1782,6 +1804,19 @@ fn push_refusal(
         })?;
     }
     Ok(())
+}
+
+fn message_text_parts(item: &Value) -> impl Iterator<Item = &str> {
+    item["content"]
+        .as_array()
+        .filter(|_| item["type"] == "message")
+        .into_iter()
+        .flatten()
+        .filter_map(|part| match part["type"].as_str()? {
+            "output_text" => part["text"].as_str(),
+            "refusal" => part["refusal"].as_str(),
+            _ => None,
+        })
 }
 
 fn finish_refusal_parts(

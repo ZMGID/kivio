@@ -20,6 +20,109 @@ fn request() -> GenerateRequest {
 }
 
 #[tokio::test]
+async fn responses_only_delivers_confirmed_tool_calls() {
+    let item = json!({"id":"fc_a","call_id":"call_a","type":"function_call",
+        "name":"lookup","arguments":"{}","status":"completed"});
+    let added = event(json!({"type":"response.output_item.added","item":{
+        "id":"fc_a","call_id":"call_a","name":"lookup","type":"function_call","arguments":""}}));
+    let done = event(json!({"type":"response.output_item.done","item":item}));
+    let partial = event(
+        json!({"type":"response.function_call_arguments.delta","item_id":"fc_a","delta":"{}"}),
+    );
+    let completed = |output| {
+        event(
+            json!({"type":"response.completed","response":{"status":"completed","output":output}}),
+        )
+    };
+    for (stream, expected) in [
+        (added.clone() + &partial + &completed(json!([])), false),
+        (done.clone() + &completed(json!([item])), true),
+        (added + &completed(json!([item])), true),
+        (completed(json!([item])), true),
+    ] {
+        let server = Server::start_at("/responses", vec![Response::Sse(stream)]).await;
+        let provider = OpenAiResponsesProvider::new(
+            reqwest::Client::new(),
+            OpenAiResponsesConfig::new(server.endpoint.clone()),
+        );
+        let mut events = vec![];
+        let result = provider
+            .stream(request(), &mut |part| {
+                events.push(part);
+                Ok(())
+            })
+            .await;
+        if expected {
+            let output = result.unwrap();
+            assert_eq!(output.finish_reason.unwrap().legacy_name(), "tool_calls");
+            assert_eq!(output.tool_calls.len(), 1);
+            assert_eq!(output.tool_calls[0].id, "call_a");
+            assert_eq!(output.tool_calls[0].arguments, json!({}));
+        } else {
+            assert!(
+                result.is_err(),
+                "unconfirmed arguments must not be executable"
+            );
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|part| matches!(part, StreamPart::ToolCallDone { .. }))
+                .count(),
+            usize::from(expected)
+        );
+    }
+}
+
+#[tokio::test]
+async fn responses_recovers_missing_visible_text_from_the_terminal_snapshot() {
+    let terminal = event(
+        json!({"type":"response.completed","response":{"status":"completed","output":[
+            {"type":"message","id":"msg_a","content":[{"type":"output_text","text":"hello "},{"type":"refusal","refusal":"world"}]}
+        ]}}),
+    );
+    for prefix in ["", "hel", "hello "] {
+        let delta =
+            event(json!({"type":"response.output_text.delta","item_id":"msg_a","delta":prefix}));
+        let server = Server::start_at("/responses", vec![Response::Sse(delta + &terminal)]).await;
+        let provider = OpenAiResponsesProvider::new(
+            reqwest::Client::new(),
+            OpenAiResponsesConfig::new(server.endpoint.clone()),
+        );
+        let mut visible = String::new();
+        let output = provider
+            .stream(request(), &mut |part| {
+                if let StreamPart::TextDelta { delta } = part {
+                    visible.push_str(&delta);
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(output.text, "hello world");
+        assert_eq!(visible, output.text);
+    }
+}
+
+#[tokio::test]
+async fn responses_buffered_rejects_an_unfinished_call_in_a_completed_turn() {
+    let unfinished = json!({"type":"function_call","id":"fc_a","call_id":"call_a",
+        "name":"lookup","arguments":"{}","status":"in_progress"});
+    let server = Server::start_at("/responses", vec![
+        Response::Json(json!({"status":"completed","output":[unfinished]})),
+        Response::Json(json!({"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[unfinished]})),
+    ]).await;
+    let provider = OpenAiResponsesProvider::new(
+        reqwest::Client::new(),
+        OpenAiResponsesConfig::new(server.endpoint.clone()),
+    );
+    assert!(provider.generate(request()).await.is_err());
+    let truncated = provider.generate(request()).await.unwrap();
+    assert_eq!(truncated.finish_reason.unwrap().legacy_name(), "length");
+    assert_eq!(truncated.tool_calls.len(), 1);
+}
+
+#[tokio::test]
 async fn gemini_blocked_responses_are_errors_in_both_delivery_modes() {
     for value in [
         json!({"promptFeedback":{"blockReason":"SAFETY"}}),
