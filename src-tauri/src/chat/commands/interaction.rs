@@ -325,8 +325,8 @@ fn delayed_stop_only_pauses_the_goal_version_it_captured() {
 /// 响应敏感工具调用确认。`always=true` 时额外把「本对话内该工具不再询问」落进
 /// `chat_tool_always_allow`——决策通道本身仍是 bool，三态只存在于这一层。
 #[tauri::command]
-pub(crate) fn chat_confirm_tool_call(
-    app: AppHandle,
+pub(crate) fn chat_confirm_tool_call<R: tauri::Runtime>(
+    app: AppHandle<R>,
     state: State<AppState>,
     interaction_id: String,
     approved: bool,
@@ -935,8 +935,8 @@ pub(crate) async fn request_tool_approval(
 }
 
 /// 同 `request_tool_approval`，但把用户选的那一档也带回来（计划批准的三选一）。
-pub(crate) async fn request_tool_approval_outcome(
-    app: &AppHandle,
+pub(crate) async fn request_tool_approval_outcome<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     state: &AppState,
     conversation_id: &str,
     run_id: &str,
@@ -999,7 +999,7 @@ pub(crate) async fn request_tool_approval_outcome(
 }
 
 /// 通知前端撤掉某条审批卡（已超时 / 已取消 / 询问方已经不在了，答复不再有意义）。
-pub(crate) fn withdraw_tool_confirm(app: &AppHandle, interaction_id: &str) {
+pub(crate) fn withdraw_tool_confirm<R: tauri::Runtime>(app: &AppHandle<R>, interaction_id: &str) {
     crate::chat::protocol::withdraw_tool_approval(app, interaction_id);
 }
 

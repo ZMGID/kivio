@@ -33,7 +33,10 @@ async fn resolves_dsh_desktop_without_path_registration() {
         let paths = std::iter::once(path_bin.parent().unwrap().to_path_buf())
             .chain(std::env::split_paths(&original));
         std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
-        assert_eq!(resolve_binary(def).await, Some(path_bin.clone()));
+        assert_eq!(
+            resolve_binary(def).await.unwrap().canonicalize().unwrap(),
+            path_bin.canonicalize().unwrap()
+        );
 
         let mut settings = crate::settings::Settings::default();
         let config = settings

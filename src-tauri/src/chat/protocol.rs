@@ -2992,7 +2992,7 @@ impl<R: tauri::Runtime> Drop for RegisteredRunGuard<R> {
     }
 }
 
-pub fn withdraw_tool_approval(app: &AppHandle, interaction_id: &str) {
+pub fn withdraw_tool_approval<R: tauri::Runtime>(app: &AppHandle<R>, interaction_id: &str) {
     let state = app.state::<AppState>();
     let event = state
         .chat_protocol()

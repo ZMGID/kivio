@@ -974,25 +974,64 @@ fn format_tool_approval_summary_highlights_run_command() {
     assert!(!summary.detail.contains("\"command\""));
 }
 
-#[test]
-fn tool_approval_does_not_fail_closed_after_sixty_seconds() {
-    let src = include_str!("interaction.rs");
-    let start = src
-        .find("pub(crate) async fn request_tool_approval_outcome")
-        .expect("request_tool_approval_outcome");
-    let rest = &src[start..];
-    let end = rest
-        .find("pub(crate) fn withdraw_tool_confirm")
-        .expect("withdraw_tool_confirm");
-    let body = &rest[..end];
+#[tokio::test(start_paused = true)]
+async fn tool_approval_accepts_late_decisions_and_withdraws_on_cancel() {
+    use super::interaction::{chat_confirm_tool_call, request_tool_approval_outcome};
+    use crate::chat::protocol::{register_run, ChatPendingInteractionSnapshot};
+    use crate::state::{test_app_state, AppState};
+    use tauri::Manager;
+
+    let app = tauri::test::mock_app();
+    app.manage(test_app_state());
+    let app = app.handle();
+    let state = app.state::<AppState>();
+    let generation = state.chat_runtime().begin_generation("conv");
+    register_run(app, "conv", "run", "message", 0);
+    let record = serde_json::from_value(serde_json::json!({
+        "id": "call", "name": "Write", "status": "pending"
+    }))
+    .unwrap();
+    let request =
+        |id| request_tool_approval_outcome(app, &state, "conv", "run", generation, &record, id);
+    let confirm =
+        |id: &str| chat_confirm_tool_call(app.clone(), state.clone(), id.into(), true, None, None);
+    let pending = || {
+        state
+            .chat_protocol()
+            .running_snapshot("conv", "run", "message")
+            .unwrap()
+            .pending_interactions
+    };
+    let shows_approval = |id: &str| {
+        matches!(pending().as_slice(),
+            [ChatPendingInteractionSnapshot::ToolApprovalRequested { interaction_id, .. }] if interaction_id == id
+        )
+    };
+
+    let approval = request("late");
+    tokio::pin!(approval);
+    assert!(futures::poll!(approval.as_mut()).is_pending());
+    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
     assert!(
-        !body.contains("from_secs(60)"),
-        "a 60s wall-clock deny is what Codex reports as Rejected(\"rejected by user\")"
+        futures::poll!(approval.as_mut()).is_pending(),
+        "an unanswered approval must still be open"
     );
-    assert!(
-        body.contains("result = rx => result"),
-        "tool approval must wait on the user oneshot until cancel"
-    );
+    assert!(shows_approval("late"));
+    confirm("late").unwrap();
+    assert!(approval.await.approved);
+    assert!(pending().is_empty());
+
+    let approval = request("cancelled");
+    tokio::pin!(approval);
+    assert!(futures::poll!(approval.as_mut()).is_pending());
+    assert!(shows_approval("cancelled"));
+    state.cancel_chat_generation("conv");
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), approval)
+        .await
+        .expect("cancellation must release the approval request");
+    assert!(!outcome.approved);
+    assert!(pending().is_empty());
+    assert!(confirm("cancelled").is_err());
 }
 
 #[test]

@@ -363,8 +363,32 @@ pub(super) fn reprice(
 mod tests {
     use super::*;
 
+    // The price table is shared by all model calls in one application process.
+    fn run_with_own_price_cache() -> bool {
+        let thread = std::thread::current();
+        let test = thread.name().expect("named pricing test");
+        if std::env::var("KIVIO_PRICING_TEST").as_deref() == Ok(test) {
+            return false;
+        }
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("KIVIO_PRICING_TEST", test)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        true
+    }
+
     #[test]
     fn stale_disk_load_does_not_replace_newer_prices() {
+        if run_with_own_price_cache() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let old = serde_json::json!({"stale-test":{"input_cost_per_token":0.000001,"output_cost_per_token":0.000002}});
         let new = serde_json::json!({"stale-test":{"input_cost_per_token":0.000004,"output_cost_per_token":0.000008}});
@@ -416,6 +440,9 @@ mod tests {
 
     #[test]
     fn reference_models_and_provider_prices_match_live_calls_and_history() {
+        if run_with_own_price_cache() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let mut db = store::open(temp.path()).unwrap();
         let document = serde_json::json!({"reference-model":{
@@ -536,6 +563,9 @@ mod tests {
 
     #[tokio::test]
     async fn refresh_falls_back_from_invalid_prices_and_keeps_cache_during_failure_backoff() {
+        if run_with_own_price_cache() {
+            return;
+        }
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -626,6 +656,9 @@ mod tests {
 
     #[test]
     fn cached_prices_reprice_history_without_overwriting_reported_or_custom_costs() {
+        if run_with_own_price_cache() {
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let mut db = store::open(temp.path()).unwrap();
         let row:UsageRecord=serde_json::from_value(serde_json::json!({"id":"auto","createdAt":1,"completedAt":1,"durationMs":0,"source":"chat","operation":"chat_tools_planning","providerId":"p","providerName":"p","model":"deepseek-v4.1-flash","apiFormat":"openai_chat","status":"success","usageSource":"provider_reported","inputTokens":1000,"outputTokens":100,"costSource":"unavailable"})).unwrap();

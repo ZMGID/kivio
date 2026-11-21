@@ -600,15 +600,14 @@ impl MockModelServer {
                     .ok();
                 let response = match read_http_request(&mut stream) {
                     Ok(body) => {
-                        let response = match response {
-                            MockResponse::ForRequest(respond) => respond(&body),
-                            response => response,
-                        };
                         captured_for_thread
                             .lock()
                             .unwrap_or_else(|err| err.into_inner())
-                            .push(body);
-                        response
+                            .push(body.clone());
+                        match response {
+                            MockResponse::ForRequest(respond) => respond(&body),
+                            response => response,
+                        }
                     }
                     Err(_) => continue,
                 };
@@ -6894,13 +6893,20 @@ fn truncated_text_response(output_tokens: Option<u64>) -> MockResponse {
 async fn truncated_text_recovers_once_without_replaying_completed_tools() {
     for with_tools in [false, true] {
         for outcome in ["success", "length", "error", "cancel", "summary-error"] {
+            let host = Arc::new(TestHost::default());
             let mut responses = Vec::new();
             if with_tools {
                 responses.push(MockResponse::Sse(planning_tool_call_sse_events()));
             }
             responses.push(truncated_text_response(Some(12)));
             responses.push(match outcome {
-                "cancel" => MockResponse::SseThenHang(Vec::new()),
+                "cancel" => {
+                    let cancel = host.cancel_flag.clone();
+                    MockResponse::ForRequest(Box::new(move |_| {
+                        cancel.store(true, Ordering::SeqCst);
+                        MockResponse::SseThenHang(Vec::new())
+                    }))
+                }
                 "summary-error" => {
                     MockResponse::Status(400, "invalid_request_error: bad summary request".into())
                 }
@@ -6927,14 +6933,6 @@ async fn truncated_text_recovers_once_without_replaying_completed_tools() {
                 config.runtime_messages.push(
                     serde_json::json!({"role":"user","content":format!("historical question {n}")}),
                 );
-            }
-            let host = Arc::new(TestHost::default());
-            if outcome == "cancel" {
-                let flag = host.cancel_flag.clone();
-                tokio::spawn(async move {
-                    sleep(Duration::from_millis(250)).await;
-                    flag.store(true, Ordering::SeqCst);
-                });
             }
             let executor = Arc::new(RecordingExecutor::default());
             let result = run_agent_loop(config, &host, &executor).await;
