@@ -26,7 +26,7 @@ use super::{
     ModelFuture, ModelUsage, StreamSink,
 };
 pub use kivio_agent_sdk::model::responses::output_from_responses;
-use kivio_agent_sdk::model::responses::{OpenAiResponsesOptions, ResponsesFormat};
+use kivio_agent_sdk::model::responses::{self, OpenAiResponsesOptions, ResponsesFormat};
 
 pub(super) struct OpenAiResponsesProvider<'a> {
     transport: ModelTransport<'a>,
@@ -59,11 +59,11 @@ impl OpenAiResponsesProvider<'_> {
     async fn send_responses_body(
         &self,
         request: &GenerateRequest,
+        body: &mut Value,
         stream: bool,
         label: &str,
     ) -> Result<reqwest::Response, ModelError> {
-        let body = self.request_body(request, stream);
-        let result = self.post_responses(request, &body, stream, label).await;
+        let result = self.post_responses(request, body, stream, label).await;
         if let Err(ref err) = result {
             let mut learned = false;
             if body.get("prompt_cache_key").is_some()
@@ -80,22 +80,34 @@ impl OpenAiResponsesProvider<'_> {
                     .runtime
                     .mark_prompt_cache_retention_unsupported(self.config.base_url);
                 learned = true;
-            } else if body_replays_reasoning_items(&body)
+            } else if body_replays_reasoning_items(body)
                 && error_maybe_rejects_reasoning_replay(&err.message)
+                && request.options.provider_options.get("input").is_none()
+                && self
+                    .config
+                    .source
+                    .model_extra_body(&request.model)
+                    .get("input")
+                    .is_none()
             {
-                // 有些中转不实现 stateless reasoning 回放（对 input 里的 reasoning item
-                // 直接 4xx）。学习后本会话不再对该 base_url 回放——去掉 item 的请求永远
-                // 合法，所以这条重试是严格安全的降级（回到修复前的行为）。
-                self.transport
-                    .runtime
-                    .mark_reasoning_replay_unsupported(self.config.base_url);
-                learned = true;
+                body["input"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|item| item["type"] != "reasoning");
+                let retry = self.post_responses(request, body, stream, label).await;
+                if retry.is_ok() && err.message.to_ascii_lowercase().contains("unsupported") {
+                    self.transport
+                        .runtime
+                        .mark_reasoning_replay_unsupported(self.config.base_url, &request.model);
+                }
+                return retry;
             }
             if learned {
                 let retry_body = self.request_body(request, stream);
-                return self
-                    .post_responses(request, &retry_body, stream, label)
-                    .await;
+                if retry_body != *body {
+                    *body = retry_body;
+                    return self.post_responses(request, body, stream, label).await;
+                }
             }
         }
         result
@@ -147,8 +159,9 @@ impl OpenAiResponsesProvider<'_> {
         let label = request_label(&request, "Responses API");
         let started_at = chrono::Local::now().timestamp();
         let started = std::time::Instant::now();
+        let mut body = self.request_body(&request, false);
         let response = self
-            .send_responses_body(&request, false, &label)
+            .send_responses_body(&request, &mut body, false, &label)
             .await
             .map_err(|err| {
                 self.record_usage_failure(
@@ -161,7 +174,7 @@ impl OpenAiResponsesProvider<'_> {
                 self.record_debug_failure(
                     &request,
                     &label,
-                    false,
+                    &body,
                     &err.message,
                     started_at,
                     started.elapsed(),
@@ -169,39 +182,45 @@ impl OpenAiResponsesProvider<'_> {
                 err
             })?;
 
+        let response_endpoint = response.url().clone();
         let raw = response.text().await.map_err(|err| {
             let message = format!("{label} read body: {err}");
             self.record_usage_failure(&request, &label, started_at, started.elapsed(), &message);
             self.record_debug_failure(
                 &request,
                 &label,
-                false,
+                &body,
                 &message,
                 started_at,
                 started.elapsed(),
             );
             ModelError::new(message)
         })?;
-        let output =
-            kivio_agent_sdk::model::responses::decode_responses_body(&raw, &label, &request.model)
-                .map_err(|err| {
-                    self.record_usage_failure(
-                        &request,
-                        &label,
-                        started_at,
-                        started.elapsed(),
-                        &err.message,
-                    );
-                    self.record_debug_failure(
-                        &request,
-                        &label,
-                        false,
-                        &err.message,
-                        started_at,
-                        started.elapsed(),
-                    );
-                    err
-                })?;
+        let mut output = responses::decode_responses_body_at_endpoint(
+            &raw,
+            &label,
+            &request.model,
+            Some(&response_endpoint),
+        )
+        .map_err(|err| {
+            self.record_usage_failure(
+                &request,
+                &label,
+                started_at,
+                started.elapsed(),
+                &err.message,
+            );
+            self.record_debug_failure(
+                &request,
+                &label,
+                &body,
+                &err.message,
+                started_at,
+                started.elapsed(),
+            );
+            err
+        })?;
+        self.bind_output_provenance(&mut output);
         self.record_usage_success(
             &request,
             &label,
@@ -213,7 +232,7 @@ impl OpenAiResponsesProvider<'_> {
         self.record_debug_success(
             &request,
             &label,
-            false,
+            &body,
             &output,
             started_at,
             started.elapsed(),
@@ -232,8 +251,15 @@ impl OpenAiResponsesProvider<'_> {
         let started = std::time::Instant::now();
         let mut measured_sink = FirstTokenStreamSink::new(sink, started);
         let sink = &mut measured_sink;
+        let stream = self.config.codex_oauth
+            || !responses::uses_buffered_delivery(
+                reqwest::Url::parse(self.config.base_url).ok().as_ref(),
+                self.responses_format(),
+                &request.model,
+            );
+        let mut body = self.request_body(&request, stream);
         let response = self
-            .send_responses_body(&request, true, &label)
+            .send_responses_body(&request, &mut body, stream, &label)
             .await
             .map_err(|err| {
                 self.record_usage_failure(
@@ -246,7 +272,7 @@ impl OpenAiResponsesProvider<'_> {
                 self.record_debug_failure(
                     &request,
                     &label,
-                    true,
+                    &body,
                     &err.message,
                     started_at,
                     started.elapsed(),
@@ -254,13 +280,12 @@ impl OpenAiResponsesProvider<'_> {
                 err
             })?;
 
-        let output = kivio_agent_sdk::model::responses::decode_responses_stream(
-            response,
-            sink,
-            &label,
-            &request.model,
-        )
-        .await
+        let mut output = if stream {
+            responses::decode_responses_stream(response, sink, &label, &request.model).await
+        } else {
+            responses::decode_responses_buffered_stream(response, sink, &label, &request.model)
+                .await
+        }
         .map_err(|err| {
             self.record_usage_failure(
                 &request,
@@ -272,13 +297,14 @@ impl OpenAiResponsesProvider<'_> {
             self.record_debug_failure(
                 &request,
                 &label,
-                true,
+                &body,
                 &err.message,
                 started_at,
                 started.elapsed(),
             );
             err
         })?;
+        self.bind_output_provenance(&mut output);
         self.record_usage_success(
             &request,
             &label,
@@ -290,7 +316,7 @@ impl OpenAiResponsesProvider<'_> {
         self.record_debug_success(
             &request,
             &label,
-            true,
+            &body,
             &output,
             started_at,
             started.elapsed(),
@@ -319,8 +345,26 @@ impl OpenAiResponsesProvider<'_> {
         format!("{base}/responses")
     }
 
+    fn responses_format(&self) -> ResponsesFormat {
+        if self.config.api_format == ProviderApiFormat::XaiResponses {
+            ResponsesFormat::Xai
+        } else {
+            ResponsesFormat::OpenAi
+        }
+    }
+
+    fn bind_output_provenance(&self, output: &mut GenerateOutput) {
+        responses::bind_output_provenance(
+            output,
+            self.responses_format(),
+            Some(self.config.id),
+            reqwest::Url::parse(self.config.base_url).ok().as_ref(),
+        );
+    }
+
     fn request_body(&self, request: &GenerateRequest, stream: bool) -> Value {
-        let is_xai = self.config.api_format == ProviderApiFormat::XaiResponses;
+        let format = self.responses_format();
+        let is_xai = format == ResponsesFormat::Xai;
         let cache_key_supported = !is_xai
             && self.config.cache_retention != CacheRetention::None
             && !self
@@ -345,11 +389,8 @@ impl OpenAiResponsesProvider<'_> {
                 .prompt_cache_retention_unsupported(self.config.base_url))
         .then(|| "24h".to_string());
         let mut options = OpenAiResponsesOptions {
-            format: if is_xai {
-                ResponsesFormat::Xai
-            } else {
-                ResponsesFormat::OpenAi
-            },
+            extra_body: self.config.source.model_extra_body(&request.model).clone(),
+            format,
             temperature: crate::chat::model_metadata::temperature_for_request(
                 request.options.temperature,
                 Some(self.config.source),
@@ -358,20 +399,24 @@ impl OpenAiResponsesProvider<'_> {
             replay_reasoning: !self
                 .transport
                 .runtime
-                .reasoning_replay_unsupported(self.config.base_url),
+                .reasoning_replay_unsupported(self.config.base_url, &request.model),
             prompt_cache_key,
             prompt_cache_retention,
             endpoint: reqwest::Url::parse(self.config.base_url).ok(),
+            provider_id: Some(self.config.id.into()),
             cache_retention: Some(match self.config.cache_retention {
                 CacheRetention::None => kivio_agent_sdk::model::openai::CacheRetention::None,
                 CacheRetention::Long => kivio_agent_sdk::model::openai::CacheRetention::Long,
                 _ => kivio_agent_sdk::model::openai::CacheRetention::Short,
             }),
-            ..Default::default()
         };
         if self.config.codex_identity && !is_xai {
-            options.extra_body = serde_json::json!({ "include": ["reasoning.encrypted_content"] });
-            if !request.tools.is_empty() || request.options.builtin_web_search {
+            if options.extra_body.get("include").is_none() {
+                options.extra_body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
+            }
+            if options.extra_body.get("parallel_tool_calls").is_none()
+                && (!request.tools.is_empty() || request.options.builtin_web_search)
+            {
                 options.extra_body["parallel_tool_calls"] = Value::Bool(true);
             }
             if options.prompt_cache_key.is_some() {
@@ -380,7 +425,7 @@ impl OpenAiResponsesProvider<'_> {
                 ));
             }
         }
-        let mut body = kivio_agent_sdk::model::responses::request_body(request, stream, &options);
+        let mut body = responses::request_body(request, stream, &options);
         if self.config.codex_oauth {
             crate::provider_oauth::codex_body(&mut body);
         }
@@ -430,7 +475,7 @@ impl OpenAiResponsesProvider<'_> {
         &self,
         request: &GenerateRequest,
         label: &str,
-        stream: bool,
+        body: &Value,
         output: &GenerateOutput,
         started_at: i64,
         duration: std::time::Duration,
@@ -438,7 +483,6 @@ impl OpenAiResponsesProvider<'_> {
         let Some(debug) = (self.transport.request_debug)() else {
             return;
         };
-        let body = self.request_body(request, stream);
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
                 provider: self.config.source,
@@ -448,9 +492,9 @@ impl OpenAiResponsesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "success",
                 url: self.responses_url(),
-                headers: self.debug_request_headers(&request.metadata, &body),
-                body,
-                stream,
+                headers: self.debug_request_headers(&request.metadata, body),
+                body: body.clone(),
+                stream: body["stream"] == true,
                 response: crate::chat::request_debug::RequestDebugResponse::from_output(
                     output,
                     Some(200),
@@ -465,7 +509,7 @@ impl OpenAiResponsesProvider<'_> {
         &self,
         request: &GenerateRequest,
         label: &str,
-        stream: bool,
+        body: &Value,
         error: &str,
         started_at: i64,
         duration: std::time::Duration,
@@ -473,7 +517,6 @@ impl OpenAiResponsesProvider<'_> {
         let Some(debug) = (self.transport.request_debug)() else {
             return;
         };
-        let body = self.request_body(request, stream);
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
                 provider: self.config.source,
@@ -483,9 +526,9 @@ impl OpenAiResponsesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "error",
                 url: self.responses_url(),
-                headers: self.debug_request_headers(&request.metadata, &body),
-                body,
-                stream,
+                headers: self.debug_request_headers(&request.metadata, body),
+                body: body.clone(),
+                stream: body["stream"] == true,
                 response: crate::chat::request_debug::RequestDebugResponse::from_error(
                     error,
                     crate::api::extract_status_code(error),
@@ -582,15 +625,21 @@ fn body_replays_reasoning_items(body: &Value) -> bool {
         })
 }
 
-/// 该错误是否可能是端点拒绝 reasoning 回放。各家中转的 4xx 文案千奇百怪，无法可靠
-/// 模式匹配，所以宽松地认所有请求级 4xx（400/404/422）：误判的代价只是该端点本会话
-/// 退回「不回放」（= 修复前的行为），而漏判的代价是对话每轮 4xx 直接不可用。
-/// 401/402/403/429 是 key/配额问题，归 failover 管，不在此列。
 fn error_maybe_rejects_reasoning_replay(err: &str) -> bool {
-    matches!(
-        crate::api::extract_status_code(err),
-        Some(400) | Some(404) | Some(422)
-    )
+    if !matches!(crate::api::extract_status_code(err), Some(400 | 404 | 422)) {
+        return false;
+    }
+    let err = err.to_ascii_lowercase();
+    [
+        "encrypted_content",
+        "encrypted content",
+        "reasoning item",
+        "item rs_",
+        "item type 'reasoning'",
+        "item type \"reasoning\"",
+    ]
+    .iter()
+    .any(|marker| err.contains(marker))
 }
 
 fn request_label(request: &GenerateRequest, fallback: &str) -> String {
@@ -902,6 +951,7 @@ mod tests {
                     content: vec![
                         MessagePart::ReasoningItem {
                             model: part_model.into(),
+                            source: None,
                             item: serde_json::json!({
                                 "type": "reasoning", "id": "rs_1", "summary": [],
                                 "encrypted_content": "gAAA"
@@ -966,7 +1016,7 @@ mod tests {
         let input = body["input"].as_array().unwrap();
         assert!(input.iter().all(|item| item["type"] != "reasoning"));
 
-        // xAI：types 的回放一直丢弃推理项，且我们不向它要密文。
+        // Grok 4.3 retains its existing no-replay behavior.
         let body = replay_request_body(&state, "xai_responses", "grok-4.3", "grok-4.3");
         let input = body["input"].as_array().unwrap();
         assert!(input.iter().all(|item| item["type"] != "reasoning"));
@@ -977,7 +1027,7 @@ mod tests {
         let state = fresh_state();
         state
             .provider_runtime()
-            .mark_reasoning_replay_unsupported("https://relay.example.com/v1");
+            .mark_reasoning_replay_unsupported("https://relay.example.com/v1", "gpt-5.6");
         let body = replay_request_body(&state, "openai_responses", "gpt-5.6", "gpt-5.6");
         let input = body["input"].as_array().unwrap();
         assert!(
@@ -999,6 +1049,15 @@ mod tests {
         // 错误串遵循 api.rs 的约定格式 `"{label} Error: {status} - {body}"`。
         assert!(error_maybe_rejects_reasoning_replay(
             "Responses stream Error: 400 Bad Request - invalid item rs_1"
+        ));
+        assert!(!error_maybe_rejects_reasoning_replay(
+            "Responses Error: 400 Bad Request - Unsupported parameter: temperature"
+        ));
+        assert!(!error_maybe_rejects_reasoning_replay(
+            "Responses Error: 422 - Unsupported reasoning.effort"
+        ));
+        assert!(!error_maybe_rejects_reasoning_replay(
+            "Responses Error: 400 - unsupported parameter 'reasoning'"
         ));
         // 401/429 是 key/配额问题，归 failover；5xx 是服务端问题——都不该学习。
         assert!(!error_maybe_rejects_reasoning_replay(

@@ -331,24 +331,21 @@ fn parse_models(value: &Value) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
+pub(crate) fn is_custom_model(model: &str) -> bool {
+    model.starts_with("claude-") || model.starts_with("gpt-oss-")
+}
+
 pub fn wrap_request(provider: &ModelProvider, model: &str, mut body: Value) -> Value {
-    let custom = model.starts_with("claude-") || model.starts_with("gpt-oss-");
+    let custom = is_custom_model(model);
     if let Some(tools) = body["tools"].as_array_mut() {
         tools.retain(|t| t["functionDeclarations"].is_array());
-        for tool in tools {
-            if let Some(decls) = tool["functionDeclarations"].as_array_mut() {
-                for decl in decls {
-                    if let Some(schema) = decl.as_object_mut().and_then(|d| d.remove("parameters"))
-                    {
-                        decl[if custom {
-                            "parameters"
-                        } else {
-                            "parametersJsonSchema"
-                        }] = if custom {
-                            custom_schema(&schema)
-                        } else {
-                            schema
-                        };
+        if custom {
+            for tool in tools {
+                if let Some(declarations) = tool["functionDeclarations"].as_array_mut() {
+                    for declaration in declarations {
+                        if let Some(schema) = declaration.get_mut("parameters") {
+                            *schema = custom_schema(schema);
+                        }
                     }
                 }
             }

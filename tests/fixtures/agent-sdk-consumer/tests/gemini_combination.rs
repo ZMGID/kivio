@@ -32,6 +32,84 @@ fn request() -> GenerateRequest {
     }
 }
 
+#[tokio::test]
+async fn gemini_native_request_preserves_referenced_tool_parameters() {
+    let server = Server::start_paths(
+        "/gemini",
+        vec!["/gemini/models/gemini-3.8-flash:generateContent".into()],
+        vec![Response::Json(json!({
+            "candidates": [{"content": {"parts": [{"text": "ready"}]}, "finishReason": "STOP"}]
+        }))],
+    )
+    .await;
+    let provider = GeminiProvider::new(
+        reqwest::Client::builder().no_proxy().build().unwrap(),
+        GeminiConfig::new(server.endpoint.clone()),
+    );
+    let mut call = request();
+    call.options.builtin_web_search = false;
+    call.tools[0].input_schema = json!({
+        "type": "object",
+        "properties": {
+            "const": {"$ref": "#/$defs/Mode"},
+            "note": {"type": ["string", "null"]}
+        },
+        "required": ["const"],
+        "additionalProperties": false,
+        "$defs": {"Mode": {"type": "string", "const": "summary"}}
+    });
+    assert_eq!(provider.generate(call).await.unwrap().text, "ready");
+    let requests = server.requests.lock().unwrap();
+    let declaration = &requests[0].body["tools"][0]["functionDeclarations"][0];
+    assert!(declaration.get("parameters").is_none(), "{declaration}");
+    assert_eq!(
+        declaration["parametersJsonSchema"],
+        json!({
+            "type": "object",
+            "properties": {
+                "const": {"$ref": "#/$defs/Mode"},
+                "note": {"type": ["string", "null"]}
+            },
+            "required": ["const"],
+            "additionalProperties": false,
+            "$defs": {"Mode": {"type": "string", "enum": ["summary"]}}
+        })
+    );
+}
+
+#[test]
+fn default_encoder_uses_native_thinking_controls_for_the_requested_model() {
+    let mut call = request();
+    call.options.thinking_level = Some("high".into());
+    for (model, enabled, expected) in [
+        (
+            "models/gemini-3.8-flash",
+            true,
+            json!({"includeThoughts":true,"thinkingLevel":"high"}),
+        ),
+        (
+            "gemini-2.5-pro",
+            true,
+            json!({"includeThoughts":true,"thinkingBudget":32768}),
+        ),
+        ("gemini-2.5-flash", false, json!({"thinkingBudget":0})),
+        ("gemini-2.5-flash-image", true, serde_json::Value::Null),
+        (
+            "gemini-3.1-flash-lite-image",
+            true,
+            json!({"includeThoughts":true,"thinkingLevel":"high"}),
+        ),
+    ] {
+        call.model = model.into();
+        call.options.thinking_enabled = enabled;
+        let body = request_body(&call, &GeminiOptions::default());
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"], expected,
+            "{model}"
+        );
+    }
+}
+
 #[test]
 fn combination_config_uses_effective_tools_and_disable_wins() {
     for overrides in [

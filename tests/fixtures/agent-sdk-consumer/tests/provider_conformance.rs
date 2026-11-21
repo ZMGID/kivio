@@ -917,6 +917,134 @@ async fn anthropic_thinking_omits_temperature_on_the_wire() {
 }
 
 #[tokio::test]
+async fn anthropic_uses_the_models_thinking_mode_and_final_request_limits() {
+    let case = ProtocolCase::Anthropic;
+    let server = case
+        .server(
+            "/thinking-variants",
+            ["legacy", "current", "override", "disabled"]
+                .into_iter()
+                .map(|answer| case.answer(answer))
+                .collect(),
+        )
+        .await;
+    let provider = case.provider(&server);
+    let mut legacy = request();
+    legacy.model = "claude-sonnet-4-5-20250929".into();
+    legacy.options.thinking_level = Some("high".into());
+    legacy.options.max_tokens = 8192;
+    legacy.options.provider_options = json!({"max_tokens": 2048});
+    let mut disabled = legacy.clone();
+    disabled.options.provider_options = json!({
+        "thinking": {"type": "disabled"},
+        "temperature": 1.2,
+    });
+    let mut current = request();
+    current.model = "claude-sonnet-5-5".into();
+    current.options.thinking_enabled = false;
+    current.options.provider_options = json!({
+        "temperature": 0.6, "top_p": 0.8, "top_k": 10,
+        "output_config": {"effort":"max","format":{"type":"json_schema","schema":{"type":"object"}}}
+    });
+    let mut override_thinking = request();
+    override_thinking.model = "claude-haiku-4-5".into();
+    override_thinking.options.thinking_enabled = false;
+    override_thinking.options.provider_options = json!({
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+        "max_tokens": 4096,
+        "temperature": 1.5,
+        "top_p": 0.8,
+        "top_k": 10
+    });
+    for call in [legacy, current, override_thinking, disabled] {
+        LanguageModelProvider::stream(provider.as_ref(), call, &mut |_| Ok(()))
+            .await
+            .unwrap();
+    }
+    let requests = server.requests.lock().unwrap();
+    let legacy = &requests[0];
+    assert_eq!(legacy.body["max_tokens"], 2048);
+    assert_eq!(legacy.body["thinking"]["type"], "enabled");
+    assert_eq!(legacy.body["thinking"]["budget_tokens"], 1024);
+    assert!(legacy.body.get("output_config").is_none());
+    let current = &requests[1];
+    assert_eq!(current.body["thinking"]["type"], "between_tools");
+    assert_eq!(
+        current.body["output_config"],
+        json!({
+            "effort":"high","format":{"type":"json_schema","schema":{"type":"object"}}
+        })
+    );
+    for key in ["temperature", "top_p", "top_k"] {
+        assert!(current.body.get(key).is_none(), "{key}: {}", current.body);
+    }
+    let override_thinking = &requests[2];
+    for key in ["temperature", "top_p", "top_k"] {
+        assert!(
+            override_thinking.body.get(key).is_none(),
+            "{key}: {}",
+            override_thinking.body
+        );
+    }
+    for received in [legacy, override_thinking] {
+        assert!(received
+            .headers
+            .to_ascii_lowercase()
+            .contains("anthropic-beta: interleaved-thinking-2025-05-14"));
+    }
+    assert!(!current
+        .headers
+        .to_ascii_lowercase()
+        .contains("interleaved-thinking"));
+    let disabled = &requests[3];
+    assert_eq!(disabled.body["thinking"]["type"], "disabled");
+    assert_eq!(disabled.body["temperature"], 1.0);
+    assert!(!disabled
+        .headers
+        .to_ascii_lowercase()
+        .contains("interleaved-thinking"));
+}
+
+#[tokio::test]
+async fn anthropic_replays_malformed_tool_arguments_as_objects_with_paired_results() {
+    let case = ProtocolCase::Anthropic;
+    let server = case
+        .server("/tool-history", vec![case.answer("answer")])
+        .await;
+    let provider = case.provider(&server);
+    let id = "tool_1";
+    let mut call = request();
+    call.messages = kivio_agent_sdk::model::model_messages_from_openai_messages(vec![
+        json!({"role": "user", "content": "Read the report."}),
+        json!({"role": "assistant", "tool_calls": [
+            {"id": id, "type": "function", "function": {"name": "read", "arguments": "{\"path\":"}},
+            {"id": "tool_2", "type": "function", "function": {"name": "read", "arguments": "[1]"}},
+            {"id": "tool_3", "type": "function", "function": {"name": "read", "arguments": "{\"path\":\"report.txt\"}"}},
+        ]}),
+        json!({"role": "tool", "tool_call_id": id, "content": "The call was interrupted."}),
+        json!({"role": "tool", "tool_call_id": "tool_2", "content": "Invalid argument."}),
+        json!({"role": "tool", "tool_call_id": "tool_3", "content": "Report contents."}),
+        json!({"role": "user", "content": "Continue."}),
+    ]);
+    LanguageModelProvider::stream(provider.as_ref(), call, &mut |_| Ok(()))
+        .await
+        .unwrap();
+    let requests = server.requests.lock().unwrap();
+    let messages = &requests[0].body["messages"];
+    let calls = messages[1]["content"].as_array().unwrap();
+    assert_eq!(calls[0]["input"], json!({}));
+    assert_eq!(calls[1]["input"], json!({}));
+    assert_eq!(calls[2]["input"], json!({"path": "report.txt"}));
+    let results = messages[2]["content"].as_array().unwrap();
+    assert_eq!(calls[0]["id"], id);
+    assert_eq!(results[0]["tool_use_id"], id);
+    assert_eq!(results[0]["content"], "The call was interrupted.");
+    assert_eq!(results[1]["tool_use_id"], "tool_2");
+    assert_eq!(results[2]["tool_use_id"], "tool_3");
+    assert_eq!(results[3]["text"], "Continue.");
+}
+
+#[tokio::test]
 async fn explicit_endpoint_headers_and_call_overrides_reach_the_wire() {
     for case in CASES {
         let server = case

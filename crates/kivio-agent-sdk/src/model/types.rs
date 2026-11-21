@@ -3,6 +3,7 @@ use std::{future::Future, pin::Pin};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::responses::ResponsesReasoningSource;
 use super::ModelError;
 
 #[cfg(test)]
@@ -200,20 +201,13 @@ pub enum MessagePart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_provider_id: Option<String>,
     },
-    /// OpenAI Responses 原生 reasoning item（`{"type":"reasoning","id":"rs_…",
-    /// "summary":[…],"encrypted_content":"…"}`），整只按输出顺序保存。
-    ///
-    /// **为什么必须回放**：Responses 上的 gpt-5 / codex 系模型做工具循环时，思维链
-    /// 靠这些 item 跨轮延续——Codex 官方客户端每轮都把它们随 `input` 原样送回
-    /// （store:false + include:["reasoning.encrypted_content"]）。不回放等于每个
-    /// 工具轮把模型的思维链清零，多步任务（生成→检查→重做）退化成短视反应。
-    ///
-    /// `model` 记录产出该 item 的模型：encrypted_content 只有同模型能解，会话中途
-    /// 换模型后旧 item 不得回放（否则 400）。仅 `openai_responses` 协议回放；其余
-    /// 适配器一律忽略本变体。
+    /// Opaque encrypted reasoning carried across stateless Responses turns.
+    /// New items are replayed only to the source model and transport.
     ReasoningItem {
         model: String,
         item: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<ResponsesReasoningSource>,
     },
 }
 
@@ -345,8 +339,8 @@ pub struct GenerateOptions {
     pub builtin_web_search: bool,
     #[serde(default)]
     pub tool_choice: ToolChoice,
-    /// Per-call protocol extensions override provider defaults and encoded options;
-    /// mandatory tool prohibition applies last. Hosts validate unknown vendor fields.
+    /// Per-call protocol fields override model defaults. Routing, delivery mode,
+    /// tool prohibition and known protocol restrictions still apply.
     #[serde(default)]
     pub provider_options: Value,
 }
@@ -531,6 +525,8 @@ pub struct GeneratedImageData {
 pub struct ProviderReasoningItem {
     pub model: String,
     pub item: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ResponsesReasoningSource>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -677,6 +673,7 @@ impl GenerateOutput {
             .map(|item| MessagePart::ReasoningItem {
                 model: item.model.clone(),
                 item: item.item.clone(),
+                source: item.source.clone(),
             })
             .collect();
         if !self.text.is_empty() {
@@ -1114,9 +1111,13 @@ pub fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage
                 .unwrap_or_default();
             if let Some(item) = entry.get("item") {
                 if !item.is_null() {
+                    let Ok(source) = serde_json::from_value(entry["source"].clone()) else {
+                        continue;
+                    };
                     parts.push(MessagePart::ReasoningItem {
                         model: model.to_string(),
                         item: item.clone(),
+                        source,
                     });
                 }
             }
@@ -1407,8 +1408,16 @@ fn openai_messages_from_model_message(
             MessagePart::Reasoning { text } => {
                 reasoning = Some(text.clone());
             }
-            MessagePart::ReasoningItem { model, item } => {
-                reasoning_items.push(serde_json::json!({ "model": model, "item": item }));
+            MessagePart::ReasoningItem {
+                model,
+                item,
+                source,
+            } => {
+                let mut entry = serde_json::json!({ "model": model, "item": item });
+                if let Some(source) = source {
+                    entry["source"] = serde_json::json!(source);
+                }
+                reasoning_items.push(entry);
             }
             MessagePart::AnthropicThinking { thinking, .. } => {
                 reasoning.get_or_insert_with(String::new).push_str(thinking);
@@ -1508,24 +1517,31 @@ fn parse_data_image_url(url: &str) -> Option<(String, String)> {
 /// messages). User/assistant text use `input_text` / `output_text` content parts, and
 /// user images use `input_image`. Mirrors `openai_messages_from_model_message` but for
 /// the Responses item shapes. (System text is carried separately as `instructions`.)
-/// `reasoning_replay`：`Some(当前请求模型)` = 回放历史里同模型的原生 reasoning items
-/// （openai_responses；思维链跨轮延续的关键），`None` = 不回放（xAI：types 回放一直
-/// 丢弃推理项；或该端点已被学习为不支持回放）。只回放 `model` 完全一致的 item——
-/// encrypted_content 是模型键控的，会话中途换模型后旧密文送回去必 400。
+/// `reasoning_replay` enables model-only replay for legacy items. Use the Responses
+/// request encoder to replay new items bound to a provider.
 pub fn responses_input_from_model_messages(
     messages: &[ModelMessage],
     reasoning_replay: Option<&str>,
 ) -> Vec<Value> {
+    responses_input_with_replay(messages, |model, source| {
+        source.is_none() && reasoning_replay == Some(model)
+    })
+}
+
+pub(super) fn responses_input_with_replay(
+    messages: &[ModelMessage],
+    can_replay: impl Fn(&str, Option<&ResponsesReasoningSource>) -> bool,
+) -> Vec<Value> {
     let mut items = Vec::new();
     for message in paired_model_messages(messages).iter() {
-        responses_items_from_model_message(message, reasoning_replay, &mut items);
+        responses_items_from_model_message(message, &can_replay, &mut items);
     }
     items
 }
 
 fn responses_items_from_model_message(
     message: &ModelMessage,
-    reasoning_replay: Option<&str>,
+    can_replay: &impl Fn(&str, Option<&ResponsesReasoningSource>) -> bool,
     items: &mut Vec<Value>,
 ) {
     if message.role == ModelRole::Tool {
@@ -1616,9 +1632,12 @@ fn responses_items_from_model_message(
                     "arguments": arguments_raw,
                 }));
             }
-            MessagePart::ReasoningItem { model, item } => {
-                // 只回放同模型的 item（密文模型键控）；未启用回放时整类忽略。
-                if reasoning_replay == Some(model.as_str()) {
+            MessagePart::ReasoningItem {
+                model,
+                item,
+                source,
+            } => {
+                if can_replay(model, source.as_ref()) {
                     reasoning_items.push(item.clone());
                 }
             }
@@ -2093,7 +2112,9 @@ mod tests {
             .content
             .iter()
             .find_map(|part| match part {
-                MessagePart::ReasoningItem { model, item } => Some((model.clone(), item.clone())),
+                MessagePart::ReasoningItem { model, item, .. } => {
+                    Some((model.clone(), item.clone()))
+                }
                 _ => None,
             })
             .expect("reasoning item part");
@@ -2122,6 +2143,7 @@ mod tests {
                     MessagePart::Text { text: "ok".into() },
                     MessagePart::ReasoningItem {
                         model: "gpt-5.6".into(),
+                        source: None,
                         item: serde_json::json!({ "type": "reasoning", "id": "rs_1", "encrypted_content": "gAAA" }),
                     },
                 ],
@@ -2142,6 +2164,7 @@ mod tests {
             content: vec![
                 MessagePart::ReasoningItem {
                     model: "gpt-5.6".to_string(),
+                    source: None,
                     item: serde_json::json!({
                         "type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gAAA"
                     }),

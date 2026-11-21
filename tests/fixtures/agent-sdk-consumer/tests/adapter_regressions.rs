@@ -300,6 +300,281 @@ fn known_routes_select_limit_and_cache_fields_without_changing_unknown_gateways(
 }
 
 #[tokio::test]
+async fn responses_reasoning_replays_only_to_its_source() {
+    use kivio_agent_sdk::model::{
+        model_messages_from_openai_messages, openai_messages_from_model_messages,
+        responses::ResponsesFormat, MessagePart,
+    };
+    let reasoning = json!({
+        "type":"reasoning", "id":"rs_1", "summary":[], "encrypted_content":"opaque"
+    });
+    let call = json!({
+        "type":"function_call", "id":"fc_1", "call_id":"call_1", "name":"echo", "arguments":"{}"
+    });
+    let first = json!({"status":"completed","output":[reasoning, call]});
+    let final_response = || {
+        Response::Json(json!({"status":"completed","output":[
+            {"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}
+        ]}))
+    };
+    for (format, model, streamed, should_replay) in [
+        (ResponsesFormat::Xai, "grok-4.7", true, true),
+        (ResponsesFormat::OpenAi, "gpt-5.6", false, true),
+        (ResponsesFormat::Xai, "grok-4.3", true, false),
+    ] {
+        let server = Server::start_at(
+            "/v1/responses",
+            vec![
+                if streamed {
+                    Response::Sse(
+                        [
+                            json!({"type":"response.output_item.added","item":call}),
+                            json!({"type":"response.output_item.done","item":call}),
+                            json!({"type":"response.completed","response":first}),
+                        ]
+                        .into_iter()
+                        .map(event)
+                        .collect(),
+                    )
+                } else {
+                    Response::Json(first.clone())
+                },
+                final_response(),
+                final_response(),
+                final_response(),
+                final_response(),
+            ],
+        )
+        .await;
+        let other = Server::start_at("/v1/responses", vec![final_response()]).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let provider = |server: &Server, format, provider_id: &str| {
+            let mut config = OpenAiResponsesConfig::new(server.endpoint.clone());
+            config.options.format = format;
+            config.options.provider_id = Some(provider_id.into());
+            OpenAiResponsesProvider::new(client.clone(), config)
+        };
+        let mut next = request();
+        next.model = model.into();
+        let original = provider(&server, format, "original");
+        let output = if streamed {
+            original.stream(next.clone(), &mut |_| Ok(())).await
+        } else {
+            original.generate(next.clone()).await
+        }
+        .unwrap();
+        let history = openai_messages_from_model_messages(&[output.replay_message()]);
+        next.messages
+            .extend(model_messages_from_openai_messages(history));
+        next.messages.push(ModelMessage {
+            role: ModelRole::Tool,
+            content: vec![MessagePart::ToolResult {
+                tool_call_id: "call_1".into(),
+                content: "ok".into(),
+                is_error: false,
+                artifacts: vec![],
+            }],
+        });
+        assert_eq!(original.generate(next.clone()).await.unwrap().text, "done");
+        provider(&server, format, "other")
+            .generate(next.clone())
+            .await
+            .unwrap();
+        let mut switched_model = next.clone();
+        switched_model.model = "another-model".into();
+        original.generate(switched_model).await.unwrap();
+        let switched_format = match format {
+            ResponsesFormat::OpenAi => ResponsesFormat::Xai,
+            ResponsesFormat::Xai => ResponsesFormat::OpenAi,
+        };
+        provider(&server, switched_format, "original")
+            .generate(next.clone())
+            .await
+            .unwrap();
+        provider(&other, format, "original")
+            .generate(next)
+            .await
+            .unwrap();
+        let requests = server.requests.lock().unwrap();
+        let replay = requests[1].body["input"].as_array().unwrap();
+        let reasoning_items: Vec<_> = replay
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .collect();
+        if should_replay {
+            assert_eq!(reasoning_items, vec![&reasoning], "{model}");
+            let index = replay.iter().position(|item| item == &reasoning).unwrap();
+            assert_eq!(replay[index + 1]["type"], "function_call");
+            assert_eq!(replay[index + 2]["type"], "function_call_output");
+        } else {
+            assert!(reasoning_items.is_empty(), "{model}");
+        }
+        let other_requests = other.requests.lock().unwrap();
+        for request in requests[2..].iter().chain(other_requests.iter()) {
+            let input = request.body["input"].as_array().unwrap();
+            assert!(
+                input.iter().all(|item| item["type"] != "reasoning"),
+                "{model}"
+            );
+            assert!(
+                input
+                    .iter()
+                    .any(|item| item["type"] == "function_call_output"),
+                "{model}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn deepseek_responses_replays_its_plaintext_reasoning() {
+    use kivio_agent_sdk::model::{
+        model_messages_from_openai_messages, openai_messages_from_model_messages,
+        responses::{self, OpenAiResponsesOptions},
+        MessagePart,
+    };
+    let reasoning = json!({
+        "type":"reasoning", "id":"rs_ds",
+        "content":[{"type":"reasoning_text","text":"Look for the result."}],
+        "summary":[]
+    });
+    let message = json!({
+        "type":"message", "id":"msg_ds", "role":"assistant",
+        "content":[{"type":"output_text","text":"Here it is."}]
+    });
+    let first = json!({"status":"completed","output":[reasoning, message]});
+    let sse = [
+        json!({"type":"response.reasoning_text.delta","item_id":"rs_ds","delta":"Look for the result."}),
+        json!({"type":"response.output_item.done","item":reasoning}),
+        json!({"type":"response.output_text.delta","item_id":"msg_ds","delta":"Here it is."}),
+        json!({"type":"response.completed","response":first}),
+    ].into_iter().map(event).collect::<String>();
+    let endpoint = "https://api.deepseek.com/responses".parse().unwrap();
+    let options = OpenAiResponsesOptions {
+        provider_id: Some("deepseek".into()),
+        endpoint: Some(endpoint),
+        prompt_cache_key: Some("conversation".into()),
+        prompt_cache_retention: Some("24h".into()),
+        ..Default::default()
+    };
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    for streamed in [false, true] {
+        // The transport fixture records HTTP payloads on loopback. The codec
+        // receives the official logical endpoint, as in the desktop transport.
+        let server = Server::start_at(
+            "/responses",
+            vec![
+                if streamed {
+                    Response::Sse(sse.clone())
+                } else {
+                    Response::Json(first.clone())
+                },
+                Response::Json(first.clone()),
+                Response::Json(first.clone()),
+                Response::Json(first.clone()),
+            ],
+        )
+        .await;
+        let post = |request: &GenerateRequest, stream, options: &OpenAiResponsesOptions| {
+            client
+                .post(server.endpoint.clone())
+                .json(&responses::request_body(request, stream, options))
+                .send()
+        };
+        let mut request = request();
+        request.model = "deepseek-flash".into();
+        request.options.thinking_enabled = true;
+        request.options.thinking_level = Some("low".into());
+        let raw = post(&request, streamed, &options)
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let mut output = responses::decode_responses_body_at_endpoint(
+            &raw,
+            "DeepSeek",
+            &request.model,
+            options.endpoint.as_ref(),
+        )
+        .unwrap();
+        responses::bind_output_provenance(
+            &mut output,
+            options.format,
+            options.provider_id.as_deref(),
+            options.endpoint.as_ref(),
+        );
+        let history = openai_messages_from_model_messages(&[output.replay_message()]);
+        let mut restored = model_messages_from_openai_messages(history);
+        let image = |data: &str| MessagePart::Image {
+            mime_type: "image/png".into(),
+            data: data.into(),
+            path: None,
+            detail: None,
+        };
+        restored[0].content.push(image("YXNzaXN0YW50"));
+        request.messages.extend(restored);
+        request.messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: vec![image("dXNlcg==")],
+        });
+        assert!(!kivio_agent_sdk::model::openai::request_body(
+            &request,
+            false,
+            &Default::default()
+        )
+        .to_string()
+        .contains("Look for the result."));
+        post(&request, false, &options)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        for target in [
+            "https://api.openai.com/v1/responses",
+            "https://gateway.example/responses",
+        ] {
+            post(
+                &request,
+                false,
+                &OpenAiResponsesOptions {
+                    endpoint: Some(target.parse().unwrap()),
+                    ..options.clone()
+                },
+            )
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        }
+        let recorded = server.requests.lock().unwrap();
+        let input = recorded[1].body["input"].as_array().unwrap();
+        let reasoning_items: Vec<_> = input
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .collect();
+        assert_eq!(reasoning_items, vec![&reasoning]);
+        assert_eq!(output.reasoning.as_deref(), Some("Look for the result."));
+        assert!(input
+            .iter()
+            .any(|item| item["role"] == "user" && item["content"][0]["type"] == "input_image"));
+        assert!(input.iter().all(|item| item["role"] != "assistant"
+            || item["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|part| part["type"] != "input_image")));
+        for field in ["include", "prompt_cache_key", "prompt_cache_retention"] {
+            assert!(recorded[0].body.get(field).is_none(), "{field}");
+        }
+        assert_eq!(recorded[0].body["reasoning"], json!({"effort":"low"}));
+        for request in &recorded[2..] {
+            assert!(!request.body.to_string().contains("Look for the result."));
+        }
+    }
+}
+
+#[tokio::test]
 async fn reasoning_details_survive_stream_history_and_scoped_replay() {
     use kivio_agent_sdk::model::{
         model_messages_from_openai_messages,

@@ -82,7 +82,9 @@ impl OpenAiChatProvider<'_> {
             }
             if learned {
                 let retry_body = self.request_body(request, stream);
-                return self.post_chat(request, &retry_body, stream, label).await;
+                if retry_body != body {
+                    return self.post_chat(request, &retry_body, stream, label).await;
+                }
             }
         }
         result
@@ -443,13 +445,7 @@ impl OpenAiChatProvider<'_> {
                 Some(self.config.source),
                 &request.model,
             ),
-            extra_body: self
-                .config
-                .source
-                .model_overrides
-                .get(&request.model)
-                .and_then(|info| info.extra_body.clone())
-                .unwrap_or_default(),
+            extra_body: self.config.source.model_extra_body(&request.model).clone(),
             prompt_cache_key,
             prompt_cache_retention,
             endpoint: reqwest::Url::parse(self.config.base_url).ok(),
@@ -684,15 +680,14 @@ mod tests {
     }
 
     #[test]
-    fn thinking_off_sends_explicit_none_on_openai_compat() {
-        // UI Off → 显式 reasoning_effort:"none"，不能省略（多家省略默认 high）。
-        let off = build_openai_body_with(None, false, "https://api.openai.com/v1");
-        assert_eq!(off["reasoning_effort"], "none", "body: {off}");
-        assert!(off.get("thinking").is_none(), "body: {off}");
-
-        // 代理 / 中转同样走 none（base_url 不含 deepseek.com / moonshot.cn）。
+    fn disabled_reasoning_respects_official_model_and_compatible_endpoint() {
+        let official = "https://api.openai.com/v1";
+        let early = build_openai_model_body(None, false, official, "gpt-5");
+        assert_ne!(early["reasoning_effort"], "none");
+        let supported = build_openai_model_body(None, false, official, "gpt-5.4");
+        assert_eq!(supported["reasoning_effort"], "none");
         let relay = build_openai_body_with(None, false, "https://relay.example.com/v1");
-        assert_eq!(relay["reasoning_effort"], "none", "body: {relay}");
+        assert_eq!(relay["reasoning_effort"], "none");
     }
 
     #[test]

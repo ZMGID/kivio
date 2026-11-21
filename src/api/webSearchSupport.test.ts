@@ -26,7 +26,9 @@ describe('builtinWebSearchSupported', () => {
     expect(builtinWebSearchSupported('anthropic_messages')).toBe(true)
   })
 
-  it('allows official DeepSeek Chat Completions, not relays', () => {
+  it('allows Chat endpoints that can route built-in search to Responses', () => {
+    expect(builtinWebSearchSupported('openai_chat', 'https://api.openai.com/v1')).toBe(true)
+    expect(builtinWebSearchSupported('openai_chat', 'https://api.openai.com.gateway.example/v1')).toBe(false)
     expect(builtinWebSearchSupported('openai_chat', 'https://api.deepseek.com/v1')).toBe(true)
     expect(builtinWebSearchSupported('openai_chat', 'https://relay.example/v1')).toBe(false)
     expect(builtinWebSearchSupported('openai_chat')).toBe(false)

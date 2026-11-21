@@ -9,6 +9,9 @@ use super::{
 };
 use serde_json::Value;
 
+mod profile;
+pub use profile::{claude_thinking_profile, ClaudeThinkingKind, ClaudeThinkingProfile};
+
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 pub const EXTENDED_CACHE_TTL_BETA: &str = "extended-cache-ttl-2025-04-11";
 pub const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
@@ -16,6 +19,7 @@ pub const INTERLEAVED_THINKING_BETA: &str = "interleaved-thinking-2025-05-14";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum AnthropicThinkingMode {
     #[default]
+    ModelDefault,
     Adaptive,
     Extended {
         output_effort: bool,
@@ -31,7 +35,8 @@ pub enum AnthropicCacheTtl {
 }
 
 /// Host-resolved wire defaults. Encoded call options override extra_body, then
-/// per-call provider_options apply; ToolChoice::None has final precedence.
+/// per-call provider_options apply. Model sampling constraints and ToolChoice::None
+/// apply to the resulting request.
 #[derive(Clone, Debug)]
 pub struct AnthropicMessagesOptions {
     pub temperature: Option<f64>,
@@ -119,8 +124,9 @@ impl AnthropicMessagesProvider {
                 .or(self.config.options.temperature),
             ..self.config.options.clone()
         };
+        let body = request_body(request, stream, &options);
         let mut headers = self.config.headers.clone();
-        let betas = feature_betas(request, &options);
+        let betas = feature_betas_for_body(&body, options.cache);
         if !betas.is_empty() {
             let mut merged: Vec<String> = headers
                 .get("anthropic-beta")
@@ -152,7 +158,7 @@ impl AnthropicMessagesProvider {
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .headers(headers)
-            .json(&request_body(request, stream, &options));
+            .json(&body);
         if let Some(key) = &self.config.api_key {
             http = http.header("x-api-key", key);
         }
@@ -251,11 +257,7 @@ pub fn request_body(
         "model": request.model,
         "messages": anthropic_messages_with_unsigned_thinking(request, options.allow_unsigned_thinking, options.provider_id.as_deref()),
     });
-    if let Some(extra) = options.extra_body.as_object() {
-        for (key, value) in extra {
-            body[key] = value.clone();
-        }
-    }
+    super::apply_body_options(&mut body, &options.extra_body, false);
     body["max_tokens"] = Value::from(max_tokens);
     if let Some(temperature) = options.temperature {
         body["temperature"] = serde_json::json!(temperature);
@@ -280,14 +282,35 @@ pub fn request_body(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    apply_anthropic_thinking(&mut body, request, options);
-    if body.get("thinking").is_some() {
-        body.as_object_mut().unwrap().remove("temperature");
-    }
-    if let Some(overrides) = request.options.provider_options.as_object() {
-        for (key, value) in overrides {
-            body[key] = value.clone();
+    let thinking_max_tokens = request
+        .options
+        .provider_options
+        .get("max_tokens")
+        .and_then(Value::as_u64)
+        .and_then(|tokens| u32::try_from(tokens).ok())
+        .unwrap_or(max_tokens);
+    let profile = claude_thinking_profile(&request.model);
+    apply_anthropic_thinking(&mut body, request, options, profile, thinking_max_tokens);
+    super::apply_body_options(&mut body, &request.options.provider_options, false);
+    if let Some(profile) = profile {
+        if profile.off_thinking_type.is_some()
+            && body["thinking"]["type"].as_str() == profile.off_thinking_type
+            && matches!(
+                body["output_config"]["effort"].as_str(),
+                Some("xhigh" | "max")
+            )
+        {
+            set_output_effort(&mut body, "high");
         }
+        apply_claude_sampling_limits(&mut body, profile);
+    } else if thinking_is_active(&body)
+        && request
+            .options
+            .provider_options
+            .get("temperature")
+            .is_none()
+    {
+        body.as_object_mut().unwrap().remove("temperature");
     }
     if request.options.tool_choice == super::ToolChoice::None {
         body.as_object_mut().unwrap().remove("tools");
@@ -307,13 +330,15 @@ pub fn feature_betas(
     request: &GenerateRequest,
     options: &AnthropicMessagesOptions,
 ) -> Vec<&'static str> {
-    let mut body = serde_json::json!({});
-    apply_anthropic_thinking(&mut body, request, options);
+    feature_betas_for_body(&request_body(request, false, options), options.cache)
+}
+
+pub fn feature_betas_for_body(body: &Value, cache: Option<AnthropicCacheTtl>) -> Vec<&'static str> {
     let mut betas = Vec::new();
     if body["thinking"]["type"] == "enabled" {
         betas.push(INTERLEAVED_THINKING_BETA);
     }
-    if options.cache == Some(AnthropicCacheTtl::OneHour) {
+    if cache == Some(AnthropicCacheTtl::OneHour) {
         betas.push(EXTENDED_CACHE_TTL_BETA);
     }
     betas
@@ -331,9 +356,20 @@ fn apply_anthropic_thinking(
     body: &mut Value,
     request: &GenerateRequest,
     options: &AnthropicMessagesOptions,
+    profile: Option<ClaudeThinkingProfile>,
+    max_tokens: u32,
 ) {
+    let defaults = profile.filter(|_| options.thinking_mode == AnthropicThinkingMode::ModelDefault);
+    let thinking_mode = match defaults {
+        Some(profile) => profile.thinking_mode(),
+        None => options.thinking_mode,
+    };
     if !request.options.thinking_enabled {
-        if let Some(kind) = &options.off_thinking_type {
+        let kind = options
+            .off_thinking_type
+            .as_deref()
+            .or_else(|| defaults.and_then(|profile| profile.off_thinking_type));
+        if let Some(kind) = kind {
             body["thinking"] = serde_json::json!({ "type":kind });
         }
         return;
@@ -341,23 +377,59 @@ fn apply_anthropic_thinking(
     let Some(level) = request.options.thinking_level.as_deref() else {
         return;
     };
-    match options.thinking_mode {
+    let level = profile.map_or(level, |profile| profile.clamp_effort(level));
+    match thinking_mode {
         AnthropicThinkingMode::Unsupported => {}
-        AnthropicThinkingMode::Adaptive => {
+        AnthropicThinkingMode::ModelDefault | AnthropicThinkingMode::Adaptive => {
             body["thinking"] = serde_json::json!({ "type":"adaptive", "display":"summarized" });
-            body["output_config"]["effort"] = serde_json::json!(level);
+            set_output_effort(body, level);
         }
         AnthropicThinkingMode::Extended { output_effort } => {
             let Some(budget) = clamp_extended_thinking_budget(
                 extended_thinking_budget_for_level(level),
-                required_max_tokens(request.options.max_tokens, options.default_max_tokens),
+                max_tokens,
             ) else {
                 return;
             };
             body["thinking"] = serde_json::json!({ "type":"enabled", "budget_tokens":budget, "display":"summarized" });
             if output_effort && matches!(level, "low" | "medium" | "high") {
-                body["output_config"]["effort"] = serde_json::json!(level);
+                set_output_effort(body, level);
             }
+        }
+    }
+}
+
+fn set_output_effort(body: &mut Value, level: &str) {
+    let config = &mut body["output_config"];
+    if !config.is_object() {
+        *config = serde_json::json!({});
+    }
+    config["effort"] = serde_json::json!(level);
+}
+
+fn thinking_is_active(body: &Value) -> bool {
+    matches!(
+        body["thinking"]["type"].as_str(),
+        Some("adaptive" | "enabled" | "between_tools")
+    )
+}
+
+fn apply_claude_sampling_limits(body: &mut Value, profile: ClaudeThinkingProfile) {
+    let thinking = thinking_is_active(body);
+    let body = body.as_object_mut().unwrap();
+    if profile.forbid_sampling_parameters || thinking {
+        body.remove("temperature");
+        body.remove("top_k");
+        if profile.forbid_sampling_parameters
+            || body
+                .get("top_p")
+                .is_some_and(|value| !value.as_f64().is_some_and(|p| (0.95..=1.0).contains(&p)))
+        {
+            body.remove("top_p");
+        }
+    } else if let Some(temperature) = body.get_mut("temperature") {
+        if let Some(value) = temperature.as_f64() {
+            *temperature = serde_json::json!(value.clamp(0.0, 1.0));
         }
     }
 }
@@ -1539,10 +1611,13 @@ fn anthropic_content_blocks(
                 ..
             } => {
                 if matches!(role, ModelRole::Assistant) {
-                    let input = if arguments.is_null() {
-                        serde_json::from_str(arguments_raw).unwrap_or(Value::Null)
-                    } else {
+                    let input = if arguments.is_object() {
                         arguments.clone()
+                    } else {
+                        serde_json::from_str::<Value>(arguments_raw)
+                            .ok()
+                            .filter(Value::is_object)
+                            .unwrap_or_else(|| serde_json::json!({}))
                     };
                     blocks.push(serde_json::json!({
                         "type": "tool_use",

@@ -4,17 +4,47 @@ use serde_json::Value;
 use super::error::provider_error_code;
 use super::usage::model_usage_from_openai_value;
 use super::{
-    parse_tool_arguments, responses_input_from_model_messages, stream_read_error, BuiltinWebSearch,
+    parse_tool_arguments, responses_input_with_replay, stream_read_error, BuiltinWebSearch,
     FinishKind, FinishReason, GenerateOutput, GenerateRequest, GeneratedImageData,
     LanguageModelProvider, MessagePart, ModelError, ModelErrorKind, ModelFuture, ModelUsage,
     PendingToolCall, ProviderReasoningItem, StreamPart, StreamSink, WebCitation,
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ResponsesFormat {
     #[default]
     OpenAi,
     Xai,
+}
+
+/// Transport identity of a reasoning item. Stored outside the opaque API item.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResponsesReasoningSource {
+    format: ResponsesFormat,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    endpoint: Option<String>,
+}
+
+impl ResponsesReasoningSource {
+    fn new(
+        format: ResponsesFormat,
+        provider_id: Option<&str>,
+        endpoint: Option<&reqwest::Url>,
+    ) -> Option<Self> {
+        let provider_id = provider_id.filter(|id| !id.is_empty()).map(str::to_string);
+        let endpoint = endpoint.map(|url| {
+            // Keep URL credentials and query parameters out of persisted history.
+            format!("{}{}", url.origin().ascii_serialization(), url.path())
+        });
+        (provider_id.is_some() || endpoint.is_some()).then_some(Self {
+            format,
+            provider_id,
+            endpoint,
+        })
+    }
 }
 
 /// Host-resolved wire defaults. Encoded call options override extra_body, then
@@ -27,6 +57,8 @@ pub struct OpenAiResponsesOptions {
     pub prompt_cache_key: Option<String>,
     pub prompt_cache_retention: Option<String>,
     pub endpoint: Option<reqwest::Url>,
+    /// Host provider identifier. Distinguishes configurations sharing an endpoint.
+    pub provider_id: Option<String>,
     pub cache_retention: Option<super::openai::CacheRetention>,
     pub extra_body: Value,
 }
@@ -40,6 +72,7 @@ impl Default for OpenAiResponsesOptions {
             prompt_cache_key: None,
             prompt_cache_retention: None,
             endpoint: None,
+            provider_id: None,
             cache_retention: None,
             extra_body: Value::Null,
         }
@@ -79,6 +112,15 @@ pub struct OpenAiResponsesProvider {
 impl OpenAiResponsesProvider {
     pub fn new(client: reqwest::Client, config: OpenAiResponsesConfig) -> Self {
         Self { client, config }
+    }
+
+    fn bind_output_provenance(&self, output: &mut GenerateOutput) {
+        bind_output_provenance(
+            output,
+            self.config.options.format,
+            self.config.options.provider_id.as_deref(),
+            Some(&self.config.endpoint),
+        );
     }
 
     async fn post(
@@ -127,13 +169,10 @@ impl LanguageModelProvider for OpenAiResponsesProvider {
     fn generate<'a>(&'a self, request: GenerateRequest) -> ModelFuture<'a, GenerateOutput> {
         Box::pin(async move {
             let label = request_label(&request, "Responses API");
-            let raw = self
-                .post(&request, false)
-                .await?
-                .text()
-                .await
-                .map_err(|error| stream_read_error(&label, &error))?;
-            decode_responses_body(&raw, &label, &request.model)
+            let response = self.post(&request, false).await?;
+            let mut output = read_responses_body(response, &label, &request.model).await?;
+            self.bind_output_provenance(&mut output);
+            Ok(output)
         })
     }
 
@@ -144,15 +183,63 @@ impl LanguageModelProvider for OpenAiResponsesProvider {
     ) -> ModelFuture<'a, GenerateOutput> {
         Box::pin(async move {
             let label = request_label(&request, "Responses stream");
-            decode_responses_stream(
-                self.post(&request, true).await?,
-                sink,
-                &label,
+            let buffered = uses_buffered_delivery(
+                Some(&self.config.endpoint),
+                self.config.options.format,
                 &request.model,
-            )
-            .await
+            );
+            let response = self.post(&request, !buffered).await?;
+            let mut output = if buffered {
+                decode_responses_buffered_stream(response, sink, &label, &request.model).await?
+            } else {
+                decode_responses_stream(response, sink, &label, &request.model).await?
+            };
+            self.bind_output_provenance(&mut output);
+            Ok(output)
         })
     }
+}
+
+/// Bind new reasoning replay data from the raw decoders to the provider that returned it.
+/// Match the format, provider ID and endpoint supplied to the request encoder.
+pub fn bind_output_provenance(
+    output: &mut GenerateOutput,
+    format: ResponsesFormat,
+    provider_id: Option<&str>,
+    endpoint: Option<&reqwest::Url>,
+) {
+    let deepseek = format == ResponsesFormat::OpenAi && is_official_deepseek(endpoint);
+    let had_plaintext_reasoning = output
+        .reasoning_items
+        .iter()
+        .any(|item| !has_encrypted_reasoning(&item.item));
+    if had_plaintext_reasoning && !deepseek {
+        output
+            .reasoning_items
+            .retain(|item| has_encrypted_reasoning(&item.item));
+    }
+    if !output.reasoning_items.is_empty() {
+        let source = ResponsesReasoningSource::new(format, provider_id, endpoint);
+        for item in &mut output.reasoning_items {
+            item.source.clone_from(&source);
+        }
+    }
+    if (deepseek || had_plaintext_reasoning) && output.reasoning.is_some() {
+        // Keep the UI reasoning separate from unscoped Chat reasoning history.
+        let mut replay = output.replay_message();
+        replay
+            .content
+            .retain(|part| !matches!(part, MessagePart::Reasoning { .. }));
+        output.canonical_message = Some(replay);
+    }
+}
+
+fn is_official_deepseek(endpoint: Option<&reqwest::Url>) -> bool {
+    endpoint.is_some_and(|url| {
+        url.scheme() == "https"
+            && url.host_str() == Some("api.deepseek.com")
+            && url.port().is_none()
+    })
 }
 
 impl crate::agent::provider_runtime::ModelRuntime for OpenAiResponsesProvider {
@@ -168,23 +255,120 @@ impl crate::agent::provider_runtime::ModelRuntime for OpenAiResponsesProvider {
     }
 }
 
+/// OpenAI documents these models as Responses-only with no streaming transport.
+pub fn uses_buffered_delivery(
+    endpoint: Option<&reqwest::Url>,
+    format: ResponsesFormat,
+    model: &str,
+) -> bool {
+    format == ResponsesFormat::OpenAi
+        && super::openai::is_official_openai(endpoint)
+        && matches!(
+            model,
+            "o1-pro" | "o1-pro-2025-03-19" | "o3-pro" | "o3-pro-2025-06-10"
+        )
+}
+
 /// Decode a successful JSON or SSE-only response and bind replay data to its model.
 pub fn decode_responses_body(
     raw: &str,
     label: &str,
     model: &str,
 ) -> Result<GenerateOutput, ModelError> {
+    decode_responses_body_at_endpoint(raw, label, model, None)
+}
+
+/// Decode DeepSeek plaintext reasoning only for its official response endpoint.
+/// Hosts bind the resulting replay data with [`bind_output_provenance`].
+pub fn decode_responses_body_at_endpoint(
+    raw: &str,
+    label: &str,
+    model: &str,
+    endpoint: Option<&reqwest::Url>,
+) -> Result<GenerateOutput, ModelError> {
+    let deepseek = is_official_deepseek(endpoint);
     let mut output = match serde_json::from_str::<Value>(raw) {
-        Ok(value) => output_from_responses(&value, raw, label)?,
+        Ok(value) => output_from_responses_payload(&value, raw, label, deepseek)?,
         Err(error) if !looks_like_sse(raw) => {
             return Err(ModelError::new(format!(
                 "{label} parse JSON: {error} (body: {})",
                 raw.chars().take(500).collect::<String>()
             )));
         }
-        Err(_) => output_from_sse_body(raw)?,
+        Err(_) => output_from_sse_body(raw, deepseek)?,
     };
     stamp_reasoning_item_model(&mut output, model);
+    Ok(output)
+}
+
+async fn read_responses_body(
+    response: reqwest::Response,
+    label: &str,
+    model: &str,
+) -> Result<GenerateOutput, ModelError> {
+    let endpoint = response.url().clone();
+    let raw = response
+        .text()
+        .await
+        .map_err(|error| stream_read_error(label, &error))?;
+    decode_responses_body_at_endpoint(&raw, label, model, Some(&endpoint))
+}
+
+/// Deliver a buffered response to clients using the streaming interface.
+pub async fn decode_responses_buffered_stream(
+    response: reqwest::Response,
+    sink: &mut (dyn StreamSink + Send),
+    label: &str,
+    model: &str,
+) -> Result<GenerateOutput, ModelError> {
+    let output = read_responses_body(response, label, model).await?;
+    if let Some(reasoning) = &output.reasoning {
+        sink.emit(StreamPart::ReasoningDelta {
+            delta: reasoning.clone(),
+        })?;
+    }
+    if let Some(search) = &output.web_search {
+        sink.emit(StreamPart::WebSearch {
+            queries: search.queries.clone(),
+            citations: search.citations.clone(),
+        })?;
+    }
+    if !output.text.is_empty() {
+        sink.emit(StreamPart::TextDelta {
+            delta: output.text.clone(),
+        })?;
+    }
+    for image in &output.images {
+        sink.emit(StreamPart::ImageData {
+            mime_type: image.mime_type.clone(),
+            data: image.data.clone(),
+        })?;
+    }
+    for call in &output.tool_calls {
+        sink.emit(StreamPart::ToolCallStart {
+            id: call.id.clone(),
+            name: call.function_name.clone(),
+        })?;
+        sink.emit(StreamPart::ToolCallDelta {
+            id: call.id.clone(),
+            delta: call.arguments_raw.clone(),
+        })?;
+        sink.emit(StreamPart::ToolCallDone { call: call.clone() })?;
+    }
+    if let Some(usage) = &output.usage {
+        if let Some(input_tokens) = usage.input_tokens {
+            sink.emit(StreamPart::ContextUsage {
+                input_tokens,
+                output_tokens: usage.output_tokens.unwrap_or(0),
+            })?;
+        }
+    }
+    if let Some(reason) = &output.finish_reason {
+        sink.emit(StreamPart::Finish {
+            reason: reason.clone(),
+            full: output.text.clone(),
+        })?;
+    }
     Ok(output)
 }
 
@@ -198,6 +382,7 @@ pub async fn decode_responses_stream(
     let mut sse = super::sse::SseDecoder::default();
     let mut state = ResponsesStreamState {
         model: model.to_string(),
+        deepseek: is_official_deepseek(Some(response.url())),
         ..Default::default()
     };
     'stream: loop {
@@ -223,8 +408,16 @@ pub async fn decode_responses_stream(
     state.finish(sink)
 }
 
-fn xai_reasoning_effort(effort: &str) -> Option<&'static str> {
+fn xai_reasoning_effort(model: &str, effort: &str) -> Option<&'static str> {
     match effort.trim().to_ascii_lowercase().as_str() {
+        "none" | "off"
+            if matches!(
+                model.strip_suffix("-latest").unwrap_or(model),
+                "grok-4.5" | "grok-4.6" | "grok-4.7"
+            ) =>
+        {
+            Some("low")
+        }
         "none" | "off" => Some("none"),
         "minimal" | "low" => Some("low"),
         "medium" => Some("medium"),
@@ -256,24 +449,279 @@ fn xai_include_values(tools: Option<&Value>) -> Vec<Value> {
     values
 }
 
+/// Adapt Chat JSON options when a host reroutes a request to OpenAI Responses.
+/// The returned value is the Responses model default body. Per-call options
+/// are translated in the request and retain precedence over those defaults.
+pub fn translate_chat_route_options(
+    request: &mut GenerateRequest,
+    extra_body: &Value,
+) -> Result<Value, ModelError> {
+    let tools_enabled = request.options.tool_choice != super::ToolChoice::None;
+    let call_fields = request
+        .options
+        .provider_options
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let mut default_fields = extra_body.as_object().cloned().unwrap_or_default();
+    default_fields.retain(|key, _| !call_fields.contains_key(key));
+    let mut defaults = translate_chat_fields(default_fields, tools_enabled)?;
+    let mut overrides = translate_chat_fields(call_fields, tools_enabled)?;
+
+    if request.options.provider_options.get("text").is_none() {
+        if let (Some(default_text), Some(call_text)) = (
+            defaults.get("text").and_then(Value::as_object),
+            overrides.get_mut("text").and_then(Value::as_object_mut),
+        ) {
+            for (field, value) in default_text {
+                call_text.entry(field).or_insert_with(|| value.clone());
+            }
+        }
+    }
+    // Chat's raw model defaults follow typed tools. Preserve that layering
+    // when Responses places typed tools after its model defaults.
+    for field in ["tools", "tool_choice"] {
+        if let Some(value) = defaults.remove(field) {
+            overrides.entry(field).or_insert(value);
+        }
+    }
+    if request.options.max_tokens == 0
+        && ["max_tokens", "max_completion_tokens", "max_output_tokens"]
+            .iter()
+            .any(|field| extra_body.get(field).is_some())
+    {
+        if let Some(value) = defaults.remove("max_output_tokens") {
+            overrides.entry("max_output_tokens").or_insert(value);
+        }
+    }
+    if request.options.thinking_enabled && request.options.thinking_level.is_none() {
+        request.options.thinking_level = defaults
+            .get("reasoning")
+            .and_then(|reasoning| reasoning["effort"].as_str())
+            .map(str::to_owned);
+    }
+    request.options.provider_options = Value::Object(overrides);
+    Ok(Value::Object(defaults))
+}
+
+fn unsupported_chat_override(field: &str) -> ModelError {
+    ModelError::with_kind(
+        format!("OpenAI Responses cannot use the Chat override `{field}`. Remove it or use a Responses-compatible option."),
+        ModelErrorKind::InvalidRequest,
+    )
+}
+
+fn flatten_chat_member(value: &mut Value, member: &str, field: &str) -> Result<bool, ModelError> {
+    let Some(object) = value.as_object_mut() else {
+        return Ok(false);
+    };
+    let Some(nested) = object.remove(member) else {
+        return Ok(false);
+    };
+    let Value::Object(nested) = nested else {
+        return Err(unsupported_chat_override(field));
+    };
+    for (key, value) in nested {
+        object.entry(key).or_insert(value);
+    }
+    Ok(true)
+}
+
+fn translate_chat_tool(tool: &mut Value, definition: bool) -> Result<(), ModelError> {
+    match tool["type"].as_str() {
+        Some("function") => {
+            if flatten_chat_member(tool, "function", "tools.function")? && definition {
+                tool.as_object_mut()
+                    .unwrap()
+                    .entry("strict")
+                    .or_insert(Value::Bool(false));
+            }
+        }
+        Some("custom") => {
+            flatten_chat_member(tool, "custom", "tools.custom")?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn translate_chat_fields(
+    mut fields: serde_json::Map<String, Value>,
+    tools_enabled: bool,
+) -> Result<serde_json::Map<String, Value>, ModelError> {
+    if let Some(count) = fields.remove("n") {
+        if !count.is_null() && count.as_u64() != Some(1) {
+            return Err(unsupported_chat_override("n"));
+        }
+    }
+    for field in [
+        "audio",
+        "frequency_penalty",
+        "function_call",
+        "functions",
+        "logit_bias",
+        "messages",
+        "modalities",
+        "prediction",
+        "presence_penalty",
+        "seed",
+        "stop",
+        "web_search_options",
+    ] {
+        if fields.remove(field).is_some_and(|value| !value.is_null()) {
+            return Err(unsupported_chat_override(field));
+        }
+    }
+    let modern_limit = fields.remove("max_completion_tokens");
+    let legacy_limit = fields.remove("max_tokens");
+    if let Some(limit) = modern_limit.or(legacy_limit) {
+        fields.entry("max_output_tokens").or_insert(limit);
+    }
+    if let Some(effort) = fields.remove("reasoning_effort") {
+        let reasoning = if effort.is_null() {
+            Value::Null
+        } else {
+            serde_json::json!({ "effort": effort })
+        };
+        fields.entry("reasoning").or_insert(reasoning);
+    }
+    if let Some(options) = fields
+        .get_mut("stream_options")
+        .and_then(Value::as_object_mut)
+    {
+        options.remove("include_usage");
+        if options.is_empty() {
+            fields.remove("stream_options");
+        }
+    }
+    let format = fields
+        .remove("response_format")
+        .filter(|value| !value.is_null());
+    let verbosity = fields.remove("verbosity").filter(|value| !value.is_null());
+    if format.is_some() || verbosity.is_some() {
+        let text = fields
+            .entry("text")
+            .or_insert_with(|| serde_json::json!({}))
+            .as_object_mut()
+            .ok_or_else(|| unsupported_chat_override("response_format"))?;
+        if let Some(mut format) = format {
+            if format["type"] == "json_schema"
+                && !flatten_chat_member(&mut format, "json_schema", "response_format")?
+            {
+                return Err(unsupported_chat_override("response_format"));
+            }
+            text.entry("format").or_insert(format);
+        }
+        if let Some(verbosity) = verbosity {
+            text.entry("verbosity").or_insert(verbosity);
+        }
+    }
+    if fields.remove("logprobs") == Some(Value::Bool(true)) {
+        let include = fields
+            .entry("include")
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .ok_or_else(|| unsupported_chat_override("logprobs"))?;
+        if !include
+            .iter()
+            .any(|value| value == "message.output_text.logprobs")
+        {
+            include.push("message.output_text.logprobs".into());
+        }
+    }
+    if tools_enabled {
+        if let Some(tools) = fields.get_mut("tools").and_then(Value::as_array_mut) {
+            for tool in tools {
+                translate_chat_tool(tool, true)?;
+            }
+        }
+        if let Some(choice) = fields.get_mut("tool_choice") {
+            if flatten_chat_member(choice, "allowed_tools", "tool_choice")? {
+                let tools = choice["tools"]
+                    .as_array_mut()
+                    .ok_or_else(|| unsupported_chat_override("tool_choice"))?;
+                for tool in tools {
+                    translate_chat_tool(tool, false)?;
+                }
+            } else {
+                translate_chat_tool(choice, false)?;
+            }
+        }
+    } else {
+        fields.remove("tools");
+        fields.remove("tool_choice");
+    }
+    Ok(fields)
+}
+
 pub fn request_body(
     request: &GenerateRequest,
     stream: bool,
     options: &OpenAiResponsesOptions,
 ) -> Value {
     let is_xai = options.format == ResponsesFormat::Xai;
-    // Encrypted reasoning is model-bound; xAI does not support its replay.
-    let reasoning_replay = (!is_xai && options.replay_reasoning).then_some(request.model.as_str());
-    let mut body = serde_json::json!({
-        "model": request.model,
-        "input": responses_input_from_model_messages(&request.messages, reasoning_replay),
-        "store": false,
+    let official_openai = super::openai::is_official_openai(options.endpoint.as_ref()) && !is_xai;
+    let deepseek = is_official_deepseek(options.endpoint.as_ref()) && !is_xai;
+    // Grok 4.7 returns encrypted reasoning for stateless replay. Earlier xAI
+    // models retain their existing behavior.
+    let supports_replay =
+        !is_xai || matches!(request.model.as_str(), "grok-4.7" | "grok-4.7-latest");
+    let source = ResponsesReasoningSource::new(
+        options.format,
+        options.provider_id.as_deref(),
+        options.endpoint.as_ref(),
+    );
+    let mut input = responses_input_with_replay(&request.messages, |model, item_source| {
+        options.replay_reasoning
+            && supports_replay
+            && model == request.model
+            && match item_source {
+                Some(item_source) => Some(item_source) == source.as_ref(),
+                // Keep model-only replay for legacy OpenAI history.
+                None => !is_xai && !deepseek,
+            }
     });
-    if let Some(extra) = options.extra_body.as_object() {
-        for (key, value) in extra {
-            body[key] = value.clone();
+    input.retain(|item| item["type"] != "reasoning" || reasoning_item_replayable(item, deepseek));
+    if official_openai || deepseek {
+        for (index, item) in input.iter_mut().enumerate() {
+            let assistant = item["role"] == "assistant";
+            if let Some(parts) = item.get_mut("content").and_then(Value::as_array_mut) {
+                for part in parts {
+                    match part["type"].as_str() {
+                        Some("output_text") if assistant && official_openai => {
+                            part["annotations"] = Value::Array(vec![]);
+                        }
+                        // A generated image needs its original image_generation_call item to
+                        // replay as assistant output. Older history only has the attachment.
+                        Some("input_image") if assistant => {
+                            *part = serde_json::json!({
+                                "type":"output_text",
+                                "text":"[历史助手消息中的图片]",
+                            });
+                            if official_openai {
+                                part["annotations"] = Value::Array(vec![]);
+                            }
+                        }
+                        Some("input_image") if official_openai && part.get("detail").is_none() => {
+                            part["detail"] = "auto".into();
+                        }
+                        _ => {}
+                    }
+                }
+                if assistant && official_openai {
+                    item["type"] = "message".into();
+                    item["id"] = format!("msg_kivio_{index}").into();
+                    item["status"] = "completed".into();
+                }
+            }
         }
     }
+    let mut body = serde_json::json!({
+        "model": request.model,
+        "input": input,
+        "store": false,
+    });
+    super::apply_body_options(&mut body, &options.extra_body, stream && !is_xai);
     if let Some(temperature) = options.temperature {
         body["temperature"] = serde_json::json!(temperature);
     }
@@ -303,7 +751,14 @@ pub fn request_body(
     let mut tools: Vec<Value> = request
         .tools
         .iter()
-        .map(|tool| tool.to_openai_responses_tool())
+        .map(|tool| {
+            let mut tool = tool.to_openai_responses_tool();
+            if official_openai {
+                // Preserve the tool schema's optional properties on Responses.
+                tool["strict"] = Value::Bool(false);
+            }
+            tool
+        })
         .collect();
     if request.options.builtin_web_search {
         tools.push(serde_json::json!({ "type": "web_search" }));
@@ -312,32 +767,35 @@ pub fn request_body(
         body["tools"] = Value::Array(tools);
         body["tool_choice"] = Value::String("auto".to_string());
     }
-    if !request.options.thinking_enabled {
-        // Omitting effort leaves thinking enabled on some compatible endpoints.
-        body["reasoning"] = serde_json::json!({ "effort": "none" });
-    } else if let Some(effort) = request.options.thinking_level.as_deref() {
-        if is_xai {
-            if let Some(mapped) = xai_reasoning_effort(effort) {
-                body["reasoning"] = serde_json::json!({ "effort": mapped });
-            }
-        } else {
-            body["reasoning"] = serde_json::json!({ "effort": effort, "summary": "auto" });
+    let effort = if request.options.thinking_enabled {
+        request.options.thinking_level.as_deref()
+    } else {
+        Some("none")
+    };
+    if is_xai {
+        if let Some(mapped) = effort.and_then(|level| xai_reasoning_effort(&request.model, level)) {
+            body["reasoning"] = serde_json::json!({ "effort": mapped });
         }
-    } else if !is_xai {
+    } else if !request.options.thinking_enabled || deepseek {
+        if let Some(effort) = effort {
+            body["reasoning"] = serde_json::json!({ "effort": effort });
+        }
+    } else if let Some(effort) = effort {
+        body["reasoning"] = serde_json::json!({ "effort": effort, "summary": "auto" });
+    } else {
         body["reasoning"] = serde_json::json!({ "summary": "auto" });
     }
-    if !is_xai && request.options.thinking_enabled {
+    if !is_xai
+        && !deepseek
+        && request.options.thinking_enabled
+        && (!official_openai || body.get("include").is_none())
+    {
         body["include"] = serde_json::json!(["reasoning.encrypted_content"]);
     }
-    if is_xai {
-        let include = xai_include_values(body.get("tools"));
-        if !include.is_empty() {
-            body["include"] = Value::Array(include);
-        }
-    } else if let Some(key) = options
+    if let Some(key) = options
         .prompt_cache_key
         .as_deref()
-        .filter(|key| !key.is_empty())
+        .filter(|key| !is_xai && !deepseek && !key.is_empty())
     {
         body["prompt_cache_key"] = Value::String(key.to_string());
         if let Some(retention) = &options.prompt_cache_retention {
@@ -351,14 +809,23 @@ pub fn request_body(
         options.cache_retention,
         true,
     );
-    if let Some(overrides) = request.options.provider_options.as_object() {
-        for (key, value) in overrides {
-            body[key] = value.clone();
-        }
+    super::apply_body_options(
+        &mut body,
+        &request.options.provider_options,
+        stream && !is_xai,
+    );
+    if official_openai {
+        super::openai::finish_official_request(&mut body, request, options.endpoint.as_ref(), true);
     }
     if request.options.tool_choice == super::ToolChoice::None {
         body.as_object_mut().unwrap().remove("tools");
         body["tool_choice"] = Value::String("none".to_string());
+    }
+    if is_xai && body.get("include").is_none() {
+        let include = xai_include_values(body.get("tools"));
+        if !include.is_empty() {
+            body["include"] = Value::Array(include);
+        }
     }
     body
 }
@@ -381,8 +848,8 @@ struct ResponsesStreamState {
     reasoning: String,
     /// 本次请求的模型名，随 reasoning item 落进历史（回放前校验同模型，密文模型键控）。
     model: String,
-    /// 原生 reasoning items（带 encrypted_content 才收）。回放它们是 gpt-5 系在
-    /// 工具循环里保持思维链连续的关键（Codex 官方客户端同款做法）。
+    deepseek: bool,
+    /// Provider-native reasoning used to continue stateless tool rounds.
     reasoning_items: Vec<Value>,
     tool_calls: Vec<ResponsesToolPartial>,
     finish_reason: Option<FinishReason>,
@@ -403,6 +870,25 @@ struct ResponsesStreamState {
 }
 
 impl ResponsesStreamState {
+    fn preserve_reasoning_item(&mut self, item: &Value) {
+        if !reasoning_item_replayable(item, self.deepseek) {
+            return;
+        }
+        let existing = item["id"].as_str().and_then(|id| {
+            self.reasoning_items
+                .iter_mut()
+                .find(|existing| existing["id"] == id)
+        });
+        if let Some(existing) = existing {
+            if self.deepseek {
+                // The final response can include a fuller snapshot than output_item.done.
+                *existing = item.clone();
+            }
+        } else {
+            self.reasoning_items.push(item.clone());
+        }
+    }
+
     fn partial_mut(&mut self, item_id: &str) -> Option<&mut ResponsesToolPartial> {
         self.tool_calls
             .iter_mut()
@@ -520,6 +1006,14 @@ impl ResponsesStreamState {
     }
 
     fn finish(mut self, sink: &mut (dyn StreamSink + Send)) -> Result<GenerateOutput, ModelError> {
+        if self.deepseek && self.reasoning.is_empty() {
+            let reasoning = self
+                .reasoning_items
+                .iter()
+                .flat_map(deepseek_reasoning_text)
+                .collect::<String>();
+            self.push_reasoning_delta(&reasoning, sink)?;
+        }
         // Flush any function calls that never received an explicit output_item.done.
         let pending_ids: Vec<String> = self
             .tool_calls
@@ -584,17 +1078,34 @@ impl ResponsesStreamState {
                 .map(|item| ProviderReasoningItem {
                     model: model.clone(),
                     item,
+                    source: None,
                 })
                 .collect(),
         })
     }
 }
 
-/// 一只 reasoning item 是否值得存下来回放：必须带非空 `encrypted_content`。
-fn reasoning_item_replayable(item: &Value) -> bool {
+fn has_encrypted_reasoning(item: &Value) -> bool {
     item.get("encrypted_content")
         .and_then(Value::as_str)
         .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn deepseek_reasoning_text(item: &Value) -> impl Iterator<Item = &str> {
+    item["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|part| part["type"] == "reasoning_text")
+        .filter_map(|part| part["text"].as_str())
+}
+
+fn reasoning_item_replayable(item: &Value, deepseek: bool) -> bool {
+    if deepseek {
+        deepseek_reasoning_text(item).any(|text| !text.trim().is_empty())
+    } else {
+        has_encrypted_reasoning(item)
+    }
 }
 
 /// 从一个 `image_generation_call` output item 取出生成的图。`result` 是裸 base64
@@ -796,13 +1307,8 @@ fn handle_responses_stream_event(
                             state.images.push(image);
                         }
                     }
-                    // 原生 reasoning item：带 encrypted_content 才值得收（无密文的 item
-                    // 在 store:false 下回放会被当服务端引用查找而 404）。整只原样保存，
-                    // 回放时随 input 送回 —— 思维链跨工具轮延续的唯一载体。
                     Some("reasoning") => {
-                        if reasoning_item_replayable(item) {
-                            state.reasoning_items.push(item.clone());
-                        }
+                        state.preserve_reasoning_item(item);
                     }
                     _ => {}
                 }
@@ -856,22 +1362,11 @@ fn handle_responses_stream_event(
                             state.push_web_search_citation(&c.url, &c.title);
                         }
                     }
-                    // reasoning items 兜底：有些网关只在 completed 的完整 output 里带
-                    // encrypted_content（output_item.done 里缺）。按 id 去重合并。
+                    // Some endpoints supply replay data only in the terminal snapshot.
                     for item in output {
                         finish_refusal_parts(state, item, sink)?;
-                        if item.get("type").and_then(Value::as_str) == Some("reasoning")
-                            && reasoning_item_replayable(item)
-                        {
-                            let id = item.get("id").and_then(Value::as_str);
-                            let seen = id.is_some_and(|id| {
-                                state.reasoning_items.iter().any(|existing| {
-                                    existing.get("id").and_then(Value::as_str) == Some(id)
-                                })
-                            });
-                            if !seen {
-                                state.reasoning_items.push(item.clone());
-                            }
+                        if item["type"] == "reasoning" {
+                            state.preserve_reasoning_item(item);
                         }
                     }
                 }
@@ -928,8 +1423,11 @@ fn looks_like_sse(body: &str) -> bool {
 /// Parse a fully-buffered Responses **SSE** body (a provider that streamed despite
 /// `stream:false`) into a `GenerateOutput`, reusing the exact streaming accumulation. The
 /// non-stream path has no live consumer, so events are fed through a discarding sink.
-fn output_from_sse_body(body: &str) -> Result<GenerateOutput, ModelError> {
-    let mut state = ResponsesStreamState::default();
+fn output_from_sse_body(body: &str, deepseek: bool) -> Result<GenerateOutput, ModelError> {
+    let mut state = ResponsesStreamState {
+        deepseek,
+        ..Default::default()
+    };
     let mut sink = DiscardSink;
     for data in super::sse::SseDecoder::default().push(body.as_bytes())? {
         if let Some(err) = process_sse_data(&data, &mut state, &mut sink)? {
@@ -977,6 +1475,15 @@ pub fn output_from_responses(
     value: &Value,
     raw: &str,
     label: &str,
+) -> Result<GenerateOutput, ModelError> {
+    output_from_responses_payload(value, raw, label, false)
+}
+
+fn output_from_responses_payload(
+    value: &Value,
+    raw: &str,
+    label: &str,
+    deepseek: bool,
 ) -> Result<GenerateOutput, ModelError> {
     // DeepSeek / OpenAI Responses 成功体带 `"error": null`，不能当成失败。
     match value.get("error") {
@@ -1055,7 +1562,9 @@ pub fn output_from_responses(
             }
             // The response decoder binds replay data to the request model.
             Some("reasoning") => {
-                if let Some(summary) = item.get("summary").and_then(Value::as_array) {
+                if deepseek {
+                    reasoning.extend(deepseek_reasoning_text(item));
+                } else if let Some(summary) = item.get("summary").and_then(Value::as_array) {
                     for text in summary
                         .iter()
                         .filter_map(|part| part.get("text").and_then(Value::as_str))
@@ -1065,7 +1574,7 @@ pub fn output_from_responses(
                         reasoning.push_str(text);
                     }
                 }
-                if reasoning_item_replayable(item) {
+                if reasoning_item_replayable(item, deepseek) {
                     reasoning_items.push(item.clone());
                 }
             }
@@ -1095,6 +1604,7 @@ pub fn output_from_responses(
             .map(|item| ProviderReasoningItem {
                 model: String::new(),
                 item,
+                source: None,
             })
             .collect(),
     })
@@ -1550,6 +2060,7 @@ mod tests {
             content: vec![
                 MessagePart::ReasoningItem {
                     model: request.model.clone(),
+                    source: None,
                     item: serde_json::json!({
                         "id": "rs_1", "type": "reasoning", "encrypted_content": "cipher",
                     }),
@@ -1778,9 +2289,29 @@ mod tests {
     }
 
     #[test]
+    fn xai_always_reasoning_models_use_lowest_effort_when_disabled() {
+        for model in ["grok-4.5", "grok-4.6-latest", "grok-4.7"] {
+            assert_eq!(
+                xai_body_with(model, None, false, false)["reasoning"]["effort"],
+                "low",
+                "{model}"
+            );
+            assert_eq!(
+                xai_body(model, Some("none"), false)["reasoning"]["effort"],
+                "low",
+                "{model}"
+            );
+        }
+        assert_eq!(
+            xai_body_with("grok-4.3", None, false, false)["reasoning"]["effort"],
+            "none"
+        );
+    }
+
+    #[test]
     fn xai_includes_server_tool_outputs() {
-        // 没有服务端工具时不发这个字段（尤其别带 reasoning.encrypted_content：
-        // xAI 的回放会丢弃推理项，要来只是让每次响应多背一份没人消费的密文）。
+        // No include field is needed without hosted tools. Grok 4.7 returns
+        // encrypted reasoning by default.
         assert!(xai_body("grok-4.3", None, false).get("include").is_none());
         // 开了内置搜索才发，且必须含来源字段——不 include 就拿不到 grok 的搜索来源。
         let searching = xai_body("grok-4.3", None, true);
@@ -2001,7 +2532,7 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"\"}]}]}}\n\n",
             "data: [DONE]\n\n",
         );
-        let output = output_from_sse_body(body).expect("sse output");
+        let output = output_from_sse_body(body, false).expect("sse output");
         assert!(output.text.trim().is_empty(), "正文确实是空的");
         assert_eq!(output.images.len(), 1, "hosted 出图必须被收下");
         assert_eq!(output.images[0].mime_type, "image/png");
@@ -2079,7 +2610,7 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n",
             "data: [DONE]\n\n",
         );
-        let output = output_from_sse_body(body).expect("sse output");
+        let output = output_from_sse_body(body, false).expect("sse output");
         let ws = output.web_search.expect("web_search present");
         assert_eq!(ws.queries, vec!["nvda close".to_string()]);
         assert_eq!(ws.citations.len(), 2, "无注解时 sources 兜底");
@@ -2283,7 +2814,8 @@ mod tests {
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n",
         );
-        let error = output_from_sse_body(body).expect_err("blank line is required to commit");
+        let error =
+            output_from_sse_body(body, false).expect_err("blank line is required to commit");
         assert!(error.is_retryable_stream_error());
     }
 
@@ -2295,7 +2827,7 @@ mod tests {
             "data: {\"type\":\"response.completed\",\r",
             "data: \"response\":{\"status\":\"completed\"}}\r\r",
         );
-        let output = output_from_sse_body(body).expect("complete multiline SSE");
+        let output = output_from_sse_body(body, false).expect("complete multiline SSE");
         assert_eq!(output.text, "你好");
         assert_eq!(
             output.finish_reason.as_ref().map(FinishReason::legacy_name),
@@ -2327,7 +2859,7 @@ mod tests {
             "data: [DONE]\r\n",
         );
         assert!(looks_like_sse(body));
-        let output = output_from_sse_body(body).expect("sse output");
+        let output = output_from_sse_body(body, false).expect("sse output");
         assert_eq!(output.tool_calls.len(), 1);
         let call = &output.tool_calls[0];
         assert_eq!(call.id, "call_abc");
@@ -2353,7 +2885,7 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer\"}]}]}}\n\n",
             "data: [DONE]\n\n",
         );
-        let output = output_from_sse_body(body).expect("sse output");
+        let output = output_from_sse_body(body, false).expect("sse output");
         let ws = output
             .web_search
             .expect("web_search captured from stream events");
@@ -2423,7 +2955,7 @@ mod tests {
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"，世界\"}\n\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n",
         );
-        let output = output_from_sse_body(body).expect("sse output");
+        let output = output_from_sse_body(body, false).expect("sse output");
         assert_eq!(output.text, "你好，世界");
         assert_eq!(
             output.finish_reason.as_ref().map(FinishReason::legacy_name),
@@ -2453,8 +2985,8 @@ mod tests {
                 false,
             ),
         ] {
-            let err =
-                output_from_sse_body(&format!("data: {event}\n\n")).expect_err("provider failure");
+            let err = output_from_sse_body(&format!("data: {event}\n\n"), false)
+                .expect_err("provider failure");
             assert!(err.to_string().contains("boom"));
             assert_eq!(err.is_retryable_stream_error(), retryable, "{event}");
         }
@@ -2469,8 +3001,8 @@ mod tests {
             serde_json::json!({"type":"response.failed","response":{"error":{"message":"stream ended without terminal event or completed response"}}}),
         ] {
             let body = format!("data: {{\"type\":\"response.output_text.delta\",\"delta\":\"你好\"}}\n\ndata: {error}\n\n");
-            let err =
-                output_from_sse_body(&body).expect_err("partial stream must not count as success");
+            let err = output_from_sse_body(&body, false)
+                .expect_err("partial stream must not count as success");
             assert!(err.is_retryable_stream_error(), "{err}");
         }
     }
@@ -2481,7 +3013,7 @@ mod tests {
         let body = concat!(
             "data: {\"type\":\"error\",\"message\":\"stream ended without terminal event or completed response\"}\n\n",
         );
-        let err = output_from_sse_body(body).expect_err("empty stream should fail");
+        let err = output_from_sse_body(body, false).expect_err("empty stream should fail");
         assert!(err.to_string().contains("without terminal"), "got {err}");
     }
 

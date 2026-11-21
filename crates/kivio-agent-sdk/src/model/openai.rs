@@ -3,8 +3,8 @@ use super::error::provider_error_code;
 use super::usage::model_usage_from_openai_value;
 use super::{
     pending_tool_calls_from_openai_message, stream_read_error, FinishReason, GenerateOutput,
-    GenerateRequest, GeneratedImageData, LanguageModelProvider, ModelError, ModelFuture,
-    ModelUsage, PendingToolCall, StreamPart, StreamSink,
+    GenerateRequest, GeneratedImageData, LanguageModelProvider, MessagePart, ModelError,
+    ModelErrorKind, ModelFuture, ModelUsage, PendingToolCall, StreamPart, StreamSink, ToolChoice,
 };
 use serde_json::Value;
 
@@ -50,6 +50,296 @@ pub fn supports_explicit_prompt_cache(model: &str) -> bool {
     major > 5 || (major == 5 && minor >= 6)
 }
 
+pub(crate) fn is_official_openai(endpoint: Option<&reqwest::Url>) -> bool {
+    endpoint.and_then(reqwest::Url::host_str) == Some("api.openai.com")
+}
+
+fn without_snapshot_date(model: &str) -> &str {
+    let split = model.len().saturating_sub(11);
+    match model.get(split..) {
+        Some(suffix)
+            if suffix.starts_with('-')
+                && chrono::NaiveDate::parse_from_str(&suffix[1..], "%Y-%m-%d").is_ok() =>
+        {
+            &model[..split]
+        }
+        _ => model,
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum ChatSupport {
+    NoRestriction,
+    ToolsWithoutReasoning,
+    NoTools,
+    ResponsesOnly,
+}
+
+struct OfficialModelProfile {
+    efforts: &'static [&'static str],
+    default_effort: &'static str,
+    chat: ChatSupport,
+}
+
+impl OfficialModelProfile {
+    fn supported_effort<'a>(&self, effort: &'a str) -> Option<&'a str> {
+        if self.efforts.contains(&effort) {
+            Some(effort)
+        } else if self.chat == ChatSupport::NoTools && matches!(effort, "none" | "minimal") {
+            // The GPT-6 migration guide recommends low when none/minimal is unavailable.
+            Some("low")
+        } else {
+            None
+        }
+    }
+
+    fn effective_effort<'a>(&self, effort: Option<&'a str>) -> &'a str {
+        effort
+            .and_then(|effort| self.supported_effort(effort))
+            .unwrap_or(self.default_effort)
+    }
+}
+
+// Official model pages and migration guides define the effort sets and defaults.
+// Exact IDs (plus dated snapshots) keep these rules off unrelated deployments.
+fn official_model_profile(model: &str) -> Option<OfficialModelProfile> {
+    use ChatSupport::{NoRestriction, NoTools, ResponsesOnly, ToolsWithoutReasoning};
+
+    const STANDARD: &[&str] = &["low", "medium", "high"];
+    const WITH_XHIGH: &[&str] = &["low", "medium", "high", "xhigh"];
+    const WITH_MAX: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+    const OFF_AND_XHIGH: &[&str] = &["none", "low", "medium", "high", "xhigh"];
+    const OFF_AND_MAX: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
+    let (efforts, default_effort, chat) = match without_snapshot_date(model) {
+        "gpt-4.1" | "gpt-4.1-mini" | "gpt-4.1-nano" | "gpt-4o" | "gpt-4o-mini" | "gpt-4-turbo"
+        | "gpt-4" | "gpt-3.5-turbo" | "chatgpt-4o-latest" => (&[][..], "none", NoRestriction),
+        "o1" | "o3" | "o3-mini" | "o4-mini" => (STANDARD, "medium", NoRestriction),
+        "o1-pro" | "o3-pro" | "gpt-5-pro" => (&["high"][..], "high", ResponsesOnly),
+        "gpt-5" | "gpt-5-mini" | "gpt-5-nano" => (
+            &["minimal", "low", "medium", "high"][..],
+            "medium",
+            NoRestriction,
+        ),
+        "gpt-5.1" => (
+            &["none", "low", "medium", "high"][..],
+            "none",
+            NoRestriction,
+        ),
+        "gpt-5.2" => (OFF_AND_XHIGH, "none", NoRestriction),
+        "gpt-5.4" | "gpt-5.4-mini" | "gpt-5.4-nano" => {
+            (OFF_AND_XHIGH, "none", ToolsWithoutReasoning)
+        }
+        "gpt-5.5" => (OFF_AND_XHIGH, "medium", ToolsWithoutReasoning),
+        "gpt-5.2-pro" | "gpt-5.4-pro" | "gpt-5.5-pro" => {
+            (&["medium", "high", "xhigh"][..], "high", ResponsesOnly)
+        }
+        "gpt-5-codex" | "gpt-5.1-codex" => (STANDARD, "medium", ResponsesOnly),
+        "gpt-5.1-codex-max" | "gpt-5.2-codex" | "gpt-5.3-codex" => {
+            (WITH_XHIGH, "medium", ResponsesOnly)
+        }
+        "gpt-5.6" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "gpt-6-sol"
+        | "gpt-6-luna" => (OFF_AND_MAX, "medium", ToolsWithoutReasoning),
+        "gpt-6.1-terra" => (OFF_AND_MAX, "medium", NoTools),
+        "gpt-6-astra" | "gpt-6.1-sol" | "gpt-6.2-astra" | "gpt-6.2-sol" => {
+            (WITH_MAX, "medium", NoTools)
+        }
+        _ => return None,
+    };
+    Some(OfficialModelProfile {
+        efforts,
+        default_effort,
+        chat,
+    })
+}
+
+/// Whether an official Chat configuration needs the Responses endpoint for this
+/// request. Use the same host-resolved extra body that the Chat encoder would use.
+pub fn chat_requires_responses(
+    request: &GenerateRequest,
+    endpoint: &reqwest::Url,
+    extra_body: &Value,
+) -> bool {
+    if !is_official_openai(Some(endpoint)) {
+        return false;
+    }
+    if request.options.builtin_web_search
+        && request.options.tool_choice != ToolChoice::None
+        && without_snapshot_date(&request.model) != "gpt-5-search-api"
+    {
+        return true;
+    }
+    let Some(profile) = official_model_profile(&request.model) else {
+        return false;
+    };
+    match profile.chat {
+        ChatSupport::ResponsesOnly => return true,
+        ChatSupport::NoRestriction => return false,
+        _ => {}
+    }
+    let overrides = &request.options.provider_options;
+    let has_tools = request.options.tool_choice != ToolChoice::None
+        && overrides
+            .get("tools")
+            .or_else(|| extra_body.get("tools"))
+            .map_or(!request.tools.is_empty(), |tools| {
+                tools.as_array().is_some_and(|tools| !tools.is_empty())
+            });
+    // Forced-answer turns can still carry tool calls and outputs from earlier turns.
+    if !has_tools
+        && !request
+            .messages
+            .iter()
+            .flat_map(|msg| &msg.content)
+            .any(|part| {
+                matches!(
+                    part,
+                    MessagePart::ToolCall { .. } | MessagePart::ToolResult { .. }
+                )
+            })
+    {
+        return false;
+    }
+    if profile.chat == ChatSupport::NoTools {
+        return true;
+    }
+    let effort = overrides.get("reasoning_effort").map_or_else(
+        || {
+            if request.options.thinking_enabled {
+                request
+                    .options
+                    .thinking_level
+                    .as_deref()
+                    .or_else(|| extra_body["reasoning_effort"].as_str())
+            } else {
+                Some("none")
+            }
+        },
+        Value::as_str,
+    );
+    profile.effective_effort(effort) != "none"
+}
+
+pub(crate) fn finish_official_request(
+    body: &mut Value,
+    request: &GenerateRequest,
+    endpoint: Option<&reqwest::Url>,
+    responses: bool,
+) {
+    if !is_official_openai(endpoint) {
+        return;
+    }
+    if responses {
+        if let Some(options) = body
+            .get_mut("stream_options")
+            .and_then(Value::as_object_mut)
+        {
+            options.remove("include_usage");
+            if options.is_empty() {
+                body.as_object_mut().unwrap().remove("stream_options");
+            }
+        }
+        if body["max_output_tokens"]
+            .as_i64()
+            .is_some_and(|limit| limit < 16)
+        {
+            body["max_output_tokens"] = Value::from(16);
+        }
+    } else if let Some(legacy) = body.as_object_mut().unwrap().remove("max_tokens") {
+        if request
+            .options
+            .provider_options
+            .get("max_completion_tokens")
+            .is_none()
+        {
+            body["max_completion_tokens"] = legacy;
+        }
+    }
+
+    let Some(profile) = official_model_profile(&request.model) else {
+        return;
+    };
+    let reasoning_field = if responses {
+        "reasoning"
+    } else {
+        "reasoning_effort"
+    };
+    let reasoning = if responses {
+        &body[reasoning_field]["effort"]
+    } else {
+        &body[reasoning_field]
+    };
+    let effort = reasoning
+        .as_str()
+        .and_then(|effort| profile.supported_effort(effort));
+    let uses_reasoning = effort.unwrap_or(profile.default_effort) != "none";
+    let effort = effort.map(|effort| Value::String(effort.into()));
+    let body = body.as_object_mut().unwrap();
+    if profile.efforts.is_empty() {
+        body.remove(reasoning_field);
+    } else if responses {
+        if let Some(reasoning) = body.get_mut("reasoning").and_then(Value::as_object_mut) {
+            if let Some(effort) = effort {
+                reasoning.insert("effort".into(), effort);
+            } else if reasoning
+                .get("effort")
+                .is_some_and(|effort| !effort.is_null())
+            {
+                reasoning.remove("effort");
+            }
+            if uses_reasoning && request.options.provider_options.get("reasoning").is_none() {
+                reasoning
+                    .entry("summary")
+                    .or_insert_with(|| Value::String("auto".into()));
+            } else if !uses_reasoning {
+                reasoning.remove("summary");
+            }
+            if reasoning.is_empty() {
+                body.remove("reasoning");
+            }
+        }
+    } else if let Some(effort) = effort {
+        body.insert(reasoning_field.into(), effort);
+    } else if body
+        .get(reasoning_field)
+        .is_some_and(|effort| !effort.is_null())
+    {
+        body.remove(reasoning_field);
+    }
+    if uses_reasoning {
+        for field in ["temperature", "top_p", "logprobs", "top_logprobs"] {
+            body.remove(field);
+        }
+    }
+    if responses {
+        let explicit_include = request.options.provider_options.get("include").is_some();
+        if uses_reasoning && !explicit_include {
+            let include = body
+                .entry("include")
+                .or_insert_with(|| Value::Array(vec![]));
+            if let Some(include) = include.as_array_mut() {
+                if !include
+                    .iter()
+                    .any(|item| item == "reasoning.encrypted_content")
+                {
+                    include.push("reasoning.encrypted_content".into());
+                }
+            }
+        }
+        if let Some(include) = body.get_mut("include").and_then(Value::as_array_mut) {
+            include.retain(|entry| {
+                if uses_reasoning {
+                    entry != "message.output_text.logprobs"
+                } else {
+                    entry != "reasoning.encrypted_content"
+                }
+            });
+            if include.is_empty() && !explicit_include {
+                body.remove("include");
+            }
+        }
+    }
+}
+
 pub(crate) fn apply_request_capabilities(
     body: &mut Value,
     model: &str,
@@ -58,12 +348,8 @@ pub(crate) fn apply_request_capabilities(
     responses: bool,
 ) {
     let host = endpoint.and_then(reqwest::Url::host_str);
-    if host == Some("api.openai.com") {
-        if !responses
-            && ["o1", "o3", "o4"]
-                .iter()
-                .any(|prefix| model == *prefix || model.starts_with(&format!("{prefix}-")))
-        {
+    if is_official_openai(endpoint) {
+        if !responses {
             if let Some(limit) = body.as_object_mut().unwrap().remove("max_tokens") {
                 body["max_completion_tokens"] = limit;
             }
@@ -149,6 +435,19 @@ impl OpenAiChatProvider {
         request: &GenerateRequest,
         stream: bool,
     ) -> Result<reqwest::Response, ModelError> {
+        if chat_requires_responses(
+            request,
+            &self.config.endpoint,
+            &self.config.options.extra_body,
+        ) {
+            return Err(ModelError::with_kind(
+                format!(
+                    "OpenAI model {} requires the Responses endpoint for this request.",
+                    request.model
+                ),
+                ModelErrorKind::InvalidRequest,
+            ));
+        }
         let options = OpenAiChatOptions {
             endpoint: Some(self.config.endpoint.clone()),
             provider_id: Some(self.provider_id()),
@@ -251,14 +550,17 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
             body["prompt_cache_retention"] = Value::String(retention.clone());
         }
     }
+    if request.options.builtin_web_search
+        && request.options.tool_choice != super::ToolChoice::None
+        && is_official_openai(options.endpoint.as_ref())
+        && without_snapshot_date(&request.model) == "gpt-5-search-api"
+    {
+        body["web_search_options"] = serde_json::json!({});
+    }
     // 模型级额外请求体字段（model_overrides[model].extra_body）：原样 merge 进 body 根部，
     // 给严格端点塞标准 schema 外的私有旋钮（NVIDIA NIM / vLLM `chat_template_kwargs` 等）。
     // 放在单次 provider_options 之前，让显式的单次覆盖仍然最后生效。
-    if let Some(extra) = options.extra_body.as_object() {
-        for (key, value) in extra {
-            body[key] = value.clone();
-        }
-    }
+    super::apply_body_options(&mut body, &options.extra_body, stream);
     if request.options.max_tokens > 0 {
         body["max_tokens"] = Value::from(request.options.max_tokens);
     } else {
@@ -267,7 +569,8 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
     if let Some(temperature) = options.temperature {
         body["temperature"] = serde_json::json!(temperature);
     }
-    let native_thinking_switch = options.native_thinking_switch;
+    let native_thinking_switch =
+        options.native_thinking_switch && !is_official_openai(options.endpoint.as_ref());
     if !request.options.thinking_enabled {
         if native_thinking_switch {
             body["thinking"] = serde_json::json!({ "type": "disabled" });
@@ -279,7 +582,12 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
     }
     // 思考等级 → OpenAI Chat `reasoning_effort`，原样下发（档位由模型库 reasoningEfforts 门控）。
     // 代理普遍接受;不发 Qwen/vLLM 私有的 enable_thinking / chat_template_kwargs。
-    if let Some(effort) = request.options.thinking_level.as_deref() {
+    if let Some(effort) = request
+        .options
+        .thinking_level
+        .as_deref()
+        .filter(|_| request.options.thinking_enabled)
+    {
         body["reasoning_effort"] = Value::String(effort.to_string());
     }
     apply_request_capabilities(
@@ -289,11 +597,8 @@ pub fn request_body(request: &GenerateRequest, stream: bool, options: &OpenAiCha
         options.cache_retention,
         false,
     );
-    if let Some(overrides) = request.options.provider_options.as_object() {
-        for (key, value) in overrides {
-            body[key] = value.clone();
-        }
-    }
+    super::apply_body_options(&mut body, &request.options.provider_options, stream);
+    finish_official_request(&mut body, request, options.endpoint.as_ref(), false);
     if request.options.tool_choice == super::ToolChoice::None {
         body.as_object_mut().unwrap().remove("tools");
         body["tool_choice"] = Value::String("none".to_string());

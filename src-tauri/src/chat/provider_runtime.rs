@@ -13,7 +13,7 @@ pub(crate) struct ProviderRuntimeState {
     active_key_idx: Mutex<HashMap<String, usize>>,
     prompt_cache_key_unsupported: Mutex<HashSet<String>>,
     prompt_cache_retention_unsupported: Mutex<HashSet<String>>,
-    reasoning_replay_unsupported: Mutex<HashSet<String>>,
+    reasoning_replay_unsupported: Mutex<HashSet<(String, String)>>,
     image_route_cache: Mutex<HashMap<(String, String), ImageRoute>>,
 }
 impl ProviderRuntimeState {
@@ -102,18 +102,18 @@ impl ProviderRuntimeState {
             .insert(base_url.to_string());
     }
 
-    pub fn reasoning_replay_unsupported(&self, base_url: &str) -> bool {
+    pub fn reasoning_replay_unsupported(&self, base_url: &str, model: &str) -> bool {
         self.reasoning_replay_unsupported
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .contains(base_url)
+            .contains(&(base_url.to_owned(), model.to_owned()))
     }
 
-    pub fn mark_reasoning_replay_unsupported(&self, base_url: &str) {
+    pub fn mark_reasoning_replay_unsupported(&self, base_url: &str, model: &str) {
         self.reasoning_replay_unsupported
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(base_url.to_string());
+            .insert((base_url.to_owned(), model.to_owned()));
     }
 
     pub fn prompt_cache_retention_unsupported(&self, base_url: &str) -> bool {

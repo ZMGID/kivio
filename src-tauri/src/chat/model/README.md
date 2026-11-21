@@ -15,6 +15,11 @@ request encoders, SSE decoders and usage parsers. See the
 
 Rules:
 
+- The model detail drawer supplies defaults in the selected protocol's JSON format.
+  The shared encoders preserve the selected model and streaming mode when applying
+  defaults and per-call options. Buffered calls omit streaming options. Official
+  OpenAI Chat requests that require Responses use the Responses encoder and
+  translate Chat-format tool declarations and options before sending.
 - Runtime and tool loop code should not inspect OpenAI `choices`, Anthropic `content`
   blocks, SSE event names, or provider-specific headers.
 - Provider adapters may use `serde_json::Value` freely at their wire boundary.

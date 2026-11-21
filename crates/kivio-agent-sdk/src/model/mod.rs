@@ -15,5 +15,23 @@ pub use error::{
 };
 pub use types::*;
 
+/// Routing and decoding use the selected model and delivery mode.
+fn apply_body_options(
+    body: &mut serde_json::Value,
+    options: &serde_json::Value,
+    allow_stream_options: bool,
+) {
+    if let Some(fields) = options.as_object() {
+        for (key, value) in fields {
+            if matches!(key.as_str(), "model" | "stream")
+                || (key == "stream_options" && !allow_stream_options)
+            {
+                continue;
+            }
+            body[key] = value.clone();
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) use error::is_tools_unsupported_error;

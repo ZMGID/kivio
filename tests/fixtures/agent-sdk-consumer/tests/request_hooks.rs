@@ -519,6 +519,7 @@ async fn hook_model_change_uses_effective_model_when_projecting_opaque_reasoning
             content: vec![
                 kivio_agent_sdk::model::MessagePart::ReasoningItem {
                     model: "test-model".into(),
+                    source: None,
                     item: json!({"type":"reasoning","id":"signed","encrypted_content":"opaque"}),
                 },
                 kivio_agent_sdk::model::MessagePart::Text { text: "prior answer".into() },

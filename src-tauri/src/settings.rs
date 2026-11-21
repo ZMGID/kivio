@@ -294,6 +294,14 @@ impl ProviderApiFormat {
 }
 
 impl ModelProvider {
+    pub(crate) fn model_extra_body(&self, model: &str) -> &serde_json::Value {
+        self.model_overrides
+            .get(model)
+            .and_then(|info| info.extra_body.as_ref())
+            .filter(|value| value.is_object())
+            .unwrap_or(&serde_json::Value::Null)
+    }
+
     pub fn is_opencode_free(&self) -> bool {
         self.request.oauth.is_none()
             && self.api_format_kind() == ProviderApiFormat::OpenAiChat
@@ -399,7 +407,7 @@ pub struct ModelInfo {
     /// `Some([..])` = 只这几档可选可下发。仅用于 model_overrides。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_efforts: Option<Vec<String>>,
-    /// 每模型额外请求体字段（原样 merge 进 chat/completions body 根部）。
+    /// 所选协议的模型级请求体默认字段。模型标识和传输模式由适配器决定。
     /// 用于给严格 OpenAI-compat 端点塞标准 schema 之外的私有旋钮，例如 NVIDIA NIM /
     /// vLLM / SGLang 的 `chat_template_kwargs`、GLM 的 thinking 开关等。仅用于 model_overrides。
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,3 +1,5 @@
+use kivio_agent_sdk::model::anthropic::{claude_thinking_profile, ClaudeThinkingKind};
+use kivio_agent_sdk::model::gemini::{gemini_thinking_profile, GeminiThinkingProfile};
 use serde_json::Value;
 
 use crate::settings::{ModelInfo, ModelPricing, ModelProvider};
@@ -259,7 +261,7 @@ pub fn reasoning_efforts_for_model(provider: Option<&ModelProvider>, model: &str
         == Some(crate::settings::ProviderApiFormat::AnthropicMessages)
     {
         if let Some(profile) = claude_thinking_profile(model) {
-            return profile.ui_effort_levels();
+            return profile.effort_levels();
         }
     }
     vec!["low".into(), "medium".into(), "high".into()]
@@ -336,7 +338,7 @@ pub(crate) fn thinking_capabilities_for_model(
             ThinkingOffMode::Supported
         }
     } else if let Some(profile) = gemini_thinking_profile(id) {
-        if profile.supports_off {
+        if profile.supports_off() {
             ThinkingOffMode::Supported
         } else {
             ThinkingOffMode::Unsupported
@@ -369,290 +371,6 @@ pub(crate) fn thinking_capabilities_for_model(
         ThinkingOffMode::Unknown
     };
     ThinkingCapabilities { levels, off_mode }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct GeminiThinkingProfile {
-    pub supports_off: bool,
-    pub budget_max: Option<i64>,
-}
-
-pub(crate) fn gemini_thinking_profile(model: &str) -> Option<GeminiThinkingProfile> {
-    let id = normalize_model_name(model);
-    if id.contains("gemini-2.5-pro") {
-        Some(GeminiThinkingProfile {
-            supports_off: false,
-            budget_max: Some(32768),
-        })
-    } else if id.contains("gemini-2.5-flash") {
-        Some(GeminiThinkingProfile {
-            supports_off: true,
-            budget_max: Some(24576),
-        })
-    } else if id.contains("gemini-3") {
-        Some(GeminiThinkingProfile {
-            supports_off: false,
-            budget_max: None,
-        })
-    } else {
-        None
-    }
-}
-
-// Product mapping for the shared Low/Medium/High control, within Google's 2.5 budgets.
-// These are application presets, not native Gemini effort levels.
-pub(crate) fn gemini_thinking_budget(model: &str, level: &str) -> Option<i64> {
-    let max = gemini_thinking_profile(model)?.budget_max?;
-    match level {
-        "low" => Some(1024),
-        "medium" => Some(8192),
-        "high" => Some(max),
-        _ => None,
-    }
-}
-
-/// Claude 思考线格式。对照官方 per-model 表：
-/// https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ClaudeThinkingKind {
-    /// Claude 3 / 3.5：没有 thinking，发任何 type 都会 400。
-    Unsupported,
-    /// 4.5 及更早（含 3.7 / Opus 4 / Sonnet 4）：`type: "enabled"` + `budget_tokens`。
-    Extended,
-    /// 4.6+：`type: "adaptive"` + `output_config.effort`。4.7+ 发 `enabled` 会 400。
-    Adaptive,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ClaudeThinkingProfile {
-    pub kind: ClaudeThinkingKind,
-    /// 官方 `output_config.effort`。Opus 4.5 是 extended-only 里唯一认 effort 的模型。
-    pub supports_output_effort: bool,
-    supports_xhigh: bool,
-    supports_max: bool,
-    /// Off 的 wire 类型：Sonnet 5.5 用 between_tools，5 用 disabled；始终思考的模型省略。
-    pub(crate) off_thinking_type: Option<&'static str>,
-    /// Fable/Mythos/Preview / Opus 4.7+ / Sonnet 5：非默认 temperature 一律 400。
-    pub(crate) forbid_temperature: bool,
-}
-
-impl ClaudeThinkingProfile {
-    fn ui_effort_levels(self) -> Vec<String> {
-        if self.kind == ClaudeThinkingKind::Unsupported {
-            return Vec::new();
-        }
-        let mut out = vec!["low".into(), "medium".into(), "high".into()];
-        if self.supports_xhigh {
-            out.push("xhigh".into());
-        }
-        if self.supports_max {
-            out.push("max".into());
-        }
-        out
-    }
-
-    pub(crate) fn clamp_effort(self, level: &str) -> &str {
-        match level {
-            "xhigh" if !self.supports_xhigh => {
-                if self.supports_max {
-                    "max"
-                } else {
-                    "high"
-                }
-            }
-            "max" if !self.supports_max => "high",
-            other => other,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ClaudeFamily {
-    Opus,
-    Sonnet,
-    Haiku,
-    Fable,
-    Mythos,
-}
-
-impl ClaudeFamily {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Opus => "opus",
-            Self::Sonnet => "sonnet",
-            Self::Haiku => "haiku",
-            Self::Fable => "fable",
-            Self::Mythos => "mythos",
-        }
-    }
-}
-
-/// 从模型 id 识别 Claude 代际。覆盖官方 id、日期快照、Bedrock 点分 id、2api 短名（`opus-4.5`）。
-/// 认不出则返回 None（适配器按 adaptive 兜底；UI 档位走安全子集）。
-pub(crate) fn claude_thinking_profile(model: &str) -> Option<ClaudeThinkingProfile> {
-    let id = normalize_claude_model_id(model);
-    if id.contains("mythos-preview") {
-        return Some(ClaudeThinkingProfile {
-            kind: ClaudeThinkingKind::Adaptive,
-            supports_output_effort: true,
-            supports_xhigh: false,
-            supports_max: true,
-            off_thinking_type: None,
-            forbid_temperature: true,
-        });
-    }
-    if id.contains("3-7-sonnet") || id.contains("sonnet-3-7") {
-        return Some(extended_budget_only());
-    }
-    if is_legacy_claude3(&id) {
-        return Some(unsupported_thinking());
-    }
-    let (family, major, minor) = parse_claude_family_version(&id)?;
-    if major < 4 {
-        return Some(unsupported_thinking());
-    }
-    Some(profile_for_claude_version(family, major, minor))
-}
-
-fn is_legacy_claude3(id: &str) -> bool {
-    id.contains("3-5-")
-        || id.contains("sonnet-3-5")
-        || id.contains("haiku-3-5")
-        || id.contains("3-haiku")
-        || id.contains("3-opus")
-        || id.contains("3-sonnet")
-}
-
-fn unsupported_thinking() -> ClaudeThinkingProfile {
-    ClaudeThinkingProfile {
-        kind: ClaudeThinkingKind::Unsupported,
-        supports_output_effort: false,
-        supports_xhigh: false,
-        supports_max: false,
-        off_thinking_type: None,
-        forbid_temperature: false,
-    }
-}
-
-fn extended_budget_only() -> ClaudeThinkingProfile {
-    ClaudeThinkingProfile {
-        kind: ClaudeThinkingKind::Extended,
-        supports_output_effort: false,
-        supports_xhigh: false,
-        supports_max: false,
-        off_thinking_type: None,
-        forbid_temperature: false,
-    }
-}
-
-fn normalize_claude_model_id(model: &str) -> String {
-    let name = normalize_model_name(model);
-    let stripped = name.rsplit('/').next().unwrap_or(name.as_str());
-    let stripped = stripped
-        .strip_prefix("anthropic.")
-        .unwrap_or(stripped)
-        .strip_prefix("anthropic-")
-        .unwrap_or(stripped);
-    normalize_model_sep(stripped).replace(':', "-")
-}
-
-fn parse_claude_family_version(id: &str) -> Option<(ClaudeFamily, u32, u32)> {
-    for family in [
-        ClaudeFamily::Opus,
-        ClaudeFamily::Sonnet,
-        ClaudeFamily::Haiku,
-        ClaudeFamily::Fable,
-        ClaudeFamily::Mythos,
-    ] {
-        let key = family.as_str();
-        let rest = if let Some(stripped) = id.strip_prefix(&format!("{key}-")) {
-            stripped
-        } else if let Some(idx) = id.find(&format!("-{key}-")) {
-            &id[idx + key.len() + 2..]
-        } else {
-            continue;
-        };
-        let mut parts = rest.split('-');
-        let major = version_segment(parts.next()?)?;
-        let minor = parts.next().and_then(version_segment).unwrap_or(0);
-        return Some((family, major, minor));
-    }
-    None
-}
-
-fn version_segment(part: &str) -> Option<u32> {
-    if (1..=2).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_digit()) {
-        part.parse().ok()
-    } else {
-        None
-    }
-}
-
-fn version_at_least(major: u32, minor: u32, req_major: u32, req_minor: u32) -> bool {
-    major > req_major || (major == req_major && minor >= req_minor)
-}
-
-/// 档位名单来自官方 Effort 页：
-/// xhigh = Fable 5 / Mythos 5 / Opus 5 / Opus 4.8 / Opus 4.7 / Sonnet 5
-/// max = 上述 + Mythos Preview / Opus 4.6 / Sonnet 4.6
-/// effort 本体 = 上述 + Opus 4.5
-fn profile_for_claude_version(
-    family: ClaudeFamily,
-    major: u32,
-    minor: u32,
-) -> ClaudeThinkingProfile {
-    // Haiku 5.5 adds adaptive thinking and output effort; older Haiku uses budgets.
-    if family == ClaudeFamily::Haiku && !version_at_least(major, minor, 5, 5) {
-        return extended_budget_only();
-    }
-    let adaptive = match family {
-        ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
-        ClaudeFamily::Opus | ClaudeFamily::Sonnet => version_at_least(major, minor, 4, 6),
-        ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
-    };
-    let kind = if adaptive {
-        ClaudeThinkingKind::Adaptive
-    } else {
-        ClaudeThinkingKind::Extended
-    };
-    let supports_output_effort = match family {
-        ClaudeFamily::Opus => version_at_least(major, minor, 4, 5),
-        ClaudeFamily::Sonnet => version_at_least(major, minor, 4, 6),
-        ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
-        ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
-    };
-    let supports_xhigh = match family {
-        ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
-        ClaudeFamily::Opus => version_at_least(major, minor, 4, 7),
-        ClaudeFamily::Sonnet => major >= 5,
-        ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
-    };
-    let supports_max = match family {
-        ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
-        ClaudeFamily::Opus | ClaudeFamily::Sonnet => version_at_least(major, minor, 4, 6),
-        ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
-    };
-    ClaudeThinkingProfile {
-        kind,
-        supports_output_effort,
-        supports_xhigh,
-        supports_max,
-        off_thinking_type: match family {
-            ClaudeFamily::Haiku if version_at_least(major, minor, 5, 5) => Some("disabled"),
-            ClaudeFamily::Sonnet if version_at_least(major, minor, 5, 5) => Some("between_tools"),
-            ClaudeFamily::Sonnet if major >= 5 => Some("disabled"),
-            ClaudeFamily::Opus if major >= 5 && !version_at_least(major, minor, 5, 5) => {
-                Some("disabled")
-            }
-            _ => None,
-        },
-        forbid_temperature: match family {
-            ClaudeFamily::Fable | ClaudeFamily::Mythos => major >= 5,
-            ClaudeFamily::Opus => version_at_least(major, minor, 4, 7),
-            ClaudeFamily::Sonnet => major >= 5,
-            ClaudeFamily::Haiku => version_at_least(major, minor, 5, 5),
-        },
-    }
 }
 
 const REASONING_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
@@ -711,6 +429,12 @@ pub(crate) fn agent_model_capabilities(
             .or_else(|| database("functionCalling")),
         reasoning: overrides
             .and_then(|caps| caps.reasoning)
+            .or_else(|| {
+                (provider.api_format_kind() == crate::settings::ProviderApiFormat::Gemini)
+                    .then(|| gemini_thinking_profile(model))
+                    .flatten()
+                    .map(|profile| profile != GeminiThinkingProfile::Unsupported)
+            })
             .or_else(|| database("reasoning")),
         builtin_web_search: if builtin_web_search_supported(provider) {
             overrides
@@ -788,11 +512,7 @@ pub(crate) fn model_can_generate_images_directly(provider: &ModelProvider, model
 }
 
 /// 当前 provider 是否支持模型**原生内置联网搜索**（任务 07-23）。
-/// 依 `api_format`：OpenAI Responses / Gemini / Anthropic Messages 支持；OpenAI Chat
-/// Completions 一般不支持（gpt-5 在其上开 `web_search` 会 400）。例外：官方 DeepSeek
-/// API（`api.deepseek.com`）的 Chat Completions 供应商仍可开内置——请求改走 Responses
-/// 的服务端 `web_search`（官方 Chat Completions 只收 `function` 工具）。
-/// 前端据此把「内置」选项置灰。
+/// Official OpenAI and DeepSeek Chat configurations dispatch hosted search via Responses.
 pub(crate) fn builtin_web_search_supported(provider: &ModelProvider) -> bool {
     if crate::provider_oauth::antigravity::is_provider(provider) {
         return false;
@@ -803,7 +523,14 @@ pub(crate) fn builtin_web_search_supported(provider: &ModelProvider) -> bool {
     // xAI 的 Responses 同样有服务端 web_search（还多 x_search），与 OpenAI Responses 同形。
     match provider.api_format_kind() {
         OpenAiResponses | XaiResponses | Gemini | AnthropicMessages => true,
-        OpenAiChat => crate::utils::is_official_deepseek_api(&provider.base_url),
+        OpenAiChat => {
+            crate::utils::is_official_deepseek_api(&provider.base_url)
+                || reqwest::Url::parse(&provider.base_url)
+                    .ok()
+                    .as_ref()
+                    .and_then(reqwest::Url::host_str)
+                    == Some("api.openai.com")
+        }
     }
 }
 
@@ -1095,16 +822,12 @@ mod tests {
                 "{model}"
             );
         }
-        assert!(
-            gemini_thinking_profile("gemini-2.5-flash")
-                .unwrap()
-                .supports_off
-        );
-        assert!(
-            !gemini_thinking_profile("gemini-2.5-pro")
-                .unwrap()
-                .supports_off
-        );
+        assert!(gemini_thinking_profile("gemini-2.5-flash")
+            .unwrap()
+            .supports_off());
+        assert!(!gemini_thinking_profile("gemini-2.5-pro")
+            .unwrap()
+            .supports_off());
         let snapshot = super::super::model_database::snapshot();
         for model in ["kimi-k2.6", "kimi-k3"] {
             let entry = &snapshot.database[model];
@@ -1515,6 +1238,8 @@ mod tests {
         }
 
         p.api_format = "openai_chat".into();
+        p.base_url = "https://api.openai.com/v1".into();
+        assert!(builtin_web_search_supported(&p));
         p.base_url = "https://api.deepseek.com/v1".into();
         assert!(
             builtin_web_search_supported(&p),

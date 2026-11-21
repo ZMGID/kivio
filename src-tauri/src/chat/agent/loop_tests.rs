@@ -4515,30 +4515,62 @@ async fn run_loop_nonstream_synthesis_empty_output_uses_fallback() {
     );
 }
 
-/// Responses 格式的一段内置搜索 SSE（web_search_call 查询 + 正文 + url_citation 来源），
-/// 供内置搜索实时卡端到端集成测试用（任务 07-23）。无 function_call → planning 直接终答。
+fn responses_text(text: &str, reasoning: Option<Value>) -> MockResponse {
+    let mut output = Vec::new();
+    if let Some(reasoning) = reasoning {
+        output.push(reasoning);
+    }
+    output.push(
+        serde_json::json!({"type":"message", "role":"assistant", "content":[
+            {"type":"output_text", "text": text}
+        ]}),
+    );
+    MockResponse::Sse(vec![
+        serde_json::json!({"type":"response.output_text.delta", "delta":text}).to_string(),
+        serde_json::json!({"type":"response.completed", "response":{
+            "status":"completed", "output":output
+        }})
+        .to_string(),
+    ])
+}
+
+async fn resumed_responses_input(
+    state: &AppState,
+    server: &MockModelServer,
+    messages: &[ModelMessage],
+    model: &str,
+) -> Vec<Value> {
+    let mut config = test_run_config(state, &server.base_url);
+    config.provider.api_format = "openai_responses".into();
+    config.model = model.into();
+    config.tools.clear();
+    config.runtime_messages = crate::chat::model::openai_messages_from_model_messages(messages);
+    config
+        .runtime_messages
+        .push(serde_json::json!({"role": "user", "content": "Continue."}));
+    let result = run_agent_loop(
+        config,
+        &Arc::new(TestHost::default()),
+        &Arc::new(RecordingExecutor::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.content, "continued");
+    let body: Value = serde_json::from_str(server.captured_bodies().last().unwrap()).unwrap();
+    body["input"].as_array().unwrap().clone()
+}
+
 #[tokio::test]
 async fn run_loop_responses_reasoning_survives_plain_final_and_reload() {
     for tools_enabled in [true, false] {
         let reasoning = serde_json::json!({
             "type": "reasoning", "id": "rs_saved", "encrypted_content": "opaque-replay",
         });
-        let server = MockModelServer::start(vec![MockResponse::Sse(vec![
-            serde_json::json!({
-                "type": "response.output_text.delta", "delta": "answer with replay",
-            })
-            .to_string(),
-            serde_json::json!({
-                "type": "response.completed",
-                "response": { "status": "completed", "output": [
-                    reasoning.clone(),
-                    { "type": "message", "role": "assistant", "content": [
-                        { "type": "output_text", "text": "answer with replay" }
-                    ] }
-                ] }
-            })
-            .to_string(),
-        ])]);
+        let server = MockModelServer::start(vec![
+            responses_text("answer with replay", Some(reasoning.clone())),
+            responses_text("continued", None),
+            responses_text("continued", None),
+        ]);
         let state = test_app_state();
         let mut config = test_run_config(&state, &server.base_url);
         config.provider.api_format = "openai_responses".into();
@@ -4558,8 +4590,7 @@ async fn run_loop_responses_reasoning_survives_plain_final_and_reload() {
             &serde_json::to_string(&saved).unwrap(),
         )
         .unwrap();
-        let replay =
-            crate::chat::model::responses_input_from_model_messages(&reloaded, Some("test-model"));
+        let replay = resumed_responses_input(&state, &server, &reloaded, "test-model").await;
         assert_eq!(
             replay
                 .iter()
@@ -4568,15 +4599,17 @@ async fn run_loop_responses_reasoning_survives_plain_final_and_reload() {
             1
         );
         assert_eq!(replay.first(), Some(&reasoning));
-        assert!(crate::chat::model::responses_input_from_model_messages(
-            &reloaded,
-            Some("another-model"),
-        )
-        .iter()
-        .all(|item| item["type"] != "reasoning"));
+        assert!(
+            resumed_responses_input(&state, &server, &reloaded, "another-model")
+                .await
+                .iter()
+                .all(|item| item["type"] != "reasoning")
+        );
     }
 }
 
+/// Responses 格式的一段内置搜索 SSE（web_search_call 查询 + 正文 + url_citation 来源），
+/// 供内置搜索实时卡端到端集成测试用（任务 07-23）。无 function_call → planning 直接终答。
 fn responses_web_search_sse_events() -> Vec<String> {
     vec![
         r#"{"type":"response.output_item.added","item":{"id":"ws_1","type":"web_search_call","status":"in_progress"}}"#.to_string(),
@@ -6970,28 +7003,11 @@ async fn run_loop_compacted_final_preserves_responses_replay() {
     let reasoning = serde_json::json!({
         "type": "reasoning", "id": "rs_compacted", "encrypted_content": "replay-after-compaction",
     });
-    let response = |text: &str, reasoning: Option<Value>| {
-        let mut output = Vec::new();
-        if let Some(reasoning) = reasoning {
-            output.push(reasoning);
-        }
-        output.push(
-            serde_json::json!({"type":"message", "role":"assistant", "content":[
-                {"type":"output_text", "text": text}
-            ]}),
-        );
-        MockResponse::Sse(vec![
-            serde_json::json!({"type":"response.output_text.delta", "delta":text}).to_string(),
-            serde_json::json!({"type":"response.completed", "response":{
-                "status":"completed", "output":output
-            }})
-            .to_string(),
-        ])
-    };
     let summary = format!("SUMMARY_MARKER {}", "Archived work completed. ".repeat(30));
     let server = MockModelServer::start(vec![
-        response(&summary, None),
-        response("final after compression", Some(reasoning.clone())),
+        responses_text(&summary, None),
+        responses_text("final after compression", Some(reasoning.clone())),
+        responses_text("continued", None),
     ]);
     let state = test_app_state();
     let mut config = test_run_config(&state, &server.base_url);
@@ -7032,8 +7048,7 @@ async fn run_loop_compacted_final_preserves_responses_replay() {
     let canonical = crate::chat::model::model_messages_from_openai_messages(history);
     let saved = serde_json::to_string(&canonical).unwrap();
     let restored: Vec<crate::chat::model::ModelMessage> = serde_json::from_str(&saved).unwrap();
-    let request =
-        crate::chat::model::responses_input_from_model_messages(&restored, Some("test-model"));
+    let request = resumed_responses_input(&state, &server, &restored, "test-model").await;
     let reasoning_items: Vec<_> = request
         .iter()
         .filter(|item| item["type"] == "reasoning")

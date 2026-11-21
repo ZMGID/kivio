@@ -90,22 +90,40 @@ impl<'a> ProviderConfig<'a> {
             opencode_free: provider.is_opencode_free(),
         }
     }
+}
 
-    // DeepSeek's built-in search uses Responses, or Messages on its Anthropic endpoint.
-    fn protocol_for_request(&self, request: &GenerateRequest) -> ProviderApiFormat {
-        if request.options.builtin_web_search
-            && request.options.tool_choice != ToolChoice::None
-            && crate::utils::is_official_deepseek_api(self.base_url)
-        {
-            if crate::utils::is_official_deepseek_anthropic_api(self.base_url) {
-                return ProviderApiFormat::AnthropicMessages;
-            }
-            if self.api_format == ProviderApiFormat::OpenAiChat {
-                return ProviderApiFormat::OpenAiResponses;
-            }
-        }
-        self.api_format
+fn adapt_request_protocol(
+    provider: &mut ModelProvider,
+    request: &mut GenerateRequest,
+) -> Result<(), ModelError> {
+    let deepseek_search = request.options.builtin_web_search
+        && request.options.tool_choice != ToolChoice::None
+        && crate::utils::is_official_deepseek_api(&provider.base_url);
+    if deepseek_search && crate::utils::is_official_deepseek_anthropic_api(&provider.base_url) {
+        provider.api_format = ProviderApiFormat::AnthropicMessages.as_str().into();
+        return Ok(());
     }
+    if provider.api_format_kind() != ProviderApiFormat::OpenAiChat {
+        return Ok(());
+    }
+    let defaults = provider.model_extra_body(&request.model);
+    let use_responses = deepseek_search
+        || reqwest::Url::parse(&provider.base_url)
+            .ok()
+            .is_some_and(|endpoint| {
+                kivio_agent_sdk::model::openai::chat_requires_responses(
+                    request, &endpoint, defaults,
+                )
+            });
+    if use_responses {
+        let defaults =
+            kivio_agent_sdk::model::responses::translate_chat_route_options(request, defaults)?;
+        if let Some(info) = provider.model_overrides.get_mut(&request.model) {
+            info.extra_body = Some(defaults);
+        }
+        provider.api_format = ProviderApiFormat::OpenAiResponses.as_str().into();
+    }
+    Ok(())
 }
 
 pub(crate) async fn generate_with_chat_provider(
@@ -141,13 +159,14 @@ async fn call_chat_provider(
     state: &AppState,
     provider: &ModelProvider,
     retry_attempts: usize,
-    request: GenerateRequest,
+    mut request: GenerateRequest,
     sink: Option<&mut (dyn StreamSink + Send)>,
 ) -> Result<GenerateOutput, ModelError> {
     crate::chat::video::validate_request(provider, &request)?;
-    let resolved = crate::provider_oauth::resolve_provider(state, provider)
+    let mut resolved = crate::provider_oauth::resolve_provider(state, provider)
         .await
         .map_err(ModelError::new)?;
+    adapt_request_protocol(&mut resolved, &mut request)?;
     let config = ProviderConfig::from_settings(&resolved);
     let request_debug = || state.request_debug_enabled().then(|| state.request_debug());
     let record_usage = |input: UsageRecordInput<'_>| crate::usage::record_model_call(state, input);
@@ -163,7 +182,7 @@ async fn call_chat_provider(
     let anthropic;
     let responses;
     let gemini;
-    let adapter: &(dyn LanguageModelProvider + Sync) = match config.protocol_for_request(&request) {
+    let adapter: &(dyn LanguageModelProvider + Sync) = match config.api_format {
         ProviderApiFormat::OpenAiChat => {
             openai = OpenAiChatProvider::new(transport, config);
             &openai
@@ -971,6 +990,94 @@ mod anonymous_http_tests {
         }
     }
 
+    #[test]
+    fn official_chat_routes_function_tools_and_their_options_to_responses() {
+        use serde_json::json;
+        for (base, model, search, routed) in [
+            ("https://api.openai.com/v1", "gpt-6.2-sol", false, true),
+            ("https://api.deepseek.com/v1", "deepseek-v4-pro", true, true),
+            ("https://gateway.example/v1", "gpt-6.2-sol", false, false),
+        ] {
+            let mut provider = provider("openai_chat", base.into(), Vec::new());
+            let mut request = GenerateRequest {
+                model: model.into(),
+                system: String::new(),
+                messages: vec![ModelMessage::text(ModelRole::User, "Look this up.")],
+                tools: vec![ModelTool {
+                    name: "lookup".into(),
+                    description: "Look up a value".into(),
+                    input_schema: json!({"type":"object"}),
+                }],
+                options: GenerateOptions {
+                    builtin_web_search: search,
+                    provider_options: json!({"tool_choice":{"type":"function","function":{"name":"lookup"}}}),
+                    ..Default::default()
+                },
+                metadata: Default::default(),
+            };
+            adapt_request_protocol(&mut provider, &mut request).unwrap();
+            let config = ProviderConfig::from_settings(&provider);
+            if routed {
+                assert_eq!(config.api_format, ProviderApiFormat::OpenAiResponses);
+                assert_eq!(
+                    request.options.provider_options["tool_choice"],
+                    json!({"type":"function","name":"lookup"})
+                );
+            } else {
+                assert_eq!(config.api_format, ProviderApiFormat::OpenAiChat);
+                assert_eq!(
+                    request.options.provider_options["tool_choice"]["function"]["name"],
+                    "lookup"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn model_body_defaults_reach_each_endpoint_without_changing_delivery() {
+        use serde_json::{json, Value};
+        let state = crate::state::test_app_state();
+        for format in FORMATS {
+            for stream in [false, true] {
+                let (url, server) =
+                    endpoint(vec![("200 OK", success(format, stream))], false).await;
+                let mut provider = provider(format, url, Vec::new());
+                provider.model_overrides.insert("local-model".into(), crate::settings::ModelInfo {
+                    extra_body: Some(json!({"vendor_option": {"mode":"custom"}, "model":"wrong-route", "stream": !stream, "stream_options": {"include_usage":true}})),
+                    ..Default::default()
+                });
+                let output = call(&state, &provider, stream).await.unwrap();
+                assert_eq!(output.text, "anonymous ok");
+                let captured = server.await.unwrap();
+                let (headers, payload) = captured[0].split_once("\r\n\r\n").unwrap();
+                let body: Value = serde_json::from_str(payload).unwrap();
+                assert_eq!(body["vendor_option"], json!({"mode":"custom"}), "{format}");
+                if !stream || matches!(format, "gemini" | "anthropic_messages" | "xai_responses") {
+                    assert!(body.get("stream_options").is_none(), "{format}");
+                }
+                if format == "gemini" {
+                    assert!(body.get("model").is_none());
+                    assert!(body.get("stream").is_none());
+                    assert_eq!(
+                        headers
+                            .lines()
+                            .next()
+                            .unwrap()
+                            .contains(":streamGenerateContent"),
+                        stream
+                    );
+                } else {
+                    assert_eq!(body["model"], "local-model");
+                    assert_eq!(
+                        body["stream"].as_bool().unwrap_or(false),
+                        stream,
+                        "{format}"
+                    );
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn anonymous_model_protocols_reach_endpoint_and_return_response() {
         for format in FORMATS {
@@ -1086,6 +1193,68 @@ mod anonymous_http_tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn responses_retry_records_the_body_that_succeeded_and_limits_learning_to_one_model() {
+        use serde_json::{json, Value};
+        let temp = tempfile::tempdir().unwrap();
+        let mut settings = crate::settings::Settings::default();
+        settings.chat_tools.request_debug_enabled = true;
+        let state = AppState::new_headless(settings, temp.path().join("usage"));
+        let (url, server) = endpoint(
+            vec![
+                (
+                    "400 Bad Request",
+                    json!({"error":{"message":"unsupported reasoning item"}}).to_string(),
+                ),
+                ("200 OK", success("openai_responses", false)),
+            ],
+            false,
+        )
+        .await;
+        let provider = provider("openai_responses", url.clone(), Vec::new());
+        let request = GenerateRequest {
+            model: "local-model".into(),
+            system: String::new(),
+            messages: vec![
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: vec![MessagePart::ReasoningItem {
+                        model: "local-model".into(),
+                        source: None,
+                        item: json!({"type":"reasoning","id":"rs_old","encrypted_content":"old","summary":[]}),
+                    }],
+                },
+                ModelMessage::text(ModelRole::User, "Continue"),
+            ],
+            tools: vec![],
+            options: Default::default(),
+            metadata: Default::default(),
+        };
+        let output = generate_with_chat_provider(&state, &provider, 1, request)
+            .await
+            .unwrap();
+        assert_eq!(output.text, "anonymous ok");
+        let bodies: Vec<Value> = server
+            .await
+            .unwrap()
+            .iter()
+            .map(|wire| serde_json::from_str(wire.split_once("\r\n\r\n").unwrap().1).unwrap())
+            .collect();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0]["input"][0]["type"], "reasoning");
+        assert_eq!(bodies[1]["input"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            crate::chat::request_debug::snapshot(&state)[0].request.body,
+            bodies[1]
+        );
+        assert!(state
+            .provider_runtime()
+            .reasoning_replay_unsupported(&url, "local-model"));
+        assert!(!state
+            .provider_runtime()
+            .reasoning_replay_unsupported(&url, "other-model"));
     }
 
     #[tokio::test]

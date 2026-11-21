@@ -999,7 +999,7 @@ export type ModelInfo = {
     cacheWrite?: number
     cacheWriteLong?: number
   }
-  /** 每模型额外请求体字段（原样 merge 进 chat/completions body 根部）。用于给严格 OpenAI-compat
+  /** 所选协议的模型级请求体默认字段。模型标识和传输模式由适配器决定。用于给严格 OpenAI-compat
    *  端点塞标准 schema 之外的私有旋钮，如 NVIDIA NIM / vLLM 的 chat_template_kwargs。仅用于 modelOverrides。 */
   extraBody?: Record<string, unknown>
   /** 该模型可选的思考等级（reasoning effort）。undefined=跟随模型库；`[]`=没有等级旋钮（请求不带
@@ -1727,15 +1727,18 @@ export function activeKeyIndexAfterRemove(current: number, removedIdx: number, r
  * 即使协议仍是 Chat Completions，也可以开内置（请求改走 Responses 的服务端 web_search）。
  * 与 Rust 侧 `model_metadata::builtin_web_search_supported` 保持一致。
  */
-export function isOfficialDeepSeekApi(baseUrl?: string): boolean {
+function providerHostname(baseUrl?: string): string {
   const raw = (baseUrl ?? '').trim()
-  if (!raw) return false
+  if (!raw) return ''
   try {
-    const host = new URL(raw.includes('://') ? raw : `https://${raw}`).hostname.toLowerCase()
-    return host === 'api.deepseek.com'
+    return new URL(raw.includes('://') ? raw : `https://${raw}`).hostname
   } catch {
-    return false
+    return ''
   }
+}
+
+export function isOfficialDeepSeekApi(baseUrl?: string): boolean {
+  return providerHostname(baseUrl) === 'api.deepseek.com'
 }
 
 export function resolveProviderWebSearchMode<T extends 'off' | 'builtin' | 'third_party' | undefined>(mode: T, oauthProvider?: string): T | 'third_party' {
@@ -1752,7 +1755,7 @@ export function builtinWebSearchSupported(apiFormat?: string, baseUrl?: string, 
   ) {
     return true
   }
-  return apiFormat === 'openai_chat' && isOfficialDeepSeekApi(baseUrl)
+  return apiFormat === 'openai_chat' && ['api.deepseek.com', 'api.openai.com'].includes(providerHostname(baseUrl))
 }
 
 export type PromptCacheRetention = 'none' | 'short' | 'long'

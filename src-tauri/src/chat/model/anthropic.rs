@@ -19,8 +19,7 @@ pub use kivio_agent_sdk::model::anthropic::{
     output_from_anthropic_message,
 };
 use kivio_agent_sdk::model::anthropic::{
-    AnthropicCacheTtl, AnthropicMessagesOptions, AnthropicThinkingMode, ANTHROPIC_VERSION,
-    INTERLEAVED_THINKING_BETA,
+    AnthropicCacheTtl, AnthropicMessagesOptions, ANTHROPIC_VERSION, INTERLEAVED_THINKING_BETA,
 };
 
 /// Claude Code 客户端身份 beta，真实 Claude Code 每个请求都带。
@@ -184,6 +183,7 @@ impl AnthropicMessagesProvider<'_> {
                             .header(ACCEPT_ENCODING, "identity"),
                         &request,
                         false,
+                        &body,
                     ),
                     &body,
                     self.config.compress_request_body,
@@ -297,6 +297,7 @@ impl AnthropicMessagesProvider<'_> {
                             .header(ACCEPT_ENCODING, "identity"),
                         &request,
                         true,
+                        &body,
                     ),
                     &body,
                     self.config.compress_request_body,
@@ -375,45 +376,19 @@ impl AnthropicMessagesProvider<'_> {
         anthropic_messages_url(self.config.base_url)
     }
 
-    fn wire_request<'a>(
-        &self,
-        request: &'a GenerateRequest,
-    ) -> (
-        std::borrow::Cow<'a, GenerateRequest>,
-        AnthropicMessagesOptions,
-    ) {
-        use crate::chat::model_metadata::ClaudeThinkingKind;
-        let profile = crate::chat::model_metadata::claude_thinking_profile(&request.model);
-        let mut resolved = std::borrow::Cow::Borrowed(request);
-        if let (Some(profile), Some(level)) = (profile, request.options.thinking_level.as_deref()) {
-            let clamped = profile.clamp_effort(level);
-            if clamped != level {
-                resolved.to_mut().options.thinking_level = Some(clamped.to_string());
-            }
+    fn request_body(&self, request: &GenerateRequest, stream: bool) -> Value {
+        let mut extra_body = self.config.source.model_extra_body(&request.model).clone();
+        if extra_body.get("metadata").is_none() {
+            extra_body["metadata"] =
+                serde_json::json!({"user_id": self.user_id(&request.metadata)});
         }
-        let temperature = if profile.is_some_and(|profile| profile.forbid_temperature) {
-            None
-        } else {
-            crate::chat::model_metadata::temperature_for_request(
+        let options = AnthropicMessagesOptions {
+            temperature: crate::chat::model_metadata::temperature_for_request(
                 request.options.temperature,
                 Some(self.config.source),
                 &request.model,
-            )
-        };
-        let thinking_mode = match profile.map(|profile| profile.kind) {
-            Some(ClaudeThinkingKind::Extended) => AnthropicThinkingMode::Extended {
-                output_effort: profile.is_some_and(|profile| profile.supports_output_effort),
-            },
-            Some(ClaudeThinkingKind::Unsupported) => AnthropicThinkingMode::Unsupported,
-            _ => AnthropicThinkingMode::Adaptive,
-        };
-        let options = AnthropicMessagesOptions {
-            temperature,
+            ),
             default_max_tokens: crate::settings::default_chat_max_output_tokens(),
-            thinking_mode,
-            off_thinking_type: profile
-                .and_then(|profile| profile.off_thinking_type)
-                .map(str::to_string),
             allow_unsigned_thinking: crate::utils::is_official_deepseek_anthropic_api(
                 self.config.base_url,
             ),
@@ -423,14 +398,10 @@ impl AnthropicMessagesProvider<'_> {
                 .claude_code
                 .then(|| crate::provider_request::CLAUDE_CODE_SYSTEM_PREFIX.to_string()),
             cache: self.prompt_cache_control(&request.metadata),
-            extra_body: serde_json::json!({ "metadata": { "user_id": self.user_id(&request.metadata) } }),
+            extra_body,
+            ..Default::default()
         };
-        (resolved, options)
-    }
-
-    fn request_body(&self, request: &GenerateRequest, stream: bool) -> Value {
-        let (request, options) = self.wire_request(request);
-        let mut body = kivio_agent_sdk::model::anthropic::request_body(&request, stream, &options);
+        let mut body = kivio_agent_sdk::model::anthropic::request_body(request, stream, &options);
         if self.config.claude_code {
             rename_tools_for_claude_code(&mut body);
         }
@@ -489,13 +460,15 @@ impl AnthropicMessagesProvider<'_> {
     }
 
     /// 本次请求按功能需要声明的 beta。
-    fn feature_betas(&self, request: &GenerateRequest) -> Vec<&'static str> {
-        let (request, options) = self.wire_request(request);
+    fn feature_betas(&self, request: &GenerateRequest, body: &Value) -> Vec<&'static str> {
         let mut betas = Vec::new();
         if self.config.claude_code {
             betas.extend([CLAUDE_CODE_BETA, INTERLEAVED_THINKING_BETA]);
         }
-        for beta in kivio_agent_sdk::model::anthropic::feature_betas(&request, &options) {
+        for beta in kivio_agent_sdk::model::anthropic::feature_betas_for_body(
+            body,
+            self.prompt_cache_control(&request.metadata),
+        ) {
             if !betas.contains(&beta) {
                 betas.push(beta);
             }
@@ -505,7 +478,12 @@ impl AnthropicMessagesProvider<'_> {
 
     /// 供应商「请求配置」带来的附加头（CLI 身份 / 自定义头）+ 按功能声明的 beta 头。
     /// 发送路径与请求调试面板共用，杜绝「面板显示的和实际发的不一致」。
-    fn extra_header_pairs(&self, request: &GenerateRequest, stream: bool) -> Vec<(String, String)> {
+    fn extra_header_pairs(
+        &self,
+        request: &GenerateRequest,
+        stream: bool,
+        body: &Value,
+    ) -> Vec<(String, String)> {
         // Anthropic 不发会话亲和头：官方与主流中转都不认，身份模式下有 X-Claude-Code-Session-Id。
         let mut pairs = crate::provider_request::model_header_pairs(
             self.config.source,
@@ -515,7 +493,7 @@ impl AnthropicMessagesProvider<'_> {
         );
         // anthropic-beta 不是保留头（用户可能要开别的 beta），所以这里得跟用户填的那条合并成
         // 一行、去重 —— 发两行的话调试面板（BTreeMap）只显示一条，就和实际发出去的对不上了。
-        let betas = self.feature_betas(request);
+        let betas = self.feature_betas(request, body);
         if !betas.is_empty() {
             let mut merged: Vec<String> = pairs
                 .iter()
@@ -548,9 +526,10 @@ impl AnthropicMessagesProvider<'_> {
         builder: reqwest::RequestBuilder,
         request: &GenerateRequest,
         stream: bool,
+        body: &Value,
     ) -> reqwest::RequestBuilder {
         let mut builder = builder;
-        for (name, value) in self.extra_header_pairs(request, stream) {
+        for (name, value) in self.extra_header_pairs(request, stream, body) {
             builder = builder.header(name, value);
         }
         builder
@@ -563,6 +542,7 @@ impl AnthropicMessagesProvider<'_> {
         &self,
         request: &GenerateRequest,
         stream: bool,
+        body: &Value,
     ) -> std::collections::BTreeMap<String, String> {
         let mut headers = std::collections::BTreeMap::new();
         if let Some(key) = self.config.preferred_api_key {
@@ -574,7 +554,7 @@ impl AnthropicMessagesProvider<'_> {
         );
         headers.insert("content-type".to_string(), "application/json".to_string());
         headers.insert("Accept-Encoding".to_string(), "identity".to_string());
-        for (name, value) in self.extra_header_pairs(request, stream) {
+        for (name, value) in self.extra_header_pairs(request, stream, body) {
             headers.insert(name, value);
         }
         crate::chat::request_debug::sanitize_headers(headers)
@@ -593,6 +573,7 @@ impl AnthropicMessagesProvider<'_> {
         let Some(debug) = (self.transport.request_debug)() else {
             return;
         };
+        let body = self.request_body(request, stream);
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
                 provider: self.config.source,
@@ -602,8 +583,8 @@ impl AnthropicMessagesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "success",
                 url: self.messages_url(),
-                headers: self.debug_request_headers(request, stream),
-                body: self.request_body(request, stream),
+                headers: self.debug_request_headers(request, stream, &body),
+                body,
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_output(
                     output,
@@ -627,6 +608,7 @@ impl AnthropicMessagesProvider<'_> {
         let Some(debug) = (self.transport.request_debug)() else {
             return;
         };
+        let body = self.request_body(request, stream);
         let record = crate::chat::request_debug::build_debug_record(
             crate::chat::request_debug::DebugRecordArgs {
                 provider: self.config.source,
@@ -636,8 +618,8 @@ impl AnthropicMessagesProvider<'_> {
                 duration_ms: duration.as_millis() as u64,
                 status: "error",
                 url: self.messages_url(),
-                headers: self.debug_request_headers(request, stream),
-                body: self.request_body(request, stream),
+                headers: self.debug_request_headers(request, stream, &body),
+                body,
                 stream,
                 response: crate::chat::request_debug::RequestDebugResponse::from_error(
                     error,
@@ -981,7 +963,7 @@ mod tests {
         assert_eq!(configured_body["temperature"], serde_json::json!(0.4));
 
         let explicit_body = build_anthropic_body_for("claude-opus-4-6", None, Some(0.4), Some(1.2));
-        assert_eq!(explicit_body["temperature"], serde_json::json!(1.2));
+        assert_eq!(explicit_body["temperature"], serde_json::json!(1.0));
     }
 
     #[test]
@@ -1201,7 +1183,7 @@ mod tests {
         assert_eq!(body["system"][0]["cache_control"]["ttl"], "1h");
         // 1h 不带 beta 头会被拒，所以头和 ttl 必须同进同出。
         let in_session = cache_test_request();
-        let headers = adapter.debug_request_headers(&in_session, false);
+        let headers = adapter.debug_request_headers(&in_session, false, &body);
         assert_eq!(
             headers.get("anthropic-beta").map(String::as_str),
             Some(EXTENDED_CACHE_TTL_BETA)
@@ -1212,19 +1194,19 @@ mod tests {
             ModelTransport::for_test(&state, &short_provider),
             ProviderConfig::from_settings(&short_provider),
         );
+        let short_body = short_adapter.request_body(&in_session, false);
         assert!(short_adapter
-            .debug_request_headers(&in_session, false)
+            .debug_request_headers(&in_session, false, &short_body)
             .get("anthropic-beta")
             .is_none());
         // 一次性调用（无会话 id）连断点都不打，自然也不该带 beta 头。
+        let one_shot = GenerateRequest {
+            metadata: Default::default(),
+            ..cache_test_request()
+        };
+        let one_shot_body = adapter.request_body(&one_shot, false);
         assert!(adapter
-            .debug_request_headers(
-                &GenerateRequest {
-                    metadata: Default::default(),
-                    ..cache_test_request()
-                },
-                false,
-            )
+            .debug_request_headers(&one_shot, false, &one_shot_body)
             .get("anthropic-beta")
             .is_none());
     }
@@ -1247,7 +1229,7 @@ mod tests {
         let in_session = cache_test_request();
         assert_eq!(
             adapter
-                .debug_request_headers(&in_session, false)
+                .debug_request_headers(&in_session, false, &body)
                 .get("anthropic-beta")
                 .map(String::as_str),
             Some(EXTENDED_CACHE_TTL_BETA)
@@ -1361,10 +1343,9 @@ mod tests {
             ProviderConfig::from_settings(&provider),
         );
         let request = cache_test_request();
-        (
-            adapter.request_body(&request, false),
-            adapter.debug_request_headers(&request, false),
-        )
+        let body = adapter.request_body(&request, false);
+        let headers = adapter.debug_request_headers(&request, false, &body);
+        (body, headers)
     }
 
     #[test]
@@ -1563,7 +1544,9 @@ mod tests {
             ModelTransport::for_test(&state, &provider),
             ProviderConfig::from_settings(&provider),
         );
-        let pairs = adapter.extra_header_pairs(&cache_test_request(), false);
+        let request = cache_test_request();
+        let body = adapter.request_body(&request, false);
+        let pairs = adapter.extra_header_pairs(&request, false, &body);
         let accepts: Vec<_> = pairs
             .iter()
             .filter(|(n, _)| n.eq_ignore_ascii_case("accept"))
@@ -1591,19 +1574,18 @@ mod tests {
         request.model = "claude-sonnet-4-5".into();
         request.options.thinking_enabled = true;
         request.options.thinking_level = Some("high".into());
-        assert_eq!(
-            adapter.request_body(&request, false)["thinking"]["type"],
-            "enabled"
-        );
+        let body = adapter.request_body(&request, false);
+        assert_eq!(body["thinking"]["type"], "enabled");
         // 用户的 beta 在前、去重后合并成一行。
         assert_eq!(
-            adapter.debug_request_headers(&request, false)["anthropic-beta"],
+            adapter.debug_request_headers(&request, false, &body)["anthropic-beta"],
             format!("foo-1,{EXTENDED_CACHE_TTL_BETA},{INTERLEAVED_THINKING_BETA}")
         );
         // adaptive 思考自带交错，不加这个 beta。
         request.model = "claude-opus-4-8".into();
+        let body = adapter.request_body(&request, false);
         assert!(
-            !adapter.debug_request_headers(&request, false)["anthropic-beta"]
+            !adapter.debug_request_headers(&request, false, &body)["anthropic-beta"]
                 .contains(INTERLEAVED_THINKING_BETA)
         );
     }

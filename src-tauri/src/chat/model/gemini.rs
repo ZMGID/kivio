@@ -14,12 +14,8 @@ use super::{
 };
 #[cfg(test)]
 use super::{MessagePart, ModelMessage, ModelRole, ModelTool};
-pub use kivio_agent_sdk::model::gemini::{
-    gemini_contents_from_generate_request, gemini_function_declarations,
-};
-use kivio_agent_sdk::model::gemini::{
-    gemini_url, GeminiOptions, GeminiResponseFormat, GeminiThinkingMode,
-};
+pub use kivio_agent_sdk::model::gemini::gemini_contents_from_generate_request;
+use kivio_agent_sdk::model::gemini::{gemini_url, GeminiOptions, GeminiResponseFormat};
 
 /// Google Gemini **原生** `generateContent` adapter（peer of openai/anthropic）。
 /// 用 Gemini 原生协议，天然不发 OpenAI 专有字段（`promptCacheKey`/`tool_choice`/…），
@@ -304,32 +300,25 @@ impl GeminiProvider<'_> {
     }
 
     fn request_body(&self, request: &GenerateRequest, _stream: bool) -> Value {
-        let thinking = if gemini_supports_thinking_level(&request.model) {
-            GeminiThinkingMode::Level
-        } else if let Some(budget) = request.options.thinking_level.as_deref().and_then(|level| {
-            crate::chat::model_metadata::gemini_thinking_budget(&request.model, level)
-        }) {
-            GeminiThinkingMode::Budget(budget)
-        } else {
-            GeminiThinkingMode::IncludeThoughts
-        };
+        let custom_bridge = self.config.antigravity && antigravity::is_custom_model(&request.model);
         let body = kivio_agent_sdk::model::gemini::request_body(
             request,
             &GeminiOptions {
+                extra_body: self.config.source.model_extra_body(&request.model).clone(),
                 temperature: crate::chat::model_metadata::temperature_for_request(
                     request.options.temperature,
                     Some(self.config.source),
                     &request.model,
                 ),
-                thinking,
-                zero_budget_when_disabled: crate::chat::model_metadata::gemini_thinking_profile(
+                omit_thinking_config: crate::chat::model_metadata::agent_model_capabilities(
+                    self.config.source,
                     &request.model,
                 )
-                .is_some_and(|profile| profile.supports_off),
+                .reasoning
+                    == Some(false),
                 image_output: crate::chat::model_metadata::is_image_output_model(&request.model),
-                include_tool_ids: self.config.antigravity
-                    && (request.model.starts_with("claude-")
-                        || request.model.starts_with("gpt-oss-")),
+                legacy_tool_parameters: custom_bridge,
+                include_tool_ids: custom_bridge,
                 provider_id: Some(self.config.id.to_string()),
                 ..Default::default()
             },
@@ -517,18 +506,6 @@ fn gemini_headers(api_key: &str) -> Result<HeaderMap, String> {
     Ok(headers)
 }
 
-/// Gemini 3.x+ 才支持 `thinkingConfig.thinkingLevel`（字符串档位）；2.5 及更早只认
-/// `thinkingBudget`（数值），传错会 400。保守解析模型名里 `gemini-<major>` 的主版本号，
-/// 取不到（未知/非 gemini 命名）则视为不支持，回退仅 `includeThoughts`。
-fn gemini_supports_thinking_level(model: &str) -> bool {
-    let lower = model.to_ascii_lowercase();
-    let Some(rest) = lower.split("gemini-").nth(1) else {
-        return false;
-    };
-    let major: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-    major.parse::<u32>().map(|v| v >= 3).unwrap_or(false)
-}
-
 fn request_label(request: &GenerateRequest, fallback: &str) -> String {
     if request.metadata.label.trim().is_empty() {
         fallback.to_string()
@@ -596,7 +573,9 @@ mod tests {
             model: "claude-test-thinking".into(),
             system: "System prompt".into(),
             messages: vec![ModelMessage::text(ModelRole::User, "Hello")],
-            tools: vec![],
+            tools: vec![ModelTool::from(
+                &crate::mcp::types::native_present_artifacts_tool(),
+            )],
             options: Default::default(),
             metadata: Default::default(),
         };
@@ -610,6 +589,23 @@ mod tests {
         assert!(body["request"]["generationConfig"]
             .get("thinkingConfig")
             .is_none());
+        let declaration = &body["request"]["tools"][0]["functionDeclarations"][0];
+        let parameters = &declaration["parameters"];
+        assert!(declaration.get("parametersJsonSchema").is_none());
+        assert_eq!(parameters["type"], "object");
+        assert_eq!(parameters["properties"]["artifact_ids"]["type"], "array");
+        assert!(parameters.get("anyOf").is_none());
+        assert!(parameters.get("additionalProperties").is_none());
+
+        let mut native_request = request.clone();
+        native_request.model = "gemini-3.8-flash".into();
+        let native_body = adapter.request_body(&native_request, true);
+        let native_declaration = &native_body["request"]["tools"][0]["functionDeclarations"][0];
+        assert!(native_declaration.get("parameters").is_none());
+        assert_eq!(
+            native_declaration["parametersJsonSchema"],
+            native_request.tools[0].input_schema,
+        );
         assert!(adapter
             .endpoint_url(&request.model, false)
             .ends_with("/v1internal:streamGenerateContent?alt=sse"));
@@ -716,6 +712,23 @@ mod tests {
     }
 
     #[test]
+    fn image_models_only_receive_their_supported_thinking_controls() {
+        let request = image_request("gemini-2.5-flash-image");
+        let body = body_for(&request, false);
+        assert!(
+            body["generationConfig"].get("thinkingConfig").is_none(),
+            "body: {body}"
+        );
+        let mut native = image_request("gemini-3.1-flash-lite-image");
+        native.options.thinking_level = Some("high".into());
+        let body = body_for(&native, false);
+        assert_eq!(
+            body["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "high"
+        );
+    }
+
+    #[test]
     fn gemini_25_off_disables_thinking_and_levels_set_a_budget() {
         let mut req = GenerateRequest {
             model: "gemini-2.5-flash".into(),
@@ -815,19 +828,6 @@ mod tests {
             serde_json::json!(1.2),
             "body: {body}"
         );
-    }
-
-    #[test]
-    fn function_declarations_for_real_present_artifacts_pass_vertex_validation() {
-        // 验收标准：真实 present_artifacts 工具定义经 gemini_function_declarations 后，
-        // parameters 无 anyOf 且顶层带 type:object（否则 Vertex 拒整个请求）。
-        let def = crate::mcp::types::native_present_artifacts_tool();
-        let decls = gemini_function_declarations(&[ModelTool::from(&def)]);
-        assert_eq!(decls.len(), 1);
-        let params = &decls[0]["parameters"];
-        assert!(params.get("anyOf").is_none());
-        assert_eq!(params["type"], "object");
-        assert!(params.get("additionalProperties").is_none());
     }
 
     fn image_request(model: &str) -> GenerateRequest {

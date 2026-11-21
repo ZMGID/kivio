@@ -887,23 +887,26 @@ mod tests {
             .prompt_cache_retention_unsupported("endpoint-a"));
         assert!(!st
             .provider_runtime()
-            .reasoning_replay_unsupported("endpoint-a"));
+            .reasoning_replay_unsupported("endpoint-a", "model-a"));
         assert!(!st
             .provider_runtime()
             .prompt_cache_key_unsupported("endpoint-b"));
         st.provider_runtime()
             .mark_prompt_cache_retention_unsupported("endpoint-a");
         st.provider_runtime()
-            .mark_reasoning_replay_unsupported("endpoint-b");
+            .mark_reasoning_replay_unsupported("endpoint-b", "model-a");
         assert!(st
             .provider_runtime()
             .prompt_cache_retention_unsupported("endpoint-a"));
         assert!(st
             .provider_runtime()
-            .reasoning_replay_unsupported("endpoint-b"));
+            .reasoning_replay_unsupported("endpoint-b", "model-a"));
         assert!(!st
             .provider_runtime()
-            .reasoning_replay_unsupported("endpoint-a"));
+            .reasoning_replay_unsupported("endpoint-b", "model-b"));
+        assert!(!st
+            .provider_runtime()
+            .reasoning_replay_unsupported("endpoint-a", "model-a"));
     }
 
     #[test]

@@ -1296,6 +1296,7 @@ mod tests {
             billing_usage: None,
             reasoning_items: vec![crate::model::ProviderReasoningItem {
                 model: "gpt-5.6".to_string(),
+                source: None,
                 item: serde_json::json!({
                     "type": "reasoning", "id": "rs_1", "summary": [],
                     "encrypted_content": "gAAA"

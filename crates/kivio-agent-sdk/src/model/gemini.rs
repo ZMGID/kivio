@@ -11,9 +11,59 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GeminiThinkingMode {
     #[default]
+    ModelDefault,
     IncludeThoughts,
     Budget(i64),
     Level,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeminiThinkingProfile {
+    Unsupported,
+    Budget { maximum: i64, supports_off: bool },
+    Level,
+    Summaries,
+}
+
+impl GeminiThinkingProfile {
+    pub fn supports_off(self) -> bool {
+        matches!(
+            self,
+            Self::Budget {
+                supports_off: true,
+                ..
+            }
+        )
+    }
+}
+
+pub fn gemini_thinking_profile(model: &str) -> Option<GeminiThinkingProfile> {
+    use GeminiThinkingProfile::*;
+    let id = model.trim().rsplit('/').next()?.to_ascii_lowercase();
+    if id.starts_with("gemini-2.5-flash-image") {
+        Some(Unsupported)
+    } else if id.starts_with("gemini-2.5-flash") {
+        Some(Budget {
+            maximum: 24_576,
+            supports_off: true,
+        })
+    } else if id.starts_with("gemini-2.5-pro") {
+        Some(Budget {
+            maximum: 32_768,
+            supports_off: false,
+        })
+    } else if id.starts_with("gemini-3-pro-image") {
+        Some(Summaries)
+    } else if gemini_major_version(&id).is_some_and(|major| major >= 3) && !id.contains("live")
+        || matches!(
+            id.as_str(),
+            "gemini-flash-latest" | "gemini-flash-lite-latest"
+        )
+    {
+        Some(Level)
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -28,8 +78,12 @@ pub enum GeminiResponseFormat {
 pub struct GeminiOptions {
     pub temperature: Option<f64>,
     pub thinking: GeminiThinkingMode,
+    /// Host metadata can mark the model as unable to accept generated thinking settings.
+    pub omit_thinking_config: bool,
     pub zero_budget_when_disabled: bool,
     pub image_output: bool,
+    /// Use the legacy OpenAPI Schema field for bridges that do not accept JSON Schema.
+    pub legacy_tool_parameters: bool,
     /// Force IDs for compatible non-Gemini models; Gemini 3+ enables them automatically.
     pub include_tool_ids: bool,
     /// Opaque host identity for native response and signature replay isolation.
@@ -169,9 +223,7 @@ impl crate::agent::provider_runtime::ModelRuntime for GeminiProvider {
 
 pub fn request_body(request: &GenerateRequest, options: &GeminiOptions) -> Value {
     let mut body = serde_json::json!({});
-    if let Some(extra) = options.extra_body.as_object() {
-        body.as_object_mut().unwrap().extend(extra.clone());
-    }
+    super::apply_body_options(&mut body, &options.extra_body, false);
     body["contents"] = Value::Array(contents_with_tool_ids(
         request,
         options.include_tool_ids || gemini_major_version(&request.model).is_some_and(|v| v >= 3),
@@ -192,7 +244,7 @@ pub fn request_body(request: &GenerateRequest, options: &GeminiOptions) -> Value
     if options.image_output {
         body["generationConfig"]["responseModalities"] = serde_json::json!(["TEXT", "IMAGE"]);
     }
-    let declarations = gemini_function_declarations(&request.tools);
+    let declarations = function_declarations(&request.tools, options.legacy_tool_parameters);
     let mut tools = Vec::new();
     if !declarations.is_empty() {
         tools.push(serde_json::json!({"functionDeclarations":declarations}));
@@ -204,24 +256,10 @@ pub fn request_body(request: &GenerateRequest, options: &GeminiOptions) -> Value
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    if request.options.thinking_enabled {
-        let mut thinking = serde_json::json!({"includeThoughts":true});
-        match options.thinking {
-            GeminiThinkingMode::IncludeThoughts => {}
-            GeminiThinkingMode::Budget(budget) => thinking["thinkingBudget"] = Value::from(budget),
-            GeminiThinkingMode::Level => {
-                if let Some(level) = &request.options.thinking_level {
-                    thinking["thinkingLevel"] = Value::String(level.clone());
-                }
-            }
-        }
+    if let Some(thinking) = thinking_config(request, options) {
         body["generationConfig"]["thinkingConfig"] = thinking;
-    } else if options.zero_budget_when_disabled {
-        body["generationConfig"]["thinkingConfig"] = serde_json::json!({"thinkingBudget":0});
     }
-    if let Some(overrides) = request.options.provider_options.as_object() {
-        body.as_object_mut().unwrap().extend(overrides.clone());
-    }
+    super::apply_body_options(&mut body, &request.options.provider_options, false);
     if request.options.tool_choice == super::ToolChoice::None {
         body.as_object_mut().unwrap().remove("tools");
         body["toolConfig"] = serde_json::json!({"functionCallingConfig":{"mode":"NONE"}});
@@ -241,6 +279,42 @@ pub fn request_body(request: &GenerateRequest, options: &GeminiOptions) -> Value
         }
     }
     body
+}
+
+fn thinking_config(request: &GenerateRequest, options: &GeminiOptions) -> Option<Value> {
+    if options.omit_thinking_config {
+        return None;
+    }
+    let profile = if options.thinking == GeminiThinkingMode::ModelDefault {
+        gemini_thinking_profile(&request.model)
+    } else {
+        None
+    };
+    if profile == Some(GeminiThinkingProfile::Unsupported) {
+        return None;
+    }
+    if !request.options.thinking_enabled {
+        return (options.zero_budget_when_disabled || profile.is_some_and(|p| p.supports_off()))
+            .then(|| serde_json::json!({"thinkingBudget":0}));
+    }
+    let level = request.options.thinking_level.as_deref();
+    let mode = match profile {
+        Some(GeminiThinkingProfile::Level) => GeminiThinkingMode::Level,
+        Some(GeminiThinkingProfile::Budget { maximum, .. }) => match level {
+            Some("low") => GeminiThinkingMode::Budget(1024),
+            Some("medium") => GeminiThinkingMode::Budget(8192),
+            Some("high") => GeminiThinkingMode::Budget(maximum),
+            _ => GeminiThinkingMode::IncludeThoughts,
+        },
+        _ => options.thinking,
+    };
+    let mut thinking = serde_json::json!({"includeThoughts":true});
+    match mode {
+        GeminiThinkingMode::Budget(tokens) => thinking["thinkingBudget"] = tokens.into(),
+        GeminiThinkingMode::Level if level.is_some() => thinking["thinkingLevel"] = level.into(),
+        _ => {}
+    }
+    Some(thinking)
 }
 
 fn gemini_major_version(model: &str) -> Option<u32> {
@@ -724,7 +798,12 @@ fn merge_consecutive_gemini_roles(contents: &mut Vec<Value>) {
     }
 }
 
+/// Encode function declarations for a legacy OpenAPI-compatible bridge.
 pub fn gemini_function_declarations(tools: &[ModelTool]) -> Vec<Value> {
+    function_declarations(tools, true)
+}
+
+fn function_declarations(tools: &[ModelTool], legacy_parameters: bool) -> Vec<Value> {
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for tool in tools {
@@ -732,16 +811,80 @@ pub fn gemini_function_declarations(tools: &[ModelTool]) -> Vec<Value> {
         if name.is_empty() || !seen.insert(name) {
             continue;
         }
-        out.push(serde_json::json!({
+        let mut declaration = serde_json::json!({
             "name": name,
             "description": tool.description,
-            "parameters": normalize_gemini_schema(tool.input_schema.clone()),
-        }));
+        });
+        let mut schema = tool.input_schema.clone();
+        if legacy_parameters {
+            declaration["parameters"] = normalize_gemini_schema(schema);
+        } else {
+            normalize_json_schema_constants(&mut schema);
+            declaration["parametersJsonSchema"] = schema;
+        }
+        out.push(declaration);
     }
     out
 }
 
-/// Gemini 只收 OpenAPI 子集：剥 JSON Schema 专有键（`$schema`/`additionalProperties`/
+fn normalize_json_schema_constants(schema: &mut Value) {
+    if let Some(schemas) = schema.as_array_mut() {
+        for schema in schemas {
+            normalize_json_schema_constants(schema);
+        }
+        return;
+    }
+    let Some(schema) = schema.as_object_mut() else {
+        return;
+    };
+    if !schema.contains_key("enum")
+        && schema
+            .get("const")
+            .is_some_and(|value| value.is_string() || value.is_number())
+    {
+        // Gemini enforces enum constraints when sampling function arguments.
+        let value = schema.remove("const").unwrap();
+        schema.insert("enum".into(), Value::Array(vec![value]));
+    }
+    for key in [
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+        "dependencies",
+    ] {
+        if let Some(children) = schema.get_mut(key).and_then(Value::as_object_mut) {
+            for child in children.values_mut() {
+                normalize_json_schema_constants(child);
+            }
+        }
+    }
+    for key in [
+        "additionalProperties",
+        "unevaluatedProperties",
+        "propertyNames",
+        "items",
+        "prefixItems",
+        "additionalItems",
+        "unevaluatedItems",
+        "contains",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "not",
+        "if",
+        "then",
+        "else",
+        "contentSchema",
+    ] {
+        if let Some(child) = schema.get_mut(key) {
+            normalize_json_schema_constants(child);
+        }
+    }
+}
+
+/// 旧版 `parameters` 只收 OpenAPI 子集：剥 JSON Schema 专有键（`$schema`/`additionalProperties`/
 /// `$defs` 等），nullable `anyOf` 折成非空分支。递归处理 properties/items/组合子。
 /// `required` 只允许出现在 `type: object` 上，否则 Gemini 400
 ///（`required: only allowed for OBJECT type`，issue #33）。
@@ -1644,11 +1787,8 @@ mod tests {
         assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "AUTO");
         let decl = &body["tools"][0]["functionDeclarations"][0];
         assert_eq!(decl["name"], "glob");
-        // schema 归一化：JSON Schema 专有键被剥掉。
-        assert!(decl["parameters"].get("$schema").is_none());
-        assert!(decl["parameters"].get("additionalProperties").is_none());
         assert_eq!(
-            decl["parameters"]["properties"]["pattern"]["type"],
+            decl["parametersJsonSchema"]["properties"]["pattern"]["type"],
             "string"
         );
         // 绝不含 OpenAI 专有字段（撞 Gemini 400 的元凶）。

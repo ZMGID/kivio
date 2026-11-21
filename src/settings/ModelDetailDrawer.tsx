@@ -235,8 +235,8 @@ export function ModelDetailDrawer({
     cachedInput: lang === 'zh' ? '缓存输入' : 'Cached Input',
     extraBody: lang === 'zh' ? '额外请求体 (JSON)' : 'Extra Request Body (JSON)',
     extraBodyHint: lang === 'zh'
-      ? '原样合并进请求体根部。用于端点私有参数，如 NVIDIA NIM / vLLM 的 chat_template_kwargs。留空则不发送。'
-      : 'Merged into the request body root. For endpoint-specific params like NVIDIA NIM / vLLM chat_template_kwargs. Leave blank to omit.',
+      ? '按当前接口填写模型默认参数，如 vLLM 的 chat_template_kwargs。Kivio 根据调用选择模型和流式模式。'
+      : 'Model defaults for this API format, such as vLLM chat_template_kwargs. Kivio selects the model and streaming mode for each call.',
     extraBodyInvalid: lang === 'zh' ? '请输入合法的 JSON 对象。' : 'Enter a valid JSON object.',
     save: lang === 'zh' ? '保存' : 'Save',
     reset: lang === 'zh' ? '重置为默认值' : 'Reset to Defaults',
