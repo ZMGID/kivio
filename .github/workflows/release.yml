@@ -9,26 +9,69 @@ on:
       tag:
         description: 'Release tag to publish to (e.g. v2.9.0)'
         required: true
-        default: 'v2.9.4'
       ref:
-        description: 'Git ref to build from (branch/tag/commit)'
-        required: true
-        default: 'main'
+        description: 'Optional branch/tag/commit to verify against the release tag'
+        required: false
+        default: ''
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-  BUILD_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
 
 jobs:
+  source:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.ref || format('refs/tags/{0}', inputs.tag)) || github.sha }}
+      - id: resolve
+        name: Verify build commit against the release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git check-ref-format "refs/tags/$RELEASE_TAG"
+          git fetch --no-tags --depth=1 origin "refs/tags/$RELEASE_TAG"
+          sha=$(git rev-parse HEAD)
+          if [[ "$sha" != "$(git rev-parse 'FETCH_HEAD^{commit}')" ]]; then
+            echo "::error::Release tag $RELEASE_TAG does not point to the selected commit $sha"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: source
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      sha: ${{ needs.source.outputs.sha }}
+
+  sdk:
+    needs: source
+    permissions:
+      contents: read
+    uses: ./.github/workflows/agent-sdk.yml
+    with:
+      sha: ${{ needs.source.outputs.sha }}
+
   model-database:
+    needs: source
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.BUILD_REF }}
+          ref: ${{ needs.source.outputs.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -38,7 +81,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/model-database"
           if ! node scripts/model-database.mjs --output "$RUNNER_TEMP/model-database/modelDatabase.json"; then
-            echo "::warning::Online model database is unavailable or incompatible; using the validated snapshot from $BUILD_REF."
+            echo "::warning::Online model database is unavailable or incompatible; using the validated snapshot from the release commit."
             node scripts/model-database.mjs --check
             cp src/data/modelDatabase.json "$RUNNER_TEMP/model-database/modelDatabase.json"
           fi
@@ -49,16 +92,24 @@ jobs:
           if-no-files-found: error
 
   create-release:
-    needs: model-database
-    # Both platform jobs upload into this release. Creating it first avoids a
-    # race where two tauri-action steps try to open the same tag.
+    needs: [source, ci, sdk, model-database]
+    env:
+      BUILD_REF: ${{ needs.source.outputs.sha }}
+    # Both platform jobs upload their verified installers into this release.
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ format('refs/tags/{0}', env.RELEASE_TAG) }}
       - name: Ensure GitHub Release exists
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          if [[ "$(git rev-parse HEAD)" != "$BUILD_REF" ]]; then
+            echo "::error::Release tag moved during validation. Run the workflow on its new commit."
+            exit 1
+          fi
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $RELEASE_TAG already exists"
             exit 0
@@ -75,25 +126,18 @@ jobs:
             "${extra[@]}"
 
   tauri-release:
-    needs: [create-release, model-database]
+    needs: [source, create-release, model-database]
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macos-latest is Apple Silicon; the DMG name stays *_aarch64.dmg.
-          - platform: macos-latest
-            name: macOS
-            args: --bundles dmg
-          - platform: windows-latest
-            name: Windows
-            args: --bundles nsis
+        platform: [macos-latest, windows-latest]
     runs-on: ${{ matrix.platform }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.BUILD_REF }}
+          ref: ${{ needs.source.outputs.sha }}
 
       - name: Use the same model database snapshot on every platform
         uses: actions/download-artifact@v4
@@ -134,24 +178,9 @@ jobs:
         if: matrix.platform == 'macos-latest'
         run: npx tauri build --bundles dmg
 
-      - name: Build and publish Windows installer
+      - name: Build Windows installer
         if: matrix.platform == 'windows-latest'
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: Kivio Desktop ${{ env.RELEASE_TAG }}
-          releaseBody: |
-            Automated macOS (Apple Silicon / aarch64, ad-hoc signed) + Windows (x64) build for ${{ env.RELEASE_TAG }}.
-            Built from: ${{ env.BUILD_REF }}
-            - macOS: DMG (ad-hoc signed, not notarized; permissions may need to be granted again after an update)
-            - Windows: NSIS installer (.exe) and portable zip (unzip and run)
-          releaseDraft: false
-          prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha') || contains(env.RELEASE_TAG, 'rc') }}
-          includeUpdaterJson: false
-          tauriScript: npx tauri
-          args: ${{ matrix.args }}
+        run: npx tauri build --bundles nsis
 
       - name: Verify signature and resources in macOS DMG
         if: matrix.platform == 'macos-latest'
@@ -174,6 +203,7 @@ jobs:
         run: gh release upload "$RELEASE_TAG" src-tauri/target/release/bundle/dmg/*.dmg --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Verify bundled resources in Windows installer
+        id: windows-installer
         if: matrix.platform == 'windows-latest'
         shell: pwsh
         run: |
@@ -189,15 +219,17 @@ jobs:
           if (-not $skillsDir) { throw 'Installer resource directory missing' }
           & node scripts/check-desktop-package.mjs --resources-dir $skillsDir.Parent.FullName
           if ($LASTEXITCODE -ne 0) { throw 'Installer resources do not match the source.' }
+          "path=$($installer.FullName)" >> $env:GITHUB_OUTPUT
 
-      - name: Package and upload Windows portable zip
+      - name: Package portable zip and upload verified Windows artifacts
         if: matrix.platform == 'windows-latest'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERIFIED_INSTALLER: ${{ steps.windows-installer.outputs.path }}
         shell: pwsh
         run: |
           $ver = $env:RELEASE_TAG.TrimStart('v')
           & ./scripts/package-windows-portable.ps1 -Version $ver
           $zip = "src-tauri/target/release/bundle/portable/Kivio.Desktop_${ver}_x64-portable.zip"
           if (-not (Test-Path -LiteralPath $zip)) { throw "portable zip not found: $zip" }
-          gh release upload $env:RELEASE_TAG $zip --clobber --repo $env:GITHUB_REPOSITORY
+          gh release upload $env:RELEASE_TAG $env:VERIFIED_INSTALLER $zip --clobber --repo $env:GITHUB_REPOSITORY

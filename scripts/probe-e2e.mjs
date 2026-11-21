@@ -12,11 +12,11 @@
  *   npm run probe:e2e                     # 全部场景
  *   npm run probe:e2e -- --list           # 只列场景
  *   npm run probe:e2e -- multi-turn cancel   # 按名字子串过滤
- *   npm run probe:e2e -- --agent codex    # 换外部 CLI（断言是按 claude 写的，仅供探索）
+ *   npm run probe:e2e -- --agent codex    # 运行该 CLI 适用的场景
  *
  * 纪律（spec `guides/external-cli-agents.md` 第 15 条）：**环境问题诚实 skip，不 fail**。
  * claude 未安装 / 未登录 / 额度耗尽 / app 没在跑 —— 一律打印可操作排查提示并 skip，
- * 否则一个过期的凭据会伪装成代码回归。
+ * 断言失败退出 1，环境导致部分或全部场景跳过退出 2，所选场景全部通过退出 0。
  *
  * 注意：跑套件期间**不要改仓库里的文件**。`tauri dev` 的 watcher 会重建并重启 app，
  * 正在进行的那一轮会连 result 都写不出来（表现为「300000ms 内没拿到 result-…json」）。
@@ -26,43 +26,31 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { parseArgs } from 'node:util'
 
 const APP_IDENTIFIER = 'com.zmair.kivio.dev'
-/**
- * 首次就绪握手的等待上限（秒）。默认 60s 够覆盖「app 正在启动」；`npm run dev` 还要先编译
- * Rust，那种情况用 `--wait 600` 让脚本一直等。等不到就 skip（不是 fail）。
- */
-const READY_TIMEOUT_MS = Number(argValueEarly('--wait', '60')) * 1000
-/** request.json 被消费的等待上限（app 已就绪之后）。 */
+const { values: options, positionals: filters } = parseArgs({
+  allowPositionals: true,
+  options: {
+    agent: { type: 'string', default: 'claude' },
+    'probe-dir': { type: 'string' },
+    wait: { type: 'string', default: '60' },
+    verbose: { type: 'boolean' },
+    list: { type: 'boolean' },
+    help: { type: 'boolean' },
+  },
+})
+const AGENT = options.agent
+const AGENT_BIN = AGENT === 'antigravity' ? 'agy' : AGENT
+const VERBOSE = options.verbose
+const READY_TIMEOUT_MS = Number(options.wait) * 1000
+if (!Number.isFinite(READY_TIMEOUT_MS) || READY_TIMEOUT_MS < 0) throw new Error('--wait must be a non-negative number')
 const CONSUME_TIMEOUT_MS = 60_000
-/** 单轮生成的等待上限。Rust 侧硬超时是 360s，这里留点余量。 */
 const TURN_TIMEOUT_MS = 300_000
 const POLL_MS = 250
 
-function argValueEarly(name, fallback) {
-  const raw = process.argv.slice(2)
-  const idx = raw.indexOf(name)
-  return idx >= 0 && raw[idx + 1] ? raw[idx + 1] : fallback
-}
-
-// ---------------------------------------------------------------------------------------------
-// CLI 参数
-// ---------------------------------------------------------------------------------------------
-
-const argv = process.argv.slice(2)
-const flags = new Set(argv.filter((a) => a.startsWith('--')))
-const filters = argv.filter((a) => !a.startsWith('--'))
-
-function argValue(name, fallback) {
-  const idx = argv.indexOf(name)
-  return idx >= 0 && argv[idx + 1] ? argv[idx + 1] : fallback
-}
-
-const AGENT = argValue('--agent', 'claude')
-const VERBOSE = flags.has('--verbose')
-
 function resolveProbeDir() {
-  const override = process.env.KIVIO_PROBE_DIR || argValue('--probe-dir', null)
+  const override = process.env.KIVIO_PROBE_DIR || options['probe-dir']
   if (override) return override
   if (process.platform === 'win32') {
     const base = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
@@ -270,7 +258,7 @@ const SCENARIOS = [
     async run() {
       const r = await turn('baseline', { prompt: 'Reply with exactly one word: pong' })
       check(r.streamOutcome === 'completed', 'streamOutcome 应为 completed', r.streamOutcome)
-      check(answerOf(r).length > 0, '回答不能为空', r.answer)
+      check(/^pong[.!。]?$/i.test(answerOf(r)), '首轮应返回提示要求的 pong', r.answer)
       check(r.liveSession.registered, '注册表里应有这个会话的常驻条目', r.liveSession)
       check(r.liveSession.alive, '常驻会话的 actor 应还活着', r.liveSession)
       check(typeof r.liveSession.childPid === 'number', '应能拿到常驻子进程 pid', r.liveSession)
@@ -294,7 +282,7 @@ const SCENARIOS = [
         prompt: 'What number did I ask you to remember? Reply with just the number.',
       })
       check(t2.streamOutcome === 'completed', '第 2 轮应正常完成', t2.streamOutcome)
-      check(answerOf(t2).includes('42'), '第 2 轮没记住第 1 轮的内容 ⇒ 不是同一个活会话', t2.answer)
+      check(/\b42\b/.test(answerOf(t2)), '第 2 轮没有记住第 1 轮的数字', t2.answer)
       check(
         t2.liveSession.childPid === pid1,
         '第 2 轮换了进程 ⇒ 常驻没生效（应复用同一个子进程）',
@@ -310,16 +298,18 @@ const SCENARIOS = [
 
   {
     name: 'cancel-resume',
-    desc: '取消后同一会话继续可用：取消轮 cancelled，下一轮正常且上下文没丢、进程还是原来那个',
+    desc: '取消后在原对话续聊，下一轮仍记得取消前的内容',
     async run() {
       const warm = await turn('cancel-resume', {
         prompt: 'Answer with one word only. Remember the number 77.',
       })
       check(warm.streamOutcome === 'completed', '热身轮应正常完成', warm.streamOutcome)
-      const pid = warm.liveSession.childPid
+      const expectsRetainedProcess = ['claude', 'dsh', 'pi'].includes(AGENT)
+      const conversationId = warm.conversationId
+      check(typeof conversationId === 'string' && conversationId.length > 0, '热身轮必须建立对话', conversationId)
 
       const cancelled = await turn('cancel-resume', {
-        conversationId: warm.conversationId,
+        conversationId,
         prompt:
           'Write a long, detailed 800-word essay about the history of clouds in art. Start immediately.',
         // 计时从本轮 generation 登记起算（见 probe_runtime::schedule_probe_cancel）。
@@ -330,22 +320,22 @@ const SCENARIOS = [
         '被取消的轮次必须走 cancelled 出口（error 说明多弹了一个假错误气泡）',
         { streamOutcome: cancelled.streamOutcome, answerHead: answerOf(cancelled).slice(0, 200) },
       )
-      check(
-        cancelled.liveSession.registered && cancelled.liveSession.alive,
-        '取消之后常驻会话应保留在注册表里（否则点一次停止就丢掉整个会话上下文）',
-        cancelled.liveSession,
-      )
+      if (expectsRetainedProcess) {
+        check(cancelled.liveSession.registered && cancelled.liveSession.alive,
+          '该 CLI 正常取消后应保留活进程', cancelled.liveSession)
+      }
 
       const after = await turn('cancel-resume', {
-        conversationId: warm.conversationId,
+        conversationId,
         prompt: 'What number did I ask you to remember earlier? Reply with just the number.',
       })
       check(after.streamOutcome === 'completed', '取消之后的下一轮应正常完成', after.streamOutcome)
-      check(answerOf(after).includes('77'), '取消把会话上下文一起丢了', after.answer)
-      check(after.liveSession.childPid === pid, '取消之后换了进程 ⇒ 常驻的核心收益没了', {
-        beforeCancelPid: pid,
-        afterCancelPid: after.liveSession.childPid,
-      })
+      check(after.conversationId === conversationId, '恢复回复必须属于原对话', after.conversationId)
+      check(/\b77\b/.test(answerOf(after)), '续聊没有保留取消前的内容', after.answer)
+      if (expectsRetainedProcess) {
+        check(Number.isInteger(warm.liveSession.childPid) && after.liveSession.childPid === warm.liveSession.childPid,
+          '该 CLI 正常取消后应复用原进程', { before: warm.liveSession, after: after.liveSession })
+      }
     },
   },
 
@@ -371,11 +361,6 @@ const SCENARIOS = [
         cs,
       )
       check(
-        cs.contextWindowTokens >= 200_000,
-        'claude 的真实窗口不可能小于 200K —— 这个值像是个假分母',
-        cs,
-      )
-      check(
         cs.tokenCountSource === 'cli_reported',
         'token 计数来源应为 cli_reported（estimated 说明分子/分母退回了估算）',
         cs,
@@ -393,6 +378,7 @@ const SCENARIOS = [
 
   {
     name: 'cache-in-numerator',
+    agents: ['claude'],
     desc: '分子含 cache：Anthropic 口径下 cache 与 input 不相交，total 必须大于 input+output',
     async run() {
       const t1 = await turn('cache-in-numerator', {
@@ -422,9 +408,9 @@ const SCENARIOS = [
 
   {
     name: 'context-usage-per-turn',
-    desc: '外部 CLI 的占用一轮只更新一次：轮中不推实时，轮末权威值到位',
+    agents: ['claude'],
+    desc: '工具轮中收到 CLI 的上下文用量，轮末仍有有效快照',
     async run() {
-      // 连着读同一个文件三次：一轮里多次 LLM 往返 —— 以前正是这种轮次会推一串实时数字。
       const r = await turn('context-usage-per-turn', {
         prompt:
           `Use the Read tool to read ${SENTINEL_NAME} in the current working directory three ` +
@@ -432,20 +418,17 @@ const SCENARIOS = [
         computeContextStats: true,
       })
       check(r.streamOutcome === 'completed', '本轮应正常完成', r.streamOutcome)
-      // 曾经这里断言「实时至少推一次」。那条通道已删：分子是单次请求快照（工具循环里每请求
-      // 一变、压缩后还会掉）、分母是上一轮的粘滞值、分段是前端缩放出来的 —— 三分之二不是真值，
-      // 而这个数字唯一能驱动的动作（压缩 / 换会话）只发生在两轮之间。改回来先想清楚这三点。
       const ticks = r.liveUsageTicks || []
       check(
-        ticks.length === 0,
-        '外部 CLI 又开始在轮中推实时占用了（分子是单次请求快照，会跳）',
+        ticks.some(tick => Number.isSafeInteger(tick.usedTokens) && tick.usedTokens > 0),
+        '工具轮没有上报非零的实时上下文占用',
         ticks,
       )
       const cs = r.contextState
       check(!!cs, '轮末应有权威上下文快照（computeContextStats 打开了）', r)
       check(
         typeof cs.estimatedInputTokens === 'number' && cs.estimatedInputTokens > 0,
-        '轮末权威分子应 > 0 —— 这是用量条现在唯一的数据来源',
+        '轮末上下文快照应保留有效用量',
         cs,
       )
       check(
@@ -464,6 +447,7 @@ const SCENARIOS = [
 
   {
     name: 'slash-passthrough',
+    agents: ['claude'],
     desc: '客户端斜杠命令的输出不被吞：/cost 返回真实报表而不是「命令已执行」',
     async run() {
       const r = await turn('slash-passthrough', { prompt: '/cost' })
@@ -485,6 +469,7 @@ const SCENARIOS = [
 
   {
     name: 'zero-usage-numerator',
+    agents: ['claude'],
     desc: '零用量的轮次不污染用量：/cost 之后用量条的分子仍非 0',
     async run() {
       const t1 = await turn('zero-usage-numerator', {
@@ -531,6 +516,7 @@ const SCENARIOS = [
 
   {
     name: 'tool-call-shape',
+    agents: ['claude', 'dsh'],
     desc: '真实工具调用的形态：原生 read 工具、arguments 带 file_path',
     async run() {
       const expectedReadName = AGENT === 'dsh' ? 'read' : 'Read'
@@ -576,6 +562,7 @@ const SCENARIOS = [
 
   {
     name: 'config-reconnect',
+    agents: ['claude', 'dsh'],
     desc: '启动配置变更触发重连：换 sandbox 档位 → pid 变了 → 但上下文还在',
     async run() {
       const dsh = AGENT === 'dsh'
@@ -605,7 +592,7 @@ const SCENARIOS = [
         t2.liveSession,
       )
       check(
-        answerOf(t2).includes('91'),
+        /\b91\b/.test(answerOf(t2)),
         '重连丢了上下文（应带 native session id resume，而不是创建新会话）',
         t2.answer,
       )
@@ -623,7 +610,8 @@ const SCENARIOS = [
 // ---------------------------------------------------------------------------------------------
 
 function checkAgentInstalled() {
-  const bin = AGENT === 'claude' ? 'claude' : AGENT
+  const bin = AGENT_BIN
+  if (!/^[a-zA-Z0-9_-]+$/.test(bin)) throw new Error('Invalid CLI agent id')
   // Windows 上 CLI 常常是 `claude.cmd`，不经 shell 找不到。命令与参数拼成一个字符串传给
   // shell（而不是 args 数组 + shell:true）——后者在 Node 22+ 会告 DEP0190。
   const probe = spawnSync(`${bin} --version`, { encoding: 'utf8', shell: true })
@@ -647,8 +635,8 @@ function printSkipHints(reason) {
   info(`1. app 起来了吗：另开一个终端 \`npm run dev\`，等 stderr 出现 \`[chat-probe] watching\``)
   info(`2. probe 目录：${PROBE_DIR}（不存在 = app 从没在这台机器上跑过 debug 构建）`)
   info(`3. 必须是 **debug** 构建：probe 整模块 #[cfg(debug_assertions)]，release 包里没有`)
-  info(`4. ${AGENT} 装了并登录了吗：\`${AGENT} --version\`，然后 \`${AGENT} -p "hi"\``)
-  info(`5. 未登录时：\`${AGENT} /login\`（或该 CLI 对应的登录命令）`)
+  info(`4. 检查 ${AGENT_BIN} 是否已安装：\`${AGENT_BIN} --version\``)
+  info(`5. 启动 \`${AGENT_BIN}\` 并检查登录状态`)
   info(`6. 会话里选的运行时是不是外部 CLI：--agent 传的是 \`${AGENT}\``)
 }
 
@@ -657,19 +645,20 @@ function printSkipHints(reason) {
 // ---------------------------------------------------------------------------------------------
 
 async function main() {
+  const supported = SCENARIOS.filter(s => !s.agents || s.agents.includes(AGENT))
   const selected = filters.length
-    ? SCENARIOS.filter((s) => filters.some((f) => s.name.includes(f)))
-    : SCENARIOS
+    ? supported.filter((s) => filters.some((f) => s.name.includes(f)))
+    : supported
 
-  if (flags.has('--list') || flags.has('--help')) {
-    log('场景：')
-    for (const s of SCENARIOS) log(`  ${s.name.padEnd(22)} ${s.desc}`)
+  if (options.list || options.help) {
+    log(`${AGENT} 适用的场景：`)
+    for (const s of supported) log(`  ${s.name.padEnd(22)} ${s.desc}`)
     log('')
     log('用法：npm run probe:e2e -- [名字子串…] [--agent claude] [--wait <秒>] [--verbose] [--probe-dir <path>]')
     return 0
   }
   if (!selected.length) {
-    log(`${C.red}没有匹配的场景：${filters.join(' ')}${C.off}（--list 看全部）`)
+    log(`${C.red}${AGENT} 没有匹配的场景：${filters.join(' ')}${C.off}（--list 查看适用场景）`)
     return 1
   }
 
@@ -736,7 +725,8 @@ async function main() {
   if (warnings.length) log(`  ${C.yellow}${warnings.length} 条 WARN（软断言，不判红）${C.off}`)
   if (skip.length && skipAllReason) printSkipHints(skipAllReason)
 
-  return fail.length ? 1 : 0
+  if (fail.length) return 1
+  return skip.length ? 2 : 0
 }
 
 main().then(

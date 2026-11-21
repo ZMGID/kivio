@@ -1,133 +1,132 @@
 name: CI
 
 on:
+  workflow_call:
+    inputs:
+      sha:
+        description: Commit verified and built by the release workflow
+        type: string
+        required: true
   pull_request:
-    # README / docs 改动不跑完整质量门（macOS + cargo test ~20min）。
     paths-ignore:
       - '**.md'
       - 'docs/**'
       - 'LICENSE'
   push:
-    branches:
-      - main
+    branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
       - 'LICENSE'
 
+permissions:
+  contents: read
+
 jobs:
-  quality:
-    # 应用只发 macOS / Windows；在 macOS runner 上跑全部检查，使 cargo test 在真实目标平台编译
-    # （Linux 分支如 rapidocr 的 ONNX 动态库下载是不维护的死代码，无法在 Linux 编过）。
+  frontend-tests:
     runs-on: macos-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      - uses: actions/setup-node@v4
         with:
           node-version: '24'
           cache: npm
-
-      - name: Install frontend dependencies
+      - id: dependencies
         run: npm ci
+      - run: npm test
+      - name: Vite and CLI bridge tests
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        run: node --test scripts/vite-watch.test.mjs scripts/pi-mcp.test.mjs scripts/dsh-bridge.test.mjs
 
-      - name: Check model database
-        run: npm run models:check && node --test scripts/model-database.test.mjs
-
-      - name: Check application icons
-        run: npm run icons:check
-
-      - name: Check desktop packaging contracts
-        run: npm run package:check && npm run test:packaging
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+  browser-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          components: rustfmt, clippy
+          ref: ${{ inputs.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:browser
 
-      # 只缓存依赖产物；清理 workspace / incremental，PR 复用 main 缓存但不另存。
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+  quality:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run models:check && node --test scripts/model-database.test.mjs
+      - run: npm run icons:check
+      - run: npm run package:check && npm run test:packaging
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
           cache-workspace-crates: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: npm run build:swift
+      - run: npm run lint
+      - run: npm run architecture:check
+      - run: npm run typecheck
+      - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 
-      - name: Build Swift sidecar
-        run: npm run build:swift
-
-      - name: Lint
-        run: npm run lint
-
-      - name: Architecture boundaries
-        run: npm run architecture:check
-
-      # typecheck 本身就串了 protocol:check（见 package.json），生成物漂移在这一步拦住。
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Frontend tests
-        run: npm run test && node --test scripts/vite-watch.test.mjs
-
-      - name: CLI bridge tests
-        run: node --test scripts/pi-mcp.test.mjs scripts/dsh-bridge.test.mjs
-
-      # tauri-build 会校验 externalBin（kivio-ocr-helper）对应当前 target triple 的二进制存在。
-      # 上面的 build:swift 在 macOS 上构建真实 Swift sidecar 满足校验，否则这一步会在 build-script 阶段失败。
-      - name: Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
-
-      - name: Rust Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
-
-      - name: Rust dependency audit
-        run: cargo audit --file src-tauri/Cargo.lock
-
-      - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-
-  windows-rust:
-    runs-on: windows-latest
+  dependency-audit:
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
         with:
-          node-version: '20'
+          ref: ${{ inputs.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit --file src-tauri/Cargo.lock
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
           cache: npm
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-
-      # job / Rust host 自动隔离 Windows 与 macOS 缓存。
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
           cache-workspace-crates: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Build bundled Word add-in
-        run: npm run build:word
-
-      - name: Prepare Windows sidecar
+      - run: npm run build:word
+      - id: sidecar
         run: npm run build:swift
-
-      - name: Rust Clippy
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
-
       - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Antigravity recovery across desktop restarts
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.sidecar.outcome == 'success' }}
+        shell: bash
+        run: |
+          TAURI_CONFIG="$(cat src-tauri/tauri.test.conf.json)" cargo build --locked --manifest-path src-tauri/Cargo.toml --no-default-features --bin kivio
+          python3 scripts/probe-antigravity-recovery.py src-tauri/target/debug/kivio
+      - name: Rust Clippy
+        if: ${{ !cancelled() && steps.sidecar.outcome == 'success' }}
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets

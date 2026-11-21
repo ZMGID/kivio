@@ -48,10 +48,11 @@ GitHub release packaging (this is the official path — do not build installers 
    gh workflow run release.yml --repo ZMGID/kivio --ref main -f tag=vX.Y.Z -f ref=vX.Y.Z
    ```
 5. `.github/workflows/release.yml` builds **both** installers on GitHub Actions and uploads them to the tag's release:
+   - Resolve the tag to a commit and run desktop CI and Agent SDK CI on that SHA before creating the release or packaging either installer. A manual build ref must resolve to the tagged commit.
    - Resolve the online model database once for both platforms. If it is unavailable, invalid, or older than the checked-in catalog, warn and validate the build ref's bundled snapshot before using it on both platforms. Never bypass model-data validation.
    - `macos-latest` (Apple Silicon / aarch64) with `--bundles dmg` → `Kivio.Desktop_X.Y.Z_aarch64.dmg`
    - `windows-latest` (x64) with `--bundles nsis` → `Kivio.Desktop_X.Y.Z_x64-setup.exe`
-   - After the NSIS build, Windows also packs `scripts/package-windows-portable.ps1` → `Kivio.Desktop_X.Y.Z_x64-portable.zip` (unzip and run `Kivio Desktop.exe`; no Start Menu). In-app update still downloads the NSIS installer.
+   - Windows extracts the NSIS installer to verify its resources, then checks and packages the portable ZIP with `scripts/package-windows-portable.ps1`. Both artifacts upload after these checks pass. Unzip `Kivio.Desktop_X.Y.Z_x64-portable.zip` and run `Kivio Desktop.exe` for portable use. In-app update still downloads the NSIS installer.
    - GitHub normalizes spaces in `productName` to dots in the asset file names.
    - The macOS DMG is **unsigned** (no signing secrets configured); first launch needs right-click → Open, or `xattr -cr "/Applications/Kivio Desktop.app"`.
 6. Watch the workflow and inspect the release assets:
