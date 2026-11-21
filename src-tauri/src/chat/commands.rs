@@ -9,6 +9,7 @@ mod agent_host;
 pub(crate) mod attachments;
 
 pub(crate) mod catalog;
+pub(crate) mod history_tool_results;
 
 pub(crate) use catalog::create_assistant_via_builder;
 

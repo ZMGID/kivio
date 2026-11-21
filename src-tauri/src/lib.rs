@@ -652,6 +652,7 @@ pub fn run() {
             chat::commands::catalog::chat_get_conversation,
             chat::commands::catalog::chat_get_conversation_window,
             chat::commands::catalog::chat_get_conversation_page,
+            chat::commands::history_tool_results::chat_get_tool_result,
             chat::commands::catalog::chat_get_conversation_revision,
             chat::export::chat_export_conversation_markdown,
             chat::export::chat_export_set_backup,

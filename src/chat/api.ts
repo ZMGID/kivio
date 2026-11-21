@@ -4,7 +4,7 @@ import { isPlaceholderTitle, optimisticConversationTitle } from './conversationT
 import { estimateTokens } from '../utils/tokens'
 import { isTauriRuntime } from './utils'
 import { recordChatPerfSample } from './chatPerformanceProbe'
-import { historyReferenceArtifacts, historyWindowStart, type ConversationHistoryPage } from './conversationHistoryWindow'
+import { historyReferenceArtifacts, historyWindowEnd, historyWindowStart, type ConversationHistoryPage } from './conversationHistoryWindow'
 import { resolveCompactionBoundaries } from './compactionBoundary'
 import { externalCliSettingsApi } from '../api/externalCliSettings'
 import { notifyError } from '../components/appNoticeStore'
@@ -13,6 +13,7 @@ import type {
   AgentRuntimeConfig,
   ChatAssistant,
   ChatAssistantSnapshot,
+  ChatMessage,
   ChatProject,
   ChatSet,
   Conversation,
@@ -21,6 +22,7 @@ import type {
   ConversationLibraryQuery,
   ConversationListItem,
   ConversationSearchHit,
+  DeferredToolResult,
   AgentPlanMode,
   GoalState,
   PendingAttachment,
@@ -35,6 +37,22 @@ export interface ConversationBranch {
   active: boolean
 }
 export type { DetectedExternalAgent } from '../api/externalCliSettings'
+
+type HistoryToolResults = { deferred_tool_results?: Record<string, Record<string, string>> }
+
+function historyMessages(conversationId: string, messages: ChatMessage[], hashes: HistoryToolResults['deferred_tool_results']) {
+  if (!hashes) return messages
+  return messages.map(message => {
+    const tools = message.tool_calls ?? message.toolCalls
+    if (!tools || !Object.hasOwn(hashes, message.id)) return message
+    const byId = hashes[message.id]
+    const projected = tools.map(tool => {
+      if (!Object.hasOwn(byId, tool.id)) return tool
+      return { ...tool, deferredToolResult: { conversationId, messageId: message.id, toolCallId: tool.id, expectedHash: byId[tool.id] } }
+    })
+    return message.tool_calls ? { ...message, tool_calls: projected } : { ...message, toolCalls: projected }
+  })
+}
 
 async function invokeGoalMutation(command: string, conversationId: string, extra: Record<string, unknown> = {}): Promise<Conversation> {
   const result = await invoke<{ success: boolean; conversation?: Conversation; error?: string }>(command, { conversationId, ...extra })
@@ -349,10 +367,15 @@ const mockChatApi = {
     return withMockContext(conversation)
   },
 
-  async getConversationWindow(conversationId: string): Promise<Conversation> {
+  async getConversationWindow(conversationId: string, anchorMessageId?: string): Promise<Conversation> {
     const conversation = await mockChatApi.getConversation(conversationId)
     const total = conversation.messages.length
-    const start = historyWindowStart(conversation.messages, total)
+    const tailStart = historyWindowStart(conversation.messages, total)
+    const index = anchorMessageId ? conversation.messages.findIndex(message => message.id === anchorMessageId) : -1
+    const early = index >= 0 && index < tailStart
+    const start = early ? historyWindowStart(conversation.messages, index + 1) : tailStart
+    const end = early ? historyWindowEnd(conversation.messages, index + 1, tailStart) : total
+    const gap = end < tailStart ? { start: end, end: tailStart } : undefined
     const directory: NonNullable<Conversation['history_directory']> = conversation.messages.flatMap((message, index) => message.role === 'user'
       ? [{ kind: 'turn' as const, id: `turn-${message.id}`, message_id: message.id, message_index: index, title: message.content.slice(0, 120) }]
       : [])
@@ -374,18 +397,22 @@ const mockChatApi = {
     directory.sort((a, b) => a.message_index - b.message_index)
     return {
       ...conversation,
-      messages: conversation.messages.slice(start),
+      messages: gap ? [...conversation.messages.slice(start, gap.start), ...conversation.messages.slice(gap.end)]
+        : conversation.messages.slice(start),
+      history_gap: gap,
       history_start: start,
       history_total: total,
       history_directory: directory,
-      history_artifacts: historyReferenceArtifacts(conversation.messages, start, total),
+      history_artifacts: gap ? [...historyReferenceArtifacts(conversation.messages, start, gap.start),
+        ...historyReferenceArtifacts(conversation.messages, gap.end, total)] : historyReferenceArtifacts(conversation.messages, start, total),
     }
   },
 
-  async getConversationPage(conversationId: string, before: number) {
+  async getConversationPage(conversationId: string, before: number, after?: number) {
     const conversation = await mockChatApi.getConversation(conversationId)
-    const end = Math.min(before, conversation.messages.length)
-    const start = historyWindowStart(conversation.messages, end)
+    const limit = Math.min(before, conversation.messages.length)
+    const start = after == null ? historyWindowStart(conversation.messages, limit) : Math.min(limit, after)
+    const end = after == null ? limit : historyWindowEnd(conversation.messages, start, limit)
     return { revision: conversation.revision, start, end, total: conversation.messages.length,
       messages: conversation.messages.slice(start, end),
       history_artifacts: historyReferenceArtifacts(conversation.messages, start, end) }
@@ -1217,19 +1244,20 @@ export const chatApi = {
     return result.conversation
   },
 
-  async getConversationWindow(conversationId: string): Promise<Conversation> {
-    if (!isTauriRuntime()) return mockChatApi.getConversationWindow(conversationId)
+  async getConversationWindow(conversationId: string, anchorMessageId?: string): Promise<Conversation> {
+    if (!isTauriRuntime()) return mockChatApi.getConversationWindow(conversationId, anchorMessageId)
     const started = performance.now()
     const result = await invoke<{
       success: boolean
       conversation: Conversation
       history_start: number
       history_total: number
+      history_gap?: Conversation['history_gap']
       history_directory: NonNullable<Conversation['history_directory']>
       history_artifacts?: Conversation['history_artifacts']
       read_ms: number
       prepare_ms: number
-    }>('chat_get_conversation_window', { conversationId })
+    } & HistoryToolResults>('chat_get_conversation_window', { conversationId, anchorMessageId, deferToolResults: true })
     if (!result.success) throw new Error('Failed to get conversation window')
     recordChatPerfSample({
       name: 'conversation-window-load', durationMs: performance.now() - started,
@@ -1238,6 +1266,8 @@ export const chatApi = {
     })
     return {
       ...result.conversation,
+      messages: historyMessages(conversationId, result.conversation.messages, result.deferred_tool_results),
+      history_gap: result.history_gap,
       history_start: result.history_start,
       history_total: result.history_total,
       history_directory: result.history_directory,
@@ -1245,11 +1275,17 @@ export const chatApi = {
     }
   },
 
-  async getConversationPage(conversationId: string, before: number): Promise<ConversationHistoryPage> {
-    if (!isTauriRuntime()) return mockChatApi.getConversationPage(conversationId, before)
-    const result = await invoke<ConversationHistoryPage & { success: boolean }>('chat_get_conversation_page', { conversationId, before })
+  async getConversationPage(conversationId: string, before: number, after?: number): Promise<ConversationHistoryPage> {
+    if (!isTauriRuntime()) return mockChatApi.getConversationPage(conversationId, before, after)
+    const result = await invoke<ConversationHistoryPage & HistoryToolResults & { success: boolean }>(
+      'chat_get_conversation_page', { conversationId, before, after, deferToolResults: true },
+    )
     if (!result.success) throw new Error('Failed to get conversation page')
-    return result
+    return { ...result, messages: historyMessages(conversationId, result.messages, result.deferred_tool_results) }
+  },
+
+  getToolResult(reference: DeferredToolResult): Promise<string> {
+    return invoke<string>('chat_get_tool_result', { ...reference })
   },
 
   async getConversationRevision(conversationId: string): Promise<number | null> {

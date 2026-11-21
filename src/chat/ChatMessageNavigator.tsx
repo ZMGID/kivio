@@ -43,6 +43,7 @@ function MessageNavigatorBase({
 }: MessageNavigatorProps) {
   const t = useT()
   const viewportRef = useRef<HTMLDivElement>(null)
+  const browsingRailRef = useRef(false)
   const proximityFrameRef = useRef<number | null>(null)
   const proximityPointerYRef = useRef(0)
   const [preview, setPreview] = useState<PreviewAnchor | null>(null)
@@ -77,6 +78,7 @@ function MessageNavigatorBase({
       if (event.deltaMode === 1) delta *= 13
       else if (event.deltaMode === 2) delta *= el.clientHeight
       if (delta === 0) return
+      browsingRailRef.current = true
       el.scrollTop += delta
     }
     el.addEventListener('wheel', onWheel, { passive: false })
@@ -85,7 +87,7 @@ function MessageNavigatorBase({
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current
-    if (!viewport || activeIndex < 0) return
+    if (!viewport || activeIndex < 0 || browsingRailRef.current) return
     // Scroll only the rail. scrollIntoView would also scroll its ancestors.
     const top = activeIndex * TICK_HEIGHT
     const bottom = top + TICK_HEIGHT
@@ -126,6 +128,7 @@ function MessageNavigatorBase({
   }
 
   const clearPointerProximity = () => {
+    browsingRailRef.current = false
     if (proximityFrameRef.current != null) cancelAnimationFrame(proximityFrameRef.current)
     proximityFrameRef.current = null
     viewportRef.current?.querySelectorAll<HTMLElement>('.chat-message-navigator-node')
@@ -164,7 +167,10 @@ function MessageNavigatorBase({
                             .replace('{n}', String(first + offset + 1))
                             .replace('{title}', node.title)
                   }
-                  onClick={() => onNavigate(node)}
+                  onClick={() => {
+                    browsingRailRef.current = false
+                    onNavigate(node)
+                  }}
                   onMouseEnter={(event) => showPreview(node, event.currentTarget)}
                   onFocus={(event) => showPreview(node, event.currentTarget)}
                   onBlur={() => setPreview(null)}

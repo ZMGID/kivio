@@ -170,19 +170,19 @@ describe('chat navigation controller', () => {
     const partial = { ...conversation('a'), history_start: 1, history_total: 2,
       messages: [{ id: 'new', role: 'user' as const, content: 'new', timestamp: 1 }] }
     state.setCurrent(partial)
-    const old = state.controller.loadOlderHistory()
+    const old = state.controller.loadHistoryPage()
     invalidateConversationTransition()
     state.setCurrent(conversation('b'))
     invalidateConversationTransition()
     state.setCurrent(partial)
-    const current = state.controller.loadOlderHistory()
+    const current = state.controller.loadHistoryPage()
     expect(state.pages).toHaveLength(2)
     const page = { revision: 1, start: 0, end: 1, total: 2,
       messages: [{ id: 'old', role: 'user' as const, content: 'old', timestamp: 1 }] }
     state.pages[0].resolve(page)
     await old
     expect(state.showHistoryPage).not.toHaveBeenCalled()
-    await state.controller.loadOlderHistory()
+    await state.controller.loadHistoryPage()
     expect(state.pages).toHaveLength(2)
     state.pages[1].resolve(page)
     await current
@@ -193,12 +193,12 @@ describe('chat navigation controller', () => {
   it('releases a failed page for retry without replacing the displayed history', async () => {
     const state = setup()
     state.setCurrent({ ...conversation('a'), history_start: 1, history_total: 1 })
-    const first = state.controller.loadOlderHistory()
+    const first = state.controller.loadHistoryPage()
     state.pages[0].reject(new Error('offline'))
     await first
     expect(state.showHistoryPage).not.toHaveBeenCalled()
     expect(state.reportHistoryError).toHaveBeenLastCalledWith('a', '加载更早消息失败，请重试。')
-    const retry = state.controller.loadOlderHistory()
+    const retry = state.controller.loadHistoryPage()
     state.pages[1].resolve({ revision: 1, start: 0, end: 1, total: 1,
       messages: [{ id: 'old', role: 'user', content: 'old', timestamp: 1 }] })
     await retry
@@ -332,15 +332,15 @@ describe('chat navigation controller', () => {
     expect(state.reads.size).toBe(0)
   })
 
-  it('loads full history for a search target outside the first window', async () => {
+  it('loads a bounded window for a search target outside the latest messages', async () => {
     const state = setup(true)
     const selecting = state.controller.selectConversation('a', { focusMessageId: 'old' })
     state.ownership.resolve(new Set())
-    expect(await state.readStarted.promise).toBe('a')
-    state.reads.get('a')!.resolve(conversation('a'))
+    expect(await state.windowStarted.promise).toBe('a')
+    state.windowReads.get('a')!.resolve(conversation('a'))
     await selecting
     expect(state.shown).toEqual(['a'])
-    expect(state.windowReads.size).toBe(0)
+    expect(state.reads.size).toBe(0)
   })
 
   it('loads an unloaded search target even when that conversation is already open', async () => {
@@ -348,8 +348,8 @@ describe('chat navigation controller', () => {
     state.setCurrent({ ...conversation('a'), history_start: 90, history_total: 100 })
     const selecting = state.controller.selectConversation('a', { focusMessageId: 'old' })
     state.ownership.resolve(new Set())
-    await vi.waitFor(() => expect(state.reads.has('a')).toBe(true))
-    state.reads.get('a')!.resolve(conversation('a'))
+    await vi.waitFor(() => expect(state.windowReads.has('a')).toBe(true))
+    state.windowReads.get('a')!.resolve(conversation('a'))
     await selecting
     expect(state.shown).toEqual(['a'])
   })

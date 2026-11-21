@@ -64,10 +64,10 @@ export function contentRevision(text: string | undefined | null): string {
 // lets revisions disappear with their message objects after a conversation is released.
 const bodyLayoutRevisionByMessage = new WeakMap<ChatMessage, string>()
 const layoutRevisionByMessage = new WeakMap<ChatMessage, string>()
+const readingBodyRevisionByMessage = new WeakMap<ChatMessage, string>()
 
-/** Fields that can change MessageBubble's body geometry (everything above its meta row). */
-export function chatMessageBodyLayoutRevision(message: ChatMessage): string {
-  const cached = bodyLayoutRevisionByMessage.get(message)
+function readingBodyRevision(message: ChatMessage): string {
+  const cached = readingBodyRevisionByMessage.get(message)
   if (cached !== undefined) return cached
 
   const tools = message.tool_calls ?? message.toolCalls ?? []
@@ -77,7 +77,7 @@ export function chatMessageBodyLayoutRevision(message: ChatMessage): string {
     tool.name ?? tool.tool_name ?? tool.toolName,
     normalizeToolCallStatus(tool.status),
     contentRevision(tool.argument_preview ?? tool.argumentPreview ?? tool.argumentsPreview),
-    contentRevision(tool.result_preview ?? tool.resultPreview),
+    tool.deferredToolResult || (tool.result_preview ?? tool.resultPreview) ? 'result' : '',
     contentRevision(tool.error),
     (tool.artifacts ?? []).map((artifact) => [
       artifact.id,
@@ -130,6 +130,19 @@ export function chatMessageBodyLayoutRevision(message: ChatMessage): string {
       degraded.toolSummaries?.map((summary) => `${summary.name}:${contentRevision(summary.preview)}`).join('|') ?? '',
     ].join(':') : '',
   ].join('::')
+  readingBodyRevisionByMessage.set(message, revision)
+  return revision
+}
+
+/** Expanded tool output affects row measurements even when the reading anchor is unchanged. */
+export function chatMessageBodyLayoutRevision(message: ChatMessage): string {
+  const tools = message.tool_calls ?? message.toolCalls
+  if (!tools?.length) return readingBodyRevision(message)
+  const cached = bodyLayoutRevisionByMessage.get(message)
+  if (cached !== undefined) return cached
+  const revision = [readingBodyRevision(message), ...tools.map(tool =>
+    tool.deferredToolResult?.expectedHash ?? contentRevision(tool.result_preview ?? tool.resultPreview),
+  )].join('::')
   bodyLayoutRevisionByMessage.set(message, revision)
   return revision
 }
@@ -152,6 +165,11 @@ function visibleMetaRevision(message: ChatMessage): string {
       usage.reasoning_tokens ?? usage.reasoningTokens,
     ].join(':') : '',
   ].join('::')
+}
+
+/** A disclosure can switch between inline and lazy content when reopening the same answer. */
+export function chatMessageReadingRevision(message: ChatMessage): string {
+  return [readingBodyRevision(message), visibleMetaRevision(message)].join('::')
 }
 
 /** Full geometry revision, including the assistant footer that can wrap onto another line. */

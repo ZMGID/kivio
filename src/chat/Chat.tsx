@@ -17,7 +17,7 @@ import { createConversationWarmCache } from './conversationWarmCache'
 import { EMPTY_HISTORY_DIRECTORY, isPartialConversation } from './conversationHistoryWindow'
 import { keepNewerTodoState, patchTodoState } from './agentTodoState'
 import { keepNewerContextMeasurement } from './contextPanel'
-import { forgetChatReadingPosition, readingPositionNeedsFullHistory, recallChatReadingPosition } from './chatReadingPosition'
+import { forgetChatReadingPosition, recallChatReadingPosition } from './chatReadingPosition'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
 import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
@@ -67,6 +67,7 @@ import {
   completeConversationTransition,
   invalidateConversationTransition,
   isCurrentConversationNavigation,
+  usePendingConversationPreview,
 } from './conversationTransitionStore'
 import type { AssistantStreamStats, MessageListProps } from './MessageList'
 import type { InputBarProps } from './InputBar'
@@ -175,12 +176,7 @@ const AssistantCenter = lazy(() => import('./AssistantCenter').then((module) => 
   default: module.AssistantCenter,
 })))
 
-// 共享 import thunk：lazy 与空闲预取复用同一次动态 import（模块缓存保证只加载一次）。
-// SettingsShell 依赖图很大（Markdown/KaTeX、各设置面板），dev 下首次点开设置要现场编译
-// 数百个模块而转圈数秒；挂载后空闲预取把这段成本移到用户点击之前。
-const importSettingsShell = () => import('../settings/public/shell')
-
-const SettingsShell = lazy(() => importSettingsShell().then((module) => ({
+const SettingsShell = lazy(() => import('../settings/public/shell').then((module) => ({
   default: module.SettingsShell,
 })))
 const SessionCenter = lazy(() => import('./public/sessionCenter').then((module) => ({
@@ -735,6 +731,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       return {
         ...keepNewerContextMeasurement(keepNewerTodoState(updated, prev), prev),
         messages: prev.messages,
+        history_gap: prev.history_gap,
         history_start: prev.history_start,
         history_total: prev.history_total,
         history_directory: prev.history_directory,
@@ -981,20 +978,20 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     readConversation: async (conversationId) => {
       const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
         .catch(() => null)
-      return cached && !isPartialConversation(cached) ? cached : chatApi.getConversation(conversationId)
+      const hasAllResults = cached && !isPartialConversation(cached) && !cached.messages.some(message =>
+        (message.tool_calls ?? message.toolCalls)?.some(tool => tool.deferredToolResult))
+      return hasAllResults ? cached : chatApi.getConversation(conversationId)
     },
-    readConversationWindow: async (conversationId) => {
-      const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
+    readConversationWindow: async (conversationId, preview, anchorMessageId) => {
+      if (anchorMessageId) return chatApi.getConversationWindow(conversationId, anchorMessageId)
+      const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision, preview)
         .catch(() => null)
       if (cached) return cached
-      // Most readers leave inside the latest turns; only a row outside the
-      // first window needs the full history to restore.
-      const firstWindow = await chatApi.getConversationWindow(conversationId)
-      return readingPositionNeedsFullHistory(
-        recallChatReadingPosition(conversationId), firstWindow.messages, previewOwner.summary(conversationId)?.messageId,
-      )
-        ? chatApi.getConversation(conversationId)
-        : firstWindow
+      preview()
+      const position = recallChatReadingPosition(conversationId)
+      const anchor = position && !position.following && position.rowKey !== previewOwner.summary(conversationId)?.messageId
+        ? position.anchorMessageId ?? position.rowKey ?? undefined : undefined
+      return chatApi.getConversationWindow(conversationId, anchor)
     },
     readHistoryPage: chatApi.getConversationPage,
     showHistoryPage: applyConversation,
@@ -1214,16 +1211,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     })
   }, [])
 
-  // 空闲预取各中心页 chunk，避免首次切到设置/专家/技能/MCP 时才触发 lazy import 而转圈；
-  // 预取后切换时 Suspense 不再挂起，chat-motion-view-in 动画得以播在真实内容上（而非 spinner）。
+  // Only warm the timeline at chat startup. Center pages load when their routes are opened.
   useEffect(() => {
     return scheduleIdleTask(() => {
-      void importSettingsShell()
-      void import('./AssistantCenter')
-      void import('./SkillCenter')
-      void import('./McpCenter')
-      void import('./KnowledgeCenter')
-      void import('./scheduledTasks/TasksCenter')
       void import('./MessageList')
     }, 400)
   }, [])
@@ -2846,47 +2836,69 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     usesExternalRuntime,
   ])
 
-  const messageListProps = useMemo<MessageListProps>(() => ({
-    conversationId: currentConversation?.id,
-    messages: displayMessages,
-    historyStart: currentConversation?.history_start ?? 0,
-    historyDirectory: currentConversation?.history_directory ?? EMPTY_HISTORY_DIRECTORY,
-    historyArtifacts: currentConversation?.history_artifacts,
-    historyLoadError: historyLoadError?.conversationId === currentConversation?.id
-      ? historyLoadError?.message : null,
-    onLoadOlder: navigation.loadOlderHistory,
-    onFocusHistoryMessage: navigation.focusHistoryMessage,
-    renderRequestId: conversationRenderRequestId,
-    onInitialRender: handleConversationFirstCommit,
-    agentPlanState: currentConversation?.agent_plan_state ?? currentConversation?.agentPlanState ?? null,
-    assistantStreamStatsByMessageId,
-    onUpdateMessage: handleUpdateMessage,
-    onRegenerateMessage: handleRegenerateMessage,
-    onReplyWithModel: (
-      usesExternalRuntime || activeAgentPlanMode !== 'act'
-        ? undefined
-        : handleReplyWithModel
-    ),
-    sessionProviderId: currentConversation?.provider_id,
-    sessionModel: currentConversation?.model,
-    onForkMessage: handleForkMessage,
-    onRewindMessage: handleRewindMessage,
-    onDeleteMessage: handleDeleteMessage,
-    messageDeleteLabel: usesExternalRuntime ? i18n[uiLang].dialogDelete : i18n[uiLang].chatMessageRemoveFromBranch,
-    onSaveMessageToNote: handleSaveMessageToNote,
-    onRetryLastUser: handleRegenerateMessage,
-    onExecuteAgentPlan: handleExecuteAgentPlan,
-    groupSelections: currentConversation?.group_selections ?? currentConversation?.groupSelections ?? {},
-    onSetGroupSelection: handleSetGroupSelection,
-    contextState,
-    compactionInProgress: contextCompressing,
-    animateCompactionBoundaryId: animateCompactionBoundaryId,
-    animateClearBoundaryId: animateClearBoundaryId,
-    lang: uiLang,
-    focusMessageId: messageFocus?.messageId,
-    focusReasoning: messageFocus?.reasoning,
-    onFocusMessageHandled: () => setMessageFocus(null),
-  }), [
+  // Streaming history and its active preview swap together inside showConversation.
+  // A settled window can paint early without moving any route or mutation authority.
+  const pendingWindow = usePendingConversationPreview()
+  const readOnlyPreview = pendingWindow && pendingWindow.id !== currentConversation?.id
+    && chatView === 'conversation' && !conversationOccupied && !popoutConversationIds.has(pendingWindow.id)
+    && !streamCoarse.streaming && !streamCoarse.streamFrozen && !streamCoarse.streamError
+    && !executionOwner.snapshot(pendingWindow.id).inFlight && !previewOwner.summary(pendingWindow.id)
+    && pendingWindow.messages.length > 0 ? pendingWindow : null
+
+  const messageListProps = useMemo<MessageListProps>(() => {
+    const conversation = readOnlyPreview ?? currentConversation
+    const history = {
+      conversationId: conversation?.id,
+      messages: readOnlyPreview?.messages ?? displayMessages,
+      historyGap: conversation?.history_gap,
+      historyStart: conversation?.history_start ?? 0,
+      historyDirectory: conversation?.history_directory ?? EMPTY_HISTORY_DIRECTORY,
+      historyArtifacts: conversation?.history_artifacts,
+      agentPlanState: conversation?.agent_plan_state ?? conversation?.agentPlanState,
+      sessionProviderId: conversation?.provider_id,
+      sessionModel: conversation?.model,
+      groupSelections: conversation?.group_selections ?? conversation?.groupSelections,
+      lang: uiLang,
+    }
+    if (readOnlyPreview) return {
+      ...history,
+      readOnlyPreview: true,
+      contextState: readOnlyPreview.context_state ?? readOnlyPreview.contextState,
+    }
+    return {
+      ...history,
+      contextState,
+      historyLoadError: historyLoadError?.conversationId === currentConversation?.id
+        ? historyLoadError?.message : null,
+      onLoadHistory: navigation.loadHistoryPage,
+      onFocusHistoryMessage: navigation.focusHistoryMessage,
+      renderRequestId: conversationRenderRequestId,
+      onInitialRender: handleConversationFirstCommit,
+      assistantStreamStatsByMessageId,
+      onUpdateMessage: handleUpdateMessage,
+      onRegenerateMessage: handleRegenerateMessage,
+      onReplyWithModel: (
+        usesExternalRuntime || activeAgentPlanMode !== 'act'
+          ? undefined
+          : handleReplyWithModel
+      ),
+      onForkMessage: handleForkMessage,
+      onRewindMessage: handleRewindMessage,
+      onDeleteMessage: handleDeleteMessage,
+      messageDeleteLabel: usesExternalRuntime ? i18n[uiLang].dialogDelete : i18n[uiLang].chatMessageRemoveFromBranch,
+      onSaveMessageToNote: handleSaveMessageToNote,
+      onRetryLastUser: handleRegenerateMessage,
+      onExecuteAgentPlan: handleExecuteAgentPlan,
+      onSetGroupSelection: handleSetGroupSelection,
+      compactionInProgress: contextCompressing,
+      animateCompactionBoundaryId: animateCompactionBoundaryId,
+      animateClearBoundaryId: animateClearBoundaryId,
+      focusMessageId: messageFocus?.messageId,
+      focusReasoning: messageFocus?.reasoning,
+      onFocusMessageHandled: () => setMessageFocus(null),
+    }
+  }, [
+    readOnlyPreview,
     animateCompactionBoundaryId,
     animateClearBoundaryId,
     assistantStreamStatsByMessageId,
@@ -2897,7 +2909,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     conversationRenderRequestId,
     displayMessages,
     navigation.focusHistoryMessage,
-    navigation.loadOlderHistory,
+    navigation.loadHistoryPage,
     handleConversationFirstCommit,
     handleDeleteMessage,
     handleExecuteAgentPlan,
@@ -2936,6 +2948,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     resolvePendingSessionConsent, resolvePendingToolConfirm,
   ])
 
+  const visibleTitlebarControls = readOnlyPreview
+    ? <span className="truncate text-sm">{readOnlyPreview.title}</span>
+    : conversationTitlebarControls
   const showConversationDock = chatView === 'conversation' && !conversationOccupied
     && (!usesChatRuntime || Boolean(dock.subagent.selection))
   // 侧栏 / 右侧面板开合时，主区内容平移到新位置（只动 transform，不逐帧重排）。
@@ -2963,12 +2978,12 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           settingsMode={settingsPanelActive}
           onToggleSidebar={handleTitlebarToggleSidebar}
           onNewConversation={handleTitlebarNewConversation}
-          dockVisible={showConversationDock && dockOpen}
+          dockVisible={showConversationDock && dockOpen && !readOnlyPreview}
           dockWidth={dock.width}
           dockToolbarRef={setDockToolbarHost}
-          onToggleDock={showConversationDock ? handleToggleDock : undefined}
+          onToggleDock={showConversationDock && !readOnlyPreview ? handleToggleDock : undefined}
         >
-          {chatView === 'conversation' ? conversationTitlebarControls : null}
+          {chatView === 'conversation' ? visibleTitlebarControls : null}
         </ChatTitlebar>
       )}
       {/* relative：收起中的侧面板以绝对定位浮在这一行上层淡出。 */}
@@ -3159,7 +3174,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
           />
         ) : (
           <ChatConversationPane
-            titlebarControls={conversationTitlebarControls}
+            titlebarControls={visibleTitlebarControls}
             usesNativeTitlebar={usesNativeTitlebar}
             sidebarCollapsed={sidebarCollapsed}
             titlebarRowClass={chatTitlebarRowClass}
@@ -3202,29 +3217,31 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         )}
         </ChatRouteKeepAlive>
         {showConversationDock && (
-          <RightDock
-            open={dockOpen}
-            toolbarInTitlebar={!usesNativeTitlebar}
-            toolbarHost={usesNativeTitlebar ? null : dockToolbarHost}
-            width={dock.width}
-            activeTab={dock.tab}
-            openTabRequest={dock.openTabRequest}
-            workdir={dockWorkdir}
-            lang={uiLang}
-            conversationId={currentConversation?.id ?? null}
-            treeExpanded={dock.treeExpanded}
-            revealRequest={dock.reveal}
-            previewRequest={dock.preview}
-            subagent={dock.subagent.selection}
-            onBackFromSubagent={dock.subagent.close}
-            onToggleTab={dock.setTab}
-            onOpenTabRequestHandled={dock.onOpenTabRequestHandled}
-            onWidthChange={dock.setWidth}
-            onClose={dock.close}
-            onTreeExpandedChange={dock.setTreeExpanded}
-            onInsertMention={dock.insertMention}
-            onRevealInTree={dock.revealInTree}
-          />
+          <div className={readOnlyPreview ? 'contents invisible' : 'contents'} {...(readOnlyPreview ? { inert: '' } : {})}>
+            <RightDock
+              open={dockOpen}
+              toolbarInTitlebar={!usesNativeTitlebar}
+              toolbarHost={usesNativeTitlebar ? null : dockToolbarHost}
+              width={dock.width}
+              activeTab={dock.tab}
+              openTabRequest={dock.openTabRequest}
+              workdir={dockWorkdir}
+              lang={uiLang}
+              conversationId={currentConversation?.id ?? null}
+              treeExpanded={dock.treeExpanded}
+              revealRequest={dock.reveal}
+              previewRequest={dock.preview}
+              subagent={dock.subagent.selection}
+              onBackFromSubagent={dock.subagent.close}
+              onToggleTab={dock.setTab}
+              onOpenTabRequestHandled={dock.onOpenTabRequestHandled}
+              onWidthChange={dock.setWidth}
+              onClose={dock.close}
+              onTreeExpandedChange={dock.setTreeExpanded}
+              onInsertMention={dock.insertMention}
+              onRevealInTree={dock.revealInTree}
+            />
+          </div>
         )}
       </div>
       {popoutNotice && (

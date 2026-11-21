@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { historyWindowStart, prependConversationHistoryPage } from './conversationHistoryWindow'
+import { historyWindowStart, mergeConversationHistoryPage } from './conversationHistoryWindow'
 import type { Conversation } from './types'
 
 const message = (id: string) => ({ id, role: 'user' as const, content: id, timestamp: 1 })
@@ -10,22 +10,22 @@ const window: Conversation = {
 }
 
 it('prepends one matching page without losing the loaded tail', () => {
-  expect(prependConversationHistoryPage(window, {
+  expect(mergeConversationHistoryPage(window, {
     revision: 5, start: 0, end: 1, total: 2, messages: [message('old')],
   })).toMatchObject({ history_start: 0, messages: [message('old'), message('new')] })
 })
 
 it('rejects pages from edited, truncated or unrelated windows', () => {
   const page = { revision: 5, start: 0, end: 1, total: 2, messages: [message('old')] }
-  expect(prependConversationHistoryPage(window, { ...page, revision: 6 })).toBeNull()
-  expect(prependConversationHistoryPage(window, { ...page, total: 1 })).toBeNull()
-  expect(prependConversationHistoryPage(window, { ...page, end: 2 })).toBeNull()
+  expect(mergeConversationHistoryPage(window, { ...page, revision: 6 })).toBeNull()
+  expect(mergeConversationHistoryPage(window, { ...page, total: 1 })).toBeNull()
+  expect(mergeConversationHistoryPage(window, { ...page, end: 2 })).toBeNull()
 })
 
 it('retains and deduplicates referenced artifacts while prepending a matching page', () => {
   const first = { id: 'art_first', name: 'first.png' }
   const second = { id: 'art_second', name: 'second.png' }
-  const result = prependConversationHistoryPage({ ...window, history_artifacts: [first] }, {
+  const result = mergeConversationHistoryPage({ ...window, history_artifacts: [first] }, {
     revision: 5, start: 0, end: 1, total: 2, messages: [message('old')],
     history_artifacts: [first, second],
   })

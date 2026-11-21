@@ -1,10 +1,12 @@
 import { useSyncExternalStore } from 'react'
+import type { Conversation } from './types'
 import { measureChatSurface } from './chatPerformanceProbe'
 
 export interface ConversationTransitionSnapshot {
   requestId: number
   targetConversationId: string | null
   loading: boolean
+  preview?: Conversation
 }
 
 export interface ConversationLoadHint {
@@ -50,6 +52,14 @@ export function completeConversationTransition(conversationId: string, requestId
   snapshot = { requestId, targetConversationId: conversationId, loading: false }
   finishSwitchSample?.()
   finishSwitchSample = null
+  emit()
+}
+
+/** A display-only window, automatically revoked by navigation or completion. */
+export function previewConversationTransition(requestId: number, conversation: Conversation | undefined) {
+  if (snapshot.requestId !== requestId || !snapshot.loading || snapshot.preview === conversation) return
+  if (conversation && snapshot.targetConversationId !== conversation.id) return
+  snapshot = { ...snapshot, preview: conversation }
   emit()
 }
 
@@ -103,12 +113,20 @@ export function getConversationTransitionSnapshot(): ConversationTransitionSnaps
   return snapshot
 }
 
+function subscribe(listener: () => void) {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+const getPreview = () => snapshot.preview
+
+export function usePendingConversationPreview() {
+  return useSyncExternalStore(subscribe, getPreview, getPreview)
+}
+
 export function useConversationTransition(): ConversationTransitionSnapshot {
   return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
+    subscribe,
     getConversationTransitionSnapshot,
     getConversationTransitionSnapshot,
   )

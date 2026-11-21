@@ -19,6 +19,7 @@ import { AskUserBlock } from './AskUserBlock'
 import { ChatMarkdown } from './ChatMarkdown'
 import { WebSearchIcon } from '../settings/public/icons'
 import { api } from '../api/tauri'
+import { HistoricalToolResult } from './HistoricalToolResult'
 import { useT, type I18n } from '../components/i18n'
 import { automationHash, setHash } from './chatRoutes'
 import { loadAttachmentDataUrl } from './attachmentPreview'
@@ -107,8 +108,9 @@ function toolRawName(toolCall: ToolCallRecord): string {
 
 function toolActionName(toolCall: ToolCallRecord): string {
   const name = toolRawName(toolCall)
+  if (name !== 'automation' && name !== 'schedule') return name
   const action = parsedArguments(toolCall)?.action
-  return (name === 'automation' || name === 'schedule') && typeof action === 'string'
+  return typeof action === 'string'
     ? `${name}_${action}`
     : name
 }
@@ -390,7 +392,6 @@ function StreamingToolOutput({ output }: { output: string }) {
   )
 }
 
-
 /** Shared boxed "consult card" shell for standalone delegations/consultations
  *  (ADVISOR / KNOWLEDGE). Owns the eyebrow + uppercase mono label +
  *  status mark + status line + collapse; callers supply identity chips, metric
@@ -414,7 +415,7 @@ function ConsultCard({
   metricChips?: ReactNode
   statusLine?: string
   defaultOpen?: boolean
-  children?: ReactNode
+  children?: ReactNode | (() => ReactNode)
 }) {
   const [open, setOpen] = useWorkDisclosure('tool', toolRecordId(toolCall), defaultOpen)
   const hasBody = Boolean(children)
@@ -453,9 +454,9 @@ function ConsultCard({
 
       {hasBody && (
         <ChatDisclosureBody open={open}>
-          <div className="mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12px]">
-            {children}
-          </div>
+          {() => <div className="mt-2 space-y-2 border-t border-neutral-200 pt-2 text-[12px]">
+            {typeof children === 'function' ? children() : children}
+          </div>}
         </ChatDisclosureBody>
       )}
     </div>
@@ -654,7 +655,7 @@ function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
         ? t.chatAutomationCancelled
         : ''
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
-  const result = status !== 'running' && status !== 'pending' ? getResultPreview(t, toolCall) : ''
+  const result = status !== 'running' && status !== 'pending' ? resultPreviewReader(t, toolCall) : null
 
   return (
     <ConsultCard
@@ -670,40 +671,44 @@ function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
       }
       statusLine={statusLine}
     >
-      {nodes.length > 0 && (
-        <div className="space-y-0.5 font-mono text-[11px] text-neutral-500">
-          {nodes.map((node) => (
-            <div key={node.nodeId} className="flex min-w-0 items-center gap-1.5">
-              <span className="shrink-0">
-                {node.status === 'success' ? '✓' : node.status === 'error' ? '✗' : node.status === 'running' ? '…' : '·'}
-              </span>
-              <span className="min-w-0 truncate">{node.nodeType || node.nodeId}</span>
+      {() => (
+        <>
+          {nodes.length > 0 && (
+            <div className="space-y-0.5 font-mono text-[11px] text-neutral-500">
+              {nodes.map((node) => (
+                <div key={node.nodeId} className="flex min-w-0 items-center gap-1.5">
+                  <span className="shrink-0">
+                    {node.status === 'success' ? '✓' : node.status === 'error' ? '✗' : node.status === 'running' ? '…' : '·'}
+                  </span>
+                  <span className="min-w-0 truncate">{node.nodeType || node.nodeId}</span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+          {status !== 'running' && result && (
+            <CardSection label="Result">
+              <div className="whitespace-pre-wrap break-words text-neutral-500">
+                {compactText(result(), 800)}
+              </div>
+            </CardSection>
+          )}
+          {error && status !== 'running' && (
+            <div className="whitespace-pre-wrap break-words text-neutral-500">
+              {error}
+            </div>
+          )}
+          {automationId ? (
+            <button
+              type="button"
+              className="text-[12px] text-neutral-600 underline-offset-2 hover:underline"
+              data-tauri-drag-region="false"
+              onClick={() => setHash(automationHash(automationId))}
+            >
+              {t.chatAutomationOpenWorkflow}
+            </button>
+          ) : null}
+        </>
       )}
-      {status !== 'running' && result && (
-        <CardSection label="Result">
-          <div className="whitespace-pre-wrap break-words text-neutral-500">
-            {compactText(result, 800)}
-          </div>
-        </CardSection>
-      )}
-      {error && status !== 'running' && (
-        <div className="whitespace-pre-wrap break-words text-neutral-500">
-          {error}
-        </div>
-      )}
-      {automationId ? (
-        <button
-          type="button"
-          className="text-[12px] text-neutral-600 underline-offset-2 hover:underline"
-          data-tauri-drag-region="false"
-          onClick={() => setHash(automationHash(automationId))}
-        >
-          {t.chatAutomationOpenWorkflow}
-        </button>
-      ) : null}
     </ConsultCard>
   )
 }
@@ -794,13 +799,13 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
 
   const query = stringValue(args?.query)
   const duration = formatDuration(getDuration(toolCall))
-  const resultText = getResultPreview(t, toolCall)
+  const readResult = status !== 'running' && !hits ? resultPreviewReader(t, toolCall) : null
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
   const count = hits?.length ?? 0
   const statusLine =
     status === 'running' ? t.toolCardKnowledgeRunning : status === 'error' ? (error || t.toolCardKnowledgeFailed) : ''
 
-  const hasBody = Boolean(query || hits || (status !== 'running' && resultText) || error)
+  const hasBody = Boolean(query || hits || readResult || error)
 
   return (
     <ConsultCard
@@ -811,7 +816,7 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
       metricChips={duration ? <CardChip tabular>{duration}</CardChip> : undefined}
       statusLine={statusLine}
     >
-      {hasBody && (
+      {hasBody && (() => (
         <>
           {query && (
             <CardSection label="Query">
@@ -823,9 +828,9 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
           {hits ? (
             <KnowledgeHits hits={hits} />
           ) : (
-            status !== 'running' && resultText && (
+            readResult && (
               <div className="whitespace-pre-wrap break-words text-neutral-500">
-                {resultText}
+                {readResult()}
               </div>
             )
           )}
@@ -835,7 +840,7 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
             </div>
           )}
         </>
-      )}
+      ))}
     </ConsultCard>
   )
 }
@@ -901,7 +906,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
   const citations = view?.citations ?? []
   const provider = view?.provider || ''
   const duration = formatDuration(getDuration(toolCall))
-  const resultText = getResultPreview(t, toolCall)
+  const readResult = status !== 'running' && status !== 'pending' && !citations.length ? resultPreviewReader(t, toolCall) : null
   const partialOutput = externalPartialOutput(toolCall)
   const error = toolCall.error ? compactToolError(toolCall.error) : ''
   const statusLine =
@@ -911,7 +916,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
     queries.length ||
       citations.length ||
       partialOutput ||
-      (status !== 'running' && status !== 'pending' && resultText) ||
+      readResult ||
       error,
   )
 
@@ -929,7 +934,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
       }
       statusLine={statusLine}
     >
-      {hasBody && (
+      {hasBody && (() => (
         <>
           {queries.length > 0 && (
             <CardSection label="Query">
@@ -946,12 +951,10 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
           {citations.length > 0 ? (
             <WebSources citations={citations} />
           ) : (
-            status !== 'running' &&
-            status !== 'pending' &&
-            resultText && (
+            readResult && (
               <CardSection label={t.toolCardResult}>
                 <div className="whitespace-pre-wrap break-words text-neutral-500">
-                  {resultText}
+                  {readResult()}
                 </div>
               </CardSection>
             )
@@ -962,7 +965,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
             </div>
           )}
         </>
-      )}
+      ))}
     </ConsultCard>
   )
 }
@@ -1076,10 +1079,8 @@ function fileMutationInlineStats(
 }
 
 /** 外部 CLI 的 Edit/Write 没有后端 diff：从参数新旧文本拼一个 ± 行的伪 diff 供展开区显示。 */
-function argEditDiff(toolCall: ToolCallRecord, args: Record<string, unknown> | null): string {
-  const rawName = toolRawName(toolCall)
-  if (!isFileMutationTool(rawName)) return ''
-  const chunks = argEditPairs(rawName, args).map((pair) => {
+function argEditDiff(edits: ReturnType<typeof argEditPairs>): string {
+  const chunks = edits.map((pair) => {
     const removed = pair.old ? pair.old.split('\n').map((line) => `- ${line}`).join('\n') : ''
     const added = pair.new ? pair.new.split('\n').map((line) => `+ ${line}`).join('\n') : ''
     return [removed, added].filter(Boolean).join('\n')
@@ -1568,31 +1569,34 @@ function getArgumentPreview(t: I18n, toolCall: ToolCallRecord): string {
   )
 }
 
-function getResultPreview(t: I18n, toolCall: ToolCallRecord): string {
-  if (isKivioToolDraft(toolCall)) return ''
+// The disclosure needs to know whether it can open. Read and format the payload
+// only when its body mounts, including for historical result-only records.
+function resultPreviewReader(t: I18n, toolCall: ToolCallRecord): (() => string) | null {
+  if (isKivioToolDraft(toolCall)) return null
   const rawName = toolRawName(toolCall)
   const todoItems = structuredTodoState(toolCall)?.items
   if (rawName === 'todo_write' || rawName === 'todo_update' || todoItems) {
-    if (normalizeToolCallStatus(toolCall.status) !== 'completed') return ''
-    if (structuredTodoCleared(toolCall)) return t.toolCardTodoAllDone
-    const counts = formatTodoCounts(todoItems)
-    return counts ? fill(t.toolCardTodoSyncedCounts, 'counts', counts) : t.toolCardTodoSynced
+    if (normalizeToolCallStatus(toolCall.status) !== 'completed') return null
+    return () => {
+      if (structuredTodoCleared(toolCall)) return t.toolCardTodoAllDone
+      const counts = formatTodoCounts(todoItems)
+      return counts ? fill(t.toolCardTodoSyncedCounts, 'counts', counts) : t.toolCardTodoSynced
+    }
   }
   const fileMutation = structuredFileMutation(toolCall)
   if (fileMutation) {
-    if (fileMutation.ok === false) {
-      return fill(t.toolCardFileNotApplied, 'target', fileMutationPreview(t, fileMutation))
-    }
-    return fill(t.toolCardFileApplied, 'target', fileMutationPreview(t, fileMutation))
+    const label = fileMutation.ok === false ? t.toolCardFileNotApplied : t.toolCardFileApplied
+    return () => fill(label, 'target', fileMutationPreview(t, fileMutation))
   }
   const readFile = structuredReadFile(toolCall)
-  if (readFile) return formatReadFilePreview(t, readFile)
-  const raw =
-    toolCall.result_preview ||
-    toolCall.resultPreview ||
-    previewValue(toolCall.result ?? toolCall.output)
-  if (!raw) return ''
-  return formatToolResultPreview(raw)
+  if (readFile) {
+    return readFile.content || readFile.notices.length ? () => formatReadFilePreview(t, readFile) : null
+  }
+  const stored = toolCall.result_preview || toolCall.resultPreview
+  if (stored) return stored.trim() ? () => formatToolResultPreview(stored) : null
+  const value = toolCall.result ?? toolCall.output
+  if (value == null || (typeof value === 'string' && !value.trim())) return null
+  return () => formatToolResultPreview(previewValue(value))
 }
 
 function compactToolError(error: string): string {
@@ -1748,10 +1752,13 @@ export function ToolCallCluster({
   const displayStatus = currentStatus === 'error'
     || (!messageStreaming && (currentStatus === 'running' || currentStatus === 'pending'))
     ? 'completed' : currentStatus
-  const target = currentTool ? getToolTarget(t, currentTool) : ''
-  const imageRead = currentTool && isImageReadToolCall(currentTool)
+  const showLiveTool = !open && !showReasoning && messageStreaming && currentTool
+  const imageRead = showLiveTool && isImageReadToolCall(currentTool)
+  const target = showLiveTool && !imageRead ? getToolTarget(t, currentTool) : ''
   // Codex-style summaries title each step as **heading**; the one-line preview shows plain text.
-  const reasoningPreview = latestReasoning?.text.trimEnd().split(/[\r\n]/).pop()?.replace(/\*\*/g, '').trim()
+  const reasoningPreview = !open && showReasoning && messageStreaming && previewEnabled
+    ? latestReasoning?.text.trimEnd().split(/[\r\n]/).pop()?.replace(/\*\*/g, '').trim()
+    : ''
 
   return (
     <div className="not-prose mb-1 min-w-0 text-[15px] leading-6 text-[var(--text-muted)]" data-tool-call-cluster>
@@ -1776,10 +1783,10 @@ export function ToolCallCluster({
                 ? fill(activeTool ? t.chatViewingImages : t.chatViewedImages, 'n', imageReadCount(currentTool))
                 : getToolName(t, currentTool)) : summary.text}
         </span>
-        {!open && showReasoning && messageStreaming && previewEnabled && reasoningPreview && (
+        {reasoningPreview && (
           <span className="min-w-0 truncate" data-testid="reasoning-preview">{reasoningPreview}</span>
         )}
-        {!open && !showReasoning && !imageRead && messageStreaming && target && (
+        {target && (
           <span className="min-w-0 truncate">{target}</span>
         )}
         {(open || messageStreaming || reasoningOnly) && summary.stoppedCount > 0 && <span className="shrink-0">{t.chatToolStoppedCount.replace('{n}', String(summary.stoppedCount))}</span>}
@@ -1809,14 +1816,17 @@ function DefaultToolCallBlock({
     [toolCall, fileMutation],
   )
   // 后端没给 diff（外部 CLI）时才用参数拼伪 diff，二者取其一。
-  const argDiff = useMemo(
-    () => (fileMutation ? '' : argEditDiff(toolCall, args)),
-    [toolCall, fileMutation, args],
-  )
+  const edits = useMemo(() => {
+    const name = toolRawName(toolCall)
+    return !fileMutation && isFileMutationTool(name) ? argEditPairs(name, args) : []
+  }, [toolCall, fileMutation, args])
   const knowledgeHits = useMemo(() => knowledgeSearchHits(toolCall), [toolCall])
-  const argumentPreview = useMemo(() => getArgumentPreview(t, toolCall), [t, toolCall])
   const partialOutput = externalPartialOutput(toolCall)
-  const resultPreview = useMemo(() => partialOutput || getResultPreview(t, toolCall), [partialOutput, t, toolCall])
+  const readResult = useMemo(
+    () => partialOutput || knowledgeHits ? null : resultPreviewReader(t, toolCall),
+    [partialOutput, knowledgeHits, t, toolCall],
+  )
+  const deferred = !readResult && !partialOutput && !knowledgeHits ? toolCall.deferredToolResult : undefined
   // 文件类工具（Read/Write/Edit）的目标路径：折叠行文件名可点，跳到右侧 dock 查看器预览。
   const previewPath = useMemo(() => {
     const raw = toolRawName(toolCall)
@@ -1824,13 +1834,15 @@ function DefaultToolCallBlock({
     return toolPathArgument(args)
   }, [toolCall, args])
   // +N -N 徽标点击用的完整 diff：真 diff 优先，外部 CLI 的伪 diff 包一层最小 patch 头。
-  const diffPatch = useMemo(() => {
-    if (fileMutation) return mutationDiffText(fileMutation)
-    if (!argDiff) return ''
-    const p = previewPath.replace(/\\/g, '/')
-    return p ? `--- a/${p}\n+++ b/${p}\n@@ @@\n${argDiff}` : `@@ @@\n${argDiff}`
-  }, [fileMutation, argDiff, previewPath])
-  const error = toolCall.error ? compactToolError(toolCall.error) : ''
+  const nativeDiff = useMemo(() => fileMutation ? mutationDiffText(fileMutation) : '', [fileMutation])
+  const hasDiff = Boolean(nativeDiff || edits.length)
+  const openDiff = () => {
+    const path = previewPath.replace(/\\/g, '/')
+    const header = path ? `--- a/${path}\n+++ b/${path}\n` : ''
+    const patch = nativeDiff || `${header}@@ @@\n${argEditDiff(edits)}`
+    requestDockDiffPreview({ title: `${toolName} ${target}`.trim(), patch })
+  }
+  const error = toolCall.error?.trim()
   const hasFileMutationDetails = Boolean(
     fileMutation && (
       fileMutation.files?.length ||
@@ -1839,7 +1851,13 @@ function DefaultToolCallBlock({
       fileMutation.diagnostics?.length
     ),
   )
-  const hasDetails = Boolean(argumentPreview || resultPreview || error || hasFileMutationDetails || knowledgeHits || argDiff)
+  const otherDetails = Boolean(readResult || deferred || partialOutput || error || hasFileMutationDetails || knowledgeHits || edits.length)
+  // Arguments may be the sole detail on a stored or still-running tool.
+  const soleArgumentPreview = useMemo(
+    () => otherDetails ? undefined : getArgumentPreview(t, toolCall),
+    [otherDetails, t, toolCall],
+  )
+  const hasDetails = otherDetails || Boolean(soleArgumentPreview)
 
   return (
     <div className="not-prose mb-1 text-[12px] leading-5 text-neutral-500">
@@ -1867,18 +1885,18 @@ function DefaultToolCallBlock({
         {target && (
           <span
             className={`min-w-0 truncate ${
-              previewPath || diffPatch
+              previewPath || hasDiff
                 ? 'cursor-pointer text-neutral-400 underline-offset-2 hover:text-neutral-700 hover:underline dark:text-neutral-500'
                 : 'text-neutral-400 dark:text-neutral-500'
             }`}
             onClick={
-              previewPath || diffPatch
+              previewPath || hasDiff
                 ? (e) => {
                     e.stopPropagation()
                     // Write/Edit 有 diff 就直接看 diff（Claude Code 行为：整行绿加红删）；
                     // Read / 没有 diff 的才开纯文件查看器。
-                    if (diffPatch) {
-                      requestDockDiffPreview({ title: `${toolName} ${target}`.trim(), patch: diffPatch })
+                    if (hasDiff) {
+                      openDiff()
                     } else {
                       requestDockPreview(previewPath)
                     }
@@ -1893,72 +1911,74 @@ function DefaultToolCallBlock({
           <InlineDiffStats
             additions={inlineStats.additions}
             removals={inlineStats.removals}
-            onClick={
-              diffPatch
-                ? () => requestDockDiffPreview({ title: `${toolName} ${target}`.trim(), patch: diffPatch })
-                : undefined
-            }
+            onClick={hasDiff ? openDiff : undefined}
           />
         )}
       </button>
 
       {hasDetails && (
         <ChatDisclosureBody open={open}>
-          <div className="mt-1.5 ml-1.5 space-y-1.5 border-l border-neutral-900/[0.08] pl-2.5">
-            {argumentPreview && (
-              <div>
-                <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-                  {t.toolCardArgs}
-                </div>
-                <div className="whitespace-pre-wrap break-words text-neutral-500">
-                  {argumentPreview}
-                </div>
-              </div>
-            )}
-            {resultPreview && (partialOutput || !knowledgeHits) && (
-              <div>
-                <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
-                  {t.toolCardResult}
-                </div>
-                {partialOutput ? (
-                  <StreamingToolOutput output={partialOutput} />
-                ) : (
-                  <div className="whitespace-pre-wrap break-words text-neutral-500">
-                    {resultPreview}
+          {() => {
+            const argumentPreview = soleArgumentPreview ?? getArgumentPreview(t, toolCall)
+            const argDiff = edits.length ? argEditDiff(edits) : ''
+            return <div className="mt-1.5 ml-1.5 space-y-1.5 border-l border-neutral-900/[0.08] pl-2.5">
+              {argumentPreview && (
+                <div>
+                  <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                    {t.toolCardArgs}
                   </div>
-                )}
-              </div>
-            )}
-            {knowledgeHits && <KnowledgeHits hits={knowledgeHits} />}
-            {fileMutation && hasFileMutationDetails && (
-              <FileMutationDetails mutation={fileMutation} />
-            )}
-            {argDiff && (
-              <div className="custom-scrollbar max-h-72 overflow-auto rounded-md border border-neutral-200/80">
-                <pre className="font-mono text-[11px] leading-[1.5]">
-                  {argDiff.split('\n').map((line, index) => (
-                    <div
-                      key={index}
-                      className={
-                        line.startsWith('+')
-                          ? 'bg-emerald-500/10 px-2 text-emerald-800 dark:text-emerald-200'
-                          : line.startsWith('-')
-                            ? 'bg-red-500/10 px-2 text-red-800 dark:text-red-200'
-                            : 'px-2 text-neutral-500'
-                      }
-                    >
-                      {line || ' '}
+                  <div className="whitespace-pre-wrap break-words text-neutral-500">
+                    {argumentPreview}
+                  </div>
+                </div>
+              )}
+              {(partialOutput || readResult || deferred) && (
+                <div>
+                  <div className="text-[11px] font-medium text-neutral-400 dark:text-neutral-500">
+                    {t.toolCardResult}
+                  </div>
+                  {partialOutput ? (
+                    <StreamingToolOutput output={partialOutput} />
+                  ) : (
+                    <div className="whitespace-pre-wrap break-words text-neutral-500">
+                      {deferred
+                        ? <HistoricalToolResult key={JSON.stringify(deferred)} reference={deferred} />
+                        : readResult?.()}
                     </div>
-                  ))}
-                </pre>
-              </div>
-            )}
-            {error && (
-              <div className="whitespace-pre-wrap break-words text-neutral-500">
-                {error}
-              </div>
-            )}
-          </div>
+                  )}
+                </div>
+              )}
+              {knowledgeHits && <KnowledgeHits hits={knowledgeHits} />}
+              {fileMutation && hasFileMutationDetails && (
+                <FileMutationDetails mutation={fileMutation} />
+              )}
+              {argDiff && (
+                <div className="custom-scrollbar max-h-72 overflow-auto rounded-md border border-neutral-200/80">
+                  <pre className="font-mono text-[11px] leading-[1.5]">
+                    {argDiff.split('\n').map((line, index) => (
+                      <div
+                        key={index}
+                        className={
+                          line.startsWith('+')
+                            ? 'bg-emerald-500/10 px-2 text-emerald-800 dark:text-emerald-200'
+                            : line.startsWith('-')
+                              ? 'bg-red-500/10 px-2 text-red-800 dark:text-red-200'
+                              : 'px-2 text-neutral-500'
+                        }
+                      >
+                        {line || ' '}
+                      </div>
+                    ))}
+                  </pre>
+                </div>
+              )}
+              {error && (
+                <div className="whitespace-pre-wrap break-words text-neutral-500">
+                  {compactToolError(error)}
+                </div>
+              )}
+            </div>
+          }}
         </ChatDisclosureBody>
       )}
     </div>

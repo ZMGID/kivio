@@ -138,12 +138,21 @@ export function createChatRunCommands({
         keptMessages[targetIndex] = { ...keptMessages[targetIndex], content: trimmedContent }
       }
       const removedMessageIds = conversation.messages.slice(cutFrom).map((message) => message.id)
+      const gap = conversation.history_gap
+      const start = conversation.history_start ?? 0
+      const keptGap = gap && cutFrom > gap.start - start ? gap : undefined
+      const total = start + cutFrom + (keptGap ? keptGap.end - keptGap.start : 0)
+      const truncated: Conversation = {
+        ...conversation, messages: keptMessages, history_gap: keptGap,
+        history_total: conversation.history_total == null ? undefined : total,
+        history_directory: conversation.history_directory?.filter(entry => entry.message_index < total),
+      }
       const startedAt = now()
       const lease = executionOwner.begin({ conversationId, kind: 'regenerate', startedAt })
       if (!lease) return rejected(conversationId, 'busy', '该对话正在生成中，请稍后再试')
       try {
         presentation.present({
-          kind: 'truncated', conversation: { ...conversation, messages: keptMessages }, removedMessageIds,
+          kind: 'truncated', conversation: truncated, removedMessageIds,
         })
         previewOwner.begin(conversationId, startedAt)
         presentation.present({ kind: 'started', conversationId, command: 'regenerate' })
@@ -165,8 +174,10 @@ export function createChatRunCommands({
       if (executionOwner.snapshot(conversationId).inFlight) {
         return rejected(conversationId, 'busy', '该对话正在生成中，请稍后再试')
       }
-      const span = assistantTurnSpan(conversation.messages, messageId)
-      if (!span || span.end !== conversation.messages.length - 1) {
+      const gap = conversation.history_gap
+      const tail = gap ? conversation.messages.slice(gap.start - (conversation.history_start ?? 0)) : conversation.messages
+      const span = assistantTurnSpan(tail, messageId)
+      if (!span || span.end !== tail.length - 1) {
         return rejected(conversationId, 'not_last_turn', '只能对最后一轮回答换模型')
       }
       const groupId = span.groupId || newGroupId()

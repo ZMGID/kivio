@@ -41,7 +41,7 @@ kivio-agent-sdk = { path = "../crates/kivio-agent-sdk", features = ["skills", "m
 # 2.12 包含运行时和 Tao 的 DPI 句柄泄漏修复，避免 Windows 无边框缩放逐渐卡顿。
 tauri = { version = "2.12", features = ["tray-icon", "macos-private-api"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 # DeepSeek Harness 的用户设置是 YAML；模型探测必须结构化读取 models/providers 数组，
 # 不能用逐行字符串扫描（注释、引号、嵌套 route 都会误判）。
 serde_yaml = { package = "serde_yaml_ng", version = "0.10" }

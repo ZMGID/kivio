@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it } from 'vitest'
 import { chatApi } from './api'
+import { isPartialConversation, mergeConversationHistoryPage } from './conversationHistoryWindow'
 
 afterEach(() => localStorage.removeItem('kivio-chat-dev-conversations'))
 
@@ -71,4 +72,33 @@ it('includes an unloaded compaction marker when its display anchor was deleted',
   expect(result.history_directory).toContainEqual(expect.objectContaining({
     kind: 'compaction', message_id: 'm0', message_index: 0, answer_preview: 'old summary',
   }))
+})
+
+it('restores an early row and the latest turn, then reads through the gap from either side without skipping messages', async () => {
+  const id = 'anchored-window'
+  const messages = Array.from({ length: 380 }, (_, i) => ({
+    id: `m${i}`, role: i % 2 === 0 ? 'user' : 'assistant', content: String(i), timestamp: i,
+  }))
+  localStorage.setItem('kivio-chat-dev-conversations', JSON.stringify([{
+    id, revision: 8, title: 'history', provider_id: 'p', model: 'm', created_at: 1, updated_at: 1, messages,
+  }]))
+
+  let loaded = await chatApi.getConversationWindow(id, 'm5')
+  expect(loaded.messages.some(message => message.id === 'm5')).toBe(true)
+  expect(loaded.messages.at(-1)?.id).toBe('m379')
+  expect(loaded.messages.some(message => message.id === 'm180')).toBe(false)
+  expect(loaded.history_start).toBe(0)
+  expect(isPartialConversation(loaded)).toBe(true)
+  let forward = true
+  while (loaded.history_gap) {
+    const gap = loaded.history_gap
+    const page = await chatApi.getConversationPage(id, gap.end, forward ? gap.start : undefined)
+    const merged = mergeConversationHistoryPage(loaded, page)
+    if (!merged) throw new Error('Page failed to extend the reading window')
+    expect(merged.messages.length).toBeGreaterThan(loaded.messages.length)
+    loaded = merged
+    forward = !forward
+  }
+  expect(isPartialConversation(loaded)).toBe(false)
+  expect(loaded.messages.map(message => message.id)).toEqual(messages.map(message => message.id))
 })

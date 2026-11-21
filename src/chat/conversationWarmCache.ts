@@ -1,6 +1,8 @@
 import type { Conversation } from './types'
 
 const TTL_MS = 5 * 60_000
+// Fast local index reads should commit once, without mounting an intermediate view.
+const PREVIEW_DELAY_MS = 32
 const MAX_ENTRIES = 4
 const MAX_BYTES = 24 * 1024 * 1024
 
@@ -12,7 +14,7 @@ type Entry = {
 }
 
 /** Owns loaded display windows between short navigation round trips.
- * Every hit must be checked against the repository index revision first. */
+ * Only a revision-checked hit may become the active conversation. */
 export function createConversationWarmCache(now = Date.now) {
   const entries = new Map<string, Entry>()
   const pending = new Map<string, { conversation: Conversation; cancel: () => void; stillCurrent?: StillCurrent }>()
@@ -79,7 +81,11 @@ export function createConversationWarmCache(now = Date.now) {
       pending.set(conversation.id, { conversation, cancel, stillCurrent })
       while (pending.size > MAX_ENTRIES) cancelPending(pending.keys().next().value!)
     },
-    async get(id: string, revision: (id: string) => Promise<number | null>): Promise<Conversation | null> {
+    async get(
+      id: string,
+      revision: (id: string) => Promise<number | null>,
+      preview?: (conversation: Conversation) => void,
+    ): Promise<Conversation | null> {
       prune()
       // A rapid A → B → A return may precede the idle cache bookkeeping.
       // Reuse that already-loaded window instead of loading the full history.
@@ -91,7 +97,19 @@ export function createConversationWarmCache(now = Date.now) {
         remove(id)
         return null
       }
-      const currentRevision = await revision(id)
+      const validating = revision(id)
+      const previewTimer = preview && setTimeout(() => {
+        const current = pending.get(id) ?? entries.get(id)
+        if (current?.conversation === conversation && (!current.stillCurrent || current.stillCurrent())) {
+          preview(conversation)
+        }
+      }, PREVIEW_DELAY_MS)
+      let currentRevision: number | null
+      try {
+        currentRevision = await validating
+      } finally {
+        clearTimeout(previewTimer)
+      }
       const current = pending.get(id) ?? entries.get(id)
       if (current?.conversation !== conversation) return null
       if (

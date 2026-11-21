@@ -73,6 +73,7 @@ export function mergeToolRecord(
   const merged = { ...previous, ...next }
   if ('result_preview' in next || 'resultPreview' in next) {
     merged.result_preview = merged.resultPreview = next.result_preview ?? next.resultPreview
+    if (!next.deferredToolResult) delete merged.deferredToolResult
   }
   const previousStructured = previous.structured_content ?? previous.structuredContent
   const nextStructured = next.structured_content ?? next.structuredContent

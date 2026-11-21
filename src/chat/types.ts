@@ -44,6 +44,14 @@ export interface SkillDetail extends SkillMeta {
   updatedAt?: number
 }
 
+/** Reference supplied only by a native history window or page. */
+export interface DeferredToolResult {
+  conversationId: string
+  messageId: string
+  toolCallId: string
+  expectedHash: string
+}
+
 export interface ToolCallRecord {
   id: string
   conversationId?: string
@@ -77,6 +85,7 @@ export interface ToolCallRecord {
   output?: unknown
   result_preview?: string
   resultPreview?: string
+  deferredToolResult?: DeferredToolResult
   error?: string
   round?: number
   sensitive?: boolean
@@ -558,6 +567,8 @@ export interface Conversation {
   /** Renderer-only partial window metadata. Omitted on complete snapshots. */
   history_start?: number
   history_total?: number
+  /** Missing half-open interval between a restored reading window and the latest messages. */
+  history_gap?: { start: number; end: number }
   /** Only artifacts referenced by loaded messages but defined outside their window. */
   history_artifacts?: ChatToolArtifact[]
   history_directory?: Array<{

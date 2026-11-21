@@ -20,6 +20,7 @@ use crate::settings::Settings;
 use crate::skills;
 use crate::state::AppState;
 
+use super::history_tool_results::{defer_window_results, DeferredToolResults};
 use super::messages::reconcile_orphan_tool_segments;
 
 /// 外部入口（如 Lens 交接）预置会话历史时的一条消息。
@@ -216,13 +217,44 @@ pub(crate) async fn chat_get_conversation(
     }))
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct HistoryWindowResponse {
+    success: bool,
+    conversation: Conversation,
+    history_start: usize,
+    history_total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history_gap: Option<std::ops::Range<usize>>,
+    history_directory: Vec<Value>,
+    history_artifacts: Vec<crate::chat::model::ModelArtifact>,
+    #[serde(skip_serializing_if = "DeferredToolResults::is_empty")]
+    deferred_tool_results: DeferredToolResults,
+    read_ms: f64,
+    prepare_ms: f64,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct HistoryPageResponse {
+    success: bool,
+    revision: u64,
+    start: usize,
+    end: usize,
+    total: usize,
+    messages: Vec<ChatMessage>,
+    history_artifacts: Vec<crate::chat::model::ModelArtifact>,
+    #[serde(skip_serializing_if = "DeferredToolResults::is_empty")]
+    deferred_tool_results: DeferredToolResults,
+}
+
 /// Return a bounded first-paint window and a compact turn directory. The
 /// repository remains authoritative; edits and sends still use full snapshots.
 #[tauri::command]
 pub(crate) async fn chat_get_conversation_window(
     app: AppHandle,
     conversation_id: String,
-) -> Result<serde_json::Value, String> {
+    anchor_message_id: Option<String>,
+    defer_tool_results: Option<bool>,
+) -> Result<HistoryWindowResponse, String> {
     let started = std::time::Instant::now();
     let repository = crate::chat::repository::repository(&app);
     let mut conversation = match repository
@@ -236,24 +268,53 @@ pub(crate) async fn chat_get_conversation_window(
             .map_err(crate::chat::repository::repository_error)?,
     };
     let read_ms = started.elapsed().as_secs_f64() * 1_000.0;
-    reconcile_conversation_orphan_tool_segments(&mut conversation);
-    strip_transcripts_for_frontend(&mut conversation);
     let total = conversation.messages.len();
-    let start = history_window_start(&conversation.messages, total);
-    let directory = conversation_history_directory(&conversation);
-    let history_artifacts =
-        crate::chat::artifacts::history_reference_artifacts(&conversation.messages, start..total);
-    conversation.messages = conversation.messages.split_off(start);
-    Ok(serde_json::json!({
-        "success": true,
-        "conversation": conversation,
-        "history_start": start,
-        "history_total": total,
-        "history_directory": directory,
-        "history_artifacts": history_artifacts,
-        "read_ms": read_ms,
-        "prepare_ms": started.elapsed().as_secs_f64() * 1_000.0 - read_ms,
-    }))
+    let tail_start = prepare_history_window(&mut conversation, total);
+    let mut start = tail_start;
+    let mut ranges = vec![tail_start..total];
+    let mut history_gap = None;
+    if let Some(index) = anchor_message_id.as_deref().and_then(|id| {
+        conversation.messages[..tail_start]
+            .iter()
+            .position(|message| message.id == id)
+    }) {
+        let end = prepare_forward_page(&mut conversation, index + 1, tail_start);
+        start = prepare_history_window(&mut conversation, index + 1);
+        if end == tail_start {
+            ranges[0].start = start;
+        } else {
+            ranges.insert(0, start..end);
+            history_gap = Some(end..tail_start);
+        }
+    }
+    let history_directory = conversation_history_directory(&conversation);
+    let mut history_artifacts = Vec::new();
+    let mut deferred_tool_results = DeferredToolResults::new();
+    for range in ranges {
+        history_artifacts.extend(crate::chat::artifacts::history_reference_artifacts(
+            &conversation.messages,
+            range.clone(),
+        ));
+        if defer_tool_results.unwrap_or(false) {
+            deferred_tool_results.extend(defer_window_results(&mut conversation.messages, range));
+        }
+    }
+    if let Some(gap) = &history_gap {
+        conversation.messages.drain(gap.clone());
+    }
+    conversation.messages.drain(..start);
+    Ok(HistoryWindowResponse {
+        success: true,
+        conversation,
+        history_start: start,
+        history_total: total,
+        history_gap,
+        history_directory,
+        history_artifacts,
+        deferred_tool_results,
+        read_ms,
+        prepare_ms: started.elapsed().as_secs_f64() * 1_000.0 - read_ms,
+    })
 }
 
 pub(super) fn conversation_history_directory(conversation: &Conversation) -> Vec<Value> {
@@ -335,31 +396,108 @@ pub(crate) async fn chat_get_conversation_page(
     app: AppHandle,
     conversation_id: String,
     before: usize,
-) -> Result<serde_json::Value, String> {
+    after: Option<usize>,
+    defer_tool_results: Option<bool>,
+) -> Result<HistoryPageResponse, String> {
     let mut conversation = crate::chat::repository::repository(&app)
         .get(&app, &conversation_id)
         .await
         .map_err(crate::chat::repository::repository_error)?;
-    reconcile_conversation_orphan_tool_segments(&mut conversation);
-    strip_transcripts_for_frontend(&mut conversation);
     let total = conversation.messages.len();
     let end = before.min(total);
-    let start = history_window_start(&conversation.messages, end);
-    Ok(serde_json::json!({
-        "success": true,
-        "revision": conversation.revision,
-        "start": start,
-        "end": end,
-        "total": total,
-        "messages": &conversation.messages[start..end],
-        "history_artifacts": crate::chat::artifacts::history_reference_artifacts(&conversation.messages, start..end),
-    }))
+    let (start, end) = match after {
+        Some(start) => {
+            let start = start.min(end);
+            (start, prepare_forward_page(&mut conversation, start, end))
+        }
+        None => (prepare_history_window(&mut conversation, end), end),
+    };
+    let history_artifacts =
+        crate::chat::artifacts::history_reference_artifacts(&conversation.messages, start..end);
+    let deferred_tool_results = if defer_tool_results.unwrap_or(false) {
+        defer_window_results(&mut conversation.messages, start..end)
+    } else {
+        DeferredToolResults::new()
+    };
+    Ok(HistoryPageResponse {
+        success: true,
+        revision: conversation.revision,
+        start,
+        end,
+        total,
+        messages: conversation.messages.drain(start..end).collect(),
+        history_artifacts,
+        deferred_tool_results,
+    })
+}
+
+const HISTORY_WINDOW_MESSAGES: usize = 60;
+const HISTORY_SIBLINGS: usize = 4;
+
+fn prepare_history_window(conversation: &mut Conversation, end: usize) -> usize {
+    // Include every possible group sibling and its user anchor before sizing
+    // the normalized rows. Off-page transcripts and orphan records never cross IPC.
+    let floor = end.saturating_sub(HISTORY_WINDOW_MESSAGES + HISTORY_SIBLINGS + 1);
+    normalize_history_candidates(conversation, floor..end);
+    history_window_start(&conversation.messages, end)
+}
+
+fn normalize_history_candidates(conversation: &mut Conversation, range: std::ops::Range<usize>) {
+    strip_conversation_replay(conversation);
+    let candidates = &mut conversation.messages[range];
+    for message in candidates
+        .iter_mut()
+        .filter(|message| message.role == "assistant")
+    {
+        reconcile_orphan_tool_segments(
+            &mut message.tool_calls,
+            &message.segments,
+            &message.api_messages,
+        );
+        strip_assistant_transcripts(message);
+    }
+}
+
+fn prepare_forward_page(conversation: &mut Conversation, start: usize, limit: usize) -> usize {
+    let ceiling = (start + HISTORY_WINDOW_MESSAGES).min(limit);
+    normalize_history_candidates(
+        conversation,
+        start..(ceiling + HISTORY_SIBLINGS + 1).min(limit),
+    );
+    let messages = &conversation.messages;
+    let mut end = start;
+    let mut bytes = 0usize;
+    while end < ceiling {
+        let size = serde_json::to_vec(&messages[end]).map_or(usize::MAX, |data| data.len());
+        if end > start && bytes.saturating_add(size) > 512 * 1024 {
+            break;
+        }
+        bytes = bytes.saturating_add(size);
+        end += 1;
+    }
+    // Keep the question with its first answer and the remaining arms of that group.
+    if end > start
+        && end < limit
+        && messages[end - 1].role == "user"
+        && messages[end].role == "assistant"
+    {
+        end += 1;
+    }
+    if end > 0 {
+        if let Some(group) = messages[end - 1].group_id.as_deref() {
+            let ceiling = (end + HISTORY_SIBLINGS).min(limit);
+            while end < ceiling && messages[end].group_id.as_deref() == Some(group) {
+                end += 1;
+            }
+        }
+    }
+    end
 }
 
 pub(super) fn history_window_start(messages: &[crate::chat::ChatMessage], end: usize) -> usize {
     let mut start = end;
     let mut bytes: usize = 0;
-    while start > end.saturating_sub(60) {
+    while start > end.saturating_sub(HISTORY_WINDOW_MESSAGES) {
         let size = serde_json::to_vec(&messages[start - 1]).map_or(usize::MAX, |data| data.len());
         // Always include one message. A single large message remains intact;
         // its process details are progressively disclosed by the renderer.
@@ -376,7 +514,7 @@ pub(super) fn history_window_start(messages: &[crate::chat::ChatMessage], end: u
     // message. The extra allowance stays bounded even for corrupt old groups.
     if messages[start].role == "assistant" {
         if let Some(group) = messages[start].group_id.as_deref() {
-            let group_floor = start.saturating_sub(4);
+            let group_floor = start.saturating_sub(HISTORY_SIBLINGS);
             while start > group_floor && messages[start - 1].group_id.as_deref() == Some(group) {
                 start -= 1;
             }
@@ -429,29 +567,38 @@ pub(super) fn reconcile_conversation_orphan_tool_segments(conversation: &mut Con
 /// 所必需的（见 commit 9d247b0），**绝不剥**。仅剥已完成的 assistant 消息（至多保留最后
 /// 一条中断草稿的转录，体积有界）。
 pub(crate) fn strip_transcripts_for_frontend(conversation: &mut Conversation) {
+    strip_conversation_replay(conversation);
+    for message in conversation
+        .messages
+        .iter_mut()
+        .filter(|message| message.role == "assistant")
+    {
+        strip_assistant_transcripts(message);
+    }
+}
+
+fn strip_conversation_replay(conversation: &mut Conversation) {
     conversation.builtin_history = None;
     if let Some(summary) = &mut conversation.context_state.summary {
         summary.replay = None;
     }
-    for message in conversation.messages.iter_mut() {
-        if message.role != "assistant" {
-            continue;
-        }
-        // 中断草稿的转录是「继续」恢复工具上下文所必需的，绝不剥。但**图片 base64 要剥**：
-        // 一张截图 2.5MB，整份灌进渲染器 JS heap 纯属白占（前端两份转录都从不读）。
-        // 中断草稿是唯一同时持有两份转录的形态（persist_partial_assistant_snapshot 两个都填），
-        // 所以两份都要剥——落盘副本已经外置成引用，这里兜住"还没落盘就发出去"的运行期形态。
-        if message.stream_outcome.as_deref() == Some("interrupted") {
-            strip_image_payloads_from_model_messages(&mut message.model_messages);
-            strip_image_payloads_from_api_messages(&mut message.api_messages);
-            continue;
-        }
-        // 两份转录前端都从不读；后端回放走盘上独立副本（build_chat_api_messages 经
-        // load_conversation 读盘）。完成态一律剥——含 legacy 老对话（其唯一转录是 api_messages，
-        // 但那是磁盘的事，发给前端的副本不需要保留）。legacy 历史转录正是冷加载时最重的一块。
-        message.model_messages = Vec::new();
-        message.api_messages = Vec::new();
+}
+
+fn strip_assistant_transcripts(message: &mut ChatMessage) {
+    // 中断草稿的转录是「继续」恢复工具上下文所必需的，绝不剥。但**图片 base64 要剥**：
+    // 一张截图 2.5MB，整份灌进渲染器 JS heap 纯属白占（前端两份转录都从不读）。
+    // 中断草稿是唯一同时持有两份转录的形态（persist_partial_assistant_snapshot 两个都填），
+    // 所以两份都要剥——落盘副本已经外置成引用，这里兜住"还没落盘就发出去"的运行期形态。
+    if message.stream_outcome.as_deref() == Some("interrupted") {
+        strip_image_payloads_from_model_messages(&mut message.model_messages);
+        strip_image_payloads_from_api_messages(&mut message.api_messages);
+        return;
     }
+    // 两份转录前端都从不读；后端回放走盘上独立副本（build_chat_api_messages 经
+    // load_conversation 读盘）。完成态一律剥——含 legacy 老对话（其唯一转录是 api_messages，
+    // 但那是磁盘的事，发给前端的副本不需要保留）。legacy 历史转录正是冷加载时最重的一块。
+    message.model_messages = Vec::new();
+    message.api_messages = Vec::new();
 }
 
 /// 清掉 `model_messages` 里图片部件的 base64（保留 mime / path，转录结构不变）。

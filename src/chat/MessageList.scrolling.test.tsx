@@ -101,6 +101,35 @@ it('restores an earlier row when reopening a conversation that ends in a user me
   expect(viewport.scrollTop).toBe((list.measurementsCache[index]?.start ?? list.getOffsetForIndex(index, 'start')?.[0])! + 18)
 })
 
+it('keeps the reading position when a saved inline tool result reopens on demand', async () => {
+  const rows: ChatMessage[] = Array.from({ length: 35 }, (_, i) => ({
+    id: `tool-history-${i}`, role: 'user', content: 'Question', timestamp: i,
+  }))
+  const tool = { id: 'read', name: 'Read', source: 'native', status: 'success' as const, arguments: '{"path":"file.txt"}' }
+  const answer: ChatMessage = {
+    ...rows[2], role: 'assistant', content: 'Result', tool_calls: [{ ...tool, result_preview: 'x'.repeat(5000) }],
+  }
+  rows[2] = answer
+  const conversationId = 'tool-reading'
+  const { container, rerender } = render(<MessageList conversationId={conversationId} messages={rows} />)
+  await act(async () => {})
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 5000 })
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 800 })
+  fireEvent.wheel(viewport, { deltaY: -100 })
+  const row = () => list.measurementsCache.find(item => String(item.key).endsWith(`:${answer.id}`))!
+  viewport.scrollTop = row().start + 12
+  list.scrollOffset = viewport.scrollTop
+  rerender(<MessageList conversationId="other" messages={[]} />)
+  await act(async () => {})
+  expect(recallChatReadingPosition(conversationId)?.rowKey).toBe(answer.id)
+  const deferredToolResult = { conversationId, messageId: answer.id, toolCallId: tool.id, expectedHash: 'digest' }
+  rerender(<MessageList conversationId={conversationId} messages={rows.map(message =>
+    message === answer ? { ...message, tool_calls: [{ ...tool, deferredToolResult }] } : message)} />)
+  await act(async () => {})
+  expect(viewport.scrollTop).toBe(row().start + 12)
+})
+
 it('falls back to the latest position when the saved row content changed', async () => {
   rememberChatReadingPosition('edited-reading', {
     following: false, rowKey: 'old', rowRevision: 'obsolete',
@@ -125,18 +154,43 @@ it('uses the lightweight directory to open a turn outside the first window', asy
       { kind: 'turn', id: 'turn-recent', message_id: 'recent', message_index: 2, title: 'Recent question' },
     ]}
     onFocusHistoryMessage={focus}
-    onLoadOlder={vi.fn()}
+    onLoadHistory={vi.fn()}
   />)
   await act(async () => { await Promise.resolve() })
   fireEvent.click(container.querySelector('[data-message-navigator-id="turn-old"]')!)
-  expect(focus).toHaveBeenCalledWith('directory', 'old', expect.any(AbortSignal))
+  expect(focus).toHaveBeenCalledWith('directory', 'old', expect.any(AbortSignal), 'old')
   const firstSignal = focus.mock.calls[0][2] as AbortSignal
   fireEvent.click(container.querySelector('[data-message-navigator-id="compaction-middle"]')!)
   expect(firstSignal.aborted).toBe(true)
-  expect(focus).toHaveBeenCalledWith('directory', 'compaction-summary-middle', expect.any(AbortSignal))
+  expect(focus).toHaveBeenCalledWith('directory', 'compaction-summary-middle', expect.any(AbortSignal), 'middle')
   const secondSignal = focus.mock.calls[1][2] as AbortSignal
   fireEvent.wheel(container.querySelector('.chat-scroll-viewport')!, { deltaY: -100 })
   expect(secondSignal.aborted).toBe(true)
+})
+
+it('loads the adjacent side of a restored gap as the reader approaches from either direction', async () => {
+  const load = vi.fn()
+  const messages = Array.from({ length: 48 }, (_, i) => ({
+    id: `gap-${i}`, role: 'user' as const, content: 'Question', timestamp: i,
+  }))
+  const { container } = render(<MessageList conversationId="restored-gap" messages={messages}
+    historyStart={0} historyGap={{ start: 24, end: 120 }} onLoadHistory={load} />)
+  await act(async () => {})
+  const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
+  Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 400 })
+  Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 5000 })
+  const firstTailRow = list.measurementsCache.find(row => String(list.options.getItemKey(row.index)).endsWith(':gap-24'))!
+  expect(list.options.count).toBe(messages.length + 1) // Only the top padding and actual messages.
+  // A navigator jump holds the target in place until the reader takes over.
+  fireEvent.click(container.querySelector('[data-message-navigator-id="turn-gap-0"]')!)
+  for (const [deltaY, edge] of [[320, 'gap-start'], [-320, 'gap-end']] as const) {
+    // The same final viewport can straddle the gap after scrolling from either side.
+    viewport.scrollTop = firstTailRow.start - 200
+    fireEvent.wheel(viewport, { deltaY })
+    fireEvent.scroll(viewport)
+    await act(async () => {})
+    expect(load).toHaveBeenLastCalledWith(edge)
+  }
 })
 
 it('keeps the visible row anchored when an older page is prepended', async () => {
@@ -148,7 +202,7 @@ it('keeps the visible row anchored when an older page is prepended', async () =>
   }))
   const load = vi.fn()
   const { container, rerender } = render(<MessageList conversationId="page-anchor"
-    messages={recent} historyStart={2} onLoadOlder={load} />)
+    messages={recent} historyStart={2} onLoadHistory={load} />)
   await act(async () => { await Promise.resolve() })
   const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
   const originalStart = list.measurementsCache.find((item) => String(list.options.getItemKey(item.index)).endsWith(':recent-0'))!.start
@@ -156,7 +210,7 @@ it('keeps the visible row anchored when an older page is prepended', async () =>
   fireEvent.scroll(viewport)
   expect(load).toHaveBeenCalledOnce()
   rerender(<MessageList conversationId="page-anchor" messages={[...older, ...recent]}
-    historyStart={0} onLoadOlder={load} />)
+    historyStart={0} onLoadHistory={load} />)
   await act(async () => { await Promise.resolve() })
   const index = Array.from({ length: list.options.count }, (_, value) => value)
     .find((value) => String(list.options.getItemKey(value)).endsWith(':recent-0'))!
@@ -171,7 +225,7 @@ it('keeps a detached reader on the same row when background history hydration pr
     id: `old-${index}`, role: 'user' as const, content: 'Old', timestamp: index,
   }))
   const { container, rerender } = render(<MessageList conversationId="background-anchor"
-    messages={recent} historyStart={2} onLoadOlder={vi.fn()} />)
+    messages={recent} historyStart={2} onLoadHistory={vi.fn()} />)
   await act(async () => { await Promise.resolve() })
   const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
   const original = list.measurementsCache.find((item) => String(list.options.getItemKey(item.index)).endsWith(':recent-3'))!
@@ -181,7 +235,7 @@ it('keeps a detached reader on the same row when background history hydration pr
     fireEvent.scroll(viewport)
   })
   rerender(<MessageList conversationId="background-anchor" messages={[...older, ...recent]}
-    historyStart={0} onLoadOlder={vi.fn()} />)
+    historyStart={0} onLoadHistory={vi.fn()} />)
   await act(async () => { await Promise.resolve() })
   const index = Array.from({ length: list.options.count }, (_, value) => value)
     .find((value) => String(list.options.getItemKey(value)).endsWith(':recent-3'))!
@@ -194,7 +248,7 @@ it('shows a failed history page request and lets the reader retry', async () => 
     conversationId: 'page-error',
     messages: [{ id: 'recent', role: 'user' as const, content: 'Recent', timestamp: 2 }],
     historyStart: 2,
-    onLoadOlder: load,
+    onLoadHistory: load,
   }
   const { container, rerender } = render(<MessageList {...props} />)
   await act(async () => { await Promise.resolve() })
@@ -215,7 +269,7 @@ it('keeps following after returning to the bottom while history is still loading
     id: `follow-${index}`, role: 'user' as const, content: 'Recent', timestamp: index + 2,
   }))
   const { container, rerender } = render(<MessageList conversationId="hydrate-follow"
-    messages={recent} historyStart={2} onLoadOlder={vi.fn()} />)
+    messages={recent} historyStart={2} onLoadHistory={vi.fn()} />)
   await act(async () => { await Promise.resolve() })
   const viewport = container.querySelector<HTMLElement>('.chat-scroll-viewport')!
   Object.defineProperty(viewport, 'scrollHeight', { configurable: true, value: 3000 })
@@ -268,11 +322,17 @@ it('bounds offscreen rendering by viewport height while keeping short-message ov
   unmount()
   render(<MessageList conversationId="short-row-budget" messages={
     Array.from({ length: 40 }, (_, index) => ({
-      id: `short-${index}`, role: 'user' as const, content: 'Short', timestamp: index,
+      id: `mixed-${index}`, role: 'user' as const,
+      content: index === 29 ? 'Historical detail\n'.repeat(400) : 'Short', timestamp: index,
     }))
   } />)
   await act(async () => { await Promise.resolve() })
   expect(list.options.rangeExtractor(range)).toEqual(Array.from({ length: 13 }, (_, index) => index + 14))
+  // The leading spacer places the large message at row 30. A short neighbor
+  // near either edge shouldn't bring the large offscreen message into the DOM.
+  for (const index of [28, 32]) {
+    expect(list.options.rangeExtractor({ ...range, startIndex: index, endIndex: index })).not.toContain(30)
+  }
 })
 
 it('corrects a short cache when content grows without a ResizeObserver entry', async () => {
@@ -373,7 +433,7 @@ it.each(['auto-prefetch', undefined])('prefetches within two viewports, coalesce
   let complete!: () => void
   const load = vi.fn(() => new Promise<void>((resolve) => { complete = resolve }))
   const props = {
-    conversationId, historyStart: 60, onLoadOlder: load,
+    conversationId, historyStart: 60, onLoadHistory: load,
     messages: Array.from({ length: 40 }, (_, index) => ({
       id: `prefetch-${index}`, role: 'user' as const, content: 'Message', timestamp: index,
     })),

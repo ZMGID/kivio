@@ -20,18 +20,12 @@ vi.mock('../api/settingsCache', async (original) => ({
 
 afterEach(() => { act(() => reset()); vi.restoreAllMocks() })
 
-it('keeps previews, queued sends and pending approvals scoped to their running conversation', async () => {
+function mockConversationPair() {
   for (const key of Object.keys(api) as Array<keyof typeof api>) {
     if (key.startsWith('on') && typeof api[key] === 'function') vi.spyOn(api, key).mockResolvedValue(() => {})
   }
   vi.spyOn(api, 'chatSyncState').mockResolvedValue(undefined)
   vi.spyOn(api, 'scheduledTasksSnapshot').mockResolvedValue({ tasks: [], liveRuns: [] })
-  let streamEvent!: (payload: ChatStreamPayload) => void
-  let toolApproval!: Parameters<typeof api.onChatToolConfirm>[0]
-  let openEvent!: Parameters<typeof api.onChatOpenConversation>[0]
-  vi.spyOn(api, 'onChatStream').mockImplementation(async handler => { streamEvent = handler; return () => {} })
-  vi.spyOn(api, 'onChatToolConfirm').mockImplementation(async handler => { toolApproval = handler; return () => {} })
-  vi.spyOn(api, 'onChatOpenConversation').mockImplementation(async handler => { openEvent = handler; return () => {} })
   const conversations: Conversation[] = ['switch-a', 'switch-b'].map(id => ({
     id, revision: 1, title: id, provider_id: '', model: '', created_at: 1, updated_at: 1,
     messages: [{ id: `${id}-question`, role: 'user', content: `${id} question`, timestamp: 1 }],
@@ -48,6 +42,96 @@ it('keeps previews, queued sends and pending approvals scoped to their running c
   vi.spyOn(chatApi, 'getConversationRevision').mockResolvedValue(1)
   vi.spyOn(chatApi, 'getConversation').mockImplementation(read)
   vi.spyOn(chatApi, 'getContextStats').mockResolvedValue({ contextState: {} })
+  return { conversations, windowReads }
+}
+
+it('shows cached history read-only until validation, and cancels it when the open chat is reselected', async () => {
+  const { windowReads } = mockConversationPair()
+  window.history.replaceState(null, '', '#chat/switch-a')
+  const readOnlyCommits: Element[] = []
+  const observeCommit = () => {
+    const preview = document.querySelector('[inert] .chat-message-list')
+    if (preview) readOnlyCommits.push(preview)
+  }
+  const view = render(<Profiler id="warm-return" onRender={observeCommit}><Chat onSettingsChange={() => {}} /></Profiler>)
+  await act(async () => { await vi.dynamicImportSettled() })
+  await screen.findByText('switch-a question')
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
+  await screen.findByText('switch-b question')
+  // Hold the repository reply. Cached history can paint, but the old route
+  // remains authoritative and message actions stay inert until validation.
+  let validate!: (revision: number) => void
+  vi.mocked(chatApi.getConversationRevision).mockImplementationOnce(() => new Promise(done => { validate = done }))
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
+  const preview = await screen.findByText('switch-a question')
+  expect(preview.closest('[inert]')).not.toBeNull()
+  expect(window.location.hash).toBe('#chat/switch-b')
+  await act(async () => validate(1))
+  expect(screen.getByText('switch-a question')).toBe(preview)
+  expect(preview.closest('[inert]')).toBeNull()
+  expect(window.location.hash).toBe('#chat/switch-a')
+
+  // A late revision change from B cannot roll back a re-selection of A.
+  vi.mocked(chatApi.getConversationRevision).mockImplementationOnce(() => new Promise(done => { validate = done }))
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
+  expect((await screen.findByText('switch-b question')).closest('[inert]')).not.toBeNull()
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
+  await screen.findByText('switch-a question')
+  await act(async () => validate(2))
+  expect(window.location.hash).toBe('#chat/switch-a')
+  expect(screen.getByText('switch-a question').closest('[inert]')).toBeNull()
+  expect(screen.queryByText('switch-b question')).not.toBeInTheDocument()
+
+  // B was invalidated. A subsequent visit must show its new durable content.
+  const fresh = {
+    id: 'switch-b', title: 'switch-b', revision: 2, provider_id: '', model: '', created_at: 1, updated_at: 2,
+    messages: [{ id: 'b-new', role: 'user' as const, content: 'new B question', timestamp: 2 }],
+  }
+  windowReads.mockResolvedValue(fresh)
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
+  await screen.findByText('new B question')
+  expect(window.location.hash).toBe('#chat/switch-b')
+
+  expect(readOnlyCommits.length).toBeGreaterThan(0)
+  readOnlyCommits.length = 0
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
+  await screen.findByText('switch-a question')
+  expect(window.location.hash).toBe('#chat/switch-a')
+  expect(readOnlyCommits).toHaveLength(0)
+  view.unmount()
+})
+
+it('withdraws deleted cached history while the definitive read is still pending', async () => {
+  const { windowReads } = mockConversationPair()
+  window.history.replaceState(null, '', '#chat/switch-a')
+  const view = render(<Chat onSettingsChange={() => {}} />)
+  await act(async () => { await vi.dynamicImportSettled() })
+  await screen.findByText('switch-a question')
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
+  await screen.findByText('switch-b question')
+
+  let missing!: (revision: null) => void
+  vi.mocked(chatApi.getConversationRevision).mockImplementationOnce(() => new Promise(done => { missing = done }))
+  let failRead!: (error: Error) => void
+  windowReads.mockImplementationOnce(() => new Promise((_, reject) => { failRead = reject }))
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
+  expect((await screen.findByText('switch-a question')).closest('[inert]')).not.toBeNull()
+  await act(async () => missing(null))
+  expect(screen.queryByText('switch-a question')).not.toBeInTheDocument()
+  await act(async () => failRead(new Error('conversation no longer exists')))
+  await waitFor(() => expect(window.location.hash).toBe('#chat'))
+  expect(screen.queryByText('switch-a question')).not.toBeInTheDocument()
+  view.unmount()
+})
+
+it('keeps previews, queued sends and pending approvals scoped to their running conversation', async () => {
+  const { conversations, windowReads } = mockConversationPair()
+  let streamEvent!: (payload: ChatStreamPayload) => void
+  let toolApproval!: Parameters<typeof api.onChatToolConfirm>[0]
+  let openEvent!: Parameters<typeof api.onChatOpenConversation>[0]
+  vi.spyOn(api, 'onChatStream').mockImplementation(async handler => { streamEvent = handler; return () => {} })
+  vi.spyOn(api, 'onChatToolConfirm').mockImplementation(async handler => { toolApproval = handler; return () => {} })
+  vi.spyOn(api, 'onChatOpenConversation').mockImplementation(async handler => { openEvent = handler; return () => {} })
   const mixedCommits: string[] = []
   const observeCommit = () => {
     const liveMessageId = getSnapshot().messageId

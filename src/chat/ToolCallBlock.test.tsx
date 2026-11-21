@@ -32,6 +32,7 @@ import type { ChatMessageSegment, ToolCallRecord } from './types'
 import { i18n, LangContext } from '../components/i18n'
 import { ReasoningPreviewContext } from './reasoningPreview'
 import { mergeSubagentProgress } from './streamApply'
+import { onDockDiffPreviewRequest } from './dock/dockPreview'
 
 function buildToolCall(overrides: Partial<ToolCallRecord> = {}): ToolCallRecord {
   return {
@@ -212,6 +213,46 @@ describe('ToolCallCluster', () => {
 })
 
 describe('ToolCallBlock', () => {
+  it('opens the current result without serializing payloads while the tool is collapsed', async () => {
+    const user = userEvent.setup()
+    const old = vi.fn(() => ({ answer: 'stale' }))
+    const current = vi.fn(() => ({ answer: 'latest result' }))
+    const call = buildToolCall({ toolName: 'run_command', result_preview: '', result: { toJSON: old } })
+    const { rerender } = render(<ToolCallBlock toolCall={call} />)
+    rerender(<ToolCallBlock toolCall={{ ...call, result: { toJSON: current } }} />)
+    const button = screen.getByRole('button')
+    expect(button).toHaveAttribute('aria-expanded', 'false')
+    expect(old).not.toHaveBeenCalled()
+    expect(current).not.toHaveBeenCalled()
+    await user.click(button)
+    expect(screen.getByText(/latest result/)).toBeVisible()
+    expect(old).not.toHaveBeenCalled()
+  })
+
+  it('opens a historical edit patch from the collapsed filename and shows the same changes when expanded', async () => {
+    const user = userEvent.setup()
+    const preview = vi.fn()
+    const unsubscribe = onDockDiffPreviewRequest(preview)
+    try {
+      render(<ToolCallBlock toolCall={buildToolCall({
+        toolName: 'Edit', source: 'external_cli', arguments: {
+          file_path: 'src/main.ts', old_string: 'before', new_string: 'after',
+        },
+      })} />)
+      const button = screen.getByRole('button')
+      await user.click(within(button).getByText('main.ts'))
+      expect(preview).toHaveBeenCalledWith({
+        title: 'Edit main.ts', patch: '--- a/src/main.ts\n+++ b/src/main.ts\n@@ @@\n- before\n+ after',
+      })
+      expect(button).toHaveAttribute('aria-expanded', 'false')
+      await user.click(button)
+      expect(screen.getByText('- before')).toBeVisible()
+      expect(screen.getByText('+ after')).toBeVisible()
+    } finally {
+      unsubscribe()
+    }
+  })
+
   it('streams multiline external tool output at the bottom and keeps terminal rendering unchanged', () => {
     const first = `${'x'.repeat(230)}\nsecond line`
     const call = buildToolCall({

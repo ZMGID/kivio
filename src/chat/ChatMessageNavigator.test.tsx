@@ -49,15 +49,24 @@ describe('MessageNavigator', () => {
     const navigate = vi.fn()
     const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(130)
     try {
-      render(<MessageNavigator nodes={turns} activeNodeId={null} visibleNodeIds={[]} onNavigate={navigate} />)
+      const navigator = (activeNodeId: string) => (
+        <MessageNavigator nodes={turns} activeNodeId={activeNodeId} visibleNodeIds={[]} onNavigate={navigate} />
+      )
+      const view = render(navigator('0'))
       const rail = screen.getByLabelText('对话轮次导航').firstElementChild as HTMLElement
       expect(screen.queryByRole('button', { name: '第 251 轮：问题 251' })).toBeNull()
-      fireEvent.scroll(rail, { target: { scrollTop: 250 * 13 } })
+      fireEvent.wheel(rail, { deltaY: 250 * 13 })
+      fireEvent.scroll(rail)
+      // A new active turn in the transcript must not move the rail out from under the pointer.
+      view.rerender(navigator('1'))
+      expect(rail.scrollTop).toBe(250 * 13)
       const middle = screen.getByRole('button', { name: '第 251 轮：问题 251' })
       fireEvent.focus(middle)
       expect(screen.getByRole('tooltip')).toHaveTextContent('问题 251')
       fireEvent.click(middle)
       expect(navigate).toHaveBeenCalledWith(turns[250])
+      view.rerender(navigator('2'))
+      expect(rail.scrollTop).toBe(2 * 13)
     } finally {
       height.mockRestore()
     }

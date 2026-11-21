@@ -51,6 +51,7 @@ import { ScrollFollowingContext, useScrollFollow } from './scroll/useScrollFollo
 import { usePresence } from './dock/workspacePanelMotion'
 import {
   chatMessageLayoutRevision,
+  chatMessageReadingRevision,
   correctCachedChatRow,
   estimateMessageRenderHeight,
   estimateMessageRenderCost,
@@ -104,6 +105,8 @@ function sameOutlineItems(a: readonly MarkdownHeadingOutlineItem[], b: readonly 
 }
 
 export interface MessageListProps {
+  /** An inactive cached window can render before it owns the saved reading position. */
+  readOnlyPreview?: boolean
   waitingForBackgroundTasks?: boolean
   density?: 'default' | 'compact'
   conversationId?: string | null
@@ -113,12 +116,13 @@ export interface MessageListProps {
   onInsertQueuedMessage?: (id: string) => void
   onRemoveQueuedMessage?: (id: string) => void
   onRestoreQueuedMessage?: (id: string) => void
+  historyGap?: Conversation['history_gap']
   historyStart?: number
   historyDirectory?: NonNullable<Conversation['history_directory']>
   historyArtifacts?: ChatToolArtifact[]
-  onLoadOlder?: () => void | Promise<void>
+  onLoadHistory?: (edge: 'older' | 'gap-start' | 'gap-end') => void | Promise<void>
   historyLoadError?: string | null
-  onFocusHistoryMessage?: (conversationId: string, messageId: string, signal: AbortSignal) => void | Promise<void>
+  onFocusHistoryMessage?: (conversationId: string, messageId: string, signal: AbortSignal, anchorMessageId?: string) => void | Promise<void>
   renderRequestId?: number
   onInitialRender?: (conversationId: string, requestId: number) => void
   agentPlanState?: AgentPlanState | null
@@ -220,19 +224,23 @@ function readingRowKey(item: RenderItem): string {
   return item.key
 }
 
-function measurementKey(item: RenderItem): string {
+function rowRevision(item: RenderItem, messageRevision: (message: ChatMessage) => string): string {
   if (item.kind === 'message') {
-    return `${readingRowKey(item)}:${chatMessageLayoutRevision(item.message)}`
+    return `${readingRowKey(item)}:${messageRevision(item.message)}`
   }
   if (item.kind === 'group') {
     return `${readingRowKey(item)}:${item.messages.map((message) => [
       message.id,
       message.provider_id ?? message.providerId ?? '',
       message.model ?? '',
-      chatMessageLayoutRevision(message),
+      messageRevision(message),
     ].join(':')).join('|')}`
   }
   return item.key
+}
+
+function measurementKey(item: RenderItem): string {
+  return rowRevision(item, chatMessageLayoutRevision)
 }
 
 function streamErrorDegraded(error: string, t: I18n): DegradedAnswer {
@@ -340,6 +348,7 @@ const MessageRowBubble = memo(function MessageRowBubble({
 })
 
 function MessageListBase({
+  readOnlyPreview = false,
   density = 'default',
   waitingForBackgroundTasks = false,
   conversationId,
@@ -375,10 +384,11 @@ function MessageListBase({
   focusMessageId = null,
   focusReasoning = false,
   onFocusMessageHandled,
+  historyGap,
   historyStart = 0,
   historyDirectory = EMPTY_HISTORY_DIRECTORY,
   historyArtifacts = EMPTY_HISTORY_ARTIFACTS,
-  onLoadOlder,
+  onLoadHistory,
   historyLoadError,
   onFocusHistoryMessage,
 }: MessageListProps) {
@@ -457,6 +467,9 @@ function MessageListBase({
     return messages.filter((message) => !activeMessageIds.has(message.id))
   }, [liveGroup, messages, liveMessageId, streamFrozen, streaming])
 
+  const beforeGap = useMemo(() => historyGap
+    ? new Set(storedMessages.slice(0, historyGap.start - historyStart).map(message => message.id))
+    : null, [historyGap, historyStart, storedMessages])
   const [turnWorkOverrides, setTurnWorkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map())
   const [temporaryTurnWork, setTemporaryTurnWork] = useState<{ conversationId: typeof conversationId; key: string } | null>(null)
   const liveHasSubagentWork = liveRowActive && !liveGroupId && liveEdges.hasSubagentWork
@@ -499,7 +512,13 @@ function MessageListBase({
       if (includeLive) liveTurnWork = { active, open, showHeader: rows.length === 0, foldAnswer: false, onOpenChange, reveal }
     }
 
+    let previousBeforeGap = Boolean(beforeGap)
     for (const message of storedMessages) {
+      if (previousBeforeGap && !beforeGap?.has(message.id)) {
+        addTurn(false)
+        userId = undefined
+        previousBeforeGap = false
+      }
       const lifecycle = message.segments?.some(isSubagentTimelineSegment) ?? false
       if (message.role === 'user') {
         addTurn(false)
@@ -522,7 +541,7 @@ function MessageListBase({
     }
     addTurn(true)
     return { workByMessageId, liveTurnWork }
-  }, [conversationId, historyMessages, liveGroupId, liveHasSubagentWork, liveRowActive,
+  }, [beforeGap, conversationId, historyMessages, liveGroupId, liveHasSubagentWork, liveRowActive,
     storedMessages, streamFrozen, streaming, temporaryTurnWork, turnWorkOverrides, waitingForBackgroundTasks])
 
   // A committed answer adopts its live key for both measurements and React
@@ -790,21 +809,31 @@ function MessageListBase({
 
   // 最后一轮回答的成员与已占用模型，整轮算一次：逐行调 isLastAssistantTurn /
   // occupiedReplyModels 是每行一次全量扫描，而且每次返回新数组，会让该行的 memo 失效。
+  const tail = useMemo(() => beforeGap ? messages.filter(message => !beforeGap.has(message.id)) : messages,
+    [beforeGap, messages])
   const lastAssistantTurn = useMemo(() => {
-    const last = messages[messages.length - 1]
+    const last = tail[tail.length - 1]
     // 最后一条是回答时，它所在的这一轮就是最后一轮。
-    const span = last ? assistantTurnSpan(messages, last.id) : null
+    const span = last ? assistantTurnSpan(tail, last.id) : null
     if (!last || !span) return null
     return {
       ids: new Set(span.siblings.map(message => message.id)),
-      occupiedModels: occupiedReplyModels(messages, last.id, sessionProviderId, sessionModel),
+      occupiedModels: occupiedReplyModels(tail, last.id, sessionProviderId, sessionModel),
     }
-  }, [messages, sessionModel, sessionProviderId])
+  }, [tail, sessionModel, sessionProviderId])
 
-  const boundaries = useMemo(
-    () => resolveCompactionBoundaries(messages, contextState),
-    [contextState, messages],
-  )
+  const boundaries = useMemo(() => {
+    const resolved = resolveCompactionBoundaries(messages, contextState)
+    if (!historyGap || !resolved.length) return resolved
+    // A display anchor inside the gap still exists. Only use a fallback anchor
+    // when the full-snapshot directory says it was deleted.
+    const anchors = new Map(historyDirectory.filter(entry => entry.kind === 'compaction')
+      .map(entry => [entry.id, entry.message_id]))
+    return resolved.filter(boundary => {
+      const anchor = anchors.get(`compaction-${boundary.record.id}`)
+      return !anchor || messages[boundary.afterIndex]?.id === anchor
+    })
+  }, [contextState, historyDirectory, historyGap, messages])
 
   const clearBoundaries = useMemo(
     () => resolveClearBoundaries(messages, contextState),
@@ -929,7 +958,7 @@ function MessageListBase({
   }, [error, liveGroup, liveMessageId, liveRowKey, streamFrozen, streaming])
   // 历史项只在消息/压缩边界/组模型身份变化时重建。高频流式文本不进入依赖；
   // live 行单独挂在 virtualizer 外的文档流尾部。
-  const historyItems = useMemo<HistoryRenderItem[]>(() => {
+  const { historyItems, gapIndex } = useMemo(() => {
     const list: HistoryRenderItem[] = [
       { kind: 'spacer', key: 'padding-top', size: LIST_EDGE_PADDING_PX },
     ]
@@ -961,7 +990,12 @@ function MessageListBase({
       )
     }
 
+    // The gap is a paging boundary between real rows and has no visual height.
+    let gapIndex: number | null = null
     for (const item of folded) {
+      if (beforeGap && gapIndex === null && !beforeGap.has(item.type === 'group' ? item.messages[0].id : item.message.id)) {
+        gapIndex = list.length
+      }
       if (item.type === 'group') {
         list.push({
           kind: 'group',
@@ -987,11 +1021,11 @@ function MessageListBase({
       }
     }
 
-    return list
+    return { historyItems: list, gapIndex: beforeGap ? gapIndex ?? list.length : null }
   // liveRowKey / origins intentionally omitted: settle aliases are applied when
   // historyMessages/folded change (the twin re-enters history). Token frames must
   // not rebuild committed rows.
-  }, [appendCompactionSlot, folded, liveGroupModels, liveRowModel, messageIndexById])
+  }, [appendCompactionSlot, beforeGap, folded, liveGroupModels, liveRowModel, messageIndexById])
 
   const errorItem = useMemo<RenderItem | null>(() => {
     if (!error) return null
@@ -1198,11 +1232,19 @@ function MessageListBase({
       let to = range.endIndex
       let height = 0
       while (from > 0 && range.startIndex - from < range.overscan && height < budget) {
-        height += rowHeight(--from)
+        const nextHeight = height + rowHeight(from - 1)
+        // Keep the immediate scroll neighbor, but don't mount a whole large
+        // reply beyond it just because the preceding short rows fit.
+        if (from !== range.startIndex && nextHeight > budget) break
+        height = nextHeight
+        from--
       }
       height = 0
       while (to < range.count - 1 && to - range.endIndex < range.overscan && height < budget) {
-        height += rowHeight(++to)
+        const nextHeight = height + rowHeight(to + 1)
+        if (to !== range.endIndex && nextHeight > budget) break
+        height = nextHeight
+        to++
       }
       let indexes = Array.from({ length: to - from + 1 }, (_, index) => from + index)
       // 消息导航：目标行附近强制挂载渲染测高，再一次性跳转。
@@ -1382,17 +1424,23 @@ function MessageListBase({
     committedConversationRef.current = conversationId
     committedSavedRef.current = false
     saveMeasurementSnapshotRef.current = () => {
-      if (!viewportEl) return
+      if (!viewportEl || readOnlyPreview) return
       if (conversationId) {
         const scrollTop = viewportEl.scrollTop
-        const anchor = virtualizer.getVirtualItems().find((row) => row.end > scrollTop && itemAt(row.index)?.kind !== 'spacer')
+        const anchor = virtualizer.getVirtualItems().find(row => {
+          const kind = itemAt(row.index)?.kind
+          return row.end > scrollTop && kind !== 'spacer'
+        })
         const item = anchor ? itemAt(anchor.index) : null
         const following = followHandle.isFollowing()
         const livePosition = following ? null : captureLiveReadingPosition(viewportEl, layoutKey)
         rememberChatReadingPosition(conversationId, livePosition ?? {
           following,
           rowKey: item ? readingRowKey(item) : null,
-          rowRevision: item ? measurementKey(item) : null,
+          anchorMessageId: item?.kind === 'message' ? item.message.id : item?.kind === 'group'
+            ? item.messages[0].id : item && 'boundary' in item ? messages[item.boundary.afterIndex]?.id
+              : item?.kind === 'compaction-progress' ? messages[item.afterIndex]?.id : undefined,
+          rowRevision: item ? rowRevision(item, chatMessageReadingRevision) : null,
           rowOffset: anchor ? scrollTop - anchor.start : 0,
           scrollTop,
           layoutKey,
@@ -1412,59 +1460,83 @@ function MessageListBase({
 
   const pageAnchorRef = useRef<{ key: string; revision: string; offset: number } | null>(null)
   const historyNavigationRef = useRef<AbortController | null>(null)
+  const wheelHistoryEdgeRef = useRef<'gap-start' | 'gap-end' | null>(null)
   const cancelHistoryNavigation = useCallback(() => {
     historyNavigationRef.current?.abort()
     historyNavigationRef.current = null
   }, [])
-  useEffect(() => cancelHistoryNavigation, [cancelHistoryNavigation, conversationId])
-  const previousHistoryRef = useRef({ conversationId, historyStart })
-  const capturePageAnchor = useCallback(() => {
-    if (!viewportEl || historyStart === 0) return
+  useEffect(() => {
+    wheelHistoryEdgeRef.current = null
+    return cancelHistoryNavigation
+  }, [cancelHistoryNavigation, conversationId])
+  const previousHistoryRef = useRef({ conversationId, historyStart, historyGap })
+  const capturePageAnchor = useCallback((edge?: 'older' | 'gap-start' | 'gap-end') => {
+    if (!viewportEl || (!historyGap && historyStart === 0)) return
     // Use the measurement at the actual offset, as ZCode does. The mounted
     // overscan window can still describe the previous position during a wheel.
     const atOffset = virtualizer.getVirtualItemForOffset(viewportEl.scrollTop)
-    const row = atOffset && itemAt(atOffset.index)?.kind !== 'spacer' ? atOffset
-      : virtualizer.measurementsCache.find((item) => item.end > viewportEl.scrollTop
-        && itemAt(item.index)?.kind !== 'spacer')
+    // A large scroll can cross the boundary in one frame. Keep the anchor on
+    // the side being extended so the new page stays within the reader's reach.
+    let row = atOffset
+    if (row && gapIndex !== null) {
+      if (edge === 'gap-start' && row.index >= gapIndex) row = virtualizer.measurementsCache[gapIndex - 1]
+      if (edge === 'gap-end' && row.index < gapIndex) row = virtualizer.measurementsCache[gapIndex]
+    }
+    if (!row || itemAt(row.index)?.kind === 'spacer') {
+      row = virtualizer.measurementsCache.find(item => item.end > viewportEl.scrollTop && itemAt(item.index)?.kind !== 'spacer')
+    }
     const item = row ? itemAt(row.index) : null
     if (row && item) pageAnchorRef.current = {
       key: item.key, revision: measurementKey(item), offset: viewportEl.scrollTop - row.start,
     }
-  }, [historyStart, itemAt, viewportEl, virtualizer])
+  }, [gapIndex, historyGap, historyStart, itemAt, viewportEl, virtualizer])
   const olderHistoryRequestRef = useRef<{ conversationId: string | null | undefined } | null>(null)
-  const requestOlderHistory = useCallback(() => {
-    if (!viewportEl || !onLoadOlder || historyStart === 0
+  const requestHistory = useCallback((edge: 'older' | 'gap-start' | 'gap-end') => {
+    if (!viewportEl || !onLoadHistory || (edge === 'older' ? historyStart === 0 : !historyGap)
       || (olderHistoryRequestRef.current && olderHistoryRequestRef.current.conversationId === conversationId)) return
     cancelHistoryNavigation()
-    capturePageAnchor()
+    capturePageAnchor(edge)
     followHandle.releaseFollow()
     const request = { conversationId }
     olderHistoryRequestRef.current = request
     void (async () => {
       try {
-        await onLoadOlder()
+        await onLoadHistory(edge)
       } finally {
         if (olderHistoryRequestRef.current === request) olderHistoryRequestRef.current = null
       }
     })()
-  }, [cancelHistoryNavigation, capturePageAnchor, conversationId, followHandle, historyStart, onLoadOlder, viewportEl])
+  }, [cancelHistoryNavigation, capturePageAnchor, conversationId, followHandle, historyGap, historyStart, onLoadHistory, viewportEl])
 
   // ZCode prefetches two viewports before the loaded history edge. Keep paging
   // out of initial bottom restoration and explicit message-navigation holds.
   const prefetchOlderHistory = useCallback((allowUnscrollable = false) => {
     if (!viewportEl || (followHandle.isFollowing() && !allowUnscrollable) || navigationLockRef.current
       || historyNavigationRef.current) return
-    if (viewportEl.scrollTop <= Math.max(64, viewportEl.clientHeight * 2)) requestOlderHistory()
-  }, [followHandle, requestOlderHistory, viewportEl])
+    const threshold = Math.max(64, viewportEl.clientHeight * 2)
+    if (historyStart > 0 && viewportEl.scrollTop <= 64) {
+      requestHistory('older')
+      return
+    }
+    if (gapIndex !== null) {
+      const boundary = virtualizer.measurementsCache[gapIndex]?.start ?? virtualizer.getTotalSize()
+      if (boundary <= viewportEl.scrollTop + viewportEl.clientHeight + threshold
+        && boundary >= viewportEl.scrollTop - threshold) {
+        requestHistory(wheelHistoryEdgeRef.current ?? (viewportEl.scrollTop <= boundary ? 'gap-start' : 'gap-end'))
+        return
+      }
+    }
+    if (viewportEl.scrollTop <= threshold) requestHistory('older')
+  }, [followHandle, gapIndex, historyStart, requestHistory, viewportEl, virtualizer])
 
   useLayoutEffect(() => {
     const previous = previousHistoryRef.current
-    previousHistoryRef.current = { conversationId, historyStart }
+    previousHistoryRef.current = { conversationId, historyStart, historyGap }
     if (previous.conversationId !== conversationId) {
       pageAnchorRef.current = null
       return
     }
-    if (historyStart >= previous.historyStart || !pageAnchorRef.current) return
+    if ((historyStart >= previous.historyStart && historyGap === previous.historyGap) || !pageAnchorRef.current) return
     const anchor = pageAnchorRef.current
     pageAnchorRef.current = null
     if (followHandle.isFollowing()) return
@@ -1477,7 +1549,7 @@ function MessageListBase({
     const start = virtualizer.measurementsCache[index]?.start
       ?? virtualizer.getOffsetForIndex(index, 'start')?.[0]
     if (start !== undefined) followHandle.restoreReadingPosition(start + anchor.offset)
-  }, [conversationId, followHandle, historyItems, historyStart, virtualizer])
+  }, [conversationId, followHandle, historyGap, historyItems, historyStart, virtualizer])
 
   useLayoutEffect(() => {
     if (!contentEl) return
@@ -1496,7 +1568,7 @@ function MessageListBase({
     return buildMessageNavigatorNodes({ folded, boundaries, clearBoundaries, renderIndexByKey })
   }, [boundaries, clearBoundaries, folded, historyItems])
   const navigatorNodes = useMemo(() => {
-    if (historyStart === 0 || historyDirectory.length === 0) return loadedNavigatorNodes
+    if ((!historyGap && historyStart === 0) || historyDirectory.length === 0) return loadedNavigatorNodes
     const loadedById = new Map(loadedNavigatorNodes.map((node) => [node.id, node]))
     const directoryNodes: MessageNavigatorNode[] = historyDirectory.map((entry) => {
       const loaded = loadedById.get(entry.id)
@@ -1512,7 +1584,7 @@ function MessageListBase({
     })
     const directoryIds = new Set(historyDirectory.map((entry) => entry.id))
     return [...directoryNodes, ...loadedNavigatorNodes.filter((node) => !directoryIds.has(node.id))]
-  }, [historyDirectory, historyStart, loadedNavigatorNodes])
+  }, [historyDirectory, historyGap, historyStart, loadedNavigatorNodes])
   const outlineItemsByOwner = useMemo(() => {
     const byOwner = new Map<string, MarkdownHeadingOutlineItem[]>()
     for (const source of outlineSources.values()) {
@@ -1952,7 +2024,7 @@ function MessageListBase({
       if (targetId && conversationId) {
         const request = new AbortController()
         historyNavigationRef.current = request
-        void onFocusHistoryMessage?.(conversationId, targetId, request.signal)
+        void onFocusHistoryMessage?.(conversationId, targetId, request.signal, entry?.message_id)
       }
       return
     }
@@ -2370,12 +2442,11 @@ function MessageListBase({
   // 下一个 scroll 事件又被 handleNavigatorScroll 的 jumpToBottom()（forceFollow）钉回，
   // gap>12 让 hold 的 stable 计数永不累积，拉锯会跑满 NAVIGATOR_HOLD_MAX_FRAMES(28)
   // + NAVIGATOR_UNLOCK_FRAMES(10) ≈ 470ms —— 体感就是「点完回底再上滚被反复拽回」。
-  // 任何以纵向为主的滚轮都直接终止当前会话：prepare 阶段取消 settle 循环，hold 阶段
-  // 走 endNavigatorSession（清 hold/force-mount、结束 eager hydrate、几帧后解锁）。
   // 阅读位置恢复也在触摸、拖动滚动条和翻页键时立即让出控制权。
   useEffect(() => {
     if (!viewportEl) return
     const takeOver = () => {
+      wheelHistoryEdgeRef.current = null
       cancelHistoryNavigation()
       if (navigatorHoldRef.current?.rowOffset != null) {
         clearNavigatorPrepare()
@@ -2385,13 +2456,16 @@ function MessageListBase({
     const handleWheel = (event: WheelEvent) => {
       if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
       takeOver()
+      wheelHistoryEdgeRef.current = event.deltaY > 0 ? 'gap-start' : 'gap-end'
       const sessionActive = navigationLockRef.current
         || navigatorSettleRafRef.current !== null
         || navigatorHoldRef.current !== null
         || bottomHoldRef.current !== null
       if (sessionActive) {
-        cancelNavigatorSettle()
-        endNavigatorSession(navigatorSettleGenerationRef.current)
+        // A real scroll owns the viewport immediately. Re-arming the delayed
+        // unlock on each wheel tick prevents paging during a trackpad gesture.
+        clearNavigatorPrepare()
+        endMessageNavigationHydrate(navigatorSettleGenerationRef.current)
       }
       // At the top an upward wheel may produce no scroll event; it must still
       // allow retrying a failed page (or reading a window shorter than a screen).
@@ -2423,7 +2497,7 @@ function MessageListBase({
       viewportEl.removeEventListener('touchstart', takeOver)
       window.removeEventListener('keydown', handleKey)
     }
-  }, [cancelHistoryNavigation, cancelNavigatorSettle, clearNavigatorPrepare, endNavigatorSession, prefetchOlderHistory, viewportEl])
+  }, [cancelHistoryNavigation, clearNavigatorPrepare, prefetchOlderHistory, viewportEl])
 
 
   const handleDisclosureClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -2497,7 +2571,7 @@ function MessageListBase({
     const saved = rememberedReadingPosition
     if (saved && !saved.following) {
       const index = historyItems.findIndex((item) => readingRowKey(item) === saved.rowKey)
-      if (index >= 0 && (!saved.rowRevision || saved.rowRevision === measurementKey(historyItems[index]))) {
+      if (index >= 0 && (!saved.rowRevision || saved.rowRevision === rowRevision(historyItems[index], chatMessageReadingRevision))) {
         beginReadingRestore(saved, index)
         return
       }
@@ -2748,14 +2822,12 @@ function MessageListBase({
                 onReplyWithModel
                   && !streaming
                   && !streamFrozen
-                  && item.messages.some((message) => isLastAssistantTurn(messages, message.id))
+                  && item.messages.some(message => isLastAssistantTurn(tail, message.id))
                   ? onReplyWithModel
                   : undefined
               }
               replyOccupiedModels={
-                item.messages[0]
-                  ? occupiedReplyModels(messages, item.messages[0].id, sessionProviderId, sessionModel)
-                  : undefined
+                lastAssistantTurn?.ids.has(item.messages[0]?.id) ? lastAssistantTurn.occupiedModels : undefined
               }
               onForkMessage={streaming || streamFrozen ? undefined : onForkMessage}
               onDeleteMessage={streaming || streamFrozen ? undefined : onDeleteMessage}
@@ -2850,6 +2922,7 @@ function MessageListBase({
       streamFrozen,
       messages,
       lastAssistantTurn,
+      tail,
       workByMessageId,
       liveTurnWork,
       animateLiveEntrance,
@@ -2944,6 +3017,7 @@ function MessageListBase({
       )}
       {navigatorTurnCount >= MESSAGE_NAVIGATOR_MIN_TURNS && (
         <MessageNavigator
+          key={conversationId}
           nodes={navigatorNodes}
           activeNodeId={activeNavigatorNodeId}
           visibleNodeIds={visibleNavigatorNodeIds}

@@ -9,12 +9,13 @@ import {
   invalidateConversationTransition,
   isCurrentConversationNavigation,
   isCurrentConversationTransition,
+  previewConversationTransition,
   type ConversationLoadHint,
 } from './conversationTransitionStore'
 import { forgetRememberedChatRoute } from './persistence'
 import { draftKey, migrateNewChatDraft } from './composerDraft'
 import type { Conversation } from './types'
-import { isPartialConversation, prependConversationHistoryPage, type ConversationHistoryPage } from './conversationHistoryWindow'
+import { isPartialConversation, mergeConversationHistoryPage, type ConversationHistoryPage } from './conversationHistoryWindow'
 
 
 type ClearChatDecision = 'busy' | 'cancelled' | 'confirmed'
@@ -23,9 +24,11 @@ interface NavigationPorts {
   currentConversationId: () => string | null
   listPopouts: () => Promise<ReadonlySet<string>>
   readConversation: (conversationId: string) => Promise<Conversation>
-  readConversationWindow?: (conversationId: string) => Promise<Conversation>
+  readConversationWindow?: (
+    conversationId: string, preview: (window?: Conversation) => void, anchorMessageId?: string,
+  ) => Promise<Conversation>
   knownConversationRevision?: (conversationId: string) => number
-  readHistoryPage: (conversationId: string, before: number) => Promise<ConversationHistoryPage>
+  readHistoryPage: (conversationId: string, before: number, after?: number) => Promise<ConversationHistoryPage>
   showHistoryPage: (conversation: Conversation) => void
   isConversationInFlight: (conversationId: string) => boolean
   prepareNewConversation: () => void
@@ -74,6 +77,13 @@ function asError(value: unknown, fallback = '对话加载失败，已从列表�
 /** Owns navigation commit rights. Backend runs are deliberately not cancelled
  * when a view changes: only an obsolete UI result loses its lease. */
 export function createChatNavigationController(ports: NavigationPorts) {
+  const readInitialWindow = (conversationId: string, requestId?: number, anchorMessageId?: string) =>
+    ports.readConversationWindow?.(conversationId, (candidate) => {
+      if (requestId === undefined) return
+      const known = ports.knownConversationRevision?.(conversationId) ?? 0
+      previewConversationTransition(requestId, candidate && candidate.revision >= known ? candidate : undefined)
+    }, anchorMessageId) ?? ports.readConversation(conversationId)
+
   const readAndShowConversation = async (
     conversationId: string,
     read: (conversationId: string) => Promise<Conversation>,
@@ -92,9 +102,12 @@ export function createChatNavigationController(ports: NavigationPorts) {
   }
 
   const historyPages = new Map<string, ReturnType<typeof captureConversationNavigation>>()
-  const loadOlderHistory = async () => {
+  const loadHistoryPage = async (edge: 'older' | 'gap-start' | 'gap-end' = 'older') => {
     const current = ports.currentConversation()
     if (!current || !isPartialConversation(current)) return
+    const gap = current.history_gap
+    const before = edge === 'older' ? current.history_start : gap?.end
+    if (!before) return
     const pending = historyPages.get(current.id)
     if (pending && isCurrentConversationNavigation(pending)) return
     const lease = captureConversationNavigation()
@@ -103,27 +116,33 @@ export function createChatNavigationController(ports: NavigationPorts) {
     historyPages.set(current.id, lease)
     ports.reportHistoryError(current.id, null)
     try {
-      const page = await ports.readHistoryPage(current.id, current.history_start!)
+      const page = await ports.readHistoryPage(current.id, before, edge === 'gap-start' ? gap?.start : undefined)
       if (!canCommit()) return
       const latest = ports.currentConversation()
       if (!latest || latest.id !== current.id || !isPartialConversation(latest)) return
-      const merged = prependConversationHistoryPage(latest, page)
-      const next = merged ?? await ports.readConversation(current.id)
-      if (canCommit()) {
-        ports.showHistoryPage(next)
-        ports.reportHistoryError(current.id, null)
+      if (latest.history_gap !== gap || latest.history_start !== current.history_start) return
+      const merged = mergeConversationHistoryPage(latest, page)
+      if (merged && merged.revision >= (ports.knownConversationRevision?.(current.id) ?? 0)) {
+        ports.showHistoryPage(merged)
+        return
       }
+      const split = gap ? gap.start - (current.history_start ?? 0) : 0
+      const index = edge === 'gap-start' ? Math.max(0, split - 1) : edge === 'gap-end' ? split : 0
+      const anchor = current.messages[index]?.id
+      const outcome = await readAndShowConversation(current.id, id => readInitialWindow(id, undefined, anchor),
+        () => canCommit() && ports.currentConversation()?.messages === latest.messages, ports.showHistoryPage)
+      if (outcome === 'changed') ports.reportConversationChanged?.(current.id)
     } catch (error) {
       if (canCommit()) {
         console.error('Failed to load older conversation history:', error)
-        ports.reportHistoryError(current.id, '加载更早消息失败，请重试。')
+        ports.reportHistoryError(current.id, edge === 'older' ? '加载更早消息失败，请重试。' : '加载历史消息失败，请重试。')
       }
     } finally {
       if (historyPages.get(current.id) === lease) historyPages.delete(current.id)
     }
   }
   let historyFocusSequence = 0
-  const focusHistoryMessage = async (conversationId: string, messageId: string, signal: AbortSignal) => {
+  const focusHistoryMessage = async (conversationId: string, messageId: string, signal: AbortSignal, anchorMessageId = messageId) => {
     const sequence = ++historyFocusSequence
     const navigation = captureConversationNavigation()
     const isCurrent = () => !signal.aborted && sequence === historyFocusSequence
@@ -132,7 +151,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
     if (!isCurrent()) return
     ports.reportHistoryError(conversationId, null)
     try {
-      const outcome = await readAndShowConversation(conversationId, ports.readConversation, isCurrent,
+      const outcome = await readAndShowConversation(conversationId, id => readInitialWindow(id, undefined, anchorMessageId), isCurrent,
         (conversation) => ports.showHistoryTarget(conversation, messageId))
       if (outcome === 'changed' && isCurrent()) ports.reportConversationChanged?.(conversationId)
     } catch (error) {
@@ -261,7 +280,9 @@ export function createChatNavigationController(ports: NavigationPorts) {
     try {
       // A run appends drafts to its own journal; the stored history a window
       // is cut from is the same whether or not the conversation is running.
-      const read = options?.initialWindow ? ports.readConversationWindow ?? ports.readConversation : ports.readConversation
+      const read = options?.initialWindow
+        ? (id: string) => readInitialWindow(id, options.embedded ? undefined : transitionRequestId)
+        : ports.readConversation
       const outcome = await readAndShowConversation(conversationId, read, () => {
         const transition = getConversationTransitionSnapshot()
         return canCommitResult() && (!transition.loading || transition.targetConversationId === conversationId)
@@ -356,7 +377,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
     }
     ports.prepareSelection(null, true)
     try {
-      const read = hint?.focusMessageId ? ports.readConversation : ports.readConversationWindow ?? ports.readConversation
+      const read = (id: string) => readInitialWindow(id, requestId, hint?.focusMessageId)
       const outcome = await readAndShowConversation(conversationId, read, isCurrent,
         (conversation) => {
           ports.showConversation(conversation, {
@@ -392,7 +413,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
   }
 
   return {
-    loadOlderHistory,
+    loadHistoryPage,
     focusHistoryMessage,
     beginConversationCreation,
     isConversationCreationCurrent,

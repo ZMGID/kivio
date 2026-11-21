@@ -1399,10 +1399,38 @@ function parseStreamingBlocks(markdown: string): string[] {
   return next
 }
 
+// A CSV-style result may contain thousands of cells. Streamdown already split
+// this block from the surrounding Markdown. Only bypass inline parsing when
+// every cell is plain text and every row has exactly the declared columns.
+function renderPlainDataTable({ content, components }: BlockProps) {
+  if (content.length < 4096 || !content.startsWith('|') || !components) return null
+  const lines = content.trimEnd().split('\n')
+  if (lines.length < 3 || !lines.every(line => line.startsWith('|') && line.endsWith('|'))) return null
+  const cells = (line: string) => line.slice(1, -1).split('|').map(cell => cell.replace(/^[ \t]+|[ \t]+$/g, ''))
+  const delimiters = cells(lines[1])
+  if (!delimiters.every(cell => /^:?-+:?$/.test(cell))) return null
+  const rows = [lines[0], ...lines.slice(2)].map(cells)
+  if (!rows.every(row => row.length === delimiters.length && row.every(cell => /^[\p{L}\p{N} -]*$/u.test(cell)))) return null
+  const styles = delimiters.map(cell => {
+    const left = cell.startsWith(':')
+    if (cell.endsWith(':')) return { textAlign: left ? 'center' as const : 'right' as const }
+    return left ? { textAlign: 'left' as const } : undefined
+  })
+  const { table: Table = 'table', thead: Head = 'thead', tbody: Body = 'tbody',
+    tr: Row = 'tr', th: Header = 'th', td: Cell = 'td' } = components
+  return <Table key={content}>
+    <Head><Row>{rows[0].map((value, i) => <Header key={i} style={styles[i]}>{value}</Header>)}</Row></Head>
+    <Body>{rows.slice(1).map((row, i) => <Row key={i}>
+      {row.map((value, col) => <Cell key={col} style={styles[col]}>{value}</Cell>)}
+    </Row>)}</Body>
+  </Table>
+}
+
 // Streamdown 2.5 can leave a block stale after a non-prefix replacement. Scope
 // that recovery to the affected block: resetting the entire document also
 // destroys unchanged code, math, image and preview state on every correction.
 const ChatMarkdownBlock = memo(function ChatMarkdownBlock(props: BlockProps) {
+  const streaming = useContext(MarkdownStreamingContext)
   const previousContentRef = useRef(props.content)
   const revisionRef = useRef(0)
   const previous = previousContentRef.current
@@ -1411,7 +1439,7 @@ const ChatMarkdownBlock = memo(function ChatMarkdownBlock(props: BlockProps) {
     revisionRef.current += 1
   }
   previousContentRef.current = props.content
-  return <Block key={revisionRef.current} {...props} />
+  return (!streaming && !props.isIncomplete && renderPlainDataTable(props)) || <Block key={revisionRef.current} {...props} />
 })
 
 const MarkdownDocument = memo(function MarkdownDocument({

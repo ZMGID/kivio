@@ -64,20 +64,56 @@ export function historyWindowStart(messages: ChatMessage[], end: number): number
   return start
 }
 
+export function historyWindowEnd(messages: ChatMessage[], start: number, limit: number): number {
+  let end = start
+  let bytes = 0
+  const encoder = new TextEncoder()
+  while (end < Math.min(start + 60, limit)) {
+    const size = encoder.encode(JSON.stringify(messages[end])).byteLength
+    if (end > start && bytes + size > 512 * 1024) break
+    bytes += size
+    end++
+  }
+  if (end > start && end < limit && messages[end - 1].role === 'user' && messages[end].role === 'assistant') end++
+  const previous = messages[end - 1]
+  const group = previous?.group_id ?? previous?.groupId
+  if (group) {
+    const ceiling = Math.min(end + 4, limit)
+    while (end < ceiling && (messages[end].group_id ?? messages[end].groupId) === group) end++
+  }
+  return end
+}
+
 /** Pages only extend the same snapshot. Edits, truncations and background
  * completions change revision and must be reloaded instead of spliced in. */
-export function prependConversationHistoryPage(
+export function mergeConversationHistoryPage(
   current: Conversation,
   page: ConversationHistoryPage,
 ): Conversation | null {
   if (current.history_start == null || current.history_total == null) return null
   if (page.revision !== current.revision || page.total !== current.history_total
-    || page.end !== current.history_start || page.start < 0
+    || page.start < 0 || page.end > page.total || page.start >= page.end
     || page.messages.length !== page.end - page.start) return null
+  let start = current.history_start
+  let gap = current.history_gap
+  let messages: ChatMessage[]
+  if (page.end === start) {
+    messages = [...page.messages, ...current.messages]
+    start = page.start
+  } else if (gap && (page.end === gap.end || (page.start === gap.start && page.end <= gap.end))) {
+    const first = Math.max(page.start, gap.start)
+    const split = gap.start - start
+    messages = [...current.messages.slice(0, split), ...page.messages.slice(first - page.start), ...current.messages.slice(split)]
+    if (page.end === gap.end) gap = first === gap.start ? undefined : { ...gap, end: first }
+    else gap = { ...gap, start: page.end }
+  } else {
+    return null
+  }
   return {
     ...current,
-    messages: [...page.messages, ...current.messages],
-    history_start: page.start,
+    messages,
+    history_start: start,
+    history_gap: gap,
     history_artifacts: [...new Map([
       ...(current.history_artifacts ?? []), ...(page.history_artifacts ?? []),
     ].map(artifact => [artifactId(artifact), artifact])).values()],
@@ -85,5 +121,5 @@ export function prependConversationHistoryPage(
 }
 
 export function isPartialConversation(conversation: Conversation | null): boolean {
-  return Boolean(conversation && (conversation.history_start ?? 0) > 0)
+  return Boolean(conversation && ((conversation.history_start ?? 0) > 0 || conversation.history_gap))
 }
