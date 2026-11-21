@@ -392,7 +392,7 @@ npx vitest run @reviewTests --maxWorkers 2 --minWorkers 1
 1. **在 DOM 移除前保存。** 把保存阅读位置和测量快照的卸载清理改为 `useLayoutEffect`，避免 detached DOM 的零值污染记录。
 2. **在真实宽度就绪后恢复。** `useChatWidthLayout` 暴露当前内容元素是否完成首次宽度测量；MessageList 等该状态就绪再恢复一次。仅改 cleanup 后，文本场景仍偏移约 30px，代码场景约 282px；定位发现恢复使用的是初始 `704px` 布局，随后切成实测 `864px` 布局。这是第 10.1 节小幅偏移的同类原因。后续宽度变化仍由已有宽度锚点处理。
 
-新增 [浏览器回归脚本](../../scripts/probe-chat-reading-position.playwright.js)，复用现有合成 fixture。先在原实现上观察到保存为 0、目标行消失的失败，再在修复后通过：
+新增 [浏览器回归脚本](../../tests/browser/chat.spec.mjs)，复用现有合成 fixture。先在原实现上观察到保存为 0、目标行消失的失败，再在修复后通过：
 
 | 场景 | 离开 / 保存 scrollTop | 回切后同一行相对视口偏差 |
 | --- | --- | ---: |
@@ -405,13 +405,11 @@ npx vitest run @reviewTests --maxWorkers 2 --minWorkers 1
 
 验证结果：5 个相关测试文件、63 项通过；`npx tsc --noEmit`、两个修改源码文件的 ESLint、`npm run architecture:check` 通过。既有 `probe-chat-scroll.playwright.js` 的普通/压力负载也通过，反向跳帧和空白帧均为 0。本次只修复阅读位置，未做 Tauri 原生窗口、真实附件和完整冷加载性能验收。
 
-复现回归入口（先启动 `npm run dev:ui`，测试期间避免其他编辑触发 Vite 整页刷新）：
+当前浏览器回归使用 Playwright 自带的 Chromium，测试会启动 fixture 服务：
 
-```powershell
-playwright-cli -s=chat-reading open http://127.0.0.1:5713/scripts/fixtures/chat-performance.html --browser=msedge
-playwright-cli -s=chat-reading run-code --filename=scripts/probe-chat-reading-position.playwright.js
-playwright-cli -s=chat-reading eval "window.chatReadingPositionReport"
-playwright-cli -s=chat-reading close
+```sh
+npx playwright install chromium
+npm run test:browser
 ```
 
 ## 12. 图片引用与查看计数修复（2026-09-25）

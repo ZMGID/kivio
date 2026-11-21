@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="UTF-8"><title>Chat titlebar</title></head>
+<body><div id="root"></div><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { ChatTitlebar } from '/src/chat/ChatTitlebar.tsx';
+import { LangContext } from '/src/components/i18n.ts';
+import '/src/styles/app.css';
+
+function Fixture() {
+  const [sidebar, setSidebar] = React.useState(true);
+  const [dock, setDock] = React.useState(true);
+  const [settings, setSettings] = React.useState(false);
+  return React.createElement(LangContext.Provider, {value: 'zh'},
+    React.createElement(ChatTitlebar, {
+      sidebarExpanded: sidebar, sidebarVisible: sidebar, dockVisible: dock, dockWidth: 420,
+      settingsMode: settings, onNewConversation() {},
+      onToggleSidebar: () => setSidebar(!sidebar), onToggleDock: () => setDock(!dock),
+    }),
+    React.createElement('button', {onClick: () => setSettings(!settings)}, '设置'));
+}
+createRoot(document.getElementById('root')).render(React.createElement(Fixture));
+</script></body></html>
