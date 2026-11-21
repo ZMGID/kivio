@@ -1264,7 +1264,8 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         let Some(context) = ctx.native_ctx else {
             return Err("Knowledge search requires a conversation.".to_string());
         };
-        let conversation = crate::chat::storage::load_conversation(ctx.app, &context.conversation_id)?;
+        let conversation =
+            crate::chat::storage::load_conversation(ctx.app, &context.conversation_id)?;
         let kb_ids = conversation.knowledge_base_ids;
         if kb_ids.is_empty() {
             return Ok(text_tool_result(
@@ -1274,11 +1275,22 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         let requested = ctx.arguments.get("kb_ids").and_then(Value::as_array);
         let kb_ids = if let Some(requested) = requested.filter(|ids| !ids.is_empty()) {
             if requested.iter().any(|id| {
-                id.as_str().is_none_or(|id| !kb_ids.iter().any(|attached| attached == id))
+                id.as_str()
+                    .is_none_or(|id| !kb_ids.iter().any(|attached| attached == id))
             }) {
-                return Err("Knowledge search can only use libraries attached to this conversation.".to_string());
+                return Err(
+                    "Knowledge search can only use libraries attached to this conversation."
+                        .to_string(),
+                );
             }
-            kb_ids.into_iter().filter(|id| requested.iter().any(|value| value.as_str() == Some(id.as_str()))).collect()
+            kb_ids
+                .into_iter()
+                .filter(|id| {
+                    requested
+                        .iter()
+                        .any(|value| value.as_str() == Some(id.as_str()))
+                })
+                .collect()
         } else {
             kb_ids
         };
