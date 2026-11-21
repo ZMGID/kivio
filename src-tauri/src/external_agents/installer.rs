@@ -2,7 +2,7 @@
 //! 带流式日志的安装执行、配置目录打开。
 //!
 //! ponytail: 查版本 / 跑官方命令 / 打开目录。**没有**卸载、没有取消、没有多后端策略协商。
-//! 自动维护只执行预览捕获的 npm 目标；未证明归属的安装使用官方手动指引。
+//! 自动维护只执行预览捕获的安装目标；未证明归属的安装使用官方手动指引。
 //! npm / pnpm / yarn / bun 的安装命令一律钉死 `registry.npmjs.org`：国内镜像经常
 //! 缺 `@deepseek-ai/*` 这类新包，用户自己的 `.npmrc` 不能把安装带跑偏。
 use crate::external_agents::spawn::CliProcessOutput;
@@ -23,18 +23,30 @@ use std::ffi::OsString;
 use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
+mod managed;
+use managed::ManagedSource;
+
+enum InstallSource {
+    NewNpm {
+        prefix: PathBuf,
+    },
+    Npm {
+        prefix: PathBuf,
+        package: &'static str,
+    },
+    Managed(ManagedSource),
+}
+
 struct PreparedInstall {
     agent: String,
     binary: PathBuf,
-    prefix: PathBuf,
-    package: String,
+    source: InstallSource,
     version: String,
     identity: super::overrides::LaunchIdentity,
     command: CommandPlan,
     environment: BTreeMap<OsString, OsString>,
     target_environment: BTreeMap<OsString, OsString>,
     created: Instant,
-    existed: bool,
 }
 static INSTALL_PLANS: LazyLock<Mutex<HashMap<String, PreparedInstall>>> =
     LazyLock::new(Default::default);
@@ -216,11 +228,12 @@ fn capture_command_environment(
     }
 }
 
-async fn prepare_install(
+async fn prepare_npm_install(
     http: &reqwest::Client,
     def: &super::types::RuntimeAgentDef,
     binary: Option<&Path>,
     version: Option<&str>,
+    environment: BTreeMap<OsString, OsString>,
 ) -> Result<PreparedInstall, String> {
     if super::overrides::custom_path(def.id).is_some() && binary.is_none() {
         return Err("自定义 CLI 路径不可用，请先修复该路径".into());
@@ -238,18 +251,9 @@ async fn prepare_install(
     let version = version
         .filter(|value| extract_semver(value).as_deref() == Some(*value))
         .ok_or("无法确定准确目标版本，请刷新后重试")?;
-    let environment: BTreeMap<OsString, OsString> = std::env::vars_os().collect();
-    let npm_name = if cfg!(windows) { "npm.cmd" } else { "npm" };
-    let npm = environment_value(&environment, "PATH")
-        .and_then(|path| {
-            std::env::split_paths(path)
-                .map(|dir| dir.join(npm_name))
-                .find(|path| path.is_absolute() && path.is_file())
-        })
-        .ok_or("请先按官方文档安装 Node.js/npm")?;
+    let npm = find_npm(&environment).ok_or("请先按官方文档安装 Node.js/npm")?;
     let prefix = if let Some(binary) = binary {
-        proven_npm_prefix(binary, package)
-            .ok_or("无法验证此 CLI 的 npm 安装归属，请按官方文档更新")?
+        proven_npm_prefix(binary, package).ok_or("未识别此路径的安装方式，请用原安装方式更新")?
     } else {
         let mut command = super::spawn::cli_command(&npm);
         command
@@ -301,49 +305,61 @@ async fn prepare_install(
     if binary.is_none() && target.exists() {
         return Err("安装目录已存在未知来源的命令，请手动检查".into());
     }
-    let mut args = npm_install_plan(package, def.install.npm_install_args, host_platform()).args;
-    args.retain(|arg| !arg.ends_with("@latest"));
-    args.extend([
-        "--prefix".into(),
-        prefix.to_string_lossy().into_owned(),
-        format!("{package}@{version}"),
-    ]);
-    let mut command = CommandPlan::owned(npm.to_string_lossy(), args);
-    command.current_dir = Some(isolated_npm_cwd());
+    let command = npm_install_plan(
+        &npm,
+        &prefix,
+        package,
+        version,
+        def.install.npm_install_args,
+    );
+    let source = if binary.is_some() {
+        InstallSource::Npm { prefix, package }
+    } else {
+        InstallSource::NewNpm { prefix }
+    };
+    Ok(prepare_install(
+        def,
+        target,
+        source,
+        version,
+        command,
+        environment,
+    ))
+}
+
+fn prepare_install(
+    def: &super::types::RuntimeAgentDef,
+    target: PathBuf,
+    source: InstallSource,
+    version: &str,
+    command: CommandPlan,
+    environment: BTreeMap<OsString, OsString>,
+) -> PreparedInstall {
     let target_command = super::spawn::agent_probe_command(def, &target);
     let mut target_environment = environment.clone();
     capture_command_environment(&mut target_environment, &target_command);
-    Ok(PreparedInstall {
+    PreparedInstall {
         agent: def.id.into(),
         identity: super::overrides::LaunchIdentity::capture(def, &target),
         binary: target,
-        prefix,
-        package: package.into(),
+        source,
         version: version.into(),
         command,
         environment,
         target_environment,
         created: Instant::now(),
-        existed: binary.is_some(),
-    })
+    }
 }
 
 fn install_spec(agent_id: &str) -> Option<&'static AgentInstallSpec> {
     get_agent_def(agent_id).map(|def| &def.install)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HostPlatform {
-    Unix,
-    Windows,
-}
-
-fn host_platform() -> HostPlatform {
-    if cfg!(windows) {
-        HostPlatform::Windows
-    } else {
-        HostPlatform::Unix
-    }
+fn find_npm(environment: &BTreeMap<OsString, OsString>) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "npm.cmd" } else { "npm" };
+    std::env::split_paths(environment_value(environment, "PATH")?)
+        .map(|path| path.join(name))
+        .find(|path| path.is_absolute() && path.is_file())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -502,6 +518,9 @@ fn isolated_npm_cwd() -> PathBuf {
 
 fn configure_install_command(command: &mut tokio::process::Command, plan: &CommandPlan) {
     command.args(&plan.args);
+    if let Some(directory) = &plan.current_dir {
+        command.current_dir(directory);
+    }
     command.env_remove("npm_config_devdir");
     command.env_remove("NPM_CONFIG_DEVDIR");
     if uses_js_package_manager(plan) {
@@ -639,12 +658,13 @@ async fn stream_install_child(
     }
 }
 
-fn npm_install_plan(package: &str, extra_args: &[&str], platform: HostPlatform) -> CommandPlan {
-    let program = if platform == HostPlatform::Windows {
-        "npm.cmd"
-    } else {
-        "npm"
-    };
+fn npm_install_plan(
+    npm: &Path,
+    prefix: &Path,
+    package: &str,
+    version: &str,
+    extra_args: &[&str],
+) -> CommandPlan {
     // `--progress=false`：npm 默认进度条用 `\r` 刷同一行。按行读会看起来像卡住，
     // 管道缓冲区填满后安装进程还会死锁。关掉进度条，改走普通日志行。
     let mut args = vec!["install", "-g", "--progress=false", NPMJS_REGISTRY_FLAG];
@@ -652,12 +672,13 @@ fn npm_install_plan(package: &str, extra_args: &[&str], platform: HostPlatform) 
         args.push(DEEPSEEK_SCOPE_REGISTRY_FLAG);
     }
     args.extend_from_slice(extra_args);
-    let package = format!("{package}@latest");
-    args.push(&package);
-    CommandPlan::direct(program, &args)
+    let specifier = format!("{package}@{version}");
+    let prefix = prefix.to_string_lossy();
+    args.extend(["--prefix", &prefix, &specifier]);
+    let mut command = CommandPlan::direct(npm.to_string_lossy(), &args);
+    command.current_dir = Some(isolated_npm_cwd());
+    command
 }
-
-/// 已安装时优先让当前二进制自更新；Kimi/Gemini 没有可用的无交互入口，按安装来源处理。
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -953,22 +974,19 @@ pub async fn chat_external_cli_install_info(
         .and_then(crate::external_agents::spawn::cached_cli_version)
         .as_deref()
         .and_then(extract_semver);
-    let latest_version = match spec.latest_version {
-        LatestVersionStrategy::Registry => latest_version(&state.http, spec).await,
-        LatestVersionStrategy::AntigravityRelease => antigravity_latest_version(&state.http).await,
-        LatestVersionStrategy::HermesRelease => hermes_latest_version(&state.http).await,
-    };
+    let environment = std::env::vars_os().collect();
+    let (latest_version, prepared) = maintenance_preview(
+        &state.http,
+        def,
+        resolved_path.as_deref(),
+        local_version.as_deref(),
+        environment,
+    )
+    .await;
     let update_available = match (&local_version, &latest_version) {
         (Some(local), Some(latest)) => version_is_newer(local, latest),
         _ => false,
     };
-    let prepared = prepare_install(
-        &state.http,
-        def,
-        resolved_path.as_deref(),
-        latest_version.as_deref(),
-    )
-    .await;
     let (plan_id, command, manual_reason, binary_path, source) = match prepared {
         Ok(mut plan) => {
             if preview_revision != super::overrides::launch_revision(def.id)
@@ -984,7 +1002,12 @@ pub async fn chat_external_cli_install_info(
             let id = uuid::Uuid::new_v4().to_string();
             let display = plan.command.display.clone();
             let binary = plan.binary.to_string_lossy().into_owned();
-            let source = format!("npm ({})", plan.prefix.display());
+            let source = match &plan.source {
+                InstallSource::NewNpm { prefix } | InstallSource::Npm { prefix, .. } => {
+                    format!("npm ({})", prefix.display())
+                }
+                InstallSource::Managed(source) => source.label().to_owned(),
+            };
             let mut plans = INSTALL_PLANS.lock().map_err(|_| "安装计划锁不可用")?;
             plans.retain(|_, old| {
                 old.created.elapsed() < Duration::from_secs(600) && old.agent != agent_id
@@ -1029,6 +1052,53 @@ pub async fn chat_external_cli_install_info(
         docs_url: spec.docs.to_string(),
         config_dir,
     })
+}
+
+async fn maintenance_preview(
+    http: &reqwest::Client,
+    def: &super::types::RuntimeAgentDef,
+    binary: Option<&Path>,
+    local_version: Option<&str>,
+    environment: BTreeMap<OsString, OsString>,
+) -> (Option<String>, Result<PreparedInstall, String>) {
+    if let Some((binary, source)) = binary.and_then(|binary| {
+        ManagedSource::resolve(def, binary, &environment).map(|source| (binary, source))
+    }) {
+        let offer = match source.offer(http, binary, &environment).await {
+            Ok(offer) => offer,
+            Err(reason) => return (None, Err(reason)),
+        };
+        let prepared = if local_version.is_none_or(|local| version_is_newer(local, &offer.version))
+        {
+            Ok(prepare_install(
+                def,
+                binary.to_owned(),
+                InstallSource::Managed(source),
+                &offer.version,
+                offer.command,
+                environment,
+            ))
+        } else {
+            Err("已是当前更新渠道的最新版本".into())
+        };
+        return (Some(offer.version), prepared);
+    }
+
+    let spec = &def.install;
+    let latest = match spec.latest_version {
+        LatestVersionStrategy::Registry => latest_version(http, spec).await,
+        LatestVersionStrategy::AntigravityRelease => antigravity_latest_version(http).await,
+        LatestVersionStrategy::HermesRelease => hermes_latest_version(http).await,
+    };
+    let prepared = if local_version
+        .zip(latest.as_deref())
+        .is_some_and(|(local, latest)| !version_is_newer(local, latest))
+    {
+        Err("已是当前更新渠道的最新版本".into())
+    } else {
+        prepare_npm_install(http, def, binary, latest.as_deref(), environment).await
+    };
+    (latest, prepared)
 }
 
 #[derive(Clone, Serialize)]
@@ -1161,23 +1231,12 @@ fn flush_progress_line(acc: &mut Vec<u8>) -> Option<String> {
 #[tauri::command]
 pub async fn chat_external_cli_install(
     app: AppHandle,
+    state: tauri::State<'_, crate::state::AppState>,
     agent_id: String,
     plan_id: String,
 ) -> Result<(), String> {
     let def = get_agent_def(&agent_id).ok_or("未知外部 Agent")?;
     let plan = consume_plan(&plan_id, &agent_id)?;
-    let mut keys = runtime_resources(Some(def.id), &plan.binary);
-    keys.push(format!("prefix:{}", resource_path(&plan.prefix)));
-    let lease = ResourceLease::acquire(keys, true)?;
-    if !plan.identity.still_current(def, &plan.binary)
-        || (plan.existed
-            && proven_npm_prefix(&plan.binary, &plan.package)
-                .as_ref()
-                .map(|path| resource_path(path))
-                != Some(resource_path(&plan.prefix)))
-    {
-        return Err("CLI 路径、配置或安装来源已改变，请刷新安装计划".into());
-    }
     let emit = |line: String| {
         let _ = app.emit(
             "external-cli-install",
@@ -1190,27 +1249,7 @@ pub async fn chat_external_cli_install(
             },
         );
     };
-    let result = MAINTENANCE_OWNER
-        .scope(lease.clone(), async {
-            let mut command = super::spawn::cli_command(&plan.command.program);
-            command.env_clear().envs(&plan.environment);
-            configure_install_command(&mut command, &plan.command);
-            command.current_dir(
-                plan.command
-                    .current_dir
-                    .as_ref()
-                    .expect("npm project directory"),
-            );
-            pin_official_npm_registry(&mut command);
-            emit(format!("$ {}", plan.command.display));
-            let child = super::spawn::AgentChild::spawn(&mut command)
-                .map_err(|e| format!("启动安装命令失败: {e}"))?;
-            if !stream_install_child(child, &emit, INSTALL_TIMEOUT_SECS).await {
-                return Err("安装或更新失败；原路径仍保留，请按官方文档修复该安装".into());
-            }
-            finish_cli_install(def, &plan, &emit).await
-        })
-        .await;
+    let result = execute_install_plan(&state.http, def, &plan, &emit).await;
     let _ = app.emit(
         "external-cli-install",
         InstallLogEvent {
@@ -1222,6 +1261,69 @@ pub async fn chat_external_cli_install(
         },
     );
     result
+}
+
+async fn execute_install_plan(
+    http: &reqwest::Client,
+    def: &super::types::RuntimeAgentDef,
+    plan: &PreparedInstall,
+    emit: &impl Fn(String),
+) -> Result<(), String> {
+    let mut keys = runtime_resources(Some(def.id), &plan.binary);
+    match &plan.source {
+        InstallSource::NewNpm { prefix } | InstallSource::Npm { prefix, .. } => {
+            keys.push(format!("prefix:{}", resource_path(prefix)));
+        }
+        InstallSource::Managed(source) => keys.extend(source.lock_key()),
+    }
+    let lease = ResourceLease::acquire(keys, true)?;
+    let stale = || "CLI 路径、配置或安装来源已改变，请刷新安装计划".to_string();
+    if !plan.identity.still_current(def, &plan.binary) {
+        return Err(stale());
+    }
+    match &plan.source {
+        InstallSource::Npm { prefix, package } => {
+            if proven_npm_prefix(&plan.binary, package)
+                .as_deref()
+                .map(resource_path)
+                != Some(resource_path(prefix))
+            {
+                return Err(stale());
+            }
+        }
+        InstallSource::Managed(source) => {
+            if ManagedSource::resolve(def, &plan.binary, &plan.environment).as_ref() != Some(source)
+            {
+                return Err(stale());
+            }
+            let offer = source.offer(http, &plan.binary, &plan.environment).await?;
+            if offer.version != plan.version
+                || offer.command != plan.command
+                || !plan.identity.still_current(def, &plan.binary)
+            {
+                return Err(stale());
+            }
+        }
+        InstallSource::NewNpm { .. } => {}
+    }
+    MAINTENANCE_OWNER
+        .scope(lease, async {
+            let mut command = super::spawn::cli_command(&plan.command.program);
+            let mut environment = plan.environment.clone();
+            if let InstallSource::Managed(source) = &plan.source {
+                source.configure_environment(&mut environment);
+            }
+            command.env_clear().envs(&environment);
+            configure_install_command(&mut command, &plan.command);
+            emit(format!("$ {}", plan.command.display));
+            let child = super::spawn::AgentChild::spawn(&mut command)
+                .map_err(|e| format!("启动安装命令失败: {e}"))?;
+            if !stream_install_child(child, emit, INSTALL_TIMEOUT_SECS).await {
+                return Err("安装或更新失败；原路径仍保留，请按官方文档修复该安装".into());
+            }
+            finish_cli_install(def, plan, emit).await
+        })
+        .await
 }
 
 /// 在系统文件管理器里打开该 CLI 的配置目录。
@@ -1252,6 +1354,81 @@ fn open_path(path: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn homebrew_updates_the_selected_launcher_and_rejects_a_changed_offer() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let fixture = tempfile::tempdir().unwrap();
+        let prefix = fixture.path();
+        let bin = prefix.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let binary = bin.join("opencode");
+        for version in ["1.2.3", "1.2.4", "1.2.5"] {
+            let keg_bin = prefix.join(format!("Cellar/opencode/{version}/bin"));
+            std::fs::create_dir_all(&keg_bin).unwrap();
+            let executable = keg_bin.join("opencode");
+            std::fs::write(&executable, format!("#!/bin/sh\necho {version}\n")).unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        symlink("../Cellar/opencode/1.2.3/bin/opencode", &binary).unwrap();
+
+        let brew = bin.join("brew");
+        std::fs::write(
+            &brew,
+            r#"#!/bin/sh
+set -eu
+test "$HOMEBREW_NO_AUTO_UPDATE" = 1
+prefix="${0%/bin/brew}"
+case "$*" in
+    --prefix) echo "$prefix" ;;
+    "info --json=v2 --formula opencode")
+        latest=$(/bin/cat "$prefix/latest")
+        printf '{"formulae":[{"full_name":"fixture/tap/opencode","versions":{"stable":"%s"},"linked_keg":"1.2.3"}]}\n' "$latest" ;;
+    "upgrade --formula fixture/tap/opencode")
+        latest=$(/bin/cat "$prefix/latest")
+        /bin/ln -sf "../Cellar/opencode/$latest/bin/opencode" "$prefix/bin/opencode" ;;
+    *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&brew, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(prefix.join("latest"), "1.2.4").unwrap();
+
+        let http = reqwest::Client::new();
+        let def = get_agent_def("opencode").unwrap();
+        let preview = || {
+            maintenance_preview(
+                &http,
+                def,
+                Some(&binary),
+                Some("1.2.3"),
+                std::env::vars_os().collect(),
+            )
+        };
+        let (latest, plan) = preview().await;
+        assert_eq!(latest.as_deref(), Some("1.2.4"));
+        let plan = plan.unwrap();
+        std::fs::write(prefix.join("latest"), "1.2.5").unwrap();
+        assert!(execute_install_plan(&http, def, &plan, &|_| {})
+            .await
+            .is_err());
+        assert_eq!(
+            std::fs::read_link(&binary).unwrap(),
+            Path::new("../Cellar/opencode/1.2.3/bin/opencode")
+        );
+
+        let (_, refreshed) = preview().await;
+        execute_install_plan(&http, def, &refreshed.unwrap(), &|_| {})
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_link(&binary).unwrap(),
+            Path::new("../Cellar/opencode/1.2.5/bin/opencode")
+        );
+    }
+
     fn write_version_probe(dir: &Path, windows: &str, unix: &str) -> PathBuf {
         let path = dir.join(if cfg!(windows) { "probe.cmd" } else { "probe" });
         let script = if cfg!(windows) {
@@ -1274,15 +1451,15 @@ mod tests {
         PreparedInstall {
             agent: agent.into(),
             binary: binary.into(),
-            prefix: binary.parent().unwrap().into(),
-            package: "fixture".into(),
+            source: InstallSource::NewNpm {
+                prefix: binary.parent().unwrap().into(),
+            },
             version: version.into(),
             identity: super::super::overrides::LaunchIdentity::capture(def, binary),
             command: CommandPlan::direct("unused", &[]),
             target_environment: environment.clone(),
             environment,
             created: Instant::now(),
-            existed: binary.exists(),
         }
     }
     #[cfg(windows)]
@@ -1591,9 +1768,11 @@ endlocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\node_m
     #[test]
     fn npm_install_pins_official_registry_and_deepseek_scope() {
         let dsh = npm_install_plan(
+            Path::new("npm.cmd"),
+            Path::new("global"),
             "@deepseek-ai/dsh",
+            "1.2.3",
             &["@deepseek-ai/cordis-plugin-group@latest"],
-            HostPlatform::Windows,
         );
         assert_eq!(dsh.program, "npm.cmd");
         assert!(dsh
@@ -1603,7 +1782,13 @@ endlocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" "%dp0%\node_m
             .args
             .contains(&"--@deepseek-ai:registry=https://registry.npmjs.org/".to_string()));
 
-        let claude = npm_install_plan("@anthropic-ai/claude-code", &[], HostPlatform::Unix);
+        let claude = npm_install_plan(
+            Path::new("npm"),
+            Path::new("global"),
+            "@anthropic-ai/claude-code",
+            "1.2.3",
+            &[],
+        );
         assert!(claude
             .args
             .contains(&"--registry=https://registry.npmjs.org/".to_string()));
