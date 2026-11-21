@@ -50,6 +50,7 @@ pub async fn process_document(
         return Ok(ParsedDoc {
             text,
             markdown: false,
+            page_ranges: Vec::new(),
         });
     }
 
@@ -65,6 +66,7 @@ pub async fn process_document(
             return Ok(ParsedDoc {
                 text: md,
                 markdown: true,
+                page_ranges: Vec::new(),
             });
         }
     }
@@ -87,6 +89,7 @@ pub async fn process_document(
                     return Ok(ParsedDoc {
                         text: md,
                         markdown: true,
+                        page_ranges: Vec::new(),
                     });
                 }
             }

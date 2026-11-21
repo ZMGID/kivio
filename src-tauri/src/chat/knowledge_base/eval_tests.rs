@@ -258,6 +258,7 @@ fn build_store() -> (rusqlite::Connection, std::path::PathBuf) {
                 chunk_count: 0,
                 status: super::DocStatus::Indexing,
                 error: None,
+                source_url: None,
                 created_at: 0,
             },
         )

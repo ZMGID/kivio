@@ -1261,35 +1261,27 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
             .unwrap_or(default_top_k)
             .min(20);
 
-        // Target libraries: explicit arg > conversation mount > all libraries.
-        let mut kb_ids: Vec<String> = ctx
-            .arguments
-            .get("kb_ids")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if kb_ids.is_empty() {
-            if let Some(nc) = ctx.native_ctx {
-                if let Ok(conv) =
-                    crate::chat::storage::load_conversation(ctx.app, &nc.conversation_id)
-                {
-                    kb_ids = conv.knowledge_base_ids.clone();
-                }
-            }
-        }
-        // No explicit kb_ids and nothing attached to this conversation →
-        // retrieve NOTHING. Attaching libraries is an explicit per-conversation
-        // choice; an empty selection must not silently fan out to every library.
+        let Some(context) = ctx.native_ctx else {
+            return Err("Knowledge search requires a conversation.".to_string());
+        };
+        let conversation = crate::chat::storage::load_conversation(ctx.app, &context.conversation_id)?;
+        let kb_ids = conversation.knowledge_base_ids;
         if kb_ids.is_empty() {
             return Ok(text_tool_result(
-                "No knowledge base is attached to this conversation. Ask the user to attach one via the 知识库 selector before searching, then retry."
-                    .to_string(),
+                "No knowledge base is attached to this conversation. Ask the user to attach one before searching.".to_string(),
             ));
         }
+        let requested = ctx.arguments.get("kb_ids").and_then(Value::as_array);
+        let kb_ids = if let Some(requested) = requested.filter(|ids| !ids.is_empty()) {
+            if requested.iter().any(|id| {
+                id.as_str().is_none_or(|id| !kb_ids.iter().any(|attached| attached == id))
+            }) {
+                return Err("Knowledge search can only use libraries attached to this conversation.".to_string());
+            }
+            kb_ids.into_iter().filter(|id| requested.iter().any(|value| value.as_str() == Some(id.as_str()))).collect()
+        } else {
+            kb_ids
+        };
 
         // Build the retrieval request from settings; the orchestrator owns
         // embed → recall → fuse → rerank → threshold → context select so the
@@ -1322,18 +1314,24 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
         };
 
         let resp = kb::retrieval::retrieve(ctx.app, ctx.state, ctx.settings, &req).await?;
+        let warning = resp.warning();
         let all_hits = resp.hits;
 
         if all_hits.is_empty() {
+            if let Some(warning) = warning {
+                return Err(warning);
+            }
             return Ok(text_tool_result(
                 "No relevant passages found in the knowledge base.".to_string(),
             ));
         }
 
-        let mut content = format!(
-            "Found {} relevant passage(s). Cite each with its [n] marker.\n\n",
+        let mut content = warning.map_or_else(String::new, |message| format!("{message}\n\n"));
+        content.push_str(&format!(
+            "Found {} relevant passage(s). Cite each using its exact [kb:…] marker.\n\n",
             all_hits.len()
-        );
+        ));
+        let search_id = uuid::Uuid::new_v4().simple().to_string();
         let mut struct_hits = Vec::with_capacity(all_hits.len());
         for (i, h) in all_hits.iter().enumerate() {
             let n = i + 1;
@@ -1341,9 +1339,12 @@ fn call_knowledge_search(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                 Some(hp) => format!("{} — {}", h.chunk.doc_name, hp),
                 None => h.chunk.doc_name.clone(),
             };
-            content.push_str(&format!("[{n}] {src}\n{}\n\n", h.chunk.text.trim()));
+            let citation = format!("kb:{search_id}-{n}");
+            content.push_str(&format!("[{citation}] {src}\n{}\n\n", h.chunk.text.trim()));
             struct_hits.push(serde_json::json!({
                 "n": n,
+                "citation": citation,
+                "page": h.chunk.page,
                 "kbId": h.kb_id,
                 "docId": h.chunk.doc_id,
                 "docName": h.chunk.doc_name,

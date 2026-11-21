@@ -71,8 +71,8 @@ export function KnowledgeRagPanel({
         <Zap size={16} className="mt-0.5 shrink-0 text-accent" />
         <p className="min-w-0 text-xs leading-relaxed text-accent">
           {t(
-            'RAG 允许 AI 检索你导入的私有文档以提供更准确的回复。Kivio 在本机解析、分块并建立索引，数据不出本机。',
-            'RAG lets the AI search your own documents for grounded answers. Kivio parses, chunks and indexes everything locally — data never leaves your machine.',
+            '索引和源文件副本保存在本机。使用远程解析时会发送原文件，远程嵌入会接收文本片段和查询，远程重排会接收查询及候选片段。知识库回答还会把命中的片段发给所选聊天模型。',
+            'The index and source copies are stored locally. Remote parsers receive source files, remote embedding services receive excerpts and queries, and remote rerankers receive queries and candidate excerpts. The selected chat model receives matching excerpts for knowledge base answers.',
           )}
         </p>
       </div>

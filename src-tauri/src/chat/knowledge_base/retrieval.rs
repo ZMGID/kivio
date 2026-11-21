@@ -119,6 +119,7 @@ pub struct EffectiveConfig {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetrievalResponse {
+    pub warnings: Vec<String>,
     /// Final passages, best-first — what the tool returns to the model.
     #[serde(skip)]
     pub hits: Vec<ScoredChunk>,
@@ -127,6 +128,18 @@ pub struct RetrievalResponse {
     pub timings: StageTimings,
     pub rerank_status: RerankStatus,
     pub effective_config: EffectiveConfig,
+}
+
+impl RetrievalResponse {
+    pub fn warning(&self) -> Option<String> {
+        let mut warnings = self.warnings.clone();
+        if let RerankStatus::Failed { error } = &self.rerank_status {
+            warnings.push(format!(
+                "Reranking unavailable; used initial retrieval: {error}"
+            ));
+        }
+        (!warnings.is_empty()).then(|| warnings.join("\n"))
+    }
 }
 
 /// A fused candidate tagged with the library it came from (fusion is per-kb;
@@ -146,11 +159,12 @@ pub async fn retrieve(
     req: &RetrievalRequest,
 ) -> Result<RetrievalResponse, String> {
     let clock = Instant::now();
-    let rerank_on = req
-        .rerank
-        .as_ref()
-        .map(|r| !r.provider_id.trim().is_empty() && !r.model.trim().is_empty())
-        .unwrap_or(false);
+    let rerank_on = req.weight_vector > 0.0
+        && req
+            .rerank
+            .as_ref()
+            .map(|r| !r.provider_id.trim().is_empty() && !r.model.trim().is_empty())
+            .unwrap_or(false);
 
     let effective_config = EffectiveConfig {
         candidate_k: req.candidate_k,
@@ -162,52 +176,101 @@ pub async fn retrieve(
         min_score: req.min_score,
     };
 
+    super::heal_stale_indexing_once(app);
     let libs = super::load_libraries(app)?;
     let root = super::kb_root(app)?;
 
     // Group libraries by (embedding provider, model) so each group embeds the
     // query with its own model; fused (cosine) scores merge across groups.
-    let mut groups: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    let mut warnings = Vec::new();
+    let mut groups: BTreeMap<(String, String), Vec<&super::KnowledgeLibrary>> = BTreeMap::new();
     for id in &req.kb_ids {
         if let Some(l) = libs.iter().find(|l| &l.id == id) {
             groups
                 .entry((l.embedding_provider_id.clone(), l.embedding_model.clone()))
                 .or_default()
-                .push(id.clone());
+                .push(l);
+        } else {
+            warnings.push(format!("Knowledge base {id} no longer exists"));
         }
     }
 
-    let attempts = if settings.retry_enabled {
-        settings.retry_attempts as usize
-    } else {
-        1
-    };
+    let attempts = crate::api::effective_retry_attempts(settings);
 
     // ---- stage: embed + per-lane recall + fusion ----
     let mut embed_ms = 0u64;
     let mut search_ms = 0u64;
     let mut merged: Vec<KbCandidate> = Vec::new();
     for ((provider_id, model), ids) in groups {
-        let Some(provider) = settings.get_provider(&provider_id).cloned() else {
-            continue;
-        };
         let t_embed = Instant::now();
-        let qvec =
-            super::embeddings::embed_query(state, &provider, &model, &req.query, attempts).await?;
+        let qvec = if req.weight_vector > 0.0 {
+            let result = match settings.get_provider(&provider_id) {
+                Some(provider) => {
+                    super::embeddings::embed_query(state, provider, &model, &req.query, attempts)
+                        .await
+                }
+                None => Err(format!("Embedding provider {provider_id} is unavailable")),
+            };
+            match result {
+                Ok(vector) => vector,
+                Err(error) => {
+                    warnings.push(format!(
+                        "Vector search unavailable for {}: {error}",
+                        ids.iter()
+                            .map(|lib| lib.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    if req.weight_keyword <= 0.0 {
+                        continue;
+                    }
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
         embed_ms += t_embed.elapsed().as_millis() as u64;
 
         let t_search = Instant::now();
-        for kb_id in &ids {
-            match super::open_kb_at(&root, kb_id).and_then(|c| {
-                super::store::hybrid_search_detailed(
-                    &c,
-                    &qvec,
-                    &req.query,
-                    req.candidate_k,
-                    req.weight_vector,
-                    req.weight_keyword,
-                )
-            }) {
+        for lib in ids {
+            let kb_id = &lib.id;
+            let result = (|| {
+                let _write = super::LIBRARY_WRITES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                let current = super::get_library_at(&root, kb_id)?;
+                let conn = super::open_library_index(&root, &current)?;
+                let recall = |vector: &[f32], weight| {
+                    super::store::hybrid_search_detailed(
+                        &conn,
+                        vector,
+                        &req.query,
+                        req.candidate_k,
+                        weight,
+                        req.weight_keyword,
+                    )
+                };
+                if req.weight_vector <= 0.0 {
+                    return recall(&[], 0.0);
+                }
+                let hits = if lib.index_generation == current.index_generation {
+                    recall(&qvec, req.weight_vector)
+                } else {
+                    Err("The embedding index changed during retrieval".to_string())
+                };
+                match hits {
+                    Err(error) if req.weight_keyword > 0.0 => {
+                        warnings.push(format!(
+                            "Vector search unavailable for {}: {error}",
+                            current.name
+                        ));
+                        recall(&[], 0.0)
+                    }
+                    result => result,
+                }
+            })();
+            match result {
                 Ok(cands) => {
                     for fused in cands {
                         merged.push(KbCandidate {
@@ -217,9 +280,7 @@ pub async fn retrieve(
                         });
                     }
                 }
-                // Tolerate a single broken library: skip (logged) so it can't
-                // starve the rest of a cross-library search.
-                Err(e) => eprintln!("kb retrieve: skipping library {kb_id}: {e}"),
+                Err(e) => warnings.push(format!("Could not search knowledge base {kb_id}: {e}")),
             }
         }
         search_ms += t_search.elapsed().as_millis() as u64;
@@ -306,12 +367,20 @@ pub async fn retrieve(
                         reordered.extend(tail);
                         merged = reordered;
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        rerank_status = RerankStatus::Failed {
+                            error: "No usable rerank scores returned".into(),
+                        };
+                    }
                     Err(e) => {
                         eprintln!("kb rerank failed, using fused order: {e}");
                         rerank_status = RerankStatus::Failed { error: e };
                     }
                 }
+            } else {
+                rerank_status = RerankStatus::Failed {
+                    error: format!("Rerank provider {} is unavailable", rc.provider_id),
+                };
             }
         }
     }
@@ -323,8 +392,9 @@ pub async fn retrieve(
     // (the conservative default — no false rejection until the user opts in).
     let mut kept: Vec<KbCandidate> = Vec::new();
     let mut below: Vec<KbCandidate> = Vec::new();
+    let use_rerank_scores = matches!(rerank_status, RerankStatus::Ok);
     for c in merged {
-        if passes_threshold(&c, rerank_on, req.min_score) {
+        if passes_threshold(&c, use_rerank_scores, req.min_score) {
             kept.push(c);
         } else {
             below.push(c);
@@ -371,6 +441,7 @@ pub async fn retrieve(
     };
 
     Ok(RetrievalResponse {
+        warnings,
         hits,
         candidates,
         timings,

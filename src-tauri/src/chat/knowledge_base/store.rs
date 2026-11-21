@@ -79,7 +79,9 @@ pub fn open_db(path: &Path) -> Result<Connection, String> {
             char_end INTEGER NOT NULL DEFAULT 0,
             order_index INTEGER NOT NULL DEFAULT 0
          );
-         CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);",
+         CREATE INDEX IF NOT EXISTS idx_chunks_doc ON chunks(doc_id);
+         CREATE TABLE IF NOT EXISTS web_sources (doc_id TEXT PRIMARY KEY, url TEXT NOT NULL);
+         CREATE INDEX IF NOT EXISTS idx_web_sources_url ON web_sources(url);",
     )
     .map_err(|e| format!("init store.db schema: {e}"))?;
     // FTS schema (D2): CJK-bigram + latin-word text indexed with unicode61, so
@@ -107,32 +109,25 @@ fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool, Stri
 /// tokenizer. Legacy DBs indexed raw `text` with `trigram`, which cannot match
 /// CJK overlaps shorter than 3 chars. Idempotent: a no-op once already migrated.
 fn ensure_fts_schema(conn: &Connection) -> Result<(), String> {
+    if column_exists(conn, "chunks", "search_text")? && current_fts_schema(conn)? {
+        return Ok(());
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     // Old DBs lack the search_text column entirely.
-    if !column_exists(conn, "chunks", "search_text")? {
-        conn.execute(
+    if !column_exists(&tx, "chunks", "search_text")? {
+        tx.execute(
             "ALTER TABLE chunks ADD COLUMN search_text TEXT NOT NULL DEFAULT ''",
             [],
         )
         .map_err(|e| format!("add search_text column: {e}"))?;
     }
-    // Is the FTS table already the new (search_text) one?
-    let fts_sql: Option<String> = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='chunks_fts'",
-            [],
-            |r| r.get::<_, String>(0),
-        )
-        .ok();
-    if fts_sql
-        .as_deref()
-        .map(|s| s.contains("search_text"))
-        .unwrap_or(false)
-    {
-        return Ok(());
+    if current_fts_schema(&tx)? {
+        return tx.commit().map_err(|e| e.to_string());
     }
     // (Re)build FTS on search_text with unicode61, then backfill + rebuild the
     // index from existing chunk text (no re-embed / re-parse needed).
-    conn.execute_batch(
+    tx.execute_batch(
         "DROP TRIGGER IF EXISTS chunks_ai;
          DROP TRIGGER IF EXISTS chunks_ad;
          DROP TABLE IF EXISTS chunks_fts;
@@ -147,11 +142,19 @@ fn ensure_fts_schema(conn: &Connection) -> Result<(), String> {
          END;",
     )
     .map_err(|e| format!("create chunks_fts: {e}"))?;
-    backfill_search_text(conn)?;
+    backfill_search_text(&tx)?;
     // Rebuild the external-content index from the populated search_text column.
-    conn.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')", [])
+    tx.execute("INSERT INTO chunks_fts(chunks_fts) VALUES('rebuild')", [])
         .map_err(|e| format!("rebuild chunks_fts: {e}"))?;
-    Ok(())
+    tx.commit().map_err(|e| e.to_string())
+}
+
+fn current_fts_schema(conn: &Connection) -> Result<bool, String> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts' AND instr(sql,'search_text') > 0)",
+        [],
+        |row| row.get(0),
+    ).map_err(|e| e.to_string())
 }
 
 /// Recompute `search_text` for every chunk from its stored text/doc_name/
@@ -219,10 +222,12 @@ fn row_to_doc(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnowledgeDocument> {
         status: status_from(&status),
         error: row.get(6)?,
         created_at: row.get(7)?,
+        source_url: row.get(8)?,
     })
 }
 
-const DOC_COLS: &str = "id, name, size_bytes, hash, chunk_count, status, error, created_at";
+const DOC_COLS: &str = "id, name, size_bytes, hash, chunk_count, status, error, created_at,
+    (SELECT url FROM web_sources WHERE doc_id = documents.id)";
 
 pub fn load_docs(conn: &Connection) -> Result<Vec<KnowledgeDocument>, String> {
     let mut stmt = conn
@@ -253,7 +258,7 @@ pub fn doc_by_hash(conn: &Connection, hash: &str) -> Result<Option<KnowledgeDocu
 
 pub fn insert_doc(conn: &Connection, doc: &KnowledgeDocument) -> Result<(), String> {
     conn.execute(
-        "INSERT OR REPLACE INTO documents (id, name, size_bytes, hash, chunk_count, status, error, created_at)
+        "INSERT INTO documents (id, name, size_bytes, hash, chunk_count, status, error, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             doc.id,
@@ -267,6 +272,13 @@ pub fn insert_doc(conn: &Connection, doc: &KnowledgeDocument) -> Result<(), Stri
         ],
     )
     .map_err(|e| format!("insert doc: {e}"))?;
+    if let Some(url) = &doc.source_url {
+        conn.execute(
+            "INSERT INTO web_sources VALUES (?1, ?2)",
+            rusqlite::params![doc.id, url],
+        )
+        .map_err(|e| format!("insert web source: {e}"))?;
+    }
     Ok(())
 }
 
@@ -285,17 +297,66 @@ pub fn set_doc_status(
     Ok(())
 }
 
-/// Delete a document, its chunks (FTS auto-synced by trigger) and vec rows.
-pub fn delete_doc(conn: &Connection, doc_id: &str) -> Result<bool, String> {
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    delete_doc_vec_rows(&tx, doc_id)?;
-    tx.execute("DELETE FROM chunks WHERE doc_id=?1", [doc_id])
+/// Delete the searchable document and return the source snapshots to erase.
+pub(super) fn delete_doc(conn: &Connection, doc_id: &str) -> Result<Vec<String>, String> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut ids = vec![doc_id.to_string()];
+    let url = tx.query_row(
+        "SELECT url FROM web_sources WHERE doc_id=?1",
+        [doc_id],
+        |row| row.get::<_, String>(0),
+    );
+    match url {
+        Ok(url) => {
+            ids = web_snapshots(&tx, &url)?;
+            tx.execute("DELETE FROM web_sources WHERE url=?1", [&url])
+                .map_err(|e| e.to_string())?;
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => (),
+        Err(error) => return Err(error.to_string()),
+    }
+    if !delete_doc_rows(&tx, doc_id)? {
+        return Err(format!("Document not found: {doc_id}"));
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(ids)
+}
+
+fn delete_doc_rows(conn: &Connection, doc_id: &str) -> Result<bool, String> {
+    delete_doc_vec_rows(conn, doc_id)?;
+    conn.execute("DELETE FROM chunks WHERE doc_id=?1", [doc_id])
         .map_err(|e| format!("delete chunks: {e}"))?;
-    let n = tx
+    let n = conn
         .execute("DELETE FROM documents WHERE id=?1", [doc_id])
         .map_err(|e| format!("delete doc: {e}"))?;
-    tx.commit().map_err(|e| e.to_string())?;
     Ok(n > 0)
+}
+
+pub(super) fn web_snapshots(conn: &Connection, url: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT doc_id FROM web_sources WHERE url=?1 ORDER BY doc_id")
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map([url], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    ids.collect::<Result<_, _>>().map_err(|e| e.to_string())
+}
+
+pub(super) fn commit_web_revision(
+    conn: &Connection,
+    prior_id: &str,
+    doc: &KnowledgeDocument,
+    chunks: &[KnowledgeChunk],
+) -> Result<(), String> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    if !delete_doc_rows(&tx, prior_id)? {
+        return Err("The original document no longer exists.".to_string());
+    }
+    insert_doc(&tx, doc)?;
+    replace_doc_chunks_in_transaction(&tx, &doc.id, chunks[0].embedding.len(), chunks)?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 /// Remove vec rows whose rowid belongs to this doc's chunks (vtable has no FK).
@@ -326,6 +387,7 @@ fn vec_table_exists(conn: &Connection) -> Result<bool, String> {
 
 /// Replace all of a document's chunks (delete old + insert new) in one tx.
 /// `dim` is the embedding dimension (used to lazily create the vec table).
+#[cfg(test)]
 pub fn replace_doc_chunks(
     conn: &Connection,
     doc_id: &str,
@@ -336,6 +398,30 @@ pub fn replace_doc_chunks(
     // write transaction. A deleted document can never regain searchable chunks.
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    replace_doc_chunks_in_transaction(&tx, doc_id, dim, chunks)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// Commit searchable content and the ready receipt together.
+pub(super) fn commit_doc_index(
+    conn: &Connection,
+    doc_id: &str,
+    dim: usize,
+    chunks: &[KnowledgeChunk],
+) -> Result<(), String> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    replace_doc_chunks_in_transaction(&tx, doc_id, dim, chunks)?;
+    set_doc_status(&tx, doc_id, DocStatus::Ready, chunks.len(), None)?;
+    tx.commit().map_err(|e| e.to_string())
+}
+
+pub(super) fn replace_doc_chunks_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    doc_id: &str,
+    dim: usize,
+    chunks: &[KnowledgeChunk],
+) -> Result<(), String> {
     let exists: bool = tx
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM documents WHERE id=?1)",
@@ -350,9 +436,9 @@ pub fn replace_doc_chunks(
         return Err("Chunk belongs to a different document".into());
     }
     if dim > 0 {
-        ensure_vec_table(&tx, dim)?;
+        ensure_vec_table(tx, dim)?;
     }
-    delete_doc_vec_rows(&tx, doc_id)?;
+    delete_doc_vec_rows(tx, doc_id)?;
     tx.execute("DELETE FROM chunks WHERE doc_id=?1", [doc_id])
         .map_err(|e| format!("delete old chunks: {e}"))?;
     for c in chunks {
@@ -383,20 +469,6 @@ pub fn replace_doc_chunks(
             .map_err(|e| format!("insert vec: {e}"))?;
         }
     }
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Drop every chunk + vec row (used by full reindex before refilling).
-pub fn clear_chunks(conn: &Connection) -> Result<(), String> {
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-    if vec_table_exists(&tx)? {
-        tx.execute("DROP TABLE vec_chunks", [])
-            .map_err(|e| format!("drop vec table: {e}"))?;
-    }
-    tx.execute("DELETE FROM chunks", [])
-        .map_err(|e| format!("clear chunks: {e}"))?;
-    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -776,6 +848,44 @@ mod tests {
     // ---- D2: bigram search-text + FTS query builder ----
 
     #[test]
+    fn web_revision_replaces_search_results_only_after_the_new_index_commits() {
+        let root = tempfile::tempdir().unwrap();
+        let conn = open_db(&root.path().join("index.db")).unwrap();
+        let make_doc = |id: &str| KnowledgeDocument {
+            id: id.into(),
+            name: "Handbook".into(),
+            size_bytes: 10,
+            hash: id.into(),
+            chunk_count: 1,
+            status: DocStatus::Ready,
+            error: None,
+            created_at: 0,
+            source_url: Some("https://example.com/handbook".into()),
+        };
+        let source = make_doc("d");
+        let revision = make_doc("next");
+        insert_doc(&conn, &source).unwrap();
+        commit_doc_index(
+            &conn,
+            "d",
+            2,
+            &[mk_chunk("original", "strawberries", vec![1.0, 0.0])],
+        )
+        .unwrap();
+        let mut chunk = mk_chunk("replacement", "blueberries", vec![1.0]);
+        chunk.doc_id = revision.id.clone();
+        assert!(commit_web_revision(&conn, "d", &revision, &[chunk.clone()]).is_err());
+        assert_eq!(load_docs(&conn).unwrap()[0].id, "d");
+        assert_eq!(fts_rows(&conn, "strawberries", 10).unwrap().len(), 1);
+        chunk.embedding.push(0.0);
+        commit_web_revision(&conn, "d", &revision, &[chunk]).unwrap();
+        assert_eq!(load_docs(&conn).unwrap()[0].id, "next");
+        assert!(fts_rows(&conn, "strawberries", 10).unwrap().is_empty());
+        assert_eq!(fts_rows(&conn, "blueberries", 10).unwrap().len(), 1);
+        assert_eq!(delete_doc(&conn, "next").unwrap(), ["d", "next"]);
+    }
+
+    #[test]
     fn bigrammize_cjk_and_latin() {
         // CJK run → space-joined char bigrams.
         assert_eq!(bigrammize("退款条件"), "退款 款条 条件");
@@ -825,6 +935,7 @@ mod tests {
                 chunk_count: 0,
                 status: DocStatus::Indexing,
                 error: None,
+                source_url: None,
                 created_at: 0,
             },
         )
@@ -861,6 +972,7 @@ mod tests {
                 chunk_count: 0,
                 status: DocStatus::Indexing,
                 error: None,
+                source_url: None,
                 created_at: 0,
             },
         )
@@ -938,6 +1050,7 @@ mod tests {
                 chunk_count: 0,
                 status: DocStatus::Indexing,
                 error: None,
+                source_url: None,
                 created_at: 0,
             },
         )
@@ -988,11 +1101,12 @@ mod tests {
                 chunk_count: 0,
                 status: super::DocStatus::Indexing,
                 error: None,
+                source_url: None,
                 created_at: 0,
             },
         )
         .unwrap();
-        assert!(delete_doc(&db, "doc_a").unwrap());
+        assert_eq!(delete_doc(&db, "doc_a").unwrap(), ["doc_a"]);
         // Network embedding finishes after deletion; index_one commits this chunk.
         let result = replace_doc_chunks(
             &db,

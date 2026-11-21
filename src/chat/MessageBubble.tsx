@@ -42,7 +42,7 @@ import { ToolCallBlock, ToolCallCluster, ImageReadCluster } from './ToolCallBloc
 import { ToolCallErrorBoundary } from './ToolCallErrorBoundary'
 import type { AgentPlanState, ChatMessage, ChatMessageSegment, ChatToolArtifact, ModelRef, ToolCallRecord } from './types'
 import { asyncReplyDisplayText } from './asyncQuestionReply'
-import { buildCitationMap, citationMapsEqual, type CitationView } from './citations'
+import { buildCitationMap, citationMapsEqual, type CitationKey, type CitationView } from './citations'
 import {
   canonicalToolName,
   clusterToolCallsForDisplay,
@@ -568,7 +568,7 @@ function TimelineTextSegment({
 }: {
   segment: ChatMessageSegment
   artifacts: ChatToolArtifact[]
-  citations?: Map<number, CitationView>
+  citations?: Map<CitationKey, CitationView>
   conversationId?: string | null
   outlineSource?: ChatMarkdownOutlineSource
 }) {
@@ -601,7 +601,7 @@ const TimelineSegmentNode = memo(function TimelineSegmentNode({
   segment: ChatMessageSegment
   toolCall?: ToolCallRecord
   artifacts: ChatToolArtifact[]
-  citations?: Map<number, CitationView>
+  citations?: Map<CitationKey, CitationView>
   conversationId?: string | null
   reasoningStreaming: boolean
   reasoningDurationMs?: number | null
@@ -713,7 +713,7 @@ function renderProcessSegments({
   segments: ChatMessageSegment[]
   toolCallById: ReadonlyMap<string, ToolCallRecord>
   artifacts: ChatToolArtifact[]
-  citations?: Map<number, CitationView>
+  citations?: Map<CitationKey, CitationView>
   conversationId?: string | null
   messageStreaming: boolean
   reasoningStreaming: boolean
@@ -904,7 +904,7 @@ function TimelineGroupBlock({
   toolCalls: ToolCallRecord[]
   toolCallById: ReadonlyMap<string, ToolCallRecord>
   artifacts: ChatToolArtifact[]
-  citations?: Map<number, CitationView>
+  citations?: Map<CitationKey, CitationView>
   conversationId?: string | null
   messageStreaming: boolean
   reasoningStreaming: boolean

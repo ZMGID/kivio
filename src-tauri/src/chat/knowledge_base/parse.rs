@@ -15,6 +15,7 @@ pub struct ParsedDoc {
     pub text: String,
     /// Whether to treat the text as markdown (heading-aware chunking).
     pub markdown: bool,
+    pub page_ranges: Vec<std::ops::Range<usize>>,
 }
 
 pub fn is_supported_ext(path: &Path) -> bool {
@@ -48,35 +49,46 @@ pub fn parse_file(path: &Path) -> Result<ParsedDoc, String> {
         "md" | "markdown" | "mdown" | "mkd" => Ok(ParsedDoc {
             text: read_text(path)?,
             markdown: true,
+            page_ranges: Vec::new(),
         }),
         "txt" | "text" | "log" | "csv" | "tsv" => Ok(ParsedDoc {
             text: read_text(path)?,
             markdown: false,
+            page_ranges: Vec::new(),
         }),
         "html" | "htm" => Ok(ParsedDoc {
             text: crate::native_tools::html_to_text(&read_text(path)?),
             markdown: true,
+            page_ranges: Vec::new(),
         }),
         "docx" => Ok(ParsedDoc {
             text: parse_docx(path)?,
             markdown: false,
+            page_ranges: Vec::new(),
         }),
         "xlsx" => Ok(ParsedDoc {
             text: parse_xlsx(path)?,
             markdown: true,
+            page_ranges: Vec::new(),
         }),
         "pdf" => {
-            let text = pdf_extract::extract_text(path)
+            let pages = pdf_extract::extract_text_by_pages(path)
                 .map_err(|e| format!("PDF text extraction failed: {e}"))?;
+            let mut text = String::new();
+            let mut page_ranges = Vec::with_capacity(pages.len());
+            for page in pages {
+                let start = text.len();
+                text.push_str(&page);
+                page_ranges.push(start..text.len());
+                text.push('\n');
+            }
             if text.trim().is_empty() {
-                return Err(
-                    "No extractable text (scanned/image PDF — OCR import is not yet supported)"
-                        .to_string(),
-                );
+                return Err("No extractable text (scanned/image PDF)".to_string());
             }
             Ok(ParsedDoc {
                 text,
                 markdown: false,
+                page_ranges,
             })
         }
         "png" | "jpg" | "jpeg" | "webp" | "bmp" | "tif" | "tiff" | "gif" => {

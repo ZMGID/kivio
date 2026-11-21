@@ -29,6 +29,7 @@ export interface KnowledgeDocument {
   status: DocStatus
   error?: string | null
   createdAt: number
+  sourceUrl?: string
 }
 
 // `kb-index` 事件 payload（后端 ingest.rs::KbIndexEvent 的镜像）。
@@ -69,6 +70,10 @@ export async function kbListDocuments(kbId: string): Promise<KnowledgeDocument[]
 
 export async function kbDeleteDocument(kbId: string, docId: string): Promise<void> {
   await invoke('kb_delete_document', { kbId, docId })
+}
+
+export async function kbOpenSource(kbId: string, docId: string): Promise<void> {
+  await invoke('kb_open_source', { kbId, docId })
 }
 
 // ===== Retrieval Test (D1) — mirrors retrieval.rs diagnostics contract =====
@@ -115,6 +120,7 @@ export interface RetrievalEffectiveConfig {
 }
 
 export interface RetrievalResponse {
+  warnings?: string[]
   candidates: RetrievalCandidate[]
   timings: RetrievalTimings
   rerankStatus: RerankStatus
@@ -137,12 +143,12 @@ export async function kbUploadDocument(
   return invoke<KnowledgeDocument>('kb_upload_document', { kbId, filePath })
 }
 
-export async function kbImportUrl(kbId: string, url: string): Promise<KnowledgeDocument> {
-  return invoke<KnowledgeDocument>('kb_import_url', { kbId, url })
+export async function kbImportUrl(kbId: string, url: string, docId?: string): Promise<KnowledgeDocument> {
+  return invoke<KnowledgeDocument>('kb_import_url', { kbId, url, docId })
 }
 
-export async function kbReindexLibrary(kbId: string): Promise<void> {
-  await invoke('kb_reindex_library', { kbId })
+export async function kbReindexLibrary(kbId: string, docId?: string): Promise<void> {
+  await invoke('kb_reindex_library', { kbId, docId })
 }
 
 export async function kbUpdateEmbedding(

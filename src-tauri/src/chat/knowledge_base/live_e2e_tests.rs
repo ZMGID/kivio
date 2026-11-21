@@ -122,6 +122,7 @@ async fn live_retrieval_stack_e2e() {
             chunk_count: 0,
             status: super::DocStatus::Indexing,
             error: None,
+            source_url: None,
             created_at: 0,
         },
     )

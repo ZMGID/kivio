@@ -67,6 +67,8 @@ pub struct KnowledgeLibrary {
     /// 只影响后续索引的请求分批，不改变已存向量，改它无需重建。
     #[serde(default)]
     pub embed_batch_size: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    index_generation: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +94,8 @@ pub struct KnowledgeDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub created_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_url: Option<String>,
 }
 
 /// One indexed chunk. `embedding` is the dense vector; everything else is
@@ -250,6 +254,7 @@ fn create_library_at(
         doc_count: 0,
         chunk_count: 0,
         embed_batch_size: 0,
+        index_generation: None,
     };
     let mut libs = load_libraries_at(root)?;
     libs.push(lib.clone());
@@ -321,55 +326,169 @@ fn set_library_dim_at(root: &Path, kb_id: &str, dim: usize) -> Result<(), String
 
 // ===== per-kb SQLite store access =====
 
-fn kb_db_path(root: &Path, kb_id: &str) -> Result<PathBuf, String> {
-    Ok(kb_dir_at(root, kb_id)?.join("store.db"))
+fn kb_db_path(root: &Path, lib: &KnowledgeLibrary) -> Result<PathBuf, String> {
+    let name = lib.index_generation.map_or_else(
+        || "store.db".to_string(),
+        |generation| format!("store-{generation}.db"),
+    );
+    Ok(kb_dir_at(root, &lib.id)?.join(name))
 }
 
 fn open_kb_at(root: &Path, kb_id: &str) -> Result<rusqlite::Connection, String> {
-    let conn = store::open_db(&kb_db_path(root, kb_id)?)?;
-    migrate_json_if_needed(root, kb_id, &conn)?;
+    let lib = get_library_at(root, kb_id)?;
+    open_library_index(root, &lib)
+}
+
+fn open_library_index(root: &Path, lib: &KnowledgeLibrary) -> Result<rusqlite::Connection, String> {
+    let path = kb_db_path(root, lib)?;
+    if lib.index_generation.is_some() && !path.is_file() {
+        return Err(format!(
+            "Published index is missing for knowledge base {}",
+            lib.id
+        ));
+    }
+    let conn = store::open_db(&path)?;
+    if lib.index_generation.is_none() {
+        migrate_json_if_needed(root, &lib.id, &conn)?;
+    }
     Ok(conn)
 }
 
-/// One-time migration of legacy V1 `docs.json` / `chunks.json` into store.db,
-/// then rename them so we don't re-import. No-op once the store has data.
+/// Publish the model and the matching index by committing the library record.
+fn publish_library_index(root: &Path, next: &KnowledgeLibrary) -> Result<(), String> {
+    let staged = open_library_index(root, next)?;
+    let _write = LIBRARY_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+    let mut libs = load_libraries_at(root)?;
+    let published = libs
+        .iter_mut()
+        .find(|lib| lib.id == next.id)
+        .ok_or_else(|| format!("Knowledge base not found: {}", next.id))?;
+    // Uploads can register new source snapshots during the rebuild. Carry
+    // their pending records over; the queued workers read the published model.
+    let staged_ids: std::collections::HashSet<_> = store::load_docs(&staged)?
+        .into_iter()
+        .map(|doc| doc.id)
+        .collect();
+    let tx = staged.unchecked_transaction().map_err(|e| e.to_string())?;
+    for doc in store::load_docs(&open_library_index(root, published)?)? {
+        if !staged_ids.contains(&doc.id) {
+            if doc.status != DocStatus::Indexing || doc.chunk_count != 0 {
+                return Err(format!("Staged index is missing {}", doc.name));
+            }
+            store::insert_doc(&tx, &doc)?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    let (doc_count, chunk_count) = store::counts(&staged)?;
+    drop(staged);
+    let previous_path = kb_db_path(root, published)?;
+    published
+        .embedding_provider_id
+        .clone_from(&next.embedding_provider_id);
+    published.embedding_model.clone_from(&next.embedding_model);
+    published.embedding_dim = next.embedding_dim;
+    published.index_generation = next.index_generation;
+    published.doc_count = doc_count;
+    published.chunk_count = chunk_count;
+    published.updated_at = chrono::Local::now().timestamp();
+    save_libraries_at(root, &libs)?;
+    ingest::remove_index_files(&previous_path);
+    Ok(())
+}
+
+/// Import V1 as one transaction. A durable marker also covers interruption
+/// between the database commit and archiving the original JSON files.
 fn migrate_json_if_needed(
     root: &Path,
     kb_id: &str,
     conn: &rusqlite::Connection,
 ) -> Result<(), String> {
     let dir = kb_dir_at(root, kb_id)?;
-    let docs_json = dir.join("docs.json");
-    if !docs_json.exists() || store::counts(conn)?.0 > 0 {
+    let files = [dir.join("docs.json"), dir.join("chunks.json")];
+    if !files.iter().any(|path| path.exists()) {
         return Ok(());
     }
-    let docs: Vec<KnowledgeDocument> = fs::read_to_string(&docs_json)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    let chunks_json = dir.join("chunks.json");
-    let chunks: Vec<KnowledgeChunk> = fs::read_to_string(&chunks_json)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    let dim = chunks.first().map(|c| c.embedding.len()).unwrap_or(0);
-    for doc in &docs {
-        let _ = store::insert_doc(conn, doc);
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS kb_migrations (name TEXT PRIMARY KEY)")
+        .map_err(|e| e.to_string())?;
+    let completed: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM kb_migrations WHERE name='legacy_json')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !completed {
+        fn read_legacy<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>, String> {
+            let archived = path.with_extension("json.migrated");
+            let path = if path.exists() { path } else { &archived };
+            match fs::read(path) {
+                Ok(bytes) => serde_json::from_slice(&bytes)
+                    .map_err(|e| format!("Migrate {}: {e}", path.display())),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(e) => Err(format!("Read {} for migration: {e}", path.display())),
+            }
+        }
+        let docs: Vec<KnowledgeDocument> = read_legacy(&files[0])?;
+        let chunks: Vec<KnowledgeChunk> = read_legacy(&files[1])?;
+        let dim = chunks.first().map_or(0, |c| c.embedding.len());
+        if chunks.iter().any(|chunk| chunk.embedding.len() != dim) {
+            return Err(format!(
+                "Legacy knowledge base {kb_id} has inconsistent embedding dimensions"
+            ));
+        }
+        let existing: std::collections::HashSet<_> = store::load_docs(&tx)?
+            .into_iter()
+            .map(|doc| doc.id)
+            .collect();
+        for doc in &docs {
+            if !existing.contains(&doc.id) {
+                store::insert_doc(&tx, doc)?;
+            }
+        }
+        let mut by_doc = std::collections::BTreeMap::<String, Vec<KnowledgeChunk>>::new();
+        for chunk in chunks {
+            by_doc.entry(chunk.doc_id.clone()).or_default().push(chunk);
+        }
+        for (doc_id, chunks) in by_doc {
+            let already_indexed: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chunks WHERE doc_id=?1)",
+                    [&doc_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if !already_indexed {
+                store::replace_doc_chunks_in_transaction(&tx, &doc_id, dim, &chunks)?;
+            }
+        }
+        for doc in docs.iter().filter(|doc| doc.chunk_count > 0) {
+            let found: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chunks WHERE doc_id=?1)",
+                    [&doc.id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if !found {
+                return Err(format!(
+                    "Legacy document {} is missing its indexed chunks",
+                    doc.name
+                ));
+            }
+        }
+        tx.execute("INSERT INTO kb_migrations VALUES ('legacy_json')", [])
+            .map_err(|e| e.to_string())?;
     }
-    let mut by_doc: std::collections::HashMap<String, Vec<KnowledgeChunk>> =
-        std::collections::HashMap::new();
-    for c in chunks {
-        by_doc.entry(c.doc_id.clone()).or_default().push(c);
+    tx.commit().map_err(|e| e.to_string())?;
+    for path in files {
+        if let Err(error) = fs::rename(&path, path.with_extension("json.migrated")) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("Archive migrated {}: {error}", path.display());
+            }
+        }
     }
-    for (doc_id, cs) in by_doc {
-        let _ = store::replace_doc_chunks(conn, &doc_id, dim, &cs);
-    }
-    let _ = fs::rename(&docs_json, dir.join("docs.json.migrated"));
-    let _ = fs::rename(&chunks_json, dir.join("chunks.json.migrated"));
-    eprintln!(
-        "knowledge_base: migrated {kb_id} JSON → store.db ({} docs)",
-        docs.len()
-    );
     Ok(())
 }
 
@@ -378,7 +497,10 @@ fn load_docs_at(root: &Path, kb_id: &str) -> Result<Vec<KnowledgeDocument>, Stri
 }
 
 fn insert_doc_at(root: &Path, kb_id: &str, doc: &KnowledgeDocument) -> Result<(), String> {
-    store::insert_doc(&open_kb_at(root, kb_id)?, doc)
+    let conn = open_kb_at(root, kb_id)?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    store::insert_doc(&tx, doc)?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 fn doc_by_hash_at(
@@ -400,6 +522,7 @@ fn set_doc_status_at(
     store::set_doc_status(&open_kb_at(root, kb_id)?, doc_id, status, count, error)
 }
 
+#[cfg(test)]
 fn replace_doc_chunks_at(
     root: &Path,
     kb_id: &str,
@@ -410,23 +533,17 @@ fn replace_doc_chunks_at(
     store::replace_doc_chunks(&open_kb_at(root, kb_id)?, doc_id, dim, chunks)
 }
 
-fn clear_chunks_at(root: &Path, kb_id: &str) -> Result<(), String> {
-    store::clear_chunks(&open_kb_at(root, kb_id)?)
-}
-
 fn delete_document_at(root: &Path, kb_id: &str, doc_id: &str) -> Result<(), String> {
-    let removed = store::delete_doc(&open_kb_at(root, kb_id)?, doc_id)?;
-    if !removed {
-        return Err(format!("Document not found: {doc_id}"));
-    }
+    let snapshots = store::delete_doc(&open_kb_at(root, kb_id)?, doc_id)?;
     // remove source snapshot(s) for this doc
     if let Ok(dir) = sources_dir_at(root, kb_id) {
         if let Ok(entries) = fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(&format!("{doc_id}__"))
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name
+                    .split_once("__")
+                    .is_some_and(|(id, _)| snapshots.iter().any(|snapshot| snapshot == id))
                 {
                     let _ = fs::remove_file(entry.path());
                 }
@@ -549,26 +666,20 @@ pub fn set_doc_status(
     set_doc_status_at(&kb_root(app)?, kb_id, doc_id, status, count, error)
 }
 
-/// Replace all of a document's chunks (used by indexing). `dim` lazily creates
-/// the per-library vector table.
-pub fn replace_doc_chunks(
-    app: &AppHandle,
-    kb_id: &str,
-    doc_id: &str,
-    dim: usize,
-    chunks: &[KnowledgeChunk],
-) -> Result<(), String> {
-    replace_doc_chunks_at(&kb_root(app)?, kb_id, doc_id, dim, chunks)
-}
-
-/// Drop every chunk + vector (used by full reindex before refilling).
-pub fn clear_chunks(app: &AppHandle, kb_id: &str) -> Result<(), String> {
-    clear_chunks_at(&kb_root(app)?, kb_id)
-}
-
 /// Remove a document and all its chunks + source snapshot, then refresh counts.
 pub fn delete_document(app: &AppHandle, kb_id: &str, doc_id: &str) -> Result<(), String> {
     delete_document_at(&kb_root(app)?, kb_id, doc_id)
+}
+
+fn is_index_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    name == "store.db"
+        || name
+            .strip_prefix("store-")
+            .and_then(|name| name.strip_suffix(".db"))
+            .is_some_and(|generation| uuid::Uuid::parse_str(generation).is_ok())
 }
 
 /// Startup self-heal: any document left in `indexing` is stale (its indexing
@@ -581,6 +692,18 @@ fn heal_stale_indexing_at(root: &Path) -> usize {
         let Ok(conn) = open_kb_at(root, &lib.id) else {
             continue;
         };
+        if let Ok(active_path) = kb_db_path(root, &lib) {
+            if let Some(index_dir) = active_path.parent() {
+                if let Ok(entries) = fs::read_dir(index_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path != active_path && is_index_file(&path) {
+                            ingest::remove_index_files(&path);
+                        }
+                    }
+                }
+            }
+        }
         let Ok(docs) = store::load_docs(&conn) else {
             continue;
         };
@@ -617,13 +740,7 @@ pub fn heal_stale_indexing(app: &AppHandle) {
     }
 }
 
-/// 懒触发版：不在 app 启动时跑（开 SQLite 会拖慢首窗），改为用户第一次真正访问知识库
-/// （打开知识库面板 → `kb_list_libraries`）时跑，且一个进程内最多跑一次。不用知识库则永不跑。
-///
-/// 前提（调用点必须保证）：触发时本会话不能有正在进行的 ingest。`heal_stale_indexing_at`
-/// 不持 `kb_lock_for`，会把任意 `Indexing` 文档直接刷成 `Error`；当前唯一调用点是「上传前
-/// 首次列库」+ `Once`，此刻不可能有 in-flight ingest，故安全。若以后要把它挪到上传后的刷新
-/// 路径，必须改为持 kb 锁、或排除当前正在索引的文档，否则会误判运行中的任务为中断。
+/// Recover once before the first listing or index mutation in this process.
 pub fn heal_stale_indexing_once(app: &AppHandle) {
     static HEAL_ONCE: std::sync::Once = std::sync::Once::new();
     HEAL_ONCE.call_once(|| heal_stale_indexing(app));
@@ -632,7 +749,7 @@ pub fn heal_stale_indexing_once(app: &AppHandle) {
 /// System-prompt segment injected when the conversation has knowledge bases
 /// attached. Tells the model the user's docs are already indexed (don't ask for
 /// re-upload), to prefer `knowledge_search`, and to cite passages inline as
-/// `[n]`. When `force` is set, the "prefer" nudge becomes a hard "must search
+/// the exact `[kb:…]` marker. When `force` is set, the "prefer" nudge becomes a hard "must search
 /// first" directive. Returns None when nothing resolvable is attached.
 pub fn mount_system_prompt(app: &AppHandle, kb_ids: &[String], force: bool) -> Option<String> {
     if kb_ids.is_empty() {
@@ -649,11 +766,11 @@ pub fn mount_system_prompt(app: &AppHandle, kb_ids: &[String], force: bool) -> O
     let names_str = names.join(", ");
     Some(if force {
         format!(
-            "This conversation has knowledge bases attached: {names_str}. **Forced retrieval is ON: you MUST call knowledge_search before every answer — do not skip it**, even if you think you already know the answer; search first to confirm. The documents are already indexed, so do not ask the user to re-upload files. When you use a retrieved passage, cite its source number inline as [n]; only if nothing relevant is found, say the knowledge base doesn't cover it."
+            "This conversation has knowledge bases attached: {names_str}. **Forced retrieval is ON: you MUST call knowledge_search before every answer — do not skip it**, even if you think you already know the answer; search first to confirm. The documents are already indexed, so do not ask the user to re-upload files. When you use a retrieved passage, copy its exact [kb:…] citation marker inline; only if nothing relevant is found, say the knowledge base doesn't cover it."
         )
     } else {
         format!(
-            "This conversation has knowledge bases attached: {names_str}. When the user's question may relate to these documents, prefer calling knowledge_search first — the documents are already indexed, so do not ask the user to re-upload files. When you use a retrieved passage, cite its source number inline as [n] (the number shown before each returned passage) so the user can trace it; only if nothing relevant is found, say the knowledge base doesn't cover it."
+            "This conversation has knowledge bases attached: {names_str}. When the user's question may relate to these documents, prefer calling knowledge_search first — the documents are already indexed, so do not ask the user to re-upload files. When you use a retrieved passage, copy its exact [kb:…] citation marker inline so the user can trace it; only if nothing relevant is found, say the knowledge base doesn't cover it."
         )
     })
 }
@@ -708,6 +825,7 @@ mod tests {
             status: DocStatus::Ready,
             error: None,
             created_at: 0,
+            source_url: None,
         }
     }
 
@@ -936,7 +1054,7 @@ mod tests {
         )
         .unwrap();
         // Corrupt the bad library's store.db with non-SQLite garbage.
-        let bad_db = kb_db_path(&root, &bad).unwrap();
+        let bad_db = kb_db_path(&root, &get_library_at(&root, &bad).unwrap()).unwrap();
         std::fs::create_dir_all(bad_db.parent().unwrap()).unwrap();
         std::fs::write(&bad_db, "not a sqlite database").unwrap();
 
@@ -957,6 +1075,127 @@ mod tests {
         );
         assert_eq!(hits[0].chunk.id, "g1");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn publishing_new_model_switches_to_the_matching_index() {
+        let root = tempfile::tempdir().unwrap();
+        let mut next = create_library_at(root.path(), "Docs", "provider", "old").unwrap();
+        let kb = next.id.clone();
+        let source = doc("doc_a", "a.md", 1);
+        insert_doc_at(root.path(), &kb, &source).unwrap();
+        replace_doc_chunks_at(
+            root.path(),
+            &kb,
+            &source.id,
+            2,
+            &[chunk_emb(
+                "old",
+                &source.id,
+                &source.name,
+                None,
+                vec![1.0, 0.0],
+            )],
+        )
+        .unwrap();
+
+        next.embedding_model = "new".into();
+        next.embedding_dim = 3;
+        next.index_generation = Some(uuid::Uuid::new_v4());
+        assert!(publish_library_index(root.path(), &next).is_err());
+        assert_eq!(
+            get_library_at(root.path(), &kb).unwrap().embedding_model,
+            "old"
+        );
+        assert_eq!(
+            search_at(root.path(), &[kb.clone()], &[1.0, 0.0], "", 1, 1.0, 0.0).unwrap()[0]
+                .chunk
+                .id,
+            "old"
+        );
+
+        let staged = store::open_db(&kb_db_path(root.path(), &next).unwrap()).unwrap();
+        store::insert_doc(&staged, &source).unwrap();
+        store::commit_doc_index(
+            &staged,
+            &source.id,
+            3,
+            &[chunk_emb(
+                "new",
+                &source.id,
+                &source.name,
+                None,
+                vec![0.0, 1.0, 0.0],
+            )],
+        )
+        .unwrap();
+        drop(staged);
+        let pending = KnowledgeDocument {
+            status: DocStatus::Indexing,
+            ..doc("pending", "new.md", 0)
+        };
+        insert_doc_at(root.path(), &kb, &pending).unwrap();
+        publish_library_index(root.path(), &next).unwrap();
+        assert!(load_docs_at(root.path(), &kb)
+            .unwrap()
+            .iter()
+            .any(|doc| { doc.id == pending.id && doc.status == DocStatus::Indexing }));
+        let published = get_library_at(root.path(), &kb).unwrap();
+        assert_eq!(
+            (published.embedding_model.as_str(), published.embedding_dim),
+            ("new", 3)
+        );
+        assert_eq!(
+            search_at(root.path(), &[kb], &[0.0, 1.0, 0.0], "", 1, 1.0, 0.0).unwrap()[0]
+                .chunk
+                .id,
+            "new"
+        );
+    }
+
+    #[test]
+    fn interrupted_legacy_migration_keeps_json_and_resumes_with_existing_rows() {
+        let root = tempfile::tempdir().unwrap();
+        let kb = create_library_at(root.path(), "Legacy", "provider", "model")
+            .unwrap()
+            .id;
+        let directory = kb_dir_at(root.path(), &kb).unwrap();
+        let first = doc("doc_a", "a.md", 1);
+        let second = doc("doc_b", "b.md", 1);
+        insert_doc_at(root.path(), &kb, &first).unwrap();
+        let docs_file = directory.join("docs.json");
+        let chunks_file = directory.join("chunks.json");
+        let write = |path: &Path, value: &serde_json::Value| {
+            fs::write(path, serde_json::to_vec(value).unwrap()).unwrap();
+        };
+        write(&docs_file, &serde_json::json!([first, second]));
+        let first_chunk = chunk_emb("a", "doc_a", "a.md", None, vec![1.0, 0.0]);
+        let second_chunk = chunk_emb("b", "doc_z_missing", "b.md", None, vec![0.0, 1.0]);
+        write(
+            &chunks_file,
+            &serde_json::json!([first_chunk, second_chunk]),
+        );
+        assert!(load_docs_at(root.path(), &kb)
+            .unwrap_err()
+            .contains("doc_z_missing"));
+        assert!(docs_file.is_file() && chunks_file.is_file());
+        let db = store::open_db(&directory.join("store.db")).unwrap();
+        assert_eq!(store::counts(&db).unwrap(), (1, 0));
+        drop(db);
+
+        let second_chunk = KnowledgeChunk {
+            doc_id: "doc_b".into(),
+            ..second_chunk
+        };
+        write(
+            &chunks_file,
+            &serde_json::json!([first_chunk, second_chunk]),
+        );
+        assert_eq!(load_docs_at(root.path(), &kb).unwrap().len(), 2);
+        let hits = search_at(root.path(), &[kb], &[0.0, 1.0], "", 2, 1.0, 0.0).unwrap();
+        assert_eq!(hits[0].chunk.doc_id, "doc_b");
+        assert!(docs_file.with_extension("json.migrated").is_file());
+        assert!(chunks_file.with_extension("json.migrated").is_file());
     }
 
     #[test]

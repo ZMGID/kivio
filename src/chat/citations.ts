@@ -7,11 +7,12 @@ import { isWebCitation, webSearchCardView, type WebCitationRef } from './webSear
 
 /** 答案正文 `[n]` 角标可查到的来源：知识库命中（KB）或联网搜索来源（web）。 */
 export type CitationView = KbHitView | WebCitationRef
+export type CitationKey = number | string
 
 /** Tool progress can replace the container without changing any visible source. */
 export function citationMapsEqual(
-  left: ReadonlyMap<number, CitationView> | undefined,
-  right: ReadonlyMap<number, CitationView> | undefined,
+  left: ReadonlyMap<CitationKey, CitationView> | undefined,
+  right: ReadonlyMap<CitationKey, CitationView> | undefined,
 ): boolean {
   if (left === right) return true
   if ((left?.size ?? 0) !== (right?.size ?? 0)) return false
@@ -23,19 +24,20 @@ export function citationMapsEqual(
       if (!isWebCitation(b) || a.n !== b.n || a.title !== b.title || a.url !== b.url
         || a.host !== b.host || a.snippet !== b.snippet || a.publishedDate !== b.publishedDate) return false
     } else if (isWebCitation(b) || a.n !== b.n || a.docName !== b.docName
+      || a.citation !== b.citation || a.kbId !== b.kbId || a.docId !== b.docId || a.page !== b.page
       || a.headingPath !== b.headingPath || a.score !== b.score || a.text !== b.text) return false
   }
   return true
 }
 
-/** 汇总本条消息所有 knowledge_search 命中 + web_search 来源，按 n 建索引，供答案里的
- *  `[n]` 角标查源。多次检索 n 会重叠：KB 命中优先（保持既有语义），联网来源只在空位补；
- *  多张 web 卡之间后写覆盖（planning 合成卡在前、synthesis 终态卡在后，答案引用的是后卡）。 */
-export function buildCitationMap(toolCalls: ToolCallRecord[]): Map<number, CitationView> {
-  const map = new Map<number, CitationView>()
+/** 按唯一来源标记索引新片段，历史记录继续使用数字。 */
+export function buildCitationMap(toolCalls: ToolCallRecord[]): Map<CitationKey, CitationView> {
+  const map = new Map<CitationKey, CitationView>()
+  const knowledgeHits = new Map<string, KbHitView>()
   for (const toolCall of toolCalls) {
     for (const hit of knowledgeSearchHits(toolCall) ?? []) {
-      map.set(hit.n, hit)
+      if (hit.citation) knowledgeHits.set(hit.citation, hit)
+      else map.set(hit.n, hit)
     }
   }
   for (const toolCall of toolCalls) {
@@ -48,6 +50,13 @@ export function buildCitationMap(toolCalls: ToolCallRecord[]): Map<number, Citat
       }
     }
   }
+  let ordinal = 0
+  for (const key of map.keys()) {
+    if (typeof key === 'number') ordinal = Math.max(ordinal, key)
+  }
+  for (const [key, hit] of knowledgeHits) {
+    map.set(key, { ...hit, n: ++ordinal })
+  }
   return map
 }
 
@@ -59,17 +68,21 @@ export interface MdNode {
   children?: MdNode[]
 }
 
+export function citationKey(marker: string): CitationKey {
+  return marker.startsWith('kb:') ? marker : Number(marker)
+}
+
 /** 把一个文本节点里的 `[n]`（且 n 是有效引用）切成 text / link 混排。 */
 export function splitCitations(value: string, validNs: Set<number>): MdNode[] {
   const out: MdNode[] = []
   let last = 0
-  const re = /\[(\d{1,3})\]/g
+  const re = /\[(\d{1,3}|kb:[a-f0-9]{32}-[1-9]\d?)\]/g
   let m: RegExpExecArray | null
   while ((m = re.exec(value))) {
-    const n = Number(m[1])
-    if (!validNs.has(n)) continue
+    const key = citationKey(m[1])
+    if (typeof key === 'number' && !validNs.has(key)) continue
     if (m.index > last) out.push({ type: 'text', value: value.slice(last, m.index) })
-    out.push({ type: 'link', url: `#kb-cite-${n}`, children: [{ type: 'text', value: m[0] }] })
+    out.push({ type: 'link', url: `#kb-cite-${key}`, children: [{ type: 'text', value: m[0] }] })
     last = m.index + m[0].length
   }
   if (last < value.length) out.push({ type: 'text', value: value.slice(last) })
@@ -83,7 +96,7 @@ export function remarkCitations(validNs: Set<number>) {
     if (!node.children || node.type === 'link' || node.type === 'linkReference') return
     const next: MdNode[] = []
     for (const child of node.children) {
-      if (child.type === 'text' && child.value && /\[\d{1,3}\]/.test(child.value)) {
+      if (child.type === 'text' && child.value?.includes('[')) {
         next.push(...splitCitations(child.value, validNs))
       } else {
         walk(child)

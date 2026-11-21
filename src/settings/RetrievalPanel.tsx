@@ -38,8 +38,11 @@ export function RetrievalPanel({
 
   const modes = [
     { id: 'hybrid', name: t('混合', 'Hybrid') },
+    { id: 'keyword', name: t('纯关键词', 'Keyword only') },
     { id: 'vector', name: t('纯向量', 'Vector only') },
   ] as const
+
+  const mode = !cfg.hybridEnabled ? 'vector' : cfg.weightVector <= 0 ? 'keyword' : 'hybrid'
 
   return (
     <div className="space-y-4">
@@ -51,16 +54,25 @@ export function RetrievalPanel({
               <button
                 key={m.id}
                 type="button"
-                className={`flex-1 ${(cfg.hybridEnabled ? 'hybrid' : 'vector') === m.id ? 'active' : ''}`}
-                onClick={() => patch({ hybridEnabled: m.id === 'hybrid' })}
+                className={`flex-1 ${mode === m.id ? 'active' : ''}`}
+                onClick={() => {
+                  if (mode === m.id) return
+                  if (m.id === 'vector') patch({ hybridEnabled: false })
+                  else patch({
+                    hybridEnabled: true,
+                    weightVector: m.id === 'keyword' ? 0 : cfg.weightVector > 0 ? cfg.weightVector : 1,
+                    weightKeyword: cfg.weightKeyword > 0 ? cfg.weightKeyword : 1,
+                  })
+                }}
               >
                 {m.name}
               </button>
             ))}
           </div>
           <p className="kv-row-desc mt-1.5">
-            {cfg.hybridEnabled
-              ? t(
+            {mode === 'keyword'
+              ? t('从现有索引在本机匹配关键词。检索时不会调用嵌入或重排服务。', 'Match keywords locally against the existing index without calling embedding or reranking services at query time.')
+              : mode === 'hybrid' ? t(
                   '向量（语义）+ 关键词（BM25）双路检索，RRF 融合。对精确词、编号和弱 embedding 更稳。',
                   'Vector (semantic) + keyword (BM25) fused via RRF. More robust for exact terms, codes and weaker embeddings.',
                 )
@@ -71,7 +83,7 @@ export function RetrievalPanel({
           </p>
         </div>
 
-        {cfg.hybridEnabled && (
+        {mode === 'hybrid' && (
           <div className="grid gap-1 sm:grid-cols-2">
             <SettingRow label={t('向量权重', 'Vector weight')} stack>
               <Input

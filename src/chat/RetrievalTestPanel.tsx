@@ -174,8 +174,11 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
                 <RerankBadge status={result.rerankStatus} />
               </div>
 
+              {result.warnings?.map((warning) => (
+                <p key={warning} className="break-words text-xs text-neutral-600">{warning}</p>
+              ))}
               {cands.length === 0 ? (
-                <p className="text-[13px] text-neutral-500">{t.chatRetrievalNoCandidates}</p>
+                result.warnings?.length ? null : <p className="text-[13px] text-neutral-500">{t.chatRetrievalNoCandidates}</p>
               ) : (
                 <div className="overflow-x-auto rounded-lg border border-neutral-200">
                   <table className="w-full min-w-[760px] text-left text-[12px]">

@@ -24,7 +24,7 @@ import { FileKindIcon } from './fileChip'
 import { SiteIcon } from './linkSiteIcon'
 import { loadArtifactDataUrl } from './attachmentPreview'
 import { openChatImageViewer } from './imageViewer'
-import { citationMapsEqual, remarkCitations, type CitationView } from './citations'
+import { citationKey, citationMapsEqual, remarkCitations, type CitationKey, type CitationView } from './citations'
 import { citationPopoverPosition, type CitationPopoverPosition } from './citationPopover'
 import { isWebCitation } from './webSearchCitations'
 import { ChatInlineImage } from './ChatInlineImage'
@@ -43,6 +43,7 @@ import { useConversationTransition } from './conversationTransitionStore'
 import { api } from '../api/tauri'
 import { copyToClipboard } from '../utils/clipboard'
 import { IconButton } from '../components/Button'
+import { kbOpenSource } from './knowledgeBase'
 import { notifyError } from '../components/appNoticeStore'
 import { CliCommandReport } from './CliCommandReport'
 import { normalizeLegacyCliReport, parseCliReport } from './cliCommandReportData'
@@ -56,7 +57,7 @@ interface ChatMarkdownProps {
   onImageClick?: (src: string, alt: string, name?: string) => void
   variant?: 'default' | 'reasoning' | 'lens' | 'lens-muted'
   /** 引用：把答案里的 `[n]` 渲染成可点来源片段（n → KB 命中片段或联网来源）。 */
-  citations?: Map<number, CitationView>
+  citations?: Map<CitationKey, CitationView>
   /** 已完成助手回答才传入；ChatMarkdown 负责把同一份规范化 Markdown 的标题注册给消息目录。 */
   outlineSource?: ChatMarkdownOutlineSource
 }
@@ -1068,6 +1069,10 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
   const triggerRef = useRef<HTMLSpanElement>(null)
   const popoverRef = useRef<HTMLSpanElement>(null)
   const web = isWebCitation(hit) ? hit : null
+  const { kbId, docId } = hit && !isWebCitation(hit) ? hit : {}
+  const openSource = kbId && docId
+    ? () => void kbOpenSource(kbId, docId).catch((error) => notifyError(String(error)))
+    : undefined
 
   useLayoutEffect(() => {
     if (!open) {
@@ -1168,7 +1173,12 @@ function CitationChip({ n, hit }: { n: number; hit?: CitationView }) {
               <span className="mb-1 flex items-center gap-1 font-medium text-neutral-700">
                 <span className="shrink-0 rounded bg-[var(--accent)]/15 px-1 text-accent">[{n}]</span>
                 <span className="truncate">
-                  {hit.docName}
+                  {openSource ? (
+                    <button type="button" onClick={openSource} className="hover:underline" title={hit.docName}>
+                      {hit.docName}
+                    </button>
+                  ) : hit.docName}
+                  {hit.page ? ` · p. ${hit.page}` : ''}
                   {hit.headingPath ? ` · ${hit.headingPath}` : ''}
                 </span>
               </span>
@@ -1310,7 +1320,7 @@ function MarkdownArtifactImage({
 const MarkdownReferencesContext = createContext<{
   artifacts: ReadonlyMap<string, ChatToolArtifact>
   artifactLookup: ReadonlyMap<string, ChatToolArtifact>
-  citations?: ReadonlyMap<number, CitationView>
+  citations?: ReadonlyMap<CitationKey, CitationView>
   conversationId?: string | null
   onImageClick?: ChatMarkdownProps['onImageClick']
 }>({ artifacts: new Map(), artifactLookup: new Map() })
@@ -1336,11 +1346,10 @@ const referencedMarkdownComponents: Components = {
     const context = useContext(MarkdownReferencesContext)
     const url = decodeKivioInternalUrl(typeof href === 'string' ? href : '')
     if (url.startsWith('artifact:')) return <MarkdownArtifactReference url={url} label={codeChildrenToString(children)} image={false} />
-    const cite = /^#kb-cite-(\d{1,3})$/.exec(url)
+    const cite = /^#kb-cite-(\d{1,3}|kb:[a-f0-9]{32}-[1-9]\d?)$/.exec(url)
     if (cite) {
-      const n = Number(cite[1])
-      const hit = context.citations?.get(n)
-      return hit ? <CitationChip n={n} hit={hit} /> : <>{children}</>
+      const hit = context.citations?.get(citationKey(cite[1]))
+      return hit ? <CitationChip n={hit.n} hit={hit} /> : <>{children}</>
     }
     return <LinkAnchor href={url} conversationId={context.conversationId}>{children}</LinkAnchor>
   },

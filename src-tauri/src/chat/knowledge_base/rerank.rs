@@ -87,12 +87,10 @@ pub async fn rerank(
             if idx >= documents.len() {
                 return None;
             }
-            // relevance_score is the calibrated 0..1 relevance (Cohere/Jina);
-            // default to 0 if a provider omits it so ordering still works.
-            let score = r
-                .get("relevance_score")
-                .and_then(|s| s.as_f64())
-                .unwrap_or(0.0) as f32;
+            let score = r.get("relevance_score")?.as_f64()? as f32;
+            if !score.is_finite() {
+                return None;
+            }
             Some((idx, score))
         })
         .collect();

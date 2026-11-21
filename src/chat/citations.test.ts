@@ -57,6 +57,28 @@ describe('buildCitationMap', () => {
     expect(map.get(1)).toMatchObject({ docName: 'doc.md', text: '段落' })
   })
 
+  it('preserves both knowledge searches and the web source when every result starts at one', () => {
+    const a = 'kb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-1'
+    const b = 'kb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-1'
+    const map = buildCitationMap([
+      tool({ id: 'first', toolName: 'knowledge_search', structured_content: {
+        hits: [{ n: 1, citation: a, docName: 'a.md', text: 'First excerpt' }],
+      } }),
+      tool({ id: 'second', toolName: 'knowledge_search', structured_content: {
+        hits: [{ n: 1, citation: b, docName: 'b.pdf', page: 2, text: 'Second excerpt' }],
+      } }),
+      tool({ id: 'web', structured_content: {
+        type: 'builtin_web_search', citations: [{ title: 'Web', url: 'https://example.com' }],
+      } }),
+    ])
+    expect(map.get(a)).toMatchObject({ docName: 'a.md' })
+    expect(map.get(b)).toMatchObject({ docName: 'b.pdf', page: 2 })
+    expect(map.get(1)).toMatchObject({ kind: 'web', url: 'https://example.com' })
+    const links = splitCitations(`[${a}], [${b}], [1]`, new Set([1]))
+      .filter(node => node.type === 'link')
+    expect(links.map(node => node.url)).toEqual([`#kb-cite-${a}`, `#kb-cite-${b}`, '#kb-cite-1'])
+  })
+
   it('indexes web_search citations by their 1-based position', () => {
     const web = tool({
       id: 'ws',

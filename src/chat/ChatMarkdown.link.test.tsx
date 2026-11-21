@@ -1,8 +1,10 @@
-import { render } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const openExternal = vi.fn(() => Promise.resolve())
 const openLocalFile = vi.fn(() => Promise.resolve())
+const kbOpenSource = vi.hoisted(() => vi.fn(() => Promise.resolve()))
+vi.mock('./knowledgeBase', () => ({ kbOpenSource }))
 vi.mock('../api/tauri', () => ({
   api: {
     get openExternal() {
@@ -16,6 +18,7 @@ vi.mock('../api/tauri', () => ({
 }))
 
 import { ChatMarkdown } from './ChatMarkdown'
+import { buildCitationMap } from './citations'
 
 /**
  * 链接点击的**底线**：除了系统 scheme（mailto:/tel:/sms:），默认导航一律不许发生。
@@ -34,6 +37,31 @@ describe('ChatMarkdown 链接点击', () => {
   beforeEach(() => {
     openExternal.mockClear()
     openLocalFile.mockClear()
+  })
+
+  it('opens the cited snapshot for the second knowledge search even when both searches return source one', () => {
+    const first = 'kb:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-1'
+    const second = 'kb:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-1'
+    render(<ChatMarkdown
+      content={`First [${first}], second [${second}], web [1].`}
+      citations={buildCitationMap([
+        { id: 'first', toolName: 'knowledge_search', status: 'success', structured_content: {
+          hits: [{ n: 1, citation: first, kbId: 'kb_a', docId: 'doc_a', docName: 'A.md', score: 1, text: 'First excerpt' }],
+        } },
+        { id: 'second', toolName: 'knowledge_search', status: 'success', structured_content: {
+          hits: [{ n: 1, citation: second, kbId: 'kb_b', docId: 'doc_b', docName: 'B.pdf', page: 7, score: 1, text: 'Second excerpt' }],
+        } },
+        { id: 'web', toolName: 'web_search', status: 'success', structured_content: {
+          type: 'builtin_web_search', citations: [{ title: 'Web', url: 'https://example.com' }],
+        } },
+      ])}
+    />)
+    fireEvent.click(screen.getByRole('button', { name: /(?:Source|来源) 3/ }))
+    const source = within(screen.getByRole('dialog'))
+    expect(source.getByText('Second excerpt')).toBeTruthy()
+    expect(source.getByText(/p\. 7/)).toBeTruthy()
+    fireEvent.click(source.getByRole('button', { name: 'B.pdf' }))
+    expect(kbOpenSource).toHaveBeenCalledWith('kb_b', 'doc_b')
   })
 
   it('本地文件链接交给 openLocalFile，且不导航 webview', () => {

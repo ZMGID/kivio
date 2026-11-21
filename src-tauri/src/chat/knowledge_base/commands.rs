@@ -54,6 +54,7 @@ pub(crate) async fn kb_rename_library(
 
 #[tauri::command]
 pub(crate) async fn kb_delete_library(app: AppHandle, kb_id: String) -> Result<(), String> {
+    let _guard = super::ingest::kb_lock_for(&kb_id).lock_owned().await;
     tauri::async_runtime::spawn_blocking(move || super::delete_library(&app, &kb_id))
         .await
         .map_err(|error| format!("kb_delete_library failed: {error}"))?
@@ -64,9 +65,14 @@ pub(crate) async fn kb_list_documents(
     app: AppHandle,
     kb_id: String,
 ) -> Result<Vec<KnowledgeDocument>, String> {
-    tauri::async_runtime::spawn_blocking(move || super::load_docs(&app, &kb_id))
-        .await
-        .map_err(|error| format!("kb_list_documents failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _write = super::LIBRARY_WRITES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        super::load_docs(&app, &kb_id)
+    })
+    .await
+    .map_err(|error| format!("kb_list_documents failed: {error}"))?
 }
 
 #[tauri::command]
@@ -75,6 +81,7 @@ pub(crate) async fn kb_delete_document(
     kb_id: String,
     doc_id: String,
 ) -> Result<(), String> {
+    let _guard = super::ingest::kb_lock_for(&kb_id).lock_owned().await;
     tauri::async_runtime::spawn_blocking(move || super::delete_document(&app, &kb_id, &doc_id))
         .await
         .map_err(|error| format!("kb_delete_document failed: {error}"))?
@@ -132,4 +139,43 @@ pub(crate) async fn kb_retrieval_test(
         min_score: kbcfg.min_score.clamp(0.0, 1.0),
     };
     super::retrieval::retrieve(&app, &state, &settings, &req).await
+}
+
+/// Open the exact snapshot used for the cited document.
+#[tauri::command]
+pub(crate) async fn kb_open_source(
+    app: AppHandle,
+    kb_id: String,
+    doc_id: String,
+) -> Result<(), String> {
+    let source_app = app.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        if !doc_id.starts_with("doc_")
+            || !doc_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        {
+            return Err("Invalid knowledge document id".to_string());
+        }
+        let _write = super::LIBRARY_WRITES.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = super::open_kb_at(&super::kb_root(&source_app)?, &kb_id)?;
+        let registered: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE id=?1 UNION ALL SELECT 1 FROM web_sources WHERE doc_id=?1)",
+            [&doc_id],
+            |row| row.get(0),
+        ).map_err(|error| error.to_string())?;
+        if !registered {
+            return Err("Knowledge document source no longer exists".to_string());
+        }
+        let path = super::ingest::find_source(&source_app, &kb_id, &doc_id)?;
+        if !super::parse::is_supported_ext(&path) {
+            return Err("Unsupported knowledge document type".to_string());
+        }
+        path.into_os_string()
+            .into_string()
+            .map_err(|_| "Invalid source path".to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    crate::commands::open_local_file(app, path, None).await
 }

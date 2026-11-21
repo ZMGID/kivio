@@ -87,19 +87,23 @@ fn split_long_line(line: &str, base: usize, target: usize) -> Vec<(String, usize
     let chars: Vec<char> = line.chars().collect();
     let mut out = Vec::new();
     let mut start = 0usize;
-    let mut i = 0usize;
-    while i < chars.len() {
-        let at_breakpoint = matches!(
-            chars[i],
-            '。' | '！' | '？' | '；' | '.' | '!' | '?' | ';' | '\n'
-        );
-        let piece_tokens = estimate_tokens(&chars[start..=i].iter().collect::<String>());
+    let mut cjk = 0usize;
+    let mut other = 0usize;
+    for (i, &ch) in chars.iter().enumerate() {
+        if is_cjk(ch) {
+            cjk += 1;
+        } else if !ch.is_whitespace() {
+            other += 1;
+        }
+        let at_breakpoint = matches!(ch, '。' | '！' | '？' | '；' | '.' | '!' | '?' | ';' | '\n');
+        let piece_tokens = cjk + other.div_ceil(4);
         if (at_breakpoint && piece_tokens >= target / 2) || piece_tokens >= target {
-            let text: String = chars[start..=i].iter().collect();
+            let text = chars[start..=i].iter().collect();
             out.push((text, base + start, base + i + 1));
             start = i + 1;
+            cjk = 0;
+            other = 0;
         }
-        i += 1;
     }
     if start < chars.len() {
         let text: String = chars[start..].iter().collect();

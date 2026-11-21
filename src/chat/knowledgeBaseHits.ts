@@ -5,6 +5,10 @@ import { toolRecordRawName } from './segments'
 
 export interface KbHitView {
   n: number
+  citation?: string
+  kbId?: string
+  docId?: string
+  page?: number
   docName: string
   headingPath?: string
   score: number
@@ -39,6 +43,11 @@ export function knowledgeSearchHits(toolCall: ToolCallRecord): KbHitView[] | nul
       if (!text) return null
       return {
         n: asNumber(o.n),
+        citation: typeof o.citation === 'string' && /^kb:[a-f0-9]{32}-[1-9]\d?$/.test(o.citation)
+          ? o.citation : undefined,
+        kbId: asString(o.kbId) || undefined,
+        docId: asString(o.docId) || undefined,
+        page: asNumber(o.page) || undefined,
         docName: asString(o.docName) || asString(o.doc_name) || '',
         headingPath: asString(o.headingPath) || asString(o.heading_path) || undefined,
         score: asNumber(o.score),

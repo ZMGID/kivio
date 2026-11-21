@@ -136,19 +136,26 @@ function InfoPill({ children }: { children: React.ReactNode }) {
   )
 }
 
-type Progress = { indexed: number; total: number }
+type Progress = { kbId: string; indexed: number; total: number }
 
 function DocRow({
   doc,
   progress,
   onDelete,
+  onRetry,
+  onRefresh,
+  busy,
 }: {
   doc: KnowledgeDocument
   progress?: Progress
   onDelete: () => void
+  onRetry: () => void
+  onRefresh?: () => void
+  busy: boolean
 }) {
   const t = useT()
-  const indexing = doc.status === 'indexing'
+  const lang = useLang()
+  const indexing = doc.status === 'indexing' || Boolean(progress)
   // 有 total 才是「向量化」阶段（可确定进度）；total 未知＝还在解析/OCR（不确定进度）。
   const determinate = indexing && !!progress && progress.total > 0
   const pct = determinate ? Math.round((progress!.indexed / progress!.total) * 100) : 0
@@ -158,6 +165,11 @@ function DocRow({
         <FileIcon name={doc.name} size={14} className="shrink-0" />
         <span className="flex-1 truncate" title={doc.name}>
           {doc.name}
+          {doc.sourceUrl && (
+            <span className="ml-2 text-xs text-neutral-500" title={doc.sourceUrl}>
+              {doc.sourceUrl} · {new Date(doc.createdAt * 1000).toLocaleDateString()}
+            </span>
+          )}
         </span>
         {indexing && (
           <span className="flex items-center gap-1 text-xs text-accent">
@@ -165,17 +177,27 @@ function DocRow({
             {determinate ? `${progress!.indexed}/${progress!.total}` : t.chatKnowledgeProcessing}
           </span>
         )}
-        {doc.status === 'ready' && (
+        {!indexing && doc.status === 'ready' && (
           <span className="flex items-center gap-1 text-xs text-emerald-500">
             <CheckCircle2 size={12} /> {t.chatKnowledgeChunks.replace('{n}', String(doc.chunkCount))}
           </span>
         )}
-        {doc.status === 'error' && (
+        {!indexing && doc.status === 'error' && (
           <span className="flex items-center gap-1 text-xs text-red-500" title={doc.error ?? ''}>
             <AlertCircle size={12} /> {t.chatBgStatusFailed}
           </span>
         )}
-        <IconButton size="sm" className="danger shrink-0" onClick={onDelete} label={`${t.chatDelete} ${doc.name}`} title={t.chatKnowledgeDeleteDocument}>
+        {!indexing && doc.status === 'error' && (
+          <IconButton size="sm" disabled={busy} onClick={onRetry} label={lang === 'zh' ? '重试索引' : 'Retry indexing'}>
+            <RefreshCw size={13} />
+          </IconButton>
+        )}
+        {onRefresh && doc.status === 'ready' && (
+          <IconButton size="sm" disabled={busy} onClick={onRefresh} label={lang === 'zh' ? '检查网页更新' : 'Check for page updates'}>
+            <RefreshCw size={13} />
+          </IconButton>
+        )}
+        <IconButton size="sm" disabled={busy} className="danger shrink-0" onClick={onDelete} label={`${t.chatDelete} ${doc.name}`} title={t.chatKnowledgeDeleteDocument}>
           <Trash2 size={13} />
         </IconButton>
       </div>
@@ -271,6 +293,13 @@ export function KnowledgeCenter() {
 
   const providers = settings?.providers ?? []
   const selected = libraries.find((l) => l.id === selectedId) ?? null
+  const embedder = providers.find((provider) => provider.id === selected?.embeddingProviderId)
+  const processing = settings?.documentProcessing
+  const activeParser = processing?.providers.find((provider) => provider.enabled && provider.id === processing.activeProcessor)
+  const fallbackParser = processing?.fallbackToThirdParty
+    ? processing.providers.find((provider) => provider.enabled)
+    : undefined
+  const parser = activeParser ?? fallbackParser
 
   const loadSettings = useCallback(async () => {
     try {
@@ -366,7 +395,17 @@ export function KnowledgeCenter() {
     let cancelled = false
     let unlisten: (() => void) | undefined
     void onKbIndex((ev) => {
-      setProgress((p) => ({ ...p, [ev.docId]: { indexed: ev.indexed, total: ev.total } }))
+      setProgress((previous) => {
+        if (ev.status === 'indexing') {
+          return { ...previous, [ev.docId]: { kbId: ev.kbId, indexed: ev.indexed, total: ev.total } }
+        }
+        if (!ev.docId) {
+          return Object.fromEntries(Object.entries(previous).filter(([, progress]) => progress.kbId !== ev.kbId))
+        }
+        const next = { ...previous }
+        delete next[ev.docId]
+        return next
+      })
       if (ev.status !== 'indexing') {
         if (ev.kbId === selectedRef.current) void refreshDocs(ev.kbId)
         void refreshLibraries()
@@ -486,15 +525,15 @@ export function KnowledgeCenter() {
     }
   }, [uploadPaths, t])
 
-  const handleImportUrl = async () => {
+  const handleImportUrl = async (doc?: KnowledgeDocument) => {
     if (!selectedId) return
-    const url = urlInput.trim()
+    const url = doc?.sourceUrl ?? urlInput.trim()
     if (!url) return
     setBusy(true)
     setError(null)
     try {
-      await kbImportUrl(selectedId, url)
-      setUrlInput('')
+      await kbImportUrl(selectedId, url, doc?.id)
+      if (!doc) setUrlInput('')
       await refreshDocs(selectedId).catch(() => {})
       await refreshLibraries()
     } catch (e) {
@@ -558,12 +597,12 @@ export function KnowledgeCenter() {
     }
   }
 
-  const handleReindex = async () => {
+  const handleReindex = async (docId?: string) => {
     if (!selected) return
-    if (!confirm(t.chatKnowledgeReindexConfirm)) return
+    if (!docId && !confirm(t.chatKnowledgeReindexConfirm)) return
     setBusy(true)
     try {
-      await kbReindexLibrary(selected.id)
+      await kbReindexLibrary(selected.id, docId)
       await refreshDocs(selected.id)
       await refreshLibraries()
     } catch (e) {
@@ -756,6 +795,15 @@ export function KnowledgeCenter() {
                       <RefreshCw size={14} /> {t.chatKnowledgeReindex}
                     </Button>
                   </div>
+                  <p className="text-xs text-neutral-500">
+                    {lang === 'zh' ? '索引保存在本机。' : 'The index is stored locally. '}
+                    {embedder && (lang === 'zh'
+                      ? `文本片段会发给本库的嵌入服务 ${embedder.name || embedder.id}。`
+                      : `Text excerpts are sent to this library’s embedding service, ${embedder.name || embedder.id}. `)}
+                    {parser && (lang === 'zh'
+                      ? `使用 ${parser.name || parser.id} 解析时，文档会发给该服务。`
+                      : `When ${parser.name || parser.id} handles parsing, it receives the document.`)}
+                  </p>
 
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="relative min-w-[220px] flex-1">
@@ -791,7 +839,15 @@ export function KnowledgeCenter() {
                   {docs.length > 0 && (
                     <div className="divide-y divide-neutral-100 overflow-hidden rounded-lg border border-neutral-200">
                       {docs.map((doc) => (
-                        <DocRow key={doc.id} doc={doc} progress={progress[doc.id]} onDelete={() => void handleDeleteDoc(doc.id)} />
+                        <DocRow
+                          key={doc.id}
+                          doc={doc}
+                          progress={progress[doc.id]}
+                          onDelete={() => void handleDeleteDoc(doc.id)}
+                          onRetry={() => void handleReindex(doc.id)}
+                          onRefresh={doc.sourceUrl ? () => void handleImportUrl(doc) : undefined}
+                          busy={busy}
+                        />
                       ))}
                     </div>
                   )}

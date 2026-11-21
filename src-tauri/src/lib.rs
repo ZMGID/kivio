@@ -866,6 +866,7 @@ pub fn run() {
             chat::knowledge_base::commands::kb_rename_library,
             chat::knowledge_base::commands::kb_delete_library,
             chat::knowledge_base::commands::kb_list_documents,
+            chat::knowledge_base::commands::kb_open_source,
             chat::knowledge_base::commands::kb_delete_document,
             chat::knowledge_base::commands::kb_retrieval_test,
             chat::knowledge_base::ingest::kb_upload_document,
