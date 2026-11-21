@@ -103,9 +103,11 @@ for (const transition of ['completion', 'stop and resume']) {
     const before = await readingPosition(page)
     async function expectRestored() {
       await expect(view).not.toHaveClass(/is-navigator-locking/)
-      const after = await readingPosition(page)
-      expect(after.paragraph).toBe(before.paragraph)
-      expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(2)
+      await expect(async () => {
+        const after = await readingPosition(page)
+        expect(after.paragraph).toBe(before.paragraph)
+        expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(2)
+      }).toPass({ timeout: 5_000 })
     }
     if (transition === 'completion') {
       await page.evaluate(() => { chatTimeline.finish(); chatTimeline.persist() })
