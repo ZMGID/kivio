@@ -53,11 +53,11 @@ export function WorkspaceBranchPicker({ data, lang, disabled, onPick }: {
           }}
           placeholder={t.workspaceSearchBranches}
           aria-label={t.workspaceSearchBranches}
-          className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-neutral-800 outline-none placeholder:text-neutral-400 dark:text-neutral-100"
+          className="min-w-0 flex-1 border-0 bg-transparent text-[12px] text-foreground outline-none placeholder:text-neutral-600"
         />
       </label>
       {data === null ? (
-        <div role="status" className="px-2 py-2 text-[12px] text-neutral-400">{t.dockLoading}</div>
+        <div role="status" className="px-2 py-2 text-[12px] text-neutral-600">{t.dockLoading}</div>
       ) : (
         <div className="flex flex-col">
           {filtered.map((ref) => (
@@ -79,7 +79,7 @@ export function WorkspaceBranchPicker({ data, lang, disabled, onPick }: {
               <span className="min-w-0 flex-1 truncate">{ref.name}</span>
               {copied === ref.name ? (
                 <span role="status" className="chat-motion-pop shrink-0 text-[11px] text-success">{t.workspaceBranchCopied}</span>
-              ) : ref.badge && <span className="shrink-0 text-[11px] text-neutral-400/80 dark:text-neutral-500">{badgeLabel[ref.badge]}</span>}
+              ) : ref.badge && <span className="shrink-0 text-[11px] text-neutral-600">{badgeLabel[ref.badge]}</span>}
             </button>
           ))}
           {canCreate && (
@@ -89,7 +89,7 @@ export function WorkspaceBranchPicker({ data, lang, disabled, onPick }: {
             </button>
           )}
           {filtered.length === 0 && !canCreate && (
-            <div className="px-2 py-2 text-[12px] text-neutral-400">{t.workspaceNoBranches}</div>
+            <div className="px-2 py-2 text-[12px] text-neutral-600">{t.workspaceNoBranches}</div>
           )}
         </div>
       )}

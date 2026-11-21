@@ -31,7 +31,7 @@ function MeterRow({ label, value, percent, tone, detail }: {
 }) {
   const bar = tone === 'critical' ? 'bg-red-500' : tone === 'warning' ? 'bg-amber-500' : 'bg-[var(--accent)]'
   return (
-    <div className="flex h-8 items-center gap-2.5 px-2.5 text-[12px]" title={detail}>
+    <div className="flex h-8 items-center gap-2.5 px-2.5 text-[12px]" title={detail ? `${label} · ${detail}` : label}>
       <span className="w-20 shrink-0 truncate text-neutral-500">{label}</span>
       <span
         role="progressbar"
@@ -45,7 +45,7 @@ function MeterRow({ label, value, percent, tone, detail }: {
           <span className={`block h-full rounded-full transition-[width] duration-500 ease-kv-out ${bar}`} style={{ width: `${Math.max(2, Math.min(100, percent))}%` }} />
         )}
       </span>
-      <span className="shrink-0 tabular-nums text-neutral-600 dark:text-neutral-300">{value}</span>
+      <span className="shrink-0 tabular-nums text-foreground">{value}</span>
     </div>
   )
 }

@@ -37,7 +37,7 @@ export function AgentIcon({ id, size = 20, className }: AgentIconProps) {
     }
     return (
       <span
-        className={`${cls} agent-icon-mono bg-neutral-800 dark:bg-neutral-200`}
+        className={`${cls} agent-icon-mono bg-foreground`}
         style={style}
         aria-hidden="true"
       />

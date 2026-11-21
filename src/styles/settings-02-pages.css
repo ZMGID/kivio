@@ -897,6 +897,7 @@ input[type="search"]::-webkit-search-decoration {
   padding-left: 28px;
   padding-right: 26px;
 }
+.kv-search .kv-input::placeholder { color: var(--color-neutral-600); }
 .kv-search-clear {
   position: absolute;
   right: 4px;
@@ -909,7 +910,7 @@ input[type="search"]::-webkit-search-decoration {
   padding: 0;
   border: none;
   background: transparent;
-  color: var(--text-faint);
+  color: var(--text-muted);
   cursor: default;
   transition: background-color var(--kv-dur-fast) var(--kv-ease-out), color var(--kv-dur-fast) var(--kv-ease-out);
 }

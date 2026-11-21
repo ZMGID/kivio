@@ -8,10 +8,10 @@ import { motionClass, usePresence } from './workspacePanelMotion'
 
 const SURFACE = 'hover:bg-black/[0.035] dark:hover:bg-white/[0.08]'
 const OPEN_SURFACE = 'bg-black/[0.035] dark:bg-white/[0.08]'
-const CONTROL = 'inline-flex h-8 min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium text-neutral-700 outline-none transition focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-neutral-300/70 disabled:pointer-events-none disabled:opacity-60 dark:text-neutral-200 dark:focus-visible:ring-white/20'
+const CONTROL = 'inline-flex h-8 min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-left text-[13px] font-medium text-foreground outline-none transition focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-60'
 const PRESS = 'active:scale-[0.98] motion-reduce:active:scale-100'
 
-export const PANEL_ICON = 'size-4 shrink-0 text-neutral-400 dark:text-neutral-500'
+export const PANEL_ICON = 'size-4 shrink-0 text-muted-foreground'
 /** 面板与其下拉共用的标记：点在带标记的元素内不算「点面板外」。 */
 export const PANEL_SCOPE_ATTR = 'data-workspace-panel'
 

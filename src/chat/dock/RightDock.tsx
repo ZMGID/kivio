@@ -215,8 +215,8 @@ export const RightDock = memo(function RightDock({
               key={tab}
               className={`flex shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1 text-[12px] transition-colors ${
                 shown === tab
-                  ? 'bg-[var(--accent-soft)] font-medium text-neutral-900 dark:text-neutral-100'
-                  : 'text-neutral-500 hover:bg-neutral-500/8 hover:text-neutral-700'
+                  ? 'bg-accent-soft font-medium text-foreground'
+                  : 'text-neutral-600 hover:bg-neutral-500/8 hover:text-foreground'
               }`}
             >
               <button type="button" className="flex items-center gap-1.5 py-1.5" onClick={() => chooseEntry(tab)}>

@@ -3,9 +3,10 @@ import { FolderIcon as Folder, FolderIcon as FolderOpen } from '../../components
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { VList, type VListHandle } from 'virtua'
 import { FILE_TREE_DENSITY_PRESETS } from '@pierre/trees'
-import { AtSign, Copy, ExternalLink, Eye, EyeOff, FilePlus2, FolderPlus, Loader2, Pencil, RefreshCw, Search, Trash2, X } from 'lucide-react'
+import { AtSign, Copy, ExternalLink, Eye, EyeOff, FilePlus2, FolderPlus, Loader2, Pencil, RefreshCw, Trash2, X } from 'lucide-react'
 import { i18n, type Lang } from '../../components/i18n'
 import { IconButton } from '../../components/Button'
+import { SearchInput } from '../../settings/public/controls'
 import { ConfirmDialog } from './ConfirmDialog'
 import { DockContextMenu, type DockMenuAnchor, type DockMenuItem } from './DockContextMenu'
 import {
@@ -655,27 +656,17 @@ export function FileTreePanel({
     <div className="relative flex min-h-0 flex-1 flex-col">
       {/* 工具栏 */}
       <div className="flex items-center gap-1 px-3 pb-2 pt-1">
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 rounded-lg border border-neutral-200 bg-transparent px-2.5 transition-colors focus-within:border-neutral-400">
-          <Search size={12} strokeWidth={2} className="shrink-0 text-neutral-400" />
-          <input
-            value={tree.searchQuery}
-            onChange={(e) => tree.setSearchQuery(e.target.value)}
-            placeholder={t.dockSearchPlaceholder}
-            className="h-7 min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-neutral-400"
-            onKeyDown={(e) => {
-              if (e.key === 'Escape' && tree.searchQuery) tree.setSearchQuery('')
-            }}
-          />
-          {tree.searchQuery && (
-            <button
-              type="button"
-              className="shrink-0 rounded p-0.5 text-neutral-400 hover:text-neutral-600"
-              onClick={() => tree.setSearchQuery('')}
-            >
-              <X size={11} />
-            </button>
-          )}
-        </div>
+        <SearchInput
+          className="flex-1"
+          value={tree.searchQuery}
+          onChange={tree.setSearchQuery}
+          placeholder={t.dockSearchPlaceholder}
+          aria-label={t.dockSearchPlaceholder}
+          clearLabel={t.dockSearchClear}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && tree.searchQuery) tree.setSearchQuery('')
+          }}
+        />
         <IconButton
           label={t.dockRefresh}
           size="sm"
@@ -719,13 +710,13 @@ export function FileTreePanel({
         {searching ? (
           <VList className="custom-scrollbar h-full">
             {tree.searching && (
-              <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-neutral-400">
+              <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-neutral-600">
                 <Loader2 size={12} className="animate-spin" />
                 {t.dockLoading}
               </div>
             )}
             {!tree.searching && (tree.searchResults ?? []).length === 0 && (
-              <div className="py-6 text-center text-[12px] text-neutral-400">{t.dockSearchEmpty}</div>
+              <div className="py-6 text-center text-[12px] text-neutral-600">{t.dockSearchEmpty}</div>
             )}
             {(tree.searchResults ?? []).map((entry: DockFsEntry) => {
               const dir = parentDirOf(entry.path)
@@ -764,7 +755,7 @@ export function FileTreePanel({
                   <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-700">
                     {basenameOf(entry.path)}
                     {dir && (
-                      <span className="ml-1.5 text-[11px] text-neutral-400 dark:text-neutral-500">{dir}</span>
+                      <span className="ml-1.5 text-[11px] text-neutral-600">{dir}</span>
                     )}
                   </span>
                 </div>
@@ -772,7 +763,7 @@ export function FileTreePanel({
             })}
           </VList>
         ) : rows.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-neutral-400">
+          <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-neutral-600">
             {tree.nodes[ROOT_PATH]?.loading ? t.dockLoading : t.dockEmptyTree}
           </div>
         ) : (

@@ -65,7 +65,7 @@ export function WorkspacePublishForm({ workdir, defaultName, lang, busy, onPubli
             aria-checked={isPrivate === option}
             onClick={() => setIsPrivate(option)}
             className={`flex-1 rounded-md px-2 py-1 transition-colors ${isPrivate === option
-              ? 'bg-black/[0.06] font-medium text-neutral-800 dark:bg-white/[0.1] dark:text-neutral-100'
+              ? 'bg-[var(--theme-surface-active)] font-medium text-foreground'
               : 'text-neutral-500 hover:bg-black/[0.035] dark:hover:bg-white/[0.06]'}`}
           >
             {option ? t.workspacePublishPrivate : t.workspacePublishPublic}

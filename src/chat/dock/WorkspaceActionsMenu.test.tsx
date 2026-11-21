@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GitRepoState } from '../../api/dockContracts'
 import { WorkspaceActionsMenu } from './WorkspaceActionsMenu'
@@ -115,6 +116,23 @@ afterEach(() => {
 })
 
 describe('WorkspaceActionsMenu', () => {
+  it('reserves the destination panel width before the message list measures a switched conversation', () => {
+    const measured: string[] = []
+    function Conversation({ id }: { id: string }) {
+      useLayoutEffect(() => {
+        measured.push(document.documentElement.style.getPropertyValue('--chat-details-inset'))
+      }, [id])
+      return <WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId={id} dockOpen={false} lang="zh" />
+    }
+    mocks.panelChoice.set('closed', false)
+    const view = render(<Conversation id="first" />)
+    measured.length = 0
+    view.rerender(<Conversation id="second" />)
+    view.rerender(<Conversation id="closed" />)
+    view.rerender(<Conversation id="first" />)
+    expect(measured).toEqual(['316px', '', '316px'])
+  })
+
   it.each(['center', 'settings'])('removes the inline panel and its menus on %s, restoring the saved choice on return', async (route) => {
     const panel = <WorkspaceActionsMenu workdir="/repo" projectName="Repo" conversationId="c1" dockOpen={false} lang="zh" />
     const view = render(<ChatRouteKeepAlive activeKey="conversation">{panel}</ChatRouteKeepAlive>)

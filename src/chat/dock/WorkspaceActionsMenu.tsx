@@ -4,7 +4,7 @@ import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 // 段三 = 历史分支；段四 = 后台任务 / 子代理。
 // Git 数据来自 useGitBadge（只在面板可见时订阅），主操作规则见 workspaceGitAction。
 // 位置：面板贴对话区右缘；内联常驻时通过 --chat-details-inset 让出内容宽度。
-import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useInsertionEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import CursorIcon from '@lobehub/icons/es/Cursor/components/Mono'
 import WindsurfIcon from '@lobehub/icons/es/Windsurf/components/Mono'
@@ -67,12 +67,11 @@ type WorkspaceActionsMenuProps = {
 const EDITOR_LABELS: Record<string, string> = { vscode: 'VS Code', cursor: 'Cursor', zed: 'Zed', windsurf: 'Windsurf' }
 
 function OpenTargetIcon({ id }: { id: string }) {
-  const className = 'size-4 shrink-0 text-neutral-700 dark:text-neutral-200'
   switch (id) {
-    case 'vscode': return <img src="/editor-icons/vscode.png" alt="" width={16} height={16} className={className} draggable={false} />
-    case 'cursor': return <CursorIcon size={16} className={className} aria-hidden="true" />
-    case 'windsurf': return <WindsurfIcon size={16} className={className} aria-hidden="true" />
-    case 'zed': return <span aria-hidden="true" className={`${className} bg-current`} style={{ maskImage: 'url("/editor-icons/zed.svg")', maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center' }} />
+    case 'vscode': return <img src="/editor-icons/vscode.png" alt="" width={16} height={16} className={PANEL_ICON} draggable={false} />
+    case 'cursor': return <CursorIcon size={16} className={PANEL_ICON} aria-hidden="true" />
+    case 'windsurf': return <WindsurfIcon size={16} className={PANEL_ICON} aria-hidden="true" />
+    case 'zed': return <span aria-hidden="true" className={`${PANEL_ICON} bg-current`} style={{ maskImage: 'url("/editor-icons/zed.svg")', maskSize: 'contain', maskRepeat: 'no-repeat', maskPosition: 'center' }} />
     case 'file-manager': return <FolderOpen open className={PANEL_ICON} />
     default: return <Code2 className={PANEL_ICON} />
   }
@@ -175,8 +174,9 @@ function useInlineRoom(enabled: boolean, dockOpen: boolean) {
 
 export function WorkspaceActionsMenu(props: WorkspaceActionsMenuProps) {
   const active = useContext(ChatRouteActiveContext)
+  const inline = useInlineRoom(active && (props.inlineAllowed ?? true), props.dockOpen)
   // 对话或工作目录切换时，卸载旧面板及其浮层、子菜单和订阅。
-  return active ? <WorkspaceActionsPanel key={`${props.conversationId ?? 'draft'}:${props.workdir}`} {...props} /> : null
+  return active ? <WorkspaceActionsPanel key={`${props.conversationId ?? 'draft'}:${props.workdir}`} {...props} inline={inline} /> : null
 }
 
 function WorkspaceActionsPanel({
@@ -185,16 +185,15 @@ function WorkspaceActionsPanel({
   conversationId,
   dockOpen,
   lang,
-  inlineAllowed = true,
+  inline,
   onOpenGitPanel,
   onOpenTasks,
   historyBranches,
   environment,
   usage,
   contextState,
-}: WorkspaceActionsMenuProps) {
+}: WorkspaceActionsMenuProps & { inline: boolean }) {
   const t = i18n[lang]
-  const inline = useInlineRoom(inlineAllowed, dockOpen)
   const [inlineChoice, setInlineChoice] = useState(() => conversationId ? getWorkspacePanelOpen(conversationId) : null)
   const [popoverOpen, setPopoverOpen] = useState(false)
   const setChoice = useCallback((next: boolean) => {
@@ -265,8 +264,8 @@ function WorkspaceActionsPanel({
       window.removeEventListener('resize', measure)
     }
   }, [presence.present, inline, dockOpen])
-  // 内联展开时把主区右侧让出来，对话列往左挤；浮层模式不让位。
-  useLayoutEffect(() => {
+  // Install the reserved width before message rows read layout on a conversation switch.
+  useInsertionEffect(() => {
     if (!open || !inline) return
     const root = document.documentElement
     root.style.setProperty('--chat-details-inset', `${PANEL_WIDTH + PANEL_GAP}px`)
