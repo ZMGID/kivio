@@ -40,13 +40,14 @@ pub use assistants::{
 };
 #[cfg(test)]
 pub(crate) use conversations::write_conversation_file_at_path;
+pub(crate) use conversations::{
+    conversation_file_revision, conversation_stop_goal, conversation_uses_external_runtime,
+    delete_conversation, read_conversation_file, restart_goal_candidates, write_conversation_file,
+    RestartGoal,
+};
 pub use conversations::{
     conversation_pins_file_path, find_reusable_blank_conversation, get_conversations,
     load_conversation, load_conversation_pins, set_conversation_pins,
-};
-pub(crate) use conversations::{
-    delete_conversation, read_conversation_file, restart_goal_candidates, write_conversation_file,
-    RestartGoal,
 };
 pub use index::load_index;
 pub(crate) use index::{
@@ -76,7 +77,7 @@ use conversations::{
 };
 pub(crate) use index::conversation_file_ids_in_dir;
 #[cfg(test)]
-use index::{index_covers_files, load_index_in_dir, load_index_or_scan_in_dir};
+use index::{load_index_in_dir, load_index_or_scan_in_dir};
 #[cfg(test)]
 use migration::has_non_empty_value;
 #[cfg(test)]
@@ -167,6 +168,10 @@ pub(crate) fn fail_write_under_for_test(root: Option<(&Path, &str)>) {
 }
 
 pub(crate) fn atomic_write(path: &Path, content: &str, label: &str) -> Result<(), String> {
+    atomic_write_bytes(path, content.as_bytes(), label)
+}
+
+pub(crate) fn atomic_write_bytes(path: &Path, content: &[u8], label: &str) -> Result<(), String> {
     #[cfg(test)]
     if FAIL_WRITE_UNDER
         .lock()
@@ -201,7 +206,7 @@ pub(crate) fn atomic_write(path: &Path, content: &str, label: &str) -> Result<()
                 options.mode(0o600);
             }
             let mut file = options.open(&tmp_path)?;
-            file.write_all(content.as_bytes())?;
+            file.write_all(content)?;
             file.sync_all()?;
             drop(file);
             #[cfg(test)]
@@ -770,26 +775,7 @@ mod index_self_heal_tests {
     }
 
     #[test]
-    fn covers_all_logic_detects_missing_conversation_files() {
-        let index = ConversationIndex {
-            conversations: vec![list_item("conv_a", Some(1)), list_item("conv_b", Some(1))],
-        };
-        // 索引覆盖全部文件(还多一个幽灵条目 conv_b)→ 信任
-        assert!(index_covers_files(&index, &["conv_a".to_string()]));
-        // 有文件(conv_c)不在索引 → 需补缺
-        assert!(!index_covers_files(
-            &index,
-            &["conv_a".to_string(), "conv_c".to_string()]
-        ));
-    }
-
-    /// 对账必须廉价:只比文件名,绝不反序列化对话正文。
-    ///
-    /// 这条挂了就意味着"侧栏刷新退化成全量扫盘"那个性能回退回来了——500 个会话的用户每点
-    /// 一次侧栏就要同步解析几百 MB JSON。这里用"文件名合法但正文是坏 JSON"的会话当探针:
-    /// 已在索引里的条目只要有人去读正文,就会被判损坏并从列表里消失。
-    #[test]
-    fn cheap_reconciliation_trusts_index_without_reading_conversation_bodies() {
+    fn cold_reconciliation_keeps_indexed_rows_when_headers_are_unreadable() {
         let dir = temp_dir();
         fs::write(
             dir.join("index.json"),
@@ -806,7 +792,7 @@ mod index_self_heal_tests {
         assert_eq!(index.conversations.len(), 1);
         assert_eq!(index.conversations[0].id, "conv_a");
 
-        // 索引没覆盖的新文件只读那一份；已在索引里的会话仍然不读正文。
+        // A new corrupt file must not erase the last known indexed row.
         fs::write(dir.join("conv_b.json"), "{ also broken").unwrap();
         let (index, healed) = load_index_or_scan_in_dir(&dir).unwrap();
         assert!(healed);
@@ -819,7 +805,7 @@ mod index_self_heal_tests {
     }
 
     #[test]
-    fn missing_index_entries_are_merged_without_rereading_indexed_bodies() {
+    fn missing_index_entries_are_merged_without_losing_indexed_rows() {
         let dir = temp_dir();
         fs::write(
             dir.join("index.json"),
@@ -870,6 +856,41 @@ mod index_self_heal_tests {
 
         assert_eq!(load_index_in_dir(&dir).unwrap().conversations.len(), 1);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cold_index_recovers_newer_body_for_the_same_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conv_a.json");
+        let disk_index = dir.path().join("index.json");
+        let mut stale = list_item("conv_a", Some(7));
+        stale.title = "old title".into();
+        fs::write(
+            &disk_index,
+            serde_json::to_vec(&ConversationIndex {
+                conversations: vec![stale],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let conversation: Conversation = serde_json::from_value(serde_json::json!({
+            "id": "conv_a", "revision": 8, "title": "committed title",
+            "provider_id": "provider", "model": "model", "created_at": 1,
+            "updated_at": 2, "messages": [],
+        }))
+        .unwrap();
+        write_conversation_file_at_path(&path, conversation).unwrap();
+
+        assert_eq!(conversation_file_revision(&path).unwrap(), Some(8));
+        let (index, healed) = load_index_or_scan_in_dir(dir.path()).unwrap();
+        assert!(healed);
+        assert_eq!(index.conversations.len(), 1);
+        assert_eq!(index.conversations[0].revision, Some(8));
+        assert_eq!(index.conversations[0].title, "committed title");
+        assert_eq!(
+            load_index_in_dir(dir.path()).unwrap().conversations[0].revision,
+            Some(7)
+        );
     }
 
     fn search_item(id: &str, updated_at: i64, archived: bool) -> ConversationListItem {

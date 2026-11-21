@@ -144,6 +144,33 @@ describe('chat protocol sequencing', () => {
     expect(invokeMock.mock.calls.some((call) => call[0] === 'chat_sync_state')).toBe(true)
   })
 
+  it('replays the missing answer prefix when a running popout returns to the main window', async () => {
+    setExclusiveConversationIds(['conversation'])
+    const seen: string[] = []
+    chatProtocolTesting.subscribe((item) => {
+      if (item.scope === 'run' && item.type === 'text_delta') seen.push(item.delta)
+    })
+    chatProtocolTesting.ingest(event(1))
+    chatProtocolTesting.ingest({
+      ...event(5), type: 'tool_approval_withdrawn', interactionId: 'approval',
+    })
+    setExclusiveConversationIds([])
+    invokeMock.mockImplementation((command, { request }) => {
+      if (command !== 'chat_sync_state') return Promise.resolve()
+      return Promise.resolve({
+        protocolVersion: 1,
+        conversationRevision: 1,
+        missingRunIds: [],
+        runs: request.cursors.length
+          ? [{ kind: 'events', runId: 'run', fromSeq: 6, throughSeq: 6, events: [event(6, 'text_delta')] }]
+          : [{ kind: 'snapshot', snapshot: snapshot({ lastSeq: 6, content: 'Answer written in the popout' }) }],
+      })
+    })
+    await syncChatProtocol('conversation')
+    chatProtocolTesting.ingest(event(7, 'text_delta'))
+    expect(seen).toEqual(['Answer written in the popout', '7'])
+  })
+
   it('still syncs a lifecycle gap on a Conversation subscriber', async () => {
     configureChatProtocolFilter('conversation')
     chatProtocolTesting.ingest(event(1))

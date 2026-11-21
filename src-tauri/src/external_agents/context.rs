@@ -641,24 +641,11 @@ pub async fn compute_external_context_state_with_probe(
     probe_cwd: Option<&Path>,
     work_dir: Option<&Path>,
 ) -> ConversationContextState {
-    let agent_id = conversation
-        .agent_runtime
-        .external_agent_id
-        .as_deref()
-        .filter(|id| !id.trim().is_empty())
-        .unwrap_or("");
-    let model = conversation
-        .agent_runtime
-        .external_model
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or("default");
+    let (agent_id, model) = external_runtime(conversation);
     // A model-list subprocess cannot improve a reported capacity or recover an
     // unknown post-compaction numerator. Do not wait for it on refresh or /compact.
     let stored = &conversation.context_state;
-    let settled = compact_usage.is_none()
-        && stored.context_source.as_deref() == Some(CONTEXT_SOURCE_EXTERNAL)
-        && stored.measurement_seq > 0;
+    let settled = has_settled_context(conversation, compact_usage);
     let needs_probe = !settled
         || (stored.context_window_tokens.is_none()
             && stored.token_count_source.as_deref() == Some(TOKEN_COUNT_CLI)
@@ -677,17 +664,57 @@ pub async fn compute_external_context_state_with_probe(
     } else {
         cached_models.map(|models| models.to_vec())
     };
-    let native_id = (agent_id == "kimi" && !settled)
+    compute_cached_external_context_state(
+        app,
+        conversation,
+        compact_usage,
+        detected_models.as_deref(),
+        work_dir,
+    )
+}
+
+pub(crate) fn compute_cached_external_context_state(
+    app: &tauri::AppHandle,
+    conversation: &Conversation,
+    compact_usage: Option<&ModelUsage>,
+    models: Option<&[RuntimeModelOption]>,
+    work_dir: Option<&Path>,
+) -> ConversationContextState {
+    let (agent_id, model) = external_runtime(conversation);
+    let native_id = (agent_id == "kimi" && !has_settled_context(conversation, compact_usage))
         .then(|| super::session::bound_native_session_id(app, &conversation.id))
         .flatten();
     compute_external_context_state(
         conversation,
         agent_id,
         model,
-        detected_models.as_ref().map(|models| models.as_slice()),
+        models,
         compact_usage,
         work_dir.map(|cwd| (cwd, native_id.as_deref())),
     )
+}
+
+fn external_runtime(conversation: &Conversation) -> (&str, &str) {
+    let runtime = &conversation.agent_runtime;
+    (
+        runtime
+            .external_agent_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or(""),
+        runtime
+            .external_model
+            .as_deref()
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or("default"),
+    )
+}
+
+fn has_settled_context(conversation: &Conversation, compact_usage: Option<&ModelUsage>) -> bool {
+    let stored = &conversation.context_state;
+    compact_usage.is_none()
+        && stored.context_source.as_deref() == Some(CONTEXT_SOURCE_EXTERNAL)
+        && stored.measurement_seq > 0
 }
 
 #[cfg(test)]

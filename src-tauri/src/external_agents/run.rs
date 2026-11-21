@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::Local;
@@ -12,6 +13,7 @@ use crate::chat::commands::{
 };
 use crate::chat::memory::l1_prompt_block;
 use crate::chat::model::ModelUsage;
+use crate::chat::protocol::{emit_run_event, ChatRunEvent, ChatSegmentPayload};
 use crate::chat::storage::live_set_system_prompt;
 use crate::chat::types::{
     AgentTodoState, ChatMessageSegment, ChatMessageSegmentKind, ChatMessageSegmentPhase,
@@ -25,9 +27,9 @@ use crate::external_agents::prompt::{
 use crate::external_agents::providers::claude::append_system_prompt_file_args;
 use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::session::acp::AcpMcpServer;
-use crate::external_agents::session::live::LaunchConfig;
+use crate::external_agents::session::live::{LaunchConfig, SessionLease};
 use crate::external_agents::session::{
-    persist_delivered_session, resolve_agent_resume_context, stable_prompt_hash,
+    persist_delivered_session, resolve_agent_resume_context, save_live_binding, stable_prompt_hash,
 };
 use crate::external_agents::skill_stage::{skill_cwd_alias_segment, stage_active_skill};
 use crate::external_agents::slash::{self};
@@ -196,6 +198,7 @@ pub(crate) async fn run_external_cli_reply_in(
             state.external_live_sessions().reserve(&conversation.id)
         })
         .await?;
+    let cancellation = lease.cancel_on_drop();
     let conversation_id = conversation.id.clone();
     let finalizes_reply = std::sync::atomic::AtomicBool::new(false);
     let run = Box::pin(run_external_cli_reply_owned(
@@ -233,6 +236,7 @@ pub(crate) async fn run_external_cli_reply_in(
         }
     };
     lease.complete();
+    cancellation.disarm();
     result
 }
 
@@ -250,7 +254,7 @@ async fn run_external_cli_reply_owned(
     working_directory: Option<&std::path::Path>,
     run_generation: u64,
     run_id: &str,
-    lease: &crate::external_agents::session::live::SessionLease<'_>,
+    lease: &Arc<SessionLease>,
     finalizes_reply: &std::sync::atomic::AtomicBool,
 ) -> Result<ExternalCliTurnOutcome, String> {
     let settings = state.settings_read().clone();
@@ -1208,33 +1212,33 @@ async fn run_external_cli_reply_owned(
     let rewind_settled = rewind.is_some() && stream_outcome == "completed";
     // A Claude rewind resumed into a fork with a new id; keep resuming that fork from now on.
     let claude_forked = rewind_settled && matches!(rewind, Some(NativeRewind::ClaudeResumeAt(_)));
-    let actual_native_session_id = (matches!(
+    let use_live_native_id = matches!(
         def.stream_format,
         StreamFormat::PiRpc | StreamFormat::AntigravityStreamJson
-    ) || claude_forked)
-        .then(|| crate::external_agents::session::load_live_handle(app, &conversation_id))
-        .flatten()
-        .map(|handle| handle.native_id);
+    ) || claude_forked;
     if state
         .chat_runtime()
         .is_generation_active(&conversation_id, run_generation)
     {
         crate::chat::repository::repository(app)
-            .with_existing_conversation(app, &conversation_id, || {
-                state
+            .with_existing_conversation_storage(app, &conversation_id, move |app, id| {
+                let actual_native_session_id = use_live_native_id
+                    .then(|| crate::external_agents::session::load_live_handle(app, id))
+                    .flatten()
+                    .map(|handle| handle.native_id);
+                app.state::<AppState>()
                     .chat_runtime()
-                    .while_generation_active(&conversation_id, run_generation, || {
+                    .while_generation_active(id, run_generation, || {
                         persist_delivered_session(
                             app,
-                            &conversation_id,
+                            id,
                             def.id,
                             &resume_ctx,
                             actual_native_session_id.as_deref(),
                             // Skill content is per-turn; only session constants belong in this hash.
                             &daemon_instructions,
                             is_slash,
-                        )?;
-                        Ok(())
+                        )
                     })
                     .unwrap_or(Ok(()))
             })
@@ -1260,7 +1264,7 @@ async fn run_external_cli_reply_owned(
             .push(boundary.clone());
     }
 
-    let terminal_content = content.clone();
+    let terminal_content = crate::chat::protocol::terminal_content(&content).to_owned();
     let terminal_outcome = stream_outcome.clone();
     push_assistant_message(
         app,
@@ -1354,11 +1358,10 @@ impl StreamSegmentTracker {
         segments: &mut Vec<ChatMessageSegment>,
         segment_order: &mut u32,
         tool_calls_len: usize,
-    ) -> ChatMessageSegment {
+    ) -> usize {
         if let Some(index) = self.native_text_items.get(id).copied() {
-            let segment = &mut segments[index];
-            segment.text.get_or_insert_default().push_str(delta);
-            return segment.clone();
+            segments[index].text.get_or_insert_default().push_str(delta);
+            return index;
         }
         self.reset_text();
         let segment = self.append(
@@ -1368,8 +1371,7 @@ impl StreamSegmentTracker {
             tool_calls_len,
             delta,
         );
-        self.native_text_items
-            .insert(id.to_string(), segments.len() - 1);
+        self.native_text_items.insert(id.to_string(), segment);
         self.reset_text();
         segment
     }
@@ -1383,7 +1385,7 @@ impl StreamSegmentTracker {
         segment_order: &mut u32,
         tool_calls_len: usize,
         phase: Option<ChatMessageSegmentPhase>,
-    ) -> Option<(ChatMessageSegment, Option<String>)> {
+    ) -> Option<(usize, Option<String>)> {
         if let Some(index) = self.native_text_items.get(id).copied() {
             let phase_changed = phase
                 .as_ref()
@@ -1393,7 +1395,7 @@ impl StreamSegmentTracker {
             }
             let previous = segments[index].text.as_deref().unwrap_or_default();
             if previous == text {
-                return phase_changed.then(|| (segments[index].clone(), Some(String::new())));
+                return phase_changed.then(|| (index, Some(String::new())));
             }
             if let Some(suffix) = text.strip_prefix(previous) {
                 let delta = suffix.to_string();
@@ -1405,15 +1407,14 @@ impl StreamSegmentTracker {
                 return Some((segment, tail.then_some(delta)));
             }
             segments[index].text = Some(text.to_string());
-            return Some((segments[index].clone(), None));
+            return Some((index, None));
         }
         if text.is_empty() {
             return None;
         }
-        let mut segment = self.append_text_item(id, text, segments, segment_order, tool_calls_len);
+        let segment = self.append_text_item(id, text, segments, segment_order, tool_calls_len);
         if let Some(phase) = phase {
-            segment.phase = phase.clone();
-            segments.last_mut().unwrap().phase = phase;
+            segments[segment].phase = phase;
         }
         Some((segment, Some(text.to_string())))
     }
@@ -1433,7 +1434,7 @@ impl StreamSegmentTracker {
         segment_order: &mut u32,
         tool_calls_len: usize,
         delta: &str,
-    ) -> ChatMessageSegment {
+    ) -> usize {
         let phase = segment_phase_for_tool_count(&kind, tool_calls_len);
         let active = match kind {
             ChatMessageSegmentKind::Reasoning => &mut self.active_reasoning_idx,
@@ -1442,15 +1443,15 @@ impl StreamSegmentTracker {
         if let Some(idx) = *active {
             if let Some(segment) = segments.get_mut(idx) {
                 if segment.kind == kind && segment.phase == phase {
-                    let merged = format!("{}{}", segment.text.as_deref().unwrap_or(""), delta);
-                    segment.text = Some(merged);
-                    return segment.clone();
+                    segment.text.get_or_insert_default().push_str(delta);
+                    return idx;
                 }
             }
         }
 
         *segment_order += 1;
-        let segment = ChatMessageSegment {
+        let index = segments.len();
+        segments.push(ChatMessageSegment {
             id: format!("seg_{}", Uuid::new_v4()),
             kind,
             phase,
@@ -1459,10 +1460,24 @@ impl StreamSegmentTracker {
             round: if tool_calls_len == 0 { None } else { Some(1) },
             text: Some(delta.to_string()),
             tool_call_id: None,
-        };
-        *active = Some(segments.len());
-        segments.push(segment.clone());
-        segment
+        });
+        *active = Some(index);
+        index
+    }
+}
+
+fn cli_stream_delta(segment: &ChatMessageSegment, delta: String) -> ChatRunEvent {
+    let payload = Some(ChatSegmentPayload::for_delta(segment));
+    if segment.kind == ChatMessageSegmentKind::Reasoning {
+        ChatRunEvent::ReasoningDelta {
+            delta,
+            segment: payload,
+        }
+    } else {
+        ChatRunEvent::TextDelta {
+            delta,
+            segment: payload,
+        }
     }
 }
 
@@ -1655,7 +1670,7 @@ struct PiRegenerateRequest {
 async fn run_persistent_turn<E, C>(
     app: &AppHandle,
     state: &State<'_, AppState>,
-    lease: &crate::external_agents::session::live::SessionLease<'_>,
+    lease: &Arc<SessionLease>,
     run_generation: u64,
     conversation: &Conversation,
     agent_id: &str,
@@ -1793,7 +1808,7 @@ where
             app,
             lease,
             conversation_id,
-            cancel,
+            run_generation,
             resolved_bin,
             LiveSession {
                 control: control.clone(),
@@ -1938,7 +1953,7 @@ where
                     app,
                     lease,
                     conversation_id,
-                    cancel,
+                    run_generation,
                     resolved_bin,
                     LiveSession {
                         control: control.clone(),
@@ -2121,7 +2136,7 @@ where
         let (next_control, resumed, reconnect_native) = reconnect_fresh(
             app,
             lease,
-            cancel,
+            run_generation,
             conversation_id,
             agent_id,
             protocol,
@@ -2162,35 +2177,34 @@ where
 
 async fn publish_live_session(
     app: &AppHandle,
-    lease: &crate::external_agents::session::live::SessionLease<'_>,
+    lease: &Arc<SessionLease>,
     conversation_id: &str,
-    cancel: &impl Fn() -> bool,
+    generation: u64,
     resolved_bin: &Path,
     session: crate::external_agents::session::live::LiveSession,
     handle: crate::external_agents::session::LiveSessionHandle,
 ) -> Result<(), String> {
     let control = session.control.clone();
     lease.track(&control);
+    let lease = Arc::clone(lease);
+    let resolved_bin = resolved_bin.to_owned();
     crate::chat::repository::repository(app)
-        .with_existing_conversation(app, conversation_id, || {
-            if cancel() {
-                return Err("cancelled".into());
-            }
-            if let Some(identity) = session.launch_config.identity.as_ref() {
-                identity.ensure_current(
-                    get_agent_def(&session.agent_id).ok_or("unknown external CLI")?,
-                    resolved_bin,
-                )?;
-            }
-            lease.publish(session, || {
-                crate::external_agents::session::save_live_handle(app, conversation_id, &handle)?;
-                crate::external_agents::session::update_stored_session_id(
-                    app,
-                    conversation_id,
-                    &handle.agent_id,
-                    &handle.native_id,
-                )
-            })
+        .with_existing_conversation_storage(app, conversation_id, move |app, id| {
+            app.state::<AppState>()
+                .chat_runtime()
+                .while_generation_active(id, generation, || {
+                    if lease.is_cancelled() {
+                        return Err("cancelled".into());
+                    }
+                    if let Some(identity) = session.launch_config.identity.as_ref() {
+                        identity.ensure_current(
+                            get_agent_def(&session.agent_id).ok_or("unknown external CLI")?,
+                            &resolved_bin,
+                        )?;
+                    }
+                    lease.publish(session, || save_live_binding(app, id, &handle))
+                })
+                .ok_or_else(|| "cancelled".to_string())?
         })
         .await?;
     let app = app.clone();
@@ -2219,10 +2233,10 @@ async fn close_live_control(
 /// `resume_native` 是 ACP / codex 的续接凭据（claude 的在 argv 里）。**不传 = 保证开新会话**，
 /// 也就保证了一条「上下文已重置」；而走到这里的原因常常只是上游 503 或改了 reasoning 档位。
 #[allow(clippy::too_many_arguments)]
-async fn reconnect_fresh<C: Fn() -> bool>(
+async fn reconnect_fresh(
     app: &AppHandle,
-    lease: &crate::external_agents::session::live::SessionLease<'_>,
-    cancel: &C,
+    lease: &Arc<SessionLease>,
+    generation: u64,
     conversation_id: &str,
     agent_id: &str,
     protocol: StreamFormat,
@@ -2276,7 +2290,7 @@ async fn reconnect_fresh<C: Fn() -> bool>(
         app,
         lease,
         conversation_id,
-        cancel,
+        generation,
         resolved_bin,
         LiveSession {
             control: control.clone(),
@@ -4638,7 +4652,7 @@ fn apply_unified_event(
                 tool_calls.len(),
                 &delta,
             );
-            emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
+            emit_run_event(app, run_id, cli_stream_delta(&segments[segment], delta));
         }
         UnifiedAgentEvent::TextItemDelta { id, delta } => {
             let segment = segment_tracker.append_text_item(
@@ -4648,14 +4662,13 @@ fn apply_unified_event(
                 segment_order,
                 tool_calls.len(),
             );
-            let tail = segments
+            let tail = !segments[segment + 1..]
                 .iter()
-                .rev()
-                .find(|segment| segment.kind == ChatMessageSegmentKind::Text)
-                .is_some_and(|last| last.id == segment.id);
+                .any(|segment| segment.kind == ChatMessageSegmentKind::Text);
+            let segment = &segments[segment];
             if tail {
                 content.push_str(&delta);
-                emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
+                emit_run_event(app, run_id, cli_stream_delta(segment, delta));
             } else {
                 *content = segments
                     .iter()
@@ -4666,8 +4679,8 @@ fn apply_unified_event(
                     app,
                     run_id,
                     crate::chat::protocol::ChatRunEvent::TextSegmentReplaced {
-                        segment_id: segment.id,
-                        text: segment.text.unwrap_or_default(),
+                        segment_id: segment.id.clone(),
+                        text: segment.text.clone().unwrap_or_default(),
                         content: content.clone(),
                     },
                 );
@@ -4682,11 +4695,12 @@ fn apply_unified_event(
                 tool_calls.len(),
                 phase,
             ) {
+                let segment = &segments[segment];
                 if let Some(delta) = delta {
                     content.push_str(&delta);
-                    emit_chat_stream_delta(app, run_id, &delta, None, Some(&segment));
+                    emit_run_event(app, run_id, cli_stream_delta(segment, delta));
                 } else {
-                    emit_chat_stream_delta(app, run_id, "", None, Some(&segment));
+                    emit_run_event(app, run_id, cli_stream_delta(segment, String::new()));
                     *content = segments
                         .iter()
                         .filter(|segment| segment.kind == ChatMessageSegmentKind::Text)
@@ -4696,7 +4710,7 @@ fn apply_unified_event(
                         app,
                         run_id,
                         crate::chat::protocol::ChatRunEvent::TextSegmentReplaced {
-                            segment_id: segment.id,
+                            segment_id: segment.id.clone(),
                             text,
                             content: content.clone(),
                         },
@@ -4714,7 +4728,7 @@ fn apply_unified_event(
                 tool_calls.len(),
                 &delta,
             );
-            emit_chat_stream_delta(app, run_id, "", Some(&delta), Some(&segment));
+            emit_run_event(app, run_id, cli_stream_delta(&segments[segment], delta));
         }
         UnifiedAgentEvent::ToolUse {
             id,
@@ -6771,9 +6785,20 @@ mod tests {
         );
 
         assert_eq!(segments.len(), 1);
-        assert_eq!(first.id, second.id);
+        assert_eq!(first, second);
         assert_eq!(segments[0].text.as_deref(), Some("你好"));
         assert_eq!(segments[0].phase, ChatMessageSegmentPhase::Plain);
+        match cli_stream_delta(&segments[second], "好".into()) {
+            ChatRunEvent::TextDelta {
+                delta,
+                segment: Some(segment),
+            } => {
+                assert_eq!(delta, "好");
+                assert_eq!(segment.id, segments[first].id);
+                assert_eq!(segment.text, None);
+            }
+            _ => panic!("expected the CLI text chunk on its existing segment"),
+        }
     }
 
     #[test]
@@ -6840,9 +6865,8 @@ mod tests {
                 Some(ChatMessageSegmentPhase::Answer),
             )
             .unwrap();
-        assert_eq!(answer.phase, ChatMessageSegmentPhase::Answer);
         assert_eq!(delta.as_deref(), Some(""));
-        assert_eq!(segments[0].phase, ChatMessageSegmentPhase::Answer);
+        assert_eq!(segments[answer].phase, ChatMessageSegmentPhase::Answer);
         assert_eq!(segments[1].kind, ChatMessageSegmentKind::Tool);
         assert!(tracker
             .complete_text_item(
@@ -6864,7 +6888,7 @@ mod tests {
                 Some(ChatMessageSegmentPhase::Answer),
             )
             .unwrap();
-        assert_eq!(answer.phase, ChatMessageSegmentPhase::Answer);
+        assert_eq!(segments[answer].phase, ChatMessageSegmentPhase::Answer);
         tracker.append_text_item("note", "Progress", &mut segments, &mut order, 1);
         let (note, delta) = tracker
             .complete_text_item(
@@ -6876,7 +6900,7 @@ mod tests {
                 Some(ChatMessageSegmentPhase::ToolLoop),
             )
             .unwrap();
-        assert_eq!(note.phase, ChatMessageSegmentPhase::ToolLoop);
+        assert_eq!(segments[note].phase, ChatMessageSegmentPhase::ToolLoop);
         assert_eq!(delta.as_deref(), Some(""));
     }
 
@@ -6922,7 +6946,7 @@ mod tests {
         assert_eq!(segments[1].text.as_deref(), Some("after"));
         // 工具之后的**正文**必须是 Synthesis：`content` 累加了所有 TextDelta，正文段标
         // ToolLoop 会让落库的 normalize 以为正文没落段而再补一条 → 气泡显示两遍。
-        assert_eq!(after.phase, ChatMessageSegmentPhase::Synthesis);
+        assert_eq!(segments[after].phase, ChatMessageSegmentPhase::Synthesis);
     }
 
     #[test]
@@ -6940,7 +6964,7 @@ mod tests {
             "还得再看一眼",
         );
 
-        assert_eq!(thinking.phase, ChatMessageSegmentPhase::ToolLoop);
+        assert_eq!(segments[thinking].phase, ChatMessageSegmentPhase::ToolLoop);
     }
 
     #[test]

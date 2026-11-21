@@ -24,6 +24,7 @@ interface NavigationPorts {
   listPopouts: () => Promise<ReadonlySet<string>>
   readConversation: (conversationId: string) => Promise<Conversation>
   readConversationWindow?: (conversationId: string) => Promise<Conversation>
+  knownConversationRevision?: (conversationId: string) => number
   readHistoryPage: (conversationId: string, before: number) => Promise<ConversationHistoryPage>
   showHistoryPage: (conversation: Conversation) => void
   isConversationInFlight: (conversationId: string) => boolean
@@ -41,12 +42,15 @@ interface NavigationPorts {
   reportClearError: (conversationId: string, message: string) => void
   focusPopout: (conversationId: string) => void
   occupyPopout: (conversationId: string) => void
-  prepareSelection: (focusMessageId: string | null, fresh: boolean) => void
+  prepareSelection: (focusMessageId: string | null, fresh: boolean, focusReasoning?: boolean) => void
   showHistoryTarget: (conversation: Conversation, messageId: string) => void
   reportHistoryError: (conversationId: string, message: string | null) => void
+  reportConversationChanged?: (conversationId: string) => void
   showConversation: (conversation: Conversation, context: {
     renderRequestId: number
     selection: boolean
+    focusMessageId?: string
+    focusReasoning?: boolean
   }) => void
   resetConversation: () => void
   discardConversation: (conversationId: string, error: Error, selection: boolean) => void
@@ -70,6 +74,23 @@ function asError(value: unknown, fallback = '对话加载失败，已从列表�
 /** Owns navigation commit rights. Backend runs are deliberately not cancelled
  * when a view changes: only an obsolete UI result loses its lease. */
 export function createChatNavigationController(ports: NavigationPorts) {
+  const readAndShowConversation = async (
+    conversationId: string,
+    read: (conversationId: string) => Promise<Conversation>,
+    isCurrent: () => boolean,
+    show: (conversation: Conversation) => void,
+  ): Promise<'shown' | 'superseded' | 'changed'> => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const conversation = await read(conversationId)
+      if (!isCurrent()) return 'superseded'
+      if ((conversation.revision ?? 0) >= (ports.knownConversationRevision?.(conversationId) ?? 0)) {
+        show(conversation)
+        return 'shown'
+      }
+    }
+    return 'changed'
+  }
+
   const historyPages = new Map<string, ReturnType<typeof captureConversationNavigation>>()
   const loadOlderHistory = async () => {
     const current = ports.currentConversation()
@@ -111,9 +132,9 @@ export function createChatNavigationController(ports: NavigationPorts) {
     if (!isCurrent()) return
     ports.reportHistoryError(conversationId, null)
     try {
-      const complete = await ports.readConversation(conversationId)
-      if (!isCurrent()) return
-      ports.showHistoryTarget(complete, messageId)
+      const outcome = await readAndShowConversation(conversationId, ports.readConversation, isCurrent,
+        (conversation) => ports.showHistoryTarget(conversation, messageId))
+      if (outcome === 'changed' && isCurrent()) ports.reportConversationChanged?.(conversationId)
     } catch (error) {
       if (!isCurrent()) return
       console.error('Failed to load historical navigation target:', error)
@@ -240,16 +261,25 @@ export function createChatNavigationController(ports: NavigationPorts) {
     try {
       // A run appends drafts to its own journal; the stored history a window
       // is cut from is the same whether or not the conversation is running.
-      const conversation = await (options?.initialWindow
-        ? (ports.readConversationWindow?.(conversationId) ?? ports.readConversation(conversationId))
-        : ports.readConversation(conversationId))
-      const transition = getConversationTransitionSnapshot()
-      if (!canCommitResult() || (transition.loading && transition.targetConversationId !== conversationId)) return
-      const renderRequestId = transitionRequestId
-        ?? (transition.loading && transition.targetConversationId === conversationId ? transition.requestId : 0)
-      ports.showConversation(conversation, { renderRequestId, selection: false })
-      if (renderRequestId > 0 && conversation.messages.length === 0) {
-        window.requestAnimationFrame(() => completeConversationTransition(conversationId, renderRequestId))
+      const read = options?.initialWindow ? ports.readConversationWindow ?? ports.readConversation : ports.readConversation
+      const outcome = await readAndShowConversation(conversationId, read, () => {
+        const transition = getConversationTransitionSnapshot()
+        return canCommitResult() && (!transition.loading || transition.targetConversationId === conversationId)
+      }, (conversation) => {
+        const transition = getConversationTransitionSnapshot()
+        const renderRequestId = transitionRequestId
+          ?? (transition.loading && transition.targetConversationId === conversationId ? transition.requestId : 0)
+        ports.showConversation(conversation, { renderRequestId, selection: false })
+        if (renderRequestId > 0 && conversation.messages.length === 0) {
+          window.requestAnimationFrame(() => completeConversationTransition(conversationId, renderRequestId))
+        }
+      })
+      if (outcome === 'changed' && canCommitResult()) {
+        if (transitionRequestId !== undefined) cancelConversationTransition(transitionRequestId)
+        if (!options?.embedded && getRouteConversationId() === conversationId) {
+          syncConversationRoute(ports.currentConversationId())
+        }
+        ports.reportConversationChanged?.(conversationId)
       }
     } catch (value) {
       const transition = getConversationTransitionSnapshot()
@@ -288,18 +318,19 @@ export function createChatNavigationController(ports: NavigationPorts) {
     return reloadConversation(conversationId, { force: true, transitionRequestId: requestId })
   }
 
+  let selectionSequence = 0
   const selectConversation = async (conversationId: string, hint?: ConversationLoadHint) => {
+    const selection = ++selectionSequence
     const current = ports.currentConversation()
     const alreadyOpen = ports.currentConversationId() === conversationId
       && current?.id === conversationId
       && (!hint?.focusMessageId || current.messages.some(message => message.id === hint.focusMessageId))
     if (alreadyOpen) {
-      const inFlight = getConversationTransitionSnapshot()
-      if (inFlight.loading && inFlight.targetConversationId !== conversationId) leaveConversation()
+      if (getConversationTransitionSnapshot().loading) leaveConversation()
       const navigationLease = captureConversationNavigation()
       const ownership = await awaitCurrentConversationNavigation(
         ports.listPopouts(),
-        () => isCurrentConversationNavigation(navigationLease),
+        () => selection === selectionSequence && isCurrentConversationNavigation(navigationLease),
       )
       if (ownership.status === 'stale') return
       if (ownership.value.has(conversationId)) {
@@ -307,14 +338,15 @@ export function createChatNavigationController(ports: NavigationPorts) {
         ports.occupyPopout(conversationId)
         return
       }
-      ports.prepareSelection(hint?.focusMessageId ?? null, false)
+      ports.prepareSelection(hint?.focusMessageId ?? null, false, hint?.focusReasoning)
       syncConversationRoute(conversationId)
       return
     }
     const requestId = beginConversationTransition(conversationId)
+    const isCurrent = () => selection === selectionSequence && isCurrentConversationTransition(requestId, conversationId)
     const ownership = await awaitCurrentConversationNavigation(
       ports.listPopouts(),
-      () => isCurrentConversationTransition(requestId, conversationId),
+      isCurrent,
     )
     if (ownership.status === 'stale') return
     if (ownership.value.has(conversationId)) {
@@ -322,19 +354,26 @@ export function createChatNavigationController(ports: NavigationPorts) {
       ports.occupyPopout(conversationId)
       return
     }
-    ports.prepareSelection(hint?.focusMessageId ?? null, true)
+    ports.prepareSelection(null, true)
     try {
-      const conversation = await (hint?.focusMessageId
-        ? ports.readConversation(conversationId)
-        : (ports.readConversationWindow?.(conversationId) ?? ports.readConversation(conversationId)))
-      if (!isCurrentConversationTransition(requestId, conversationId)) return
-      ports.showConversation(conversation, { renderRequestId: requestId, selection: true })
-      if (conversation.messages.length === 0) {
-        window.requestAnimationFrame(() => completeConversationTransition(conversationId, requestId))
+      const read = hint?.focusMessageId ? ports.readConversation : ports.readConversationWindow ?? ports.readConversation
+      const outcome = await readAndShowConversation(conversationId, read, isCurrent,
+        (conversation) => {
+          ports.showConversation(conversation, {
+            renderRequestId: requestId, selection: true,
+            focusMessageId: hint?.focusMessageId, focusReasoning: hint?.focusReasoning,
+          })
+          if (conversation.messages.length === 0) {
+            window.requestAnimationFrame(() => completeConversationTransition(conversationId, requestId))
+          }
+          syncConversationRoute(conversationId)
+        })
+      if (outcome === 'changed' && isCurrent()) {
+        cancelConversationTransition(requestId)
+        ports.reportConversationChanged?.(conversationId)
       }
-      syncConversationRoute(conversationId)
     } catch (value) {
-      if (!isCurrentConversationTransition(requestId, conversationId)) return
+      if (!isCurrent()) return
       ports.discardConversation(conversationId, asError(value), true)
       forgetRememberedChatRoute()
       syncConversationRoute(null)

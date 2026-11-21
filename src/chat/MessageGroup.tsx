@@ -1,6 +1,7 @@
 import { memo, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { Check, Columns2, Square, Trash2 } from 'lucide-react'
 import type { ChatMessage, ChatToolArtifact, ModelRef } from './types'
+import type { ChatReadingBlock } from './chatReadingPosition'
 import { MessageBubble } from './MessageBubble'
 import { ReasoningPreviewContext } from './reasoningPreview'
 import type { MarkdownOutlineSourceUpdate } from './ChatMarkdown'
@@ -34,6 +35,10 @@ interface MessageGroupProps {
   messages: ChatMessage[]
   // 当前组的选中条 message id（D5）；空时默认第一列。
   selectedMessageId?: string | null
+  focusedMessageId?: string
+  animateEntrance?: boolean
+  readingAnchor?: ChatReadingBlock
+  revealReasoning?: { messageId: string; generation: number }
   onSelectColumn?: (groupId: string, messageId: string) => void
   onUpdateMessage?: (messageId: string, content: string) => Promise<void>
   onRegenerateMessage?: (messageId: string) => Promise<void>
@@ -92,6 +97,9 @@ function GroupColumnView({
   conversationId,
   conversationArtifactsById,
   live,
+  animateEntrance,
+  readingAnchor,
+  revealReasoning,
   isSelected,
   isFocused,
   showColumnChrome,
@@ -112,6 +120,9 @@ function GroupColumnView({
   conversationId?: string | null
   conversationArtifactsById?: ReadonlyMap<string, ChatToolArtifact>
   live: boolean
+  animateEntrance: boolean
+  readingAnchor?: ChatReadingBlock
+  revealReasoning?: number
   isSelected: boolean
   isFocused: boolean
   // columns 模式渲染列头（model 标签 + 「用这条继续」按钮）；tabs 模式列头交给 footer chip。
@@ -173,9 +184,6 @@ function GroupColumnView({
           )}
         </div>
       )}
-      {/* 列内滚动框 + 滚动隔离：头部固定，正文超列高时列内竖向滚动；光标在哪列就滚哪列
-          （ColumnScrollBody 非 passive wheel 监听），到边界再交给外层列表。
-          tabs 模式整宽显示，不限列高，交给外层列表滚动（不套 ColumnScrollBody）。 */}
       {showColumnChrome ? (
         <ColumnScrollBody>
           <MessageBubble
@@ -183,6 +191,9 @@ function GroupColumnView({
             conversationId={conversationId}
             conversationArtifactsById={conversationArtifactsById}
             messageStreaming={streaming}
+            animateEntrance={animateEntrance}
+            readingAnchor={readingAnchor}
+            revealReasoning={revealReasoning}
             // 实时列先结束的臂保持「出字中」上下文（mermaid 源码 / eager 岛不在原地翻转）；
             // 这些内容变化留给落库后的 group twin 首挂一次完成。
             markdownStreaming={live || streaming}
@@ -205,6 +216,9 @@ function GroupColumnView({
           conversationId={conversationId}
           conversationArtifactsById={conversationArtifactsById}
           messageStreaming={streaming}
+          animateEntrance={animateEntrance}
+          readingAnchor={readingAnchor}
+          revealReasoning={revealReasoning}
           markdownStreaming={live || streaming}
           // tabs 模式：当前显示列即聚焦列 → 正常展示流式思考。
           reasoningStreaming={streaming && isFocused}
@@ -320,6 +334,10 @@ function MessageGroupBase({
   groupId,
   messages,
   selectedMessageId,
+  focusedMessageId,
+  animateEntrance = true,
+  readingAnchor,
+  revealReasoning,
   onSelectColumn,
   onUpdateMessage,
   onRegenerateMessage,
@@ -349,10 +367,13 @@ function MessageGroupBase({
 
   const columns = useMemo<GroupColumn[]>(() => {
     if (live && liveGroup) {
-      return liveGroup.columns.map((col) => ({
-        message: streamColumnToMessage(col),
-        streaming: col.streaming,
-      }))
+      return liveGroup.columns.flatMap((column, index) => {
+        if (column.messageId.startsWith('pending-') && !column.streaming) {
+          const persisted = messages[index]
+          return persisted ? [{ message: persisted, streaming: false }] : []
+        }
+        return [{ message: streamColumnToMessage(column), streaming: column.streaming }]
+      })
     }
     return messages.map((message) => ({ message, streaming: false }))
     // groupsVersion：流式列被原地 mutate，靠版本号让 memo 重算（见上方注释）。
@@ -367,7 +388,8 @@ function MessageGroupBase({
   // tabs 模式当前显示哪条：用户在本组点过 chip → tabMessageId（若仍存在于列里）；
   // 否则跟随续聊选中条 / 第一条。流式列认领后 message id 会从占位变真实，故做存在性校验。
   const tabActiveId =
-    (tabMessageId && columns.some((c) => c.message.id === tabMessageId) ? tabMessageId : null) ??
+    focusedMessageId ?? (tabMessageId && columns.some((c) => c.message.id === tabMessageId) ? tabMessageId : null) ??
+    readingAnchor?.messageId ??
     effectiveSelectedId
   const tabColumn = columns.find((c) => c.message.id === tabActiveId) ?? columns[0]
 
@@ -395,6 +417,9 @@ function MessageGroupBase({
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
               live={live}
+              animateEntrance={animateEntrance}
+              readingAnchor={readingAnchor?.messageId === column.message.id ? readingAnchor : undefined}
+              revealReasoning={revealReasoning?.messageId === column.message.id ? revealReasoning.generation : undefined}
               isSelected={!live && column.message.id === effectiveSelectedId}
               isFocused={index === focusedIndex}
               showColumnChrome
@@ -420,6 +445,9 @@ function MessageGroupBase({
           conversationId={conversationId}
           conversationArtifactsById={conversationArtifactsById}
           live={live}
+          animateEntrance={animateEntrance}
+          readingAnchor={readingAnchor?.messageId === tabColumn.message.id ? readingAnchor : undefined}
+          revealReasoning={revealReasoning?.messageId === tabColumn.message.id ? revealReasoning.generation : undefined}
           isSelected={false}
           // tabs 当前显示列即聚焦列（正常展示流式思考）。
           isFocused
@@ -442,7 +470,7 @@ function MessageGroupBase({
         viewMode={viewMode}
         onChangeViewMode={setViewMode}
         activeMessageId={footerActiveId}
-        markContext={!live}
+        markContext={!live && (viewMode === 'columns' || tabColumn.message.id === effectiveSelectedId)}
         onSelectChip={handleChipClick}
         onDeleteMessage={!live ? onDeleteMessage : undefined}
         deleteLabel={deleteLabel}

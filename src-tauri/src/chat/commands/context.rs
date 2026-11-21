@@ -48,7 +48,7 @@ pub(crate) async fn chat_get_context_stats(
         )
         .await
     } else {
-        compute_context_state(&app, &state, &conversation, None, &[]).await?
+        compute_context_state(&app, state.inner(), &conversation)
     };
     let (conversation, stored) =
         persist_context_state(&app, &conversation_id, conversation, context_state).await?;
@@ -237,7 +237,7 @@ async fn finalize_local_context_change(
     generation: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     invalidate_context_measurement(state, &mut conversation);
-    let context_state = compute_context_state(app, state, &conversation, None, &[]).await?;
+    let context_state = compute_context_state(app, state.inner(), &conversation);
     conversation.context_state = context_state.clone();
     if generation.is_some_and(|generation| {
         !state
@@ -591,13 +591,11 @@ pub(super) fn conversation_cache_usage(
     (input > 0).then_some((input, read))
 }
 
-pub(super) async fn compute_context_state(
+pub(super) fn compute_context_state(
     app: &AppHandle,
-    state: &State<'_, AppState>,
+    state: &AppState,
     conversation: &Conversation,
-    _last_user_api_content: Option<&str>,
-    _last_user_image_paths: &[PathBuf],
-) -> Result<ConversationContextState, String> {
+) -> ConversationContextState {
     if conversation.agent_runtime.is_external() {
         // 缓存 key 必须与写入方 chat_detect_external_agent_models 一致：探测 cwd
         // （resolve_detection_cwd，非项目会话 = __global__），否则该读取恒 miss。
@@ -631,17 +629,12 @@ pub(super) async fn compute_context_state(
             conversation.project_id.as_deref(),
         )
         .ok();
-        return Ok(
-            crate::external_agents::context::compute_external_context_state_with_probe(
-                app,
-                conversation,
-                false,
-                None,
-                cached_models.as_ref().map(|c| c.models.as_slice()),
-                None,
-                work_dir.as_deref(),
-            )
-            .await,
+        return crate::external_agents::context::compute_cached_external_context_state(
+            app,
+            conversation,
+            None,
+            cached_models.as_ref().map(|c| c.models.as_slice()),
+            work_dir.as_deref(),
         );
     }
 
@@ -687,7 +680,7 @@ pub(super) async fn compute_context_state(
         compression_count = 1;
     }
 
-    Ok(ConversationContextState {
+    ConversationContextState {
         estimated_input_tokens,
         context_window_tokens: Some(context_window_tokens),
         context_window_estimated,
@@ -723,7 +716,7 @@ pub(super) async fn compute_context_state(
         measurement_seq: measurement.seq,
         lifecycle_id: measurement.lifecycle_id,
         request_measurement: measurement.persist,
-    })
+    }
 }
 
 /// Manual compaction of the whole live history. Returns `false` when there is too little

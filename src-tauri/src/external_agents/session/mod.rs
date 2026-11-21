@@ -160,20 +160,6 @@ pub fn replace_stored_session_id(
     let _ = save_session(app, &stored);
 }
 
-pub fn update_stored_session_id(
-    app: &AppHandle,
-    conversation_id: &str,
-    agent_id: &str,
-    session_id: &str,
-) -> Result<(), String> {
-    let Some(mut stored) = load_session(app, conversation_id).filter(|s| s.agent_id == agent_id)
-    else {
-        return Ok(());
-    };
-    stored.session_id = session_id.to_string();
-    save_session(app, &stored)
-}
-
 // Legacy markers are adopted into the conversation before their next ordinary turn.
 fn rewound_marker_path(app: &AppHandle, conversation_id: &str) -> Result<PathBuf, String> {
     Ok(sessions_dir(app)?.join(format!("rewound-{conversation_id}.marker")))
@@ -564,6 +550,90 @@ pub fn save_live_handle(
     let path = live_handle_path(app, conversation_id)?;
     let raw = serde_json::to_string_pretty(handle).map_err(|e| e.to_string())?;
     crate::chat::storage::atomic_write(&path, &raw, "external live session handle")
+}
+
+/// Called with the conversation storage lease held, before registering the actor.
+pub(super) fn save_live_binding(
+    app: &AppHandle,
+    conversation_id: &str,
+    handle: &LiveSessionHandle,
+) -> Result<(), String> {
+    let live_path = live_handle_path(app, conversation_id)?;
+    let live = serde_json::to_string_pretty(handle).map_err(|error| error.to_string())?;
+    let Some(mut stored) = load_session(app, conversation_id).filter(|stored| {
+        stored.agent_id == handle.agent_id && stored.session_id != handle.native_id
+    }) else {
+        return crate::chat::storage::atomic_write(
+            &live_path,
+            &live,
+            "external live session handle",
+        );
+    };
+
+    stored.session_id.clone_from(&handle.native_id);
+    let stored_path = session_path(app, conversation_id)?;
+    let stored = serde_json::to_string_pretty(&stored).map_err(|error| error.to_string())?;
+    commit_live_binding(&live_path, &live, &stored_path, &stored)
+}
+
+fn commit_live_binding(
+    live_path: &std::path::Path,
+    live: &str,
+    stored_path: &std::path::Path,
+    stored: &str,
+) -> Result<(), String> {
+    use crate::chat::storage::{atomic_write, atomic_write_bytes};
+
+    let previous = match fs::read(live_path) {
+        Ok(previous) => Some(previous),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "read previous external live session handle: {error}"
+            ))
+        }
+    };
+    atomic_write(live_path, live, "external live session handle")?;
+    if let Err(error) = atomic_write(stored_path, stored, "external agent session") {
+        let rollback = match previous {
+            Some(previous) => {
+                atomic_write_bytes(live_path, &previous, "external live session handle")
+            }
+            None => fs::remove_file(live_path).map_err(|error| error.to_string()),
+        };
+        return match rollback {
+            Ok(()) => Err(error),
+            Err(rollback) => Err(format!("{error}; restore previous CLI binding: {rollback}")),
+        };
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn live_binding_restores_original_state_if_legacy_record_commit_fails() {
+    let directory = tempfile::tempdir().unwrap();
+    let live = directory.path().join("live-session.json");
+    let stored = directory.path().join("session.json");
+    // Keep the destination occupied by a directory so the second atomic
+    // write fails at rename, after the new live handle was written.
+    fs::create_dir(&stored).unwrap();
+
+    for previous in [
+        None,
+        Some(&b"previous live binding"[..]),
+        Some(&b"invalid \xff JSON"[..]),
+    ] {
+        if let Some(previous) = previous {
+            fs::write(&live, previous).unwrap();
+        }
+        let result = commit_live_binding(&live, "replacement", &stored, "new native id");
+        assert!(result
+            .unwrap_err()
+            .starts_with("write external agent session file:"));
+        assert_eq!(fs::read(&live).ok().as_deref(), previous);
+        assert!(stored.is_dir());
+    }
 }
 
 pub fn clear_live_handle(app: &AppHandle, conversation_id: &str) {

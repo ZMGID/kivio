@@ -9,7 +9,7 @@ import { createStreamPreviewOwner } from './streamPreviewOwner'
 import { reset as resetStreamStore } from './streamingStore'
 
 const packet = (runId: string, type: string, recovery?: {
-  groupId: string; groupSize: number; armIndex: number
+  groupId: string; groupSize: number; armIndex: number; activeArmCount?: number
 }): ChatStreamPayload => ({
   conversationId: 'a', runId, messageId: `message-${runId}`, type,
   recovery: recovery ? { ...recovery, providerId: 'p', model: 'm' } : null,
@@ -43,10 +43,7 @@ describe('chat stream lifecycle owner', () => {
     owner.receive(packet('run-a', 'run_started'))
     let resolveCancel: () => void = () => {}
     const cancel = vi.fn(() => new Promise<void>((resolve) => { resolveCancel = resolve }))
-    const pending = vi.fn()
-    const cancelling = owner.cancelRun('a', cancel, pending)
-
-    expect(pending).toHaveBeenCalledTimes(1)
+    const cancelling = owner.cancelRun('a', cancel)
     expect(cancel).toHaveBeenCalledTimes(1)
     expect(preview.summary('a')?.streaming).toBe(false)
     expect(owner.receive(packet('run-a', 'text_delta')).kind).toBe('ignored')
@@ -87,6 +84,40 @@ describe('chat stream lifecycle owner', () => {
     preview.dispose()
   })
 
+  it.each([
+    ['run_failed', 'run_completed', 'done'],
+    ['run_completed', 'run_failed', 'done'],
+    ['run_failed', 'run_cancelled', 'error'],
+    ['run_failed', 'run_failed', 'error'],
+    ['run_cancelled', 'run_cancelled', 'cancelled'],
+  ])('settles recovered arms %s then %s with group outcome %s', async (first, last, reason) => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(execution, preview)
+    owner.receive(packet('one', 'run_started', { groupId: 'group', groupSize: 2, activeArmCount: 2, armIndex: 0 }))
+    owner.receive(packet('two', 'run_started', { groupId: 'group', groupSize: 2, activeArmCount: 2, armIndex: 1 }))
+    expect(owner.receive(packet('one', first)).kind).toBe('pending')
+    expect(owner.receive(packet('one', first)).kind).toBe('ignored')
+    const result = owner.receive(packet('two', last))
+    if (result.kind !== 'ready') throw new Error('Expected both registered arms to settle')
+    expect(result.terminal.reason).toBe(reason)
+    expect(await owner.settleExternalTerminal(result.permit, async () => null, () => {})).toBe(true)
+    expect(execution.snapshot('a').inFlight).toBe(false)
+    preview.dispose()
+  })
+
+  it('settles a new answer beside historical model columns after its only active arm ends', async () => {
+    const execution = createChatExecutionOwner()
+    const preview = createStreamPreviewOwner()
+    const owner = createChatStreamLifecycleOwner(execution, preview)
+    owner.receive(packet('new', 'run_started', { groupId: 'existing', groupSize: 3, activeArmCount: 1, armIndex: 2 }))
+    const result = owner.receive(packet('new', 'run_completed'))
+    if (result.kind !== 'ready') throw new Error('Expected a single active answer to settle')
+    expect(await owner.settleExternalTerminal(result.permit, async () => null, () => {})).toBe(true)
+    expect(execution.snapshot('a').inFlight).toBe(false)
+    preview.dispose()
+  })
+
   it('counts hidden popout group arms even when the window docks between terminals', async () => {
     const execution = createChatExecutionOwner()
     const preview = createStreamPreviewOwner()
@@ -105,7 +136,7 @@ describe('chat stream lifecycle owner', () => {
     preview.dispose()
   })
 
-  it('keeps a popped-out group hidden and unsettled when it docks before its first terminal', async () => {
+  it('resumes displaying a docked group and still waits for every arm to end', async () => {
     const execution = createChatExecutionOwner()
     const preview = createStreamPreviewOwner()
     const lifecycle = createChatStreamLifecycleOwner(execution, preview)
@@ -113,13 +144,18 @@ describe('chat stream lifecycle owner', () => {
       listConversationPopouts: vi.fn(), openConversationPopout: vi.fn(), closeConversationPopout: vi.fn(),
     })
     popout.changed(['a'])
-    const receive = (event: ChatStreamPayload) => {
-      const ownership = popout.observeRun(event)
-      return lifecycle.receive(event, { project: !ownership.suppressMainProjection })
-    }
-    receive(packet('one', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 0 }))
-    receive(packet('two', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 1 }))
+    const receive = (event: ChatStreamPayload) =>
+      lifecycle.receive(event, { project: !popout.owns(event.conversationId) })
+    const one = packet('one', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 0 })
+    const two = packet('two', 'run_started', { groupId: 'popped', groupSize: 2, armIndex: 1 })
+    receive(one)
+    receive(two)
+    expect(getActiveGroup('a')).toBeUndefined()
     popout.changed([])
+    receive({ ...one, restoredFromSnapshot: true })
+    receive({ ...two, restoredFromSnapshot: true })
+    receive({ ...packet('two', 'text_delta'), type: 'text_delta', delta: 'Response in main window', segment: null })
+    expect(getActiveGroup('a')?.columns[1].content).toBe('Response in main window')
     expect(receive(packet('one', 'run_completed')).kind).toBe('pending')
     expect(execution.snapshot('a').inFlight).toBe(true)
     const last = receive(packet('two', 'run_completed'))

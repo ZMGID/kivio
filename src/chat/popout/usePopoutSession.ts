@@ -13,10 +13,11 @@ import {
 import { useTauriEvent } from '../hooks/useTauriEvent'
 import { keepNewerTodoState, patchTodoState } from '../agentTodoState'
 import { keepNewerContextMeasurement } from '../contextPanel'
-import { findSubagentToolIndex, mergeSubagentProgress, messageToolCalls, userPromptEventToRecord } from '../streamApply'
+import { findSubagentToolIndex, mergeSubagentProgress, messageToolCalls, userPromptEventToRecord, isStreamTerminal } from '../streamApply'
 import { createChatExecutionOwner } from '../chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from '../chatStreamLifecycleOwner'
 import { createStreamPreviewOwner } from '../streamPreviewOwner'
+import { createRunInteractionInbox } from '../runInteractionInbox'
 import {
   reset as resetStreamStore,
   setCoarse as setStreamCoarse,
@@ -28,12 +29,7 @@ import { insertTextIntoComposer } from '../composerInsert'
 import { usePopoutComposer } from './usePopoutComposer'
 import { usePopoutWorkdir } from './usePopoutWorkdir'
 import { useDetectedExternalAgents } from '../permissionModes'
-import type {
-  ChatSessionConsentPayload,
-  ChatToolConfirmPayload,
-  ChatUserPromptPayload,
-  ChatHookPayload,
-} from '../../api/tauri'
+import type { ChatHookPayload } from '../../api/tauri'
 import type { Lang } from '../../components/i18n'
 
 const EMPTY_MESSAGES: Conversation['messages'] = []
@@ -44,14 +40,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const committedConversationRef = useRef(conversation)
   useLayoutEffect(() => { committedConversationRef.current = conversation }, [conversation])
   const [loadError, setLoadError] = useState('')
-  const [pendingToolConfirm, setPendingToolConfirm] = useState<ChatToolConfirmPayload | null>(null)
-  const [pendingSessionConsent, setPendingSessionConsent] = useState<ChatSessionConsentPayload | null>(null)
-  const [pendingUserPrompt, setPendingUserPrompt] = useState<ChatUserPromptPayload | null>(null)
   const [hookWarning, setHookWarning] = useState<ChatHookPayload | null>(null)
-  const [toolConfirmError, setToolConfirmError] = useState('')
-  const [sessionConsentError, setSessionConsentError] = useState('')
-  const [submittingInteractionId, setSubmittingInteractionId] = useState<string | null>(null)
-  const [sessionConsentSubmitting, setSessionConsentSubmitting] = useState(false)
   const [approvalPolicy, setApprovalPolicy] = useState('readonly_auto_sensitive_confirm')
 
   const conversationIdRef = useRef(conversationId)
@@ -62,8 +51,15 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const [previewOwner] = useState(createStreamPreviewOwner)
   const [streamLifecycleOwner] = useState(() => createChatStreamLifecycleOwner(executionOwner, previewOwner))
   useSyncExternalStore(executionOwner.subscribe, executionOwner.getRevision)
-  const pendingToolConfirmsRef = useRef<ChatToolConfirmPayload[]>([])
-  const pendingUserPromptsRef = useRef<ChatUserPromptPayload[]>([])
+  const [interactionInbox] = useState(() => createRunInteractionInbox({
+    confirmTool: api.chatConfirmToolCall,
+    respondConsent: api.chatRespondSessionConsent,
+  }))
+  const interactionSnapshot = useSyncExternalStore(interactionInbox.subscribe, interactionInbox.getSnapshot)
+  const cancellingInteractions = executionOwner.isCancellationRequested(conversationId)
+  const pendingToolConfirm = cancellingInteractions ? null : interactionSnapshot.toolConfirm
+  const pendingSessionConsent = cancellingInteractions ? null : interactionSnapshot.sessionConsent
+  const pendingUserPrompt = cancellingInteractions ? null : interactionSnapshot.userPrompt
   const streamCoarse = useStreamCoarse()
   const acceptPersistedConversation = useCallback((next: Conversation) => {
     setConversation((current) => current?.id === next.id && current.revision > next.revision
@@ -76,6 +72,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     viewActiveRef.current = true
     previewOwner.attach()
     previewOwner.activate(conversationId)
+    interactionInbox.activate(conversationId)
     let cancelled = false
     setLoadError('')
     void chatApi.getConversation(conversationId).then((conv) => {
@@ -96,10 +93,11 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       incomingReadEpoch.current += 1
       viewActiveRef.current = false
       executionOwner.observe({ kind: 'drop', conversationId })
+      interactionInbox.observe({ kind: 'drop', conversationId })
       previewOwner.dispose()
       resetStreamStore()
     }
-  }, [acceptPersistedConversation, conversationId, executionOwner, previewOwner])
+  }, [acceptPersistedConversation, conversationId, executionOwner, interactionInbox, previewOwner])
 
   // The preview is replaced only after React commits the authoritative twin.
   useEffect(() => {
@@ -132,17 +130,21 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   useTauriEvent(api.onChatStream, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
     const result = streamLifecycleOwner.receive(payload)
+    if (isStreamTerminal(payload)) {
+      interactionInbox.observe({ kind: 'runTerminal', conversationId: payload.conversationId, runId: payload.runId })
+    }
     if (result.kind === 'started') {
       setHookWarning(null)
-      setPendingSessionConsent(null)
-      pendingToolConfirmsRef.current = []
-      pendingUserPromptsRef.current = []
-      setPendingToolConfirm(null)
+      interactionInbox.observe({ kind: 'runStarted', conversationId: payload.conversationId, runId: payload.runId })
+      if (payload.snapshotPendingInteractions) {
+        interactionInbox.reconcileRun(payload.conversationId, payload.runId, payload.snapshotPendingInteractions)
+      }
     } else if (result.kind === 'ready') {
       previewOwner.freeze(payload.conversationId)
       settleExternalRun(result)
     }
-  }, [previewOwner, settleExternalRun, streamLifecycleOwner])
+  }, [interactionInbox, previewOwner, settleExternalRun, streamLifecycleOwner])
+
 
   useTauriEvent(api.onChatTool, (payload) => {
     if (payload.conversationId !== conversationIdRef.current
@@ -183,43 +185,32 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     })
   }, [executionOwner, previewOwner])
   useTauriEvent(api.onChatToolConfirm, (payload) => {
-    if (payload.conversationId !== conversationIdRef.current) return
-    const queue = pendingToolConfirmsRef.current
-    if (!queue.some((item) => item.interactionId === payload.interactionId)) queue.push(payload)
-    setPendingToolConfirm(queue[0] ?? null)
-    setToolConfirmError('')
-  }, [])
+    if (payload.conversationId !== conversationIdRef.current
+      || !executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
+    interactionInbox.observe({ kind: 'toolRequested', payload })
+  }, [executionOwner, interactionInbox])
 
   useTauriEvent(api.onChatToolConfirmWithdraw, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
-    const rest = pendingToolConfirmsRef.current.filter((item) => item.interactionId !== payload.interactionId)
-    pendingToolConfirmsRef.current = rest
-    setPendingToolConfirm((current) => (
-      current?.interactionId === payload.interactionId ? rest[0] ?? null : current
-    ))
-  }, [])
+    interactionInbox.observe({ kind: 'toolWithdrawn', ...payload })
+  }, [interactionInbox])
 
   useTauriEvent(api.onChatSessionConsent, (payload) => {
-    if (payload.conversationId !== conversationIdRef.current) return
-    setPendingSessionConsent(payload)
-    setSessionConsentError('')
-  }, [])
+    if (payload.conversationId !== conversationIdRef.current
+      || !executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
+    interactionInbox.observe({ kind: 'consentRequested', payload })
+  }, [executionOwner, interactionInbox])
 
   useTauriEvent(api.onChatUserPrompt, (payload) => {
-    if (payload.conversationId !== conversationIdRef.current) return
-    const queue = pendingUserPromptsRef.current
-    if (!queue.some((item) => item.interactionId === payload.interactionId)) queue.push(payload)
-    setPendingUserPrompt(queue[0] ?? null)
-  }, [])
+    if (payload.conversationId !== conversationIdRef.current
+      || !executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
+    interactionInbox.observe({ kind: 'userPromptRequested', payload })
+  }, [executionOwner, interactionInbox])
 
   useTauriEvent(api.onChatUserPromptResolved, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
-    const rest = pendingUserPromptsRef.current.filter((item) => (
-      item.runId !== payload.runId || item.interactionId !== payload.interactionId
-    ))
-    pendingUserPromptsRef.current = rest
-    setPendingUserPrompt(rest[0] ?? null)
-  }, [])
+    interactionInbox.observe({ kind: 'userAnswered', ...payload })
+  }, [interactionInbox])
 
   useTauriEvent(api.onChatHook, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
@@ -288,6 +279,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const settlementPorts = useMemo<Parameters<typeof executionOwner.finish>[2]>(() => ({
     completeWithConversation: (id, persisted) => {
       if (conversationIdRef.current !== id) return
+      interactionInbox.observe({ kind: 'drop', conversationId: id })
       acceptPersistedConversation(persisted)
       previewOwner.complete(id, { kind: 'persisted', committedMessages: committedConversationRef.current?.messages ?? EMPTY_MESSAGES })
     },
@@ -313,7 +305,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     },
     abandonPreview: (id) => previewOwner.complete(id, { kind: 'error' }),
     settleQueue: () => {},
-  }), [acceptPersistedConversation, previewOwner])
+  }), [acceptPersistedConversation, interactionInbox, previewOwner])
 
   const handleSend = useCallback(async (
     content: string,
@@ -380,43 +372,15 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     if (result.kind !== 'ignored' && result.kind !== 'superseded') setStreamCoarse({ cancelling: false })
   }, [conversationId, executionOwner, streamLifecycleOwner])
 
-  const resolveToolConfirm = useCallback(async (
+  const resolveToolConfirm = useCallback((
     approved: boolean,
     always = false,
     permissionMode: string | null = null,
-  ) => {
-    const prompt = pendingToolConfirm
-    if (!prompt || pendingToolConfirmsRef.current[0]?.interactionId !== prompt.interactionId
-      || submittingInteractionId === prompt.interactionId) return
-    setSubmittingInteractionId(prompt.interactionId)
-    setToolConfirmError('')
-    try {
-      await api.chatConfirmToolCall(prompt.interactionId, approved, always, permissionMode)
-      const rest = pendingToolConfirmsRef.current.filter((item) => item.interactionId !== prompt.interactionId)
-      pendingToolConfirmsRef.current = rest
-      setPendingToolConfirm(rest[0] ?? null)
-    } catch (error) {
-      if (pendingToolConfirmsRef.current[0]?.interactionId === prompt.interactionId) {
-        setToolConfirmError(typeof error === 'string' ? error : error instanceof Error ? error.message : '提交审批失败')
-      }
-    } finally {
-      setSubmittingInteractionId((current) => current === prompt.interactionId ? null : current)
-    }
-  }, [pendingToolConfirm, submittingInteractionId])
+  ) => pendingToolConfirm
+    ? interactionInbox.respondTool({ interactionId: pendingToolConfirm.interactionId, approved, always, permissionMode })
+    : Promise.resolve(false), [interactionInbox, pendingToolConfirm])
 
-  const resolveSessionConsent = useCallback(async (granted: boolean) => {
-    const prompt = pendingSessionConsent
-    if (!prompt) return
-    setSessionConsentSubmitting(true)
-    try {
-      await api.chatRespondSessionConsent(prompt.conversationId, granted)
-      setPendingSessionConsent(null)
-    } catch (error) {
-      setSessionConsentError(typeof error === 'string' ? error : (error as Error).message || '提交会话授权失败')
-    } finally {
-      setSessionConsentSubmitting(false)
-    }
-  }, [pendingSessionConsent])
+  const resolveSessionConsent = useCallback((granted: boolean) => interactionInbox.respondConsent(granted), [interactionInbox])
 
   const handleModelChange = useCallback(async (providerId: string, model: string) => {
     const next = await chatApi.updateConversation(conversationId, { providerId, model })
@@ -549,19 +513,15 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     pendingSessionConsent,
     pendingUserPrompt,
     pendingUserPromptRecord,
-    toolConfirmError,
-    sessionConsentError,
-    toolConfirmSubmitting: pendingToolConfirm !== null && submittingInteractionId === pendingToolConfirm.interactionId,
-    sessionConsentSubmitting,
+    userPromptDraft: interactionSnapshot.userPromptDraft,
+    toolConfirmError: interactionSnapshot.toolConfirmError,
+    sessionConsentError: interactionSnapshot.sessionConsentError,
+    toolConfirmSubmitting: interactionSnapshot.toolConfirmSubmitting,
+    sessionConsentSubmitting: interactionSnapshot.sessionConsentSubmitting,
     resolveToolConfirm,
     resolveSessionConsent,
     dismissUserPrompt: () => {
-      const current = pendingUserPrompt
-      const rest = pendingUserPromptsRef.current.filter((item) => (
-        current ? item.interactionId !== current.interactionId : true
-      ))
-      pendingUserPromptsRef.current = rest
-      setPendingUserPrompt(rest[0] ?? null)
+      if (pendingUserPrompt) interactionInbox.observe({ kind: 'userAnswered', ...pendingUserPrompt })
     },
     hookWarning,
     dismissHookWarning: () => setHookWarning(null),

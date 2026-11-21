@@ -127,7 +127,8 @@ import {
   type ChatHookPayload,
 } from '../api/tauri'
 import { getSettingsCached, subscribeSettings, updateSettingsCached } from '../api/settingsCache'
-import { setExclusiveConversationIds } from '../api/chatProtocol'
+import { knownChatConversationRevision, recordChatConversationRevision, setExclusiveConversationIds } from '../api/chatProtocol'
+import { notifyError } from '../components/appNoticeStore'
 import { OnboardingShell } from '../onboarding/public/shell'
 import type { SettingsShellHandle, SettingsTab } from '../settings/public/shell'
 import { AppDialogHost } from '../components/AppDialog'
@@ -392,7 +393,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   useEffect(() => () => warmConversationCache.clear(), [warmConversationCache])
   const [conversationRenderRequestId, setConversationRenderRequestId] = useState(0)
   /** 全局搜索跳转目标；MessageList 完成滚动后清空。 */
-  const [focusMessageId, setFocusMessageId] = useState<string | null>(null)
+  const [messageFocus, setMessageFocus] = useState<{ messageId: string; reasoning?: boolean } | null>(null)
   const {
     collapsed: sidebarCollapsed,
     width: sidebarWidth,
@@ -434,6 +435,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   )
   const [popoutOwner] = useState(createChatPopoutOwnershipOwner)
   const popoutConversationIds = useSyncExternalStore(popoutOwner.subscribe, popoutOwner.membership)
+  const conversationOccupied = Boolean(currentConversation?.id && popoutConversationIds.has(currentConversation.id))
   const [popoutNotice, setPopoutNotice] = useState<string | null>(null)
   useEffect(() => { setExclusiveConversationIds(popoutConversationIds) }, [popoutConversationIds])
   const [sidebarProfileRefreshKey, setSidebarProfileRefreshKey] = useState(0)
@@ -575,8 +577,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   // used by earlier lifecycle handlers without a second Chat-level ref bridge.
   const messageQueue = useMessageQueue({
     onCompactContext: (conversation) => compressConversation(conversation.id),
-    onSendMessage: (content, attachments, options) =>
-      handleSendMessage(content, attachments, options),
+    onSendMessage: async (content, attachments, { conversationOverride }) => {
+      const result = await sendController.send({ content, attachments, queuedConversation: conversationOverride })
+      return result.composerAccepted
+    },
     onRestoreToComposer: (message) => insertTextIntoComposer(message.content, message.attachments),
     onPendingChange: (conversationId, pending) => {
       void chatApi.setGoalUserQueuePending(conversationId, pending)
@@ -972,6 +976,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const navigation = useMemo(() => createChatNavigationController({
     currentConversation: () => currentConversationRef.current,
     currentConversationId: () => currentConversationIdRef.current,
+    knownConversationRevision: knownChatConversationRevision,
     listPopouts: popoutOwner.list,
     readConversation: async (conversationId) => {
       const cached = await warmConversationCache.get(conversationId, chatApi.getConversationRevision)
@@ -1035,39 +1040,44 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     reportClearError: setStreamErrorForConversation,
     showHistoryTarget: (conversation, messageId) => {
       applyConversation(conversation)
-      setFocusMessageId(messageId)
+      setMessageFocus({ messageId })
     },
     reportHistoryError: (conversationId, message) => {
       setHistoryLoadError(message ? { conversationId, message } : null)
     },
+    reportConversationChanged: () => {
+      notifyError(uiLangRef.current === 'zh'
+        ? '对话仍在更新，请重新打开。'
+        : 'The conversation is still updating. Open it again to retry.')
+    },
     focusPopout: (conversationId) => { void chatApi.focusConversationPopout(conversationId) },
     occupyPopout: (conversationId) => occupyConversationInMain(conversationId, currentConversationRef.current),
-    prepareSelection: (focusMessageId, fresh) => {
+    prepareSelection: (focusMessageId, fresh, focusReasoning) => {
       if (fresh) {
-        const leaving = currentConversationRef.current
-        // A running conversation is remembered too: its stored history does not
-        // change until the run settles, and every reuse re-checks the revision.
-        // That snapshot is only reused while the same run is still going.
-        if (leaving) {
-          const { id } = leaving
-          const epoch = executionOwner.turnEpoch(id)
-          warmConversationCache.rememberSoon(leaving, executionOwner.snapshot(id).inFlight
-            ? () => executionOwner.snapshot(id).inFlight && executionOwner.turnEpoch(id) === epoch
-            : undefined)
-        }
         setAssistantStreamStatsByMessageId({})
         setHookWarning(null)
       }
-      setFocusMessageId(focusMessageId)
+      setMessageFocus(focusMessageId ? { messageId: focusMessageId, reasoning: focusReasoning } : null)
     },
-    showConversation: (conversation, { renderRequestId, selection }) => {
+    showConversation: (conversation, { renderRequestId, selection, focusMessageId, focusReasoning }) => {
+      const leaving = currentConversationRef.current
+      if (leaving && leaving.id !== conversation.id) {
+        // Only inactive windows occupy cache slots. Swap after a successful read
+        // so leaving a conversation cannot evict the one we're about to open.
+        warmConversationCache.forget(conversation.id)
+        const { id } = leaving
+        const epoch = executionOwner.turnEpoch(id)
+        warmConversationCache.rememberSoon(leaving, executionOwner.snapshot(id).inFlight
+          ? () => executionOwner.snapshot(id).inFlight && executionOwner.turnEpoch(id) === epoch
+          : undefined)
+      }
       // The external preview store and React history must commit to the same conversation.
       flushSync(() => {
         currentConversationIdRef.current = conversation.id
         applyConversation(conversation)
         if (renderRequestId > 0) setConversationRenderRequestId(renderRequestId)
         restoreStreamingPreview(conversation.id)
-        if (selection) setStreamError('')
+        if (selection) setMessageFocus(focusMessageId ? { messageId: focusMessageId, reasoning: focusReasoning } : null)
         else setStreamCoarse({ cancelling: false })
       })
     },
@@ -1327,7 +1337,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       // Reading is side-effect-free. A stale terminal must not call the
       // navigation helper, which applies its result before the run permit is
       // checked again.
-      () => canPresent() ? chatApi.getConversation(conversationId) : Promise.resolve(null),
+      () => canPresent() || queueCommands.hasQueued(conversationId)
+        ? chatApi.getConversation(conversationId)
+        : Promise.resolve(null),
       (outcome) => {
         const conversation = outcome.kind === 'loaded' ? outcome.value : null
         const loadError = outcome.kind === 'failed' ? outcome.error : null
@@ -1361,12 +1373,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         }
         refreshSidebar()
         syncGeneratingConversationIds()
+        void queueCommands.settleAfterRun(conversationId, reason === 'error' ? null : conversation)
+        void wakeAfterRun()
       },
     )
   }, [
     applyConversation, clearStreamSnapshot, freezeStreamSnapshot, markConversationCompacting,
-    popoutOwner, refreshSidebar, setStreamErrorForConversation, settleStreamingPreview,
-    streamLifecycleOwner, syncGeneratingConversationIds,
+    popoutOwner, queueCommands, refreshSidebar, setStreamErrorForConversation, settleStreamingPreview,
+    streamLifecycleOwner, syncGeneratingConversationIds, wakeAfterRun,
   ])
 
   // React 的权威消息提交后才清 live 预览；定时兜底和旧轮失效归 previewOwner。
@@ -1378,6 +1392,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     conversationId: string,
     conversation: Conversation,
   ) => {
+    recordChatConversationRevision(conversationId, conversation.revision)
     if (currentConversationIdRef.current === conversationId) {
       applyConversation(conversation)
     }
@@ -1427,29 +1442,26 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [popoutOwner, refreshSidebar, reloadConversation])
 
   useTauriEvent(api.onChatStream, (payload) => {
-      const popout = popoutOwner.observeRun(payload)
+      const poppedOut = popoutOwner.owns(payload.conversationId)
       // Popout ownership hides main-window display only. Execution identity
-      // still observes every arm, including terminals arriving after close.
-      const result = streamLifecycleOwner.receive(payload, { project: !popout.suppressMainProjection })
-      if (result.kind === 'ignored') return
-      if (popout.suppressMainProjection) {
-        syncGeneratingConversationIds()
-        if (result.kind === 'ready') finishExternalStreamingRun(result)
-        return
-      }
-      if (isStreamTerminal(payload)) {
+      // continues tracking every arm across ownership changes.
+      const result = streamLifecycleOwner.receive(payload, { project: !poppedOut })
+      const terminal = isStreamTerminal(payload)
+      if (terminal) {
         interactionInbox.observe({
           kind: 'runTerminal', conversationId: payload.conversationId, runId: payload.runId,
         })
       }
-      if (result.kind === 'started') {
+      if (result.kind === 'ignored') return
+      if (!poppedOut && result.kind === 'started') {
         interactionInbox.observe({
           kind: 'runStarted', conversationId: payload.conversationId, runId: payload.runId,
         })
-        syncGeneratingConversationIds()
-        return
+        if (payload.snapshotPendingInteractions) {
+          interactionInbox.reconcileRun(payload.conversationId, payload.runId, payload.snapshotPendingInteractions)
+        }
       }
-      syncGeneratingConversationIds()
+      if (terminal || result.kind === 'started') syncGeneratingConversationIds()
       if (result.kind === 'ready') finishExternalStreamingRun(result)
   }, [finishExternalStreamingRun, interactionInbox, popoutOwner, streamLifecycleOwner, syncGeneratingConversationIds])
 
@@ -1517,8 +1529,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       if (result.confirmedQueueMessageId) {
         queueCommands.confirm(payload.conversationId, result.confirmedQueueMessageId)
       }
-      syncGeneratingConversationIds()
-  }, [executionOwner, previewOwner, queueCommands, syncGeneratingConversationIds])
+  }, [executionOwner, previewOwner, queueCommands])
 
   // Live sub-agent progress is merged onto its spawning tool card.
   // 流状态行的瞬态一行字（上游重试等）：写进会话流快照，StreamStatusLine 每秒读。
@@ -1562,17 +1573,14 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useTauriEvent(api.onChatUserPrompt, (payload) => {
       if (popoutOwner.owns(payload.conversationId)) return
-      if (!executionOwner.allowsStreamPayload(payload)) return
       if (!executionOwner.snapshot(payload.conversationId).inFlight) return
       if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
-      if (!previewOwner.projectDisplay({ kind: 'userPrompt', payload }).accepted) return
+      if (executionOwner.allowsStreamPayload(payload)) previewOwner.projectDisplay({ kind: 'userPrompt', payload })
       // 同时排进「输入框上方」那张面板的队列：消息流里的那条只是痕迹，真正作答在面板上。
       interactionInbox.observe({ kind: 'userPromptRequested', payload })
-      syncGeneratingConversationIds()
-  }, [executionOwner, interactionInbox, previewOwner, syncGeneratingConversationIds])
+  }, [executionOwner, interactionInbox, previewOwner])
 
   useTauriEvent(api.onChatUserPromptResolved, (payload) => {
-    if (popoutOwner.owns(payload.conversationId)) return
     interactionInbox.observe({ kind: 'userAnswered', ...payload })
   }, [interactionInbox])
 
@@ -1583,7 +1591,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useTauriEvent(api.onChatToolConfirm, (payload) => {
     if (popoutOwner.owns(payload.conversationId)) return
-    if (!executionOwner.allowsStreamPayload(payload)) return
     if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
     const queued = interactionInbox.observe({ kind: 'toolRequested', payload })
     if (queued && currentConversationIdRef.current === payload.conversationId) {
@@ -1595,7 +1602,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   }, [executionOwner, interactionInbox])
 
   useTauriEvent(api.onChatToolConfirmWithdraw, (payload) => {
-    if (popoutOwner.owns(payload.conversationId)) return
     interactionInbox.observe({ kind: 'toolWithdrawn', ...payload })
   }, [interactionInbox])
 
@@ -1608,7 +1614,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
 
   useTauriEvent(api.onChatSessionConsent, (payload) => {
     if (popoutOwner.owns(payload.conversationId)) return
-    if (!executionOwner.allowsStreamPayload(payload)) return
     if (!executionOwner.observe({ kind: 'runEvent', conversationId: payload.conversationId, runId: payload.runId })) return
     interactionInbox.observe({ kind: 'consentRequested', payload })
   }, [executionOwner, interactionInbox])
@@ -1622,11 +1627,11 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (!conversationId) return
     // 已弹出的会话:主窗只渲染占位卡、不渲染消息,run 边沿事件足够;
     // sync 会把该会话的运行快照(可能数百 KB)白拉到主窗协议状态里。
-    if (popoutOwner.owns(conversationId)) return
+    if (conversationOccupied) return
     void api.chatSyncState(conversationId).catch((error) => {
       console.error('Failed to synchronize chat protocol state:', error)
     })
-  }, [currentConversation?.id, popoutConversationIds, popoutOwner])
+  }, [currentConversation?.id, conversationOccupied])
 
   useEffect(() => {
     currentConversationIdRef.current = currentConversation?.id ?? null
@@ -2295,9 +2300,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const result = await streamLifecycleOwner.cancelRun(
       conversationId,
       () => chatApi.cancelStream(conversationId),
-      () => {
-        interactionInbox.observe({ kind: 'drop', conversationId })
-      },
     )
     if (result.kind === 'failed') {
       console.error('Failed to cancel chat stream:', result.error)
@@ -2306,16 +2308,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
     if (result.kind !== 'ignored' && result.kind !== 'superseded'
       && currentConversationIdRef.current === conversationId) setStreamCoarse({ cancelling: false })
-  }, [executionOwner, interactionInbox, previewOwner, setStreamErrorForConversation, streamLifecycleOwner, syncGeneratingConversationIds])
+  }, [executionOwner, previewOwner, setStreamErrorForConversation, streamLifecycleOwner, syncGeneratingConversationIds])
 
   const displayMessages = executionOwner.overlayMessages(
     currentConversation?.id,
     currentConversation?.messages ?? [],
   )
 
-  const conversationOccupied = Boolean(
-    currentConversation?.id && popoutConversationIds.has(currentConversation.id),
-  )
   const showEmptyHero = chatView === 'conversation'
     && !conversationOccupied
     && !goalDraft && !goalActive
@@ -2427,6 +2426,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         : conversation && 'matchMessageId' in conversation
           ? conversation.matchMessageId ?? undefined
           : undefined
+    const focusReasoning = Boolean(conversation && (
+      ('match_field' in conversation && conversation.match_field === 'reasoning')
+      || ('matchField' in conversation && conversation.matchField === 'reasoning')
+    ))
     runAfterLeavingEditors(() => {
       // 跨项目/集点击必须是一次原子导航。这里仅更新导航上下文，不调用
       // handleSelectProject/handleSelectSet（两者会清空会话并写 #chat）。
@@ -2441,6 +2444,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       }
       void handleSelectConversation(id, {
         focusMessageId: focusMessageId || undefined,
+        focusReasoning,
       })
     }, { restoreCurrentRoute: false })
   }, [handleSelectConversation, occupyConversationInMain, popoutOwner, runAfterLeavingEditors])
@@ -2879,8 +2883,9 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     animateCompactionBoundaryId: animateCompactionBoundaryId,
     animateClearBoundaryId: animateClearBoundaryId,
     lang: uiLang,
-    focusMessageId,
-    onFocusMessageHandled: () => setFocusMessageId(null),
+    focusMessageId: messageFocus?.messageId,
+    focusReasoning: messageFocus?.reasoning,
+    onFocusMessageHandled: () => setMessageFocus(null),
   }), [
     animateCompactionBoundaryId,
     animateClearBoundaryId,
@@ -2904,7 +2909,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleSetGroupSelection,
     handleUpdateMessage,
     uiLang,
-    focusMessageId,
+    messageFocus,
     usesExternalRuntime,
     activeAgentPlanMode,
   ])
@@ -2916,7 +2921,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     return sourceId ? { sourceId, title: origin.title } : null
   }, [currentConversation])
 
-  const pendingSlot = useMemo(() => (
+  const cancellingInteractions = currentConversation ? executionOwner.isCancellationRequested(currentConversation.id) : false
+  const pendingSlot = useMemo(() => cancellingInteractions ? null : (
     <PendingInteractionSlot
       snapshot={interactionSnapshot}
       activeAgentRuntime={activeAgentRuntime}
@@ -2926,7 +2932,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       onPersistApprovedSandbox={persistApprovedExternalSandbox}
     />
   ), [
-    activeAgentRuntime, dismissPendingUserPrompt, interactionSnapshot, persistApprovedExternalSandbox,
+    activeAgentRuntime, cancellingInteractions, dismissPendingUserPrompt, interactionSnapshot, persistApprovedExternalSandbox,
     resolvePendingSessionConsent, resolvePendingToolConfirm,
   ])
 

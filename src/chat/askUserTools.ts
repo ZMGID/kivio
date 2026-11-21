@@ -35,3 +35,54 @@ export function hasAskUserStructuredContent(value: unknown): boolean {
     && 'askUser' in (value as Record<string, unknown>),
   )
 }
+
+export interface DraftAnswer {
+  selectedOptionIds: string[]
+  customText: string
+  customTextEdited?: boolean
+}
+
+export interface AskUserDraft {
+  signature: string
+  answers: Record<string, DraftAnswer>
+  questionIndex: number
+}
+
+export interface AskUserDraftStorage {
+  read: () => AskUserDraft | null
+  write: (draft: AskUserDraft) => void
+  submission: () => { submitting: boolean; error: string }
+  subscribe: (listener: () => void) => () => void
+  submit: (operation: () => Promise<void>) => Promise<void>
+}
+
+export function createAskUserDraftStorage(): AskUserDraftStorage {
+  let draft: AskUserDraft | null = null
+  let submission = { submitting: false, error: '' }
+  const listeners = new Set<() => void>()
+  const publish = (next: typeof submission) => {
+    submission = next
+    for (const listener of listeners) listener()
+  }
+  return {
+    read: () => draft,
+    write: (next) => { draft = next },
+    submission: () => submission,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+    async submit(operation) {
+      if (submission.submitting) return
+      publish({ submitting: true, error: '' })
+      let error = ''
+      try {
+        await operation()
+      } catch (cause) {
+        error = cause instanceof Error ? cause.message : String(cause)
+      } finally {
+        publish({ submitting: false, error })
+      }
+    },
+  }
+}

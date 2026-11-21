@@ -22,18 +22,26 @@ async page => {
       // a separate scroll/resize assertion, never the next sample's baseline.
       await page.evaluate(() => window.chatAcceptance.resize());
       await page.waitForTimeout(300);
-      // Detach bottom follow with actual user input before inspecting history.
-      await page.hover('.chat-scroll-viewport');
-      await page.mouse.wheel(0, -4000);
-      const earlier = page.getByRole('button', { name: /显示更早的过程/ });
-      await earlier.waitFor({ state: 'visible' });
-      const recentText = await page.locator('.chat-markdown').allTextContents();
-      await earlier.click();
-      const revealedText = await page.locator('.chat-markdown').allTextContents();
-      if (!recentText.every(text => revealedText.includes(text))) throw new Error('Paging discarded visible work');
-      if (!revealedText.some(text => !recentText.includes(text) && text.startsWith('Step '))) {
-        throw new Error('Earlier work could not be revealed');
-      }
+      // Read a middle step by scrolling the same timeline the user sees.
+      const viewport = page.locator('.chat-scroll-viewport');
+      const distance = await viewport.evaluate(view => Math.floor(view.scrollHeight / 2));
+      await page.mouse.move(12, 350);
+      await page.mouse.wheel(0, -distance);
+      await page.waitForFunction(steps => {
+        const view = document.querySelector('.chat-scroll-viewport').getBoundingClientRect();
+        return [...document.querySelectorAll('.chat-markdown')].some(row => {
+          const match = /^Step (\d+):/.exec(row.textContent);
+          const rect = row.getBoundingClientRect();
+          return match && Number(match[1]) > steps / 8 && Number(match[1]) < 7 * steps / 8
+            && rect.bottom > view.top && rect.top < view.bottom;
+        });
+      }, steps);
+      if (await page.locator('*').count() > 12000) throw new Error('Scrolling mounted the entire work history');
+      await page.getByRole('button', { name: '回到底部' }).click();
+      await page.waitForFunction(() => {
+        const view = document.querySelector('.chat-scroll-viewport');
+        return view.scrollHeight - view.clientHeight - view.scrollTop <= 3;
+      });
     }
   }
   await page.evaluate(reports => { window.chatLongRunReport = reports; }, reports);

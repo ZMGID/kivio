@@ -94,7 +94,9 @@ pub struct SubAgentManager {
     pub(crate) waits: wait::WaitState,
     pub(crate) eval: eval::Kernels,
     pub(crate) pools: workpool::Pools,
-    user_interrupted: std::sync::Mutex<std::collections::HashMap<String, Interruption>>,
+    user_interrupted: std::sync::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<Interruption>>>,
+    >,
 }
 
 #[derive(Default)]
@@ -139,31 +141,20 @@ impl SubAgentManager {
     /// OMP exception: after a user interrupt, finished results are not allowed to
     /// start a parent turn until the user prompts again.
     pub fn set_user_interrupted(&self, root: &str, interrupted: bool) {
-        let mut states = self
-            .user_interrupted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let state = states.entry(root.to_string()).or_default();
-        if interrupted {
-            state.epoch = state.epoch.wrapping_add(1);
-        }
-        state.interrupted = interrupted;
+        self.with_interruption(root, |state| {
+            if interrupted {
+                state.epoch = state.epoch.wrapping_add(1);
+            }
+            state.interrupted = interrupted;
+        });
     }
 
     pub fn user_interrupted(&self, root: &str) -> bool {
-        self.user_interrupted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(root)
-            .is_some_and(|state| state.interrupted)
+        self.with_interruption(root, |state| state.interrupted)
     }
 
     pub fn interruption_epoch(&self, root: &str) -> u64 {
-        self.user_interrupted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(root)
-            .map_or(0, |state| state.epoch)
+        self.with_interruption(root, |state| state.epoch)
     }
 
     /// Lock order: interruption state before runtime run reservations.
@@ -172,36 +163,38 @@ impl SubAgentManager {
         root: &str,
         action: impl FnOnce(u64) -> R,
     ) -> R {
-        let states = self
-            .user_interrupted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        action(states.get(root).map_or(0, |state| state.epoch))
+        self.with_interruption(root, |state| action(state.epoch))
     }
 
     pub(crate) fn interrupt_user_turn<R>(&self, root: &str, action: impl FnOnce() -> R) -> R {
-        let mut states = self
-            .user_interrupted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let state = states.entry(root.to_string()).or_default();
-        state.epoch = state.epoch.wrapping_add(1);
-        state.interrupted = true;
-        action()
+        self.with_interruption(root, |state| {
+            state.epoch = state.epoch.wrapping_add(1);
+            state.interrupted = true;
+            action()
+        })
     }
 
     /// A Stop accepted while the new turn was being saved must win.
     pub fn resume_user_turn(&self, root: &str, epoch: u64) -> bool {
-        let mut states = self
+        self.with_interruption(root, |state| {
+            if state.epoch != epoch {
+                return false;
+            }
+            state.interrupted = false;
+            true
+        })
+    }
+
+    fn with_interruption<R>(&self, root: &str, action: impl FnOnce(&mut Interruption) -> R) -> R {
+        let state = self
             .user_interrupted
             .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let state = states.entry(root.to_string()).or_default();
-        if state.epoch != epoch {
-            return false;
-        }
-        state.interrupted = false;
-        true
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(root.to_owned())
+            .or_default()
+            .clone();
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        action(&mut state)
     }
 
     /// Agent id that owns `run_id` (a child run), or `MAIN_AGENT_ID` for any other run.
@@ -248,6 +241,37 @@ mod tests {
         assert!(manager.user_interrupted("root"));
         assert!(manager.resume_user_turn("root", manager.interruption_epoch("root")));
         assert!(!manager.user_interrupted("root"));
+    }
+
+    #[test]
+    fn one_conversations_stop_does_not_delay_admitting_another() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let manager = SubAgentManager::default();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (admitted_tx, admitted_rx) = mpsc::channel();
+        std::thread::scope(|threads| {
+            let manager = &manager;
+            threads.spawn(move || {
+                manager.interrupt_user_turn("a", || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                });
+            });
+            entered_rx.recv().unwrap();
+            threads.spawn(move || {
+                manager
+                    .with_interruption_epoch("b", |epoch| admitted_tx.send(epoch))
+                    .unwrap();
+            });
+            let admitted = admitted_rx.recv_timeout(Duration::from_secs(2));
+            release_tx.send(()).unwrap();
+            assert_eq!(admitted, Ok(0));
+        });
+        assert!(manager.user_interrupted("a"));
+        assert!(!manager.user_interrupted("b"));
     }
 
     #[test]

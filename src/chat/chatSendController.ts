@@ -1,6 +1,7 @@
 import { chatApi } from './api'
 import { createChatExecutionOwner, type ExecutionLease, type PreparedRunOutcome } from './chatExecutionOwner'
 import { prepareConversationForSend, type SendPreparationIntent } from './prepareConversationForSend'
+import { readQueuedSendSkillPolicy } from './skillSelection'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import type { Conversation, PendingAttachment } from './types'
 
@@ -29,16 +30,20 @@ export type SendPresentationEvent =
   | { kind: 'outcome'; conversationId: string; outcome: PreparedRunOutcome }
   | { kind: 'settled' }
 
-export interface SendIntent {
+export type SendIntent = {
   content: string
   attachments: PendingAttachment[]
-  preparation: SendPreparationIntent
-  attachmentSkillId: string | null
-  disabledReason: string
-  planMessageId?: string
-  onPartialConversation?: (conversation: Conversation) => void
-  onAccepted?: () => void
-}
+} & (
+  | { queuedConversation: Conversation }
+  | {
+    preparation: SendPreparationIntent
+    attachmentSkillId: string | null
+    disabledReason: string
+    planMessageId?: string
+    onPartialConversation?: (conversation: Conversation) => void
+    onAccepted?: () => void
+  }
+)
 
 interface SendPresentation {
   currentConversationId: () => string | null
@@ -82,11 +87,13 @@ export function createChatSendController({
       if (!content && attachments.length === 0) {
         return { kind: 'not_committed', error: new Error('消息为空'), composerAccepted: false }
       }
-      const preparation = intent.preparation
-      const sendTarget = preparation.override && preparation.conversation
-        ? preparation.conversation.id
-        : preparation.forceNew ? null : startingConversationId
-      if (!preparation.forceNew && intent.disabledReason) {
+      const queued = 'queuedConversation' in intent
+      const sendTarget = queued
+        ? intent.queuedConversation.id
+        : intent.preparation.override && intent.preparation.conversation
+          ? intent.preparation.conversation.id
+          : intent.preparation.forceNew ? null : startingConversationId
+      if (!queued && !intent.preparation.forceNew && intent.disabledReason) {
         return reject(new Error(intent.disabledReason), sendTarget)
       }
       const claim = executionOwner.claimSend(sendTarget)
@@ -94,16 +101,20 @@ export function createChatSendController({
 
       let lease: ExecutionLease | null = null
       try {
-        const prepared = await prepareConversationForSend(preparation, persistence, (phase, conversation) => {
-          if (phase === 'created') {
-            if (!executionOwner.bindSend(claim, conversation.id)) return false
-            intent.onPartialConversation?.(conversation)
-            presentation.present({ kind: 'created', conversation, startingConversationId, creation })
-          } else {
-            intent.onPartialConversation?.(conversation)
-            presentation.present({ kind: 'updated', conversation })
-          }
-        }, () => { creation = presentation.beginCreation?.() ?? null })
+        const policy = queued ? await readQueuedSendSkillPolicy(intent.queuedConversation) : intent
+        if (queued && policy.disabledReason) return reject(new Error(policy.disabledReason), sendTarget)
+        const prepared = queued
+          ? { ok: true, conversation: intent.queuedConversation } as const
+          : await prepareConversationForSend(intent.preparation, persistence, (phase, conversation) => {
+            if (phase === 'created') {
+              if (!executionOwner.bindSend(claim, conversation.id)) return false
+              intent.onPartialConversation?.(conversation)
+              presentation.present({ kind: 'created', conversation, startingConversationId, creation })
+            } else {
+              intent.onPartialConversation?.(conversation)
+              presentation.present({ kind: 'updated', conversation })
+            }
+          }, () => { creation = presentation.beginCreation?.() ?? null })
         if (!prepared.ok) {
           console.error(`Failed to prepare conversation before send (${prepared.stage}):`, prepared.error)
           return reject(prepared.error, prepared.conversation?.id ?? null, prepared.conversation ?? undefined)
@@ -133,12 +144,12 @@ export function createChatSendController({
         if (presentation.currentConversationId() === conversation.id) previewOwner.activate(conversation.id)
         previewOwner.begin(conversation.id, startedAt, fanOut ? 'group' : 'single')
         presentation.present({ kind: 'started', conversation, content, attachments, fanOut })
-        intent.onAccepted?.()
+        if (!queued) intent.onAccepted?.()
 
         const outcome = await executionOwner.submitPreparedRun({
           lease, content, attachments,
-          attachmentSkillId: intent.attachmentSkillId,
-          planMessageId: intent.planMessageId,
+          attachmentSkillId: policy.attachmentSkillId,
+          planMessageId: queued ? undefined : intent.planMessageId,
         }, {
           ...settlementPorts,
           onOutcome: (outcome) => presentation.present({ kind: 'outcome', conversationId: conversation.id, outcome }),

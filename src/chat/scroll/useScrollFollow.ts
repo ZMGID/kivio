@@ -380,11 +380,11 @@ export function useScrollFollow(args: UseScrollFollowArgs): {
         && previousScrollTop !== null
         && scrollTop > previousScrollTop + 1
       const selfInduced = scrollTop === token || contentGrewBeforeScroll || (layoutCompensation && !userReturnedDuringLayout)
-      // Native scrollbar movement may have no wheel/pointer event. A backwards
-      // move with unchanged geometry and no compensation token takes ownership.
-      if (!selfInduced && previousScrollTop !== null &&
-        scrollTop < previousScrollTop - 1 &&
-        previousScrollHeight === viewport.scrollHeight &&
+      // WebKit can deliver a native scroll without a DOM wheel event. Rows
+      // entering the virtual window may also change height in that same frame.
+      // Only movement beyond the possible layout adjustment releases follow.
+      if (!selfInduced && previousScrollTop !== null && previousScrollHeight !== null &&
+        previousScrollTop - scrollTop > Math.abs(viewport.scrollHeight - previousScrollHeight) + 1 &&
         gap > configRef.current.attachThresholdPx) {
         dispatch({ type: 'release' })
       }

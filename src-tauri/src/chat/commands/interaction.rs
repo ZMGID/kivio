@@ -1,7 +1,7 @@
 use std::{collections::HashMap, time::Duration};
 
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::time::timeout;
 
 use crate::chat::agent::execute::truncate_chars;
@@ -131,40 +131,19 @@ pub(crate) enum UserStopScope {
     BackgroundWait,
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct StopOutcome {
+    pub(crate) warning: Option<String>,
+}
+
 /// 取消指定对话的生成，或停止等待仍在后台运行的任务。
 #[tauri::command]
 pub(crate) async fn chat_cancel_stream(
     app: AppHandle,
-    state: State<'_, AppState>,
     conversation_id: String,
     scope: Option<UserStopScope>,
-) -> Result<(), String> {
-    let persisted = cancel_user_generation(
-        state.inner(),
-        &conversation_id,
-        scope.unwrap_or_default(),
-        || {
-            let last_user_id = crate::chat::storage::load_conversation(&app, &conversation_id)
-                .ok()
-                .filter(|conversation| {
-                    conversation.agent_runtime.kind == crate::chat::types::AgentRuntimeKind::Builtin
-                })
-                .and_then(|conversation| {
-                    conversation
-                        .messages
-                        .into_iter()
-                        .rev()
-                        .find(|message| message.role == "user")
-                        .map(|message| message.id)
-                });
-            last_user_id.map_or(Ok(()), |id| {
-                let path = crate::chat::draft_journal::stop_fence_path(&app, &conversation_id)?;
-                crate::chat::storage::atomic_write(&path, &id, "conversation stop marker")
-            })
-        },
-    );
-    pause_goal_after_cancel(&app, &conversation_id).await?;
-    persisted
+) -> Result<StopOutcome, String> {
+    stop_generation(&app, &conversation_id, Some(scope.unwrap_or_default())).await
 }
 
 pub(super) fn cancel_user_generation<R>(
@@ -186,34 +165,161 @@ pub(super) fn cancel_user_generation<R>(
 
 pub(crate) async fn cancel_stream(
     app: &AppHandle,
-    state: &AppState,
     conversation_id: &str,
-) -> Result<(), String> {
-    state.cancel_chat_generation(conversation_id);
-    pause_goal_after_cancel(app, conversation_id).await
+) -> Result<StopOutcome, String> {
+    stop_generation(app, conversation_id, None).await
 }
 
-async fn pause_goal_after_cancel(app: &AppHandle, conversation_id: &str) -> Result<(), String> {
-    if let Ok(conversation) = crate::chat::repository::repository(app)
-        .mutate(app, conversation_id, |conversation| {
-            if let Some(goal) = conversation
-                .goal_state
-                .as_mut()
-                .filter(|g| crate::chat::goal::is_running(g.status))
-            {
-                goal.version += 1;
-                goal.status = crate::chat::types::GoalStatus::Paused;
-                goal.status_reason = Some("Paused by user".into());
-                goal.active_run_id = None;
-                goal.updated_at = chrono::Local::now().timestamp();
-            }
-            Ok(())
+async fn stop_generation(
+    app: &AppHandle,
+    conversation_id: &str,
+    scope: Option<UserStopScope>,
+) -> Result<StopOutcome, String> {
+    let app_for_stop = app.clone();
+    let stopped_id = conversation_id.to_owned();
+    let repository = crate::chat::repository::repository(app);
+    let (goal, fence_result) = repository
+        .with_conversation_storage(
+            conversation_id,
+            move || {
+                // Capture the stopped Goal/turn while holding the same storage
+                // lock used by Send, Goal Resume/Edit and conversation deletion.
+                let path = crate::chat::storage::conversation_file_path(&app_for_stop, &stopped_id);
+                let goal = path
+                    .as_ref()
+                    .map_err(Clone::clone)
+                    .and_then(|path| crate::chat::storage::conversation_stop_goal(path))
+                    .map(|goal| goal.filter(|goal| crate::chat::goal::is_running(goal.status)));
+                let state = app_for_stop.state::<AppState>();
+                let persist_fence = scope.is_some();
+                let capture = || {
+                    let fence = if persist_fence {
+                        path.and_then(|path| write_stop_fence(&app_for_stop, &stopped_id, &path))
+                    } else {
+                        Ok(())
+                    };
+                    (goal, fence)
+                };
+                Ok(if let Some(scope) = scope {
+                    cancel_user_generation(state.inner(), &stopped_id, scope, capture)
+                } else {
+                    state.cancel_chat_generation(&stopped_id);
+                    capture()
+                })
+            },
+            "stop conversation",
+        )
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
+
+    let goal_result = match goal {
+        Ok(Some(goal)) => pause_stopped_goal(app, conversation_id, &goal).await,
+        Ok(None) => Ok(()),
+        Err(error) => Err(error),
+    };
+    let warning = match (fence_result, goal_result) {
+        (Ok(()), Ok(())) => None,
+        (Err(fence), Ok(())) => Some(format!("Generation stopped. Its stop marker could not be saved. {fence}")),
+        (Ok(()), Err(goal)) => Some(format!("Generation stopped. Goal state could not be published. {goal}")),
+        (Err(fence), Err(goal)) => Some(format!("Generation stopped. Its stop marker and Goal state could not be published. {fence}\n{goal}")),
+    };
+    Ok(StopOutcome { warning })
+}
+
+fn write_stop_fence(app: &AppHandle, id: &str, path: &std::path::Path) -> Result<(), String> {
+    use crate::chat::storage;
+
+    if storage::conversation_uses_external_runtime(path)? {
+        return Ok(());
+    }
+    let conversation = storage::read_conversation_file(path, id)?;
+    let user = conversation
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user");
+    user.map_or(Ok(()), |message| {
+        let path = crate::chat::draft_journal::stop_fence_path(app, id)?;
+        storage::atomic_write(&path, &message.id, "conversation stop marker")
+    })
+}
+
+async fn pause_stopped_goal(
+    app: &AppHandle,
+    conversation_id: &str,
+    stopped_goal: &crate::chat::storage::RestartGoal,
+) -> Result<(), String> {
+    use crate::chat::repository::{
+        recover_committed, repository, repository_error, ConversationRepositoryError,
+    };
+
+    match repository(app)
+        .mutate_if(app, conversation_id, None, |conversation| {
+            Ok(pause_matching_goal(conversation, stopped_goal))
         })
         .await
     {
-        crate::chat::goal::emit_goal_state(app, &conversation);
+        Ok(Some(conversation)) => crate::chat::goal::emit_goal_state(app, &conversation),
+        Ok(None) => {}
+        Err(error @ ConversationRepositoryError::Committed { .. }) => {
+            let (conversation, warning) = recover_committed(app, error).await?;
+            crate::chat::goal::emit_goal_state(app, &conversation);
+            return Err(warning);
+        }
+        Err(error) => return Err(repository_error(error)),
     }
     Ok(())
+}
+
+fn pause_matching_goal(
+    conversation: &mut crate::chat::Conversation,
+    stopped_goal: &crate::chat::storage::RestartGoal,
+) -> bool {
+    let Some(goal) = conversation.goal_state.as_mut().filter(|goal| {
+        goal.id == stopped_goal.id
+            && goal.version == stopped_goal.version
+            && crate::chat::goal::is_running(goal.status)
+    }) else {
+        return false;
+    };
+    goal.version += 1;
+    goal.status = crate::chat::types::GoalStatus::Paused;
+    goal.status_reason = Some("Paused by user".into());
+    goal.active_run_id = None;
+    goal.updated_at = chrono::Local::now().timestamp();
+    true
+}
+
+#[cfg(test)]
+#[test]
+fn delayed_stop_only_pauses_the_goal_version_it_captured() {
+    let mut conversation: crate::chat::Conversation = serde_json::from_value(serde_json::json!({
+        "id": "conv_stop", "title": "Stop", "provider_id": "provider", "model": "model",
+        "created_at": 1, "updated_at": 1, "messages": [],
+    }))
+    .unwrap();
+    assert!(conversation.goal_state.is_none());
+    let goal = crate::chat::goal::start(&mut conversation, "Check the run").unwrap();
+    let mut stopped = crate::chat::storage::RestartGoal {
+        id: goal.id,
+        version: goal.version,
+        status: goal.status,
+    };
+    // A Resume/Edit that wins the next storage slot advances this version.
+    conversation.goal_state.as_mut().unwrap().version += 1;
+    assert!(!pause_matching_goal(&mut conversation, &stopped));
+    assert_eq!(
+        conversation.goal_state.as_ref().unwrap().status,
+        crate::chat::GoalStatus::Active
+    );
+
+    stopped.version += 1;
+    assert!(pause_matching_goal(&mut conversation, &stopped));
+    assert_eq!(
+        conversation.goal_state.as_ref().unwrap().status,
+        crate::chat::GoalStatus::Paused
+    );
+    assert!(!pause_matching_goal(&mut conversation, &stopped));
 }
 
 /// 响应敏感工具调用确认。`always=true` 时额外把「本对话内该工具不再询问」落进

@@ -114,6 +114,33 @@ describe('stream preview owner', () => {
     owner.dispose()
   })
 
+  it('publishes the pending foreground frame when a frozen background conversation restarts', () => {
+    const owner = createStreamPreviewOwner()
+    owner.activate('a')
+    owner.begin('a', 100)
+    owner.receive(packet('a', 'run-a', 'text_delta', 'frozen'))
+    owner.complete('a', { kind: 'error' })
+    owner.activate('b')
+    owner.begin('b', 101)
+    owner.receive(packet('b', 'run-b', 'text_delta', 'visible'))
+    owner.receive(packet('a', 'replacement', 'run_started'))
+    vi.runAllTimers()
+    expect(getSnapshot().content).toBe('visible')
+    owner.dispose()
+  })
+
+  it('replaces same-run text before replaying a recovery snapshot', () => {
+    const owner = createStreamPreviewOwner()
+    owner.activate('a')
+    owner.receive(packet('a', 'run-a', 'run_started'))
+    owner.receive(packet('a', 'run-a', 'text_delta', 'already visible'))
+    owner.receive({ ...packet('a', 'run-a', 'run_started'), restoredFromSnapshot: true })
+    owner.receive(packet('a', 'run-a', 'text_delta', 'already visible plus recovered text'))
+    vi.runAllTimers()
+    expect(getSnapshot().content).toBe('already visible plus recovered text')
+    owner.dispose()
+  })
+
   it('holds the visible answer until its committed twin appears, then clears it', () => {
     const owner = createStreamPreviewOwner()
     owner.activate('a')

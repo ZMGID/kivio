@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, type ChatMcpServer, type ChatToolDefinition } from '../../api/tauri'
 import { getSettingsCached, subscribeSettings, updateSettingsCached } from '../../api/settingsCache'
-import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../../api/chatTools'
 import { isPluginManagedServer, preservePluginManagedServers } from '../../settings/public/connectors'
 import { isTauriRuntime } from '../utils'
 import { scheduleIdleTask } from '../idleTask'
+import { readChatToolAvailability } from '../toolAvailability'
 import { useTauriEvent } from './useTauriEvent'
 
 export const DEFAULT_APPROVAL_POLICY = 'readonly_auto_sensitive_confirm'
@@ -82,24 +82,12 @@ export function useChatToolIndicator({ onSettingsChange }: UseChatToolIndicatorO
         setApprovalPolicyState(DEFAULT_APPROVAL_POLICY)
         return
       }
-      const anyMcpEnabled = chatTools.enabled && chatTools.servers.some((server) => server.enabled)
-      const anyNativeEnabled = hasEnabledNativeBuiltinTool(chatTools.nativeTools)
-      const skillRuntimeEnabled = hasEnabledSkillRuntime(chatTools.nativeTools)
-      const requested = anyMcpEnabled || anyNativeEnabled || skillRuntimeEnabled
-      setToolsRequested(requested)
-      if (!requested) {
-        setToolDiscoveryPending(false)
-        setEnabledTools([])
-        setEnabledToolCount(null)
-        setToolsDisabledReason('')
-        return
-      }
-      const result = await api.chatMcpListTools(true)
-      const tools = result.success ? result.tools : []
-      setEnabledTools(tools)
-      setToolDiscoveryPending(Boolean(result.discoveryPending))
-      setEnabledToolCount(result.discoveryPending ? null : tools.length)
-      setToolsDisabledReason(result.success ? '' : result.error || '工具不可用')
+      const availability = await readChatToolAvailability(chatTools)
+      setToolsRequested(availability.toolsRequested)
+      setEnabledTools(availability.enabledTools)
+      setToolDiscoveryPending(availability.toolDiscoveryPending)
+      setEnabledToolCount(availability.enabledToolCount)
+      setToolsDisabledReason(availability.toolsDisabledReason)
     } catch (err) {
       resetToolCatalog(err instanceof Error ? err.message : String(err))
       setApprovalPolicyState(DEFAULT_APPROVAL_POLICY)

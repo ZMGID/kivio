@@ -435,6 +435,7 @@ pub(crate) async fn push_assistant_message(
             if let Some(plan) = message_plan {
                 latest.agent_plan_state = plan;
             }
+            latest.context_state = compute_context_state(app, state.inner(), latest);
             Ok(())
         })
         .await;
@@ -451,58 +452,15 @@ pub(crate) async fn push_assistant_message(
     // 终态已落主文件,run 期间的草稿日志随即失效(见 chat::draft_journal)。
     crate::chat::draft_journal::clear_draft(app, &conversation_id);
 
-    // Context is derived from the full conversation. Commit it with CAS and
-    // recompute once if an unrelated operation advanced the revision while the
-    // potentially expensive estimate/compression was running.
-    for attempt in 0..2 {
-        match compute_context_state(app, state, &persisted, None, &[]).await {
-            Ok(context_state) => {
-                persisted.context_state = context_state;
-                let next_context = persisted.context_state.clone();
-                match crate::chat::repository::repository(app)
-                    .update_context(app, &conversation_id, persisted.revision, next_context)
-                    .await
-                {
-                    Ok(latest) => {
-                        persisted = latest;
-                        emit_chat_context_state(
-                            app,
-                            &conversation_id,
-                            persisted.revision,
-                            &persisted.context_state,
-                        );
-                        break;
-                    }
-                    Err(crate::chat::repository::ConversationRepositoryError::Conflict {
-                        ..
-                    }) if attempt == 0 => {
-                        persisted = crate::chat::repository::repository(app)
-                            .get(app, &conversation_id)
-                            .await
-                            .map_err(crate::chat::repository::repository_error)?;
-                    }
-                    Err(err) => {
-                        eprintln!("Context state commit failed after assistant reply: {err}");
-                        break;
-                    }
-                }
-            }
-            Err(err) => {
-                eprintln!("Context usage estimate failed after assistant reply: {err}");
-                break;
-            }
-        }
-    }
-
     if let Some(warning) = warning {
         persisted.context_state.warning = Some(warning);
-        emit_chat_context_state(
-            app,
-            &conversation_id,
-            persisted.revision,
-            &persisted.context_state,
-        );
     }
+    emit_chat_context_state(
+        app,
+        &conversation_id,
+        persisted.revision,
+        &persisted.context_state,
+    );
     *conversation = persisted;
     if let Some(first_user) = background_title_user {
         super::title::schedule_auto_title_summary(

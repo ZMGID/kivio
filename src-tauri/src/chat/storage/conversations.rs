@@ -22,8 +22,41 @@ pub(crate) struct RestartGoal {
 /// This is candidate discovery, not full-file validation: candidates are loaded
 /// normally again under the repository lock before any change is persisted.
 pub(super) fn read_restart_goal(reader: impl Read) -> Result<Option<RestartGoal>, String> {
-    struct GoalVisitor<'a>(&'a mut Option<Option<RestartGoal>>);
-    impl<'de> serde::de::Visitor<'de> for GoalVisitor<'_> {
+    read_conversation_field::<Option<RestartGoal>>(reader, "goal_state").map(Option::flatten)
+}
+
+pub(crate) fn conversation_stop_goal(path: &Path) -> Result<Option<RestartGoal>, String> {
+    let file = fs::File::open(path).map_err(|error| format!("open conversation Goal: {error}"))?;
+    read_restart_goal(file)
+}
+
+pub(crate) fn conversation_uses_external_runtime(path: &Path) -> Result<bool, String> {
+    let file =
+        fs::File::open(path).map_err(|error| format!("open conversation runtime: {error}"))?;
+    read_conversation_field::<crate::chat::AgentRuntimeConfig>(file, "agent_runtime")
+        .map(|runtime| runtime.is_some_and(|runtime| runtime.is_external()))
+}
+
+/// Per-conversation freshness reads the authoritative atomic body, independently of index.json.
+pub(crate) fn conversation_file_revision(path: &Path) -> Result<Option<u64>, String> {
+    match fs::File::open(path) {
+        Ok(file) => read_conversation_field(file, "revision")
+            .map(|revision| Some(revision.unwrap_or(0)))
+            .map_err(|error| format!("read conversation revision: {error}")),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("open conversation revision: {error}")),
+    }
+}
+
+fn read_conversation_field<T: serde::de::DeserializeOwned>(
+    reader: impl Read,
+    name: &str,
+) -> Result<Option<T>, String> {
+    struct FieldVisitor<'a, T> {
+        name: &'a str,
+        found: &'a mut Option<T>,
+    }
+    impl<'de, T: serde::de::DeserializeOwned> serde::de::Visitor<'de> for FieldVisitor<'_, T> {
         type Value = ();
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -32,12 +65,12 @@ pub(super) fn read_restart_goal(reader: impl Read) -> Result<Option<RestartGoal>
 
         fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
             while let Some(key) = map.next_key::<String>()? {
-                if key == "goal_state" {
-                    *self.0 = Some(map.next_value()?);
+                if key == self.name {
+                    *self.found = Some(map.next_value()?);
                     // Returning Ok here would make serde_json expect the closing
                     // brace. This private sentinel intentionally cancels parsing;
-                    // only a successfully decoded goal_state enables the fast exit.
-                    return Err(serde::de::Error::custom("Goal header decoded"));
+                    // only a successfully decoded field enables the fast exit.
+                    return Err(serde::de::Error::custom("Conversation header decoded"));
                 }
                 map.next_value::<serde::de::IgnoredAny>()?;
             }
@@ -47,9 +80,15 @@ pub(super) fn read_restart_goal(reader: impl Read) -> Result<Option<RestartGoal>
 
     let mut found = None;
     let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(reader));
-    let result = serde::Deserializer::deserialize_map(&mut deserializer, GoalVisitor(&mut found));
+    let result = serde::Deserializer::deserialize_map(
+        &mut deserializer,
+        FieldVisitor {
+            name,
+            found: &mut found,
+        },
+    );
     match found {
-        Some(goal) => Ok(goal),
+        Some(value) => Ok(Some(value)),
         None => result.map(|()| None).map_err(|error| error.to_string()),
     }
 }

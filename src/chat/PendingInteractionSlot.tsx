@@ -32,11 +32,9 @@ export const PendingInteractionSlot = memo(function PendingInteractionSlot({
   const {
     toolConfirm, toolConfirmSubmitting, toolConfirmError,
     sessionConsent, sessionConsentSubmitting, sessionConsentError,
-    userPrompt,
+    userPrompt, userPromptDraft,
   } = snapshot
 
-  /** 面板用的工具记录：**必须记忆** —— 每渲染新建一个对象，会把卡片里
-   *  「换了新询问就重置草稿」的 effect 变成每渲染都重置（用户选到一半的答案被清空）。 */
   const userPromptRecord = useMemo(
     () => (userPrompt ? userPromptEventToRecord(userPrompt) : null),
     [userPrompt],
@@ -56,9 +54,10 @@ export const PendingInteractionSlot = memo(function PendingInteractionSlot({
       <div className="mx-auto w-full max-w-4xl">
         {userPrompt && userPromptRecord && (
           <AskUserBlock
-            key={userPrompt.interactionId}
+            key={JSON.stringify([userPrompt.conversationId, userPrompt.runId, userPrompt.interactionId])}
             variant="docked"
             interactionId={userPrompt.interactionId}
+            draftStorage={userPromptDraft}
             toolCall={userPromptRecord}
             onResolved={() => onDismissUserPrompt(userPrompt.conversationId, userPrompt.runId, userPrompt.interactionId)}
           />

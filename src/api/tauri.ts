@@ -14,6 +14,7 @@ import {
 } from './chatProtocol'
 import type {
   ChatProtocolEvent,
+  ChatPendingInteractionSnapshot,
   ChatRetryStatusPayload,
   ChatRunEventEnvelope,
   ChatSegmentPayload as GeneratedChatSegmentPayload,
@@ -85,7 +86,10 @@ export type ChatStreamSegment = GeneratedChatSegmentPayload
 export type ChatStreamPayload = Extract<
   ChatRunEventEnvelope,
   { type: 'run_started' | 'text_delta' | 'text_segment_replaced' | 'reasoning_delta' | 'stream_attempt_discarded' | 'run_completed' | 'run_cancelled' | 'run_failed' }
-> & { restoredFromSnapshot?: boolean }
+> & {
+  restoredFromSnapshot?: boolean
+  snapshotPendingInteractions?: readonly ChatPendingInteractionSnapshot[]
+}
 
 export type ChatExternalSendAttachment = {
   id: string
@@ -2175,7 +2179,13 @@ export const api = {
         || event.type === 'run_cancelled'
         || event.type === 'run_failed'
       ) {
-        listener({ ...event, restoredFromSnapshot: delivery.source === 'snapshot' })
+        listener({
+          ...event,
+          restoredFromSnapshot: delivery.source === 'snapshot',
+          snapshotPendingInteractions: event.type === 'run_started' && delivery.source === 'snapshot'
+            ? delivery.pendingInteractions
+            : undefined,
+        })
       }
     })
   },

@@ -1,0 +1,160 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Synthetic timeline audit</title></head>
+<body><div id="root"></div>
+<script type="module">
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {flushSync} from 'react-dom';
+import {MessageList} from '/src/chat/MessageList.tsx';
+import {createChatNavigationController} from '/src/chat/chatNavigationController.ts';
+import {createStreamPreviewOwner} from '/src/chat/streamPreviewOwner.ts';
+import {createRunInteractionInbox} from '/src/chat/runInteractionInbox.ts';
+import {PendingInteractionSlot} from '/src/chat/PendingInteractionSlot.tsx';
+import '/src/styles/app.css';
+import 'streamdown/styles.css';
+
+const long = (prefix, rows = 18) => Array.from({length: rows}, (_, i) => `${prefix} paragraph ${i + 1}: Testing the timeline with a distinct line of synthetic content to make scroll position observable.`).join('\n\n');
+const build = id => ({id, messages: Array.from({length: 14}, (_, i) => [
+  {id:`${id}-user-${i}`, role:'user', timestamp:1, content:`${id} question ${i}`},
+  {id:`${id}-answer-${i}`, role:'assistant', timestamp:2, content:long(`${id} answer ${i}`, 5)},
+]).flat()});
+const beta = build('beta');
+const alpha = build('alpha');
+alpha.messages[1].reasoning = 'Only the reasoning contains this phrase.';
+beta.messages.splice(2, 2, {id:'group-user', role:'user', group_id:'group', timestamp:3, content:'A question for multiple models'},
+  {id:'group-answer-a', role:'assistant', group_id:'group', provider_id:'demo', model:'Model One', timestamp:4, content:'First answer without the target'},
+  {id:'group-answer-b', role:'assistant', group_id:'group', provider_id:'demo', model:'Model Two', timestamp:4, content:'Second answer with the search term'});
+if (new URLSearchParams(location.search).has('history-work')) {
+  for (const [conversation, messageId, label] of [
+    [alpha, 'alpha-answer-13', 'Single'], [beta, 'group-answer-a', 'Grouped'],
+  ]) {
+    const message = conversation.messages.find(value => value.id === messageId);
+    const ids = ['first', 'second'];
+    message.tool_calls = ids.map((id, index) => ({
+      id, name: 'read_file', source: 'native', status: 'completed',
+      arguments_json: JSON.stringify({path: `/tmp/${id}.txt`}),
+      result_preview: `${label} tool result ${index + 1}`,
+    }));
+    message.segments = [
+      ...ids.map((id, order) => ({kind: 'tool', phase: 'tool_loop', id: `tool-${id}`, order, tool_call_id: id})),
+      {kind: 'text', phase: 'answer', id: 'final', order: ids.length, text: message.content},
+    ];
+  }
+}
+const owner = createStreamPreviewOwner();
+let settled;
+const inbox = createRunInteractionInbox({confirmTool: async () => {}, respondConsent: async () => {}});
+inbox.activate('alpha');
+const events = [];
+let openRead;
+function Harness() {
+  const [current, setCurrent] = React.useState(alpha);
+  const interaction = React.useSyncExternalStore(inbox.subscribe, inbox.getSnapshot);
+  const [focus, setFocus] = React.useState(null);
+  const [narrow, setNarrow] = React.useState(false);
+  const currentRef = React.useRef(current);
+  currentRef.current = current;
+  const nav = React.useMemo(() => createChatNavigationController({
+    listPopouts: async () => new Set(),
+    currentConversationId: () => currentRef.current.id,
+    currentConversation: () => currentRef.current,
+    prepareSelection: (messageId, fresh, reasoning) => {
+      events.push(['prepare', currentRef.current.id, messageId, fresh]);
+      setFocus(messageId ? {messageId, reasoning} : null);
+    },
+    readConversation: async id => {
+      await new Promise(resolve => { openRead = resolve; events.push(['waiting', id]); });
+      events.push(['ready', id]);
+      return beta;
+    },
+    showConversation: (next, {focusMessageId, focusReasoning}) => flushSync(() => {
+      setCurrent(next);
+      setFocus(focusMessageId ? {messageId: focusMessageId, reasoning: focusReasoning} : null);
+    }),
+  }), []);
+  window.chatTimeline = {
+    crossSearch: (focusMessageId = 'beta-answer-0') => { void nav.selectConversation('beta', {focusMessageId}); },
+    resolveSearch: () => openRead(),
+    sameSearch: (focusMessageId, focusReasoning) =>
+      nav.selectConversation(currentRef.current.id, {focusMessageId, focusReasoning}),
+    switchTo: id => flushSync(() => {
+      owner.activate(id);
+      inbox.activate(id);
+      setCurrent(id === 'alpha' ? alpha : beta);
+    }),
+    prompt: (interactionId = 'prompt') => inbox.observe({kind: 'userPromptRequested', payload: {
+      conversationId: 'alpha', runId: 'prompt-run', interactionId, toolCallId: 'ask',
+      name: 'ask_user', source: 'native',
+      prompt: {title: 'Questions', questions: [
+        {id: 'first', prompt: 'First question', options: [
+          {id: 'first-option', label: 'First answer'}, {id: 'alternate-first', label: 'Alternative first answer'},
+        ]},
+        {id: 'second', prompt: 'Second question', options: [
+          {id: 'second-option', label: 'Second answer'}, {id: 'alternate-second', label: 'Alternative second answer'},
+        ]},
+      ]},
+    }}),
+    resolvePrompt: () => inbox.observe({
+      kind: 'userAnswered', conversationId: 'alpha', runId: 'prompt-run', interactionId: 'prompt',
+    }),
+    promptWithDeferredAnswer: () => {
+      const pending = [];
+      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {unregisterListener: () => {}};
+      window.__TAURI_INTERNALS__ = {
+        transformCallback: () => 1,
+        unregisterCallback: () => {},
+        invoke: command => command === 'chat_submit_user_choice'
+          ? new Promise((resolve, reject) => pending.push({resolve, reject})) : Promise.resolve(null),
+      };
+      window.pendingAnswers = pending;
+      inbox.observe({kind: 'userPromptRequested', payload: {
+        conversationId: 'alpha', runId: 'prompt-run', interactionId: 'deferred', toolCallId: 'ask',
+        name: 'ask_user', source: 'native', prompt: {title: 'Question', questions: [{
+          id: 'only', prompt: 'Choose one', options: [
+            {id: 'one', label: 'Option one'}, {id: 'two', label: 'Option two'},
+          ],
+        }]},
+      }});
+    },
+    resize: () => flushSync(() => setNarrow(value => !value)),
+    beginLong: (process = false) => {
+      owner.activate('alpha');
+      owner.begin('alpha', 100);
+      const content = long('Live', 115);
+      const commentary = long('Long step', 32);
+      const parts = process
+        ? [{id:'part-commentary', kind:'text', phase:'tool_loop', order:0, text:commentary},
+           {id:'part-answer', kind:'text', phase:'answer', order:1, text:content}]
+        : [{id:'part-answer', kind:'text', phase:'answer', order:0, text:content}];
+      for (const part of parts) {
+        owner.receive({type:'text_delta', conversationId:'alpha', runId:'r', messageId:'active-assistant', delta:part.text, segment:part});
+      }
+      settled = {id:'active-assistant', role:'assistant', timestamp:2, content,
+        stream_outcome:'completed', segments:parts};
+      owner.activate('alpha');
+    },
+    finish: () => {
+      owner.receive({type:'run_completed', conversationId:'alpha', runId:'r', messageId:'active-assistant'});
+    },
+    freeze: () => owner.freezeForCancellation('alpha'),
+    resume: () => owner.resume('alpha'),
+    persist: () => flushSync(() => {
+      alpha.messages=[...alpha.messages,settled];
+      if (currentRef.current.id === 'alpha') setCurrent({...alpha});
+      owner.complete('alpha',{kind:'persisted',committedMessages:alpha.messages});
+    }),
+    events,
+  };
+  return React.createElement('div', {className:'chat-main-pane', style:{height:'100vh', width:narrow?'740px':'100%', display:'flex', flexDirection:'column'}},
+    React.createElement(MessageList, {
+      conversationId: current.id, messages: current.messages, focusMessageId: focus?.messageId, focusReasoning: focus?.reasoning,
+      onFocusMessageHandled: () => { events.push(['handled', current.id, focus?.messageId]); setFocus(null); },
+    }),
+    React.createElement(PendingInteractionSlot, {
+      snapshot: interaction, activeAgentRuntime: {kind: 'native'},
+      onDismissUserPrompt: (conversationId, runId, interactionId) =>
+        inbox.observe({kind: 'userAnswered', conversationId, runId, interactionId}),
+    }));
+}
+createRoot(document.querySelector('#root')).render(React.createElement(Harness));
+</script></body></html>

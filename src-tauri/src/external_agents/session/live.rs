@@ -583,9 +583,9 @@ impl LiveSession {
 /// Owns every reusable external CLI process handle. The map lock is held only
 /// while cloning/removing control handles; command sends and shutdown waits
 /// always happen after the guard has been dropped.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct LiveSessionRegistry {
-    sessions: Mutex<RegistryState>,
+    sessions: Arc<Mutex<RegistryState>>,
 }
 
 #[derive(Default)]
@@ -631,19 +631,22 @@ impl Drop for ConversationRetirement<'_> {
         }
     }
 }
-pub(crate) struct SessionLease<'a> {
-    registry: &'a LiveSessionRegistry,
+pub(crate) struct SessionLease {
+    registry: LiveSessionRegistry,
     conversation_id: String,
     state: Arc<PendingState>,
     published: Mutex<Option<SessionControl>>,
     completed: AtomicBool,
 }
-impl SessionLease<'_> {
+impl SessionLease {
     pub(crate) fn track(&self, control: &SessionControl) {
         *self.published.lock().unwrap_or_else(|e| e.into_inner()) = Some(control.clone());
     }
     pub(crate) fn cancel(&self) {
         self.state.cancel.cancel();
+    }
+    pub(crate) fn cancel_on_drop(&self) -> tokio_util::sync::DropGuard {
+        self.state.cancel.clone().drop_guard()
     }
     pub(crate) fn complete(&self) {
         self.completed.store(true, Ordering::Release);
@@ -659,27 +662,42 @@ impl SessionLease<'_> {
         session: LiveSession,
         commit: impl FnOnce() -> Result<(), String>,
     ) -> Result<(), String> {
+        if !self.can_publish(
+            &self
+                .registry
+                .sessions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        ) {
+            return Err("cancelled".into());
+        }
+
+        // The pending lease excludes another publisher for this conversation.
+        // Retirement waits for the lease even if it starts during the disk write.
+        commit()?;
         let mut state = self
             .registry
             .sessions
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if state.shutting_down
-            || self.is_cancelled()
-            || !state
-                .pending
-                .get(&self.conversation_id)
-                .is_some_and(|current| Arc::ptr_eq(current, &self.state))
-        {
+        if !self.can_publish(&state) {
             return Err("cancelled".into());
         }
-        commit()?;
         *self.published.lock().unwrap_or_else(|e| e.into_inner()) = Some(session.control.clone());
         LiveSessionRegistry::register_locked(&mut state, self.conversation_id.clone(), session);
         Ok(())
     }
+
+    fn can_publish(&self, state: &RegistryState) -> bool {
+        !state.shutting_down
+            && !self.is_cancelled()
+            && state
+                .pending
+                .get(&self.conversation_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &self.state))
+    }
 }
-impl Drop for SessionLease<'_> {
+impl Drop for SessionLease {
     fn drop(&mut self) {
         let mut registry = self
             .registry
@@ -788,7 +806,7 @@ impl LiveSessionRegistry {
         Ok(Some(lease))
     }
 
-    pub(crate) fn reserve(&self, conversation_id: &str) -> Result<SessionLease<'_>, String> {
+    pub(crate) fn reserve(&self, conversation_id: &str) -> Result<Arc<SessionLease>, String> {
         let mut registry = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
         if registry
             .pending
@@ -810,13 +828,13 @@ impl LiveSessionRegistry {
         registry
             .pending
             .insert(conversation_id.into(), state.clone());
-        Ok(SessionLease {
-            registry: self,
+        Ok(Arc::new(SessionLease {
+            registry: self.clone(),
             conversation_id: conversation_id.into(),
             state,
             published: Mutex::new(None),
             completed: AtomicBool::new(false),
-        })
+        }))
     }
 
     pub(crate) fn with_current<T>(
@@ -1274,6 +1292,70 @@ mod tests {
         assert!(!wrote.load(Ordering::Acquire));
         drop(lease);
         let retirement = retirement.await.unwrap();
+        assert!(registry.reserve("conversation").is_err());
+        drop(retirement);
+        assert!(registry.reserve("conversation").is_ok());
+    }
+
+    #[test]
+    fn publishing_a_cli_session_does_not_delay_another_conversations_reservation() {
+        use std::sync::mpsc;
+
+        let registry = LiveSessionRegistry::default();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (reserved_tx, reserved_rx) = mpsc::channel();
+        std::thread::scope(|threads| {
+            let registry = &registry;
+            threads.spawn(move || {
+                let lease = registry.reserve("a").unwrap();
+                let (session, _receiver) = make("codex", "/project");
+                lease
+                    .publish(session, || {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Ok(())
+                    })
+                    .unwrap();
+                lease.complete();
+            });
+            entered_rx.recv().unwrap();
+            threads.spawn(move || {
+                reserved_tx.send(registry.reserve("b").is_ok()).unwrap();
+            });
+            let reserved = reserved_rx.recv_timeout(Duration::from_secs(2));
+            release_tx.send(()).unwrap();
+            assert_eq!(reserved, Ok(true));
+        });
+    }
+
+    #[tokio::test]
+    async fn retiring_conversation_waits_for_its_binding_publication_after_the_caller_drops() {
+        let registry = LiveSessionRegistry::default();
+        let lease = registry.reserve("conversation").unwrap();
+        let worker_lease = Arc::clone(&lease);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            let (session, _receiver) = make("codex", "/project");
+            worker_lease.publish(session, || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            })
+        });
+        entered_rx.await.unwrap();
+        let retirement = registry.retire_conversation("conversation");
+        tokio::pin!(retirement);
+        assert!(futures::poll!(retirement.as_mut()).is_pending());
+        assert!(lease.is_cancelled());
+        drop(lease);
+        assert!(futures::poll!(retirement.as_mut()).is_pending());
+
+        release_tx.send(()).unwrap();
+        assert_eq!(worker.await.unwrap(), Err("cancelled".into()));
+        let retirement = retirement.await.unwrap();
+        assert!(registry.control_any("conversation").is_none());
         assert!(registry.reserve("conversation").is_err());
         drop(retirement);
         assert!(registry.reserve("conversation").is_ok());

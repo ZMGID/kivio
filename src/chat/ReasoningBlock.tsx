@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useT } from '../components/i18n'
 import { ChevronRight } from 'lucide-react'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
@@ -8,6 +8,7 @@ import { useRevealedText } from './streamReveal'
 type ReasoningBlockProps = {
   reasoning: string
   defaultOpen?: boolean
+  revealRequest?: number
   /** 思维链正在流式写入 */
   streaming?: boolean
   /** 当前轮仍在生成，重挂时恢复最近思考的预览。 */
@@ -27,13 +28,16 @@ function formatThinkingDuration(durationMs: number | null | undefined): string {
   return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`
 }
 
-export function ReasoningBlock({ reasoning: arrivedReasoning, defaultOpen = false, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
+export function ReasoningBlock({ reasoning: arrivedReasoning, defaultOpen = false, revealRequest, streaming = false, previewActive = streaming, onExpand, durationMs = null }: ReasoningBlockProps) {
   const t = useT()
   // 思考写入时与正文同样按节奏显示新增文字。
   const reasoning = useRevealedText(arrivedReasoning, streaming)
   const collapsible = reasoning.trim().length > 0
   const previewEnabled = useContext(ReasoningPreviewContext)
   const [expanded, setExpanded] = useState(defaultOpen)
+  useLayoutEffect(() => {
+    if (revealRequest !== undefined) setExpanded(true)
+  }, [revealRequest])
   const [sawLivePreview, setSawLivePreview] = useState(false)
   const [liveDurationMs, setLiveDurationMs] = useState(0)
   const durationStartedAtRef = useRef<number | null>(null)

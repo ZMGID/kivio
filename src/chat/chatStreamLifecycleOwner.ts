@@ -36,7 +36,7 @@ export function createChatStreamLifecycleOwner(executionOwner: ExecutionOwner, p
   const classifyTerminal = (terminal: ChatRunTerminal, target: 'single' | 'group'): StreamLifecycleResult => {
     const decision = executionOwner.observeTerminal(terminal, target)
     if (decision.kind === 'ignored') return { kind: 'ignored' }
-    if (decision.kind === 'ready') return { kind: 'ready', terminal, permit: decision.permit }
+    if (decision.kind === 'ready') return decision
     return { kind: decision.kind, terminal }
   }
   return {
@@ -45,7 +45,6 @@ export function createChatStreamLifecycleOwner(executionOwner: ExecutionOwner, p
     async cancelRun(
       conversationId: string,
       cancel: () => Promise<void>,
-      onPending?: () => void,
     ): Promise<CancelRunResult> {
       const permit = executionOwner.requestCancellation(
         conversationId, previewOwner.summary(conversationId)?.runId ?? null,
@@ -53,7 +52,6 @@ export function createChatStreamLifecycleOwner(executionOwner: ExecutionOwner, p
       if (!permit) return { kind: 'ignored' }
       previewOwner.freezeForCancellation(conversationId)
       try {
-        onPending?.()
         await cancel()
         return executionOwner.completeCancellation(permit, true)
           ? { kind: 'cancelled' }
@@ -72,7 +70,7 @@ export function createChatStreamLifecycleOwner(executionOwner: ExecutionOwner, p
       if (!executionOwner.observe({
         kind: 'runEvent', conversationId: id, runId: payload.runId,
         started, groupId: started ? payload.recovery?.groupId : undefined,
-        groupSize: started ? payload.recovery?.groupSize : undefined,
+        groupSize: started ? payload.recovery?.activeArmCount ?? payload.recovery?.groupSize : undefined,
       })) return { kind: 'ignored' }
       if (started && !executionOwner.allowsStreamPayload(payload)) return { kind: 'ignored' }
 

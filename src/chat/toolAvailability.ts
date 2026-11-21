@@ -1,4 +1,5 @@
-import type { ChatToolDefinition } from '../api/tauri'
+import { api, type ChatToolDefinition, type Settings } from '../api/tauri'
+import { hasEnabledNativeBuiltinTool, hasEnabledSkillRuntime } from '../api/chatTools'
 
 export interface ToolStatusHintInput {
   /** 工具目录不可用的原因（空 = 可用）。 */
@@ -13,6 +14,24 @@ export interface ToolStatusHintInput {
   recommendedTools: string[]
   /** 推荐里目录中找不到的那部分（见 findUnavailableRecommendedTools）。 */
   unavailableRecommendedTools: string[]
+}
+
+export async function readChatToolAvailability(chatTools: Settings['chatTools']) {
+  const toolsRequested = Boolean(chatTools && (
+    (chatTools.enabled && chatTools.servers.some((server) => server.enabled))
+    || hasEnabledNativeBuiltinTool(chatTools.nativeTools)
+    || hasEnabledSkillRuntime(chatTools.nativeTools)
+  ))
+  const result = toolsRequested ? await api.chatMcpListTools(true) : null
+  const enabledTools = result?.success ? result.tools : []
+  const toolDiscoveryPending = Boolean(result?.discoveryPending)
+  return {
+    enabledTools,
+    enabledToolCount: result && !toolDiscoveryPending ? enabledTools.length : null,
+    toolDiscoveryPending,
+    toolsDisabledReason: result && !result.success ? result.error || '工具不可用' : '',
+    toolsRequested,
+  }
 }
 
 /**

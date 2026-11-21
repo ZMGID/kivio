@@ -143,6 +143,7 @@ export function restoreGroupArm(
   messageId: string,
   providerId: string,
   model: string,
+  activeArmCount = groupSize,
 ): GroupColumnSnapshot {
   let group = activeGroups.get(conversationId)
   if (!group || group.groupId !== groupId) {
@@ -151,9 +152,11 @@ export function restoreGroupArm(
       conversationId,
       groupId,
       expectedColumns,
-      columns: Array.from({ length: expectedColumns }, (_, index) => (
-        makeColumn(`pending-${groupId}-${index}`, null, null)
-      )),
+      columns: Array.from({ length: expectedColumns }, (_, index) => {
+        const column = makeColumn(`pending-${groupId}-${index}`, null, null)
+        column.streaming = index >= expectedColumns - activeArmCount
+        return column
+      }),
     }
     activeGroups.set(conversationId, group)
   }

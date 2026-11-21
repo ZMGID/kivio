@@ -152,6 +152,8 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     patch(conversationId, () => [])
   }, [patch])
 
+  const hasQueued = useCallback((conversationId: string) => Boolean(queuedRef.current[conversationId]?.length), [])
+
   /**
    * 一轮结束后发出队首一条。已提交的条目留给 `settleAfterRun` 先对账/解开，
    * 运行中不能把 CLI 已接住的那条再发一遍。
@@ -281,6 +283,7 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
     conversationId: string,
     conversation?: Conversation | null,
   ) => {
+    if (!hasQueued(conversationId)) return
     if (conversation) {
       for (const message of conversation.messages ?? []) {
         for (const record of message.tool_calls ?? message.toolCalls ?? []) {
@@ -295,7 +298,7 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
       return drain(conversation)
     }
     releaseSubmitted(conversationId)
-  }, [confirm, drain, releaseSubmitted])
+  }, [confirm, drain, hasQueued, releaseSubmitted])
 
   /** Sending queues the message; only an explicit promotion steers the current run. */
   const sendWhileRunning = useCallback((
@@ -306,9 +309,9 @@ export function useMessageQueue({ onSendMessage, onRestoreToComposer, onPendingC
 
   const commands = useMemo(() => ({
     enqueue, enqueueCompact, remove, restoreToComposer, restoreClearedQueue, clearConversation,
-    drain, steer, followUp, confirm, settleAfterRun, sendWhileRunning,
+    hasQueued, drain, steer, followUp, confirm, settleAfterRun, sendWhileRunning,
   }), [enqueue, enqueueCompact, remove, restoreToComposer, restoreClearedQueue, clearConversation,
-    drain, steer, followUp, confirm, settleAfterRun, sendWhileRunning])
+    hasQueued, drain, steer, followUp, confirm, settleAfterRun, sendWhileRunning])
 
   return {
     queued,

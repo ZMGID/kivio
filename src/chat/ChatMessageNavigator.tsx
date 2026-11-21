@@ -1,8 +1,12 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { createPortal } from 'react-dom'
 import { Boxes, Eraser } from 'lucide-react'
 import { useT } from '../components/i18n'
 import { messageNavigatorProximityWidth, type MessageNavigatorNode } from './messageNavigator'
+
+// The rail has fixed-height ticks, including compaction and clear markers.
+const TICK_HEIGHT = 13
 
 interface PreviewAnchor {
   node: MessageNavigatorNode
@@ -43,6 +47,18 @@ function MessageNavigatorBase({
   const proximityPointerYRef = useRef(0)
   const [preview, setPreview] = useState<PreviewAnchor | null>(null)
   const visibleNodeIdSet = new Set(visibleNodeIds)
+  const windowed = nodes.length > 64
+  const virtualizer = useVirtualizer({
+    count: nodes.length,
+    getScrollElement: () => viewportRef.current,
+    estimateSize: () => TICK_HEIGHT,
+    enabled: windowed,
+    overscan: 6,
+  })
+  const ticks = virtualizer.getVirtualItems()
+  const first = windowed ? ticks[0]?.index ?? 0 : 0
+  const end = windowed ? (ticks.at(-1)?.index ?? -1) + 1 : nodes.length
+  const activeIndex = activeNodeId ? nodes.findIndex(node => node.id === activeNodeId) : -1
 
   useEffect(() => () => {
     if (proximityFrameRef.current != null) cancelAnimationFrame(proximityFrameRef.current)
@@ -67,18 +83,17 @@ function MessageNavigatorBase({
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
-  useEffect(() => {
-    if (!activeNodeId) return
+  useLayoutEffect(() => {
     const viewport = viewportRef.current
-    const active = [...(viewport?.querySelectorAll<HTMLElement>('[data-message-navigator-id]') ?? [])]
-      .find((element) => element.dataset.messageNavigatorId === activeNodeId)
-    if (!viewport || !active) return
-    const viewportRect = viewport.getBoundingClientRect()
-    const activeRect = active.getBoundingClientRect()
-    if (activeRect.top < viewportRect.top || activeRect.bottom > viewportRect.bottom) {
-      active.scrollIntoView({ block: 'nearest' })
+    if (!viewport || activeIndex < 0) return
+    // Scroll only the rail. scrollIntoView would also scroll its ancestors.
+    const top = activeIndex * TICK_HEIGHT
+    const bottom = top + TICK_HEIGHT
+    if (top < viewport.scrollTop) viewport.scrollTop = top
+    else if (bottom > viewport.scrollTop + viewport.clientHeight) {
+      viewport.scrollTop = bottom - viewport.clientHeight
     }
-  }, [activeNodeId])
+  }, [activeIndex, activeNodeId])
 
   const showPreview = (node: MessageNavigatorNode, button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect()
@@ -127,8 +142,11 @@ function MessageNavigatorBase({
           onMouseMove={handlePointerMove}
           onMouseLeave={clearPointerProximity}
         >
-          <div className="chat-message-navigator-track">
-            {nodes.map((node, index) => {
+          <div
+            className="chat-message-navigator-track"
+            style={windowed ? { paddingTop: first * TICK_HEIGHT, paddingBottom: (nodes.length - end) * TICK_HEIGHT } : undefined}
+          >
+            {nodes.slice(first, end).map((node, offset) => {
               const active = node.id === activeNodeId
               return (
                 <button
@@ -143,7 +161,7 @@ function MessageNavigatorBase({
                       : node.kind === 'clear'
                         ? t.contextClearDividerAria
                         : t.chatTurnLabel
-                            .replace('{n}', String(index + 1))
+                            .replace('{n}', String(first + offset + 1))
                             .replace('{title}', node.title)
                   }
                   onClick={() => onNavigate(node)}

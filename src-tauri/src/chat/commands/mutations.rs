@@ -23,9 +23,7 @@ use super::catalog::{reconcile_conversation_orphan_tool_segments, strip_transcri
 use super::context::{
     compute_context_state, emit_chat_context_state, mark_summary_stale_if_needed,
 };
-use super::messages::{
-    build_error_arm_message, replace_final_text_segments_for_edit, upsert_assistant_message,
-};
+use super::messages::{replace_final_text_segments_for_edit, upsert_assistant_message};
 use super::{
     agent_run_entry_label, complete_assistant_reply, complete_assistant_reply_inner,
     ChatSendReservation, ReplyArm, CHAT_REPLY_BUSY_ERROR, MAX_REPLY_MODELS,
@@ -315,7 +313,7 @@ pub(crate) async fn chat_update_message(
         }
         candidate.messages[idx].timestamp = chrono::Local::now().timestamp();
         super::context::invalidate_context_measurement(&state, &mut candidate);
-        let context_state = compute_context_state(&app, &state, &candidate, None, &[]).await?;
+        let context_state = compute_context_state(&app, state.inner(), &candidate);
         candidate.context_state = context_state.clone();
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
@@ -571,21 +569,7 @@ pub(crate) async fn chat_regenerate_message(
         .transpose()?
         .unwrap_or_default();
     for attempt in 0..2 {
-        let context_state = match compute_context_state(
-            &app,
-            &state,
-            &conversation,
-            last_user_api_content.as_deref(),
-            &last_user_image_paths,
-        )
-        .await
-        {
-            Ok(state) => state,
-            Err(err) => {
-                eprintln!("Context usage estimate failed before regenerate: {err}");
-                break;
-            }
-        };
+        let context_state = compute_context_state(&app, state.inner(), &conversation);
         match repository
             .update_context(
                 &app,
@@ -685,7 +669,7 @@ pub(crate) async fn chat_delete_message(
         let mut candidate = snapshot.clone();
         remove_assistant_answer(&mut candidate, &message_id)?;
         super::context::invalidate_context_measurement(&state, &mut candidate);
-        let context_state = compute_context_state(&app, &state, &candidate, None, &[]).await?;
+        let context_state = compute_context_state(&app, state.inner(), &candidate);
         candidate.context_state = context_state.clone();
         match repository
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
@@ -2289,13 +2273,15 @@ pub(crate) async fn chat_reply_with_model(
     };
     arm_conversation.builtin_history = prefix;
 
-    let arm = ReplyArm {
-        group_id: prep.group_id.clone(),
-        group_size: prep.group_size,
-        arm_index: prep.arm_index,
-        provider_id: provider_id.trim().to_string(),
-        model: model.trim().to_string(),
-    };
+    let arm = ReplyArm::new(
+        prep.group_id.clone(),
+        prep.group_size,
+        1,
+        prep.arm_index,
+        provider_id.trim().to_string(),
+        model.trim().to_string(),
+    );
+    let _arm_guard = arm.register(&app, &conversation_id, conversation.revision);
     let run_entry = agent_run_entry_label(crate::chat::agent::AgentRunEntry::Send);
     let outcome = complete_assistant_reply_inner(
         &app,
@@ -2312,96 +2298,32 @@ pub(crate) async fn chat_reply_with_model(
     )
     .await;
 
-    let (produced, history, terminal) = match outcome {
-        Ok(result) if result.message.is_some() => {
-            let message = result.message.expect("checked");
-            let outcome_label = message
-                .stream_outcome
-                .clone()
-                .unwrap_or_else(|| "completed".to_string());
-            let content = message.content.clone();
-            (
-                Some(message),
-                result.history,
-                result.run_id.map(|id| (id, outcome_label, content)),
-            )
-        }
-        Ok(result) if result.error.as_deref() == Some("cancelled") => {
-            if let Some(run_id) = result.run_id {
-                crate::chat::protocol::finish_run(
-                    &app,
-                    &run_id,
-                    "cancelled",
-                    "",
-                    conversation.revision,
-                );
-            }
-            let mut latest = repository
-                .get(&app, &conversation_id)
-                .await
-                .map_err(crate::chat::repository::repository_error)?;
-            strip_transcripts_for_frontend(&mut latest);
-            return Ok(serde_json::json!({
-                "success": true,
-                "conversation": latest,
-                "warning": preparation_warning,
-            }));
-        }
-        Ok(result) => {
-            let err = result.error.unwrap_or_else(|| "换模型回答失败".to_string());
-            let message = build_error_arm_message(
-                &prep.group_id,
-                arm.provider_id.clone(),
-                arm.model.clone(),
-                err,
-                run_entry,
-                user_skill_id.as_deref(),
-            );
-            let content = message.content.clone();
-            (
-                Some(message),
-                result.history,
-                result.run_id.map(|id| (id, "error".to_string(), content)),
-            )
-        }
-        Err(err) if err == "cancelled" => {
-            let mut latest = repository
-                .get(&app, &conversation_id)
-                .await
-                .map_err(crate::chat::repository::repository_error)?;
-            strip_transcripts_for_frontend(&mut latest);
-            return Ok(serde_json::json!({
-                "success": true,
-                "conversation": latest,
-                "warning": preparation_warning,
-            }));
-        }
-        Err(err) => {
-            let message = build_error_arm_message(
-                &prep.group_id,
-                arm.provider_id.clone(),
-                arm.model.clone(),
-                err,
-                run_entry,
-                user_skill_id.as_deref(),
-            );
-            (Some(message), None, None)
-        }
-    };
-
-    let Some(produced) = produced else {
+    let outcome = arm.normalize_outcome(outcome, run_entry, user_skill_id.as_deref());
+    let history = outcome.history;
+    let Some(produced) = outcome.message else {
+        crate::chat::protocol::finish_run(
+            &app,
+            &arm.run_id,
+            "cancelled",
+            "",
+            conversation.revision,
+        );
         let mut latest = repository
             .get(&app, &conversation_id)
             .await
             .map_err(crate::chat::repository::repository_error)?;
         strip_transcripts_for_frontend(&mut latest);
         return Ok(serde_json::json!({
-            "success": false,
-            "error": "换模型回答失败",
+            "success": true,
             "conversation": latest,
             "warning": preparation_warning,
         }));
     };
+    let outcome_label = produced
+        .stream_outcome
+        .clone()
+        .unwrap_or_else(|| "completed".to_string());
+    let content = crate::chat::protocol::terminal_content(&produced.content).to_owned();
 
     let group_id_for_apply = prep.group_id.clone();
     let source_branch_id = conversation
@@ -2435,6 +2357,7 @@ pub(crate) async fn chat_reply_with_model(
             if !latest.agent_runtime.is_external() {
                 super::context::invalidate_context_measurement(state_ref, latest);
             }
+            latest.context_state = compute_context_state(app_ref, state_ref, latest);
             Ok(())
         })
         .await;
@@ -2453,47 +2376,9 @@ pub(crate) async fn chat_reply_with_model(
         Err(error) => return Err(crate::chat::repository::repository_error(error)),
     };
 
-    for attempt in 0..2 {
-        match compute_context_state(&app, &state, &latest, None, &[]).await {
-            Ok(context_state) => {
-                match repository
-                    .update_context(&app, &conversation_id, latest.revision, context_state)
-                    .await
-                {
-                    Ok(next) => {
-                        latest = next;
-                        emit_chat_context_state(
-                            &app,
-                            &latest.id,
-                            latest.revision,
-                            &latest.context_state,
-                        );
-                        break;
-                    }
-                    Err(crate::chat::repository::ConversationRepositoryError::Conflict {
-                        ..
-                    }) if attempt == 0 => {
-                        latest = repository
-                            .get(&app, &conversation_id)
-                            .await
-                            .map_err(crate::chat::repository::repository_error)?;
-                    }
-                    Err(err) => {
-                        eprintln!("Context state commit failed after reply-with-model: {err}");
-                        break;
-                    }
-                }
-            }
-            Err(err) => {
-                eprintln!("Context usage estimate failed after reply-with-model: {err}");
-                break;
-            }
-        }
-    }
+    emit_chat_context_state(&app, &latest.id, latest.revision, &latest.context_state);
 
-    if let Some((run_id, outcome, content)) = terminal {
-        crate::chat::protocol::finish_run(&app, &run_id, &outcome, &content, latest.revision);
-    }
+    crate::chat::protocol::finish_run(&app, &arm.run_id, &outcome_label, &content, latest.revision);
 
     strip_transcripts_for_frontend(&mut latest);
     Ok(serde_json::json!({

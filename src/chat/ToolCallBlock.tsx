@@ -1,5 +1,6 @@
 import { FolderIcon as FolderOpen } from '../components/FileIcon'
 import { type ComponentType, type ReactNode, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useWorkDisclosure } from './workDisclosure'
 import { ChatDisclosureBody } from './ChatDisclosureBody'
 import { FileIcon } from '../components/FileIcon'
 import { ExternalSubagentEvents, SubagentTimelineEvents } from './SubagentTimelineEvents'
@@ -9,7 +10,7 @@ import type { AgentTodoItem, AgentTodoState, AgentTodoStatus, ChatMessageSegment
 import { normalizeToolCallStatus } from './toolStatus'
 import { formatToolResultPreview } from './toolResultPreview'
 import { hasAskUserStructuredContent, isAskUserToolName } from './askUserTools'
-import { canonicalToolName, isExternalChildToolCall, isImageReadToolCall, isNativeTaskToolCall, isNativeWaitToolCall, imageReadCount, imageReadItems, lifecycleSubagentProvider, summarizeToolGroup, toolCallDiffStats, toolRecordRawName } from './segments'
+import { canonicalToolName, isExternalChildToolCall, isImageReadToolCall, isNativeTaskToolCall, isNativeWaitToolCall, imageReadCount, imageReadItems, lifecycleSubagentProvider, summarizeToolGroup, toolCallDiffStats, toolRecordRawName, toolRecordId } from './segments'
 import { requestDockDiffPreview, requestDockPreview } from './dock/dockPreview'
 import { DiffView } from './dock/DiffView'
 import { knowledgeSearchHits, type KbHitView } from './knowledgeBaseHits'
@@ -397,6 +398,7 @@ function StreamingToolOutput({ output }: { output: string }) {
  *  cards: eyebrow · LABEL · identity chips · status mark · metric chips ·
  *  status line · chevron. */
 function ConsultCard({
+  toolCall,
   label,
   status,
   identityChips,
@@ -405,6 +407,7 @@ function ConsultCard({
   defaultOpen = false,
   children,
 }: {
+  toolCall: ToolCallRecord
   label: string
   status: ToolCallStatus
   identityChips?: ReactNode
@@ -413,14 +416,14 @@ function ConsultCard({
   defaultOpen?: boolean
   children?: ReactNode
 }) {
-  const [open, setOpen] = useState(defaultOpen)
+  const [open, setOpen] = useWorkDisclosure('tool', toolRecordId(toolCall), defaultOpen)
   const hasBody = Boolean(children)
   const running = status === 'running'
   return (
     <div className="not-prose mb-2 rounded-md border border-neutral-200 bg-neutral-50/70 px-3 py-2 leading-5 text-neutral-500 transition-colors hover:bg-neutral-100/70">
       <button
         type="button"
-        onClick={() => { if (hasBody) setOpen((v) => !v) }}
+        onClick={() => { if (hasBody) setOpen(!open) }}
         aria-expanded={hasBody ? open : undefined}
         data-chat-disclosure={hasBody || undefined}
         className={`flex w-full max-w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left ${hasBody ? '' : 'cursor-default'}`}
@@ -506,6 +509,7 @@ function AdvisorCard({ toolCall }: ToolCallBlockProps) {
 
   return (
     <ConsultCard
+      toolCall={toolCall}
       label="ADVISOR"
       status={status}
       identityChips={model ? <CardChip>{model}</CardChip> : undefined}
@@ -654,6 +658,7 @@ function AutomationRunCard({ toolCall }: ToolCallBlockProps) {
 
   return (
     <ConsultCard
+      toolCall={toolCall}
       label="AUTOMATION"
       status={status}
       defaultOpen={status === 'running' || nodes.length > 0}
@@ -799,6 +804,7 @@ function KnowledgeCard({ toolCall }: ToolCallBlockProps) {
 
   return (
     <ConsultCard
+      toolCall={toolCall}
       label="KNOWLEDGE"
       status={status}
       identityChips={count > 0 ? <CardChip>{t.chatToolSegmentsCount.replace('{n}', String(count))}</CardChip> : undefined}
@@ -911,6 +917,7 @@ function WebSearchCard({ toolCall }: ToolCallBlockProps) {
 
   return (
     <ConsultCard
+      toolCall={toolCall}
       label="WEB SEARCH"
       status={status}
       identityChips={provider ? <CardChip>{provider}</CardChip> : undefined}
@@ -1699,6 +1706,7 @@ export function ToolCallCluster({
   messageStreaming,
   latestReasoning,
   activityCount,
+  revealReasoning,
   onExpand,
   children,
 }: {
@@ -1708,12 +1716,19 @@ export function ToolCallCluster({
   messageStreaming: boolean
   latestReasoning?: { text: string; streaming: boolean }
   activityCount?: number
+  revealReasoning?: number
   onExpand?: () => void
   children: () => ReactNode
 }) {
   const t = useT()
   const previewEnabled = useContext(ReasoningPreviewContext)
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useWorkDisclosure('cluster', segments[0]?.id)
+  const appliedReveal = useRef<number>()
+  useLayoutEffect(() => {
+    if (revealReasoning === undefined || appliedReveal.current === revealReasoning) return
+    appliedReveal.current = revealReasoning
+    if (!open) setOpen(true)
+  }, [open, revealReasoning, setOpen])
   const summary = summarizeToolGroup(segments, toolCalls, toolCallById, messageStreaming)
   let activeTool: ToolCallRecord | undefined
   if (messageStreaming) {
@@ -1771,7 +1786,7 @@ export function ToolCallCluster({
         <ChevronDown size={12} aria-hidden="true" className={`shrink-0 text-neutral-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       <ChatDisclosureBody open={open}>
-        {() => <div className="custom-scrollbar mt-1 max-h-80 space-y-1 overflow-y-auto">{children()}</div>}
+        {() => <div data-work-scroll className="custom-scrollbar mt-1 max-h-80 space-y-1 overflow-y-auto">{children()}</div>}
       </ChatDisclosureBody>
     </div>
   )
@@ -1783,7 +1798,7 @@ function DefaultToolCallBlock({
 }: ToolCallBlockProps) {
   const t = useT()
   const status = normalizeToolCallStatus(toolCall.status)
-  const [open, setOpen] = useState(defaultOpen)
+  const [open, setOpen] = useWorkDisclosure('tool', toolRecordId(toolCall), defaultOpen)
 
   const toolName = getToolName(t, toolCall)
   const target = useMemo(() => getToolTarget(t, toolCall), [t, toolCall])
@@ -1831,7 +1846,7 @@ function DefaultToolCallBlock({
       <button
         type="button"
         onClick={() => {
-          if (hasDetails) setOpen((value) => !value)
+          if (hasDetails) setOpen(!open)
         }}
         aria-expanded={hasDetails ? open : undefined}
         data-chat-disclosure={hasDetails || undefined}
@@ -2029,7 +2044,7 @@ function ImageReadThumb({ item, conversationId }: { item: ImageReadItem; convers
 
 export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = false }: { toolCalls: ToolCallRecord[]; conversationId?: string | null; defaultOpen?: boolean }) {
   const t = useT()
-  const [open, setOpen] = useState(defaultOpen)
+  const [open, setOpen] = useWorkDisclosure('images', toolCalls[0] && toolRecordId(toolCalls[0]), defaultOpen)
   const items = useMemo(() => collectImageReadItems(toolCalls), [toolCalls])
   // Count the same deduplicated images as the thumbnails, not read operations.
   // Historical records without identities can only contribute their reported count.
@@ -2045,7 +2060,7 @@ export function ImageReadCluster({ toolCalls, conversationId, defaultOpen = fals
     <div className="not-prose mb-1 text-[12px] leading-5 text-neutral-500">
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen(!open)}
         aria-expanded={open}
         data-chat-disclosure
         className="max-w-full min-w-0 inline-flex items-center gap-1.5 rounded-md py-0 text-[15px] leading-6 text-neutral-500 transition-colors hover:text-neutral-700"

@@ -38,7 +38,9 @@ function isTopLevelHeading(value: unknown): value is MdastHeading {
  * heading 也不会污染答案目录；原始 HTML details 块由 remark 当作 HTML block 保留。
  */
 export function parseMarkdownHeadingOutline(source: string): ParsedMarkdownHeading[] {
-  if (!source.trim()) return []
+  // ATX markers or a Setext underline must exist before parsing a heading.
+  // Most tool narration has neither, even when it contains a Markdown table.
+  if (!/^\s{0,3}(?:#{1,3}(?:[ \t]|$)|(?:=+|-+)[ \t]*$)/m.test(source)) return []
   const tree = unified().use(remarkParse).parse(source) as unknown as MdastRoot
   const headings: ParsedMarkdownHeading[] = []
   for (const node of tree.children) {
@@ -64,8 +66,9 @@ export function markdownHeadingSourceId(sourceId: string, ordinal: number): stri
   return `chat-heading-${encodeURIComponent(sourceId)}-${ordinal}`
 }
 
-export function outlineItemsForSource(sourceId: string, source: string): MarkdownHeadingOutlineItem[] {
-  return parseMarkdownHeadingOutline(source).map((heading) => ({
+export function outlineItemsForSource(sourceId: string, source: string | ParsedMarkdownHeading[]): MarkdownHeadingOutlineItem[] {
+  const headings = typeof source === 'string' ? parseMarkdownHeadingOutline(source) : source
+  return headings.map((heading) => ({
     ...heading,
     sourceId,
     anchorId: markdownHeadingAnchorId(sourceId, heading.ordinal),

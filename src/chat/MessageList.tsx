@@ -76,7 +76,10 @@ import {
 import { createLiveRowModel } from './liveRowModel'
 import { useLiveRowMeasurement } from './hooks/useLiveRowMeasurement'
 import { useChatWidthLayout } from './hooks/useChatWidthLayout'
-import { readingGroupRowKey, recallChatReadingPosition, rememberChatReadingPosition } from './chatReadingPosition'
+import {
+  captureLiveReadingPosition, readingGroupRowKey, resolveChatReadingBlock,
+  recallChatReadingPosition, rememberChatReadingPosition, type ChatReadingBlock, type ChatReadingPosition,
+} from './chatReadingPosition'
 import { EMPTY_HISTORY_ARTIFACTS, EMPTY_HISTORY_DIRECTORY } from './conversationHistoryWindow'
 
 
@@ -143,6 +146,7 @@ export interface MessageListProps {
   lang?: Lang
   /** 全局搜索：打开会话后滚到该消息并短暂高亮。 */
   focusMessageId?: string | null
+  focusReasoning?: boolean
   onFocusMessageHandled?: () => void
 }
 
@@ -369,6 +373,7 @@ function MessageListBase({
   animateClearBoundaryId = null,
   lang = 'zh',
   focusMessageId = null,
+  focusReasoning = false,
   onFocusMessageHandled,
   historyStart = 0,
   historyDirectory = EMPTY_HISTORY_DIRECTORY,
@@ -453,6 +458,7 @@ function MessageListBase({
   }, [liveGroup, messages, liveMessageId, streamFrozen, streaming])
 
   const [turnWorkOverrides, setTurnWorkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  const [temporaryTurnWork, setTemporaryTurnWork] = useState<{ conversationId: typeof conversationId; key: string } | null>(null)
   const liveHasSubagentWork = liveRowActive && !liveGroupId && liveEdges.hasSubagentWork
   const { workByMessageId, liveTurnWork } = useMemo(() => {
     const visible = new Set(historyMessages.map(message => message.id))
@@ -470,11 +476,13 @@ function MessageListBase({
         || (!hasSubagentWork && !(includeLive && liveHasSubagentWork))) return
       const key = JSON.stringify([conversationId, userId])
       const active = current && ((streaming && !streamFrozen) || waitingForBackgroundTasks)
-      const open = turnWorkOverrides.get(key) ?? (active || rows.some(message =>
-        (message.stream_outcome ?? message.streamOutcome) === 'cancelled'))
+      const open = temporaryTurnWork?.key === key || (turnWorkOverrides.get(key) ?? (active || rows.some(message =>
+        (message.stream_outcome ?? message.streamOutcome) === 'cancelled')))
       const onOpenChange = (value: boolean) => {
+        setTemporaryTurnWork(current => current?.key === key ? null : current)
         setTurnWorkOverrides(previous => new Map(previous).set(key, value))
       }
+      const reveal = () => setTemporaryTurnWork({ conversationId, key })
       rows.forEach((message, index) => {
         const outcome = message.stream_outcome ?? message.streamOutcome
         workByMessageId.set(message.id, {
@@ -485,9 +493,10 @@ function MessageListBase({
             && !message.segments?.some(segment => segment.kind === 'text' && segment.phase === 'answer')
             && (!outcome || outcome === 'completed'),
           onOpenChange,
+          reveal,
         })
       })
-      if (includeLive) liveTurnWork = { active, open, showHeader: rows.length === 0, foldAnswer: false, onOpenChange }
+      if (includeLive) liveTurnWork = { active, open, showHeader: rows.length === 0, foldAnswer: false, onOpenChange, reveal }
     }
 
     for (const message of storedMessages) {
@@ -514,7 +523,7 @@ function MessageListBase({
     addTurn(true)
     return { workByMessageId, liveTurnWork }
   }, [conversationId, historyMessages, liveGroupId, liveHasSubagentWork, liveRowActive,
-    storedMessages, streamFrozen, streaming, turnWorkOverrides, waitingForBackgroundTasks])
+    storedMessages, streamFrozen, streaming, temporaryTurnWork, turnWorkOverrides, waitingForBackgroundTasks])
 
   // A committed answer adopts its live key for both measurements and React
   // identity. Live and historical rows share a parent in renderTail below.
@@ -687,7 +696,7 @@ function MessageListBase({
   // endNavigatorSession 的解锁 rAF 链；clear 时必须 cancel，避免卸载后 setState。
   const navigatorUnlockRafRef = useRef<number | null>(null)
   const navigatorUnlockGenerationRef = useRef(0)
-  const headingNavigationTargetRef = useRef<{ anchorId: string; targetIndex: number } | null>(null)
+  const headingNavigationTargetRef = useRef<{ anchorId: string; sourceId: string; targetIndex: number } | null>(null)
 
   // 导航「先渲染再跳」：在当前视口不动的前提下，把目标行附近强制挂进 DOM 测高。
   const [forceMountRenderIndex, setForceMountRenderIndex] = useState<number | null>(null)
@@ -701,8 +710,10 @@ function MessageListBase({
   // 跳转后 paint 前钉住。jumped=false 时只在 layout 里跳一次，避免 rAF 跳完再被测高扯。
   const navigatorHoldRef = useRef<{
     generation: number
-    targetIndex: number
+    targetIndex: number | null
     rowOffset: number | null
+    readingBlock?: ChatReadingBlock
+    focusMessageId?: string
     frames: number
     stable: number
     jumped: boolean
@@ -717,6 +728,7 @@ function MessageListBase({
     lastScrollHeight: number
   } | null>(null)
   const [navigatorHoldEpoch, setNavigatorHoldEpoch] = useState(0)
+  const [reasoningReveal, setReasoningReveal] = useState<{ messageId: string; generation: number } | null>(null)
   const [bottomHoldEpoch, setBottomHoldEpoch] = useState(0)
   // Recalculate reserve after hydrated content changes height during bottomHold.
   const [reserveEpoch, setReserveEpoch] = useState(0)
@@ -996,6 +1008,8 @@ function MessageListBase({
     () => conversationId ? recallChatReadingPosition(conversationId) : null,
     [conversationId],
   )
+  const animateLiveEntrance = !liveItem || rememberedReadingPosition?.following !== false
+    || rememberedReadingPosition.rowKey !== readingRowKey(liveItem)
   const { liveRowRef, getLiveRowSize, measureRow } = useLiveRowMeasurement(layoutKey, liveRowKey)
   const measurementRevision = useMemo(
     () => historyItems.map(measurementKey).join('|'),
@@ -1373,8 +1387,10 @@ function MessageListBase({
         const scrollTop = viewportEl.scrollTop
         const anchor = virtualizer.getVirtualItems().find((row) => row.end > scrollTop && itemAt(row.index)?.kind !== 'spacer')
         const item = anchor ? itemAt(anchor.index) : null
-        rememberChatReadingPosition(conversationId, {
-          following: followHandle.isFollowing(),
+        const following = followHandle.isFollowing()
+        const livePosition = following ? null : captureLiveReadingPosition(viewportEl, layoutKey)
+        rememberChatReadingPosition(conversationId, livePosition ?? {
+          following,
           rowKey: item ? readingRowKey(item) : null,
           rowRevision: item ? measurementKey(item) : null,
           rowOffset: anchor ? scrollTop - anchor.start : 0,
@@ -1591,6 +1607,8 @@ function MessageListBase({
 
   const endNavigatorSession = useCallback((generation: number) => {
     if (generation !== navigatorSettleGenerationRef.current) return
+    const restoredReadingPosition = navigatorHoldRef.current?.rowOffset != null
+    setReasoningReveal(reveal => reveal?.generation === generation ? null : reveal)
     const hadBottomHold = bottomHoldRef.current != null
     navigatorHoldRef.current = null
     bottomHoldRef.current = null
@@ -1603,8 +1621,14 @@ function MessageListBase({
     if (hadBottomHold) {
       setReserveEpoch((value) => value + 1)
     }
-    // force-mount 拆除后还可能有迟到测高；锁多留几帧再开。
     cancelNavigatorUnlock()
+    // A restored reader needs normal width and row compensation as soon as
+    // the hold stops aligning its row. A late ResizeObserver may run next.
+    if (restoredReadingPosition) {
+      setNavigationLock(false)
+      return
+    }
+    // force-mount 拆除后还可能有迟到测高；锁多留几帧再开。
     const unlockGeneration = navigatorUnlockGenerationRef.current
     let remaining = NAVIGATOR_UNLOCK_FRAMES
     const unlockTick = () => {
@@ -1625,6 +1649,7 @@ function MessageListBase({
     cancelNavigatorSettle()
     cancelNavigatorUnlock()
     setNavigationLock(false)
+    setReasoningReveal(null)
     const hadBottomHold = bottomHoldRef.current != null
     navigatorHoldRef.current = null
     bottomHoldRef.current = null
@@ -1655,9 +1680,12 @@ function MessageListBase({
     return true
   }, [contentEl, followHandle])
 
-  const alignViewportToHeading = useCallback((anchorId: string) => {
+  const alignViewportToHeading = useCallback((anchorId: string, sourceId: string) => {
     const el = scrollRef.current
-    const heading = contentEl?.querySelector(`#${CSS.escape(anchorId)}`) as HTMLElement | null
+    // A recycled process block reserves its height. Align there first so the
+    // observer mounts the Markdown, then the navigation hold aligns its heading.
+    const heading = contentEl?.querySelector<HTMLElement>(`#${CSS.escape(anchorId)}`)
+      ?? contentEl?.querySelector<HTMLElement>(`[data-chat-work-sources~="${CSS.escape(encodeURIComponent(sourceId))}"]`)
     if (!heading || !el) return false
     const column = heading.closest<HTMLElement>('.chat-message-group-col-body')
     if (column) {
@@ -1673,18 +1701,34 @@ function MessageListBase({
     return true
   }, [contentEl, followHandle])
 
-  const alignViewportToNavigationTarget = useCallback((targetRenderIndex: number, rowOffset: number | null = null) => {
+  const getNavigationRow = useCallback((targetRenderIndex: number | null) => contentEl?.querySelector<HTMLElement>(
+    targetRenderIndex === null ? '[data-chat-live-reading-row]' : `[data-chat-row-index="${targetRenderIndex}"]`,
+  ), [contentEl])
+
+  const alignViewportToNavigationTarget = useCallback((
+    targetRenderIndex: number | null, rowOffset: number | null = null, readingBlock?: ChatReadingBlock,
+  ) => {
     if (rowOffset !== null) {
+      const el = scrollRef.current
+      const element = getNavigationRow(targetRenderIndex)
+      if (el && element && (readingBlock || targetRenderIndex === null)) {
+        const block = readingBlock && resolveChatReadingBlock(element, readingBlock)
+        const top = (block?.element ?? element).getBoundingClientRect().top - el.getBoundingClientRect().top
+        followHandle.scrollToOffset(el.scrollTop + top + (block?.offset ?? rowOffset))
+        return true
+      }
+      if (targetRenderIndex === null) return false
       virtualizer.getTotalSize()
       const row = virtualizer.measurementsCache[targetRenderIndex]
       if (!row) return false
       followHandle.scrollToOffset(row.start + rowOffset)
       return true
     }
+    if (targetRenderIndex === null) return false
     const target = headingNavigationTargetRef.current
-    if (target?.targetIndex === targetRenderIndex && alignViewportToHeading(target.anchorId)) return true
+    if (target?.targetIndex === targetRenderIndex && alignViewportToHeading(target.anchorId, target.sourceId)) return true
     return alignViewportToRowIndex(targetRenderIndex)
-  }, [alignViewportToHeading, alignViewportToRowIndex, followHandle, virtualizer])
+  }, [alignViewportToHeading, alignViewportToRowIndex, followHandle, getNavigationRow, virtualizer])
 
   const rowHasPendingMedia = useCallback((row: HTMLElement) => {
     if (row.querySelector(NAVIGATOR_PENDING_SELECTOR)) return true
@@ -1698,11 +1742,11 @@ function MessageListBase({
   }, [])
 
 
-  const readNavigatorTargetMetrics = useCallback((targetRenderIndex: number, rowOffset: number | null = null) => {
+  const readNavigatorTargetMetrics = useCallback((
+    targetRenderIndex: number | null, rowOffset: number | null = null, readingBlock?: ChatReadingBlock,
+  ) => {
     const el = scrollRef.current
-    const row = contentEl?.querySelector(
-      `[data-chat-row-index="${targetRenderIndex}"]`,
-    ) as HTMLElement | null
+    const row = getNavigationRow(targetRenderIndex)
     if (!row || !el) {
       return { ready: false as const, height: 0, offsetPx: Number.POSITIVE_INFINITY }
     }
@@ -1721,8 +1765,11 @@ function MessageListBase({
       : null
     // Heading jumps settle at the heading, rather than waiting for the whole
     // answer's top to align (which never happens for a heading midway down it).
+    const block = readingBlock && resolveChatReadingBlock(row, readingBlock)
+    if (block?.pending) return { ready: false as const, height, offsetPx: Number.POSITIVE_INFINITY }
     const desiredOffset = rowOffset !== null
-      ? Math.max(0, Math.min(el.scrollHeight - el.clientHeight, rowRect.top - viewportRect.top + el.scrollTop + rowOffset))
+      ? Math.max(0, Math.min(el.scrollHeight - el.clientHeight, (block
+        ? block.element.getBoundingClientRect().top + block.offset : rowRect.top + rowOffset) - viewportRect.top + el.scrollTop))
       : heading
         ? Math.max(0, Math.min(el.scrollHeight - el.clientHeight,
           heading.getBoundingClientRect().top - viewportRect.top + el.scrollTop - HEADING_NAVIGATOR_TOP_INSET_PX))
@@ -1732,7 +1779,7 @@ function MessageListBase({
       height,
       offsetPx: desiredOffset == null ? Math.abs(rowRect.top - viewportRect.top) : Math.abs(el.scrollTop - desiredOffset),
     }
-  }, [contentEl, rowHasPendingMedia])
+  }, [getNavigationRow, rowHasPendingMedia])
 
   /**
    * 先渲染后跳转：
@@ -1745,6 +1792,7 @@ function MessageListBase({
   const prepareThenJumpToNavigatorNode = useCallback((
     generation: number,
     targetRenderIndex: number,
+    focusMessageId?: string,
   ) => {
     cancelNavigatorSettle()
     // 准备阶段明确解锁：force-mount 上方行测高需要 shouldAdjust 保住当前画面。
@@ -1765,6 +1813,7 @@ function MessageListBase({
         generation,
         targetIndex: targetRenderIndex,
         rowOffset: null,
+        focusMessageId,
         frames: 0,
         stable: 0,
         jumped: false,
@@ -1824,11 +1873,31 @@ function MessageListBase({
     }
 
     setNavigationLock(true)
-    alignViewportToNavigationTarget(hold.targetIndex, hold.rowOffset)
+    alignViewportToNavigationTarget(hold.targetIndex, hold.rowOffset, hold.readingBlock)
+    if (!hold.jumped && hold.focusMessageId) {
+      const target = contentEl?.querySelector<HTMLElement>(
+        `[data-message-id="${CSS.escape(hold.focusMessageId)}"]`,
+      )
+      if (target) {
+        const columns = target.closest<HTMLElement>('.chat-message-group')
+        if (columns) {
+          const area = columns.getBoundingClientRect()
+          const column = target.getBoundingClientRect()
+          if (column.left < area.left || column.right > area.right) {
+            columns.scrollLeft += column.left - area.left
+          }
+        }
+        if (target.classList.contains('kv-search-focus-flash')) {
+          target.classList.remove('kv-search-focus-flash')
+          target.getBoundingClientRect()
+        }
+        target.classList.add('kv-search-focus-flash')
+      }
+    }
     hold.jumped = true
     hold.frames += 1
 
-    const metrics = readNavigatorTargetMetrics(hold.targetIndex, hold.rowOffset)
+    const metrics = readNavigatorTargetMetrics(hold.targetIndex, hold.rowOffset, hold.readingBlock)
     const totalSize = virtualizer.getTotalSize()
     const geometryStable = metrics.ready
       && metrics.offsetPx <= NAVIGATOR_ALIGN_EPSILON_PX
@@ -1857,6 +1926,7 @@ function MessageListBase({
     return () => cancelAnimationFrame(raf)
   }, [
     alignViewportToNavigationTarget,
+    contentEl,
     endNavigatorSession,
     navigatorHoldEpoch,
     readNavigatorTargetMetrics,
@@ -1916,7 +1986,7 @@ function MessageListBase({
     const generation = beginMessageNavigationHydrate()
     navigatorSettleGenerationRef.current = generation
     clearNavigatorPrepare()
-    headingNavigationTargetRef.current = { anchorId: item.anchorId, targetIndex }
+    headingNavigationTargetRef.current = { anchorId: item.anchorId, sourceId: item.sourceId, targetIndex }
     setForceMountRenderIndex(targetIndex)
     prepareThenJumpToNavigatorNode(generation, targetIndex)
   }, [
@@ -1939,91 +2009,76 @@ function MessageListBase({
     // 切换会话时清掉上一会话未完成的 settle，避免 eager / force-mount 残留；在 paint 前完成，
     // 新会话首帧不带旧会话的导航高亮、强制挂载行或右键菜单。
     clearNavigatorPrepare()
+    setTemporaryTurnWork(current => current?.conversationId === conversationId ? current : null)
     resetMessageNavigationStore()
     headingNavigationTargetRef.current = null
     updateActiveNavigatorNode(null)
     updateVisibleNavigatorNodes([])
-    setOutlineSources(new Map())
+    // Sources unregister on unmount. Clearing here would also erase the new
+    // timeline registered by child layout effects in this same commit.
     setActiveOutlineOwnerId(null)
     setActiveOutlineAnchorId(null)
     setMsgMenu(null)
   }, [clearNavigatorPrepare, conversationId, updateActiveNavigatorNode, updateVisibleNavigatorNodes])
 
-  // 全局搜索：打开会话后滚到命中消息，并短暂闪一下高亮。
-  // 「已处理 id」ref：effect deps 里有 historyItems——处理完到父级清 focusMessageId
-  // 之间若消息列表又变（落库/工具更新），不挡一道会对同一个 id 反复重跳。
-  // prop 回到 null 时重置，同一 id 之后仍可再次聚焦。
-  const handledFocusRef = useRef<string | null>(null)
+  const handledFocusRef = useRef<{ conversationId: string; messageId: string } | null>(null)
+  const [focusedGroupAnswer, setFocusedGroupAnswer] = useState<{
+    conversationId: string; groupId: string; messageId: string
+  } | null>(null)
+  const selectGroupAnswer = useCallback((groupId: string, messageId: string) => {
+    setFocusedGroupAnswer(current => current?.groupId === groupId ? null : current)
+    onSetGroupSelection?.(groupId, messageId)
+  }, [onSetGroupSelection])
   const focusedTurnWork = focusMessageId ? workByMessageId.get(focusMessageId) : undefined
+  const focusTargetIndex = useMemo(() => focusMessageId ? historyItems.findIndex(item =>
+    item.key === focusMessageId
+    || (item.kind === 'message' && item.message.id === focusMessageId)
+    || (item.kind === 'group' && item.messages.some(message => message.id === focusMessageId))
+  ) : -1, [focusMessageId, historyItems])
+  const focusWaitingForLive = Boolean(focusMessageId && (
+    (liveItem?.kind === 'streaming' && liveItem.messageId === focusMessageId)
+    || (liveItem?.kind === 'live-group' && liveGroup?.columns.some(column => column.messageId === focusMessageId))
+  ))
   useEffect(() => {
     if (!focusMessageId || !conversationId) {
       handledFocusRef.current = null
       return
     }
-    if (handledFocusRef.current === focusMessageId) return
-    if (focusedTurnWork?.foldAnswer && !focusedTurnWork.open) {
-      focusedTurnWork.onOpenChange(true)
+    if (handledFocusRef.current?.conversationId === conversationId
+      && handledFocusRef.current.messageId === focusMessageId) return
+    if (focusedTurnWork && (focusReasoning || focusedTurnWork.foldAnswer) && !focusedTurnWork.open) {
+      focusedTurnWork.reveal()
       return
     }
-    let targetIndex = -1
-    for (let i = 0; i < historyItems.length; i++) {
-      const item = historyItems[i]
-      if (item.key === focusMessageId) {
-        targetIndex = i
-        break
-      }
-      if (item.kind === 'message' && item.message.id === focusMessageId) {
-        targetIndex = i
-        break
-      }
-      if (item.kind === 'group' && item.messages.some((m) => m.id === focusMessageId)) {
-        targetIndex = i
-        break
-      }
-    }
-    if (targetIndex < 0) {
-      // 消息尚未就绪（或 id 已失效）——等 historyItems 变化再试；若始终找不到则下一轮消息变更后仍可重试。
-      // 空会话或 id 不在列表时清掉，避免卡住。
-      if (messages.length > 0) {
-        handledFocusRef.current = focusMessageId
-        onFocusMessageHandled?.()
-      }
+    if (focusTargetIndex < 0) {
+      if (focusWaitingForLive) return
+      handledFocusRef.current = { conversationId, messageId: focusMessageId }
+      onFocusMessageHandled?.()
       return
     }
 
-    handledFocusRef.current = focusMessageId
+    handledFocusRef.current = { conversationId, messageId: focusMessageId }
+    const target = historyItems[focusTargetIndex]
+    setFocusedGroupAnswer(target.kind === 'group'
+      ? { conversationId, groupId: target.groupId, messageId: focusMessageId } : null)
     followHandle.releaseFollow()
     const generation = beginMessageNavigationHydrate()
     navigatorSettleGenerationRef.current = generation
     clearNavigatorPrepare()
-    setForceMountRenderIndex(targetIndex)
-    prepareThenJumpToNavigatorNode(generation, targetIndex)
-
-    const flash = () => {
-      const el = contentEl?.querySelector(
-        `[data-message-id="${CSS.escape(focusMessageId)}"]`,
-      ) as HTMLElement | null
-      if (!el) return
-      el.classList.add('kv-search-focus-flash')
-      window.setTimeout(() => el.classList.remove('kv-search-focus-flash'), 1600)
-    }
-    // 等 force-mount + 对齐后再闪
-    const t1 = window.setTimeout(flash, 80)
-    const t2 = window.setTimeout(flash, 240)
+    if (focusReasoning) setReasoningReveal({ messageId: focusMessageId, generation })
+    setForceMountRenderIndex(focusTargetIndex)
+    prepareThenJumpToNavigatorNode(generation, focusTargetIndex, focusMessageId)
     onFocusMessageHandled?.()
-    return () => {
-      window.clearTimeout(t1)
-      window.clearTimeout(t2)
-    }
   }, [
     clearNavigatorPrepare,
-    contentEl,
     conversationId,
     focusMessageId,
+    focusReasoning,
+    focusTargetIndex,
+    focusWaitingForLive,
     focusedTurnWork,
     followHandle,
     historyItems,
-    messages.length,
     onFocusMessageHandled,
     prepareThenJumpToNavigatorNode,
   ])
@@ -2156,6 +2211,18 @@ function MessageListBase({
   ])
 
 
+  const headingLookup = useMemo(() => {
+    const byAnchor = new Map<string, MarkdownHeadingOutlineItem>()
+    const lastBySource = new Map<string, MarkdownHeadingOutlineItem>()
+    for (const items of outlineItemsByOwner.values()) {
+      for (const item of items) {
+        byAnchor.set(item.anchorId, item)
+        lastBySource.set(encodeURIComponent(item.sourceId), item)
+      }
+    }
+    return { byAnchor, lastBySource }
+  }, [outlineItemsByOwner])
+
   const syncHeadingOutlineFromDom = useCallback((readingY: number, viewportTop: number, viewportBottom: number) => {
     const el = scrollRef.current
     if (!el) return
@@ -2186,13 +2253,20 @@ function MessageListBase({
       ? column.getBoundingClientRect().top + column.clientHeight * 0.3
       : readingY
     let active: MarkdownHeadingOutlineItem | null = null
-    for (const item of items) {
-      const heading = target.querySelector(`#${CSS.escape(item.anchorId)}`) as HTMLElement | null
-      if (heading && heading.getBoundingClientRect().top <= headingReadingY) active = item
+    const byAnchor = headingLookup.byAnchor
+    for (const node of target.querySelectorAll<HTMLElement>('[data-chat-work-sources], h1[id], h2[id], h3[id]')) {
+      const bounds = node.getBoundingClientRect()
+      if (node.dataset.chatWorkSources && bounds.bottom <= headingReadingY) {
+        // Even an unmounted block above the viewport contributes its last heading.
+        const source = node.dataset.chatWorkSources.split(' ').at(-1)!
+        active = headingLookup.lastBySource.get(source) ?? active
+      } else if (node.id && bounds.top <= headingReadingY) {
+        active = byAnchor.get(node.id) ?? active
+      }
     }
     active ??= items[0] ?? null
     setActiveOutlineAnchorId((current) => current === active?.anchorId ? current : active?.anchorId ?? null)
-  }, [outlineItemsByOwner])
+  }, [headingLookup, outlineItemsByOwner])
 
   // 滚动监听：用 DOM 行几何更新导航器（兼容「上方虚拟 + 底部实挂载」）。
   // 跟随钉底由 useScrollFollow 独立处理。
@@ -2283,7 +2357,7 @@ function MessageListBase({
       } else {
         const hold = navigatorHoldRef.current
         if (hold?.jumped) {
-          alignViewportToNavigationTarget(hold.targetIndex, hold.rowOffset)
+          alignViewportToNavigationTarget(hold.targetIndex, hold.rowOffset, hold.readingBlock)
         }
       }
     }
@@ -2396,31 +2470,40 @@ function MessageListBase({
   const tailWrapRef = useRef<HTMLDivElement | null>(null)
   const tailSpacerRef = useRef<HTMLDivElement | null>(null)
 
-  // Switching back restores a stable row plus its offset. Search/navigation
-  // has higher priority, and a missing row falls back to the normal bottom.
+  const beginReadingRestore = useCallback((position: ChatReadingPosition, index: number | null) => {
+    const start = index === null ? null : virtualizer.measurementsCache[index]?.start
+      ?? virtualizer.getOffsetForIndex(index, 'start')?.[0]
+    clearNavigatorPrepare()
+    widthAnchorRef.current = null
+    const generation = beginMessageNavigationHydrate()
+    navigatorSettleGenerationRef.current = generation
+    navigatorHoldRef.current = {
+      generation, targetIndex: index, rowOffset: position.rowOffset, readingBlock: position.block,
+      frames: 0, stable: 0, jumped: false, lastHeight: -1, lastTotalSize: -1,
+    }
+    setForceMountRenderIndex(index)
+    setNavigationLock(true)
+    followHandle.restoreReadingPosition(start != null ? start + position.rowOffset : position.scrollTop)
+    alignViewportToNavigationTarget(index, position.rowOffset, position.block)
+    setNavigatorHoldEpoch(value => value + 1)
+  }, [alignViewportToNavigationTarget, clearNavigatorPrepare, followHandle, setNavigationLock, virtualizer, widthAnchorRef])
+
+  const restoredViewRef = useRef<{ conversationId: typeof conversationId; viewport: HTMLDivElement } | null>(null)
   useLayoutEffect(() => {
     if (!viewportEl || !widthReady) return
+    if (restoredViewRef.current?.conversationId === conversationId && restoredViewRef.current?.viewport === viewportEl) return
+    restoredViewRef.current = { conversationId, viewport: viewportEl }
+    if (focusTargetIndex >= 0 || focusWaitingForLive) return
     const saved = rememberedReadingPosition
-    if (saved && !saved.following && !focusMessageId) {
+    if (saved && !saved.following) {
       const index = historyItems.findIndex((item) => readingRowKey(item) === saved.rowKey)
       if (index >= 0 && (!saved.rowRevision || saved.rowRevision === measurementKey(historyItems[index]))) {
-        const start = virtualizer.measurementsCache[index]?.start
-          ?? virtualizer.getOffsetForIndex(index, 'start')?.[0]
-        if (start !== undefined) {
-          clearNavigatorPrepare()
-          widthAnchorRef.current = null
-          const generation = beginMessageNavigationHydrate()
-          navigatorSettleGenerationRef.current = generation
-          navigatorHoldRef.current = {
-            generation, targetIndex: index, rowOffset: saved.rowOffset,
-            frames: 0, stable: 0, jumped: false, lastHeight: -1, lastTotalSize: -1,
-          }
-          setForceMountRenderIndex(index)
-          setNavigationLock(true)
-          followHandle.restoreReadingPosition(start + saved.rowOffset)
-          setNavigatorHoldEpoch(value => value + 1)
-          return
-        }
+        beginReadingRestore(saved, index)
+        return
+      }
+      if (liveItem && readingRowKey(liveItem) === saved.rowKey) {
+        beginReadingRestore(saved, null)
+        return
       }
       if (!saved.rowKey && saved.layoutKey === layoutKey) {
         followHandle.restoreReadingPosition(saved.scrollTop)
@@ -2431,11 +2514,8 @@ function MessageListBase({
     const lastNode = navigatorNodesRef.current[navigatorNodesRef.current.length - 1]
     updateActiveNavigatorNode(lastNode?.id ?? null)
     updateVisibleNavigatorNodes(lastNode ? [lastNode.id] : [])
-  // Wait for the measured width: the initial 704px estimate can put the same
-  // row at a different offset even on a warm return. The navigation hold then
-  // keeps that row in place until its measurements settle.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId, viewportEl, widthReady])
+  }, [beginReadingRestore, conversationId, focusTargetIndex, focusWaitingForLive, followHandle, historyItems, layoutKey, liveItem,
+    rememberedReadingPosition, updateActiveNavigatorNode, updateVisibleNavigatorNodes, viewportEl, widthReady])
 
   useLayoutEffect(() => {
     if (!followHandle.isFollowing()) capturePageAnchor()
@@ -2459,22 +2539,46 @@ function MessageListBase({
   }, [conversationId, messages, followHandle, cancelHistoryNavigation])
 
   // After the row ref measures the handoff, keep following while heavy content hydrates.
-  const liveScrollHandoffRef = useRef({ conversationId, live: liveRowActive })
+  const liveScrollHandoffRef = useRef({ conversationId, live: liveRowActive, frozen: streamFrozen })
+  const [liveTransitionReading, setLiveTransitionReading] = useState<{
+    conversationId: typeof conversationId; position: ChatReadingPosition | null
+  } | null>(null)
   // WebKit can reset scrollTop when the live row leaves normal flow, before
   // layout effects run. Snapshot the detached reader before that DOM commit.
-  const handoffReadingOffset = liveScrollHandoffRef.current.live && !liveRowActive
+  const liveDisplayChanged = liveScrollHandoffRef.current.live
+    && (!liveRowActive || liveScrollHandoffRef.current.frozen !== streamFrozen)
     && liveScrollHandoffRef.current.conversationId === conversationId
-    && !followHandle.isFollowing() ? viewportEl?.scrollTop ?? null : null
+  const preserveHandoffReading = liveDisplayChanged && !followHandle.isFollowing() && viewportEl
+  const handoffReadingOffset = preserveHandoffReading ? viewportEl.scrollTop : null
+  const handoffReadingPosition = preserveHandoffReading ? captureLiveReadingPosition(viewportEl, layoutKey) : null
+  const activeReadingPosition = liveDisplayChanged ? handoffReadingPosition
+    : liveTransitionReading && liveTransitionReading.conversationId === conversationId
+      ? liveTransitionReading.position
+      : rememberedReadingPosition
   useLayoutEffect(() => {
     const previous = liveScrollHandoffRef.current
-    liveScrollHandoffRef.current = { conversationId, live: liveRowActive }
+    liveScrollHandoffRef.current = { conversationId, live: liveRowActive, frozen: streamFrozen }
     // 切换会话不是本会话的流式交接。
-    if (previous.conversationId !== conversationId || !previous.live || liveRowActive) return
-    if (!streamFollowIntentRef.current && !followHandle.isFollowing()) {
-      if (handoffReadingOffset !== null) followHandle.restoreReadingPosition(handoffReadingOffset)
-      beginStreamSettleEagerHydrate()
+    if (previous.conversationId !== conversationId) {
+      setLiveTransitionReading(null)
       return
     }
+    if (!previous.live) return
+    if (liveRowActive && previous.frozen === streamFrozen) return
+    setLiveTransitionReading({ conversationId, position: handoffReadingPosition })
+    if (!streamFollowIntentRef.current && !followHandle.isFollowing()) {
+      if (handoffReadingPosition && forceMountRenderIndexRef.current == null && !focusMessageId) {
+        const index = liveRowActive ? null : historyItems.findIndex((item) => readingRowKey(item) === handoffReadingPosition.rowKey)
+        if (index === null || index >= 0) {
+          beginReadingRestore(handoffReadingPosition, index)
+          return
+        }
+      }
+      if (handoffReadingOffset !== null) followHandle.restoreReadingPosition(handoffReadingOffset)
+      if (!liveRowActive) beginStreamSettleEagerHydrate()
+      return
+    }
+    if (liveRowActive) return
 
     cancelNavigatorSettle()
     navigatorHoldRef.current = null
@@ -2498,12 +2602,16 @@ function MessageListBase({
     }
     setBottomHoldEpoch((value) => value + 1)
   }, [
+    beginReadingRestore,
     cancelNavigatorSettle,
     conversationId,
     followHandle,
-    historyItems.length,
+    focusMessageId,
+    historyItems,
     handoffReadingOffset,
+    handoffReadingPosition,
     liveRowActive,
+    streamFrozen,
     setNavigationLock,
   ])
 
@@ -2571,6 +2679,7 @@ function MessageListBase({
 
   const renderItem = useCallback(
     (item: RenderItem) => {
+      const readingAnchor = activeReadingPosition?.rowKey === readingRowKey(item) ? activeReadingPosition?.block : undefined
       switch (item.kind) {
         case 'spacer':
           return <div aria-hidden="true" style={{ height: item.size }} />
@@ -2589,6 +2698,8 @@ function MessageListBase({
               reasoningDurationMsBySegmentId={assistantStats?.reasoningDurationMsBySegmentId}
               sentModels={item.sentModels}
               turnWork={workByMessageId.get(msg.id)}
+              readingAnchor={readingAnchor}
+              revealReasoning={reasoningReveal?.messageId === msg.id ? reasoningReveal.generation : undefined}
               onUpdateMessage={msg.role === 'assistant' ? onUpdateMessage : undefined}
               // 编辑/重生成入口在任何 run 在飞时都不可用（AC3）。streamFrozen 也算在飞：
               // 本地取消后 send invoke 尚未返回，此窗口内触发只会被 in-flight 兜底静默吞掉
@@ -2625,7 +2736,12 @@ function MessageListBase({
               groupId={item.groupId}
               messages={item.messages}
               selectedMessageId={selectedMessageId}
-              onSelectColumn={onSetGroupSelection}
+              focusedMessageId={focusedGroupAnswer?.conversationId === conversationId
+                && focusedGroupAnswer?.groupId === item.groupId ? focusedGroupAnswer.messageId : undefined}
+              readingAnchor={readingAnchor}
+              revealReasoning={reasoningReveal && item.messages.some(message => message.id === reasoningReveal.messageId)
+                ? reasoningReveal : undefined}
+              onSelectColumn={onSetGroupSelection || focusedGroupAnswer ? selectGroupAnswer : undefined}
               onUpdateMessage={onUpdateMessage}
               onRegenerateMessage={streaming || streamFrozen ? undefined : onRegenerateMessage}
               onReplyWithModel={
@@ -2657,6 +2773,8 @@ function MessageListBase({
               conversationArtifactsById={conversationArtifactsById}
               groupId={item.groupId}
               messages={[]}
+              animateEntrance={animateLiveEntrance}
+              readingAnchor={readingAnchor}
               onSaveMessageToNote={onSaveMessageToNote}
             />
           )
@@ -2664,6 +2782,8 @@ function MessageListBase({
           return (
             <MessageRowBubble
               live={item.live}
+              animateEntrance={animateLiveEntrance}
+              readingAnchor={readingAnchor}
               conversationId={conversationId}
               conversationArtifactsById={conversationArtifactsById}
               turnWork={liveTurnWork}
@@ -2732,8 +2852,13 @@ function MessageListBase({
       lastAssistantTurn,
       workByMessageId,
       liveTurnWork,
+      animateLiveEntrance,
       groupSelections,
+      focusedGroupAnswer,
+      reasoningReveal,
+      activeReadingPosition,
       onSetGroupSelection,
+      selectGroupAnswer,
       handleOutlineSourceChange,
       lang,
     ],
@@ -2773,6 +2898,8 @@ function MessageListBase({
           data-chat-item-key={virtualItem ? measurementKey(item) : undefined}
           data-chat-row-index={virtualItem?.index}
           data-chat-reading-row={item.kind !== 'spacer' ? '' : undefined}
+          data-chat-live-reading-row={virtualItem ? undefined : ''}
+          data-chat-reading-key={virtualItem ? undefined : readingRowKey(item)}
           data-message-id={item.kind === 'message' ? item.message.id : item.kind === 'streaming' ? item.messageId : undefined}
           data-chat-message-list-item={item.kind}
           // `top`, not transform: layout positions snap to device pixels. A
@@ -2829,6 +2956,11 @@ function MessageListBase({
         ref={setScrollEl}
         onContextMenu={handleContextMenu}
         onClickCapture={handleDisclosureClick}
+        onAnimationEndCapture={(event) => {
+          if (event.animationName === 'kv-search-focus-flash' && event.target instanceof HTMLElement) {
+            event.target.classList.remove('kv-search-focus-flash')
+          }
+        }}
         onScroll={handleNavigatorScroll}
         onScrollCapture={(event) => {
           if (event.target !== event.currentTarget) scheduleNavigatorSync()

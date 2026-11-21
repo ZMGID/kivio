@@ -332,6 +332,7 @@ export function createStreamPreviewOwner() {
           payload.messageId,
           payload.recovery.providerId,
           payload.recovery.model,
+          payload.recovery.activeArmCount,
         )
       }
       if (hasActiveGroup(payload.conversationId) && payload.messageId) {
@@ -355,6 +356,10 @@ export function createStreamPreviewOwner() {
         return { accepted: true, target: 'group', terminal }
       }
       let snapshot = snapshots.get(payload.conversationId)
+      if (payload.type === 'run_started' && payload.restoredFromSnapshot && snapshot?.runId === payload.runId) {
+        snapshot = restoreRunSnapshot(payload, snapshot.startedAt ?? now)
+        snapshots.set(payload.conversationId, snapshot)
+      }
       if (payload.type === 'run_started' && snapshot && !snapshot.streaming
         && snapshot.runId !== payload.runId) {
         // A backend-owned wake/recovery run can start after the previous local
@@ -363,7 +368,6 @@ export function createStreamPreviewOwner() {
         generations.set(payload.conversationId, (generations.get(payload.conversationId) ?? 0) + 1)
         cancellationFreezes.delete(payload.conversationId)
         if (pendingTwin?.conversationId === payload.conversationId) cancelTwin()
-        cancelFrame()
         snapshot = restoreRunSnapshot(payload, now)
         snapshots.set(payload.conversationId, snapshot)
         if (selectedId === payload.conversationId) {

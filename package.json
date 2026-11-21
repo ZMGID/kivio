@@ -25,6 +25,7 @@
     "architecture:check": "node --test scripts/check-architecture.test.mjs && node scripts/check-architecture.mjs",
     "typecheck": "npm run protocol:check && tsc --noEmit",
     "test": "vitest run",
+    "test:browser": "playwright test --config tests/browser/playwright.config.mjs",
     "test:dsh-bridge": "node --test scripts/dsh-bridge.test.mjs",
     "test:replace-visual": "node scripts/generate-replace-visual-fixtures.mjs --check && vitest run src/lens/replaceVisualBenchmark.test.ts",
     "fixtures:replace-visual": "node scripts/generate-replace-visual-fixtures.mjs",
@@ -70,6 +71,7 @@
     "virtua": "^0.49.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.65.1",
     "@shadcn/lint": "^0.2.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@tauri-apps/cli": "^2.0.0",

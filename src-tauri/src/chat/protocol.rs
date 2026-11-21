@@ -25,17 +25,42 @@ const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
 const SNAPSHOT_TEXT_MAX_BYTES: usize = 512 * 1024;
 /// 单个段的文本上限（段数本身受轮次约束）。
 const SNAPSHOT_SEGMENT_MAX_BYTES: usize = 256 * 1024;
+// The persisted message owns long answers. Short terminal text can still
+// correct an in-progress snapshot or fill one when no chunks were emitted.
+const TERMINAL_TEXT_MAX_BYTES: usize = 512;
+
+pub(crate) fn terminal_content(full: &str) -> &str {
+    if full.len() <= TERMINAL_TEXT_MAX_BYTES {
+        full
+    } else {
+        ""
+    }
+}
+
+fn bounded_tail(text: &str, max_bytes: usize) -> &str {
+    let mut cut = text.len().saturating_sub(max_bytes);
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    &text[cut..]
+}
 
 /// 超限时从头部裁掉多余字节，保住最新的尾部（对齐到字符边界）。
 fn cap_text_tail(text: &mut String, max_bytes: usize) {
     if text.len() <= max_bytes {
         return;
     }
-    let mut cut = text.len() - max_bytes;
-    while cut < text.len() && !text.is_char_boundary(cut) {
-        cut += 1;
-    }
+    let cut = text.len() - bounded_tail(text, max_bytes).len();
     text.replace_range(..cut, "");
+}
+
+fn append_bounded_tail(text: &mut String, delta: &str, max_bytes: usize) {
+    if delta.len() >= max_bytes {
+        *text = bounded_tail(delta, max_bytes).to_owned();
+    } else {
+        cap_text_tail(text, max_bytes - delta.len());
+        text.push_str(delta);
+    }
 }
 const COMPLETED_RUN_TTL: Duration = Duration::from_secs(5 * 60);
 const MAX_COMPLETED_RUNS: usize = 32;
@@ -141,6 +166,14 @@ pub struct ChatSegmentPayload {
 
 impl From<&crate::chat::ChatMessageSegment> for ChatSegmentPayload {
     fn from(segment: &crate::chat::ChatMessageSegment) -> Self {
+        let mut payload = Self::for_delta(segment);
+        payload.text = segment.text.clone();
+        payload
+    }
+}
+
+impl ChatSegmentPayload {
+    pub(crate) fn for_delta(segment: &crate::chat::ChatMessageSegment) -> Self {
         Self {
             id: segment.id.clone(),
             kind: match &segment.kind {
@@ -161,7 +194,7 @@ impl From<&crate::chat::ChatMessageSegment> for ChatSegmentPayload {
             order: segment.order,
             step_number: segment.step_number,
             round: segment.round,
-            text: segment.text.clone(),
+            text: None,
             tool_call_id: segment.tool_call_id.clone(),
         }
     }
@@ -274,6 +307,9 @@ pub struct ChatContextUsagePayload {
 pub struct ChatRunRecoveryMetadata {
     pub group_id: String,
     pub group_size: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub active_arm_count: Option<u32>,
     pub arm_index: u32,
     pub provider_id: String,
     pub model: String,
@@ -1476,21 +1512,49 @@ impl ChatProtocolHub {
             .then_some(snapshot)
     }
 
+    fn running_group_keys(&self) -> std::collections::HashSet<(&str, &str)> {
+        self.runs
+            .values()
+            .filter(|run| run.terminal_at.is_none())
+            .filter_map(|run| Self::group_recovery_key(&run.snapshot))
+            .collect()
+    }
+
+    fn group_recovery_key(snapshot: &ChatRunSnapshot) -> Option<(&str, &str)> {
+        snapshot
+            .recovery
+            .as_ref()
+            .filter(|group| group.active_arm_count.unwrap_or(group.group_size) > 1)
+            .map(|group| (snapshot.conversation_id.as_str(), group.group_id.as_str()))
+    }
+
     fn prune(&mut self) {
         let now = Instant::now();
-        self.runs.retain(|_, run| {
-            run.terminal_at.map_or(true, |finished| {
-                now.duration_since(finished) <= COMPLETED_RUN_TTL
-            })
-        });
         let mut completed: Vec<_> = self
             .runs
             .iter()
-            .filter_map(|(id, run)| run.terminal_at.map(|at| (id.clone(), at)))
+            .filter_map(|(id, run)| run.terminal_at.map(|at| (id, run, at)))
             .collect();
-        completed.sort_by_key(|(_, at)| *at);
-        let remove_count = completed.len().saturating_sub(MAX_COMPLETED_RUNS);
-        for (id, _) in completed.into_iter().take(remove_count) {
+        let expired = |at| now.duration_since(at) > COMPLETED_RUN_TTL;
+        if completed.len() <= MAX_COMPLETED_RUNS && !completed.iter().any(|(_, _, at)| expired(*at))
+        {
+            return;
+        }
+
+        // A settled arm remains part of the recoverable state while a sibling runs.
+        let live_groups = self.running_group_keys();
+        completed.retain(|(_, run, _)| {
+            !Self::group_recovery_key(&run.snapshot).is_some_and(|key| live_groups.contains(&key))
+        });
+        completed.sort_by_key(|(_, _, at)| *at);
+        let overflow = completed.len().saturating_sub(MAX_COMPLETED_RUNS);
+        let remove: Vec<_> = completed
+            .into_iter()
+            .enumerate()
+            .take_while(|(index, (_, _, at))| *index < overflow || expired(*at))
+            .map(|(_, (id, _, _))| id.clone())
+            .collect();
+        for id in remove {
             self.runs.remove(&id);
         }
     }
@@ -1588,8 +1652,15 @@ impl ChatProtocolHub {
             run.terminal_at = Some(Instant::now());
         }
         let bytes = replay_bytes_estimate(&envelope);
-        run.replay.push_back((bytes, envelope.clone()));
-        run.replay_bytes = run.replay_bytes.saturating_add(bytes);
+        if bytes > MAX_REPLAY_BYTES {
+            // This sequence can only be recovered from a snapshot. Skip
+            // cloning a payload that would evict itself and all older events.
+            run.replay.clear();
+            run.replay_bytes = 0;
+        } else {
+            run.replay.push_back((bytes, envelope.clone()));
+            run.replay_bytes = run.replay_bytes.saturating_add(bytes);
+        }
         while run.replay.len() > MAX_REPLAY_EVENTS || run.replay_bytes > MAX_REPLAY_BYTES {
             if let Some((removed, _)) = run.replay.pop_front() {
                 run.replay_bytes = run.replay_bytes.saturating_sub(removed);
@@ -1685,6 +1756,9 @@ impl ChatProtocolHub {
             .filter(|cursor| !known_run_ids.contains(cursor.run_id.as_str()))
             .map(|cursor| cursor.run_id.clone())
             .collect();
+        // A window can subscribe between two terminals of the same fan-out.
+        // Recover the settled siblings of a still-running group alongside its live arms.
+        let running_groups = self.running_group_keys();
         let mut runs = Vec::new();
         for run in self
             .runs
@@ -1692,7 +1766,10 @@ impl ChatProtocolHub {
             .filter(|run| run.snapshot.conversation_id == request.conversation_id)
         {
             let Some(last_seq) = cursors.get(run.snapshot.run_id.as_str()).copied() else {
-                if run.terminal_at.is_none() {
+                if run.terminal_at.is_none()
+                    || Self::group_recovery_key(&run.snapshot)
+                        .is_some_and(|key| running_groups.contains(&key))
+                {
                     runs.push(ChatRunSync::Snapshot {
                         snapshot: run.snapshot.clone(),
                     });
@@ -1813,8 +1890,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 snapshot.status_note = None;
                 snapshot.retry_status = None;
             }
-            snapshot.content.push_str(delta);
-            cap_text_tail(&mut snapshot.content, SNAPSHOT_TEXT_MAX_BYTES);
+            append_bounded_tail(&mut snapshot.content, delta, SNAPSHOT_TEXT_MAX_BYTES);
             upsert_segment(&mut snapshot.segments, segment, delta);
         }
         ChatRunEvent::TextSegmentReplaced {
@@ -1827,10 +1903,8 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 .iter_mut()
                 .find(|segment| segment.id == *segment_id)
             {
-                segment.text = Some(text.clone());
-                cap_text_tail(segment.text.as_mut().unwrap(), SNAPSHOT_SEGMENT_MAX_BYTES);
-                snapshot.content = content.clone();
-                cap_text_tail(&mut snapshot.content, SNAPSHOT_TEXT_MAX_BYTES);
+                segment.text = Some(bounded_tail(text, SNAPSHOT_SEGMENT_MAX_BYTES).to_owned());
+                snapshot.content = bounded_tail(content, SNAPSHOT_TEXT_MAX_BYTES).to_owned();
             }
         }
         ChatRunEvent::ReasoningDelta { delta, segment } => {
@@ -1838,8 +1912,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
                 snapshot.status_note = None;
                 snapshot.retry_status = None;
             }
-            snapshot.reasoning.push_str(delta);
-            cap_text_tail(&mut snapshot.reasoning, SNAPSHOT_TEXT_MAX_BYTES);
+            append_bounded_tail(&mut snapshot.reasoning, delta, SNAPSHOT_TEXT_MAX_BYTES);
             upsert_segment(&mut snapshot.segments, segment, delta);
         }
         ChatRunEvent::StreamAttemptDiscarded {
@@ -2019,9 +2092,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
             conversation_revision,
         } => {
             snapshot.status = ChatRunStatus::Completed;
-            if !full.is_empty() || snapshot.content.is_empty() {
-                snapshot.content = full.clone();
-            }
+            apply_terminal_preview(&mut snapshot.content, full);
             snapshot.terminal = Some(ChatTerminalSnapshot::RunCompleted {
                 full: full.clone(),
                 conversation_revision: *conversation_revision,
@@ -2036,9 +2107,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
             conversation_revision,
         } => {
             snapshot.status = ChatRunStatus::Failed;
-            if !full.is_empty() || snapshot.content.is_empty() {
-                snapshot.content = full.clone();
-            }
+            apply_terminal_preview(&mut snapshot.content, full);
             snapshot.terminal = Some(ChatTerminalSnapshot::RunFailed {
                 error: error.clone(),
                 full: full.clone(),
@@ -2053,9 +2122,7 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
             conversation_revision,
         } => {
             snapshot.status = ChatRunStatus::Cancelled;
-            if !full.is_empty() || snapshot.content.is_empty() {
-                snapshot.content = full.clone();
-            }
+            apply_terminal_preview(&mut snapshot.content, full);
             snapshot.terminal = Some(ChatTerminalSnapshot::RunCancelled {
                 full: full.clone(),
                 conversation_revision: *conversation_revision,
@@ -2068,29 +2135,61 @@ fn fold_snapshot(snapshot: &mut ChatRunSnapshot, event: &ChatRunEvent) {
     }
 }
 
+fn apply_terminal_preview(content: &mut String, preview: &str) {
+    if !preview.is_empty() {
+        *content = bounded_tail(preview, SNAPSHOT_TEXT_MAX_BYTES).to_owned();
+    }
+}
+
 fn upsert_segment(
     segments: &mut Vec<ChatSegmentPayload>,
     segment: &Option<ChatSegmentPayload>,
     delta: &str,
 ) {
     let Some(segment) = segment else { return };
-    if let Some(existing) = segments.iter_mut().find(|item| item.id == segment.id) {
-        // move + push_str，不 clone：clone+format 是 O(已累积长度)，长答案下每个
-        // delta 都整段拷贝，多对话并发时在协议锁内滚成显著 CPU。
-        let mut accumulated = existing.text.take().unwrap_or_default();
-        accumulated.push_str(delta);
-        cap_text_tail(&mut accumulated, SNAPSHOT_SEGMENT_MAX_BYTES);
-        *existing = segment.clone();
-        existing.text = Some(accumulated);
+    let existing = if segments.last().is_some_and(|tail| tail.id == segment.id) {
+        Some(segments.len() - 1)
     } else {
-        let mut segment = segment.clone();
-        let base = segment.text.take().unwrap_or_default();
-        segment.text = Some(if base.ends_with(delta) {
-            base
+        segments.iter().position(|item| item.id == segment.id)
+    };
+    let text = if let Some(index) = existing {
+        let mut accumulated = segments[index].text.take().unwrap_or_default();
+        append_bounded_tail(&mut accumulated, delta, SNAPSHOT_SEGMENT_MAX_BYTES);
+        accumulated
+    } else {
+        let base = segment.text.as_deref().unwrap_or_default();
+        if base.ends_with(delta) {
+            bounded_tail(base, SNAPSHOT_SEGMENT_MAX_BYTES).to_owned()
+        } else if delta.len() >= SNAPSHOT_SEGMENT_MAX_BYTES {
+            bounded_tail(delta, SNAPSHOT_SEGMENT_MAX_BYTES).to_owned()
         } else {
-            format!("{base}{delta}")
-        });
+            let mut text = bounded_tail(base, SNAPSHOT_SEGMENT_MAX_BYTES - delta.len()).to_owned();
+            text.push_str(delta);
+            text
+        }
+    };
+    let segment = ChatSegmentPayload {
+        id: segment.id.clone(),
+        kind: segment.kind.clone(),
+        phase: segment.phase,
+        order: segment.order,
+        step_number: segment.step_number,
+        round: segment.round,
+        text: Some(text),
+        tool_call_id: segment.tool_call_id.clone(),
+    };
+    let order_changed = if let Some(index) = existing {
+        let order_changed = segments[index].order != segment.order;
+        segments[index] = segment;
+        order_changed
+    } else {
+        let out_of_order = segments
+            .last()
+            .is_some_and(|tail| tail.order > segment.order);
         segments.push(segment);
+        out_of_order
+    };
+    if order_changed {
         segments.sort_by_key(|item| item.order);
     }
 }
@@ -2101,7 +2200,7 @@ fn upsert_segment(
 /// 多窗口：按 label 分槽，弹出窗只收自己那条对话；仅当该对话已有活着的 `Conversation`
 /// 订阅者时，才跳过主窗 All 的高频事件。按「窗口已打开」跳过会在通道未订上/已死时黑洞。
 /// debug 构建额外广播到全局事件总线,喂 chat probe(probe.rs 靠 `app.listen` 收实时载荷)。
-fn emit_protocol(app: &AppHandle, event: ChatProtocolEvent) {
+fn emit_protocol<R: tauri::Runtime>(app: &AppHandle<R>, event: ChatProtocolEvent) {
     crate::desktop_pet::observe_protocol(app, &event);
     #[cfg(debug_assertions)]
     notify_protocol_debug_sink(&event);
@@ -2179,8 +2278,8 @@ pub fn chat_protocol_subscribe(
     );
 }
 
-pub fn register_run(
-    app: &AppHandle,
+pub fn register_run<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     conversation_id: &str,
     run_id: &str,
     message_id: &str,
@@ -2196,8 +2295,8 @@ pub fn register_run(
     );
 }
 
-pub fn register_run_with_recovery(
-    app: &AppHandle,
+pub fn register_run_with_recovery<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     conversation_id: &str,
     run_id: &str,
     message_id: &str,
@@ -2236,7 +2335,7 @@ pub fn emit_live_run_event(app: &AppHandle, conversation_id: &str, event: ChatRu
 }
 
 /// replay 预算用的字节估算。delta 事件每秒成百上千条，为算长度整包 `serde_json::to_vec`
-/// 一遍纯属浪费——按字段长度估；低频事件（工具卡、终态携带全文）才实序列化拿准数。
+/// 一遍纯属浪费——delta 和终态按字段长度估；其它低频事件实序列化拿准数。
 fn replay_bytes_estimate(envelope: &ChatRunEventEnvelope) -> usize {
     const ENVELOPE_OVERHEAD: usize = 128;
     const SEGMENT_OVERHEAD: usize = 160;
@@ -2254,6 +2353,10 @@ fn replay_bytes_estimate(envelope: &ChatRunEventEnvelope) -> usize {
             });
             base + delta.len() + segment_bytes
         }
+        ChatRunEvent::RunCompleted { full, .. } | ChatRunEvent::RunCancelled { full, .. } => {
+            base + full.len() * 6
+        }
+        ChatRunEvent::RunFailed { full, error, .. } => base + (full.len() + error.len()) * 6,
         _ => serde_json::to_vec(envelope)
             .map(|value| value.len())
             .unwrap_or(0)
@@ -2292,7 +2395,7 @@ fn split_coalescible_delta(event: ChatRunEvent) -> Result<PendingDelta, ChatRunE
 
 /// 合帧窗口到点后的兜底冲刷：没有后续事件（模型停顿、流已结束但终态还没到）时，
 /// 缓冲里的尾巴也必须在 ~25ms 内上屏。
-fn schedule_delta_flush(app: &AppHandle, run_id: &str) {
+fn schedule_delta_flush<R: tauri::Runtime>(app: &AppHandle<R>, run_id: &str) {
     let app = app.clone();
     let run_id = run_id.to_string();
     tauri::async_runtime::spawn(async move {
@@ -2310,7 +2413,7 @@ fn schedule_delta_flush(app: &AppHandle, run_id: &str) {
     });
 }
 
-pub fn emit_run_event(app: &AppHandle, run_id: &str, event: ChatRunEvent) {
+pub fn emit_run_event<R: tauri::Runtime>(app: &AppHandle<R>, run_id: &str, event: ChatRunEvent) {
     let state = app.state::<AppState>();
     let mut schedule = false;
     {
@@ -2812,40 +2915,48 @@ pub fn emit_hook_failed(
     }
 }
 
-pub fn finish_run(
-    app: &AppHandle,
+pub fn finish_run<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     run_id: &str,
     reason: &str,
     full: &str,
     conversation_revision: u64,
 ) {
-    let event = match reason {
+    emit_run_event(
+        app,
+        run_id,
+        terminal_run_event(reason, full, conversation_revision),
+    );
+}
+
+fn terminal_run_event(reason: &str, full: &str, conversation_revision: u64) -> ChatRunEvent {
+    let full = terminal_content(full).to_owned();
+    match reason {
         "done" | "completed" | "recovered" => ChatRunEvent::RunCompleted {
-            full: full.to_string(),
+            full,
             conversation_revision,
         },
         "cancelled" => ChatRunEvent::RunCancelled {
-            full: full.to_string(),
+            full,
             conversation_revision,
         },
         error => ChatRunEvent::RunFailed {
-            error: error.to_string(),
-            full: full.to_string(),
+            error: bounded_tail(error, TERMINAL_TEXT_MAX_BYTES).to_owned(),
+            full,
             conversation_revision,
         },
-    };
-    emit_run_event(app, run_id, event);
+    }
 }
 
-pub struct RegisteredRunGuard {
-    app: AppHandle,
+pub struct RegisteredRunGuard<R: tauri::Runtime = tauri::Wry> {
+    app: AppHandle<R>,
     run_id: String,
     base_revision: u64,
     deferred: bool,
 }
 
-impl RegisteredRunGuard {
-    pub fn new(app: &AppHandle, run_id: &str, base_revision: u64) -> Self {
+impl<R: tauri::Runtime> RegisteredRunGuard<R> {
+    pub fn new(app: &AppHandle<R>, run_id: &str, base_revision: u64) -> Self {
         Self {
             app: app.clone(),
             run_id: run_id.to_string(),
@@ -2859,7 +2970,7 @@ impl RegisteredRunGuard {
     }
 }
 
-impl Drop for RegisteredRunGuard {
+impl<R: tauri::Runtime> Drop for RegisteredRunGuard<R> {
     fn drop(&mut self) {
         let already_terminal = self
             .app
@@ -3440,6 +3551,7 @@ mod tests {
     fn recovery_metadata_is_preserved_in_run_started_and_snapshot() {
         let mut hub = ChatProtocolHub::default();
         let recovery = ChatRunRecoveryMetadata {
+            active_arm_count: None,
             group_id: "group".to_string(),
             group_size: 2,
             arm_index: 1,
@@ -3465,6 +3577,58 @@ mod tests {
             panic!("first mount should receive an active run snapshot");
         };
         assert_eq!(snapshot.recovery.as_ref(), Some(&recovery));
+    }
+
+    #[test]
+    fn between_group_terminals_a_new_window_recovers_the_settled_sibling_too() {
+        let mut hub = ChatProtocolHub::default();
+        for (index, run_id) in ["settled", "running"].into_iter().enumerate() {
+            hub.register_with_recovery(
+                "conv",
+                run_id,
+                run_id,
+                0,
+                Some(ChatRunRecoveryMetadata {
+                    group_id: "group".into(),
+                    group_size: 2,
+                    active_arm_count: Some(2),
+                    arm_index: index as u32,
+                    provider_id: "provider".into(),
+                    model: "model".into(),
+                }),
+            )
+            .unwrap();
+        }
+        hub.push(
+            "settled",
+            ChatRunEvent::RunFailed {
+                error: "failed before model execution".into(),
+                full: String::new(),
+                conversation_revision: 1,
+            },
+        )
+        .unwrap();
+        for index in 0..=MAX_COMPLETED_RUNS {
+            let run_id = format!("other-run-{index}");
+            hub.register("other", &run_id, "message", 0).unwrap();
+            hub.push(
+                &run_id,
+                ChatRunEvent::RunCompleted {
+                    full: String::new(),
+                    conversation_revision: 1,
+                },
+            )
+            .unwrap();
+        }
+        let sync = hub.sync(&ChatSyncRequest {
+            protocol_version: CHAT_PROTOCOL_VERSION,
+            conversation_id: "conv".into(),
+            cursors: vec![],
+        });
+        assert_eq!(sync.runs.len(), 2);
+        assert!(sync.runs.iter().any(|run| matches!(run,
+            ChatRunSync::Snapshot { snapshot } if snapshot.run_id == "settled" && snapshot.terminal.is_some()
+        )));
     }
 
     #[test]
@@ -3740,6 +3904,54 @@ mod tests {
     }
 
     #[test]
+    fn recovered_segments_keep_order_when_a_delta_moves_an_earlier_segment() {
+        let mut hub = ChatProtocolHub::default();
+        hub.register("conv", "run", "message", 0).unwrap();
+        for (id, order, delta) in [
+            ("first", 1, "a"),
+            ("last", 3, "c"),
+            ("last", 3, "d"),
+            ("next", 2, "b"),
+            ("first", 4, "e"),
+        ] {
+            let segment = ChatSegmentPayload {
+                order,
+                ..text_segment(id)
+            };
+            hub.push(
+                "run",
+                ChatRunEvent::TextDelta {
+                    delta: delta.into(),
+                    segment: Some(segment),
+                },
+            )
+            .unwrap();
+        }
+
+        let result = hub.sync(&ChatSyncRequest {
+            protocol_version: CHAT_PROTOCOL_VERSION,
+            conversation_id: "conv".into(),
+            cursors: vec![],
+        });
+        let ChatRunSync::Snapshot { snapshot } = &result.runs[0] else {
+            panic!("new window should recover the current segments");
+        };
+        let segments: Vec<_> = snapshot
+            .segments
+            .iter()
+            .map(|segment| (segment.id.as_str(), segment.order, segment.text.as_deref()))
+            .collect();
+        assert_eq!(
+            segments,
+            [
+                ("next", 2, Some("b")),
+                ("last", 3, Some("cd")),
+                ("first", 4, Some("ae")),
+            ]
+        );
+    }
+
+    #[test]
     fn buffered_deltas_merge_into_single_event_with_identical_fold() {
         let mut hub = ChatProtocolHub::default();
         hub.register("conv", "run", "message", 0).unwrap();
@@ -3831,7 +4043,7 @@ mod tests {
             "run",
             ChatRunEvent::TextDelta {
                 delta: "x".repeat(MAX_REPLAY_BYTES + 1),
-                segment: None,
+                segment: Some(text_segment("first")),
             },
         )
         .unwrap();
@@ -3844,7 +4056,76 @@ mod tests {
                 last_seq: 1,
             }],
         });
-        assert!(matches!(result.runs[0], ChatRunSync::Snapshot { .. }));
+        let ChatRunSync::Snapshot { snapshot } = &result.runs[0] else {
+            panic!("oversized first delta must restore from a bounded snapshot");
+        };
+        assert_eq!(snapshot.content.len(), SNAPSHOT_TEXT_MAX_BYTES);
+        assert_eq!(
+            snapshot.segments[0].text.as_ref().unwrap().len(),
+            SNAPSHOT_SEGMENT_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn long_terminal_text_uses_persisted_content_and_keeps_streamed_snapshot_text() {
+        let mut hub = ChatProtocolHub::default();
+        hub.register("conv", "run", "message", 0).unwrap();
+        let streamed = "streamed content\n".repeat(500);
+        hub.push(
+            "run",
+            ChatRunEvent::TextDelta {
+                delta: streamed.clone(),
+                segment: None,
+            },
+        )
+        .unwrap();
+        let full = "\0🌱".repeat(10_000);
+        let envelope = hub
+            .push("run", terminal_run_event(&full, &full, 1))
+            .unwrap();
+        let ChatRunEvent::RunFailed {
+            full,
+            error,
+            conversation_revision,
+        } = &envelope.event
+        else {
+            panic!("expected failure acknowledgement");
+        };
+        assert_eq!(*conversation_revision, 1);
+        assert!(full.is_empty());
+        assert!(error.len() <= TERMINAL_TEXT_MAX_BYTES);
+        assert!(error.ends_with('🌱'));
+        assert!(serde_json::to_vec(&envelope).unwrap().len() < 8192);
+        assert_eq!(hub.runs["run"].snapshot.content, streamed);
+    }
+
+    #[test]
+    fn recovered_snapshot_preserves_short_terminal_text_that_corrects_streamed_draft() {
+        let mut hub = ChatProtocolHub::default();
+        hub.register("conv", "run", "message", 0).unwrap();
+        hub.push(
+            "run",
+            ChatRunEvent::TextDelta {
+                delta: "draft".repeat(MAX_REPLAY_BYTES / 5 + 1),
+                segment: None,
+            },
+        )
+        .unwrap();
+        hub.push("run", terminal_run_event("done", "corrected", 2))
+            .unwrap();
+
+        let result = hub.sync(&ChatSyncRequest {
+            protocol_version: CHAT_PROTOCOL_VERSION,
+            conversation_id: "conv".into(),
+            cursors: vec![ChatRunCursor {
+                run_id: "run".into(),
+                last_seq: 1,
+            }],
+        });
+        let ChatRunSync::Snapshot { snapshot } = &result.runs[0] else {
+            panic!("the oversized draft requires snapshot recovery");
+        };
+        assert_eq!(snapshot.content, "corrected");
     }
 
     #[test]

@@ -6,6 +6,7 @@ import type { ChatContextPayload, ChatStreamPayload } from '../api/tauri'
 import { CHAT_PROTOCOL_VERSION } from '../generated/chatProtocol'
 import { chatApi } from './api'
 import Chat from './Chat'
+import { draftKey, updateComposerDraft } from './composerDraft'
 import { getSnapshot, reset } from './streamingStore'
 import type { Conversation } from './types'
 
@@ -19,15 +20,17 @@ vi.mock('../api/settingsCache', async (original) => ({
 
 afterEach(() => { act(() => reset()); vi.restoreAllMocks() })
 
-it('commits conversation history and its live preview together when switching', async () => {
+it('keeps previews, queued sends and pending approvals scoped to their running conversation', async () => {
   for (const key of Object.keys(api) as Array<keyof typeof api>) {
     if (key.startsWith('on') && typeof api[key] === 'function') vi.spyOn(api, key).mockResolvedValue(() => {})
   }
   vi.spyOn(api, 'chatSyncState').mockResolvedValue(undefined)
   vi.spyOn(api, 'scheduledTasksSnapshot').mockResolvedValue({ tasks: [], liveRuns: [] })
   let streamEvent!: (payload: ChatStreamPayload) => void
+  let toolApproval!: Parameters<typeof api.onChatToolConfirm>[0]
   let openEvent!: Parameters<typeof api.onChatOpenConversation>[0]
   vi.spyOn(api, 'onChatStream').mockImplementation(async handler => { streamEvent = handler; return () => {} })
+  vi.spyOn(api, 'onChatToolConfirm').mockImplementation(async handler => { toolApproval = handler; return () => {} })
   vi.spyOn(api, 'onChatOpenConversation').mockImplementation(async handler => { openEvent = handler; return () => {} })
   const conversations: Conversation[] = ['switch-a', 'switch-b'].map(id => ({
     id, revision: 1, title: id, provider_id: '', model: '', created_at: 1, updated_at: 1,
@@ -57,6 +60,8 @@ it('commits conversation history and its live preview together when switching', 
   }
   window.history.replaceState(null, '', '#chat/switch-a')
   const view = render(<Profiler id="switch" onRender={observeCommit}><Chat onSettingsChange={() => {}} /></Profiler>)
+  // The first message pane is lazy-loaded. Wait for that import before inspecting its committed history.
+  await act(async () => { await vi.dynamicImportSettled() })
   await screen.findByText('switch-a question')
   await act(async () => {
     for (const conversation of conversations) {
@@ -84,8 +89,44 @@ it('commits conversation history and its live preview together when switching', 
     await waitFor(() => expect(getSnapshot().messageId).toBe(`${id}-answer`))
   }
   expect(mixedCommits).toEqual([])
-  expect(windowReads.mock.calls.map(([id]) => id)).toEqual(['switch-b'])
+  expect(windowReads).not.toHaveBeenCalled()
   expect(chatApi.getConversation).not.toHaveBeenCalled()
+
+  const input = screen.getByRole('textbox')
+  act(() => updateComposerDraft(draftKey('switch-b'), (draft) => ({ ...draft, input: 'Queued for B' })))
+  fireEvent.keyDown(input, { key: 'Enter' })
+  expect((await screen.findByText('Queued for B')).closest('[data-chat-message-list-item="injected-user"]')).toBeInTheDocument()
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
+  await screen.findByText('switch-a question')
+
+  const finished = { ...conversations[1], revision: 2, messages: [
+    ...conversations[1].messages,
+    { id: 'switch-b-answer', role: 'assistant' as const, content: 'Finished B', timestamp: 2 },
+  ] }
+  vi.mocked(chatApi.getConversation).mockResolvedValueOnce(finished)
+  const send = vi.spyOn(chatApi, 'sendMessage').mockResolvedValue(finished)
+  await act(async () => streamEvent({
+    protocolVersion: CHAT_PROTOCOL_VERSION, scope: 'run', conversationId: 'switch-b',
+    runId: 'switch-b-run', messageId: 'switch-b-answer', seq: 3, baseRevision: 1,
+    type: 'run_completed', full: 'Finished B', conversationRevision: 2,
+  }))
+  expect(send.mock.calls[0]?.slice(0, 2)).toEqual(['switch-b', 'Queued for B'])
+  expect(screen.getByText('switch-a question')).toBeVisible()
+  expect(getSnapshot().messageId).toBe('switch-a-answer')
+
+  let failStop!: (error: Error) => void
+  const cancel = vi.spyOn(chatApi, 'cancelStream').mockImplementation(() => new Promise((_, reject) => { failStop = reject }))
+  await act(async () => toolApproval({
+    conversationId: 'switch-a', runId: 'switch-a-run', interactionId: 'approval-a', toolCallId: 'tool-a',
+    name: 'fixture-tool', source: 'native', argumentsPreview: 'An approval for A',
+  }))
+  expect(await screen.findByText('An approval for A')).toBeVisible()
+  fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+  await waitFor(() => expect(cancel).toHaveBeenCalledWith('switch-a'))
+  expect(screen.queryByText('An approval for A')).not.toBeInTheDocument()
+  await act(async () => failStop(new Error('Stop request failed')))
+  expect(await screen.findByText('An approval for A')).toBeVisible()
+  expect(getSnapshot().streaming).toBe(true)
   view.unmount()
 })
 

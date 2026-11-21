@@ -43,6 +43,7 @@ function snapshot(overrides: Partial<RunInteractionSnapshot> = {}): RunInteracti
     sessionConsentSubmitting: false,
     sessionConsentError: '',
     userPrompt: null,
+    userPromptDraft: null,
     pendingToolConversationIds: [],
     ...overrides,
   }

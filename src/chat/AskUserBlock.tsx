@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useT, type I18n } from '../components/i18n'
 import { AsyncQuestionsContext } from './asyncQuestionsContext'
 import { codexAsyncReplyEnvelope } from './asyncQuestionReply'
@@ -25,6 +25,7 @@ import type {
   AskUserStructuredContent,
   ToolCallRecord,
 } from './types'
+import { createAskUserDraftStorage, type AskUserDraft, type AskUserDraftStorage, type DraftAnswer } from './askUserTools'
 
 interface AskUserBlockProps {
   toolCall: ToolCallRecord
@@ -33,14 +34,9 @@ interface AskUserBlockProps {
    *  `inline` = 消息流里的痕迹，待答时只留一行「等待你回答」，答完显示答案摘要。
    *  两处同时渲染整张卡会出现两个可作答的副本。 */
   variant?: 'docked' | 'inline'
+  draftStorage?: AskUserDraftStorage | null
   /** 作答/跳过成功后通知宿主收起这张面板。 */
   onResolved?: () => void
-}
-
-interface DraftAnswer {
-  selectedOptionIds: string[]
-  customText: string
-  customTextEdited?: boolean
 }
 
 interface ParsedAskUser {
@@ -251,11 +247,11 @@ function firstUnansweredIndex(parsed: ParsedAskUser | null, draft: Record<string
   return index >= 0 ? index : 0
 }
 
-function promptSignature(parsed: ParsedAskUser | null): string {
-  if (!parsed) return ''
-  return parsed.questions
-    .map((question) => `${question.id}:${question.options.map((option) => option.id).join(',')}`)
-    .join('|')
+function loadAskUserDraft(parsed: ParsedAskUser | null, signature: string, storage: AskUserDraftStorage): AskUserDraft {
+  const saved = storage.read()
+  if (saved?.signature === signature) return saved
+  const answers = createDraft(parsed)
+  return { signature, answers, questionIndex: firstUnansweredIndex(parsed, answers) }
 }
 
 function phaseLabel(phase: string, t: I18n): string {
@@ -300,43 +296,42 @@ function preventMouseFocus(event: ReactMouseEvent<HTMLButtonElement>) {
   event.preventDefault()
 }
 
-export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onResolved }: AskUserBlockProps) {
+export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onResolved, draftStorage }: AskUserBlockProps) {
   const t = useT()
   const asyncQuestions = useContext(AsyncQuestionsContext)
   const parsed = useMemo(() => parseAskUser(toolCall, t.chatAskNeedsConfirm), [toolCall, t.chatAskNeedsConfirm])
   const parsedRef = useRef(parsed)
   parsedRef.current = parsed
   const docked = variant === 'docked'
-  const signature = promptSignature(parsed)
+  const signature = useMemo(() => JSON.stringify([
+    toolCall.id,
+    parsed?.questions.map((question) => [question.id, question.options.map((option) => option.id)]),
+  ]), [toolCall.id, parsed?.questions])
   const optionsRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const customInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
-  const [draft, setDraft] = useState<Record<string, DraftAnswer>>(() => createDraft(parsed))
-  /** 草稿的同步镜像。两个用途，都是「不能等下一次渲染」：
-   *  ① 单题单选点一下就提交，要**当场**拿到含这次选择的草稿（`draft` 还是旧值）；
-   *  ② 同一批次里连点两下（React 会把它们合并成一次渲染）时，第二下要基于第一下的结果 ——
-   *     只读 `draft` 的话第二下会把第一下覆盖掉（多选实测：连点两项只剩后一项）。 */
+  const [localInteraction] = useState(createAskUserDraftStorage)
+  const interaction = draftStorage ?? localInteraction
+  const { submitting, error: submitError } = useSyncExternalStore(interaction.subscribe, interaction.submission, interaction.submission)
+  const [draft, setDraft] = useState(() => loadAskUserDraft(parsed, signature, interaction))
   const draftRef = useRef(draft)
-  const [currentIndex, setCurrentIndex] = useState(() => firstUnansweredIndex(parsed, createDraft(parsed)))
-  const submitRef = useRef<(skipped: boolean, draftOverride?: Record<string, DraftAnswer>) => void>(() => {})
   /** 键盘光标（与「已选中」是两回事：光标只是高亮，Enter 才落选）。 */
   const [activeIndex, setActiveIndex] = useState(0)
-  const [submitting, setSubmitting] = useState(false)
-  const submittingRef = useRef(false)
-  const [submitError, setSubmitError] = useState('')
   const questionCount = parsed?.questions.length ?? 0
-  const visibleIndex = questionCount > 0 ? Math.min(currentIndex, questionCount - 1) : 0
+  const visibleIndex = questionCount > 0 ? Math.min(draft.questionIndex, questionCount - 1) : 0
+  const updateDraft = (answers: AskUserDraft['answers'], questionIndex: number) => {
+    const next = { signature, answers, questionIndex }
+    draftRef.current = next
+    setDraft(next)
+    interaction.write(next)
+  }
 
-  // 只在**换了另一条询问**时重置草稿。依赖里刻意不放 `parsed`：它是按 `toolCall` 记忆的，
-  // 而调用方常常每次渲染都新建 toolCall 对象（docked 面板就是从事件载荷现拼的），
-  // 放进去就变成「每次渲染都清空用户选到一半的答案」。`id + signature` 已经能唯一标定一条询问。
   useEffect(() => {
-    const nextDraft = createDraft(parsedRef.current)
+    if (draftRef.current.signature === signature) return
+    const nextDraft = loadAskUserDraft(parsedRef.current, signature, interaction)
     draftRef.current = nextDraft
     setDraft(nextDraft)
-    setCurrentIndex(firstUnansweredIndex(parsedRef.current, nextDraft))
-    setSubmitError('')
-  }, [toolCall.id, signature])
+  }, [interaction, signature])
 
   useLayoutEffect(() => {
     const el = listRef.current
@@ -380,9 +375,9 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
     && (!parsed.async || Boolean(asyncQuestions && !asyncQuestions.closedIds.has(toolCall.id)))
   const currentQuestion = parsed.questions[visibleIndex]
   const currentAnswer = currentQuestion
-    ? draft[currentQuestion.id] ?? { selectedOptionIds: [], customText: '' }
+    ? draft.answers[currentQuestion.id] ?? { selectedOptionIds: [], customText: '' }
     : { selectedOptionIds: [], customText: '' }
-  const allAnswered = parsed.questions.every((question) => question.required === false || draftHasAnswer(question, draft[question.id]))
+  const allAnswered = parsed.questions.every((question) => question.required === false || draftHasAnswer(question, draft.answers[question.id]))
   const currentAnswered = currentQuestion ? draftHasAnswer(currentQuestion, currentAnswer) : false
   const isLastQuestion = visibleIndex >= parsed.questions.length - 1
   /** 单题（绝大多数情况）不显示进度条与上一题/下一题 —— 一道题的「1/1」和翻页键是纯噪声。 */
@@ -423,17 +418,12 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
 
   /** 点一行选项。单题单选时**直接落答案**（把新草稿同步传下去），不用再点提交。 */
   const pickOption = (question: AskUserQuestion, optionId: string) => {
-    if (submittingRef.current) return
-    const next = draftWithSelection(draftRef.current, question, optionId)
-    draftRef.current = next
-    setDraft(next)
-    if (!allowMultiple(question)) {
-      const questionIndex = parsed.questions.findIndex((item) => item.id === question.id)
-      if (questionIndex >= 0 && questionIndex < parsed.questions.length - 1) {
-        setCurrentIndex(questionIndex + 1)
-      }
-    }
-    if (answerOnPick) submitRef.current(false, next)
+    if (interaction.submission().submitting) return
+    const next = draftWithSelection(draftRef.current.answers, question, optionId)
+    const questionIndex = parsed.questions.findIndex((item) => item.id === question.id)
+    updateDraft(next, !allowMultiple(question) && questionIndex >= 0
+      ? Math.min(questionIndex + 1, parsed.questions.length - 1) : draftRef.current.questionIndex)
+    if (answerOnPick) void submit(false, next)
   }
 
   const handleListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -470,41 +460,37 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
   }
 
   const setCustomText = (questionId: string, customText: string) => {
-    if (submittingRef.current) return
+    if (interaction.submission().submitting) return
     const question = parsed.questions.find((item) => item.id === questionId)
     const exclusive = Boolean(question)
       && !allowMultiple(question!)
       && (!(question!.value_schema ?? question!.valueSchema) || question!.defaultValue !== undefined)
     const next = {
-      ...draftRef.current,
+      ...draftRef.current.answers,
       [questionId]: {
         selectedOptionIds: exclusive && (customText.trim() || question?.defaultValue !== undefined)
           ? []
-          : draftRef.current[questionId]?.selectedOptionIds ?? [],
+          : draftRef.current.answers[questionId]?.selectedOptionIds ?? [],
         customText,
         customTextEdited: true,
       },
     }
-    draftRef.current = next
-    setDraft(next)
+    updateDraft(next, draftRef.current.questionIndex)
   }
 
   const goPrevious = () => {
-    setCurrentIndex((index) => Math.max(0, index - 1))
+    updateDraft(draftRef.current.answers, Math.max(0, draftRef.current.questionIndex - 1))
   }
 
   const goNext = () => {
-    setCurrentIndex((index) => Math.min(parsed.questions.length - 1, index + 1))
+    updateDraft(draftRef.current.answers, Math.min(parsed.questions.length - 1, draftRef.current.questionIndex + 1))
   }
 
   const submit = async (skipped: boolean, draftOverride?: Record<string, DraftAnswer>) => {
-    if (submittingRef.current || (!parsed.async && !interactionId)) return
+    if (!parsed.async && !interactionId) return
     // 用镜像而不是 `draft`：自定义输入框按 Enter 时，那一次 onChange 的值还没进渲染。
-    const source = draftOverride ?? draftRef.current
-    submittingRef.current = true
-    setSubmitting(true)
-    setSubmitError('')
-    try {
+    const source = draftOverride ?? draftRef.current.answers
+    await interaction.submit(async () => {
       const answers = Object.fromEntries(parsed.questions
         .filter((question) => question.required !== false || draftHasAnswer(question, source[question.id]))
         .map((question) => {
@@ -536,15 +522,8 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
       }
       // 答复成功后立即通知宿主收起面板；失败则保留面板供用户重试。
       onResolved?.()
-    } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : String(error))
-    } finally {
-      submittingRef.current = false
-      setSubmitting(false)
-    }
+    })
   }
-
-  submitRef.current = (skipped, draftOverride) => { void submit(skipped, draftOverride) }
 
   return (
     <div aria-busy={submitting} className={`not-prose w-full overflow-hidden rounded-2xl border border-neutral-200/70 bg-[var(--theme-surface)]/95 text-[12px] leading-5 text-neutral-700 ${
@@ -714,7 +693,7 @@ export function AskUserBlock({ toolCall, interactionId, variant = 'inline', onRe
                         listRef.current?.focus({ preventScroll: true })
                         return
                       }
-                      if (event.key !== 'Enter' || !draftHasAnswer(currentQuestion, draftRef.current[currentQuestion.id])) return
+                      if (event.key !== 'Enter' || !draftHasAnswer(currentQuestion, draftRef.current.answers[currentQuestion.id])) return
                       event.preventDefault()
                       // 与点选项同一套流转：单题单选直接提交；多题则翻到下一题，最后一题凑齐了再提交。
                       if (answerOnPick) void submit(false)

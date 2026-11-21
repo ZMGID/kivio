@@ -7,6 +7,86 @@ export interface ChatReadingPosition {
   rowOffset: number
   scrollTop: number
   layoutKey: string
+  block?: ChatReadingBlock
+}
+
+export interface ChatReadingBlock {
+  segmentId: string | null
+  messageId: string | null
+  excerpt: string
+  index: number
+  top: number
+  inWork: boolean
+  work?: { key: string; offset: number }
+}
+
+const READING_BLOCKS = '.chat-markdown :is(p, li, pre, h1, h2, h3, h4, h5, h6, table, blockquote),'
+  + ' [data-chat-work-block] :is(pre, button[data-chat-disclosure])'
+const readingBlocks = (scope: HTMLElement) => [...scope.querySelectorAll<HTMLElement>(READING_BLOCKS)]
+const blockExcerpt = (block: HTMLElement) => block.textContent?.trim().slice(0, 96) ?? ''
+
+export function captureLiveReadingPosition(viewport: HTMLElement, layoutKey: string): ChatReadingPosition | null {
+  const row = viewport.querySelector<HTMLElement>('[data-chat-live-reading-row]')
+  const rowKey = row?.dataset.chatReadingKey
+  if (!row || !rowKey) return null
+  const view = viewport.getBoundingClientRect()
+  const rect = row.getBoundingClientRect()
+  if (rect.top > view.top + 1 || rect.bottom <= view.top) return null
+  const element = readingBlocks(row).find((block) => {
+    const bounds = block.getBoundingClientRect()
+    return bounds.bottom > view.top && bounds.top < view.bottom && Boolean(blockExcerpt(block))
+  })
+  const segment = element?.closest<HTMLElement>('[data-chat-reading-segment]')
+  const message = element?.closest<HTMLElement>('[data-message-id]')
+  const work = element?.closest<HTMLElement>('[data-chat-work-block]')
+  const workKey = work?.dataset.chatWorkBlock
+  return {
+    following: false,
+    rowKey,
+    rowOffset: view.top - rect.top,
+    scrollTop: viewport.scrollTop,
+    layoutKey,
+    block: element ? {
+      segmentId: segment?.dataset.chatReadingSegment ?? null,
+      messageId: message?.dataset.messageId ?? null,
+      excerpt: blockExcerpt(element),
+      index: readingBlocks(segment ?? work ?? message ?? row).indexOf(element),
+      top: element.getBoundingClientRect().top - view.top,
+      inWork: Boolean(element.closest('[data-chat-process-group]')),
+      work: work && workKey ? { key: workKey, offset: view.top - work.getBoundingClientRect().top } : undefined,
+    } : undefined,
+  }
+}
+
+export function resolveChatReadingBlock(row: HTMLElement, block: ChatReadingBlock): {
+  element: HTMLElement
+  offset: number
+  pending: boolean
+} | undefined {
+  const message = block.messageId && row.dataset.messageId !== block.messageId
+    ? row.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(block.messageId)}"]`) ?? row
+    : row
+  const segment = block.segmentId
+    ? message.querySelector<HTMLElement>(`[data-chat-reading-segment="${CSS.escape(block.segmentId)}"]`)
+    : null
+  const work = block.work
+    ? message.querySelector<HTMLElement>(`[data-chat-work-block="${CSS.escape(block.work.key)}"]`)
+    : null
+  const blocks = readingBlocks(segment ?? work ?? message)
+  const matching = (candidate: HTMLElement) => {
+    const excerpt = blockExcerpt(candidate)
+    return candidate.getClientRects().length > 0
+      && (excerpt.startsWith(block.excerpt) || (excerpt.length > 0 && block.excerpt.startsWith(excerpt)))
+  }
+  const indexed = blocks[block.index]
+  const element = indexed && matching(indexed) ? indexed : blocks.find(matching)
+  if (element) return { element, offset: -block.top, pending: false }
+  if (work && block.work) return {
+    element: work,
+    offset: Math.min(block.work.offset, Math.max(0, work.getBoundingClientRect().height - 1)),
+    pending: true,
+  }
+  return undefined
 }
 
 const MAX_POSITIONS = 24

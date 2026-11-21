@@ -17,10 +17,7 @@ use crate::chat::vision::{
     auxiliary_vision_tool_record, finish_auxiliary_vision_tool_record,
     user_content_with_auxiliary_vision_result,
 };
-use crate::chat::{
-    chat_missing_model_error, format_chat_login_required_error, session_model_for_conversation,
-    Conversation, ToolCallStatus,
-};
+use crate::chat::{session_model_for_conversation, Conversation, ToolCallStatus};
 use crate::state::AppState;
 
 #[cfg(debug_assertions)]
@@ -36,7 +33,9 @@ use super::messages::{
     auxiliary_tool_segments, build_assistant_message, push_assistant_message,
     tool_segment_for_record,
 };
-use super::reply_runtime::{ArmReplyOutcome, ChatReplyGuard, ReplyArm, ReplyHistoryCommit};
+use super::reply_runtime::{
+    resolve_reply_provider, ArmReplyOutcome, ChatReplyGuard, ReplyArm, ReplyHistoryCommit,
+};
 use super::resolve_thinking;
 use super::tooling::{
     allowed_mcp_server_ids, append_agent_ask_user_tools, append_agent_todo_tools,
@@ -188,12 +187,15 @@ struct ReplyAdmission<'a> {
 fn admit_reply_generation<'a>(
     state: &'a AppState,
     conversation_id: &str,
+    registered_run_id: Option<&str>,
 ) -> Result<ReplyAdmission<'a>, String> {
     let run_generation = state
         .chat_runtime()
         .begin_reply_generation(conversation_id)
         .ok_or_else(|| "cancelled".to_string())?;
-    let run_id = format!("chat-run-{}-{}", run_generation, Uuid::new_v4());
+    let run_id = registered_run_id
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("chat-run-{}-{}", run_generation, Uuid::new_v4()));
     // Install cleanup before Goal claiming or any other fallible await.
     let guard = ChatReplyGuard::try_new(state, conversation_id, &run_id, run_generation)
         .expect("new reply run ID is unique");
@@ -316,7 +318,6 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
                         ArmReplyOutcome {
                             history: None,
                             message: None,
-                            run_id: None,
                             error: None,
                         }
                     }
@@ -350,16 +351,8 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         let resolved_model = arm
             .map(|a| a.model.clone())
             .unwrap_or_else(|| conversation.model.clone());
-        let provider = settings
-            .get_provider(&resolved_provider_id)
-            .ok_or_else(|| "Chat provider not found".to_string())?
-            .clone();
-        if !provider.authentication_ready() {
-            return Err(format_chat_login_required_error(&provider.name));
-        }
-        if resolved_model.trim().is_empty() {
-            return Err(chat_missing_model_error());
-        }
+        let provider =
+            resolve_reply_provider(&settings, &resolved_provider_id, &resolved_model)?.clone();
 
         let last_user_idx = conversation.messages.iter().rposition(|m| m.role == "user");
         let video_plan =
@@ -404,8 +397,14 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             run_generation,
             run_id,
             _reply_guard,
-        } = admit_reply_generation(state.inner(), &conversation.id)?;
-        let assistant_message_id = format!("msg_{}", Uuid::new_v4());
+        } = admit_reply_generation(
+            state.inner(),
+            &conversation.id,
+            arm.map(|arm| arm.run_id.as_str()),
+        )?;
+        let assistant_message_id = arm
+            .map(|arm| arm.message_id.clone())
+            .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()));
         if let Some(goal) = conversation
             .goal_state
             .as_ref()
@@ -421,29 +420,25 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             )
             .await?;
         }
-        let recovery = arm.map(|arm| crate::chat::protocol::ChatRunRecoveryMetadata {
-            group_id: arm.group_id.clone(),
-            group_size: arm.group_size as u32,
-            arm_index: arm.arm_index as u32,
-            provider_id: arm.provider_id.clone(),
-            model: arm.model.clone(),
-        });
-        crate::chat::protocol::register_run_with_recovery(
-            app,
-            &conversation.id,
-            &run_id,
-            &assistant_message_id,
-            conversation.revision,
-            recovery,
-        );
+        if arm.is_none() {
+            crate::chat::protocol::register_run(
+                app,
+                &conversation.id,
+                &run_id,
+                &assistant_message_id,
+                conversation.revision,
+            );
+        }
         let mut protocol_guard =
             crate::chat::protocol::RegisteredRunGuard::new(app, &run_id, conversation.revision);
+        if arm.is_some() {
+            protocol_guard.defer_terminal();
+        }
         if direct_image_model && arm.is_some() {
             protocol_guard.defer_terminal();
             return Ok(PreparedReply::Finished(ArmReplyOutcome {
                 history: None,
                 message: None,
-                run_id: Some(run_id),
                 error: Some(
                     "多模型并行回答暂不支持直接生图模型，请在多答选择中移除该模型。".to_string(),
                 ),
@@ -471,7 +466,6 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
                 PreparedReply::Finished(ArmReplyOutcome {
                     history: None,
                     message: None,
-                    run_id: None,
                     error: None,
                 })
             });
@@ -527,7 +521,6 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
                         return Ok(PreparedReply::Finished(ArmReplyOutcome {
                     history: None,
                             message: None,
-                            run_id: Some(run_id),
                             error: Some("cancelled".to_string()),
                         }));
                     }
@@ -569,7 +562,6 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
                         return Ok(PreparedReply::Finished(ArmReplyOutcome {
                             history: None,
                             message: None,
-                            run_id: Some(run_id),
                             error: Some(err),
                         }));
                     }
@@ -1232,7 +1224,6 @@ fn finish_prepared_reply<'a, 'state: 'a>(
                     return Ok(ArmReplyOutcome {
                         history: None,
                         message: None,
-                        run_id: Some(run_id),
                         error: Some(error),
                     });
                 }
@@ -1301,7 +1292,6 @@ fn finish_prepared_reply<'a, 'state: 'a>(
             return Ok(ArmReplyOutcome {
                 history: Some(history_commit),
                 message: Some(message),
-                run_id: Some(run_id),
                 error: run_error,
             });
         }
@@ -1339,7 +1329,6 @@ fn finish_prepared_reply<'a, 'state: 'a>(
                 conversation.context_state.compression_count,
             );
         }
-        let terminal_content = result.content.clone();
         let terminal_outcome =
             crate::chat::agent_presentation::run_status(&result.status).to_string();
         let goal_assistant_message_id = assistant_message_id.clone();
@@ -1348,6 +1337,11 @@ fn finish_prepared_reply<'a, 'state: 'a>(
             .as_ref()
             .filter(|g| g.active_run_id.as_deref() == Some(run_id.as_str()))
             .map(|g| g.id.clone());
+        let terminal_content = if goal_run.is_some() {
+            result.content.clone()
+        } else {
+            crate::chat::protocol::terminal_content(&result.content).to_owned()
+        };
         let goal_usage = result.usage.clone();
         let run_plan_update = message_plan.clone();
         push_assistant_message(
@@ -1409,7 +1403,6 @@ fn finish_prepared_reply<'a, 'state: 'a>(
         Ok(ArmReplyOutcome {
             history: None,
             message: None,
-            run_id: None,
             error: None,
         })
     })
@@ -1448,7 +1441,6 @@ async fn finish_reply_failure(
         return Ok(ArmReplyOutcome {
             history: None,
             message: None,
-            run_id: Some(run_id.to_string()),
             error: Some(error),
         });
     }
@@ -1535,8 +1527,8 @@ mod tests {
     #[tokio::test]
     async fn dropped_preparation_retires_admitted_generation_and_preserves_sibling_run() {
         let state = crate::state::test_app_state();
-        let first = admit_reply_generation(&state, "conversation").unwrap();
-        let sibling = admit_reply_generation(&state, "conversation").unwrap();
+        let first = admit_reply_generation(&state, "conversation", None).unwrap();
+        let sibling = admit_reply_generation(&state, "conversation", None).unwrap();
         let generation = first.run_generation;
         let sibling_generation = sibling.run_generation;
         let preparation = async move {
@@ -1557,7 +1549,7 @@ mod tests {
             .is_generation_active("conversation", sibling_generation));
         drop(sibling);
         assert!(!state.chat_runtime().has_active_reply("conversation"));
-        assert!(admit_reply_generation(&state, "conversation").is_ok());
+        assert!(admit_reply_generation(&state, "conversation", None).is_ok());
     }
 
     #[test]

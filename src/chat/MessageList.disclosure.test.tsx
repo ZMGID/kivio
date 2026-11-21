@@ -15,8 +15,9 @@ vi.mock('@tanstack/react-virtual', async (importOriginal) => {
   return {
     ...actual,
     useVirtualizer: (...args: Parameters<typeof actual.useVirtualizer>) => {
-      list = actual.useVirtualizer(...args)
-      return list
+      const instance = actual.useVirtualizer(...args)
+      if (args[0].getScrollElement()?.classList.contains('chat-scroll-viewport')) list = instance
+      return instance
     },
   }
 })

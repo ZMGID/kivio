@@ -2043,7 +2043,8 @@ export const chatApi = {
 
   async cancelStream(conversationId: string, scope?: 'backgroundWait'): Promise<void> {
     if (!isTauriRuntime()) return
-    await invoke<void>('chat_cancel_stream', { conversationId, scope })
+    const outcome = await invoke<{ warning: string | null } | undefined>('chat_cancel_stream', { conversationId, scope })
+    if (outcome?.warning) notifyError(outcome.warning)
   },
 
   ...externalCliSettingsApi,

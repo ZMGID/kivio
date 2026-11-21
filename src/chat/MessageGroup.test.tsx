@@ -103,20 +103,21 @@ describe('MessageGroup — columns 模式', () => {
 
   it.each(['{Enter}', ' '])('键盘聚焦非活动列后可用 %s 展开思考，其他列仍卸载正文', async (key) => {
     const user = userEvent.setup()
+    const conversationId = key === '{Enter}' ? 'columns-enter' : 'columns-space'
     act(() => {
-      beginGroup('c1', 'g1', [
+      beginGroup(conversationId, 'g1', [
         { providerId: 'openai', model: 'gpt-4o' },
         { providerId: 'anthropic', model: 'claude-3' },
       ])
-      const a = ensureGroupColumn('c1', 'msg_a', 'openai', 'gpt-4o')!
+      const a = ensureGroupColumn(conversationId, 'msg_a', 'openai', 'gpt-4o')!
       a.streaming = true
       a.reasoning = 'Column A thought'
-      const b = ensureGroupColumn('c1', 'msg_b', 'anthropic', 'claude-3')!
+      const b = ensureGroupColumn(conversationId, 'msg_b', 'anthropic', 'claude-3')!
       b.streaming = true
       b.reasoning = 'Column B thought'
       flushGroups()
     })
-    const { container } = render(<MessageGroup conversationId="c1" groupId="g1" messages={[]} />)
+    const { container } = render(<MessageGroup conversationId={conversationId} groupId="g1" messages={[]} />)
     const columns = container.querySelectorAll('.chat-message-group-col')
     const first = columns[0].querySelector<HTMLButtonElement>('button[title="展开完整思考"]')!
     fireEvent.click(first)
@@ -206,20 +207,21 @@ describe('MessageGroup — columns 模式', () => {
   })
 
   it('性能降级（R10）：非聚焦列折叠 reasoning（正文 hideBody），聚焦列展开流式思考', async () => {
+    const conversationId = 'columns-reasoning-preview'
     act(() => {
-      beginGroup('c1', 'g1', [
+      beginGroup(conversationId, 'g1', [
         { providerId: 'openai', model: 'gpt-4o' },
         { providerId: 'anthropic', model: 'claude-3' },
       ])
-      const a = ensureGroupColumn('c1', 'msg_a', 'openai', 'gpt-4o')!
+      const a = ensureGroupColumn(conversationId, 'msg_a', 'openai', 'gpt-4o')!
       a.streaming = true
       a.reasoning = 'focused thinking'
-      const b = ensureGroupColumn('c1', 'msg_b', 'anthropic', 'claude-3')!
+      const b = ensureGroupColumn(conversationId, 'msg_b', 'anthropic', 'claude-3')!
       b.streaming = true
       b.reasoning = 'unfocused thinking'
       flushGroups()
     })
-    const { container } = render(<MessageGroup conversationId="c1" groupId="g1" messages={[]} />)
+    const { container } = render(<MessageGroup conversationId={conversationId} groupId="g1" messages={[]} />)
     // Only the focused column mounts the latest-line preview; full text stays lazy.
     const columns = container.querySelectorAll('.chat-message-group-col')
     expect(columns[0].querySelector('[data-testid="reasoning-preview"]')).not.toBeNull()

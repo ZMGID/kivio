@@ -28,13 +28,17 @@ function conversation(id: string): Conversation {
 function setup(withWindow = false) {
   let current: Conversation | null = null
   let inFlight = false
+  let knownRevision = 0
   const reads = new Map<string, ReturnType<typeof deferred<Conversation>>>()
   const readStarted = deferred<string>()
   const windowReads = new Map<string, ReturnType<typeof deferred<Conversation>>>()
   const windowStarted = deferred<string>()
   const ownership = deferred<ReadonlySet<string>>()
+  const listPopouts = vi.fn(() => ownership.promise)
+  const prepareSelection = vi.fn()
   const shown: string[] = []
   const errors: string[] = []
+  const changed = vi.fn()
   const occupyPopout = vi.fn()
   const prepareNewConversation = vi.fn()
   const clearEmptyChat = vi.fn()
@@ -52,7 +56,8 @@ function setup(withWindow = false) {
   const controller = createChatNavigationController({
     currentConversation: () => current,
     currentConversationId: () => current?.id ?? null,
-    listPopouts: () => ownership.promise,
+    knownConversationRevision: () => knownRevision,
+    listPopouts,
     readHistoryPage: () => {
       const pending = deferred<ConversationHistoryPage>()
       pages.push(pending)
@@ -81,9 +86,10 @@ function setup(withWindow = false) {
     reportClearError,
     focusPopout: vi.fn(),
     occupyPopout,
-    prepareSelection: vi.fn(),
+    prepareSelection,
     showHistoryTarget,
     reportHistoryError,
+    reportConversationChanged: changed,
     showConversation: (value) => {
       current = value
       shown.push(value.id)
@@ -92,17 +98,73 @@ function setup(withWindow = false) {
     discardConversation: (_id, error) => { errors.push(error.message) },
   })
   return {
-    controller, ownership, reads, readStarted, windowReads, windowStarted, shown, errors, occupyPopout,
+    controller, ownership, reads, readStarted, windowReads, windowStarted, shown, errors, changed, occupyPopout,
     prepareNewConversation, clearEmptyChat, requestClearChat, deleteConversation,
+    listPopouts, prepareSelection,
     cancelDeletedRun, finalizeDeletedChat, reportClearError,
     showHistoryTarget, reportHistoryError,
     pages, showHistoryPage,
     setCurrent: (value: Conversation | null) => { current = value },
+    setKnownRevision: (revision: number) => { knownRevision = revision },
     setInFlight: (value: boolean) => { inFlight = value },
   }
 }
 
 describe('chat navigation controller', () => {
+  it('does not refocus an old result after a newer same-conversation hit was shown', async () => {
+    const state = setup()
+    state.setCurrent({
+      ...conversation('a'),
+      messages: ['old-hit', 'new-hit'].map(id => ({
+        id, role: 'user', timestamp: 1, content: id,
+      })),
+    })
+    const first = state.controller.selectConversation('a', { focusMessageId: 'old-hit' })
+    state.listPopouts.mockResolvedValueOnce(new Set())
+    await state.controller.selectConversation('a', { focusMessageId: 'new-hit' })
+    state.ownership.resolve(new Set())
+    await first
+    expect(state.prepareSelection.mock.calls.map(([messageId]) => messageId)).toEqual(['new-hit'])
+  })
+
+  it('commits the finished reply when the target runs ahead of its initial window', async () => {
+    const state = setup(true)
+    state.setCurrent(conversation('b'))
+    const selecting = state.controller.selectConversation('a')
+    state.ownership.resolve(new Set())
+    expect(await state.windowStarted.promise).toBe('a')
+    state.setKnownRevision(2)
+    const oldWindow = state.windowReads.get('a')!
+    oldWindow.resolve(conversation('a'))
+    await Promise.resolve()
+    expect(state.shown).toEqual([])
+    const freshWindow = state.windowReads.get('a')!
+    expect(freshWindow).not.toBe(oldWindow)
+    freshWindow.resolve({ ...conversation('a'), revision: 2 })
+    await selecting
+    expect(state.shown).toEqual(['a'])
+  })
+
+  it('keeps the previous view when the selected conversation keeps changing', async () => {
+    const state = setup(true)
+    state.setCurrent(conversation('b'))
+    window.history.replaceState(null, '', '#chat/b')
+    const selecting = state.controller.selectConversation('a')
+    state.ownership.resolve(new Set())
+    expect(await state.windowStarted.promise).toBe('a')
+    for (const revision of [1, 2, 3]) {
+      state.setKnownRevision(revision + 1)
+      state.windowReads.get('a')!.resolve({ ...conversation('a'), revision })
+      await Promise.resolve()
+    }
+    await selecting
+    expect(state.errors).toEqual([])
+    expect(state.shown).toEqual([])
+    expect(state.changed).toHaveBeenCalledWith('a')
+    expect(getConversationTransitionSnapshot().loading).toBe(false)
+    expect(window.location.hash).toBe('#chat/b')
+  })
+
   it('allows a new page after A-B-A and an obsolete completion cannot unlock the newer request', async () => {
     const state = setup()
     const partial = { ...conversation('a'), history_start: 1, history_total: 2,

@@ -3,6 +3,13 @@ import type {
   ChatToolConfirmPayload,
   ChatUserPromptPayload,
 } from '../api/tauri'
+import type { ChatPendingInteractionSnapshot } from '../generated/chatProtocol'
+import { createAskUserDraftStorage, type AskUserDraftStorage } from './askUserTools'
+
+interface PendingUserPrompt {
+  payload: ChatUserPromptPayload
+  draft: AskUserDraftStorage
+}
 
 export type RunInteractionEvent =
   | { kind: 'toolRequested'; payload: ChatToolConfirmPayload }
@@ -22,6 +29,7 @@ export interface RunInteractionSnapshot {
   sessionConsentSubmitting: boolean
   sessionConsentError: string
   userPrompt: ChatUserPromptPayload | null
+  userPromptDraft: AskUserDraftStorage | null
   pendingToolConversationIds: readonly string[]
 }
 
@@ -56,7 +64,7 @@ function errorMessage(value: unknown, fallback: string): string {
 export function createRunInteractionInbox(transport: RunInteractionTransport) {
   const tools = new Map<string, ChatToolConfirmPayload[]>()
   const consents = new Map<string, ChatSessionConsentPayload>()
-  const users = new Map<string, ChatUserPromptPayload[]>()
+  const users = new Map<string, PendingUserPrompt[]>()
   const toolSubmitting = new Set<string>()
   const consentSubmitting = new Set<string>()
   const toolErrors = new Map<string, string>()
@@ -78,6 +86,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
     sessionConsentSubmitting: false,
     sessionConsentError: '',
     userPrompt: null,
+    userPromptDraft: null,
     pendingToolConversationIds: [],
   }
 
@@ -99,7 +108,8 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
       sessionConsent: consent,
       sessionConsentSubmitting: consent ? consentSubmitting.has(consent.conversationId) : false,
       sessionConsentError: consent ? consentErrors.get(runKey(consent.conversationId, consent.runId)) ?? '' : '',
-      userPrompt: user,
+      userPrompt: user?.payload ?? null,
+      userPromptDraft: user?.draft ?? null,
       pendingToolConversationIds,
     }
     if (
@@ -111,6 +121,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
       && snapshot.sessionConsentSubmitting === next.sessionConsentSubmitting
       && snapshot.sessionConsentError === next.sessionConsentError
       && snapshot.userPrompt === next.userPrompt
+      && snapshot.userPromptDraft === next.userPromptDraft
       && snapshot.pendingToolConversationIds.length === next.pendingToolConversationIds.length
       && snapshot.pendingToolConversationIds.every((id, index) => id === next.pendingToolConversationIds[index])
     ) return
@@ -127,9 +138,40 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
     else tools.delete(conversationId)
     if (consents.get(conversationId)?.runId === runId) consents.delete(conversationId)
     consentErrors.delete(runKey(conversationId, runId))
-    const remainingUsers = (users.get(conversationId) ?? []).filter((item) => item.runId !== runId)
+    const remainingUsers = (users.get(conversationId) ?? []).filter(({ payload }) => payload.runId !== runId)
     if (remainingUsers.length) users.set(conversationId, remainingUsers)
     else users.delete(conversationId)
+  }
+
+  const reconcileRun = (
+    conversationId: string,
+    runId: string,
+    pending: readonly ChatPendingInteractionSnapshot[],
+  ) => {
+    const toolIds = new Set(pending.flatMap((item) => item.type === 'tool_approval_requested' ? [item.interactionId] : []))
+    const userIds = new Set(pending.flatMap((item) => item.type === 'user_prompt_requested' ? [item.interactionId] : []))
+    const remainingTools = (tools.get(conversationId) ?? []).filter((tool) => {
+      if (tool.runId !== runId || toolIds.has(tool.interactionId)) return true
+      const key = requestKey(conversationId, runId, tool.interactionId)
+      rememberLimited(answeredTools, key)
+      toolErrors.delete(key)
+      return false
+    })
+    if (remainingTools.length) tools.set(conversationId, remainingTools)
+    else tools.delete(conversationId)
+    const remainingUsers = (users.get(conversationId) ?? []).filter(({ payload }) => {
+      if (payload.runId !== runId || userIds.has(payload.interactionId)) return true
+      rememberLimited(answeredUsers, requestKey(conversationId, runId, payload.interactionId))
+      return false
+    })
+    if (remainingUsers.length) users.set(conversationId, remainingUsers)
+    else users.delete(conversationId)
+    if (consents.get(conversationId)?.runId === runId
+      && !pending.some((item) => item.type === 'session_consent_requested')) {
+      consents.delete(conversationId)
+      consentErrors.delete(runKey(conversationId, runId))
+    }
+    publish()
   }
 
   const observe = (event: RunInteractionEvent): boolean => {
@@ -165,12 +207,15 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
       const key = requestKey(prompt.conversationId, prompt.runId, prompt.interactionId)
       if (terminalRuns.has(runKey(prompt.conversationId, prompt.runId)) || answeredUsers.has(key)) return false
       const queue = users.get(prompt.conversationId) ?? []
-      if (queue.some((item) => item.runId === prompt.runId && item.interactionId === prompt.interactionId)) return false
-      users.set(prompt.conversationId, [...queue, prompt])
+      if (queue.some(({ payload }) => payload.runId === prompt.runId && payload.interactionId === prompt.interactionId)) return false
+      users.set(prompt.conversationId, [...queue, {
+        payload: prompt,
+        draft: createAskUserDraftStorage(),
+      }])
     } else if (event.kind === 'userAnswered') {
       rememberLimited(answeredUsers, requestKey(event.conversationId, event.runId, event.interactionId))
       const rest = (users.get(event.conversationId) ?? [])
-        .filter((item) => item.runId !== event.runId || item.interactionId !== event.interactionId)
+        .filter(({ payload }) => payload.runId !== event.runId || payload.interactionId !== event.interactionId)
       if (rest.length) users.set(event.conversationId, rest)
       else users.delete(event.conversationId)
     } else if (event.kind === 'runStarted') {
@@ -186,7 +231,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
         rememberLimited(answeredTools, requestKey(item.conversationId, item.runId, item.interactionId))
         toolErrors.delete(requestKey(item.conversationId, item.runId, item.interactionId))
       }
-      for (const item of users.get(event.conversationId) ?? []) {
+      for (const { payload: item } of users.get(event.conversationId) ?? []) {
         rememberLimited(answeredUsers, requestKey(item.conversationId, item.runId, item.interactionId))
       }
       const consent = consents.get(event.conversationId)
@@ -275,6 +320,7 @@ export function createRunInteractionInbox(transport: RunInteractionTransport) {
   return {
     activate,
     observe,
+    reconcileRun,
     respondTool,
     respondConsent,
     getSnapshot: () => snapshot,

@@ -413,7 +413,7 @@ impl ConversationRepository {
         lock
     }
 
-    async fn with_conversation_storage<T, F>(
+    pub(crate) async fn with_conversation_storage<T, F>(
         &self,
         id: &str,
         operation: F,
@@ -474,6 +474,31 @@ impl ConversationRepository {
         operation()
     }
 
+    pub(crate) async fn with_existing_conversation_storage<T>(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        operation: impl FnOnce(&AppHandle, &str) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+    {
+        let app = app.clone();
+        let conversation_id = id.to_owned();
+        self.with_conversation_storage(
+            id,
+            move || {
+                if !super::storage::conversation_file_path(&app, &conversation_id)?.is_file() {
+                    return Err("conversation no longer exists".to_string());
+                }
+                operation(&app, &conversation_id)
+            },
+            "update conversation storage",
+        )
+        .await
+        .map_err(repository_error)
+    }
+
     pub async fn get(&self, app: &AppHandle, id: &str) -> RepositoryResult<Conversation> {
         let _barrier = self.barrier.read().await;
         let lock = self.conversation_lock(id);
@@ -487,8 +512,8 @@ impl ConversationRepository {
         .await
     }
 
-    /// Cheap freshness probe for renderer display snapshots. The index is
-    /// updated by repository writes; no conversation body crosses IPC here.
+    /// The body is authoritative even when a crash interrupted index publication.
+    /// Only its small revision header is read and returned.
     pub async fn revision(&self, app: &AppHandle, id: &str) -> RepositoryResult<Option<u64>> {
         let _barrier = self.barrier.read().await;
         let lock = self.conversation_lock(id);
@@ -497,15 +522,8 @@ impl ConversationRepository {
         let id = id.to_string();
         Self::spawn_storage(
             move || {
-                if !super::storage::conversation_file_path(&app, &id)?.is_file() {
-                    return Ok(None);
-                }
-                let index = super::storage::load_index_or_scan(&app)?;
-                Ok(index
-                    .conversations
-                    .iter()
-                    .find(|item| item.id == id)
-                    .and_then(|item| item.revision))
+                let path = super::storage::conversation_file_path(&app, &id)?;
+                super::storage::conversation_file_revision(&path)
             },
             "read conversation revision",
         )
@@ -976,6 +994,25 @@ impl ConversationRepository {
     where
         F: FnOnce(&mut Conversation) -> Result<(), String>,
     {
+        self.mutate_if(app, id, expected_revision, |conversation| {
+            mutation(conversation)?;
+            Ok(true)
+        })
+        .await
+        .map(|conversation| conversation.expect("unconditional conversation mutation"))
+    }
+
+    /// A rejected change keeps the current revision and leaves the index untouched.
+    pub(crate) async fn mutate_if<F>(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        expected_revision: Option<u64>,
+        mutation: F,
+    ) -> RepositoryResult<Option<Conversation>>
+    where
+        F: FnOnce(&mut Conversation) -> Result<bool, String>,
+    {
         let _barrier = self.barrier.read().await;
         let lock = self.conversation_lock(id);
         let _conversation = lock.lock().await;
@@ -1001,7 +1038,9 @@ impl ConversationRepository {
             .map(|_| latest.goal_state.clone());
         let previous_runtime = latest.agent_runtime.clone();
         let runtime_is_unbound = !latest.runtime_locked;
-        mutation(&mut latest)?;
+        if !mutation(&mut latest)? {
+            return Ok(None);
+        }
         crate::external_agents::commands::check_runtime_switch_allowed(
             &previous_runtime,
             runtime_is_unbound,
@@ -1012,7 +1051,7 @@ impl ConversationRepository {
         }
         increment_revision(&mut latest)?;
         latest.updated_at = chrono::Local::now().timestamp();
-        self.persist_locked(app, latest).await
+        self.persist_locked(app, latest).await.map(Some)
     }
 
     /// pretty 序列化 + `atomic_write`（含 fsync）都是毫秒级同步 IO，全部走
@@ -1153,7 +1192,13 @@ impl ConversationRepository {
         let _barrier = self.barrier.read().await;
         let lock = self.conversation_lock(id);
         let _conversation = lock.lock().await;
-        let mut latest = super::storage::load_conversation(app, id)?;
+        let app_for_read = app.clone();
+        let id_owned = id.to_owned();
+        let mut latest = Self::spawn_storage(
+            move || super::storage::load_conversation(&app_for_read, &id_owned),
+            "load conversation context",
+        )
+        .await?;
         validate_expected_revision(id, latest.revision, Some(expected_revision))?;
         apply_context_state_update(&mut latest, state)?;
         self.persist_locked(app, latest).await

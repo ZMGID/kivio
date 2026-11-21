@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
+import * as settingsCache from '../api/settingsCache'
+import { api } from '../api/tauri'
+import { makeChatToolsFixture, makeSettings } from '../settings/tabs/testFixtures'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createStreamPreviewOwner } from './streamPreviewOwner'
 import { createChatSendController, type SendPresentationEvent } from './chatSendController'
@@ -45,6 +48,48 @@ function harness(
 }
 
 describe('chat send controller', () => {
+  it.each(['enabled', 'disabled', 'missing tools'] as const)(
+    'uses the saved target conversation and its %s skill policy for queued text',
+    async (status) => {
+      const target = conversation('a', { active_skill_id: 'target-skill', knowledge_base_ids: ['target-library'] })
+      const sendMessage = vi.fn().mockResolvedValue(target)
+      const updateConversation = vi.fn()
+      const { controller, events } = harness({
+        createConversation: vi.fn(), setAgentRuntime: vi.fn(), updateConversation, sendMessage,
+      }, () => 'b')
+      vi.stubGlobal('window', { __TAURI_INTERNALS__: {} })
+      const settings = vi.spyOn(settingsCache, 'refreshSettings').mockResolvedValue(makeSettings({
+        chatTools: makeChatToolsFixture({ disabledSkillIds: status === 'disabled' ? ['target-skill'] : [] }),
+      }))
+      const catalog = vi.spyOn(api, 'chatSessionSkills').mockResolvedValue({
+        success: true, skills: [{
+          id: 'target-skill', name: 'Target skill', description: '', source: 'user',
+          recommendedTools: status === 'missing tools' ? ['required-search'] : [],
+        }],
+      })
+      const tools = vi.spyOn(api, 'chatMcpListTools').mockResolvedValue({ success: true, tools: [] })
+      try {
+        const outcome = await controller.send({ queuedConversation: target, content: 'Queued in A', attachments: [] })
+        if (status === 'missing tools') {
+          expect(outcome).toMatchObject({ kind: 'not_committed', error: { message: expect.stringContaining('required-search') } })
+          expect(events).toContainEqual(expect.objectContaining({ kind: 'rejected', conversationId: 'a' }))
+          expect(sendMessage).not.toHaveBeenCalled()
+        } else {
+          expect(outcome).toMatchObject({ kind: 'persisted', conversation: { id: 'a' } })
+          expect(sendMessage.mock.calls[0]?.slice(0, 4)).toEqual(['a', 'Queued in A', [], status === 'disabled' ? null : 'target-skill'])
+        }
+        if (status === 'disabled') expect(catalog).not.toHaveBeenCalled()
+        else expect(catalog).toHaveBeenCalledWith('a')
+        expect(updateConversation).not.toHaveBeenCalled()
+      } finally {
+        settings.mockRestore()
+        catalog.mockRestore()
+        tools.mockRestore()
+        vi.unstubAllGlobals()
+      }
+    },
+  )
+
   it('a rejected duplicate send cannot invalidate the first pending creation commit', async () => {
     let resolveCreate!: (value: Conversation) => void
     const persistence = {

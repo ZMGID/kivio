@@ -42,6 +42,27 @@ describe('MessageNavigator', () => {
     expect(screen.getByRole('button', { name: '上下文压缩摘要' })).toBeInTheDocument()
   })
 
+  it('在长轨道滚到中段时保留原轮次编号、预览和跳转目标', () => {
+    const turns = Array.from({ length: 500 }, (_, index) => ({
+      ...nodes[0], id: String(index), title: `问题 ${index + 1}`,
+    }))
+    const navigate = vi.fn()
+    const height = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(130)
+    try {
+      render(<MessageNavigator nodes={turns} activeNodeId={null} visibleNodeIds={[]} onNavigate={navigate} />)
+      const rail = screen.getByLabelText('对话轮次导航').firstElementChild as HTMLElement
+      expect(screen.queryByRole('button', { name: '第 251 轮：问题 251' })).toBeNull()
+      fireEvent.scroll(rail, { target: { scrollTop: 250 * 13 } })
+      const middle = screen.getByRole('button', { name: '第 251 轮：问题 251' })
+      fireEvent.focus(middle)
+      expect(screen.getByRole('tooltip')).toHaveTextContent('问题 251')
+      fireEvent.click(middle)
+      expect(navigate).toHaveBeenCalledWith(turns[250])
+    } finally {
+      height.mockRestore()
+    }
+  })
+
   it('点击节点定位；轨道滚轮只滚导航条，不切换消息、不冒泡', () => {
     const onNavigate = vi.fn()
     const parentWheel = vi.fn()

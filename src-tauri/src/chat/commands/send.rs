@@ -867,36 +867,18 @@ async fn send_reserved(
     }
     #[cfg(all(debug_assertions, target_os = "windows"))]
     crate::chat::probe::log_stack("message saved; computing context");
-    match compute_context_state(
-        &app,
-        &state,
-        &conversation,
-        Some(api_content.as_str()),
-        &last_user_image_paths,
-    )
-    .await
-    {
-        Ok(context_state) => {
-            // Usage is a cache. A concurrent refresh/rename must not abort an
-            // already persisted user message or overwrite a newer summary.
-            conversation = persist_context_state_best_effort(
-                &app,
-                &conversation_id,
-                conversation,
-                context_state,
-            )
+    // Usage is a cache. A concurrent refresh/rename must not abort an
+    // already persisted user message or overwrite a newer summary.
+    let context_state = compute_context_state(&app, state.inner(), &conversation);
+    conversation =
+        persist_context_state_best_effort(&app, &conversation_id, conversation, context_state)
             .await?;
-            emit_chat_context_state(
-                &app,
-                &conversation.id,
-                conversation.revision,
-                &conversation.context_state,
-            );
-        }
-        Err(err) => {
-            eprintln!("Context usage estimate failed before send: {err}");
-        }
-    }
+    emit_chat_context_state(
+        &app,
+        &conversation.id,
+        conversation.revision,
+        &conversation.context_state,
+    );
     #[cfg(all(debug_assertions, target_os = "windows"))]
     crate::chat::probe::log_stack("context computed");
     let forced_skill_id = active_skill_id

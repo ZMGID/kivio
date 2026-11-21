@@ -1,4 +1,4 @@
-use super::conversations::read_conversation_file;
+use super::conversations::{conversation_file_revision, read_conversation_file};
 use super::*;
 
 struct ConversationIndexCacheEntry {
@@ -51,45 +51,15 @@ pub(crate) fn persist_healed_conversation_index(app: &AppHandle) -> Result<(), S
     save_index(app, &index)
 }
 
-/// 索引缺的会话才读正文；已在 index 里的条目原样保留，绝不整目录重扫。
-fn merge_missing_conversations(
-    dir: &Path,
-    mut index: ConversationIndex,
-    file_ids: &[String],
-) -> ConversationIndex {
-    let indexed: HashSet<String> = index
-        .conversations
-        .iter()
-        .map(|item| item.id.clone())
-        .collect();
-    for id in file_ids {
-        if indexed.contains(id) {
-            continue;
-        }
-        let path = dir.join(format!("{id}.json"));
-        match read_conversation_file(&path, id) {
-            Ok(conversation) => index
-                .conversations
-                .push(ConversationListItem::from(&conversation)),
-            Err(e) => eprintln!("skip corrupt conversation file {id}: {e}"),
-        }
-    }
-    index
-}
-
 pub(crate) fn load_index_or_scan(app: &AppHandle) -> Result<ConversationIndex, String> {
     let dir = conversations_dir(app)?;
-    let file_ids = conversation_file_ids_in_dir(&dir)?;
     let mut cache = conversation_index_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(entry) = cache.get(&dir) {
-        if index_covers_files(&entry.index, &file_ids) {
-            return Ok(entry.index.clone());
-        }
+        return Ok(entry.index.clone());
     }
-    let (index, healed) = load_index_or_scan_in_dir(&dir)?;
-    let needs_persist = healed || cache.get(&dir).is_some_and(|entry| entry.needs_persist);
+    let (index, needs_persist) = load_index_or_scan_in_dir(&dir)?;
     cache.insert(
         dir,
         ConversationIndexCacheEntry {
@@ -100,35 +70,47 @@ pub(crate) fn load_index_or_scan(app: &AppHandle) -> Result<ConversationIndex, S
     Ok(index)
 }
 
-/// index.json 只是缓存；conv_<id>.json 才是真相源。
-///
-/// 对账口径必须**廉价**：一次 readdir 只比文件名，不读也不反序列化任何对话正文。
-/// 索引缺文件时只读缺的那几份，补进现有条目——不要把已索引的会话整本再 parse 一遍。
-/// 多余的幽灵条目无害，按 updated_at 排序时会被过滤掉。
-///
-/// **只读不写**：自愈落盘统一交给持有 `index_lock` 的写路径（`persist_healed_conversation_index`
-/// / `repository::persist_locked` / `bulk_mutate_loaded` / `delete_conversation`）。这里顺手
-/// `save_index` 会绕开那把锁，和并发的持久化 lost update——刚存的会话会在侧栏短暂消失。
+/// Reconcile only when the in-process index is cold. Existing rows need a
+/// header check because a crash may have committed a body without its index.
+/// Repository writers own index publication; this read cannot overwrite them.
 pub(super) fn load_index_or_scan_in_dir(dir: &Path) -> Result<(ConversationIndex, bool), String> {
     let file_ids = conversation_file_ids_in_dir(dir)?;
-    match load_index_in_dir(dir) {
-        Ok(index) if index_covers_files(&index, &file_ids) => Ok((index, false)),
-        Ok(index) => Ok((merge_missing_conversations(dir, index, &file_ids), true)),
+    let (mut index, mut healed) = match load_index_in_dir(dir) {
+        Ok(index) => (index, false),
         Err(e) => {
             eprintln!("conversation index unavailable, rebuilding list from files: {e}");
-            Ok((
-                merge_missing_conversations(dir, ConversationIndex::default(), &file_ids),
-                true,
-            ))
+            (ConversationIndex::default(), true)
+        }
+    };
+    let positions: HashMap<_, _> = index
+        .conversations
+        .iter()
+        .enumerate()
+        .map(|(position, item)| (item.id.clone(), position))
+        .collect();
+    for id in file_ids {
+        let path = dir.join(format!("{id}.json"));
+        let position = positions.get(&id).copied();
+        if let Some(position) = position {
+            match conversation_file_revision(&path) {
+                Ok(Some(revision)) if index.conversations[position].revision != Some(revision) => {}
+                _ => continue,
+            }
+        }
+        healed = true;
+        match read_conversation_file(&path, &id) {
+            Ok(conversation) => {
+                let item = ConversationListItem::from(&conversation);
+                if let Some(position) = position {
+                    index.conversations[position] = item;
+                } else {
+                    index.conversations.push(item);
+                }
+            }
+            Err(error) => eprintln!("skip corrupt conversation file {id}: {error}"),
         }
     }
-}
-
-/// 索引是否覆盖了磁盘上每个对话文件。只比 id，不比内容/revision。
-pub(super) fn index_covers_files(index: &ConversationIndex, file_ids: &[String]) -> bool {
-    let indexed: std::collections::HashSet<&str> =
-        index.conversations.iter().map(|c| c.id.as_str()).collect();
-    file_ids.iter().all(|id| indexed.contains(id.as_str()))
+    Ok((index, healed))
 }
 
 /// 纯逻辑:扫描给定目录,收集有效对话 id(只看文件名,不读内容)。
@@ -169,9 +151,11 @@ pub(super) fn load_index_in_dir(dir: &Path) -> Result<ConversationIndex, String>
 pub(crate) fn save_index(app: &AppHandle, index: &ConversationIndex) -> Result<(), String> {
     let path = index_file_path(app)?;
     let content = serde_json::to_string(index).map_err(|e| format!("serialize index: {e}"))?;
-    atomic_write(&path, &content, "index")?;
+    let result = atomic_write(&path, &content, "index");
     if let Some(dir) = path.parent() {
-        remember_conversation_index_cache(dir.to_path_buf(), index.clone(), false);
+        // The body is already durable. Keep its newest row for this process
+        // and leave the index marked for retry if this write failed.
+        remember_conversation_index_cache(dir.to_path_buf(), index.clone(), result.is_err());
     }
-    Ok(())
+    result
 }

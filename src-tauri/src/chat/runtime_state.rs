@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex, Weak,
     },
 };
 
@@ -20,6 +20,7 @@ pub(crate) struct ChatRuntimeState {
     resources: super::resources::ResourceSessions,
     next_generation: AtomicU64,
     runs: Mutex<ChatRunIndexes>,
+    generation_effects: Mutex<HashMap<String, Weak<Mutex<()>>>>,
     /// Signalled whenever a conversation's last reply slot is retired, so a
     /// queued send can retry its atomic reservation instead of polling.
     reply_idle: tokio::sync::Notify,
@@ -119,6 +120,8 @@ impl ChatRuntimeState {
     }
 
     pub(crate) fn cancel_conversation(&self, conversation_id: &str) {
+        let gate = self.generation_effect_gate(conversation_id);
+        let _effect = gate.lock().unwrap_or_else(|error| error.into_inner());
         let mut indexes = self.indexes();
         if let Some((_, cancelled)) = indexes.send_reservations.get_mut(conversation_id) {
             *cancelled = true;
@@ -135,12 +138,9 @@ impl ChatRuntimeState {
         generation: u64,
         operation: impl FnOnce() -> T,
     ) -> Option<T> {
-        let indexes = self.indexes();
-        if !indexes
-            .active_generations
-            .get(conversation_id)
-            .is_some_and(|active| active.contains_key(&generation))
-        {
+        let gate = self.generation_effect_gate(conversation_id);
+        let _effect = gate.lock().unwrap_or_else(|error| error.into_inner());
+        if !self.is_generation_active(conversation_id, generation) {
             return None;
         }
         Some(operation())
@@ -159,6 +159,8 @@ impl ChatRuntimeState {
     }
 
     pub(crate) fn end_generation(&self, conversation_id: &str, generation: u64) {
+        let gate = self.generation_effect_gate(conversation_id);
+        let _effect = gate.lock().unwrap_or_else(|error| error.into_inner());
         let mut indexes = self.indexes();
         retire_generation(&mut indexes, conversation_id, generation);
         self.generation_retired.notify_waiters();
@@ -166,6 +168,8 @@ impl ChatRuntimeState {
 
     /// A run-bound stop keeps sibling arms and outer reply/send guards intact.
     pub(crate) fn cancel_generation(&self, conversation_id: &str, generation: u64) -> bool {
+        let gate = self.generation_effect_gate(conversation_id);
+        let _effect = gate.lock().unwrap_or_else(|error| error.into_inner());
         let mut indexes = self.indexes();
         if !is_generation_active(&indexes, conversation_id, generation) {
             return false;
@@ -184,6 +188,8 @@ impl ChatRuntimeState {
         run_id: &str,
         generation: u64,
     ) {
+        let gate = self.generation_effect_gate(conversation_id);
+        let _effect = gate.lock().unwrap_or_else(|error| error.into_inner());
         let idle = {
             let mut indexes = self.indexes();
             retire_generation(&mut indexes, conversation_id, generation);
@@ -377,6 +383,8 @@ impl ChatRuntimeState {
 
     pub(crate) fn forget_conversation(&self, conversation_id: &str) {
         self.resources.forget(conversation_id);
+        let gate = self.generation_effect_gate(conversation_id);
+        let _effect = gate.lock().unwrap_or_else(|error| error.into_inner());
         {
             let mut indexes = self.indexes();
             cancel_generations(&mut indexes, conversation_id);
@@ -635,6 +643,22 @@ impl ChatRuntimeState {
 
     pub(crate) async fn lock_conversation_creation(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.conversation_create_lock.lock().await
+    }
+
+    // A generation's external effect and its retirement have one ordering per
+    // conversation. The process-wide index never stays locked during that effect.
+    fn generation_effect_gate(&self, conversation_id: &str) -> Arc<Mutex<()>> {
+        let mut gates = self
+            .generation_effects
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = gates.get(conversation_id).and_then(Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(Mutex::new(()));
+        gates.insert(conversation_id.to_owned(), Arc::downgrade(&gate));
+        gate
     }
 
     fn indexes(&self) -> std::sync::MutexGuard<'_, ChatRunIndexes> {
@@ -927,6 +951,37 @@ mod tests {
             .while_generation_active("conversation", next, || permit.send("new prompt"))
             .is_some());
         assert_eq!(peer.recv().await, Some("new prompt"));
+    }
+
+    #[test]
+    fn one_conversations_active_effect_does_not_delay_stopping_another() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let runtime = ChatRuntimeState::default();
+        let a = runtime.begin_generation("a");
+        let b = runtime.begin_generation("b");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        std::thread::scope(|threads| {
+            let runtime = &runtime;
+            threads.spawn(move || {
+                runtime.while_generation_active("a", a, || {
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                });
+            });
+            entered_rx.recv().unwrap();
+            threads.spawn(move || {
+                stopped_tx.send(runtime.cancel_generation("b", b)).unwrap();
+            });
+            let stopped = stopped_rx.recv_timeout(Duration::from_secs(2));
+            release_tx.send(()).unwrap();
+            assert_eq!(stopped, Ok(true));
+        });
+        assert!(runtime.is_generation_active("a", a));
+        assert!(!runtime.is_generation_active("b", b));
     }
 
     #[tokio::test]

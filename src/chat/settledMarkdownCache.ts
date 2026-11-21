@@ -1,8 +1,11 @@
-import type { ParsedMarkdownHeading } from './markdownHeadingOutline'
+import { normalizeMarkdownForRender, preserveLocalMarkdownLinks } from './markdownUtils'
+import { normalizeLegacyCliReport } from './cliCommandReportData'
+import { inlineArtifactReferenceLinks } from './artifactReferences'
+import { parseMarkdownHeadingOutline, type ParsedMarkdownHeading } from './markdownHeadingOutline'
 
 export type SettledMarkdownCacheEntry = {
   normalized: string
-  /** 只在已挂载的正式回答请求目录时填充，避免普通 Markdown 多做一次 AST 解析。 */
+  /** Filled on demand when the conversation timeline requests an outline. */
   outline?: ParsedMarkdownHeading[]
 }
 
@@ -41,15 +44,40 @@ export function getSettledMarkdownCacheEntry(
   return touch(content, build())
 }
 
-export function getSettledMarkdownOutline(
-  content: string,
-  build: () => SettledMarkdownCacheEntry,
-  buildOutline: (normalized: string) => ParsedMarkdownHeading[],
-): SettledMarkdownCacheEntry {
-  const entry = getSettledMarkdownCacheEntry(content, build)
-  if (entry.outline !== undefined) return entry
-  entry.outline = buildOutline(entry.normalized)
-  return touch(content, entry)
+function errorDetailsFence(detail: string): string {
+  const longestRun = Math.max(0, ...Array.from(detail.matchAll(/`+/g), (match) => match[0].length))
+  return '`'.repeat(Math.max(3, longestRun + 1))
+}
+
+// Older external-agent failures were persisted with literal HTML. ReactMarkdown intentionally
+// does not enable raw HTML, so migrate only Kivio's exact legacy disclosure shape into the safe
+// fenced block below. Arbitrary model-authored HTML remains inert text.
+function normalizeLegacyErrorDetails(content: string): string {
+  return content.replace(
+    /<details>\s*<summary>错误详情<\/summary>\s*(`{3,})\s*\n([\s\S]*?)\n\1\s*<\/details>/g,
+    (_match, _oldFence: string, detail: string) => {
+      const fence = errorDetailsFence(detail)
+      return `${fence}kivio-error-details\n${detail}\n${fence}`
+    },
+  )
+}
+
+export function buildMarkdownEntry(content: string): SettledMarkdownCacheEntry {
+  return {
+    normalized: preserveLocalMarkdownLinks(
+      normalizeMarkdownForRender(inlineArtifactReferenceLinks(normalizeLegacyCliReport(normalizeLegacyErrorDetails(content)))),
+    ),
+  }
+}
+
+export function getSettledMarkdownOutline(content: string): SettledMarkdownCacheEntry & { outline: ParsedMarkdownHeading[] } {
+  const entry = getSettledMarkdownCacheEntry(content, () => buildMarkdownEntry(content))
+  const outline = entry.outline ?? parseMarkdownHeadingOutline(entry.normalized)
+  if (!entry.outline) {
+    entry.outline = outline
+    touch(content, entry)
+  }
+  return { normalized: entry.normalized, outline }
 }
 
 export function clearSettledMarkdownCache(): void {

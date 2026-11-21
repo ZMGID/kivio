@@ -10,7 +10,9 @@ import {
 } from '../generated/chatProtocol'
 
 export type ChatProtocolIssue = 'version_mismatch' | 'invalid_event' | 'resync_required'
-export type ChatProtocolDelivery = { source: 'live' | 'snapshot' }
+export type ChatProtocolDelivery =
+  | { source: 'live' }
+  | { source: 'snapshot'; pendingInteractions: ChatRunSnapshot['pendingInteractions'] }
 type Subscriber = (event: ChatProtocolEvent, delivery: ChatProtocolDelivery) => void
 
 type RunState = {
@@ -31,6 +33,7 @@ const conversationRevisions = new Map<string, number>()
 const syncRetryAttempts = new Map<string, number>()
 const syncRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const exclusiveConversationIds = new Set<string>()
+const projectionRecoveries = new Map<string, symbol>()
 let nativeListener: Promise<void> | null = null
 let subscribeConversationId: string | null = null
 let subscribeGeneration = 0
@@ -51,10 +54,27 @@ export function configureChatProtocolFilter(conversationId: string | null) {
 
 /** 主窗 All 订阅者：这些对话的高频帧被独占路由跳过，seq 缺口不要当丢包去 sync。 */
 export function setExclusiveConversationIds(ids: Iterable<string>) {
-  exclusiveConversationIds.clear()
-  for (const id of ids) {
-    if (id) exclusiveConversationIds.add(id)
+  const next = new Set(ids)
+  for (const id of exclusiveConversationIds) {
+    if (!next.has(id) && [...runs.values()].some((run) => run.conversationId === id && !run.terminal)) {
+      projectionRecoveries.set(id, Symbol())
+    }
   }
+  exclusiveConversationIds.clear()
+  for (const id of next) {
+    if (!id) continue
+    projectionRecoveries.delete(id)
+    exclusiveConversationIds.add(id)
+  }
+}
+
+export function knownChatConversationRevision(conversationId: string): number {
+  return conversationRevisions.get(conversationId) ?? 0
+}
+
+export function recordChatConversationRevision(conversationId: string, revision: number) {
+  if (!Number.isFinite(revision)) return
+  conversationRevisions.set(conversationId, Math.max(knownChatConversationRevision(conversationId), revision))
 }
 
 function reportIssue(issue: ChatProtocolIssue, conversationId?: string) {
@@ -107,12 +127,7 @@ function isExclusiveSparseLifecycle(type: ChatRunEventEnvelope['type']): boolean
 }
 
 function advanceTerminalRevision(event: ChatRunEventEnvelope) {
-  if (!isTerminal(event)) return
-  const revision = event.conversationRevision
-  conversationRevisions.set(
-    event.conversationId,
-    Math.max(conversationRevisions.get(event.conversationId) ?? 0, revision),
-  )
+  if (isTerminal(event)) recordChatConversationRevision(event.conversationId, event.conversationRevision)
 }
 
 function scheduleSync(conversationId: string, delayMs = 0) {
@@ -226,6 +241,8 @@ function isSemanticallyValidSnapshot(conversationId: string, snapshot: ChatRunSn
     recovery.groupId.length > 0
     && recovery.groupSize > 0
     && recovery.armIndex < recovery.groupSize
+    && (recovery.activeArmCount === undefined
+      || (recovery.activeArmCount > 0 && recovery.activeArmCount <= recovery.groupSize))
     && recovery.providerId.length > 0
     && recovery.model.length > 0
   )
@@ -246,7 +263,7 @@ function applyEvent(event: ChatProtocolEvent) {
   if (event.scope === 'conversation') {
     const current = conversationRevisions.get(event.conversationId) ?? 0
     if (event.revision < current && event.type !== 'subagent_activity_added') return
-    conversationRevisions.set(event.conversationId, Math.max(current, event.revision))
+    recordChatConversationRevision(event.conversationId, event.revision)
     dispatch(event)
     return
   }
@@ -290,7 +307,7 @@ function applySnapshot(snapshot: ChatRunSnapshot) {
     pending: new Map(),
   }
   runs.set(snapshot.runId, state)
-  const restored = { source: 'snapshot' as const }
+  const restored = { source: 'snapshot' as const, pendingInteractions: snapshot.pendingInteractions }
   dispatch(syntheticEnvelope(snapshot, { type: 'run_started', recovery: snapshot.recovery }), restored)
   const orderedSegments = [...snapshot.segments].sort((left, right) => left.order - right.order)
   let restoredContent = ''
@@ -453,12 +470,16 @@ export async function syncChatProtocol(conversationId: string) {
   if (!conversationId || syncing.has(conversationId)) return
   syncing.add(conversationId)
   let acceptedSync = false
+  let projectionRecovery: symbol | undefined
   try {
     await ensureListener()
     // 只给还在跑的 run 带 cursor：后端 5 分钟后会剪掉已完成的 run，
     // 再带着它们的 cursor 去 sync 只会被算进 missingRunIds，白触发一次全量 reload。
     // run 的状态本身要留着（快照恢复/去重还要用），所以是不带 cursor，不是删。
-    const cursors = [...runs.entries()]
+    // A sparse lifecycle cursor from a popout may be ahead of text the main
+    // window never received. Rebuild the running projection from a snapshot.
+    projectionRecovery = projectionRecoveries.get(conversationId)
+    const cursors = projectionRecovery ? [] : [...runs.entries()]
       .filter(([, state]) => state.conversationId === conversationId && !state.terminal)
       .map(([runId, state]) => ({ runId, lastSeq: state.lastSeq }))
     const result = await invoke<unknown>('chat_sync_state', {
@@ -490,6 +511,9 @@ export async function syncChatProtocol(conversationId: string) {
       return
     }
     acceptedSync = true
+    if (projectionRecovery && projectionRecoveries.get(conversationId) === projectionRecovery) {
+      projectionRecoveries.delete(conversationId)
+    }
     // 本窗口没见过这个会话时，直接把后端 revision 收下当基线。
     // 任何有内容的会话 revision 都 > 0，把「没见过」当「落后」会导致
     // 第一次切进任何会话都必定触发一次多余的全量 reload。
@@ -497,10 +521,7 @@ export async function syncChatProtocol(conversationId: string) {
     if (knownRevision !== undefined && validated.conversationRevision > knownRevision) {
       reportIssue('resync_required', conversationId)
     }
-    conversationRevisions.set(
-      conversationId,
-      Math.max(knownRevision ?? 0, validated.conversationRevision),
-    )
+    recordChatConversationRevision(conversationId, validated.conversationRevision)
     if (validated.missingRunIds.length > 0) {
       for (const runId of validated.missingRunIds) runs.delete(runId)
       reportIssue('resync_required', conversationId)
@@ -530,6 +551,7 @@ export async function syncChatProtocol(conversationId: string) {
     )
     if (acceptedSync && unresolvedGap) retrySync(conversationId)
     else if (acceptedSync) syncRetryAttempts.delete(conversationId)
+    if (acceptedSync && projectionRecoveries.has(conversationId)) scheduleSync(conversationId)
   }
 }
 
@@ -540,6 +562,7 @@ export const chatProtocolTesting = {
     liveDuringSync.clear()
     conversationRevisions.clear()
     exclusiveConversationIds.clear()
+    projectionRecoveries.clear()
     syncRetryAttempts.clear()
     for (const timer of syncRetryTimers.values()) clearTimeout(timer)
     syncRetryTimers.clear()

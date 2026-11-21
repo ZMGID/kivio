@@ -515,16 +515,12 @@ pub(crate) async fn call_tool(
         "kivio_interrupt" => {
             let id = required_string(arguments, "conversation_id")?;
             repository(app)
-                .get(app, id)
+                .revision(app, id)
                 .await
-                .map_err(repository_error)?;
-            crate::chat::commands::interaction::cancel_stream(
-                app,
-                app.state::<AppState>().inner(),
-                id,
-            )
-            .await?;
-            json!({"conversation_id": id, "interrupted": true})
+                .map_err(repository_error)?
+                .ok_or_else(|| format!("对话不存在（{id}）"))?;
+            let outcome = crate::chat::commands::interaction::cancel_stream(app, id).await?;
+            json!({"conversation_id": id, "interrupted": true, "warning": outcome.warning})
         }
         _ => return Err(format!("未知的语音编排工具：{name}")),
     };

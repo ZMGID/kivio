@@ -57,6 +57,18 @@ describe('conversation stream presentation', () => {
     expect(snapshot.messageId).toBe('m1')
   })
 
+  it('stops the reasoning timer once answer text begins', () => {
+    const snapshot = createEmptyStreamSnapshot()
+    const base = { protocolVersion: 1, scope: 'run', seq: 1, baseRevision: 0, conversationId: 'c1', runId: 'run', messageId: 'm1' } as const
+    const segment = { phase: 'synthesis', stepNumber: null, round: null, toolCallId: null, text: null } as const
+    const thought = { ...base, type: 'reasoning_delta', delta: 'Consider', segment: { ...segment, id: 'r', kind: 'reasoning', order: 1 } } as const
+    const answer = { ...base, type: 'text_delta', delta: 'Answer', segment: { ...segment, id: 'a', kind: 'text', order: 2 } } as const
+    applyConversationStreamEvent(snapshot, thought, 100)
+    applyConversationStreamEvent(snapshot, answer, 140)
+    applyConversationStreamEvent(snapshot, answer, 800)
+    expect(snapshot.reasoningDurationMsBySegmentId.r).toBe(40)
+  })
+
   it('rolls back only a failed attempt, keeps completed work and rejects late rollback', () => {
     const snapshot = createEmptyStreamSnapshot()
     snapshot.runId = 'run-a'

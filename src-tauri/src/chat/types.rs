@@ -678,6 +678,17 @@ pub struct ConversationWorktree {
 /// 完整对话数据（存储在 conversations/{id}.json）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conversation {
+    pub id: String,
+    /// Monotonic on-disk revision maintained by `ConversationRepository`.
+    /// Keep it before the history so freshness checks read only the header.
+    /// Legacy conversation files deserialize as revision 0.
+    #[serde(default)]
+    pub revision: u64,
+    /// Keep this before both histories, including an explicit null for ordinary chats.
+    #[serde(default)]
+    pub goal_state: Option<GoalState>,
+    #[serde(default)]
+    pub agent_runtime: AgentRuntimeConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin_history: Option<Box<crate::chat::session_history::BuiltinHistory>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -690,22 +701,10 @@ pub struct Conversation {
     /// Derived at the storage boundary; never accepted from persisted JSON.
     #[serde(default, skip_deserializing)]
     pub runtime_locked: bool,
-    pub id: String,
-    /// Monotonic on-disk revision maintained by `ConversationRepository`.
-    /// Legacy conversation files deserialize as revision 0.
-    #[serde(default)]
-    pub revision: u64,
-    /// Keep this before messages, including an explicit null for ordinary chats:
-    /// restart recovery can inspect the Goal without reading the history body.
-    /// Missing in legacy files still means no Goal.
-    #[serde(default)]
-    pub goal_state: Option<GoalState>,
     pub title: String,
     pub provider_id: String,
     pub model: String,
     pub messages: Vec<ChatMessage>,
-    #[serde(default)]
-    pub agent_runtime: AgentRuntimeConfig,
     #[serde(default)]
     pub active_skill_id: Option<String>,
     #[serde(default)]

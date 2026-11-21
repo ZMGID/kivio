@@ -13,11 +13,11 @@ import { createMathPlugin } from '@streamdown/math'
 import 'katex/dist/katex.min.css'
 import { mermaid } from '@streamdown/mermaid'
 import remarkBreaks from 'remark-breaks'
-import { normalizeMarkdownForRender, preserveLocalMarkdownLinks, remarkLiteralUnderscore } from './markdownUtils'
+import { remarkLiteralUnderscore } from './markdownUtils'
 import { MarkdownErrorBoundary } from './MarkdownErrorBoundary'
 import type { ChatToolArtifact } from './types'
 import { artifactDataUrl, isImageArtifact } from './artifacts'
-import { artifactReferenceId, inlineArtifactReferenceLinks } from './artifactReferences'
+import { artifactReferenceId } from './artifactReferences'
 import { artifactId } from './artifactPresentation'
 import { ArtifactFileChip } from './GeneratedFileArtifacts'
 import { FileKindIcon } from './fileChip'
@@ -30,11 +30,10 @@ import { isWebCitation } from './webSearchCitations'
 import { ChatInlineImage } from './ChatInlineImage'
 import { MarkdownStreamingContext } from './markdownStreaming'
 import { LiveRevealContext, useRevealedText } from './streamReveal'
-import { getSettledMarkdownCacheEntry, getSettledMarkdownOutline, type SettledMarkdownCacheEntry } from './settledMarkdownCache'
+import { buildMarkdownEntry, getSettledMarkdownCacheEntry, getSettledMarkdownOutline, type SettledMarkdownCacheEntry } from './settledMarkdownCache'
 import {
-  markdownHeadingAnchorId,
+  outlineItemsForSource,
   type MarkdownHeadingOutlineItem,
-  parseMarkdownHeadingOutline,
 } from './markdownHeadingOutline'
 import { ChatHeavyIsland } from './ChatHeavyIsland'
 import { HtmlFrame } from './HtmlFrame'
@@ -46,7 +45,7 @@ import { IconButton } from '../components/Button'
 import { kbOpenSource } from './knowledgeBase'
 import { notifyError } from '../components/appNoticeStore'
 import { CliCommandReport } from './CliCommandReport'
-import { normalizeLegacyCliReport, parseCliReport } from './cliCommandReportData'
+import { parseCliReport } from './cliCommandReportData'
 import { isSvgSource, readSvgPreview } from './svgPreview'
 
 interface ChatMarkdownProps {
@@ -73,7 +72,7 @@ export type MarkdownOutlineSourceUpdate = {
 export type ChatMarkdownOutlineSource = {
   ownerMessageId: string
   sourceId: string
-  onChange: (update: MarkdownOutlineSourceUpdate) => void
+  onChange?: (update: MarkdownOutlineSourceUpdate) => void
 }
 
 
@@ -363,24 +362,6 @@ export function highlightCode(code: string, language: string) {
 
 function normalizeCodeBlockText(code: string): string {
   return code.replace(/\n$/, '')
-}
-
-function errorDetailsFence(detail: string): string {
-  const longestRun = Math.max(0, ...Array.from(detail.matchAll(/`+/g), (match) => match[0].length))
-  return '`'.repeat(Math.max(3, longestRun + 1))
-}
-
-// Older external-agent failures were persisted with literal HTML. ReactMarkdown intentionally
-// does not enable raw HTML, so migrate only Kivio's exact legacy disclosure shape into the safe
-// fenced block below. Arbitrary model-authored HTML remains inert text.
-function normalizeLegacyErrorDetails(content: string): string {
-  return content.replace(
-    /<details>\s*<summary>错误详情<\/summary>\s*(`{3,})\s*\n([\s\S]*?)\n\1\s*<\/details>/g,
-    (_match, _oldFence: string, detail: string) => {
-      const fence = errorDetailsFence(detail)
-      return `${fence}kivio-error-details\n${detail}\n${fence}`
-    },
-  )
 }
 
 function ErrorDetails({ detail }: { detail: string }) {
@@ -1452,28 +1433,19 @@ const MarkdownDocument = memo(function MarkdownDocument({
   const outlineOwnerMessageId = outlineSource?.ownerMessageId
   const onOutlineSourceChange = outlineSource?.onChange
   const entry = useMemo<SettledMarkdownCacheEntry>(() => {
-    const build = () => {
-      const normalizedContent = preserveLocalMarkdownLinks(
-        normalizeMarkdownForRender(inlineArtifactReferenceLinks(normalizeLegacyCliReport(normalizeLegacyErrorDetails(content)))),
-      )
-      return { normalized: normalizedContent }
-    }
+    const build = () => buildMarkdownEntry(content)
     if (streaming) return build()
     if (outlineSourceId) {
-      return getSettledMarkdownOutline(content, build, parseMarkdownHeadingOutline)
+      return getSettledMarkdownOutline(content)
     }
     return getSettledMarkdownCacheEntry(content, build)
   }, [content, outlineSourceId, streaming])
   const outlineItems = useMemo<MarkdownHeadingOutlineItem[]>(() => {
     if (!outlineSourceId || streaming || !entry.outline) return []
-    return entry.outline.map((heading) => ({
-      ...heading,
-      sourceId: outlineSourceId,
-      anchorId: markdownHeadingAnchorId(outlineSourceId, heading.ordinal),
-    }))
+    return outlineItemsForSource(outlineSourceId, entry.outline)
   }, [entry.outline, outlineSourceId, streaming])
   useLayoutEffect(() => {
-    if (!outlineSourceId || !outlineOwnerMessageId || !onOutlineSourceChange || streaming) return
+    if (!outlineSourceId || !outlineOwnerMessageId || !outlineItems.length || streaming) return
     const root = documentRoot
     if (!root) return
     let frame: number | null = null
@@ -1492,7 +1464,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
       })
       if (!published) {
         published = true
-        onOutlineSourceChange({ ownerMessageId: outlineOwnerMessageId, sourceId: outlineSourceId, items: outlineItems })
+        onOutlineSourceChange?.({ ownerMessageId: outlineOwnerMessageId, sourceId: outlineSourceId, items: outlineItems })
       }
     }
     const observer = typeof MutationObserver === 'undefined'
@@ -1506,7 +1478,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
     return () => {
       if (frame != null) cancelAnimationFrame(frame)
       observer?.disconnect()
-      onOutlineSourceChange({ ownerMessageId: outlineOwnerMessageId, sourceId: outlineSourceId, items: null })
+      onOutlineSourceChange?.({ ownerMessageId: outlineOwnerMessageId, sourceId: outlineSourceId, items: null })
     }
   }, [
     documentRoot,

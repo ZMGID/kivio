@@ -10,6 +10,7 @@ export interface ConversationTransitionSnapshot {
 export interface ConversationLoadHint {
   /** 全局搜索跳转：打开会话后滚到这条消息并短暂高亮。 */
   focusMessageId?: string
+  focusReasoning?: boolean
 }
 
 export interface ConversationNavigationLease {

@@ -56,6 +56,7 @@ function PopoutPendingSlot({
     pendingSessionConsent,
     pendingUserPrompt,
     pendingUserPromptRecord,
+    userPromptDraft,
     toolConfirmError,
     sessionConsentError,
     toolConfirmSubmitting,
@@ -73,6 +74,7 @@ function PopoutPendingSlot({
             variant="docked"
             key={pendingUserPrompt.interactionId}
             toolCall={pendingUserPromptRecord}
+            draftStorage={userPromptDraft}
             interactionId={pendingUserPrompt.interactionId}
             onResolved={dismissUserPrompt}
           />

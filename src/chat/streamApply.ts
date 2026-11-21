@@ -127,13 +127,16 @@ export function upsertStreamSegment(
   delta = '',
 ): ChatMessageSegment[] {
   const incomingToolCallId = segmentToolCallId(incoming)
-  const index = segments.findIndex((segment) => (
-    segment.id === incoming.id ||
-    (incoming.kind === 'tool' &&
-      segment.kind === 'tool' &&
-      incomingToolCallId &&
-      segmentToolCallId(segment) === incomingToolCallId)
-  ))
+  const tail = segments.at(-1)
+  const index = incoming.kind !== 'tool' && tail?.id === incoming.id
+    ? segments.length - 1
+    : segments.findIndex((segment) => (
+      segment.id === incoming.id ||
+      (incoming.kind === 'tool' &&
+        segment.kind === 'tool' &&
+        incomingToolCallId &&
+        segmentToolCallId(segment) === incomingToolCallId)
+    ))
   const existing = index >= 0 ? segments[index] : null
   const nextText = incoming.kind === 'tool'
     ? incoming.text ?? existing?.text ?? null
@@ -153,10 +156,18 @@ export function upsertStreamSegment(
     toolCallId: incoming.toolCallId ?? incoming.tool_call_id ?? existing?.toolCallId ?? existing?.tool_call_id ?? null,
     text: nextText,
   }
-  const next = index < 0
-    ? [...segments, nextSegment]
-    : segments.map((segment, i) => (i === index ? nextSegment : segment))
-  return next.sort(compareTimelineSegments)
+  // Keep previously published previews immutable. Updating text on an existing
+  // segment cannot move it unless one of the comparator's inputs changed.
+  if (existing) {
+    const next = segments.slice()
+    next[index] = nextSegment
+    if (existing.order === nextSegment.order && existing.kind === nextSegment.kind
+      && existing.phase === nextSegment.phase && existing.round === nextSegment.round
+      && existingStepNumber === segmentStepNumber(nextSegment)) return next
+    return next.sort(compareTimelineSegments)
+  }
+  const next = [...segments, nextSegment]
+  return !tail || compareTimelineSegments(tail, nextSegment) <= 0 ? next : next.sort(compareTimelineSegments)
 }
 
 export function nextSegmentOrder(segments: ChatMessageSegment[]): number {
@@ -267,11 +278,9 @@ export function applyStreamDeltaToSnapshot(
         snapshot.reasoningDurationMs ?? 0,
         now - snapshot.reasoningStartedAt,
       )
-    }
-    if (segment?.kind === 'text') {
-      const activeReasoningSegment = findReasoningSegmentForText(snapshot.segments, segment)
-      if (activeReasoningSegment) {
-        updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id, now)
+      if (segment?.kind === 'text') {
+        const activeReasoningSegment = findReasoningSegmentForText(snapshot.segments, segment)
+        if (activeReasoningSegment) updateReasoningSegmentDuration(snapshot, activeReasoningSegment.id, now)
       }
     }
     snapshot.streaming = true

@@ -79,7 +79,7 @@ lifecycleId: number,
  */
 segments?: Array<ChatContextUsageSegmentPayload>, };
 
-export type ChatRunRecoveryMetadata = { groupId: string, groupSize: number, armIndex: number, providerId: string, model: string, };
+export type ChatRunRecoveryMetadata = { groupId: string, groupSize: number, activeArmCount?: number, armIndex: number, providerId: string, model: string, };
 
 export type ChatTodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 

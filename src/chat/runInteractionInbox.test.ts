@@ -60,6 +60,30 @@ describe('run interaction inbox', () => {
     expect(inbox.getSnapshot().toolConfirm).toBeNull()
   })
 
+  it('drops interactions absent from a recovered run while keeping its still-pending question and draft', () => {
+    const { inbox } = setup()
+    inbox.activate('a')
+    inbox.observe({ kind: 'runStarted', conversationId: 'a', runId: 'r1' })
+    inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'answer-in-popout') })
+    inbox.observe({ kind: 'consentRequested', payload: consent('a', 'r1') })
+    const question = user('a', 'r1', 'question')
+    inbox.observe({ kind: 'userPromptRequested', payload: question })
+    inbox.observe({ kind: 'toolRequested', payload: tool('b', 'r2', 'unrelated') })
+    const draft = inbox.getSnapshot().userPromptDraft
+
+    inbox.reconcileRun('a', 'r1', [{
+      type: 'user_prompt_requested', interactionId: question.interactionId,
+      toolCallId: question.toolCallId, name: question.name, source: question.source,
+      prompt: { title: null, questions: [] }, structuredContent: null,
+    }])
+    expect(inbox.getSnapshot()).toMatchObject({ toolConfirm: null, sessionConsent: null, userPrompt: question })
+    expect(inbox.getSnapshot().userPromptDraft).toBe(draft)
+    inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'answer-in-popout') })
+    expect(inbox.getSnapshot().toolConfirm).toBeNull()
+    inbox.activate('b')
+    expect(inbox.getSnapshot().toolConfirm?.interactionId).toBe('unrelated')
+  })
+
   it('keeps tool, consent, and user prompts distinct per conversation', () => {
     const { inbox } = setup()
     inbox.observe({ kind: 'toolRequested', payload: tool('a', 'r1', 'tool-a') })

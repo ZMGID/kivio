@@ -248,7 +248,7 @@ struct DesktopPet {
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
-fn state(app: &AppHandle) -> Option<tauri::State<'_, Arc<DesktopPet>>> {
+fn state<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<tauri::State<'_, Arc<DesktopPet>>> {
     app.try_state::<Arc<DesktopPet>>()
 }
 
@@ -575,7 +575,7 @@ fn draw(app: &AppHandle, state: &DesktopPet) {
     }
 }
 
-pub fn observe_protocol(app: &AppHandle, event: &ChatProtocolEvent) {
+pub fn observe_protocol<R: tauri::Runtime>(app: &AppHandle<R>, event: &ChatProtocolEvent) {
     let ChatProtocolEvent::Run(envelope) = event else {
         return;
     };

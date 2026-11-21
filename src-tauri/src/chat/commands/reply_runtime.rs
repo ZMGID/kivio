@@ -1,7 +1,7 @@
 use kivio_agent_sdk::agent::{EntryId, SessionHistory};
 use uuid::Uuid;
 
-use crate::settings::Settings;
+use crate::settings::{ModelProvider, Settings};
 use crate::state::AppState;
 
 use super::ChatMessage;
@@ -9,6 +9,25 @@ use super::ChatMessage;
 pub(super) const CHAT_REPLY_BUSY_ERROR: &str = "该对话正在生成中，请稍后再试";
 /// 多模型一问多答的并排上限（决策 D4）。超过此数不允许发送。
 pub(super) const MAX_REPLY_MODELS: usize = 4;
+
+pub(super) fn resolve_reply_provider<'a>(
+    settings: &'a Settings,
+    provider_id: &str,
+    model: &str,
+) -> Result<&'a ModelProvider, String> {
+    let provider = settings
+        .get_provider(provider_id)
+        .ok_or_else(|| "Chat provider not found".to_string())?;
+    if !provider.authentication_ready() {
+        return Err(crate::chat::format_chat_login_required_error(
+            &provider.name,
+        ));
+    }
+    if model.trim().is_empty() {
+        return Err(crate::chat::chat_missing_model_error());
+    }
+    Ok(provider)
+}
 
 /// 由会话级 `reply_models` 解析出本次发送要 fan-out 的「臂」列表。
 /// 返回去重后（按 provider_id+model）、保序的 `(provider_id, model)`。
@@ -166,9 +185,87 @@ impl Drop for ChatReplyGuard<'_> {
 pub(super) struct ReplyArm {
     pub(super) group_id: String,
     pub(super) group_size: usize,
+    pub(super) active_arm_count: usize,
     pub(super) arm_index: usize,
     pub(super) provider_id: String,
     pub(super) model: String,
+    pub(super) run_id: String,
+    pub(super) message_id: String,
+}
+
+impl ReplyArm {
+    pub(super) fn new(
+        group_id: String,
+        group_size: usize,
+        active_arm_count: usize,
+        arm_index: usize,
+        provider_id: String,
+        model: String,
+    ) -> Self {
+        Self {
+            group_id,
+            group_size,
+            active_arm_count,
+            arm_index,
+            provider_id,
+            model,
+            run_id: format!("chat-run-{}", Uuid::new_v4()),
+            message_id: format!("msg_{}", Uuid::new_v4()),
+        }
+    }
+
+    pub(super) fn register<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        conversation_id: &str,
+        revision: u64,
+    ) -> crate::chat::protocol::RegisteredRunGuard<R> {
+        crate::chat::protocol::register_run_with_recovery(
+            app,
+            conversation_id,
+            &self.run_id,
+            &self.message_id,
+            revision,
+            Some(crate::chat::protocol::ChatRunRecoveryMetadata {
+                group_id: self.group_id.clone(),
+                group_size: self.group_size as u32,
+                active_arm_count: Some(self.active_arm_count as u32),
+                arm_index: self.arm_index as u32,
+                provider_id: self.provider_id.clone(),
+                model: self.model.clone(),
+            }),
+        );
+        crate::chat::protocol::RegisteredRunGuard::new(app, &self.run_id, revision)
+    }
+
+    pub(super) fn normalize_outcome(
+        &self,
+        result: Result<ArmReplyOutcome, String>,
+        run_entry: &str,
+        active_skill_id: Option<&str>,
+    ) -> ArmReplyOutcome {
+        let mut outcome = result.unwrap_or_else(|error| ArmReplyOutcome {
+            message: None,
+            history: None,
+            error: Some(error),
+        });
+        if outcome.message.is_none() && outcome.error.as_deref() != Some("cancelled") {
+            let mut message = super::messages::build_error_arm_message(
+                &self.group_id,
+                self.provider_id.clone(),
+                self.model.clone(),
+                outcome
+                    .error
+                    .take()
+                    .unwrap_or_else(|| "模型没有返回回答".to_string()),
+                run_entry,
+                active_skill_id,
+            );
+            message.id.clone_from(&self.message_id);
+            outcome.message = Some(message);
+        }
+        outcome
+    }
 }
 
 /// 多模型臂运行后回收的结果。协调者据此把 assistant 消息合并进真正的会话并落盘。
@@ -182,7 +279,6 @@ pub(crate) struct ReplyHistoryCommit {
 pub(super) struct ArmReplyOutcome {
     pub(super) message: Option<ChatMessage>,
     pub(super) history: Option<ReplyHistoryCommit>,
-    pub(super) run_id: Option<String>,
     pub(super) error: Option<String>,
 }
 
@@ -190,6 +286,64 @@ pub(super) struct ArmReplyOutcome {
 mod tests {
     use super::super::interaction::{cancel_user_generation, UserStopScope};
     use super::*;
+
+    #[test]
+    fn preflight_failure_finishes_the_registered_arm_without_losing_its_error_column() {
+        use tauri::Manager;
+
+        let app = tauri::test::mock_app();
+        app.manage(crate::state::test_app_state());
+        let state = app.state::<AppState>();
+        let mut settings = Settings::default();
+        settings.providers.push(
+            serde_json::from_value(serde_json::json!({
+                "id": "requires-login", "name": "Configured but signed-out provider",
+                "baseUrl": "https://fixture.invalid/v1", "apiKeys": [],
+                "request": { "oauth": { "provider": "codex" } }
+            }))
+            .unwrap(),
+        );
+        let arm = ReplyArm::new(
+            "group".into(),
+            2,
+            2,
+            0,
+            "requires-login".into(),
+            "model".into(),
+        );
+        let sibling = ReplyArm::new("group".into(), 2, 2, 1, "other".into(), "model".into());
+        let _guard = arm.register(app.handle(), "conv", 1);
+        let _sibling_guard = sibling.register(app.handle(), "conv", 1);
+        let failure = match resolve_reply_provider(&settings, &arm.provider_id, &arm.model) {
+            Ok(_) => panic!("an unsigned provider must fail preflight"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            failure,
+            crate::chat::format_chat_login_required_error("Configured but signed-out provider")
+        );
+        let pending = state
+            .chat_protocol()
+            .running_snapshot("conv", &arm.run_id, &arm.message_id)
+            .unwrap();
+        assert_eq!(pending.recovery.unwrap().active_arm_count, Some(2));
+        let message = arm
+            .normalize_outcome(Err(failure.clone()), "send", None)
+            .message
+            .unwrap();
+        assert_eq!(message.id, arm.message_id);
+        assert_eq!(message.stream_outcome.as_deref(), Some("error"));
+        assert_eq!(message.content, failure);
+        crate::chat::protocol::finish_run(app.handle(), &arm.run_id, "error", &message.content, 2);
+        assert!(state
+            .chat_protocol()
+            .running_snapshot("conv", &arm.run_id, &arm.message_id)
+            .is_none());
+        assert!(state
+            .chat_protocol()
+            .running_snapshot("conv", &sibling.run_id, &sibling.message_id)
+            .is_some());
+    }
 
     #[tokio::test]
     async fn dropped_external_reply_retires_generation_and_allows_the_next_send() {

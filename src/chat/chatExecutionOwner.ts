@@ -31,7 +31,7 @@ export type ExternalTerminalPermit = {
 
 export type TerminalDisposition =
   | { kind: 'ignored' | 'pending' | 'deferred' }
-  | { kind: 'ready'; permit: ExternalTerminalPermit }
+  | { kind: 'ready'; terminal: ChatRunTerminal; permit: ExternalTerminalPermit }
 
 type StreamPayloadIdentity = {
   conversationId: string
@@ -98,7 +98,7 @@ export function createChatExecutionOwner(
     groupId: string | null
     expectedArms: number
     runIds: Set<string>
-    terminalIds: Set<string>
+    terminalReasons: Map<string, ChatRunTerminal['reason']>
     ready: boolean
     groupEnded: boolean
   }>()
@@ -156,6 +156,7 @@ export function createChatExecutionOwner(
     turnEpoch: (conversationId: string) => turnEpochs.get(conversationId) ?? 0,
     snapshot,
     activeConversationIds: () => [...new Set([...active.keys(), ...external])],
+    isCancellationRequested: (conversationId: string) => cancellations.has(conversationId),
     overlayMessages: optimistic.overlay,
     /** Grants one cancellation attempt for the current execution. The permit
      * remains the identity of its content fence until failure or run turnover. */
@@ -283,7 +284,7 @@ export function createChatExecutionOwner(
                 token: ++externalSequence,
                 groupId: event.groupId ?? null,
                 expectedArms: Math.max(1, event.groupSize ?? 1),
-                runIds: new Set(), terminalIds: new Set(), ready: false, groupEnded: false,
+                runIds: new Set(), terminalReasons: new Map(), ready: false, groupEnded: false,
               }
               externalRuns.set(id, run)
             }
@@ -336,16 +337,16 @@ export function createChatExecutionOwner(
         advanceTurn(id)
         run = {
           token: ++externalSequence, groupId: null, expectedArms: 1,
-          runIds: new Set([terminal.runId]), terminalIds: new Set(),
+          runIds: new Set([terminal.runId]), terminalReasons: new Map(),
           ready: false, groupEnded: false,
         }
         externalRuns.set(id, run)
         external.add(id)
       }
       if (!run || !terminal.runId || !run.runIds.has(terminal.runId)
-        || run.terminalIds.has(terminal.runId)) return { kind: 'ignored' }
-      run.terminalIds.add(terminal.runId)
-      if (run.terminalIds.size < run.expectedArms) return { kind: 'pending' }
+        || run.terminalReasons.has(terminal.runId)) return { kind: 'ignored' }
+      run.terminalReasons.set(terminal.runId, terminal.reason)
+      if (run.terminalReasons.size < run.expectedArms) return { kind: 'pending' }
       run.ready = true
       if (run.groupId && !run.groupEnded) {
         groups.end(id)
@@ -353,6 +354,11 @@ export function createChatExecutionOwner(
       }
       return {
         kind: 'ready',
+        terminal: run.groupId ? {
+          ...terminal,
+          reason: [...run.terminalReasons.values()].includes('done') ? 'done'
+            : [...run.terminalReasons.values()].includes('error') ? 'error' : 'cancelled',
+        } : terminal,
         permit: { conversationId: id, token: run.token } as ExternalTerminalPermit,
       }
     },

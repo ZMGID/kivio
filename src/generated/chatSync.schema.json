@@ -1820,6 +1820,14 @@
     "ChatRunRecoveryMetadata": {
       "additionalProperties": false,
       "properties": {
+        "activeArmCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "armIndex": {
           "format": "uint32",
           "minimum": 0,
