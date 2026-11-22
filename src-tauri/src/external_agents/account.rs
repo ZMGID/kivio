@@ -1,5 +1,7 @@
 //! Read-only native account/usage discovery. Never starts a conversation or returns credentials.
+mod persisted;
 mod snapshot;
+pub(super) use persisted::PersistedQuota;
 pub(crate) use snapshot::{AccountSnapshotMode, AccountSnapshots};
 
 use crate::{

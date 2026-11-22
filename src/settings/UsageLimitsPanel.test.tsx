@@ -41,21 +41,33 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
     antigravity: [{ name: 'Gemini Models · 5h', usedPercent: 22, resetsAt: reset, windowDurationMins: 300 }],
     grok: [{ name: 'Monthly', usedPercent: 0, resetsAt: reset, windowDurationMins: 40320 }],
   }
+  let completeAutomatic!: () => void
+  const automatic = new Promise<void>(resolve => { completeAutomatic = resolve })
+  let initialRead = true
   get.mockImplementation(async (id, _project, mode) => {
     if (id === 'antigravity' && mode === 'refresh') throw new Error('IPC interrupted')
+    if (initialRead && mode === 'cached' && id !== 'antigravity') return null
+    if (id === 'antigravity' && mode === 'automatic') await automatic
     return {
       agentId: id, account: null, credits: null, unavailable: null, checkedAt: 123,
       windows: id === 'codex' || id === 'antigravity' || id === 'grok' ? windows[id] : [],
+      ...(initialRead && mode === 'cached' ? { nextRefreshAt: Date.now() - 1000 } : {}),
       ...(id === 'codex' ? { refreshError: 'timeout' } : id === 'kimi' ? { unavailable: 'Kimi CLI sign-in required' } : {}),
     }
   })
   const firstVisit = render(<UsageLimitsPanel lang="en" />)
+  const antigravity = await screen.findByRole('region', { name: 'Antigravity CLI' })
+  expect(within(antigravity).getByRole('progressbar', { name: 'Gemini Models · 5h' })).toHaveAttribute('aria-valuenow', '78')
+  await waitFor(() => expect(get).toHaveBeenCalledWith('antigravity', null, 'automatic'))
+  initialRead = false
+  windows.antigravity = [{ ...windows.antigravity[0], usedPercent: 28 }]
+  await act(async () => completeAutomatic())
+  expect(within(antigravity).getByRole('progressbar', { name: 'Gemini Models · 5h' })).toHaveAttribute('aria-valuenow', '72')
+
   const codex = await screen.findByRole('region', { name: 'Codex' })
   expect(await within(codex).findByRole('progressbar')).toHaveAttribute('aria-valuenow', '0')
   expect(within(codex).getByText('Refresh failed. Showing the last successful reading.')).toBeInTheDocument()
   expect(within(codex).getByText('Reset time unavailable')).toBeInTheDocument()
-  const antigravity = await screen.findByRole('region', { name: 'Antigravity CLI' })
-  expect(await within(antigravity).findByRole('progressbar', { name: 'Gemini Models · 5h' })).toHaveAttribute('aria-valuenow', '78')
   expect(within(antigravity).getByText(/^Resets in /)).toHaveAttribute('datetime', reset)
   const grok = await screen.findByRole('region', { name: 'Grok Build' })
   expect(within(grok).getByRole('progressbar', { name: 'Monthly' })).toHaveAttribute('aria-valuenow', '100')
@@ -67,7 +79,7 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
   firstVisit.unmount()
   const secondVisit = render(<UsageLimitsPanel lang="en" />)
   const cached = screen.getByRole('progressbar', { name: 'Gemini Models · 5h' })
-  expect(cached).toHaveAttribute('aria-valuenow', '78')
+  expect(cached).toHaveAttribute('aria-valuenow', '72')
   expect(screen.queryByRole('region', { name: 'Kimi' })).not.toBeInTheDocument()
   await act(async () => {})
   expect(detect).toHaveBeenCalledTimes(1)

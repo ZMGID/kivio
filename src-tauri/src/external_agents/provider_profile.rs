@@ -1276,7 +1276,7 @@ fn launch_config_file_revision(
     Some(hasher.hash_one(content))
 }
 
-fn codex_launch_auth(content: &[u8]) -> Option<Value> {
+pub(super) fn codex_launch_auth(content: &[u8]) -> Option<Value> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
     let mut auth: Value = serde_json::from_slice(content).ok()?;

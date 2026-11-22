@@ -43,6 +43,7 @@ function createEntry(agentId: string, conversationId?: string | null) {
   let sequence = 0
   let applied = 0
   let pending: Promise<void> | undefined
+  let initialCacheRead: Promise<void> | undefined
 
   const update = (changes: Partial<View>) => {
     view = { ...view, ...changes }
@@ -99,12 +100,17 @@ function createEntry(agentId: string, conversationId?: string | null) {
       configurationRevision += 1
       nextCheckAt = 0
       pending = undefined
+      initialCacheRead = undefined
       update(EMPTY)
       if (listeners.size) void load('automatic')
     },
-    subscribe(listener: () => void) {
+    subscribe(listener: () => void, cachedFirst = false) {
       listeners.add(listener)
-      void connect().then(() => {
+      void connect().then(async () => {
+        if (cachedFirst && listeners.has(listener) && view === EMPTY) {
+          initialCacheRead ??= load('cached')
+          await initialCacheRead
+        }
         if (listeners.has(listener)) void load('automatic')
       })
       return () => { listeners.delete(listener) }
@@ -153,7 +159,7 @@ export function useCliAccounts(agents: DetectedExternalAgent[]) {
     let snapshot = read()
     return {
       subscribe(listener: () => void) {
-        const subscriptions = sources.map(({ entry }) => entry.subscribe(listener))
+        const subscriptions = sources.map(({ entry }) => entry.subscribe(listener, true))
         return () => subscriptions.forEach(unsubscribe => unsubscribe())
       },
       getSnapshot() {

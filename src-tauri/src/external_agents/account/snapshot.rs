@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::super::{overrides::LaunchIdentity, types::RuntimeAgentDef};
-use super::ProbeReading;
+use super::{PersistedQuota, ProbeReading};
 
 const AUTOMATIC_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 const CAPACITY: usize = 64;
@@ -27,19 +27,34 @@ pub(crate) enum AccountSnapshotMode {
 #[derive(Default)]
 struct Slot {
     refresh: tokio::sync::Mutex<()>,
-    completed: Mutex<Option<(Instant, Value)>>,
+    completed: Mutex<Option<Reading>>,
+}
+
+struct Reading {
+    refreshed: Option<Instant>,
+    value: Value,
 }
 
 impl Slot {
     fn snapshot(&self, mode: AccountSnapshotMode, requested: Instant) -> Option<Value> {
         let completed = self.completed.lock().unwrap_or_else(|err| err.into_inner());
-        let (time, value) = completed.as_ref()?;
+        let reading = completed.as_ref()?;
         (match mode {
             AccountSnapshotMode::Cached => true,
-            AccountSnapshotMode::Automatic => time.elapsed() < AUTOMATIC_REFRESH_INTERVAL,
-            AccountSnapshotMode::Refresh => *time >= requested,
+            AccountSnapshotMode::Automatic => reading
+                .refreshed
+                .is_some_and(|time| time.elapsed() < AUTOMATIC_REFRESH_INTERVAL),
+            AccountSnapshotMode::Refresh => reading.refreshed.is_some_and(|time| time >= requested),
         })
-        .then(|| value.clone())
+        .then(|| reading.value.clone())
+    }
+
+    fn restore(&self, value: Value) {
+        let mut completed = self.completed.lock().unwrap_or_else(|err| err.into_inner());
+        completed.get_or_insert(Reading {
+            refreshed: None,
+            value,
+        });
     }
 
     fn publish(&self, agent: &str, reading: Result<ProbeReading, String>) -> Value {
@@ -57,12 +72,17 @@ impl Slot {
             ),
         };
         if failed {
-            if let Some((_, previous)) = completed.as_ref().filter(|(_, previous)| {
-                previous["windows"]
-                    .as_array()
-                    .is_some_and(|w| !w.is_empty())
-                    && same_reported_account(previous, &next)
-            }) {
+            if let Some(previous) =
+                completed
+                    .as_ref()
+                    .map(|reading| &reading.value)
+                    .filter(|previous| {
+                        previous["windows"]
+                            .as_array()
+                            .is_some_and(|w| !w.is_empty())
+                            && same_reported_account(previous, &next)
+                    })
+            {
                 let failure = next["unavailable"].take();
                 next = previous.clone();
                 next["refreshError"] = failure;
@@ -71,7 +91,10 @@ impl Slot {
         next["nextRefreshAt"] = json!(
             chrono::Utc::now().timestamp_millis() + AUTOMATIC_REFRESH_INTERVAL.as_millis() as i64
         );
-        *completed = Some((Instant::now(), next.clone()));
+        *completed = Some(Reading {
+            refreshed: Some(Instant::now()),
+            value: next.clone(),
+        });
         next
     }
 }
@@ -154,14 +177,27 @@ impl AccountSnapshots {
         requested: Instant,
         validate: impl Fn() -> Result<(), String>,
         probe: impl FnOnce() -> F,
+        disk: Option<&PersistedQuota>,
     ) -> Result<(Option<Value>, bool), String>
     where
         F: Future<Output = Result<ProbeReading, String>>,
     {
         validate()?;
-        let Some(slot) = self.slot(key, mode) else {
+        let restored = (mode == AccountSnapshotMode::Cached)
+            .then(|| disk.and_then(PersistedQuota::restore))
+            .flatten();
+        let slot_mode = if restored.is_some() {
+            AccountSnapshotMode::Automatic
+        } else {
+            mode
+        };
+        let Some(slot) = self.slot(key, slot_mode) else {
             return Ok((None, false));
         };
+        if let Some(value) = restored {
+            validate()?;
+            slot.restore(value);
+        }
         let snapshot = slot.snapshot(mode, requested);
         if snapshot.is_some() || mode == AccountSnapshotMode::Cached {
             return Ok((snapshot, false));
@@ -174,7 +210,18 @@ impl AccountSnapshots {
         }
         let reading = probe().await;
         validate()?;
-        Ok((Some(slot.publish(agent, reading)), true))
+        let removed = reading
+            .as_ref()
+            .is_ok_and(|reading| reading.definitively_unavailable);
+        let value = slot.publish(agent, reading);
+        if let Some(disk) = disk {
+            if removed {
+                disk.invalidate();
+            } else if value["unavailable"].is_null() && value["refreshError"].is_null() {
+                disk.save(&value);
+            }
+        }
+        Ok((Some(value), true))
     }
 }
 
@@ -217,6 +264,7 @@ mod tests {
                     tokio::task::yield_now().await;
                     Ok(report("a@example.test", 65, 100))
                 },
+                None,
             )
         };
         let (first, second, third) = tokio::join!(
@@ -252,6 +300,7 @@ mod tests {
                 Instant::now(),
                 || Ok(()),
                 || std::future::ready(next),
+                None,
             )
         };
         refresh(Ok(report("a@example.test", 100, 100)))
@@ -271,6 +320,7 @@ mod tests {
                 Instant::now(),
                 || Ok(()),
                 || async { panic!("automatic failure retry must honor the interval") },
+                None,
             )
             .await
             .unwrap();
@@ -308,6 +358,7 @@ mod tests {
                     current.store(false, Ordering::Relaxed);
                     Ok(report("a@example.test", 60, 100))
                 },
+                None,
             )
             .await;
         assert_eq!(rejected.unwrap_err(), "profile changed");
@@ -319,6 +370,7 @@ mod tests {
                 Instant::now(),
                 || Ok(()),
                 || async { panic!("cache reads must never probe") },
+                None,
             )
         };
         assert_eq!(peek("first").await.unwrap(), (None, false));
@@ -330,6 +382,7 @@ mod tests {
                 Instant::now(),
                 || Ok(()),
                 || async { Ok(report("b@example.test", 40, 200)) },
+                None,
             )
             .await
             .unwrap();
