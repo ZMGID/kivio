@@ -61,6 +61,12 @@ describe('ProviderIcon provider→brand mapping', () => {
       ['https://token-plan-cn.xiaomimimo.com/v1', 'XiaomiMiMo'],
       ['https://opencode.ai/zen/go/v1', 'OpenCode'],
       ['https://hezubus.cc/', 'Hezubus'],
+      ['https://api.longcat.chat/openai/v1', 'LongCat'],
+      ['https://ai-gateway.vercel.sh/v1', 'Vercel'],
+      ['https://api.sambanova.ai/v1', 'SambaNova'],
+      ['https://tokenhub.tencentmaas.com/v1', 'TencentCloud'],
+      ['https://tokenhub-intl.tencentcloudmaas.com/v1', 'TencentCloud'],
+      ['https://api.hunyuan.cloud.tencent.com/v1', 'Hunyuan'],
     ]
     for (const [url, brand] of cases) {
       expect(matchProviderGlyph(`${url} 小白`), url).toBe(PROVIDER_BRANDS[brand])

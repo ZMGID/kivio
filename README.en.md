@@ -34,10 +34,10 @@ Bring your own keys. No account, no proxy, no telemetry. Data stays on disk.
 <table>
 <tr>
 <td width="180" align="center" valign="middle">
-<a href="https://hezubus.cc"><img src="docs/sponsors/hezubus.png" alt="Hezubus" width="150"></a>
+<a href="https://crab-ai.net/register?aff=KIVIO"><img src="docs/sponsors/crab-ai.png" alt="Crab-ai" width="150"></a>
 </td>
 <td>
-Thanks to <a href="https://hezubus.cc">Hezubus</a> for sponsoring this project. <a href="https://hezubus.cc">Hezubus</a> provides official, stable, high-speed API relay for GPT, Claude, and other models, with enterprise customization, invoicing, and 7×16h dedicated support. It also offers a purpose-built WebSocket connection for faster time-to-first-token. Codex subsidy rates go as low as 0.08×. <a href="https://hezubus.cc">Register here</a>.
+Thanks to Crab-ai for sponsoring this project. Crab-ai gives you access to multiple models through one API key. <a href="https://crab-ai.net/register?aff=KIVIO">Sign up for Crab-ai</a>.
 </td>
 </tr>
 </table>

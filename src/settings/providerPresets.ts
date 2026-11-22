@@ -23,9 +23,9 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   { name: 'Antigravity OAuth', baseUrl: 'https://daily-cloudcode-pa.googleapis.com', apiFormat: 'gemini', oauth: 'antigravity' },
   { name: 'OpenCode Free', baseUrl: 'https://opencode.ai/zen/v1' },
   {
-    name: 'Hezubus',
-    baseUrl: 'https://hezubus.cc/',
-    apiKeyUrl: 'https://hezubus.cc/console',
+    name: 'Crab-ai',
+    baseUrl: 'https://api-slb.crab-ai.net/v1',
+    apiKeyUrl: 'https://crab-ai.net/register?aff=KIVIO',
     sponsored: true,
   },
   {
@@ -81,6 +81,11 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     apiKeyUrl: 'https://platform.moonshot.cn/console/api-keys',
   },
   {
+    name: 'Moonshot Intl',
+    baseUrl: 'https://api.moonshot.ai/v1',
+    apiKeyUrl: 'https://platform.kimi.ai/console/api-keys',
+  },
+  {
     name: 'GLM',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     apiKeyUrl: 'https://open.bigmodel.cn/usercenter/apikeys',
@@ -108,9 +113,34 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     apiKeyUrl: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
   },
   {
+    name: 'Xiaomi MiMo',
+    baseUrl: 'https://api.xiaomimimo.com/v1',
+    apiKeyUrl: 'https://platform.xiaomimimo.com/',
+  },
+  {
+    name: 'LongCat',
+    baseUrl: 'https://api.longcat.chat/openai/v1',
+    apiKeyUrl: 'https://longcat.ai/platform',
+  },
+  {
+    name: 'Tencent TokenHub',
+    baseUrl: 'https://tokenhub.tencentmaas.com/v1',
+    apiKeyUrl: 'https://console.cloud.tencent.com/tokenhub/apikey?regionId=1',
+  },
+  {
+    name: 'Tencent TokenHub Intl',
+    baseUrl: 'https://tokenhub-intl.tencentcloudmaas.com/v1',
+    apiKeyUrl: 'https://console.tencentcloud.com/tokenhub/apikey?regionId=1',
+  },
+  {
     name: 'SiliconFlow',
     baseUrl: 'https://api.siliconflow.cn/v1',
     apiKeyUrl: 'https://cloud.siliconflow.cn/account/ak',
+  },
+  {
+    name: 'SiliconFlow Intl',
+    baseUrl: 'https://api.siliconflow.com/v1',
+    apiKeyUrl: 'https://cloud.siliconflow.com/account/ak',
   },
   {
     name: 'OpenRouter',
@@ -157,6 +187,41 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     name: 'Perplexity',
     baseUrl: 'https://api.perplexity.ai',
     apiKeyUrl: 'https://www.perplexity.ai/settings/api',
+  },
+  {
+    name: 'PPIO',
+    baseUrl: 'https://api.ppio.com/openai/v1',
+    apiKeyUrl: 'https://ppio.com/settings/key-management',
+  },
+  {
+    name: 'Vercel AI Gateway',
+    baseUrl: 'https://ai-gateway.vercel.sh/v1',
+    apiKeyUrl: 'https://vercel.com/d?title=AI+Gateway+API+Keys&to=%2F%5Bteam%5D%2F~%2Fai-gateway%2Fapi-keys',
+  },
+  {
+    name: 'NVIDIA NIM',
+    baseUrl: 'https://integrate.api.nvidia.com/v1',
+    apiKeyUrl: 'https://build.nvidia.com/models',
+  },
+  {
+    name: 'Cerebras',
+    baseUrl: 'https://api.cerebras.ai/v1',
+    apiKeyUrl: 'https://cloud.cerebras.ai/',
+  },
+  {
+    name: 'DeepInfra',
+    baseUrl: 'https://api.deepinfra.com/v1/openai',
+    apiKeyUrl: 'https://deepinfra.com/dash/keys',
+  },
+  {
+    name: 'SambaNova',
+    baseUrl: 'https://api.sambanova.ai/v1',
+    apiKeyUrl: 'https://cloud.sambanova.ai/apis',
+  },
+  {
+    name: 'Novita AI',
+    baseUrl: 'https://api.novita.ai/openai/v1',
+    apiKeyUrl: 'https://novita.ai/settings/key-management',
   },
   {
     name: 'Ollama',

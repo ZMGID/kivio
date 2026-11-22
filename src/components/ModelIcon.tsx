@@ -38,6 +38,8 @@ import Volcengine from '@lobehub/icons/es/Volcengine/components/Color'
 import Bailian from '@lobehub/icons/es/Bailian/components/Color'
 import Baichuan from '@lobehub/icons/es/Baichuan/components/Color'
 import Hunyuan from '@lobehub/icons/es/Hunyuan/components/Color'
+import TencentCloud from '@lobehub/icons/es/TencentCloud/components/Color'
+import LongCat from '@lobehub/icons/es/LongCat/components/Color'
 import Spark from '@lobehub/icons/es/Spark/components/Color'
 import ModelScope from '@lobehub/icons/es/ModelScope/components/Color'
 import GiteeAI from '@lobehub/icons/es/GiteeAI/components/Mono'
@@ -46,6 +48,8 @@ import PPIO from '@lobehub/icons/es/PPIO/components/Color'
 import Infinigence from '@lobehub/icons/es/Infinigence/components/Color'
 import DeepInfra from '@lobehub/icons/es/DeepInfra/components/Color'
 import Cerebras from '@lobehub/icons/es/Cerebras/components/Color'
+import SambaNova from '@lobehub/icons/es/SambaNova/components/Color'
+import Vercel from '@lobehub/icons/es/Vercel/components/Mono'
 import Hyperbolic from '@lobehub/icons/es/Hyperbolic/components/Color'
 import LmStudio from '@lobehub/icons/es/LmStudio/components/Mono'
 import Vllm from '@lobehub/icons/es/Vllm/components/Color'
@@ -68,32 +72,16 @@ function Kimi({ size = 16, style }: { size?: number; style?: CSSProperties }) {
   return <KimiMono size={size} style={{ ...style, color: '#007CFF' }} />
 }
 
-/** lobehub 的 XiaomiMiMo Mono 是整段字标，18px 格子里会糊成「XIAOMI MIMO」字。橙色 Mi 标在格子里才认得出。 */
-function XiaomiMiMoMark({ size = 16, style }: { size?: number; style?: CSSProperties }) {
-  return (
-    <span
-      style={{
-        width: size,
-        height: size,
-        borderRadius: Math.max(3, Math.round(size * 0.22)),
-        background: '#FF6900',
-        color: '#fff',
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        fontSize: Math.max(7, Math.round(size * 0.42)),
-        fontWeight: 700,
-        lineHeight: 1,
-        letterSpacing: '-0.05em',
-        flexShrink: 0,
-        ...style,
-      }}
-      aria-hidden
-    >
-      Mi
-    </span>
-  )
+function providerImage(src: string): Glyph {
+  return function ProviderImage({ size = 16, style }) {
+    return <img src={src} alt="" width={size} height={size} style={{ flexShrink: 0, ...style }} />
+  }
 }
+
+// https://mimo.mi.com/favicon.png
+const XiaomiMiMoMark = providerImage('/provider-icons/xiaomi-mimo.png')
+// https://crab-ai.net/brand/pwa-rounded-192x192.png
+const CrabAiMark = providerImage('/provider-icons/crab-ai.png')
 
 /** 合租巴士 / Hezubus 没有 lobehub 标，用品牌黄橙巴士缩成格子图标。 */
 function HezubusMark({ size = 16, style }: { size?: number; style?: CSSProperties }) {
@@ -223,6 +211,8 @@ export const PROVIDER_BRANDS: Record<string, Glyph> = {
   Bailian: G(Bailian),
   Baichuan: G(Baichuan),
   Hunyuan: G(Hunyuan),
+  TencentCloud: G(TencentCloud),
+  LongCat: G(LongCat),
   Spark: G(Spark),
   ModelScope: G(ModelScope),
   GiteeAI: G(GiteeAI),
@@ -231,6 +221,8 @@ export const PROVIDER_BRANDS: Record<string, Glyph> = {
   Infinigence: G(Infinigence),
   DeepInfra: G(DeepInfra),
   Cerebras: G(Cerebras),
+  SambaNova: G(SambaNova),
+  Vercel: G(Vercel),
   Hyperbolic: G(Hyperbolic),
   LmStudio: G(LmStudio),
   Vllm: G(Vllm),
@@ -243,6 +235,7 @@ export const PROVIDER_BRANDS: Record<string, Glyph> = {
   Voyage: G(Voyage),
   XiaomiMiMo: XiaomiMiMoMark,
   OpenCode: G(OpenCode),
+  CrabAi: CrabAiMark,
   Hezubus: HezubusMark,
 }
 
@@ -254,6 +247,7 @@ export const PROVIDER_PICKER_KEYS: string[] = [
   'XiaomiMiMo',
   'Minimax',
   'OpenCode',
+  'CrabAi',
   'Hezubus',
   'DeepSeek',
   'OpenAI',
@@ -273,6 +267,8 @@ export const PROVIDER_PICKER_KEYS: string[] = [
   'Bailian',
   'Wenxin',
   'Hunyuan',
+  'TencentCloud',
+  'LongCat',
   'Spark',
   'Baichuan',
   'Yi',
@@ -290,6 +286,8 @@ export const PROVIDER_PICKER_KEYS: string[] = [
   'Vllm',
   'Xinference',
   'Cerebras',
+  'SambaNova',
+  'Vercel',
   'Hyperbolic',
   'DeepInfra',
   'Novita',
@@ -308,6 +306,7 @@ export const PROVIDER_PICKER_KEYS: string[] = [
 // 自动匹配：先按 baseUrl 的域名，再按名字。用户改名成「小白」也能靠域名认出来。
 const PROVIDER_ICON_MAP: Array<[RegExp, string]> = [
   [/openrouter/, 'OpenRouter'],
+  [/crab-ai\.net|\bcrab[- ]ai\b/, 'CrabAi'],
   [/hezubus|合租巴士/, 'Hezubus'],
   [/opencode/, 'OpenCode'],
   [/xiaomi|xiaomimimo|mimo\.mi|token-plan/, 'XiaomiMiMo'],
@@ -330,7 +329,9 @@ const PROVIDER_ICON_MAP: Array<[RegExp, string]> = [
   [/volces|volcengine|ark\.cn|火山/, 'Volcengine'],
   [/dashscope|aliyun|bailian|百炼|通义/, 'Bailian'],
   [/baichuan|百川/, 'Baichuan'],
-  [/hunyuan|混元|tencent|tokenhub/, 'Hunyuan'],
+  [/\btokenhub\b/, 'TencentCloud'],
+  [/hunyuan|混元|tencent/, 'Hunyuan'],
+  [/longcat/, 'LongCat'],
   [/xf-yun|iflytek|spark|讯飞|星火/, 'Spark'],
   [/modelscope|魔搭/, 'ModelScope'],
   [/gitee/, 'GiteeAI'],
@@ -339,6 +340,8 @@ const PROVIDER_ICON_MAP: Array<[RegExp, string]> = [
   [/infini|infinigence|无问/, 'Infinigence'],
   [/deepinfra/, 'DeepInfra'],
   [/cerebras/, 'Cerebras'],
+  [/sambanova/, 'SambaNova'],
+  [/vercel/, 'Vercel'],
   [/hyperbolic/, 'Hyperbolic'],
   [/lmstudio|lm-studio|127\.0\.0\.1:1234|localhost:1234/, 'LmStudio'],
   [/vllm/, 'Vllm'],

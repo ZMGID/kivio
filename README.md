@@ -34,10 +34,10 @@
 <table>
 <tr>
 <td width="180" align="center" valign="middle">
-<a href="https://hezubus.cc"><img src="docs/sponsors/hezubus.png" alt="合租巴士 Hezubus" width="150"></a>
+<a href="https://crab-ai.net/register?aff=KIVIO"><img src="docs/sponsors/crab-ai.png" alt="Crab-ai" width="150"></a>
 </td>
 <td>
-感谢 <a href="https://hezubus.cc">合租巴士</a> 赞助本项目。<a href="https://hezubus.cc">合租巴士</a> 提供 GPT / Claude 等多款模型的官方稳定极速 API 中转服务，支持企业级定制、报销开票、7×16h 专属技术支持，更有独家适配的 WebSocket 连接方式，畅享极速首字速度。Codex 补贴倍率低至 0.08。<a href="https://hezubus.cc">点此注册</a>。
+感谢 Crab-ai 赞助本项目。Crab-ai 提供统一的 API，可通过一个 API Key 接入多款模型。<a href="https://crab-ai.net/register?aff=KIVIO">注册 Crab-ai</a>。
 </td>
 </tr>
 </table>
