@@ -89,6 +89,17 @@ describe('prepare conversation for send', () => {
     expect(persistence.setAgentRuntime).not.toHaveBeenCalled()
   })
 
+  it('keeps expert defaults when applying welcome-page sources before the first message', async () => {
+    const created = { ...conversation('expert'), knowledge_base_ids: ['kb-docs', 'kb-guide'] }
+    const updateConversation = vi.fn().mockResolvedValue(created)
+    await prepareConversationForSend(intent(), {
+      createConversation: async () => created, setAgentRuntime: vi.fn(), updateConversation,
+    }, vi.fn())
+    expect(updateConversation).toHaveBeenCalledWith('expert', {
+      knowledgeBaseIds: ['kb-docs', 'kb-guide', 'kb-a'],
+    })
+  })
+
   it('returns a created partial conversation and recoverable error when a draft patch fails', async () => {
     const created = conversation('new-a')
     const onProgress = vi.fn()

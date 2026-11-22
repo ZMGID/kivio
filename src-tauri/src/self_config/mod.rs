@@ -147,7 +147,7 @@ pub fn inspect(ctx: NativeCallCtx<'_>) -> NativeToolFuture<'_> {
                     "globallyAvailable":crate::settings::skill_globally_available(&settings.chat_tools, &m.id),
                     "disableModelInvocation":m.disable_model_invocation
                 })).collect::<Vec<_>>(),"warnings":registry.warnings,
-                "note":"Registry and global gates only; the conversation assistant allow-list and model tools can still restrict activation."})
+                "note":"Registry and global settings. Activation also depends on the current runtime and available tools."})
             }
             "plugins" => json!({"packages":crate::plugins::packages::list()?,
                 "catalog":crate::plugins::PLUGIN_CATALOG.iter().map(|p| json!({"id":p.id,"name":p.name,"enabled":crate::plugins::is_enabled(p.id)})).collect::<Vec<_>>(),

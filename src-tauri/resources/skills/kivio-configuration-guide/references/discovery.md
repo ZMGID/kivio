@@ -29,11 +29,11 @@ arguments: [focus]
 ```
 
 - 必需 `name`、`description`；可选 `id`，省略时由 name slug 生成。不要用改 name 的方式修复已存储的开关 ID，除非确实要改身份。
-- `disable-model-invocation: true` 从自动目录隐藏，显式选择/斜杠仍可用；不能绕过全局禁用或助手白名单。
+- `disable-model-invocation: true` 从自动目录隐藏，显式选择/斜杠仍可用；仍遵循全局启停设置。
 - `recommended-tools`、`mcp-tools`、`allowed-tools` 被读成推荐工具，**不是**工具权限配置。
 - `triggers`、`argument-hint`、`arguments` 供斜杠机制使用。描述只用单行，列表只用简单标量。
 
-全局 `chatTools.disabledSkillIds` 缺省表示启用；插件附属技能还要满足对应插件的启用状态。具备助手快照时按 `skillIds` 白名单过滤，空列表可导致全部不可用。`chatTools.nativeTools.skillRuntime` 控制 skill 工具；模型不支持工具时只能依实际 fallback 读取正文，不能假装调用了脚本。
+全局 `chatTools.disabledSkillIds` 缺省表示启用；插件附属技能还要满足对应插件的启用状态。专家的 `skillIds` 标记优先使用的技能，留空表示无偏好。`chatTools.nativeTools.skillRuntime` 控制 skill 工具；模型不支持工具时只能依实际 fallback 读取正文，不能假装调用了脚本。
 
 ## 操作入口与验证
 
@@ -41,4 +41,4 @@ arguments: [focus]
 
 运行时 `skill` 工具形状为 `{"name":"目录中实际显示的名称"}`。它返回正文、实际 Skill directory 和资源路径；后续 `read`/`bash` 必须以该目录解析相对路径。`skill` 只加载，不负责安装或运行所有脚本。
 
-源码：`src-tauri/src/skills/{discover,parse,types,runtime,catalog,mod}.rs`；`src-tauri/src/settings.rs::skill_global_unavailable_error`；`src-tauri/src/chat/agent_preparation.rs::skill_allowed_for_conversation`。
+源码：`src-tauri/src/skills/{discover,parse,types,runtime,catalog,mod}.rs`；`src-tauri/src/settings.rs::skill_global_unavailable_error`。

@@ -23,7 +23,7 @@ arguments: [focus]
 - 自定义 `triggers` 之外还会有 `/<id>` 和 `/<slug(name)>` 默认触发器；name 和 id 改动会影响存储的禁用/引用关系。
 - `$ARGUMENTS` 是去除首尾空白后的完整尾部文本；`arguments` 声明的名称按空白分词做位置映射，`$ARG_FOCUS`/声明名称对应的 `$FOCUS` 取相应词，缺失取空串。**不按 Shell 引号解析多词参数**。
 - 未声明的 `$NAME` 保持原样；`$ARG_...` 特殊约定的未知参数为空。替换只扫描一次，不递归替换用户值里的 `$`。
-- `disable-model-invocation:true` 只限制自动选取，用户显式斜杠可用；全局禁用、插件/连接器门控和助手白名单仍生效。
+- `disable-model-invocation:true` 只限制自动选取，用户显式斜杠可用；全局禁用和插件/连接器门控仍生效。
 - 触发成功会固定该技能并展开正文，不会解锁它声明的工具。
 
 ## 插件命令
@@ -32,7 +32,7 @@ arguments: [focus]
 
 ## 排障
 
-用 `kivio_inspect {"topic":"skills"}` 看 command/skill 的真实 ID、source 和 path，再检查正文 frontmatter、triggers、开关与当前助手白名单。已安装却不触发时测试下一轮；同一轮 registry 已缓存。检查是否被前端内置命令拦截，优先换独特名字而不是占用内置命令。
+用 `kivio_inspect {"topic":"skills"}` 看 command/skill 的真实 ID、source 和 path，再检查正文 frontmatter、triggers 与启停设置。已安装却不触发时测试下一轮；同一轮 registry 已缓存。检查是否被前端内置命令拦截，优先换独特名字而不是占用内置命令。
 
 创建好命令后分别验证“目录发现”和“输入 `/命令 参数` 后正文按预期展开”，不要只检查文件存在。
 

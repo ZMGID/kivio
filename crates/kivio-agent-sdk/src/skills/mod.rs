@@ -7,7 +7,7 @@ pub mod parse;
 mod runtime;
 pub mod types;
 
-pub use catalog::format_catalog;
+pub use catalog::{format_catalog, format_catalog_with_preferences};
 pub use discover::{read_skill_record, read_skill_record_with};
 pub use parse::{parse_skill_markdown, parse_skill_record};
 pub use runtime::{

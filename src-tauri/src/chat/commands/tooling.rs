@@ -1,29 +1,22 @@
 use tauri::AppHandle;
 
-use crate::chat::agent_preparation as agent_prepare;
 use crate::mcp::{self, ChatToolDefinition};
-use crate::settings::{SessionModel, Settings};
+use crate::settings::{skill_globally_available, SessionModel, Settings};
 use crate::skills;
 use crate::state::AppState;
 
 /// Determine which MCP servers can survive this conversation's tool filters
 /// before opening any transports. None means unrestricted; Some([]) means none.
-pub(super) fn allowed_mcp_server_ids<'a>(
-    conversation: &'a crate::chat::Conversation,
+pub(super) fn allowed_mcp_server_ids(
+    conversation: &crate::chat::Conversation,
     settings: &Settings,
-) -> Option<&'a [String]> {
+) -> Option<&'static [String]> {
     if super::catalog::is_builder_conversation(conversation)
         || (conversation.agent_runtime.is_chat() && !settings.chat.chat_mode.mcp_read_only)
     {
         return Some(&[]);
     }
-    if crate::chat::voice_orchestrator::is_brain_conversation(conversation) {
-        return None;
-    }
-    conversation
-        .assistant_snapshot
-        .as_ref()
-        .map(|assistant| assistant.mcp_server_ids.as_slice())
+    None
 }
 
 /// Resolve explicit skill commands anywhere outside code/URLs in the user task.
@@ -34,24 +27,17 @@ pub(super) fn allowed_mcp_server_ids<'a>(
 ///
 /// `disable_model_invocation` only gates *model* auto-invocation, so it is
 /// intentionally ignored here — an explicit user slash command may still trigger
-/// such a skill. Availability is gated by `skill_allowed_for_conversation`
-/// (Settings enable list, plugin availability, assistant allow-list).
+/// such a skill. Global skill and plugin settings still apply.
 pub(super) fn try_apply_skill_slash_trigger(
     registry: &skills::SkillRegistry,
     chat_tools: &crate::settings::ChatToolsConfig,
-    assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
     content: &str,
 ) -> Option<(String, String)> {
     let matches: Vec<_> = crate::chat::slash_commands::command_ranges(content)
         .into_iter()
         .filter_map(|range| {
             let record = registry.find_by_trigger(&content[range.clone()])?;
-            agent_prepare::skill_allowed_for_conversation(
-                chat_tools,
-                assistant_snapshot,
-                &record.meta.id,
-            )
-            .then_some((range, record))
+            skill_globally_available(chat_tools, &record.meta.id).then_some((range, record))
         })
         .collect();
     let first_id = matches.first()?.1.meta.id.clone();
@@ -78,14 +64,12 @@ pub(super) fn try_apply_skill_slash_trigger(
 pub(super) fn resolve_request_skill(
     registry: &skills::SkillRegistry,
     chat_tools: &mut crate::settings::ChatToolsConfig,
-    assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
     content: &str,
     requested: Option<&str>,
 ) -> (Option<String>, Option<skills::SkillDetail>) {
-    let slash = try_apply_skill_slash_trigger(registry, chat_tools, assistant_snapshot, content);
+    let slash = try_apply_skill_slash_trigger(registry, chat_tools, content);
     let id = resolve_forced_skill_id(
         chat_tools,
-        assistant_snapshot,
         registry,
         slash.as_ref().map(|(id, _)| id.as_str()).or(requested),
     );
@@ -107,7 +91,6 @@ pub(super) fn resolve_request_skill(
 
 pub(super) fn resolve_forced_skill_id(
     chat_tools: &crate::settings::ChatToolsConfig,
-    assistant_snapshot: Option<&crate::chat::types::ChatAssistantSnapshot>,
     registry: &skills::SkillRegistry,
     requested: Option<&str>,
 ) -> Option<String> {
@@ -115,13 +98,7 @@ pub(super) fn resolve_forced_skill_id(
     let enabled = registry
         .records
         .iter()
-        .filter(|record| {
-            agent_prepare::skill_allowed_for_conversation(
-                chat_tools,
-                assistant_snapshot,
-                &record.meta.id,
-            )
-        })
+        .filter(|record| skill_globally_available(chat_tools, &record.meta.id))
         .any(|record| {
             record.meta.id == requested
                 || record.meta.name == requested

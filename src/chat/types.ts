@@ -325,12 +325,14 @@ export interface ChatAssistant {
   provider_id?: string
   providerId?: string
   model?: string
-  /** 允许使用的 MCP 服务器 id 白名单。空 = 不可用任何 MCP。 */
+  /** 优先使用的 MCP 服务器 ID。空表示无偏好。 */
   mcp_server_ids?: string[]
   mcpServerIds?: string[]
-  /** 允许激活的技能 id 白名单。空 = 不可用任何技能。 */
+  /** 优先使用的技能 ID。空表示无偏好。 */
   skill_ids?: string[]
   skillIds?: string[]
+  knowledge_base_ids?: string[]
+  knowledgeBaseIds?: string[]
   enabled?: boolean
   installed?: boolean
   archived?: boolean
@@ -356,6 +358,8 @@ export interface ChatAssistantSnapshot {
   mcpServerIds?: string[]
   skill_ids?: string[]
   skillIds?: string[]
+  knowledge_base_ids?: string[]
+  knowledgeBaseIds?: string[]
 }
 
 export type ContextUsageStatus =

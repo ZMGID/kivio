@@ -1741,18 +1741,13 @@ pub(crate) async fn chat_update_conversation(
                 };
             }
             if let Some(assistant_id) = assistant_id {
-                let trimmed = assistant_id.trim();
-                if trimmed.is_empty() {
-                    conversation.assistant_id = None;
-                    conversation.assistant_snapshot = None;
-                    conversation.active_skill_id = None;
+                let id = assistant_id.trim();
+                let snapshot = if id.is_empty() {
+                    None
                 } else {
-                    let snapshot = assistant_snapshot(&app, trimmed)?;
-                    // 切换助手不再强制激活默认技能;skill_ids 仅作白名单。
-                    conversation.active_skill_id = None;
-                    conversation.assistant_id = Some(snapshot.id.clone());
-                    conversation.assistant_snapshot = Some(snapshot);
-                }
+                    Some(assistant_snapshot(&app, id)?)
+                };
+                conversation.apply_assistant(snapshot);
             }
             if let Some(ids) = knowledge_base_ids {
                 // Drop blanks/dups; order preserved.

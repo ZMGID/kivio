@@ -187,7 +187,14 @@ pub fn assistant_snapshot(
     if !assistant_is_available(&assistant) {
         return Err("助手不可用".to_string());
     }
-    Ok(ChatAssistantSnapshot::from(&assistant))
+    let mut snapshot = ChatAssistantSnapshot::from(&assistant);
+    if !snapshot.knowledge_base_ids.is_empty() {
+        let libraries = crate::chat::knowledge_base::load_libraries(app)?;
+        snapshot
+            .knowledge_base_ids
+            .retain(|id| libraries.iter().any(|library| &library.id == id));
+    }
+    Ok(snapshot)
 }
 
 /// `enabled` 是旧版助手中心留下的兼容字段。新版以「常用 / installed」控制选择器展示，
@@ -218,6 +225,7 @@ fn normalize_assistant(assistant: &mut ChatAssistant) -> Result<(), String> {
     assistant.mcp_server_ids = normalize_string_list(&assistant.mcp_server_ids, 64, 200);
     retire_cua_mcp_server_ids(&mut assistant.mcp_server_ids);
     assistant.skill_ids = normalize_string_list(&assistant.skill_ids, 64, 200);
+    assistant.knowledge_base_ids = normalize_string_list(&assistant.knowledge_base_ids, 64, 200);
     Ok(())
 }
 

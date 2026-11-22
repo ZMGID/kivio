@@ -5,6 +5,15 @@ pub fn format_catalog(
     explicit_skill_id: Option<&str>,
     skill_enabled: impl Fn(&str) -> bool,
 ) -> String {
+    format_catalog_with_preferences(registry, explicit_skill_id, &[], skill_enabled)
+}
+
+pub fn format_catalog_with_preferences(
+    registry: &SkillRegistry,
+    explicit_skill_id: Option<&str>,
+    preferred_ids: &[String],
+    skill_enabled: impl Fn(&str) -> bool,
+) -> String {
     let explicit_skill_id = explicit_skill_id.filter(|id| !id.trim().is_empty());
     let mut skills: Vec<_> = registry
         .records
@@ -45,6 +54,9 @@ pub fn format_catalog(
             "    <location>{}</location>\n",
             xml_escape(&record.location.display().to_string())
         ));
+        if preferred_ids.contains(&record.meta.id) {
+            out.push_str("    <preference>Prefer this skill when it fits the task.</preference>\n");
+        }
         out.push_str("  </skill>\n");
     }
     out.push_str("</available_skills>");

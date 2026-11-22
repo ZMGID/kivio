@@ -488,7 +488,7 @@ async fn run_builtin_agent_node(
     let events = WorkflowAgentEvents::default();
     let executor = std::sync::Arc::new(WorkflowToolExecutor {
         app: app.clone(),
-        skills: skills::for_run(registry.clone(), None),
+        skills: skills::for_run(registry.clone()),
     });
     let retry_attempts = if settings.retry_enabled {
         settings.retry_attempts as usize

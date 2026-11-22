@@ -16,40 +16,21 @@ pub fn chat_tools_capable(
         || image_generation_enabled
 }
 
-/// Apply the active assistant snapshot's explicit MCP server policy.
-/// Native and Skill tools are unaffected; `None` means unrestricted, while an
-/// empty `mcp_server_ids` list intentionally disables every MCP tool.
-pub fn apply_assistant_mcp_restrictions(
-    tools: &mut Vec<ChatToolDefinition>,
-    assistant_snapshot: Option<&ChatAssistantSnapshot>,
+/// Mark the tools from preferred servers in the catalog sent to the model.
+pub fn apply_assistant_mcp_preferences(
+    tools: &mut [ChatToolDefinition],
+    assistant: &ChatAssistantSnapshot,
 ) {
-    let Some(assistant) = assistant_snapshot else {
-        return;
-    };
-    tools.retain(|tool| {
-        if tool.source != "mcp" {
-            return true;
+    for tool in tools {
+        if tool.source == "mcp"
+            && tool
+                .server_id
+                .as_ref()
+                .is_some_and(|id| assistant.mcp_server_ids.contains(id))
+        {
+            tool.description
+                .push_str("\nPrefer this tool when it fits the task.");
         }
-        match tool.server_id.as_deref() {
-            Some(server_id) => assistant.mcp_server_ids.iter().any(|id| id == server_id),
-            None => false,
-        }
-    });
-}
-
-/// 全局启用的技能受助手白名单限制；语音编排哨兵和无助手对话不限。
-pub fn skill_allowed_for_conversation(
-    chat_tools: &crate::settings::ChatToolsConfig,
-    assistant_snapshot: Option<&ChatAssistantSnapshot>,
-    skill_id: &str,
-) -> bool {
-    if !crate::settings::skill_globally_available(chat_tools, skill_id) {
-        return false;
-    }
-    match assistant_snapshot {
-        Some(assistant) if crate::chat::voice_orchestrator::is_brain_snapshot(assistant) => true,
-        Some(assistant) => assistant.skill_ids.iter().any(|id| id == skill_id),
-        None => true,
     }
 }
 
@@ -371,7 +352,7 @@ fn build_chat_prompt_with_segments(
         }
     }
     // 集的系统提示词：实时注入（不冻结），随集编辑对集内所有对话立即生效。作为独立段落，
-    // 与助手段并存（助手段提供人设/工具白名单，集段是这一组对话的统一指令）。
+    // 与助手段并存（助手段提供人设和工具偏好，集段是这一组对话的统一指令）。
     // 带与助手相同的标题，避免原文被埋进超长 system prompt 后模型当旁注忽略。
     if let Some(set_prompt) = set_system_prompt {
         let set_prompt = set_prompt.trim();
@@ -500,9 +481,12 @@ fn build_chat_prompt_with_segments(
             || active_skill_id.is_some()
             || chat_tools.skill_fallback_mode != "legacy_full_body");
     if include_catalog {
-        let catalog = skills::format_catalog(registry, active_skill_id, |skill_id| {
-            skill_allowed_for_conversation(chat_tools, assistant_snapshot, skill_id)
-        });
+        let preferred =
+            assistant_snapshot.map_or(&[][..], |assistant| assistant.skill_ids.as_slice());
+        let catalog =
+            skills::format_catalog_with_preferences(registry, active_skill_id, preferred, |id| {
+                crate::settings::skill_globally_available(chat_tools, id)
+            });
         if !catalog.is_empty() {
             append_context_segment(&mut context, &mut segments, "skills", "Skills", &catalog);
         }
@@ -772,6 +756,7 @@ mod tests {
             model: String::new(),
             mcp_server_ids: mcp_server_ids.into_iter().map(str::to_string).collect(),
             skill_ids: skill_ids.into_iter().map(str::to_string).collect(),
+            knowledge_base_ids: Vec::new(),
         }
     }
 
@@ -1218,75 +1203,82 @@ mod tests {
     }
 
     #[test]
-    fn assistant_mcp_restrictions_keep_only_allowed_servers() {
-        let assistant = test_assistant_snapshot(vec!["demo"], vec![]);
+    fn expert_skill_preferences_preserve_the_available_catalog() {
+        let registry = skills::SkillRegistry {
+            records: ["pdf", "review", "disabled"]
+                .into_iter()
+                .map(test_skill_record)
+                .collect(),
+            ..Default::default()
+        };
+        let mut settings = ChatToolsConfig::default();
+        settings.disabled_skill_ids.push("disabled".into());
+        for selected in [vec!["pdf", "disabled"], vec![]] {
+            let assistant = test_assistant_snapshot(vec![], selected.clone());
+            let prompt = build_chat_prompt(
+                "en",
+                false,
+                false,
+                &registry,
+                &settings,
+                true,
+                &["skill".into()],
+                None,
+                None,
+                Some(&assistant),
+                None,
+                "",
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+            );
+            let entries: Vec<_> = prompt
+                .context
+                .split("<skill>")
+                .skip(1)
+                .map(|entry| entry.split_once("</skill>").unwrap().0)
+                .collect();
+            assert_eq!(entries.len(), 2);
+            for name in ["pdf", "review"] {
+                let entry = entries
+                    .iter()
+                    .find(|entry| entry.contains(&format!("<name>{name}</name>")))
+                    .unwrap();
+                assert_eq!(entry.contains("<preference>"), selected.contains(&name));
+            }
+        }
+    }
+
+    #[test]
+    fn expert_marks_only_preferred_mcp_tools_in_the_model_catalog() {
         let mut other = test_mcp_tool();
-        other.server_id = Some("other".to_string());
-        let mut tools = vec![
-            crate::mcp::types::native_skill_activate_tool(),
-            crate::mcp::types::native_web_fetch_tool(),
-            test_mcp_tool(), // server_id = "demo"
-            other,           // server_id = "other"
-        ];
-
-        apply_assistant_mcp_restrictions(&mut tools, Some(&assistant));
-
-        // 原生工具保留,只有 allow-list 内的 MCP 工具保留。
-        assert!(tools.iter().any(|t| t.name == "skill"));
-        assert!(tools.iter().any(|t| t.name == "web_fetch"));
-        assert_eq!(tools.iter().filter(|t| t.source == "mcp").count(), 1);
-        assert!(tools
-            .iter()
-            .any(|t| t.source == "mcp" && t.server_id.as_deref() == Some("demo")));
+        other.server_id = Some("other".into());
+        other.id = "mcp__other__search".into();
+        let original = other.description.clone();
+        for preferred in [vec![], vec!["demo"]] {
+            let assistant = test_assistant_snapshot(preferred.clone(), vec![]);
+            let mut tools = vec![test_mcp_tool(), other.clone()];
+            apply_assistant_mcp_preferences(&mut tools, &assistant);
+            let models: Vec<_> = tools
+                .iter()
+                .map(crate::chat::model::ModelTool::from)
+                .collect();
+            assert_ne!(models[0].name, models[1].name);
+            assert_eq!(
+                models[0].description.contains("Prefer"),
+                !preferred.is_empty()
+            );
+            assert_eq!(models[1].description, original);
+        }
     }
 
     #[test]
-    fn assistant_empty_mcp_list_drops_all_mcp_tools() {
-        let assistant = test_assistant_snapshot(vec![], vec![]);
-        let mut tools = vec![crate::mcp::types::native_web_fetch_tool(), test_mcp_tool()];
-
-        apply_assistant_mcp_restrictions(&mut tools, Some(&assistant));
-
-        assert!(tools.iter().all(|t| t.source != "mcp"));
-        assert!(tools.iter().any(|t| t.name == "web_fetch"));
-    }
-
-    #[test]
-    fn no_assistant_does_not_restrict_mcp() {
-        let mut tools = vec![test_mcp_tool()];
-        apply_assistant_mcp_restrictions(&mut tools, None);
-        assert_eq!(tools.len(), 1);
-    }
-
-    #[test]
-    fn skill_allowed_respects_assistant_allow_list() {
-        let chat_tools = crate::settings::ChatToolsConfig::default(); // 默认无禁用技能
-        let assistant = test_assistant_snapshot(vec![], vec!["doc"]);
-
-        assert!(skill_allowed_for_conversation(
-            &chat_tools,
-            Some(&assistant),
-            "doc",
-        ));
-        // 不在白名单内的技能被拒。
-        assert!(!skill_allowed_for_conversation(
-            &chat_tools,
-            Some(&assistant),
-            "pdf",
-        ));
-        // 无助手 = 不限(只看全局 enable)。
-        assert!(skill_allowed_for_conversation(&chat_tools, None, "pdf"));
-        let mut brain = test_assistant_snapshot(vec![], vec![]);
-        brain.id = "asst_voice_orchestrator".into();
-        assert!(skill_allowed_for_conversation(
-            &chat_tools,
-            Some(&brain),
-            "pdf"
-        ));
-    }
-
-    #[test]
-    fn skill_fallback_switches_to_markdown_when_assistant_disables_tools() {
+    fn skill_fallback_switches_to_markdown_when_tools_are_unavailable() {
         let mut chat_tools = crate::settings::ChatToolsConfig::default();
 
         apply_skill_fallback_when_tools_unavailable(&mut chat_tools, Some("doc"), false);

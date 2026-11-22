@@ -668,11 +668,22 @@ pub(crate) async fn create_chat_conversation_internal(
         } else {
             None
         };
+        // A customized blank chat is still a separate conversation. Starting with
+        // an expert must use its current defaults, including after the expert was edited.
+        let reusable = reusable.filter(|conv| {
+            assistant_snapshot.as_ref().is_none_or(|assistant| {
+                conv.knowledge_base_ids == assistant.knowledge_base_ids
+                    && conv
+                        .assistant_snapshot
+                        .as_ref()
+                        .is_some_and(|old| old.knowledge_base_ids == assistant.knowledge_base_ids)
+            })
+        });
         if let Some(conversation) = reusable {
             conversation
         } else {
             let now = chrono::Local::now().timestamp();
-            let conversation = Conversation {
+            let mut conversation = Conversation {
                 builtin_history: None,
                 external_history: None,
                 external_cwd: None,
@@ -684,12 +695,10 @@ pub(crate) async fn create_chat_conversation_internal(
                 provider_id,
                 model,
                 messages: vec![],
-                // 助手不再有「默认单技能」;skill_ids 只是白名单,不强制激活某个技能。
+                // 专家选择的技能仅表示优先使用。
                 active_skill_id: None,
-                assistant_id: assistant_snapshot
-                    .as_ref()
-                    .map(|assistant| assistant.id.clone()),
-                assistant_snapshot,
+                assistant_id: None,
+                assistant_snapshot: None,
                 created_at: now,
                 updated_at: now,
                 pinned: false,
@@ -712,6 +721,7 @@ pub(crate) async fn create_chat_conversation_internal(
                 agent_runtime: settings.chat.default_agent_runtime.clone(),
             };
 
+            conversation.apply_assistant(assistant_snapshot);
             crate::chat::repository::repository(app)
                 .create(app, conversation)
                 .await
@@ -972,6 +982,7 @@ pub(super) fn assistant_from_builder_args(arguments: &Value) -> Result<ChatAssis
         model: String::new(),
         mcp_server_ids: str_arr("mcp_server_ids"),
         skill_ids: str_arr("skill_ids"),
+        knowledge_base_ids: str_arr("knowledge_base_ids"),
         enabled: true,
         installed: true,
         archived: false,
@@ -1030,17 +1041,24 @@ fn builder_system_prompt(app: &AppHandle, settings: &Settings) -> String {
         }
         Err(_) => "（无可用技能）".to_string(),
     };
+    let libraries = crate::chat::knowledge_base::load_libraries(app).unwrap_or_default();
+    let knowledge_block = libraries
+        .iter()
+        .map(|lib| format!("- {} ({})", lib.id, lib.name))
+        .collect::<Vec<_>>()
+        .join("\n");
     format!(
         "你是「专家搭建助手」。任务:通过对话帮用户创建一个新的 Kivio 专家(assistant),最后调用 save_assistant 工具落库。回答语言跟随用户。\n\n\
 流程:\n\
 1. 先用一两个问题问清这个专家「要做什么、面向什么场景、语气/风格、有没有边界或禁忌」。一次只问一两个,别一次性列一堆。\n\
 2. 据此为它撰写 system_prompt(这是该专家自己的系统指令,用第二人称写给它)。\n\
-3. 判断它需要哪些 MCP 服务器和技能,只能从下面「可用」列表里选并给出精确 id;用不到就留空。\n\
-4. 调用 save_assistant 前,先把完整配置(名称/描述/系统提示词要点/选用的 MCP/技能)复述给用户,得到明确确认后再调用;确认前不要调用工具。\n\
+3. 判断它应优先使用哪些 MCP 服务器和技能,只能从下面「可用」列表里选并给出精确 id;用不到就留空。\n\
+4. 调用 save_assistant 前,先把完整配置(名称/描述/系统提示词要点/选用的 MCP/技能和默认知识库)复述给用户,得到明确确认后再调用;确认前不要调用工具。\n\
 5. save_assistant 成功后,简短告诉用户已创建、可在「专家套件」查看。\n\n\
 可用 MCP 服务器(格式 id (名称)):\n{mcp_block}\n\n\
 可用技能(格式 id (名称)):\n{skills_block}\n\n\
-注意:mcp_server_ids / skill_ids 必须使用上面列出的精确 id,不要编造;name 与 system_prompt 必填。"
+可选默认知识库(可多选，格式 id (名称)):\n{knowledge_block}\n\n\
+注意:mcp_server_ids / skill_ids / knowledge_base_ids 必须使用上面列出的精确 id,不要编造;name 与 system_prompt 必填。"
     )
 }
 
@@ -1080,6 +1098,7 @@ pub(crate) async fn chat_create_builder_conversation(
         model: String::new(),
         mcp_server_ids: Vec::new(),
         skill_ids: Vec::new(),
+        knowledge_base_ids: Vec::new(),
     };
 
     let now = chrono::Local::now().timestamp();

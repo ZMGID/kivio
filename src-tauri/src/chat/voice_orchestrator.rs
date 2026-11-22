@@ -40,6 +40,7 @@ fn brain_snapshot() -> ChatAssistantSnapshot {
         model: String::new(),
         mcp_server_ids: Vec::new(),
         skill_ids: Vec::new(),
+        knowledge_base_ids: Vec::new(),
     }
 }
 

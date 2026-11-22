@@ -593,7 +593,12 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
                 false,
             )
             .await?;
-        let skill_registry = resources.skills.clone();
+        let builder_mode = is_builder_conversation(conversation);
+        let skill_registry = if builder_mode {
+            std::sync::Arc::default()
+        } else {
+            resources.skills.clone()
+        };
         let mut effective_chat_tools = settings.chat_tools.clone();
         // Read the stored text, before attachment/vision augmentation, so those
         // documents never become slash arguments. This also covers edited retries.
@@ -617,13 +622,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         if let Some(record) = requested_skill.and_then(|id| skill_registry.find(id)) {
             selected.push(record.meta.id.clone());
         }
-        selected.retain(|id| {
-            agent_prepare::skill_allowed_for_conversation(
-                &effective_chat_tools,
-                conversation.assistant_snapshot.as_ref(),
-                id,
-            )
-        });
+        selected.retain(|id| crate::settings::skill_globally_available(&effective_chat_tools, id));
         selected.sort();
         selected.dedup();
         let request_registry = if selected.is_empty() {
@@ -641,7 +640,6 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         let (skill_id, active_skill_detail) = resolve_request_skill(
             &request_registry,
             &mut effective_chat_tools,
-            conversation.assistant_snapshot.as_ref(),
             if conversation.agent_runtime.is_chat() {
                 ""
             } else {
@@ -706,13 +704,6 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         if video_plan.model.is_some() {
             tools.push(crate::chat::video_analysis::tool_definition());
         }
-        if !is_brain {
-            agent_prepare::apply_assistant_mcp_restrictions(
-                &mut tools,
-                conversation.assistant_snapshot.as_ref(),
-            );
-        }
-        let builder_mode = is_builder_conversation(conversation);
         if builder_mode {
             // 搭建会话只暴露 save_assistant,屏蔽文件/命令/MCP/技能等,保持聚焦。
             tools.clear();
@@ -734,10 +725,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
             apply_web_search_mode_tool_filter(&mut tools, web_search_mode, &settings);
         }
         append_voice_orchestration_tools(&mut tools, is_brain);
-        crate::chat::plan_document::append_tools(
-            &mut tools,
-            plan_mode && !is_builder_conversation(conversation),
-        );
+        crate::chat::plan_document::append_tools(&mut tools, plan_mode && !builder_mode);
         let user_tools_available = (tools_capable || is_brain) && !tools.is_empty();
         agent_prepare::apply_skill_fallback_when_tools_unavailable(
             &mut effective_chat_tools,
@@ -768,6 +756,9 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         } else {
             false
         };
+        if let Some(assistant) = &conversation.assistant_snapshot {
+            agent_prepare::apply_assistant_mcp_preferences(&mut tools, assistant);
+        }
         super::tooling::move_mcp_tools_to_end(&mut tools);
         crate::chat::tool_on_demand::configure_tools(
             &mut tools,
@@ -998,10 +989,7 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         };
         let executor = std::sync::Arc::new(RegistryToolExecutor {
             app: app.clone(),
-            skills: crate::skills::for_run(
-                skill_registry.clone(),
-                conversation.assistant_snapshot.as_ref(),
-            ),
+            skills: crate::skills::for_run(skill_registry.clone()),
             video_analysis: tokio::sync::Mutex::new(crate::chat::video_analysis::VideoTool::new(
                 conversation.clone(),
                 video_plan,

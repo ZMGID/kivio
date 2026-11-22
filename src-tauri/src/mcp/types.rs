@@ -606,8 +606,9 @@ pub fn native_save_assistant_tool() -> ChatToolDefinition {
                 "icon": { "type": "string", "description": "Optional short icon label/emoji" },
                 "color": { "type": "string", "description": "Optional hex color like #6A8FBD" },
                 "system_prompt": { "type": "string", "description": "The assistant's own system instructions" },
-                "mcp_server_ids": { "type": "array", "items": { "type": "string" }, "description": "Allowed MCP server ids (exact ids from the available list; empty = none)" },
-                "skill_ids": { "type": "array", "items": { "type": "string" }, "description": "Allowed skill ids (exact ids from the available list; empty = none)" }
+                "mcp_server_ids": { "type": "array", "items": { "type": "string" }, "description": "Preferred MCP server ids (exact ids from the available list; empty = no preference)" },
+                "skill_ids": { "type": "array", "items": { "type": "string" }, "description": "Preferred skill ids (exact ids from the available list; empty = no preference)" },
+                "knowledge_base_ids": { "type": "array", "items": { "type": "string" }, "description": "Default knowledge libraries to attach when using this assistant (exact ids from the available list)" }
             },
             "required": ["name", "system_prompt"]
         }),

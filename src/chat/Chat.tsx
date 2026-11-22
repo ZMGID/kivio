@@ -1733,6 +1733,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     currentConversationRef,
     navigation,
     identity: assistantIdentity,
+    welcomeKnowledgeBaseIds: draftKnowledgeBaseIds,
     refreshSidebar,
     refreshContextStats,
     applyConversationIfCurrent,
@@ -1956,7 +1957,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         setId: options.embedded ? null : selectedSet?.id ?? null,
         draft: {
           agentRuntime: options.embedded ? BUILTIN_AGENT_RUNTIME : draftAgentRuntime,
-          knowledgeBaseIds: options.embedded ? [] : draftKnowledgeBaseIds,
+          knowledgeBaseIds: options.embedded || (currentConversation && !options.forceNewConversation)
+            ? [] : draftKnowledgeBaseIds,
           forceKnowledgeSearch: options.embedded ? false : draftForceKnowledgeSearch,
           additionalDirectories: options.embedded ? [] : draftAdditionalDirectories,
           thinkingLevel: draftThinkingLevel,

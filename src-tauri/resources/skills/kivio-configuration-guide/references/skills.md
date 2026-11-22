@@ -17,6 +17,6 @@
 
 ## 看不到 / 不调用
 
-先读 [发现与调用](discovery.md)，按顺序核对：根目录与扫描深度 → frontmatter → 同 ID 覆盖 → `disabledSkillIds` → 插件/连接器门控 → 当前助手 `skillIds` 白名单 → `nativeTools.skillRuntime` 与工具能力 → `disable-model-invocation` → 当前运行时/缓存。
+先读 [发现与调用](discovery.md)，按顺序核对：根目录与扫描深度 → frontmatter → 同 ID 覆盖 → `disabledSkillIds` → 插件/连接器门控 → `nativeTools.skillRuntime` 与工具能力 → `disable-model-invocation` → 当前运行时/缓存。
 
 `recommended-tools` 只是提示，不会启用工具或扩大权限；`agents/openai.yaml` 的显示和调用策略不由 Kivio 此解析器处理。发现问题时修正一层后再测试，不同时改所有开关。工具名不存在不能凭技能文字调用。

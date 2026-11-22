@@ -3227,7 +3227,7 @@ async fn execute(
     let executor = Arc::new(Executor {
         app: app.clone(),
         host: host.clone(),
-        skills: crate::skills::for_run(skills.clone(), None),
+        skills: crate::skills::for_run(skills.clone()),
     });
     tools.retain(|tool| tool.id != "native__yield");
     append_yield(&mut tools, &host.options);

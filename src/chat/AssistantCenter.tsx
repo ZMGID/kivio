@@ -23,6 +23,7 @@ import { Checkbox, Input, SearchInput, Select, TextArea } from '../settings/publ
 import { useT } from '../components/i18n'
 import { AgentIcon } from '../settings/public/icons'
 import { chatApi } from './api'
+import { kbListLibraries, type KnowledgeLibrary } from './knowledgeBase'
 import type { ChatAssistant, SkillMeta } from './types'
 import { confirmDialog } from '../components/dialogQueue'
 import { useWindowStore } from '../utils/windowStore'
@@ -86,6 +87,7 @@ function createBlankAssistant(): AssistantDraft {
     model: '',
     mcp_server_ids: [],
     skill_ids: [],
+    knowledge_base_ids: [],
     enabled: true,
     installed: true,
     archived: false,
@@ -226,6 +228,7 @@ export function AssistantCenter({
   const t = useT()
   const [session] = useWindowStore(assistantDraftStore)
   const [assistants, setAssistants] = useState<ChatAssistant[]>([])
+  const [libraries, setLibraries] = useState<KnowledgeLibrary[]>([])
   const [providers, setProviders] = useState<ModelProvider[]>([])
   const [mcpServers, setMcpServers] = useState<Array<{ id: string; name: string }>>([])
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -296,6 +299,17 @@ export function AssistantCenter({
     }
   }, [loadAssistants])
 
+  useEffect(() => {
+    if (view === 'list') return
+    let active = true
+    void kbListLibraries().then((items) => {
+      if (active) setLibraries(items)
+    }).catch((err: unknown) => {
+      if (active) setError(String(err))
+    })
+    return () => { active = false }
+  }, [view])
+
   const selectedAssistant = useMemo(
     () => assistants.find((assistant) => assistant.id === selectedId) ?? null,
     [assistants, selectedId],
@@ -319,6 +333,7 @@ export function AssistantCenter({
   const models = providerModels(selectedProvider)
   const draftMcpIds = assistantMcpIds(draft)
   const draftSkillIds = assistantSkillIds(draft)
+  const draftLibraryIds = draft?.knowledge_base_ids ?? draft?.knowledgeBaseIds ?? []
   const canApplyCurrent = Boolean(onApplyAssistant)
   const installedCount = assistants.filter((assistant) => assistant.installed !== false).length
 
@@ -564,6 +579,7 @@ export function AssistantCenter({
     if (!assistant) return renderList()
     const usedMcpIds = assistantMcpIds(assistant)
     const usedSkillIds = assistantSkillIds(assistant)
+    const libraryIds = assistant.knowledge_base_ids ?? assistant.knowledgeBaseIds ?? []
     const mcpNames = usedMcpIds.map((id) => mcpServers.find((s) => s.id === id)?.name ?? id)
     const skillNames = usedSkillIds.map((id) => skills.find((s) => s.id === id)?.name ?? id)
     const systemPrompt = assistant.system_prompt ?? assistant.systemPrompt ?? ''
@@ -655,7 +671,7 @@ export function AssistantCenter({
           <section className="space-y-3">
             <h3 className="flex items-center gap-2 text-[17px] font-semibold text-neutral-950">
               <Wrench size={16} className="text-neutral-400" />
-              MCP <span className="text-neutral-400">({mcpNames.length})</span>
+              {t.chatAssistantMcpServers} <span className="text-neutral-400">({mcpNames.length})</span>
             </h3>
             <div className="flex flex-wrap gap-1.5">
               {mcpNames.length === 0 ? (
@@ -683,6 +699,18 @@ export function AssistantCenter({
               ))}
             </div>
           </section>
+          {libraryIds.length > 0 && (
+            <section className="space-y-3">
+              <h3 className="text-[17px] font-semibold text-neutral-950">{t.chatAssistantKnowledgeBases}</h3>
+              <div className="flex flex-wrap gap-1.5">
+                {libraryIds.map((id) => (
+                  <span key={id} className="rounded-md bg-neutral-100 px-2.5 py-1 text-[12px] text-neutral-700">
+                    {libraries.find((library) => library.id === id)?.name ?? id}
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       </div>
     )
@@ -807,6 +835,22 @@ export function AssistantCenter({
                       onChange={() => updateDraft('skill_ids', toggleId(draftSkillIds, skill.id))}
                     >
                       <span className="block truncate">{skill.name}</span>
+                    </Checkbox>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <div className="text-[12px] font-medium text-neutral-600">{t.chatAssistantKnowledgeBases}</div>
+                <div className="custom-scrollbar max-h-56 space-y-1 overflow-y-auto rounded-md border border-neutral-200 p-2">
+                  {libraries.length === 0 && <div className="px-1 py-2 text-[12px] text-neutral-400">{t.chatKnowledgeEmptyTitle}</div>}
+                  {libraries.map((library) => (
+                    <Checkbox
+                      key={library.id}
+                      className="flex w-full rounded px-1.5 py-1.5 hover:bg-neutral-900/[0.04]"
+                      checked={draftLibraryIds.includes(library.id)}
+                      onChange={() => updateDraft('knowledge_base_ids', toggleId(draftLibraryIds, library.id))}
+                    >
+                      <span className="block truncate">{library.name}</span>
                     </Checkbox>
                   ))}
                 </div>

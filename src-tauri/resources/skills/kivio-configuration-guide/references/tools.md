@@ -8,7 +8,7 @@
 
 `kivio_inspect` 的 `topic` 为 `status`（默认）、`skills`、`plugins`、`mcp`、`hooks`。只读内存/文件/注册信息，不启动依赖、不联网测试。摘要不返回 API keys、完整 MCP command/args/env/header/auth 或 Hook 脚本。
 
-status 的版本来自当前二进制，默认模型来自应用设置，不能据此替代本轮上下文里的运行时和会话模型。skills 的 globallyAvailable 只含全局门控，不含助手白名单。plugins 分为通用 packages 和预设 CLI catalog，catalog 开关不证明 binary 已安装。
+status 的版本来自当前二进制，默认模型来自应用设置，不能据此替代本轮上下文里的运行时和会话模型。skills 的 globallyAvailable 反映全局设置和插件状态。plugins 分为通用 packages 和预设 CLI catalog，catalog 开关不证明 binary 已安装。
 
 ## 修改
 

@@ -44,6 +44,9 @@ vi.mock('./api', () => ({
     duplicateAssistant: mocks.duplicate,
   },
 }))
+vi.mock('./knowledgeBase', () => ({
+  kbListLibraries: async () => [{ id: 'kb_a', name: 'Product docs' }, { id: 'kb_b', name: 'Support FAQ' }],
+}))
 vi.mock('../api/tauri', () => ({
   api: { onChatAssistantsChanged: async () => () => {} },
 }))
@@ -300,4 +303,25 @@ it('opens a duplicate while its detail stays current', async () => {
     fireEvent.click(screen.getByRole('button', { name: 'chatAssistantDuplicate' }))
   })
   expect(screen.getByLabelText('chatAssistantName')).toHaveValue('Helper copy')
+})
+
+it('saves multiple default libraries and allows removing a default when editing again', async () => {
+  const page = mount()
+  await editNamed('Helper')
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Product docs' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Support FAQ' }))
+  await save()
+  const saved = mocks.update.mock.lastCall?.[0]
+  expect(saved.knowledge_base_ids).toEqual(['kb_a', 'kb_b'])
+  page.unmount()
+  resetAssistantDraftStore()
+  mocks.assistants = [saved]
+  mount()
+  await editNamed('Helper')
+  const docs = await screen.findByRole('checkbox', { name: 'Product docs' })
+  expect(docs).toBeChecked()
+  expect(screen.getByRole('checkbox', { name: 'Support FAQ' })).toBeChecked()
+  fireEvent.click(docs)
+  await save()
+  expect(mocks.update.mock.lastCall?.[0].knowledge_base_ids).toEqual(['kb_b'])
 })

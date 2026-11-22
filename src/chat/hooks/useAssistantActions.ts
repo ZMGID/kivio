@@ -21,6 +21,7 @@ export interface UseAssistantActionsOptions {
     ChatNavigationController,
     'beginConversationCreation' | 'isConversationCreationCurrent' | 'commitCreatedConversation'
   >
+  welcomeKnowledgeBaseIds?: string[]
   identity: AssistantActionIdentity
   refreshSidebar: () => void
   refreshContextStats: (conversationId: string) => Promise<void>
@@ -42,6 +43,7 @@ export function useAssistantActions({
   currentConversationRef,
   navigation,
   identity,
+  welcomeKnowledgeBaseIds,
   refreshSidebar,
   refreshContextStats,
   applyConversationIfCurrent,
@@ -54,7 +56,8 @@ export function useAssistantActions({
     try {
       const assistantProviderId = assistant.provider_id ?? assistant.providerId ?? ''
       const assistantModel = assistant.model ?? ''
-      const conv = await chatApi.createConversation(
+      const draftIds = currentConversationRef.current ? [] : welcomeKnowledgeBaseIds ?? []
+      let conv = await chatApi.createConversation(
         assistantProviderId || identity.activeProviderId || undefined,
         assistantModel || identity.activeModel || undefined,
         identity.projectName,
@@ -62,6 +65,10 @@ export function useAssistantActions({
         assistant.id,
         identity.setId ?? null,
       )
+      const mounted = conv.knowledge_base_ids ?? conv.knowledgeBaseIds ?? []
+      if (draftIds.some((id) => !mounted.includes(id))) {
+        conv = await chatApi.updateConversation(conv.id, { knowledgeBaseIds: [...new Set([...mounted, ...draftIds])] })
+      }
       refreshSidebar()
       if (navigation.commitCreatedConversation(creation, conv)) {
         setStreamError('')
@@ -72,7 +79,7 @@ export function useAssistantActions({
         setStreamError(errorMessage(err, '创建助手对话失败'))
       }
     }
-  }, [identity, navigation, refreshSidebar, setAssistantStreamStatsByMessageId])
+  }, [currentConversationRef, identity, navigation, refreshSidebar, setAssistantStreamStatsByMessageId, welcomeKnowledgeBaseIds])
 
   const startBuilderChat = useCallback(async () => {
     const creation = navigation.beginConversationCreation()

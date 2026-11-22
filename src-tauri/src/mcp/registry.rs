@@ -1099,7 +1099,7 @@ async fn call_skill_tool(
         })
         .await
         .map_err(|e| e.to_string())??;
-        crate::skills::for_run(std::sync::Arc::new(registry), None)
+        crate::skills::for_run(std::sync::Arc::new(registry))
     };
     let record = context
         .registry()

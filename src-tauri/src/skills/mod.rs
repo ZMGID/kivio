@@ -8,8 +8,8 @@ pub use discover::{
     legacy_app_data_skills_dir, read_skill_record, user_skills_dir,
 };
 pub use kivio_agent_sdk::skills::{
-    activate_skill, extract_skill_name, format_catalog, parse, slugify, substitute_arguments,
-    SkillTool,
+    activate_skill, extract_skill_name, format_catalog_with_preferences, parse, slugify,
+    substitute_arguments, SkillTool,
 };
 pub use parse::parse_skill_markdown;
 pub use runtime::{for_run, read_selected, SkillRunContext};

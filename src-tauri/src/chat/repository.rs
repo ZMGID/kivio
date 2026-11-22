@@ -1227,8 +1227,8 @@ impl ConversationRepository {
                     assistant_id,
                     assistant_snapshot,
                 } => {
+                    conversation.apply_assistant(assistant_snapshot);
                     conversation.assistant_id = assistant_id;
-                    conversation.assistant_snapshot = assistant_snapshot;
                 }
                 ConversationMetadataMutation::Pinned(value) => conversation.pinned = value,
                 ConversationMetadataMutation::Location {

@@ -26,7 +26,7 @@
 
 ## 诊断顺序
 
-1. **身份/开关**：是否独立 server、enabled 是否 true；`enabledTools:[]` 表示不过滤工具，不是全部禁用。助手 MCP 白名单、Kivio Chat 只读筛选和规划模式还会进一步过滤。
+1. **身份/开关**：是否独立 server、enabled 是否 true；`enabledTools:[]` 表示不过滤工具，不是全部禁用。Kivio Chat 只读筛选和规划模式还会进一步过滤。专家勾选的服务器表示优先使用。
 2. **启动**：stdio 可执行文件是否真存在/在宿主 PATH，参数是否独立，cwd 是否正确。终端能运行不保证 GUI 进程 PATH 相同。不要把 Git Bash 语法塞进直接启动的 command/args。
 3. **协议**：stdio stdout 必须是 MCP 消息；安装进度/日志发 stderr。HTTP 使用 `streamable_http`，不是 settings 中的 `http` 或旧 SSE 模式。插件 `.mcp.json` 可用 `type:"http"`，由插件加载器转换，别混淆两种 schema。
 4. **认证**：只检查密钥是否存在和 header/env 名称。401/403 先看认证；TLS、404、DNS 和启动失败分别处理，不能全部归因于模型不支持。URL 不内嵌用户名密码。OAuth 连接器通过连接器授权页续期。

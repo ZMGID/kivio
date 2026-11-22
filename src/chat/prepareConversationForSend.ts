@@ -124,11 +124,11 @@ export async function prepareConversationForSend(
   }
 
   const kb = conversation.knowledge_base_ids ?? conversation.knowledgeBaseIds ?? []
-  if (draft.knowledgeBaseIds.length > 0 && (
-    kb.length !== draft.knowledgeBaseIds.length || !kb.every((id) => draft.knowledgeBaseIds.includes(id))
-  )) {
+  // A welcome-page draft can add sources to the defaults supplied by the expert.
+  const selectedIds = [...new Set([...kb, ...draft.knowledgeBaseIds])]
+  if (selectedIds.length > kb.length) {
     const error = await apply('knowledgeBase', () => persistence.updateConversation(conversation!.id, {
-      knowledgeBaseIds: draft.knowledgeBaseIds,
+      knowledgeBaseIds: selectedIds,
     }))
     if (error) return error
   }

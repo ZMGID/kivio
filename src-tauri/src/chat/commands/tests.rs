@@ -235,7 +235,8 @@ fn builder_args_produce_valid_assistant() {
         "system_prompt": "你是写作助手。",
         "description": "写文案",
         "mcp_server_ids": ["mcp-1", "  ", "mcp-2"],
-        "skill_ids": ["doc"]
+        "skill_ids": ["doc"],
+        "knowledge_base_ids": ["kb_docs", "kb_faq"]
     });
     let a = assistant_from_builder_args(&args).expect("should parse");
     assert!(a.id.starts_with("asst_"));
@@ -245,6 +246,28 @@ fn builder_args_produce_valid_assistant() {
     assert!(!a.built_in);
     assert_eq!(a.mcp_server_ids, vec!["mcp-1", "mcp-2"]); // 空串被过滤
     assert_eq!(a.skill_ids, vec!["doc"]);
+    assert_eq!(a.knowledge_base_ids, ["kb_docs", "kb_faq"]);
+}
+
+#[test]
+fn expert_knowledge_defaults_follow_switches_and_leave_manual_sources_attached() {
+    let mut chat = test_conversation_with_messages(vec![]);
+    chat.knowledge_base_ids.push("kb_manual".into());
+    let expert = |id: &str, ids: &[&str]| {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "name": id, "knowledge_base_ids": ids,
+        }))
+        .unwrap()
+    };
+    chat.apply_assistant(Some(expert("a", &["kb_one", "kb_shared"])));
+    assert_eq!(
+        chat.knowledge_base_ids,
+        ["kb_manual", "kb_one", "kb_shared"]
+    );
+    chat.apply_assistant(Some(expert("b", &["kb_shared"])));
+    assert_eq!(chat.knowledge_base_ids, ["kb_manual", "kb_shared"]);
+    chat.apply_assistant(None);
+    assert_eq!(chat.knowledge_base_ids, ["kb_manual"]);
 }
 
 #[test]
@@ -291,7 +314,7 @@ fn slash_trigger_prepares_instructions_and_pins_skill() {
     let chat_tools = crate::settings::ChatToolsConfig::default();
 
     let (skill_id, rewritten) =
-        try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix login")
+        try_apply_skill_slash_trigger(&registry, &chat_tools, "/commit fix login")
             .expect("slash trigger should match");
 
     assert_eq!(skill_id, "commit");
@@ -316,13 +339,8 @@ fn slash_trigger_keeps_user_task_and_loads_instructions_once() {
         for tools_available in [false, true] {
             let mut chat_tools = crate::settings::ChatToolsConfig::default();
             chat_tools.skill_fallback_mode = "progressive".to_string();
-            let (id, detail) = resolve_request_skill(
-                &registry,
-                &mut chat_tools,
-                None,
-                input,
-                Some("another-skill"),
-            );
+            let (id, detail) =
+                resolve_request_skill(&registry, &mut chat_tools, input, Some("another-skill"));
             assert_eq!(id.as_deref(), Some("frontend-design"));
             let prompt = agent_prepare::build_chat_prompt(
                 "zh-CN",
@@ -373,7 +391,7 @@ fn slash_trigger_resolves_arguments_without_changing_registry_or_other_turns() {
         ("/ci fix logout", "fix logout"),
     ] {
         let mut config = crate::settings::ChatToolsConfig::default();
-        let (_, detail) = resolve_request_skill(&registry, &mut config, None, input, None);
+        let (_, detail) = resolve_request_skill(&registry, &mut config, input, None);
         assert!(detail
             .unwrap()
             .body
@@ -382,7 +400,7 @@ fn slash_trigger_resolves_arguments_without_changing_registry_or_other_turns() {
     assert!(registry.records[0].body.contains("$ARGUMENTS"));
     let mut config = crate::settings::ChatToolsConfig::default();
     config.skill_fallback_mode = "progressive".to_string();
-    let (id, detail) = resolve_request_skill(&registry, &mut config, None, "next task", None);
+    let (id, detail) = resolve_request_skill(&registry, &mut config, "next task", None);
     assert!(id.is_none() && detail.is_none());
     assert_eq!(config.skill_fallback_mode, "progressive");
 }
@@ -392,8 +410,8 @@ fn slash_trigger_ignores_non_slash_and_unknown() {
     let registry = slash_skill_registry(slash_skill_record("commit", "Commit", vec!["/commit"]));
     let chat_tools = crate::settings::ChatToolsConfig::default();
 
-    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "commit fix").is_none());
-    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/unknown x").is_none());
+    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, "commit fix").is_none());
+    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, "/unknown x").is_none());
 }
 
 #[test]
@@ -405,7 +423,7 @@ fn slash_trigger_activates_inline_skills_without_losing_the_task() {
         "please /commit fix login",
         "please\n/commit fix login",
     ] {
-        let (id, body) = try_apply_skill_slash_trigger(&registry, &config, None, content).unwrap();
+        let (id, body) = try_apply_skill_slash_trigger(&registry, &config, content).unwrap();
         assert_eq!(id, "commit");
         assert!(body.contains("Write a commit for: fix login"));
     }
@@ -415,7 +433,7 @@ fn slash_trigger_activates_inline_skills_without_losing_the_task() {
         "/commit/file",
         "> /commit",
     ] {
-        assert!(try_apply_skill_slash_trigger(&registry, &config, None, content).is_none());
+        assert!(try_apply_skill_slash_trigger(&registry, &config, content).is_none());
     }
 }
 
@@ -433,7 +451,6 @@ fn slash_trigger_loads_multiple_inline_skills_once() {
     let (id, detail) = resolve_request_skill(
         &registry,
         &mut config,
-        None,
         "please /review changes then /commit fix login /review again",
         None,
     );
@@ -450,40 +467,18 @@ fn slash_trigger_skips_disabled_skill() {
     let mut chat_tools = crate::settings::ChatToolsConfig::default();
     chat_tools.disabled_skill_ids = vec!["commit".to_string()];
 
-    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, None, "/commit fix").is_none());
+    assert!(try_apply_skill_slash_trigger(&registry, &chat_tools, "/commit fix").is_none());
 }
 
 #[test]
-fn slash_trigger_respects_assistant_policy_but_allows_explicit_only_skills() {
+fn slash_trigger_allows_explicit_only_skills() {
     let mut record = slash_skill_record("commit", "Commit", vec![]);
     record.meta.disable_model_invocation = true;
     let registry = slash_skill_registry(record);
     let mut config = crate::settings::ChatToolsConfig::default();
     config.skill_fallback_mode = "progressive".to_string();
-    let (id, _) = resolve_request_skill(&registry, &mut config, None, "/commit fix", None);
+    let (id, _) = resolve_request_skill(&registry, &mut config, "/commit fix", None);
     assert_eq!(id.as_deref(), Some("commit"));
-
-    let assistant = crate::chat::types::ChatAssistantSnapshot {
-        id: "restricted".to_string(),
-        name: "Restricted".to_string(),
-        description: String::new(),
-        source: "user".to_string(),
-        system_prompt: String::new(),
-        provider_id: String::new(),
-        model: String::new(),
-        mcp_server_ids: vec![],
-        skill_ids: vec![],
-    };
-    config.skill_fallback_mode = "progressive".to_string();
-    let (id, detail) = resolve_request_skill(
-        &registry,
-        &mut config,
-        Some(&assistant),
-        "/commit fix",
-        None,
-    );
-    assert!(id.is_none() && detail.is_none());
-    assert_eq!(config.skill_fallback_mode, "progressive");
 }
 
 fn test_provider(id: &str, name: &str, enabled_models: Vec<&str>) -> ModelProvider {
@@ -3624,6 +3619,12 @@ fn test_conversation_with_messages(messages: Vec<ChatMessage>) -> Conversation {
 #[test]
 fn chat_without_read_only_mcp_skips_discovery_before_tool_filtering() {
     let mut conversation = test_conversation_with_messages(Vec::new());
+    conversation.assistant_snapshot = Some(
+        serde_json::from_value(serde_json::json!({
+            "id": "expert", "name": "Expert", "mcp_server_ids": ["docs"]
+        }))
+        .unwrap(),
+    );
     conversation.agent_runtime.kind = crate::chat::AgentRuntimeKind::Chat;
     let mut settings = Settings::default();
     settings.chat.chat_mode.mcp_read_only = false;

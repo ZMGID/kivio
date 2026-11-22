@@ -208,6 +208,7 @@ function normalizeAssistant(assistant: ChatAssistant): ChatAssistant {
     model: (assistant.model ?? '').trim(),
     mcp_server_ids: assistant.mcp_server_ids ?? assistant.mcpServerIds ?? [],
     skill_ids: assistant.skill_ids ?? assistant.skillIds ?? [],
+    knowledge_base_ids: assistant.knowledge_base_ids ?? assistant.knowledgeBaseIds ?? [],
     enabled: assistant.enabled ?? true,
     installed: assistant.installed ?? true,
     archived: assistant.archived ?? false,
@@ -228,6 +229,7 @@ function assistantSnapshot(assistant: ChatAssistant): ChatAssistantSnapshot {
     model: assistant.model ?? '',
     mcp_server_ids: assistant.mcp_server_ids ?? assistant.mcpServerIds ?? [],
     skill_ids: assistant.skill_ids ?? assistant.skillIds ?? [],
+    knowledge_base_ids: assistant.knowledge_base_ids ?? assistant.knowledgeBaseIds ?? [],
   }
 }
 
@@ -452,6 +454,7 @@ const mockChatApi = {
       activeSkillId: null,
       assistant_id: snapshot?.id ?? null,
       assistantId: snapshot?.id ?? null,
+      knowledge_base_ids: snapshot?.knowledge_base_ids ?? [],
       assistant_snapshot: snapshot,
       assistantSnapshot: snapshot,
       created_at: now,
@@ -787,6 +790,7 @@ const mockChatApi = {
       model?: string
       activeSkillId?: string | null
       assistantId?: string | null
+      knowledgeBaseIds?: string[]
       additionalDirectories?: AdditionalDirectory[]
     }
   ): Promise<Conversation> {
@@ -822,6 +826,10 @@ const mockChatApi = {
       updated_at: nowSeconds(),
     }
     if ('assistantId' in updates) {
+      const previous = conversation.assistant_snapshot ?? conversation.assistantSnapshot
+      const previousIds = previous?.knowledge_base_ids ?? previous?.knowledgeBaseIds ?? []
+      const manualIds = (conversation.knowledge_base_ids ?? conversation.knowledgeBaseIds ?? [])
+        .filter((id) => !previousIds.includes(id))
       const assistantId = updates.assistantId?.trim() ?? ''
       if (!assistantId) {
         conversation.assistant_id = null
@@ -840,7 +848,10 @@ const mockChatApi = {
         conversation.assistantSnapshot = snapshot
         conversation.active_skill_id = null
       }
+      conversation.knowledge_base_ids = [...new Set([...manualIds, ...(conversation.assistant_snapshot?.knowledge_base_ids ?? [])])]
     }
+    if (updates.knowledgeBaseIds !== undefined) conversation.knowledge_base_ids = updates.knowledgeBaseIds
+    conversation.knowledgeBaseIds = conversation.knowledge_base_ids
     conversation.activeSkillId = conversation.active_skill_id
     if (updates.additionalDirectories !== undefined) {
       conversation.additional_directories = updates.additionalDirectories

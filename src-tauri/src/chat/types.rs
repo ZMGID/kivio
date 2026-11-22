@@ -763,6 +763,23 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    pub(crate) fn apply_assistant(&mut self, snapshot: Option<ChatAssistantSnapshot>) {
+        if let Some(previous) = &self.assistant_snapshot {
+            self.knowledge_base_ids
+                .retain(|id| !previous.knowledge_base_ids.contains(id));
+        }
+        if let Some(next) = &snapshot {
+            for id in &next.knowledge_base_ids {
+                if !self.knowledge_base_ids.contains(id) {
+                    self.knowledge_base_ids.push(id.clone());
+                }
+            }
+        }
+        self.active_skill_id = None;
+        self.assistant_id = snapshot.as_ref().map(|assistant| assistant.id.clone());
+        self.assistant_snapshot = snapshot;
+    }
+
     /// Changing a selected answer also changes the input represented by a saved
     /// summary/tail. Callers validate membership before selecting an answer.
     pub(crate) fn select_group_answer(&mut self, group_id: String, message_id: String) {
@@ -996,7 +1013,7 @@ pub struct ConversationPin {
 }
 
 /// 可复用 Chat 助手配置。存储字段保持 snake_case，与 Conversation JSON 一致。
-/// 重建后只保留：身份(name/desc/icon/color) + 系统提示词 + 模型 + 勾选的 MCP/技能白名单。
+/// 重建后只保留：身份(name/desc/icon/color) + 系统提示词 + 模型 + MCP/技能使用偏好。
 /// 旧文件里的 author/tags/quick_commands/data_connectors/knowledge_skills 等字段由 serde 忽略未知字段容错。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatAssistant {
@@ -1016,12 +1033,14 @@ pub struct ChatAssistant {
     pub provider_id: String,
     #[serde(default)]
     pub model: String,
-    /// 该助手允许使用的 MCP 服务器 id 白名单。空 = 不可用任何 MCP。
+    /// 该助手优先使用的 MCP 服务器 ID。空表示无偏好。
     #[serde(default)]
     pub mcp_server_ids: Vec<String>,
-    /// 该助手允许激活的技能 id 白名单。空 = 不可用任何技能。
+    /// 该助手优先使用的技能 ID。空表示无偏好。
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub knowledge_base_ids: Vec<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_true")]
@@ -1053,6 +1072,8 @@ pub struct ChatAssistantSnapshot {
     pub mcp_server_ids: Vec<String>,
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub knowledge_base_ids: Vec<String>,
 }
 
 impl From<&ChatAssistant> for ChatAssistantSnapshot {
@@ -1067,6 +1088,7 @@ impl From<&ChatAssistant> for ChatAssistantSnapshot {
             model: assistant.model.clone(),
             mcp_server_ids: assistant.mcp_server_ids.clone(),
             skill_ids: assistant.skill_ids.clone(),
+            knowledge_base_ids: assistant.knowledge_base_ids.clone(),
         }
     }
 }
