@@ -244,6 +244,106 @@ async fn responses_refusal_is_visible_once_in_both_delivery_modes() {
 }
 
 #[tokio::test]
+async fn grok_length_continuation_keeps_partial_text_and_ordered_output() {
+    use kivio_agent_sdk::model::{responses::ResponsesFormat, FinishKind, MessagePart};
+
+    let items = [
+        json!({"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"q"}}),
+        json!({"type":"reasoning","id":"rs_1","encrypted_content":"cipher","summary":[]}),
+        json!({"type":"message","role":"assistant","id":"msg_1","status":"completed","content":[{"type":"output_text","text":"found","annotations":[]}]}),
+        json!({"type":"message","role":"assistant","id":"msg_2","status":"incomplete","content":[{"type":"output_text","text":" partial","annotations":[]}]}),
+    ];
+    let unfinished = json!({"type":"function_call","id":"fc_1","call_id":"call_1",
+        "name":"lookup","arguments":"","status":"incomplete"});
+    for (streamed, with_search, with_call) in [
+        (false, true, false),
+        (true, true, false),
+        (false, true, true),
+        (true, false, true),
+    ] {
+        let mut expected = items[usize::from(!with_search)..].to_vec();
+        if with_call {
+            expected.push(unfinished.clone());
+        }
+        let first = json!({"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":expected});
+        let reply = if streamed {
+            Response::Sse(
+                event(
+                    json!({"type":"response.output_item.done","output_index":if with_search { 2 } else { 1 },"item":items[2]}),
+                ) + &event(json!({"type":"response.incomplete","response":first})),
+            )
+        } else {
+            Response::Json(first)
+        };
+        let server = Server::start_at("/v1/responses", vec![
+                reply,
+                Response::Json(json!({"status":"completed","output":[
+                    {"type":"message","role":"assistant","content":[{"type":"output_text","text":"continued"}]}
+                ]})),
+            ]).await;
+        let mut config = OpenAiResponsesConfig::new(server.endpoint.clone());
+        config.options.format = ResponsesFormat::Xai;
+        let provider = OpenAiResponsesProvider::new(
+            reqwest::Client::builder().no_proxy().build().unwrap(),
+            config,
+        );
+        let mut next = request();
+        next.model = "grok-4.7".into();
+        let output = if streamed {
+            let mut visible = String::new();
+            let output = provider
+                .stream(next.clone(), &mut |part| {
+                    match part {
+                        StreamPart::TextDelta { delta } => visible.push_str(&delta),
+                        StreamPart::ToolCallDone { .. } => {
+                            panic!("unfinished call marked ready")
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(visible, "found partial");
+            output
+        } else {
+            provider.generate(next.clone()).await.unwrap()
+        };
+        assert_eq!(output.text, "found partial");
+        assert_eq!(
+            output.finish_reason.as_ref().unwrap().kind,
+            FinishKind::Length
+        );
+        next.messages.push(output.replay_message());
+        if with_call {
+            assert_eq!(output.tool_calls.len(), 1);
+            next.messages.push(ModelMessage {
+                role: ModelRole::Tool,
+                content: vec![MessagePart::ToolResult {
+                    tool_call_id: "call_1".into(),
+                    content: "Truncated call, retry.".into(),
+                    is_error: true,
+                    artifacts: vec![],
+                }],
+            });
+        }
+        next.messages
+            .push(ModelMessage::text(ModelRole::User, "Continue"));
+        assert_eq!(provider.generate(next).await.unwrap().text, "continued");
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests[1].body["store"], false);
+        let input = requests[1].body["input"].as_array().unwrap();
+        assert_eq!(&input[1..1 + expected.len()], expected);
+        let last = input.last().unwrap();
+        assert_eq!(last["role"], "user");
+        assert_eq!(last["content"][0]["text"], "Continue");
+        if with_call {
+            assert_eq!(input[1 + expected.len()]["call_id"], "call_1");
+        }
+    }
+}
+
+#[tokio::test]
 async fn responses_incomplete_distinguishes_limits_from_errors() {
     for reason in ["max_output_tokens", "content_filter", "unknown_reason"] {
         let value =

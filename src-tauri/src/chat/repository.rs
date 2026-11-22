@@ -700,7 +700,7 @@ impl ConversationRepository {
         folder: Option<&str>,
         project_id: Option<&str>,
         set_id: Option<&str>,
-        assistant_id: Option<&str>,
+        assistant: Option<&ChatAssistantSnapshot>,
     ) -> RepositoryResult<Option<Conversation>> {
         let _barrier = self.barrier.read().await;
         let app_for_read = app.clone();
@@ -709,7 +709,7 @@ impl ConversationRepository {
         let folder = folder.map(str::to_string);
         let project_id = project_id.map(str::to_string);
         let set_id = set_id.map(str::to_string);
-        let assistant_id = assistant_id.map(str::to_string);
+        let assistant = assistant.cloned();
         let found = Self::spawn_storage(
             move || {
                 super::storage::find_reusable_blank_conversation(
@@ -719,7 +719,7 @@ impl ConversationRepository {
                     folder.as_deref(),
                     project_id.as_deref(),
                     set_id.as_deref(),
-                    assistant_id.as_deref(),
+                    assistant.as_ref(),
                 )
             },
             "find reusable blank conversation",

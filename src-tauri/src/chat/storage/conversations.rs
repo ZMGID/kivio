@@ -84,7 +84,11 @@ fn read_conversation_field<T: serde::de::DeserializeOwned>(
         fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
             while let Some(key) = map.next_key::<String>()? {
                 if key == self.name {
-                    *self.found = Some(map.next_value()?);
+                    let value = map.next_value()?;
+                    // EOF can terminate a JSON number even halfway through its digits.
+                    // Require its object delimiter before accepting a bounded prefix.
+                    map.next_key::<serde::de::IgnoredAny>()?;
+                    *self.found = Some(value);
                     // Returning Ok here would make serde_json expect the closing
                     // brace. This private sentinel intentionally cancels parsing;
                     // only a successfully decoded field enables the fast exit.
@@ -474,8 +478,9 @@ pub fn find_reusable_blank_conversation(
     folder: Option<&str>,
     project_id: Option<&str>,
     set_id: Option<&str>,
-    assistant_id: Option<&str>,
+    assistant: Option<&ChatAssistantSnapshot>,
 ) -> Result<Option<Conversation>, String> {
+    let assistant_id = assistant.map(|expert| expert.id.as_str());
     let mut index = load_index_or_scan(app)?;
     index
         .conversations
@@ -511,6 +516,7 @@ pub fn find_reusable_blank_conversation(
             && conversation.project_id.as_deref() == project_id
             && conversation.set_id.as_deref() == set_id
             && conversation.assistant_id.as_deref() == assistant_id
+            && assistant.is_none_or(|expert| conversation.matches_new_expert(expert))
         {
             return Ok(Some(conversation));
         }

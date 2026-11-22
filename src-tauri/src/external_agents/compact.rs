@@ -39,16 +39,8 @@ pub async fn request_external_compaction(
         .require_completed()?;
 
     let cwd = resolve_effective_cwd(app, &conversation.id, conversation.project_id.as_deref())?;
-    let mut updated = compute_external_context_state_with_probe(
-        app,
-        conversation,
-        true,
-        None,
-        None,
-        Some(&cwd),
-        Some(&cwd),
-    )
-    .await;
+    let mut updated =
+        compute_external_context_state_with_probe(app, state.inner(), conversation, &cwd).await;
 
     updated.summary = None;
     updated.last_compressed_at = Some(chrono::Local::now().timestamp());

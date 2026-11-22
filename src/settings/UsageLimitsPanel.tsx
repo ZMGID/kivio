@@ -170,6 +170,12 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
   const readings = accounts.flatMap(({ agent, view }) => view.account?.windows.length
     ? [<AgentLimits key={agent.id} agent={agent} account={view.account} error={view.error} now={now} lang={lang} />]
     : [])
+  const notices = accounts.flatMap(({ agent, view }) => {
+    const reason = view.error || view.account?.unavailable
+    return reason && !view.account?.windows.length
+      ? [<p key={agent.id}>{agent.name} · {reason}</p>]
+      : []
+  })
   const checking = accounts.some(account => account.checking)
   const refresh = async () => {
     setRefreshing(true)
@@ -197,14 +203,10 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
       </div>
       {available.length
         ? <div className="cli-limits-list">
-            {readings.length ? readings : <div className="cli-limits-message" role="status">
-              {checking ? t.cliLimitsChecking : <>
-                <p>{t.cliLimitsNoReadings}</p>
-                {accounts.map(({ agent, view }) => {
-                  const reason = view.error || view.account?.unavailable
-                  return reason && <p key={agent.id}>{agent.name} · {reason}</p>
-                })}
-              </>}
+            {readings}
+            {(!readings.length || notices.length > 0) && <div className="cli-limits-message" role="status">
+              {!readings.length && <p>{checking ? t.cliLimitsChecking : t.cliLimitsNoReadings}</p>}
+              {notices}
             </div>}
           </div>
         : <p className="cli-limits-message" role="status">{scanFailed ? t.cliLimitsScanFailed : agents ? t.cliLimitsEmpty : t.cliLimitsScanning}</p>}

@@ -763,6 +763,18 @@ pub struct Conversation {
 }
 
 impl Conversation {
+    pub(crate) fn matches_new_expert(&self, expert: &ChatAssistantSnapshot) -> bool {
+        if self.knowledge_base_ids != expert.defaults.knowledge_base_ids {
+            return false;
+        }
+        // On a new chat every default library is mounted by the expert.
+        let mut expected = expert.clone();
+        expected
+            .mounted_default_ids
+            .clone_from(&expert.defaults.knowledge_base_ids);
+        self.assistant_snapshot.as_ref() == Some(&expected)
+    }
+
     pub(crate) fn apply_assistant(&mut self, snapshot: Option<ChatAssistantSnapshot>) {
         if let Some(previous) = &self.assistant_snapshot {
             self.knowledge_base_ids
@@ -1137,7 +1149,7 @@ pub struct ChatAssistant {
 }
 
 /// 对话创建时冻结的助手配置，避免后续编辑助手静默改变旧对话行为。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatAssistantSnapshot {
     pub id: String,
     pub name: String,

@@ -369,155 +369,194 @@ fn reported_model_window(model: &Value) -> Option<u32> {
     u32::try_from(tokens).ok().filter(|tokens| *tokens > 0)
 }
 
-fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
-    let mut out = vec![default_model_option()];
-    let mut seen = HashSet::from(["default".to_string()]);
-
-    // 有 currentModelId（如 grok 的 models.currentModelId）时，把 default 占位标成
-    // "Default (<真实模型名>)" —— 否则单模型 CLI 的胶囊上永远只见 "Default"，
-    // 用户无从知道探测其实成功了（与 claude 的 label_for_claude_model 呈现一致）。
-    let current_id = result
-        .get("models")
-        .and_then(|m| m.get("currentModelId"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-
-    if let Some(config_options) = result.get("configOptions").and_then(|v| v.as_array()) {
-        // Grok sends picker labels in configOptions and capacity in availableModels.
-        let catalog_windows: HashMap<_, _> = result
-            .pointer("/models/availableModels")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|model| {
-                Some((
-                    model.get("modelId")?.as_str()?,
-                    reported_model_window(model)?,
-                ))
-            })
-            .collect();
-
-        for raw_option in config_options {
-            let option = match raw_option.as_object() {
-                Some(o) => o,
-                None => continue,
-            };
-            let config_id = option.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            if config_id != "model"
-                && option.get("category").and_then(|v| v.as_str()) != Some("model")
-            {
-                continue;
-            }
-            if let Some(values) = option.get("options").and_then(|v| v.as_array()) {
-                for raw_value in values {
-                    let value = match raw_value.as_object() {
-                        Some(o) => o,
-                        None => continue,
-                    };
-                    let id = value
-                        .get("value")
-                        .or_else(|| value.get("id"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    if id.is_empty() || !seen.insert(id.to_string()) {
-                        continue;
-                    }
-                    let name = value.get("name").and_then(|v| v.as_str()).unwrap_or(id);
-                    // cursor 的模型走的是**这条** configOptions 分支（不是下面的
-                    // models.availableModels），且它把窗口写在 modelId 的方括号里
-                    // （`claude-opus-5[thinking=true,context=300k,...]`）——实测 33 个模型
-                    // 里 13 个带 `context=`，全都没有 `_meta.totalContextTokens`。
-                    // 这里若留 None，cursor 的分母就永远没来源、只能吃兜底。
-                    // `_meta.totalContextTokens` 仍优先（显式字段比字符串提示可靠）。
-                    let window = reported_model_window(raw_value)
-                        .or_else(|| catalog_windows.get(id).copied())
-                        .or_else(|| context_window_from_model_id_params(id));
-                    if current_id == Some(id) {
-                        out[0].label = format!("Default ({name})");
-                        out[0].context_window_tokens = window;
-                    }
-                    out.push(RuntimeModelOption {
-                        capabilities: None,
-                        id: id.to_string(),
-                        label: if name != id {
-                            format!("{name} ({id})")
-                        } else {
-                            id.to_string()
-                        },
-                        context_window_tokens: window,
-                    });
-                }
-            }
-            if out.len() > 1 {
-                return out;
-            }
-        }
-    }
-
-    if let Some(models) = result.get("models").and_then(|v| v.as_object()) {
-        if let Some(available) = models.get("availableModels").and_then(|v| v.as_array()) {
-            for model in available {
-                let id = model.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
-                if id.is_empty() || !seen.insert(id.to_string()) {
-                    continue;
-                }
-                let name = model.get("name").and_then(|v| v.as_str()).unwrap_or(id);
-                // 窗口优先级：`_meta.totalContextTokens`（显式字段，grok）> modelId 方括号里的
-                // `context=300k`（字符串提示，cursor）> None。显式字段比字符串提示可靠。
-                let window = reported_model_window(model)
-                    .or_else(|| context_window_from_model_id_params(id));
-                if current_id == Some(id) {
-                    out[0].label = format!("Default ({name})");
-                    out[0].context_window_tokens = window;
-                }
-                out.push(RuntimeModelOption {
-                    capabilities: None,
-                    id: id.to_string(),
-                    label: if name != id {
-                        format!("{name} ({id})")
-                    } else {
-                        id.to_string()
-                    },
-                    // grok 等在 _meta.totalContextTokens 报真实窗口（如 500000）；
-                    // cursor 把它写在 modelId 的 `context=300k` 里；都没有则留空。
-                    context_window_tokens: window,
-                });
-            }
-        }
-    }
-
-    out
+/// A session may send picker names, its selected id, and model metadata in separate frames.
+#[derive(Default)]
+struct AcpModelCatalog {
+    models: Vec<RuntimeModelOption>,
+    indices: HashMap<String, usize>,
+    current_model: Option<String>,
 }
 
-/// 把某个 ACP `result`/`update` 里解析出的模型并入累加器（去重）。default 占位不进 `acc`，
-/// 但若其标签被 `normalize_models` 用 currentModelId 富化过（"Default (Grok 4.5)"），
-/// 则更新 `default_slot`，最终装配时替换普通占位。
-fn merge_acp_models(
-    acc: &mut Vec<RuntimeModelOption>,
-    seen: &mut HashSet<String>,
-    default_slot: &mut RuntimeModelOption,
-    value: &Value,
-) {
-    for model in normalize_models(value) {
-        if model.id == "default" {
-            if model.label != "Default" {
-                *default_slot = model;
+impl AcpModelCatalog {
+    fn from_initialize(initialize: &Value, resumed: bool) -> Self {
+        let mut catalog = Self::default();
+        if let Some(models) = initialize.pointer("/_meta/modelState") {
+            catalog.merge_model_state(models);
+            // Initialize describes the launch default. A loaded conversation may use another model.
+            if resumed {
+                catalog.current_model = None;
             }
-            continue;
         }
-        if seen.insert(model.id.clone()) {
-            acc.push(model);
+        catalog
+    }
+
+    fn merge(&mut self, value: &serde_json::Map<String, Value>) {
+        if let Some(options) = value.get("configOptions").and_then(Value::as_array) {
+            for selector in options.iter().filter(|option| {
+                option.get("id").and_then(Value::as_str) == Some("model")
+                    || option.get("category").and_then(Value::as_str) == Some("model")
+            }) {
+                if let Some(id) = selector.get("currentValue").and_then(Value::as_str) {
+                    self.current_model = normalize_opt(Some(id));
+                }
+                if let Some(options) = selector.get("options").and_then(Value::as_array) {
+                    for option in options {
+                        let id = option.get("value").or_else(|| option.get("id"));
+                        self.merge_option(id, option, true);
+                    }
+                }
+            }
+        }
+        if let Some(models) = value.get("models") {
+            self.merge_model_state(models);
+        }
+    }
+
+    fn merge_model_state(&mut self, models: &Value) {
+        if let Some(id) = models.get("currentModelId").and_then(Value::as_str) {
+            self.current_model = normalize_opt(Some(id));
+        }
+        self.merge_available_models(models);
+    }
+
+    fn merge_available_models(&mut self, models: &Value) {
+        if let Some(available) = models.get("availableModels").and_then(Value::as_array) {
+            for model in available {
+                self.merge_option(model.get("modelId"), model, false);
+            }
+        }
+    }
+
+    fn merge_option(&mut self, id: Option<&Value>, option: &Value, picker: bool) {
+        let Some(id) = id
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty() && *id != "default")
+        else {
+            return;
+        };
+        let index = *self.indices.entry(id.to_owned()).or_insert_with(|| {
+            self.models.push(RuntimeModelOption {
+                id: id.to_owned(),
+                label: id.to_owned(),
+                capabilities: None,
+                context_window_tokens: context_window_from_model_id_params(id),
+            });
+            self.models.len() - 1
+        });
+        let model = &mut self.models[index];
+        if let Some(name) = option.get("name").and_then(Value::as_str) {
+            if picker || model.label == id {
+                model.label = name.to_owned();
+            }
+        }
+        if let Some(window) = reported_model_window(option) {
+            model.context_window_tokens = Some(window);
+        }
+    }
+
+    fn handshake<'a>(
+        &'a mut self,
+        session_id: Option<&'a str>,
+        requested_model: Option<&'a str>,
+    ) -> Option<AcpModelHandshake<'a>> {
+        Some(AcpModelHandshake {
+            catalog: self,
+            session_id,
+            requested_model,
+        })
+    }
+
+    fn window(&self, receipt_model: Option<&str>) -> Option<u64> {
+        receipt_model
+            .or(self.current_model.as_deref())
+            .and_then(|id| self.model(id))
+            .and_then(|model| model.context_window_tokens)
+            .map(u64::from)
+    }
+
+    fn model(&self, id: &str) -> Option<&RuntimeModelOption> {
+        self.indices.get(id).map(|index| &self.models[*index])
+    }
+
+    fn into_options(self) -> Option<Vec<RuntimeModelOption>> {
+        if self.models.is_empty() {
+            return None;
+        }
+        let mut default = default_model_option();
+        if let Some(current) = self.current_model.as_deref().and_then(|id| self.model(id)) {
+            default.label = format!("Default ({})", current.label);
+            default.context_window_tokens = current.context_window_tokens;
+        }
+        let mut out = Vec::with_capacity(self.models.len() + 1);
+        out.push(default);
+        out.extend(self.models.into_iter().map(|mut model| {
+            if model.label != model.id {
+                model.label = format!("{} ({})", model.label, model.id);
+            }
+            model
+        }));
+        Some(out)
+    }
+}
+
+struct AcpModelHandshake<'a> {
+    catalog: &'a mut AcpModelCatalog,
+    session_id: Option<&'a str>,
+    requested_model: Option<&'a str>,
+}
+
+enum AcpModelNotice<'a> {
+    Available(&'a Value),
+    Config(&'a str, &'a serde_json::Map<String, Value>),
+    Selected(&'a str, &'a str),
+}
+
+impl<'a> AcpModelNotice<'a> {
+    fn parse(method: &str, params: &'a Value) -> Option<Self> {
+        if method == "_x.ai/models/update" {
+            return params
+                .get("availableModels")?
+                .is_array()
+                .then_some(Self::Available(params));
+        }
+        let session = params.get("sessionId")?.as_str()?;
+        let update = params.get("update")?.as_object()?;
+        if is_acp_child_update(update) {
+            return None;
+        }
+        match method {
+            "session/update"
+                if update.contains_key("models") || update.contains_key("configOptions") =>
+            {
+                Some(Self::Config(session, update))
+            }
+            "_x.ai/session_notification"
+                if update.get("sessionUpdate")?.as_str()? == "model_changed" =>
+            {
+                Some(Self::Selected(session, update.get("model_id")?.as_str()?))
+            }
+            _ => None,
+        }
+    }
+
+    fn apply(self, catalog: &mut AcpModelCatalog, session_id: Option<&str>) {
+        match self {
+            // The unscoped catalog includes a launch default, distinct from a loaded session.
+            Self::Available(models) => catalog.merge_available_models(models),
+            Self::Config(id, config) if Some(id) == session_id => catalog.merge(config),
+            Self::Selected(id, model) if Some(id) == session_id => {
+                catalog.current_model = normalize_opt(Some(model))
+            }
+            _ => {}
         }
     }
 }
 
 /// 测试替身：复刻 `detect_acp_models` 读循环的行处理（跳空行 / 跳非 JSON banner / 合并
-/// result 与异步 session/update 推送），不启子进程。生产循环与此共用 `merge_acp_models`。
+/// result 与异步 session/update 推送），不启子进程。生产循环与此共用 `AcpModelCatalog`。
 #[cfg(test)]
 fn collect_acp_models_from_lines(lines: &[&str]) -> Option<Vec<RuntimeModelOption>> {
-    let mut collected: Vec<RuntimeModelOption> = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut default_slot = default_model_option();
+    let mut catalog = AcpModelCatalog::default();
     for line in lines {
         if line.trim().is_empty() {
             continue;
@@ -526,22 +565,23 @@ fn collect_acp_models_from_lines(lines: &[&str]) -> Option<Vec<RuntimeModelOptio
             Ok(v) => v,
             Err(_) => continue,
         };
-        if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
-            if let Some(update) = value.get("params").and_then(|p| p.get("update")) {
-                merge_acp_models(&mut collected, &mut seen, &mut default_slot, update);
+        if value.get("method").and_then(Value::as_str) == Some("_x.ai/models/update") {
+            if let Some(models) = value.get("params") {
+                catalog.merge_available_models(models);
             }
             continue;
         }
-        if let Some(result) = value.get("result") {
-            merge_acp_models(&mut collected, &mut seen, &mut default_slot, result);
+        if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
+            if let Some(update) = value.pointer("/params/update").and_then(Value::as_object) {
+                catalog.merge(update);
+            }
+            continue;
+        }
+        if let Some(result) = value.get("result").and_then(Value::as_object) {
+            catalog.merge(result);
         }
     }
-    if collected.is_empty() {
-        return None;
-    }
-    let mut out = vec![default_slot];
-    out.extend(collected);
-    Some(out)
+    catalog.into_options()
 }
 
 /// 从一个 ACP `result`/`update` 里抽取 CLI 当前配置：`models.currentModelId` 作为当前模型，
@@ -723,10 +763,7 @@ pub async fn detect_acp_models(
 
     let mut expected_id: u64 = 1;
     let mut next_id: u64 = 2;
-    let mut collected: Vec<RuntimeModelOption> = Vec::new();
-    let mut default_slot = default_model_option();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut current_model: Option<String> = None;
+    let mut catalog = AcpModelCatalog::default();
     let mut current_reasoning: Option<String> = None;
     let mut reasoning_options: Vec<RuntimeModelOption> = Vec::new();
     let deadline = Duration::from_secs(timeout_secs);
@@ -766,11 +803,18 @@ pub async fn detect_acp_models(
         };
 
         // 异步模型推送：session/update 通知里携带的模型（N4）。
+        if value.get("method").and_then(Value::as_str) == Some("_x.ai/models/update") {
+            if let Some(models) = value.get("params") {
+                catalog.merge_available_models(models);
+            }
+            continue;
+        }
         if value.get("method").and_then(|v| v.as_str()) == Some("session/update") {
             if let Some(update) = value.get("params").and_then(|p| p.get("update")) {
-                merge_acp_models(&mut collected, &mut seen, &mut default_slot, update);
-                let (cm, cr) = extract_acp_current(update);
-                current_model = current_model.or(cm);
+                if let Some(update) = update.as_object() {
+                    catalog.merge(update);
+                }
+                let (_, cr) = extract_acp_current(update);
                 current_reasoning = current_reasoning.or(cr);
             }
             continue;
@@ -805,9 +849,10 @@ pub async fn detect_acp_models(
             continue;
         }
         if expected_id == 2 {
-            merge_acp_models(&mut collected, &mut seen, &mut default_slot, result);
-            let (cm, cr) = extract_acp_current(result);
-            current_model = current_model.or(cm);
+            if let Some(result) = result.as_object() {
+                catalog.merge(result);
+            }
+            let (_, cr) = extract_acp_current(result);
             current_reasoning = current_reasoning.or(cr);
             // configOptions 里的推理档位（kimi 的 `thinking`）——与 models._meta 那条
             // 并列，两种形态各占一家 CLI，都要认。
@@ -822,13 +867,9 @@ pub async fn detect_acp_models(
         }
     }
 
-    if collected.is_empty() {
-        return None;
-    }
-    let mut out = vec![default_slot];
-    out.extend(collected);
+    let current_model = catalog.current_model.clone();
     Some(AcpModelsProbe {
-        models: out,
+        models: catalog.into_options()?,
         current_model,
         current_reasoning,
         reasoning_options,
@@ -1400,6 +1441,7 @@ struct AcpUpdateState {
     thought: AcpTextAssembler,
     emitted_tools: HashSet<String>,
     context_tokens: Option<u64>,
+    context_window: Option<u64>,
     children: HashMap<String, AcpChildState>,
 }
 
@@ -1647,6 +1689,7 @@ fn acp_apply_session_update_ex(
             // 正在流式的正文游标被重置后，后续累积快照的 starts_with 判断失效
             // → 整段正文重复发一遍。两处分发共用 `parse_acp_usage_update`（不是两份拷贝）。
             if let Some(mut usage) = parse_acp_usage_update(update) {
+                state.context_window = usage.context_window_tokens.or(state.context_window);
                 if usage.context_tokens.is_some() {
                     state.context_tokens = usage.context_tokens;
                 } else {
@@ -1749,6 +1792,7 @@ pub struct AcpSession {
     /// detection (N3). `None` = agent default.
     current_model: Option<String>,
     current_reasoning: Option<String>,
+    model_catalog: AcpModelCatalog,
     terminals: AcpTerminalHost,
 }
 
@@ -1948,6 +1992,7 @@ impl AcpSession {
                 &mut reader,
                 &mut stdin,
                 Some(&mut terminals),
+                None,
                 1,
                 ACP_INITIALIZE_TIMEOUT,
             )
@@ -1966,8 +2011,11 @@ impl AcpSession {
             // session/new for a fresh session, session/load to resume a prior one.
             // One Kivio conversation ↔ one native session id: load failure must
             // surface (caller only starts fresh when the CLI says the id is gone).
+            let resume_session = resume_session.filter(|id| !id.is_empty());
+            let mut model_catalog =
+                AcpModelCatalog::from_initialize(&init_result, resume_session.is_some());
             let mut next_id: u64 = 2;
-            let (result, session_id) = match resume_session.filter(|s| !s.is_empty()) {
+            let (result, session_id) = match resume_session {
                 Some(sid) => {
                     let mut last_err = None;
                     let mut loaded = None;
@@ -1987,6 +2035,7 @@ impl AcpSession {
                             &mut reader,
                             &mut stdin,
                             Some(&mut terminals),
+                            model_catalog.handshake(Some(sid), None),
                             next_id,
                             ACP_SESSION_NEW_TIMEOUT,
                         )
@@ -2037,6 +2086,7 @@ impl AcpSession {
                         &mut reader,
                         &mut stdin,
                         Some(&mut terminals),
+                        model_catalog.handshake(None, None),
                         next_id,
                         ACP_SESSION_NEW_TIMEOUT,
                     )
@@ -2055,7 +2105,6 @@ impl AcpSession {
             };
 
             terminals.set_session_id(session_id.clone());
-
             let (mut model_config_id, mut reasoning_config_id) = find_config_ids(&result);
             let mut current_reasoning = normalize_opt(extract_acp_reasoning(&result).1.as_deref());
 
@@ -2071,6 +2120,7 @@ impl AcpSession {
                     &mut reader,
                     &mut stdin,
                     Some(&mut terminals),
+                    model_catalog.handshake(Some(&session_id), Some(chosen)),
                     next_id,
                     Duration::from_secs(10),
                 )
@@ -2092,6 +2142,7 @@ impl AcpSession {
                     &mut reader,
                     &mut stdin,
                     Some(&mut terminals),
+                    model_catalog.handshake(Some(&session_id), None),
                     next_id,
                     Duration::from_secs(10),
                 )
@@ -2110,6 +2161,7 @@ impl AcpSession {
                 reasoning_config_id,
                 chosen_model,
                 current_reasoning,
+                model_catalog,
             ))
         }
         .await;
@@ -2123,6 +2175,7 @@ impl AcpSession {
                 reasoning_config_id,
                 current_model,
                 current_reasoning,
+                model_catalog,
             )) => {
                 // Config options report the applied level; launch-flag effort is already in argv.
                 let current_reasoning = if reasoning_config_id.is_some() {
@@ -2142,6 +2195,7 @@ impl AcpSession {
                     reasoning_config_id,
                     current_model,
                     current_reasoning,
+                    model_catalog,
                     terminals,
                 })
             }
@@ -2196,6 +2250,8 @@ impl AcpSession {
                     &mut self.reader,
                     &mut self.stdin,
                     Some(&mut self.terminals),
+                    self.model_catalog
+                        .handshake(Some(&self.session_id), Some(chosen)),
                     id,
                     Duration::from_secs(10),
                 )
@@ -2231,6 +2287,7 @@ impl AcpSession {
                     &mut self.reader,
                     &mut self.stdin,
                     Some(&mut self.terminals),
+                    self.model_catalog.handshake(Some(&self.session_id), None),
                     id,
                     Duration::from_secs(10),
                 )
@@ -2261,6 +2318,7 @@ impl AcpSession {
             prompt_id,
             &self.session_id,
             self.trailing_usage_update,
+            &mut self.model_catalog,
             events,
             control,
             approvals.as_mut(),
@@ -2286,6 +2344,7 @@ async fn acp_read_prompt(
     prompt_id: u64,
     session_id: &str,
     trailing_usage_update: bool,
+    model_catalog: &mut AcpModelCatalog,
     events: &mpsc::Sender<UnifiedAgentEvent>,
     control: &mut mpsc::Receiver<SessionCommand>,
     mut approvals: Option<&mut ApprovalBridge>,
@@ -2341,44 +2400,54 @@ async fn acp_read_prompt(
                         .await?;
                 }
             }
-            AcpNext::Frame(AcpFrame::Notification { method, params }) => match method.as_str() {
-                "session/update" => {
-                    if let Some(update) = acp_session_update(&params, session_id) {
-                        if usage_deadline.is_some()
-                            && update.get("sessionUpdate").and_then(Value::as_str)
-                                != Some("usage_update")
-                        {
-                            continue;
+            AcpNext::Frame(AcpFrame::Notification { method, params }) => {
+                if let Some(notice) = AcpModelNotice::parse(&method, &params) {
+                    notice.apply(model_catalog, Some(session_id));
+                }
+                match method.as_str() {
+                    "session/update" => {
+                        if let Some(update) = acp_session_update(&params, session_id) {
+                            if usage_deadline.is_some()
+                                && update.get("sessionUpdate").and_then(Value::as_str)
+                                    != Some("usage_update")
+                            {
+                                continue;
+                            }
+                            let mut buffer = Vec::new();
+                            acp_apply_session_update_ex(
+                                update,
+                                &mut update_state,
+                                Some(terminals),
+                                &mut |event| buffer.push(event),
+                            );
+                            for mut event in buffer {
+                                if let UnifiedAgentEvent::Usage { usage } = &mut event {
+                                    usage.context_window_tokens = update_state
+                                        .context_window
+                                        .or_else(|| model_catalog.window(None));
+                                }
+                                let _ = events.send(event).await;
+                            }
+                            if usage_deadline.is_some() && update_state.context_tokens.is_some() {
+                                return Ok(());
+                            }
                         }
-                        let mut buffer = Vec::new();
-                        acp_apply_session_update_ex(
-                            update,
-                            &mut update_state,
-                            Some(terminals),
-                            &mut |event| buffer.push(event),
-                        );
-                        for event in buffer {
+                    }
+                    "_x.ai/session_notification" => {
+                        if let Some(update) = acp_session_update(&params, session_id) {
+                            if let Some(text) = acp_retry_state_note(update) {
+                                let _ = events.send(UnifiedAgentEvent::StatusNote { text }).await;
+                            }
+                        }
+                    }
+                    method if method.starts_with("cursor/") => {
+                        for event in cursor_extension_events(method, &params) {
                             let _ = events.send(event).await;
                         }
-                        if usage_deadline.is_some() && update_state.context_tokens.is_some() {
-                            return Ok(());
-                        }
                     }
+                    _ => {}
                 }
-                "_x.ai/session_notification" => {
-                    if let Some(text) =
-                        acp_session_update(&params, session_id).and_then(acp_retry_state_note)
-                    {
-                        let _ = events.send(UnifiedAgentEvent::StatusNote { text }).await;
-                    }
-                }
-                method if method.starts_with("cursor/") => {
-                    for event in cursor_extension_events(method, &params) {
-                        let _ = events.send(event).await;
-                    }
-                }
-                _ => {}
-            },
+            }
             AcpNext::Frame(AcpFrame::Response { id, result }) if id.as_u64() == Some(prompt_id) => {
                 let result = result?;
                 let outcome = match result.get("stopReason").and_then(Value::as_str) {
@@ -2390,8 +2459,16 @@ async fn acp_read_prompt(
                         )
                     }
                 };
-                if let Some(usage) = usage_from_prompt_result(&result, update_state.context_tokens)
+                if let Some(mut usage) =
+                    usage_from_prompt_result(&result, update_state.context_tokens)
                 {
+                    // Grok identifies the model that produced this context sample in the prompt receipt.
+                    if usage.context_tokens.is_some() {
+                        let model = result.pointer("/_meta/modelId").and_then(Value::as_str);
+                        usage.context_window_tokens = update_state
+                            .context_window
+                            .or_else(|| model_catalog.window(model));
+                    }
                     let _ = events.send(UnifiedAgentEvent::Usage { usage }).await;
                 }
                 // Kimi computes usage asynchronously after sending PromptResponse.
@@ -2433,9 +2510,12 @@ async fn acp_read_until_id(
     reader: &mut Lines<impl tokio::io::AsyncBufRead + Unpin>,
     stdin: &mut (impl AsyncWrite + Unpin),
     mut terminals: Option<&mut AcpTerminalHost>,
+    models: Option<AcpModelHandshake<'_>>,
     target_id: u64,
     overall: Duration,
 ) -> Result<AcpHandshakeReply, String> {
+    // The id for session/new is known only once the reply arrives.
+    let mut model_frames: Vec<(String, Value)> = Vec::new();
     let start = std::time::Instant::now();
     loop {
         if start.elapsed() > overall {
@@ -2455,7 +2535,28 @@ async fn acp_read_until_id(
                 )
                 .await?;
             }
+            AcpNext::Frame(AcpFrame::Notification { method, params }) if models.is_some() => {
+                if AcpModelNotice::parse(&method, &params).is_some() {
+                    model_frames.push((method, params));
+                }
+            }
             AcpNext::Frame(AcpFrame::Response { id, result }) if id.as_u64() == Some(target_id) => {
+                if let (Some(models), Ok(reply)) = (models, &result) {
+                    let session_id = models
+                        .session_id
+                        .or_else(|| reply.get("sessionId").and_then(Value::as_str));
+                    if let Some(requested) = models.requested_model {
+                        models.catalog.current_model = Some(requested.to_string());
+                    }
+                    for (method, params) in &model_frames {
+                        if let Some(notice) = AcpModelNotice::parse(method, params) {
+                            notice.apply(models.catalog, session_id);
+                        }
+                    }
+                    if let Some(reply) = reply.as_object() {
+                        models.catalog.merge(reply);
+                    }
+                }
                 return Ok(AcpHandshakeReply::Response(result));
             }
             AcpNext::Eof => return Err("ACP agent exited during handshake".to_string()),
@@ -2966,6 +3067,7 @@ mod tests {
                 &mut reader,
                 &mut host_write,
                 Some(&mut terminals),
+                None,
                 7,
                 Duration::from_secs(2),
             );
@@ -3026,6 +3128,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grok_prompt_meter_uses_the_loaded_session_and_actual_receipt_model() {
+        let initialize = json!({"_meta":{"modelState":{"currentModelId":"new-default",
+            "availableModels":[
+                {"modelId":"new-default","_meta":{"totalContextTokens":500000}},
+                {"modelId":"resumed"}
+            ]
+        }}});
+        for (setup, receipt_model, reported_size, expected) in [
+            (
+                json!({"models":{"currentModelId":"resumed"}}),
+                None,
+                None,
+                Some(64_000),
+            ),
+            (json!({}), Some("resumed"), None, Some(64_000)),
+            (
+                json!({"models":{"currentModelId":"new-default"}}),
+                Some("resumed"),
+                Some(128_000),
+                Some(128_000),
+            ),
+            (json!({}), None, None, None),
+            (
+                json!({"models":{"currentModelId":"resumed"}}),
+                Some("unknown"),
+                None,
+                None,
+            ),
+        ] {
+            let mut catalog = AcpModelCatalog::from_initialize(&initialize, true);
+            catalog.merge(setup.as_object().unwrap());
+            let (host, mut peer) = tokio::io::duplex(4096);
+            let (read, mut write) = tokio::io::split(host);
+            let mut reader = BufReader::new(read).lines();
+            let mut terminals = AcpTerminalHost::new(std::env::temp_dir());
+            let (_commands, mut control) = mpsc::channel(1);
+            let (events, mut output) = mpsc::channel(8);
+            write_rpc_line(
+                &mut peer,
+                json!({"jsonrpc":"2.0","method":"_x.ai/models/update",
+                    "params":{"currentModelId":"new-default","availableModels":[
+                        {"modelId":"resumed","_meta":{"totalContextTokens":64000}}
+                    ]}
+                }),
+            )
+            .await
+            .unwrap();
+            if let Some(size) = reported_size {
+                write_rpc_line(
+                    &mut peer,
+                    json!({"jsonrpc":"2.0","method":"session/update","params":{
+                        "sessionId":"ours","update":{"sessionUpdate":"usage_update","size":size}
+                    }}),
+                )
+                .await
+                .unwrap();
+            }
+            write_rpc_result(
+                &mut peer,
+                &json!(3),
+                json!({
+                    "stopReason":"end_turn","_meta":{"modelId":receipt_model,"totalTokens":16000}
+                }),
+            )
+            .await
+            .unwrap();
+            acp_read_prompt(
+                &mut reader,
+                &mut write,
+                &mut terminals,
+                3,
+                "ours",
+                false,
+                &mut catalog,
+                &events,
+                &mut control,
+                None,
+            )
+            .await
+            .unwrap();
+            let usage = std::iter::from_fn(|| output.try_recv().ok())
+                .find_map(|event| match event {
+                    UnifiedAgentEvent::Usage { usage } if usage.context_tokens == Some(16_000) => {
+                        Some(usage)
+                    }
+                    _ => None,
+                })
+                .expect("measured prompt receipt");
+            assert_eq!(usage.context_window_tokens, expected);
+        }
+    }
+
+    #[tokio::test]
     async fn live_prompt_ignores_other_sessions_and_only_finishes_on_its_response() {
         let (host, mut agent) = tokio::io::duplex(4096);
         let (host_read, mut host_write) = tokio::io::split(host);
@@ -3039,6 +3234,7 @@ mod tests {
             requests: asks,
             decisions: replies,
         };
+        let mut catalog = AcpModelCatalog::default();
         let live = acp_read_prompt(
             &mut reader,
             &mut host_write,
@@ -3046,6 +3242,7 @@ mod tests {
             7,
             "ours",
             true,
+            &mut catalog,
             &events,
             &mut control,
             Some(&mut bridge),
@@ -3206,6 +3403,7 @@ mod tests {
                     7,
                     "ours",
                     false,
+                    &mut AcpModelCatalog::default(),
                     &events,
                     &mut control,
                     None,
@@ -3236,6 +3434,7 @@ mod tests {
                 7,
                 "ours",
                 false,
+                &mut AcpModelCatalog::default(),
                 &events,
                 &mut control,
                 None,
@@ -3999,6 +4198,27 @@ mod tests {
                 .find(|m| m.id == "grok-4.5")
                 .expect("real model");
             assert_eq!(real.context_window_tokens, Some(500_000));
+        }
+    }
+
+    #[test]
+    fn acp_split_catalog_enriches_picker_and_current_model() {
+        let picker = json!({"id":2,"result":{
+            "models":{"currentModelId":"active"},
+            "configOptions":[{"id":"model","options":[{"value":"active","name":"Picker label"}]}]
+        }})
+        .to_string();
+        let metadata = json!({"method":"session/update","params":{"update":{
+            "models":{"availableModels":[{"modelId":"active","_meta":{"totalContextTokens":64000}}]}
+        }}})
+        .to_string();
+        for frames in [[picker.as_str(), metadata.as_str()], [&metadata, &picker]] {
+            let models = collect_acp_models_from_lines(&frames).unwrap();
+            assert_eq!(models.len(), 2);
+            assert_eq!(models[0].context_window_tokens, Some(64_000));
+            assert_eq!(models[1].context_window_tokens, Some(64_000));
+            assert_eq!(models[0].label, "Default (Picker label)");
+            assert_eq!(models[1].label, "Picker label (active)");
         }
     }
 
@@ -5032,7 +5252,8 @@ mod tests {
                 ]
             }
         });
-        let models = normalize_models(&result);
+        let frame = json!({"id":2,"result":result}).to_string();
+        let models = collect_acp_models_from_lines(&[&frame]).unwrap();
         assert!(models.iter().any(|m| m.id == "grok-4.3"));
     }
 
@@ -5087,7 +5308,8 @@ mod tests {
                 ]
             }
         });
-        let models = normalize_models(&result);
+        let frame = json!({"id":2,"result":result}).to_string();
+        let models = collect_acp_models_from_lines(&[&frame]).unwrap();
         let window_of = |id: &str| {
             models
                 .iter()
@@ -5131,7 +5353,8 @@ mod tests {
                 ]}
             ]
         });
-        let models = normalize_models(&result);
+        let frame = json!({"id":2,"result":result}).to_string();
+        let models = collect_acp_models_from_lines(&[&frame]).unwrap();
         let window_of = |id: &str| {
             models
                 .iter()
@@ -5163,7 +5386,8 @@ mod tests {
                 ]
             }
         });
-        let models = normalize_models(&result);
+        let frame = json!({"id":2,"result":result}).to_string();
+        let models = collect_acp_models_from_lines(&[&frame]).unwrap();
         assert_eq!(
             models
                 .iter()
@@ -5737,6 +5961,7 @@ async fn read_rpc_response(
     acp_read_until_id(
         reader,
         stdin,
+        None,
         None,
         want_id,
         deadline.saturating_sub(started.elapsed()),

@@ -44,7 +44,7 @@ const MAX_BYTES = 24 * 1024 * 1024
 
 // Charge strings at UTF-16 width and account for collection slots and field names.
 // Walk the already-loaded JSON values without building a serialized copy of tool results.
-function retainedBytes(value: unknown, budget = MAX_BYTES, depth = 0): number {
+function retainedBytes(value: unknown, budget: number, depth = 0): number {
   if (typeof value === 'string') return 16 + value.length * 2
   if (value == null || typeof value !== 'object') return 8
   if (depth > 128) return MAX_BYTES + 1
@@ -74,8 +74,13 @@ type RetainedWindow = {
 
 export function createConversationWarmCache(readWindow: (id: string, anchor?: string) => Promise<Conversation>) {
   const entries = new Map<string, RetainedWindow>()
-
+  let restoring: { entry: RetainedWindow } | undefined
   let usedBytes = 0
+
+  const budgetFor = (id: string) => {
+    const selected = restoring?.entry
+    return selected?.conversation && selected.conversation.id !== id ? MAX_BYTES - selected.bytes : MAX_BYTES
+  }
 
   const forget = (id: string) => {
     const entry = entries.get(id)
@@ -88,9 +93,9 @@ export function createConversationWarmCache(readWindow: (id: string, anchor?: st
   }
 
   const trim = () => {
-    for (const id of entries.keys()) {
+    for (const [id, entry] of entries) {
       if (usedBytes <= MAX_BYTES && entries.size <= MAX_ENTRIES) break
-      forget(id)
+      if (entry !== restoring?.entry) forget(id)
     }
   }
 
@@ -98,17 +103,26 @@ export function createConversationWarmCache(readWindow: (id: string, anchor?: st
     remember(conversation: Conversation, anchor?: string, stillCurrent?: () => boolean) {
       const id = conversation.id
       forget(id)
-      const bytes = retainedBytes(conversation)
-      if (bytes > MAX_BYTES) return
-      const entry: RetainedWindow = { conversation, bytes, stillCurrent, timer: setTimeout(() => forget(id), IDLE_TTL_MS) }
+      const budget = budgetFor(id)
+      const bytes = retainedBytes(conversation, budget)
+      const fits = bytes <= budget
+      const bounded = conversation.history_start != null && Boolean(conversation.history_source)
+      if (bounded && !fits) return
+      const entry: RetainedWindow = {
+        conversation: fits ? conversation : null,
+        bytes: fits ? bytes : 0,
+        stillCurrent,
+        timer: setTimeout(() => forget(id), IDLE_TTL_MS),
+      }
       entries.set(id, entry)
-      usedBytes += bytes
+      usedBytes += entry.bytes
       trim()
-      if (conversation.history_start != null && conversation.history_source) return
+      if (bounded) return
       entry.bounding = readWindow(id, anchor).then(window => {
         if (entries.get(id) !== entry) return
-        const bytes = retainedBytes(window)
-        if (bytes > MAX_BYTES) {
+        const budget = budgetFor(id)
+        const bytes = retainedBytes(window, budget)
+        if (bytes > budget) {
           forget(id)
           return
         }
@@ -127,25 +141,34 @@ export function createConversationWarmCache(readWindow: (id: string, anchor?: st
     ): Promise<Conversation | null> {
       const entry = entries.get(id)
       if (!entry) return null
-      if (entry.conversation) display(entry.conversation)
-      if (entry.bounding) await entry.bounding
-      if (entries.get(id) !== entry || !entry.conversation) return null
-      const after = entry.conversation.history_source
-        ? { revision: entry.conversation.revision, source: entry.conversation.history_source } : undefined
-      const checkpoint = await resume(id, after)
-      if (entries.get(id) !== entry || !entry.conversation) return null
-      const base = entry.conversation
-      if (checkpoint?.conversationRevision === null) {
-        forget(id)
-        throw new Error('Conversation no longer exists')
+      // Displaying the selected conversation parks the outgoing one synchronously.
+      const selection = { entry }
+      restoring = selection
+      try {
+        const previewAfterProjection = !entry.conversation
+        if (entry.conversation) display(entry.conversation)
+        if (entry.bounding) await entry.bounding
+        if (previewAfterProjection && entry.conversation) display(entry.conversation)
+        if (entries.get(id) !== entry || !entry.conversation) return null
+        const after = entry.conversation.history_source
+          ? { revision: entry.conversation.revision, source: entry.conversation.history_source } : undefined
+        const checkpoint = await resume(id, after)
+        if (entries.get(id) !== entry || !entry.conversation) return null
+        const base = entry.conversation
+        if (checkpoint?.conversationRevision === null) {
+          forget(id)
+          throw new Error('Conversation no longer exists')
+        }
+        const replay = checkpoint?.historyReplay
+        const current = replay && replay.through.revision === checkpoint.conversationRevision ? applyReplay(base, replay) : null
+        if (!current || (entry.stillCurrent && !entry.stillCurrent())) {
+          forget(id)
+          return null
+        }
+        return current
+      } finally {
+        if (restoring === selection) restoring = undefined
       }
-      const replay = checkpoint?.historyReplay
-      const current = replay && replay.through.revision === checkpoint.conversationRevision ? applyReplay(base, replay) : null
-      if (!current || (entry.stillCurrent && !entry.stillCurrent())) {
-        forget(id)
-        return null
-      }
-      return current
     },
     forget,
     clear() { for (const id of entries.keys()) forget(id) },

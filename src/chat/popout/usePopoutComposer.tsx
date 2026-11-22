@@ -24,7 +24,7 @@ import {
   useDshCustomPresets,
 } from '../permissionModes'
 import { SessionUsageStrip } from '../SessionUsageStrip'
-import { resolveSendSkillId } from '../skillSelection'
+import { normalizeSkill, resolveSendSkillId, skillRecommendedTools, skillsForExpert } from '../skillSelection'
 import { findUnavailableRecommendedTools } from '../toolAvailability'
 import type {
   AdditionalDirectory,
@@ -65,24 +65,6 @@ function additionalDirectoriesOf(conversation: Conversation | null | undefined):
   return conversation?.additional_directories ?? conversation?.additionalDirectories ?? []
 }
 
-function skillRecommendedTools(skill?: SkillMeta | null): string[] {
-  return skill?.recommended_tools ?? skill?.recommendedTools ?? []
-}
-
-function normalizeSkill(skill: import('../../api/tauri').SkillMeta): SkillMeta {
-  return {
-    id: skill.id,
-    name: skill.name,
-    description: skill.description,
-    source: skill.source,
-    path: skill.path ?? undefined,
-    recommendedTools: skill.recommendedTools,
-    disableModelInvocation: skill.disableModelInvocation,
-    files: skill.files,
-  }
-}
-
-
 function applyConversationMeta(
   setConversation: Dispatch<SetStateAction<Conversation | null>>,
   updated: Conversation,
@@ -114,8 +96,6 @@ type UsePopoutComposerArgs = {
   cancelVisible: boolean
   cancelling: boolean
   disabled: boolean
-  /** 由 usePopoutSession 解析，标题栏工作区面板共用。 */
-  workdir: string
 }
 
 export function usePopoutComposer({
@@ -134,7 +114,6 @@ export function usePopoutComposer({
   cancelVisible,
   cancelling,
   disabled,
-  workdir: gitWorkdir,
 }: UsePopoutComposerArgs): InputBarProps {
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
@@ -156,7 +135,7 @@ export function usePopoutComposer({
   const [webSearchEnabled, setWebSearchEnabled] = useState(true)
   const [providerApiFormats, setProviderApiFormats] = useState<Record<string, string>>({})
   const [providerBaseUrls, setProviderBaseUrls] = useState<Record<string, string>>({})
-  const [skills, setSkills] = useState<SkillMeta[]>([])
+  const [catalog, setCatalog] = useState<{ conversationId: string; skills: SkillMeta[] } | null>(null)
   const [disabledSkillIds, setDisabledSkillIds] = useState<string[]>([])
   const [boundProject, setBoundProject] = useState<ChatProject | null>(null)
   const [boundSet, setBoundSet] = useState<ChatSet | null>(null)
@@ -343,22 +322,18 @@ export function usePopoutComposer({
   }, [setId])
 
   useEffect(() => {
-    if (!isTauriRuntime()) {
-      setSkills([])
-      return
-    }
+    if (!isTauriRuntime()) return
     let cancelled = false
-    void api.chatSkillsList(undefined, gitWorkdir || undefined).then((result) => {
+    void api.chatSessionSkills(conversationId).then((result) => {
       if (cancelled) return
-      if (result.success) setSkills(result.skills.map(normalizeSkill))
-      else setSkills([])
+      setCatalog(result.success ? { conversationId, skills: result.skills.map(normalizeSkill) } : null)
     }).catch(() => {
-      if (!cancelled) setSkills([])
+      if (!cancelled) setCatalog(null)
     })
     return () => {
       cancelled = true
     }
-  }, [gitWorkdir])
+  }, [conversationId])
 
   useTauriEvent(api.onChatContext, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
@@ -534,10 +509,11 @@ export function usePopoutComposer({
     applyConversationMeta(setConversation, next)
   }, [conversationId, runtime, setConversation])
 
-  const enabledSkills = useMemo(
-    () => skills.filter((skill) => !disabledSkillIds.includes(skill.id)),
-    [disabledSkillIds, skills],
-  )
+  const assistantSnapshot = conversation?.assistant_snapshot ?? conversation?.assistantSnapshot ?? null
+  const enabledSkills = useMemo(() => {
+    if (loadedId !== conversationId || catalog?.conversationId !== conversationId) return []
+    return skillsForExpert(catalog.skills.filter(skill => !disabledSkillIds.includes(skill.id)), assistantSnapshot)
+  }, [assistantSnapshot, catalog, conversationId, disabledSkillIds, loadedId])
   const send = useCallback<InputBarProps['onSend']>((content, attachments, options) => onSend(
     content, attachments, {
       ...options,
@@ -582,7 +558,6 @@ export function usePopoutComposer({
   const webSearchMode: WebSearchMode = explicitWebSearch
     || loadLastWebSearchMode()
     || (webSearchEnabled ? 'third_party' : 'off')
-  const assistantSnapshot = conversation?.assistant_snapshot ?? conversation?.assistantSnapshot ?? null
   const currentAssistant = assistantSnapshot
     ? { id: assistantSnapshot.id, name: assistantSnapshot.name }
     : null

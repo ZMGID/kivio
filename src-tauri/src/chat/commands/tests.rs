@@ -250,6 +250,29 @@ fn builder_args_produce_valid_assistant() {
 }
 
 #[test]
+fn blank_chat_reuse_requires_the_current_expert_and_untouched_mounts() {
+    let expert: crate::chat::types::ChatAssistantSnapshot =
+        serde_json::from_value(serde_json::json!({
+            "id": "asst_docs", "name": "Docs", "tool_policy": "allowlist",
+            "mcp_server_ids": ["docs"], "skill_ids": ["read"], "knowledge_base_ids": ["kb_docs"],
+        }))
+        .unwrap();
+    let mut blank = test_conversation_with_messages(vec![]);
+    blank.apply_assistant(Some(expert.clone()));
+    assert!(blank.matches_new_expert(&expert));
+
+    let mut edited = expert.clone();
+    edited.mcp_server_ids.clear();
+    assert!(!blank.matches_new_expert(&edited));
+    let mut edited = expert.clone();
+    edited.skill_ids.clear();
+    assert!(!blank.matches_new_expert(&edited));
+
+    blank.attach_manual_knowledge_bases(&["kb_docs".into()]);
+    assert!(!blank.matches_new_expert(&expert));
+}
+
+#[test]
 fn expert_knowledge_defaults_follow_switches_and_leave_manual_sources_attached() {
     let mut chat = test_conversation_with_messages(vec![]);
     chat.knowledge_base_ids.push("kb_manual".into());

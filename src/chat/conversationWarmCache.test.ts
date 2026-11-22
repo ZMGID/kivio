@@ -47,6 +47,45 @@ it('shows a completed send immediately and retains only its bounded window after
   cache.clear()
 })
 
+it.each([
+  { limit: 'entry count', length: 0, kept: 'E' },
+  { limit: 'byte budget', length: 7 * 1024 * 1024, kept: 'B' },
+])('protects the selected window when parking another reaches the $limit', async ({ length, kept }) => {
+  const cache = createConversationWarmCache(async id => windowFor(id))
+  const window = (id: string): Conversation => ({ ...windowFor(id), messages: [
+    { id: 'reply', role: 'assistant', content: 'x'.repeat(length), timestamp: 1 },
+  ] })
+  cache.remember(window('A'))
+  for (const id of ['B', 'C', 'D']) cache.remember(windowFor(id))
+  const outgoing = window('E')
+  const restored = await cache.get('A', replayCurrent, () => cache.remember(outgoing))
+  expect(restored?.id).toBe('A')
+  const parked = await cache.get('E', replayCurrent, () => {})
+  const oldestIdle = await cache.get('B', replayCurrent, () => {})
+  expect([parked?.id, oldestIdle?.id].filter(Boolean)).toEqual([kept])
+  cache.clear()
+})
+
+it('projects an oversized full history and restores only the bounded window', async () => {
+  const bounded = windowFor('large')
+  const full: Conversation = { ...bounded, history_start: undefined, messages: [
+    { id: 'old', role: 'assistant', content: 'x'.repeat(13 * 1024 * 1024), timestamp: 1 },
+  ] }
+  let supply!: (window: Conversation) => void
+  const read = vi.fn(() => new Promise<Conversation>(resolve => { supply = resolve }))
+  const cache = createConversationWarmCache(read)
+  cache.remember(full, 'reading-position')
+  const display = vi.fn()
+  const restoring = cache.get(full.id, replayCurrent, display)
+  expect(read).toHaveBeenCalledWith(full.id, 'reading-position')
+  expect(display).not.toHaveBeenCalled()
+  supply(bounded)
+  expect(await restoring).toBe(bounded)
+  expect(display.mock.calls).toEqual([[bounded]])
+  expect(await cache.get(full.id, replayCurrent, display)).toBe(bounded)
+  cache.clear()
+})
+
 it('refetches when a run settles during replay even with an unchanged durable revision', async () => {
   const cache = createConversationWarmCache(async id => windowFor(id))
   let running = true

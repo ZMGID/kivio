@@ -211,17 +211,41 @@ pub async fn chat_detect_external_agent_models(
     force: Option<bool>,
     snapshot_only: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let started = std::time::Instant::now();
-    let force = force.unwrap_or(false);
     let def = get_agent_def(&agent_id).ok_or_else(|| format!("未知外部 Agent: {agent_id}"))?;
-    let cwd = resolve_detection_cwd(&app, conversation_id.as_deref())?;
+    let (models, cached, refreshing) = discover_agent_models(
+        &app,
+        &state,
+        def,
+        conversation_id.as_deref(),
+        force.unwrap_or(false),
+        snapshot_only.unwrap_or(false),
+    )
+    .await?;
+    let mut payload = cached_models_payload(def, &models, cached);
+    if let Some(refreshing) = refreshing {
+        payload["refreshing"] = refreshing.into();
+    }
+    Ok(payload)
+}
+
+pub(super) async fn discover_agent_models(
+    app: &AppHandle,
+    state: &AppState,
+    def: &crate::external_agents::types::RuntimeAgentDef,
+    conversation_id: Option<&str>,
+    force: bool,
+    snapshot_only: bool,
+) -> Result<(CachedAgentModels, bool, Option<bool>), String> {
+    let started = std::time::Instant::now();
+    let agent_id = def.id;
+    let cwd = resolve_detection_cwd(app, conversation_id)?;
     let cwd_key = cwd.to_string_lossy().into_owned();
-    let key = cache_key(&agent_id, &cwd_key);
+    let key = cache_key(agent_id, &cwd_key);
     let discovery = state.external_discovery();
     let generation = discovery.model_generation();
-    let launch_revision = super::overrides::launch_revision(&agent_id)
+    let launch_revision = super::overrides::launch_revision(agent_id)
         .ok_or_else(|| "CLI 配置正在更新，请重试".to_string())?;
-    let snapshot_key = model_snapshot_key(&agent_id, &cwd_key);
+    let snapshot_key = model_snapshot_key(agent_id, &cwd_key);
     let snapshot_path = state.usage_dir.join("external-agent-models.json");
 
     if !force {
@@ -230,14 +254,12 @@ pub async fn chat_detect_external_agent_models(
             EXTERNAL_AGENT_MODELS_CACHE_TTL,
             EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
         ) {
-            let mut payload = cached_models_payload(def, &cached, true);
-            payload["refreshing"] = false.into();
-            return Ok(payload);
+            return Ok((cached, true, Some(false)));
         }
     }
 
     let previous = discovery.load_model_snapshot(&snapshot_path, &snapshot_key);
-    if snapshot_only.unwrap_or(false) {
+    if snapshot_only {
         let cached = previous.unwrap_or_else(|| CachedAgentModels {
             models: crate::external_agents::types::fallback_models_from_pairs(def.fallback_models),
             source: ModelSource::Fallback,
@@ -249,19 +271,17 @@ pub async fn chat_detect_external_agent_models(
             current_reasoning: None,
             probe_error: None,
         });
-        let mut payload = cached_models_payload(def, &cached, true);
-        payload["refreshing"] = true.into();
-        return Ok(payload);
+        return Ok((cached, true, Some(true)));
     }
 
     let _guard = state.external_discovery().acquire_model_probe(&key).await;
     if discovery.model_generation() != generation
-        || super::overrides::launch_revision(&agent_id) != Some(launch_revision)
+        || super::overrides::launch_revision(agent_id) != Some(launch_revision)
     {
         return Err("CLI 配置已变更，请重新获取模型".into());
     }
     if let Some(cached) = discovery.models_completed_since(&key, started) {
-        return Ok(cached_models_payload(def, &cached, true));
+        return Ok((cached, true, None));
     }
     if !force {
         if let Some(cached) = state.external_discovery().get_cached_external_agent_models(
@@ -269,11 +289,11 @@ pub async fn chat_detect_external_agent_models(
             EXTERNAL_AGENT_MODELS_CACHE_TTL,
             EXTERNAL_AGENT_MODELS_FALLBACK_TTL,
         ) {
-            return Ok(cached_models_payload(def, &cached, true));
+            return Ok((cached, true, None));
         }
     }
     let probe = detect_agent_models(def, &cwd).await;
-    if super::overrides::launch_revision(&agent_id) != Some(launch_revision) {
+    if super::overrides::launch_revision(agent_id) != Some(launch_revision) {
         return Err("CLI 配置已变更，请重新获取模型".into());
     }
     let mut cached = CachedAgentModels {
@@ -300,7 +320,7 @@ pub async fn chat_detect_external_agent_models(
     if cached.source == ModelSource::Probed {
         discovery.save_model_snapshot(&snapshot_path, snapshot_key, cached.clone());
     }
-    Ok(cached_models_payload(def, &cached, false))
+    Ok((cached, false, None))
 }
 
 fn models_payload(

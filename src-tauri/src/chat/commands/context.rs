@@ -38,12 +38,9 @@ pub(crate) async fn chat_get_context_stats(
         let cwd = crate::external_agents::workspace::resolve_loaded_cwd(&app, &conversation)?;
         crate::external_agents::context::compute_external_context_state_with_probe(
             &app,
+            state.inner(),
             &conversation,
-            true,
-            None,
-            None,
-            Some(&cwd),
-            Some(&cwd),
+            &cwd,
         )
         .await
     } else {

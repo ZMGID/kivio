@@ -513,7 +513,6 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     cancelVisible: streamCoarse.streaming,
     cancelling: streamCoarse.cancelling,
     disabled: streamCoarse.streaming || executionOwner.snapshot(conversationId).inFlight,
-    workdir,
   })
 
   const messageListProps: MessageListProps = {

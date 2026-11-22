@@ -204,7 +204,7 @@ pub enum MessagePart {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_provider_id: Option<String>,
     },
-    /// Ordered Responses output for stateless xAI server-tool turns. Portable
+    /// Ordered Responses output for stateless xAI server-tool and truncated turns. Portable
     /// text and client calls remain separate for editing and switching providers.
     XaiOutput {
         model: String,

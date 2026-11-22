@@ -126,5 +126,6 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
   expect(screen.getByText(/Kimi CLI sign-in required/)).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Refresh usage limits' }))
   expect(await screen.findByRole('progressbar', { name: 'Monthly' })).toBeVisible()
-  expect(screen.queryByText(/Account service timed out/)).not.toBeInTheDocument()
+  expect(screen.getByText(/Claude.*Account service timed out/)).toBeVisible()
+  expect(screen.queryByText(/Kimi CLI sign-in required/)).not.toBeInTheDocument()
 })

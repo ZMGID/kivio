@@ -1,6 +1,7 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
+import * as desktop from '../../api/tauri'
 import { api, type ChatContextPayload } from '../../api/tauri'
 import { chatApi, normalizeAgentRuntime } from '../api'
 import type { Conversation } from '../types'
@@ -34,7 +35,7 @@ it.each([
       streaming: false, usesChatRuntime: false, usesExternalRuntime: true,
       runtime: normalizeAgentRuntime({ agent_runtime: { kind: 'external', external_agent_id: 'pi' } }),
       detectedExternalAgents: [], onSend: vi.fn(), onCancel: vi.fn(), cancelVisible: false,
-      cancelling: false, disabled: false, workdir: '',
+      cancelling: false, disabled: false,
     })
     return <>{contextSlot}</>
   }
@@ -50,4 +51,27 @@ it.each([
   await act(async () => publish({ conversationId: saved.id, live: { usedTokens: 91000,
     tokenCountSource: 'cli_reported', contextWindowTokens: 100000, measurementSeq: 7 } }))
   expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', expectedPercent)
+})
+
+it('shows only skills permitted by the expert and updates the menu when the expert changes', async () => {
+  vi.spyOn(desktop, 'isTauriRuntime').mockReturnValue(true)
+  const catalog = {
+    success: true, warnings: [], skills: ['approved', 'outside'].map(id => ({
+      id, name: id, description: '', source: 'user', recommendedTools: [],
+    })),
+  }
+  vi.spyOn(api, 'chatSessionSkills').mockResolvedValue(catalog)
+  const saved: Conversation = {
+    id: 'popout-menu', revision: 1, title: '', provider_id: '', model: '', messages: [], created_at: 1, updated_at: 1,
+    assistant_snapshot: { id: 'legacy', name: 'Expert', tool_policy: 'allowlist', skill_ids: ['approved'] },
+  }
+  const { result, rerender } = renderHook(({ conversation }) => usePopoutComposer({
+    conversation, setConversation: vi.fn(), conversationId: saved.id, lang: 'en', displayMessages: [],
+    streaming: false, usesChatRuntime: false, usesExternalRuntime: false, runtime: normalizeAgentRuntime(saved),
+    detectedExternalAgents: [], onSend: vi.fn(), onCancel: vi.fn(), cancelVisible: false,
+    cancelling: false, disabled: false,
+  }), { initialProps: { conversation: saved } })
+  await waitFor(() => expect(result.current.enabledSkills?.map(skill => skill.id)).toEqual(['approved']))
+  rerender({ conversation: { ...saved, assistant_snapshot: null } })
+  expect(result.current.enabledSkills?.map(skill => skill.id)).toEqual(['approved', 'outside'])
 })

@@ -191,6 +191,30 @@ fn restart_goal_recovery_resource_regression() {
 }
 
 #[test]
+fn revision_split_at_header_limit_is_read_from_the_complete_legacy_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = "conv_split_revision";
+    let path = dir.path().join(format!("{id}.json"));
+    let mut current = conversation(id, "retained message");
+    current.revision = 42;
+    let mut body = serde_json::to_value(&current).unwrap();
+    let fields = body.as_object_mut().unwrap();
+    fields.remove("revision");
+    fields.remove("goal_state");
+    let remaining = serde_json::to_string(fields).unwrap();
+    let start = r#"{"goal_state":null,"padding":""#;
+    let before_split = r#"","revision":4"#;
+    let padding = "x".repeat(8192 - start.len() - before_split.len());
+    let legacy = format!("{start}{padding}{before_split}2,{}", &remaining[1..]);
+    fs::write(&path, legacy).unwrap();
+
+    assert_eq!(conversation_file_revision(&path).unwrap(), Some(42));
+    assert!(super::conversations::index_revision(&path).is_err());
+    let scan = restart_goal_candidates_in_dir(dir.path()).unwrap();
+    assert_eq!(scan.verified_rows[0].revision, Some(42));
+}
+
+#[test]
 fn cold_legacy_sidebar_uses_index_then_reconciles_once_per_file_version() {
     let dir = tempfile::tempdir().unwrap();
     let id = "conv_legacy_startup";

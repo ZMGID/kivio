@@ -668,10 +668,6 @@ pub(crate) async fn create_chat_conversation_internal(
         .as_ref()
         .map(|project| project.name.clone())
         .or(folder);
-    let assistant_id_for_reuse = assistant_snapshot
-        .as_ref()
-        .map(|assistant| assistant.id.clone());
-
     let conversation = {
         let _create_guard = state.chat_runtime().lock_conversation_creation().await;
         let reusable = if reuse_blank {
@@ -683,23 +679,13 @@ pub(crate) async fn create_chat_conversation_internal(
                     folder.as_deref(),
                     project_id.as_deref(),
                     set_id.as_deref(),
-                    assistant_id_for_reuse.as_deref(),
+                    assistant_snapshot.as_ref(),
                 )
                 .await
                 .map_err(crate::chat::repository::repository_error)?
         } else {
             None
         };
-        // A customized blank chat is still a separate conversation. Starting with
-        // an expert must use its current defaults, including after the expert was edited.
-        let reusable = reusable.filter(|conv| {
-            assistant_snapshot.as_ref().is_none_or(|assistant| {
-                conv.knowledge_base_ids == assistant.defaults.knowledge_base_ids
-                    && conv.assistant_snapshot.as_ref().is_some_and(|old| {
-                        old.defaults.knowledge_base_ids == assistant.defaults.knowledge_base_ids
-                    })
-            })
-        });
         if let Some(conversation) = reusable {
             conversation
         } else {

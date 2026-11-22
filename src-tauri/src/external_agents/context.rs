@@ -4,14 +4,13 @@ use crate::chat::agent_preparation as agent_prepare;
 use crate::chat::model::ModelUsage;
 use crate::chat::model_metadata::context_window_for_model;
 use crate::chat::types::{ContextUsageSegment, Conversation, ConversationContextState};
-use crate::external_agents::detection::detect_single_agent;
 use crate::external_agents::kimi_usage;
 use crate::external_agents::registry::get_agent_def;
 use crate::external_agents::session::claude_init::{
     context_window_from_claude_model_alias, context_window_from_claude_resolved_model,
 };
 use crate::external_agents::types::{
-    ContextWindowStrategy, RuntimeAgentDef, RuntimeModelOption, UsageFallbackStrategy,
+    ContextWindowStrategy, RuntimeModelOption, UsageFallbackStrategy,
 };
 
 pub const CONTEXT_SOURCE_BUILTIN: &str = "kivio_builtin";
@@ -92,6 +91,11 @@ pub fn context_window_for_external_model(
 
     if let Some(tokens) = reported_window.filter(|value| *value > 0) {
         return (Some(tokens as usize), false);
+    }
+
+    // A fresh discovery session describes today's Grok default, not the model of this turn.
+    if uses_grok_session_default(agent_id, lookup_id) {
+        return (None, true);
     }
 
     if let Some(models) = detected_models {
@@ -430,10 +434,14 @@ pub(crate) fn apply_external_context_event(
         UnifiedAgentEvent::CliCompacted { post_tokens, .. } => (*post_tokens, None, true),
         _ => return None,
     };
+    // A Grok default prompt may have resolved to another native model since the previous
+    // turn. Its reader supplies the matching capacity when the session knows it.
+    let keep_previous_window = compacted || !uses_grok_session_default(agent_id, model);
     let window = window.or_else(|| {
-        (!state.context_window_estimated)
-            .then_some(state.context_window_tokens.map(|tokens| tokens as u64))
-            .flatten()
+        state
+            .context_window_tokens
+            .filter(|_| keep_previous_window && !state.context_window_estimated)
+            .map(|tokens| tokens as u64)
     });
     if !compacted
         && state.context_source.as_deref() == Some(CONTEXT_SOURCE_EXTERNAL)
@@ -474,30 +482,49 @@ pub fn compute_external_context_state(
     compact_usage: Option<&ModelUsage>,
     wire_session: Option<(&Path, Option<&str>)>,
 ) -> ConversationContextState {
-    // New streaming measurements are authoritative, including an explicit unknown
-    // after compaction. Re-reading older message billing must not revive stale usage.
+    let reading =
+        read_external_measurement(conversation, agent_id, model, compact_usage, wire_session);
+    context_state_from_reading(conversation, agent_id, model, detected_models, reading)
+}
+
+enum ExternalMeasurement {
+    Settled(Box<ConversationContextState>),
+    Legacy(ExternalSessionUsage),
+}
+
+impl ExternalMeasurement {
+    fn needs_model_capacity(&self) -> bool {
+        match self {
+            Self::Settled(state) => {
+                state.token_count_source.as_deref() == Some(TOKEN_COUNT_CLI)
+                    && state.context_window_tokens.is_none()
+            }
+            Self::Legacy(usage) => {
+                usage.token_count_source == TOKEN_COUNT_CLI
+                    && usage
+                        .reported_context_window
+                        .is_none_or(|window| window == 0)
+            }
+        }
+    }
+}
+
+fn read_external_measurement(
+    conversation: &Conversation,
+    agent_id: &str,
+    model: &str,
+    compact_usage: Option<&ModelUsage>,
+    wire_session: Option<(&Path, Option<&str>)>,
+) -> ExternalMeasurement {
+    // New streaming measurements include an explicit unknown after compaction.
     let stored = &conversation.context_state;
     if compact_usage.is_none() && stored.context_source.as_deref() == Some(CONTEXT_SOURCE_EXTERNAL)
     {
         let mut snapshot = stored.clone();
-        if reset_changed_external_meter(&mut snapshot, agent_id, model) {
-            return snapshot;
-        }
-        if stored.measurement_seq > 0 {
-            if stored.context_window_tokens.is_none()
-                && stored.token_count_source.as_deref() == Some(TOKEN_COUNT_CLI)
-            {
-                let (window, estimated) =
-                    context_window_for_external_model(agent_id, model, detected_models, None);
-                if let Some(window) = window.filter(|n| *n > 0 && !estimated) {
-                    set_external_meter_values(
-                        &mut snapshot,
-                        Some(stored.estimated_input_tokens as u64),
-                        Some(window as u64),
-                    );
-                }
-            }
-            return snapshot;
+        if reset_changed_external_meter(&mut snapshot, agent_id, model)
+            || snapshot.measurement_seq > 0
+        {
+            return ExternalMeasurement::Settled(Box::new(snapshot));
         }
     }
     let usage = compact_usage
@@ -510,7 +537,32 @@ pub fn compute_external_context_state(
             reported_context_window: item.context_window_tokens,
         })
         .unwrap_or_else(|| collect_external_session_usage(conversation, agent_id, wire_session));
+    ExternalMeasurement::Legacy(usage)
+}
 
+fn context_state_from_reading(
+    conversation: &Conversation,
+    agent_id: &str,
+    model: &str,
+    detected_models: Option<&[RuntimeModelOption]>,
+    reading: ExternalMeasurement,
+) -> ConversationContextState {
+    let usage = match reading {
+        ExternalMeasurement::Settled(mut snapshot) => {
+            if snapshot.context_window_tokens.is_none()
+                && snapshot.token_count_source.as_deref() == Some(TOKEN_COUNT_CLI)
+            {
+                let (window, estimated) =
+                    context_window_for_external_model(agent_id, model, detected_models, None);
+                if let Some(window) = window.filter(|n| *n > 0 && !estimated) {
+                    let used = snapshot.estimated_input_tokens as u64;
+                    set_external_meter_values(&mut snapshot, Some(used), Some(window as u64));
+                }
+            }
+            return *snapshot;
+        }
+        ExternalMeasurement::Legacy(usage) => usage,
+    };
     let (context_window_tokens, context_window_estimated) = context_window_for_external_model(
         agent_id,
         model,
@@ -589,6 +641,10 @@ pub fn compute_external_context_state(
     }
 }
 
+fn uses_grok_session_default(agent_id: &str, model: &str) -> bool {
+    agent_id == "grok" && matches!(model.trim(), "" | "default")
+}
+
 /// `default` / 空串都当「没指定模型」（不是一个叫 default 的模型）。
 fn normalized_external_model(model: &str) -> Option<String> {
     if model.trim().is_empty() || model == "default" {
@@ -629,52 +685,40 @@ fn external_context_segments(usage: &ExternalSessionUsage) -> Vec<ContextUsageSe
     }]
 }
 
-/// `probe_cwd` = 模型探测用的 cwd；`work_dir` = 会话的**执行** cwd
-/// （`workspace::resolve_effective_cwd`），只用于按 workDir 关联 kimi 的落盘日志。
-/// 两者语义不同（见 spec 第 11b 条），故分开传，不复用同一个参数。
+/// Use the same cached model discovery as the picker for a missing capacity.
 pub async fn compute_external_context_state_with_probe(
     app: &tauri::AppHandle,
+    state: &crate::state::AppState,
     conversation: &Conversation,
-    probe_models: bool,
-    compact_usage: Option<&ModelUsage>,
-    cached_models: Option<&[RuntimeModelOption]>,
-    probe_cwd: Option<&Path>,
-    work_dir: Option<&Path>,
+    work_dir: &Path,
 ) -> ConversationContextState {
-    let detected_models = match context_probe_agent(conversation, compact_usage) {
-        Some(def) if probe_models => {
-            let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
-            Some(
-                detect_single_agent(def, probe_cwd.unwrap_or(&fallback_cwd))
-                    .await
-                    .models,
-            )
-        }
-        _ => None,
-    };
-    compute_cached_external_context_state(
-        app,
+    let (agent_id, model) = external_runtime(conversation);
+    let native_id = kimi_meter_session(app, conversation, agent_id, None);
+    let reading = read_external_measurement(
         conversation,
-        compact_usage,
-        detected_models.as_deref().or(cached_models),
-        work_dir,
-    )
-}
-
-fn context_probe_agent(
-    conversation: &Conversation,
-    compact_usage: Option<&ModelUsage>,
-) -> Option<&'static RuntimeAgentDef> {
-    let stored = &conversation.context_state;
-    let (agent_id, _) = external_runtime(conversation);
-    // A model catalog can fill a missing denominator but cannot recover usage after compaction.
-    if has_settled_context(conversation, compact_usage)
-        && (stored.context_window_tokens.is_some()
-            || stored.token_count_source.as_deref() != Some(TOKEN_COUNT_CLI))
-    {
-        return None;
-    }
-    get_agent_def(agent_id)
+        agent_id,
+        model,
+        None,
+        Some((work_dir, native_id.as_deref())),
+    );
+    let def = get_agent_def(agent_id)
+        .filter(|_| reading.needs_model_capacity() && !uses_grok_session_default(agent_id, model));
+    let catalog = if let Some(def) = def {
+        super::commands::discover_agent_models(
+            app,
+            state,
+            def,
+            Some(&conversation.id),
+            false,
+            false,
+        )
+        .await
+        .ok()
+        .map(|(catalog, _, _)| catalog.models)
+    } else {
+        None
+    };
+    context_state_from_reading(conversation, agent_id, model, catalog.as_deref(), reading)
 }
 
 pub(crate) fn compute_cached_external_context_state(
@@ -685,9 +729,7 @@ pub(crate) fn compute_cached_external_context_state(
     work_dir: Option<&Path>,
 ) -> ConversationContextState {
     let (agent_id, model) = external_runtime(conversation);
-    let native_id = (agent_id == "kimi" && !has_settled_context(conversation, compact_usage))
-        .then(|| super::session::bound_native_session_id(app, &conversation.id))
-        .flatten();
+    let native_id = kimi_meter_session(app, conversation, agent_id, compact_usage);
     compute_external_context_state(
         conversation,
         agent_id,
@@ -696,6 +738,17 @@ pub(crate) fn compute_cached_external_context_state(
         compact_usage,
         work_dir.map(|cwd| (cwd, native_id.as_deref())),
     )
+}
+
+fn kimi_meter_session(
+    app: &tauri::AppHandle,
+    conversation: &Conversation,
+    agent_id: &str,
+    compact_usage: Option<&ModelUsage>,
+) -> Option<String> {
+    (agent_id == "kimi" && !has_settled_context(conversation, compact_usage))
+        .then(|| super::session::bound_native_session_id(app, &conversation.id))
+        .flatten()
 }
 
 fn external_runtime(conversation: &Conversation) -> (&str, &str) {
@@ -1196,40 +1249,73 @@ mod tests {
     }
 
     #[test]
-    fn refresh_probes_a_default_model_only_for_a_missing_capacity() {
+    fn grok_refresh_preserves_session_capacity_and_never_substitutes_a_different_default() {
         let mut conversation = empty_conversation();
         conversation.agent_runtime.external_agent_id = Some("grok".into());
         conversation.agent_runtime.external_model = None;
-        let stored = &mut conversation.context_state;
-        stored.context_source = Some(CONTEXT_SOURCE_EXTERNAL.into());
-        stored.external_agent_id = Some("grok".into());
-        stored.token_count_source = Some(TOKEN_COUNT_CLI.into());
-        stored.estimated_input_tokens = 25_000;
-        stored.measurement_seq = 7;
-        assert_eq!(
-            context_probe_agent(&conversation, None).map(|def| def.id),
-            Some("grok")
-        );
-        let catalog = [RuntimeModelOption {
+        conversation.context_state = ConversationContextState {
+            context_source: Some(CONTEXT_SOURCE_EXTERNAL.into()),
+            external_agent_id: Some("grok".into()),
+            token_count_source: Some(TOKEN_COUNT_CLI.into()),
+            estimated_input_tokens: 25_000,
+            measurement_seq: 7,
+            ..Default::default()
+        };
+        let mut catalog = [RuntimeModelOption {
             id: "default".into(),
-            label: "Default (Grok)".into(),
+            label: "Default (new model)".into(),
             context_window_tokens: Some(500_000),
             capabilities: None,
         }];
-        conversation.context_state = compute_external_context_state(
-            &conversation,
+        let refresh = |conversation: &Conversation, model: &str, catalog: &[RuntimeModelOption]| {
+            compute_external_context_state(conversation, "grok", model, Some(catalog), None, None)
+        };
+        // A legacy default snapshot has no native model id or capacity.
+        assert_eq!(
+            refresh(&conversation, "default", &catalog).usage_ratio,
+            None
+        );
+        let usage = ModelUsage {
+            context_tokens: Some(25_000),
+            context_window_tokens: Some(100_000),
+            ..Default::default()
+        };
+        apply_external_context_event(
+            &mut conversation.context_state,
             "grok",
             "default",
-            Some(&catalog),
-            None,
-            None,
+            &crate::external_agents::types::UnifiedAgentEvent::Usage { usage },
         );
-        assert_eq!(conversation.context_state.usage_ratio, Some(0.05));
-        assert_eq!(conversation.context_state.measurement_seq, 7);
-        assert!(context_probe_agent(&conversation, None).is_none());
+        let reopened: Conversation =
+            serde_json::from_value(serde_json::to_value(&conversation).unwrap()).unwrap();
+        assert_eq!(
+            refresh(&reopened, "default", &catalog).usage_ratio,
+            Some(0.25)
+        );
+
+        apply_external_context_event(
+            &mut conversation.context_state,
+            "grok",
+            "default",
+            &crate::external_agents::types::UnifiedAgentEvent::Usage {
+                usage: ModelUsage {
+                    context_tokens: Some(25_000),
+                    ..Default::default()
+                },
+            },
+        );
+        assert_eq!(
+            refresh(&conversation, "default", &catalog).usage_ratio,
+            None
+        );
+
+        catalog[0].id = "pinned".into();
+        conversation.context_state.external_model = Some("pinned".into());
         conversation.context_state.context_window_tokens = None;
-        conversation.context_state.token_count_source = None;
-        assert!(context_probe_agent(&conversation, None).is_none());
+        assert_eq!(
+            refresh(&conversation, "pinned", &catalog).usage_ratio,
+            Some(0.05)
+        );
     }
 
     #[test]

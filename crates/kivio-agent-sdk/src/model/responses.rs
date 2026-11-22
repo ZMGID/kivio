@@ -1200,7 +1200,11 @@ fn xai_server_tool(item: &Value) -> bool {
 }
 
 fn xai_output_item(item: &Value) -> bool {
-    if !function_item_is_complete(item) {
+    // Replay describes what the model returned, including a length-limited last item.
+    // Only the separate function-call decoder can mark a local call ready to execute.
+    if !function_item_is_complete(item)
+        && !matches!(item["status"].as_str(), Some("incomplete" | "in_progress"))
+    {
         return false;
     }
     match item["type"].as_str() {
@@ -1227,9 +1231,13 @@ fn preserve_xai_output<'a>(
     model: &str,
     items: impl Iterator<Item = &'a Value> + Clone,
 ) {
+    let truncated = output
+        .finish_reason
+        .as_ref()
+        .is_some_and(|reason| reason.kind == FinishKind::Length);
     if !items
         .clone()
-        .any(|item| xai_server_tool(item) && xai_output_item(item))
+        .any(|item| (truncated || xai_server_tool(item)) && xai_output_item(item))
     {
         return;
     }
@@ -1285,7 +1293,7 @@ pub(super) fn xai_replay_items<'a>(
             (
                 item["call_id"].as_str(),
                 item["name"].as_str(),
-                item["arguments"].as_str(),
+                Some(responses_tool_arguments(item["arguments"].as_str())),
             )
         });
     let mut current_calls = message.content.iter().filter_map(|part| match part {
@@ -1690,12 +1698,14 @@ fn function_item_is_complete(item: &Value) -> bool {
     item["status"].is_null() || item["status"] == "completed"
 }
 
+fn responses_tool_arguments(arguments: Option<&str>) -> &str {
+    arguments
+        .filter(|raw| !raw.trim().is_empty())
+        .unwrap_or("{}")
+}
+
 fn pending_tool_call_from_partial(partial: &ResponsesToolPartial) -> PendingToolCall {
-    let raw = if partial.arguments.trim().is_empty() {
-        "{}".to_string()
-    } else {
-        partial.arguments.clone()
-    };
+    let raw = responses_tool_arguments(Some(&partial.arguments)).to_owned();
     let (arguments, arguments_parse_error) = parse_tool_arguments(&raw);
     PendingToolCall {
         id: partial.call_id.clone(),
@@ -1767,12 +1777,7 @@ fn output_from_responses_payload(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let raw_args = item
-                    .get("arguments")
-                    .and_then(Value::as_str)
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or("{}")
-                    .to_string();
+                let raw_args = responses_tool_arguments(item["arguments"].as_str()).to_owned();
                 let (arguments, arguments_parse_error) = parse_tool_arguments(&raw_args);
                 tool_calls.push(PendingToolCall {
                     id: call_id,
