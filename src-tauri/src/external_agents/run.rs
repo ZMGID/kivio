@@ -1921,14 +1921,21 @@ where
                             let recover = recover_antigravity_prompt.ok_or(
                                 "Antigravity 原生会话已不存在。请先发送一条普通消息恢复上下文，再运行命令。",
                             )?;
-                            // Persist delivery intent before publishing a replacement binding.
-                            // The existing history delivery path settles it with the saved reply.
-                            let recovery =
-                                persist_visible_history_replay(app, conversation, run_generation)
-                                    .await?;
-                            recovered_prompt = Some(recover(&recovery)?);
-                            history_transition =
-                                recovery.external_history.map(|history| history.id);
+                            // A parked thread already has a committed handoff. Keep its history
+                            // boundary and let dispatch record the replacement native ID.
+                            recovered_prompt = Some(if history_transition.is_some() {
+                                recover(conversation)?
+                            } else {
+                                let recovery = persist_visible_history_replay(
+                                    app,
+                                    conversation,
+                                    run_generation,
+                                )
+                                .await?;
+                                let prompt = recover(&recovery)?;
+                                history_transition = recovery.external_history.map(|h| h.id);
+                                prompt
+                            });
                         } else {
                             turn_args = drop_resume_for_fresh_session(
                                 app,

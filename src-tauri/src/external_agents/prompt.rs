@@ -155,21 +155,26 @@ pub fn rewind_history_block(messages: &[ChatMessage]) -> String {
 const PROVIDER_HANDOFF_BYTES: usize = 16_000;
 const HANDOFF_ENTRY_BYTES: usize = 3_800;
 
-fn handoff_field(entry: &mut String, label: &str, value: &str, field_limit: usize) {
+fn redact_handoff_data(value: &str) -> std::borrow::Cow<'_, str> {
     use std::sync::LazyLock;
 
     static INLINE_DATA: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"(?i)data:[^\s,;]*[;][^\s,]*base64,[a-z0-9+/=_-]*|(?:iVBORw0KGgo|/9j/|R0lGOD|UklGR)[a-z0-9+/=]{100,}").unwrap()
     });
+    INLINE_DATA.replace_all(value, "[attachment data omitted]")
+}
+
+/// Returns whether the quoted preview lost text to a byte limit.
+fn handoff_field(entry: &mut String, label: &str, value: &str, field_limit: usize) -> bool {
     let value = value.trim();
     let remaining =
         HANDOFF_ENTRY_BYTES.saturating_sub(entry.len() + label.len() + "\n \"\" …".len());
     if value.is_empty() || remaining == 0 {
-        return;
+        return !value.is_empty();
     }
     let preview = &value[..value.floor_char_boundary(field_limit.min(remaining))];
     // Quote even embedded newlines, so historical text cannot add prompt headings.
-    let clean = INLINE_DATA.replace_all(preview, "[attachment data omitted]");
+    let clean = redact_handoff_data(preview);
     let mut text = clean.as_ref();
     let mut quoted = serde_json::to_string(text).expect("text is JSON-serializable");
     while quoted.len() > remaining + 2 {
@@ -181,19 +186,26 @@ fn handoff_field(entry: &mut String, label: &str, value: &str, field_limit: usiz
     entry.push_str(label);
     entry.push(' ');
     entry.push_str(&quoted);
-    if text.len() < clean.len() || preview.len() < value.len() {
+    let truncated = text.len() < clean.len() || preview.len() < value.len();
+    if truncated {
         entry.push_str(" …");
     }
+    truncated
 }
 
-fn handoff_message(message: &ChatMessage) -> String {
-    let mut entry = String::new();
-    let body = if message.role == "assistant" && !message.segments.is_empty() {
+fn handoff_body(message: &ChatMessage) -> std::borrow::Cow<'_, str> {
+    if message.role == "assistant" && !message.segments.is_empty() {
         std::borrow::Cow::Owned(crate::chat::export::message_body_text(message))
     } else {
         std::borrow::Cow::Borrowed(message.content.as_str())
-    };
-    handoff_field(&mut entry, "Text", &body, 2_500);
+    }
+}
+
+fn handoff_message(message: &ChatMessage) -> (String, Option<std::ops::Range<usize>>) {
+    let mut entry = String::new();
+    let header = format!("\n\nHistorical {}", message.role);
+    let truncated = handoff_field(&mut entry, "Text", &handoff_body(message), 2_500);
+    let preview = truncated.then(|| header.len()..header.len() + entry.len());
     for attachment in &message.attachments {
         handoff_field(&mut entry, "Attachment", &attachment.name, 256);
         handoff_field(&mut entry, "Attachment path", &attachment.path, 512);
@@ -257,9 +269,9 @@ fn handoff_message(message: &ChatMessage) -> String {
         }
     }
     if entry.is_empty() {
-        entry
+        (entry, None)
     } else {
-        format!("\n\nHistorical {}{entry}", message.role)
+        (header + &entry, preview)
     }
 }
 
@@ -348,6 +360,7 @@ pub(crate) fn provider_handoff_delta(
         .collect();
     let mut remaining = PROVIDER_HANDOFF_BYTES - HEADER.len() - OMITTED.len() - compacted.len();
     let mut selected = BTreeMap::new();
+    let mut previews = Vec::new();
     let mut omitted = false;
     // Keep the initial request and the latest exchange when older activity has
     // to be omitted. Emit all selected entries in their original order.
@@ -364,15 +377,40 @@ pub(crate) fn provider_handoff_delta(
         if selected.contains_key(&index) {
             continue;
         }
-        let item = handoff_message(messages[index]);
+        let (item, preview) = handoff_message(messages[index]);
         if item.len() <= remaining {
             remaining -= item.len();
             if !item.is_empty() {
                 selected.insert(index, item);
+                if let Some(range) = preview {
+                    previews.push((index, range));
+                }
             }
         } else {
+            // An older, shorter entry may still fit.
             omitted = true;
-            break;
+            if remaining == 0 {
+                break;
+            }
+        }
+    }
+    // Reserve space for the initial request and latest exchange before expanding
+    // clipped text. Keep each expansion intact and charge its escaped wire size.
+    for (index, range) in previews {
+        let body = handoff_body(messages[index]);
+        let body = body.trim();
+        let available = remaining + range.len();
+        if body.len() > available {
+            continue;
+        }
+        let quoted = serde_json::to_string(&redact_handoff_data(body)).expect("serializable text");
+        let full = format!("\nText {quoted}");
+        if full.len() <= available {
+            remaining = available - full.len();
+            selected
+                .get_mut(&index)
+                .unwrap()
+                .replace_range(range, &full);
         }
     }
     if selected.is_empty() && compacted.is_empty() {
@@ -637,7 +675,10 @@ mod tests {
 
     #[test]
     fn provider_handoff_budgets_utf8_and_preserves_first_and_latest_exchange() {
-        let mut messages = vec![message("user", "original task")];
+        let mut messages = vec![
+            message("user", "original task"),
+            message("assistant", "short retained decision"),
+        ];
         let long = "🦊换行\n".repeat(3_000);
         for _ in 0..15 {
             messages.push(message("assistant", &long));
@@ -654,6 +695,7 @@ mod tests {
         let history = provider_handoff_block(&conversation, &conversation.messages);
         assert!(history.len() <= PROVIDER_HANDOFF_BYTES);
         assert!(history.contains("omitted"));
+        assert!(history.contains("short retained decision"));
         assert!(history.find("original task").unwrap() < history.find("recent request").unwrap());
         assert!(history.find("recent request").unwrap() < history.find("recent answer").unwrap());
         assert!(history.contains("🦊"));

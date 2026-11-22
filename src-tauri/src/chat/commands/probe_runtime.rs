@@ -478,23 +478,34 @@ async fn new_probe_conversation(
         true,
     )
     .await?;
-    conversation.title = {
-        let head: String = req.prompt.chars().take(60).collect();
-        format!("🔬 {head}")
-    };
-    // 新建时选择外部 CLI；续聊切换由 switchAgentRuntime 调用生产命令。
+    // Persist the initial CLI choice before the direct probe admits its first question.
     if let Some(agent) = req
         .external_agent_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        conversation.agent_runtime = crate::chat::AgentRuntimeConfig {
-            kind: crate::chat::types::AgentRuntimeKind::External,
-            external_agent_id: Some(agent.to_string()),
-            ..Default::default()
-        };
+        conversation = crate::chat::repository::repository(app)
+            .mutate_expected(
+                app,
+                &conversation.id,
+                Some(conversation.revision),
+                |latest| {
+                    latest.agent_runtime = crate::chat::AgentRuntimeConfig {
+                        kind: crate::chat::types::AgentRuntimeKind::External,
+                        external_agent_id: Some(agent.to_string()),
+                        ..Default::default()
+                    };
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(crate::chat::repository::repository_error)?;
     }
+    conversation.title = {
+        let head: String = req.prompt.chars().take(60).collect();
+        format!("🔬 {head}")
+    };
     Ok(conversation)
 }
 

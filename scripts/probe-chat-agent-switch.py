@@ -116,9 +116,9 @@ def run(binary, home, base, trace):
     messages = []
     handoff_anchors = []
 
-    def turn(label, expected, *, switch=False):
+    def turn(label, expected, *, switch=False, notes=""):
         nonlocal conversation_id
-        prompt = f"Reply briefly. This is {label}-{uuid.uuid4()}."
+        prompt = f"{notes}Reply briefly. This is {label}-{uuid.uuid4()}."
         request = {"id": label, "prompt": prompt, "provider": PROVIDER, "model": MODEL,
             "cwd": str(workspace), "sendThroughIpc": True, "webSearchMode": "off", "timeoutSeconds": 30}
         if conversation_id is None:
@@ -166,7 +166,9 @@ def run(binary, home, base, trace):
         # The app starts its chat WebView shortly after starting the watcher.
         time.sleep(3)
 
-        seed, _, agy_id = turn("seed-antigravity", cli("antigravity"))
+        # This message fits the handoff budget; its final requirement must reach the next CLI.
+        notes = " ".join(f"检查第 {n} 项交接记录。" for n in range(100)) + " "
+        seed, _, agy_id = turn("seed-antigravity", cli("antigravity"), notes=notes)
         seed_next, _, initial_followup = turn("continue-original-antigravity", cli("antigravity"))
         known_by_agy = visible_text()
         agy_trace = antigravity.parent / f"{agy_id}.jsonl"
@@ -221,6 +223,20 @@ def run(binary, home, base, trace):
         assert seed not in gemini_return_next and back_to_gemini not in gemini_return_next
         once_in_order(gemini_return_next, after_gemini_return)
         print(f"PASS Antigravity → Gemini, fresh native session received full portable history, same timeline {conversation_id}")
+
+        # The parked thread can disappear in the CLI while another agent is active.
+        before_missing = visible_text()
+        agy_trace.unlink()
+        missing, _, replacement = turn("return-to-missing-antigravity", cli("antigravity"), switch=True)
+        next_prompt, _, reused = turn("continue-replacement-antigravity", cli("antigravity"))
+        assert replacement != agy_id and reused == replacement
+        assert any(start["requested"] == agy_id and start["native"] != agy_id
+                   for start in read_lines(antigravity.parent / "starts.jsonl"))
+        recovered, following = read_lines(antigravity.parent / f"{replacement}.jsonl")
+        once_in_order(recovered, *before_missing, missing)
+        once_in_order(following, next_prompt)
+        assert all(item not in following for item in (*before_missing, missing))
+        print("PASS missing parked Antigravity session, current request and history delivered once")
     finally:
         if app.poll() is None:
             app.terminate()
