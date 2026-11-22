@@ -26,7 +26,8 @@ vi.mock('../api/settingsCache', () => ({
   subscribeSettings: () => () => {},
   setFavoriteModelsCached: vi.fn(),
 }))
-vi.mock('../components/ModelIcon', () => ({ ModelIcon: () => null }))
+// 'no-brand-model' 代表认不出品牌的模型名。
+vi.mock('../components/ModelIcon', () => ({ ModelIcon: () => null, hasModelIcon: (model: string) => model !== 'no-brand-model' }))
 
 const runtime: AgentRuntimeConfig = {
   kind: 'external',
@@ -540,6 +541,10 @@ describe('AgentModelPicker · built-in models and thinking level', () => {
     document.body.innerHTML = ''
     await act(async () => { renderPicker({ model: '' }) })
     expect(trigger().querySelector('.kv-agent-picker__crumb-sep')).toBeNull()
+    document.body.innerHTML = ''
+    await act(async () => { renderPicker({ model: 'no-brand-model' }) })
+    expect(trigger().querySelector('.kv-agent-picker__crumb-sep')).toBeNull()
+    expect(trigger()).toHaveTextContent('no-brand-model')
     document.body.innerHTML = ''
     await act(async () => { renderPicker({ agentRuntime: { ...builtin, kind: 'chat' } }) })
     expect(trigger().querySelector('img.kv-agent-picker__logo--chat')).not.toBeNull()

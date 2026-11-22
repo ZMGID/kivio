@@ -111,7 +111,8 @@ function HezubusMark({ size = 16, style }: { size?: number; style?: CSSPropertie
 // First match wins; tested case-insensitively against the model id.
 const MODEL_ICON_MAP: Array<[RegExp, Glyph]> = [
   [/gpt|chatgpt|openai|codex|dall[-·]?e|(?:^|[-/])o[134](?:-|$)/, G(OpenAI)],
-  [/claude|anthropic/, G(Claude)],
+  // Claude Code 的模型是别名（opus / sonnet[1m] / haiku），不带 claude 前缀。
+  [/claude|anthropic|^(?:opus|sonnet|haiku)(?:[-[]|$)/, G(Claude)],
   [/gemma/, G(Gemma)],
   [/gemini|palm|bison/, G(Gemini)],
   [/deepseek/, G(DeepSeek)],
@@ -173,6 +174,12 @@ export function ModelIcon({ model, size = 18, className }: ModelIconProps) {
 
 // eslint-disable-next-line react-refresh/only-export-components -- test-only helper
 export { matchGlyph as _matchGlyphForTest }
+
+/** 认得出品牌才有图标；认不出时 ModelIcon 会画首字母方块，不适合放在胶囊这类要求干净的位置。 */
+// eslint-disable-next-line react-refresh/only-export-components -- 与 ModelIcon 同源的匹配规则
+export function hasModelIcon(model: string): boolean {
+  return matchGlyph(model) !== null
+}
 
 // 供应商图标注册表。key 即持久化到设置里的图标标识（settings.providerIcons）。
 // eslint-disable-next-line react-refresh/only-export-components -- 图标表与组件同源，拆文件只为 HMR 不值当

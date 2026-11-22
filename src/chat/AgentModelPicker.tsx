@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Lock, Zap } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
-import { ModelIcon } from '../components/ModelIcon'
+import { ModelIcon, hasModelIcon } from '../components/ModelIcon'
 import { IconButton } from '../components/Button'
 import { useLang, useT } from '../components/i18n'
 import { chatTitlebarPillButtonClass } from './platform'
@@ -129,9 +129,11 @@ function AgentModelPickerBase({
     ? (external.reasoningOptions.length > 0 ? external.reasoningLabel : null)
     : (thinking.hidden ? null : thinking.effectiveLabel)
   const fastOn = usesExternal && external.fastOn
-  const pillModelId = usesExternal
+  const pillModelCandidate = usesExternal
     ? (external.activeModelId !== 'default' ? external.activeModelId : null)
     : model || null
+  // 认不出品牌的模型不画首字母方块，也不带「/」。
+  const pillModelId = pillModelCandidate && hasModelIcon(pillModelCandidate) ? pillModelCandidate : null
   const providerName = !usesExternal && model ? builtinCatalog.currentProvider?.name : undefined
   const summary = [
     agentLabel,

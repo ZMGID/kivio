@@ -18,6 +18,9 @@ describe('ModelIcon model→brand mapping', () => {
     expect(matchGlyph('deepseek-v4-flash-free')).toBe(PROVIDER_BRANDS.DeepSeek)
     expect(matchGlyph('mimo-v2.5-free')).not.toBeNull()
     expect(matchGlyph('spelling-model')).toBeNull()
+    // Claude Code 的别名模型名。
+    for (const id of ['opus', 'sonnet', 'haiku', 'sonnet[1m]', 'opus-4-6']) expect(matchGlyph(id)).toBe(PROVIDER_BRANDS.Claude)
+    expect(matchGlyph('opusmax-custom')).toBeNull()
   })
 
   it('matches common model families', () => {
