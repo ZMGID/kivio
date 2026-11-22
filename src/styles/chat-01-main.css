@@ -459,6 +459,7 @@
 
 /* 编辑器外层：高度由 ComposerEditor 写成编辑器的自然高度并平滑过渡（逐行长高 / 发送后收回）。 */
 .chat-composer-editor-host {
+  position: relative;
   transition: height var(--kv-dur-normal) var(--kv-ease-standard);
 }
 .chat-composer-editor-host.is-resizing {
@@ -502,6 +503,23 @@
   outline: none;
 }
 .chat-composer-editor .ProseMirror-separator { display: none; }
+
+.chat-composer-caret { display: none; }
+@media (forced-colors: none) and (prefers-contrast: no-preference) {
+  .chat-composer-editor:has(+ .chat-composer-caret:not([hidden])) {
+    caret-color: transparent;
+  }
+  .chat-composer-editor:focus:not(.is-optimize-out):not(.is-optimizing) + .chat-composer-caret:not([hidden]) {
+    display: block;
+    position: absolute;
+    pointer-events: none;
+    width: 1px;
+    background: var(--text);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .chat-composer-caret { animation: kv-caret-blink 1s steps(1, end) infinite; }
+}
 
 /* ===== 输入区结构 =====
      ① .chat-composer-status  当前环境与任务，仅在有内容时渲染
@@ -1494,9 +1512,9 @@ button.chat-composer-status-item:hover {
   margin-left: 2px;
   vertical-align: -0.12em;
   background: currentColor;
-  animation: kv-title-caret-blink 0.9s steps(1, end) infinite;
+  animation: kv-caret-blink 0.9s steps(1, end) infinite;
 }
-@keyframes kv-title-caret-blink {
+@keyframes kv-caret-blink {
   50% {
     opacity: 0;
   }

@@ -5,6 +5,7 @@ import { EditorView } from '@milkdown/prose/view'
 import { history, undo, redo, undoDepth, redoDepth, closeHistory } from '@milkdown/prose/history'
 import { keymap } from '@milkdown/prose/keymap'
 import { deleteSelection, selectAll } from '@milkdown/prose/commands'
+import { composerCaret } from './composerCaret'
 import { findComposerCommands, type SlashCommandDefinition } from './slashCommands'
 
 const schema = new Schema({ nodes: {
@@ -166,11 +167,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, Props>(function C
     })
     const createState = (value: string) => EditorState.create({
       doc: documentFromText(value, current.current.commands),
-      plugins: [history(), normalize, keymap({
+      plugins: [history(), normalize, composerCaret, keymap({
         'Mod-z': undo, 'Mod-Shift-z': redo, 'Mod-y': redo, 'Mod-a': selectAll,
         // AllSelection cannot use the browser's native deletion fallback.
         'Backspace': deleteSelection, 'Delete': deleteSelection,
-        'Shift-Enter': (state, dispatch) => { dispatch?.(state.tr.insertText('\n')); return true },
+        'Shift-Enter': (state, dispatch) => { dispatch?.(state.tr.insertText('\n').scrollIntoView()); return true },
       })],
     })
     const view = new EditorView(mount.current, {
