@@ -8,6 +8,7 @@ import {
   type DshPluginSettingsSnapshot,
 } from '../api/externalCliSettings'
 import { Button, IconButton } from '../components/Button'
+import { ErrorNotice } from '../components/AppNotice'
 import { Input, SearchInput } from './components'
 import { dshPluginShortName } from './dshPluginNames'
 import { i18n, type Lang } from '../components/i18n'
@@ -393,7 +394,7 @@ function ShellCard({
           setMaxOutputBytes(snapshot.shell.maxOutputBytes?.toString() ?? '')
         }}
       />
-      {error && <p className="kv-row-desc kv-dsh-field-error">{error}</p>}
+      <ErrorNotice message={error} />
     </>
   )
 }
@@ -444,7 +445,7 @@ function AgentLoopCard({
         onSave={() => void save()}
         onDiscard={() => setParallel(snapshot.agentLoop.maxParallelToolCalls?.toString() ?? '')}
       />
-      {error && <p className="kv-row-desc kv-dsh-field-error">{error}</p>}
+      <ErrorNotice message={error} />
     </>
   )
 }
@@ -552,7 +553,7 @@ function WebSearchCard({
           setApiKey('')
         }}
       />
-      {error && <p className="kv-row-desc kv-dsh-field-error">{error}</p>}
+      <ErrorNotice message={error} />
     </>
   )
 }

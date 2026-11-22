@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type CSSProperties } from 'react'
 import { Check, Copy, Download, Upload } from 'lucide-react'
 import { Button } from '../../components/Button'
+import { ErrorNotice } from '../../components/AppNotice'
 import { confirmDialog } from '../../components/dialogQueue'
 import { Input, Select, TextArea, Toggle } from '../public/controls'
 import { SettingRow, SettingsGroup } from '../components'
@@ -220,7 +221,7 @@ export function ThemeTab({ settings, lang, draft, onDraftChange, onCommit }: {
             </>}
           </div>
         </header>
-        {!jsonMode && error && <p role="alert" className="theme-feedback error">{error}</p>}
+        <ErrorNotice message={jsonMode ? null : error} />
         {!jsonMode && notice && <p role="status" className="theme-feedback">{notice}</p>}
 
         <div className={`theme-workspace-body${draft ? ' is-editing' : ''}`}>

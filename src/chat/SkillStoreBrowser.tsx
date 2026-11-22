@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from 're
 import { Check, Download, ExternalLink, Loader2, Star } from 'lucide-react'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
+import { ErrorNotice } from '../components/AppNotice'
 import { SearchInput, Select } from '../settings/public/controls'
 import { useT } from '../components/i18n'
 import {
@@ -29,6 +30,9 @@ export function SkillStoreBrowser() {
   const [cursor, setCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  // 列表加载失败留在原位并可重试；翻页等操作失败走右上角提示。
+  const [loadError, setLoadError] = useState('')
+  const [loadAttempt, setLoadAttempt] = useState(0)
   const [error, setError] = useState('')
 
   useEffect(() => {
@@ -40,6 +44,7 @@ export function SkillStoreBrowser() {
   useEffect(() => {
     const reqId = ++reqSeq.current
     setLoading(true)
+    setLoadError('')
     setError('')
     setItems([])
     setCursor(null)
@@ -54,17 +59,18 @@ export function SkillStoreBrowser() {
       })
       .catch((err) => {
         if (reqId !== reqSeq.current) return
-        setError(err instanceof Error ? err.message : String(err))
+        setLoadError(err instanceof Error ? err.message : String(err))
       })
       .finally(() => {
         if (reqId === reqSeq.current) setLoading(false)
       })
-  }, [sort, query])
+  }, [sort, query, loadAttempt])
 
   const loadMore = useCallback(() => {
     if (!cursor || loadingMore || query) return
     const reqId = reqSeq.current
     setLoadingMore(true)
+    setError('')
     listClawHubSkills({ sort, cursor, limit: PAGE_LIMIT })
       .then((res) => {
         if (reqId !== reqSeq.current) return
@@ -115,11 +121,7 @@ export function SkillStoreBrowser() {
         />
       </div>
 
-      {banner && (
-        <div className="mb-3 rounded-md border border-red-300/60 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-300">
-          {banner}
-        </div>
-      )}
+      <ErrorNotice message={banner} />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? (
@@ -133,7 +135,12 @@ export function SkillStoreBrowser() {
               </div>
             ))}
           </div>
-        ) : items.length === 0 ? (
+        ) : items.length === 0 ? loadError ? (
+          <div className="flex h-40 flex-col items-center justify-center gap-2 px-6 text-center text-[13px] text-neutral-500">
+            <p role="alert" className="max-w-[480px] break-words">{loadError}</p>
+            <Button size="sm" onClick={() => setLoadAttempt((n) => n + 1)}>{t.chatRetry}</Button>
+          </div>
+        ) : (
           <div className="flex h-40 items-center justify-center text-[13px] text-neutral-400">{t.chatSkillStoreNoResults}</div>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">

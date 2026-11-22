@@ -7,6 +7,7 @@ import { Check, ExternalLink, Loader2 } from 'lucide-react'
 import type { ChatMcpServer } from '../api/tauri'
 import { api } from '../api/tauri'
 import { Button, IconButton } from '../components/Button'
+import { ErrorNotice } from '../components/AppNotice'
 import { Input, SearchInput } from '../settings/public/controls'
 import { useT } from '../components/i18n'
 import {
@@ -39,6 +40,9 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
   const [cursor, setCursor] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  // 列表加载失败留在原位并可重试；翻页、安装失败走右上角提示。
+  const [loadError, setLoadError] = useState('')
+  const [loadAttempt, setLoadAttempt] = useState(0)
   const [error, setError] = useState('')
   const [config, setConfig] = useState<ConfigState | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -53,6 +57,7 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
   useEffect(() => {
     const reqId = ++reqSeq.current
     setLoading(true)
+    setLoadError('')
     setError('')
     setItems([])
     setCursor(undefined)
@@ -65,17 +70,18 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
       })
       .catch((err) => {
         if (reqId !== reqSeq.current) return
-        setError(err instanceof Error ? err.message : String(err))
+        setLoadError(err instanceof Error ? err.message : String(err))
       })
       .finally(() => {
         if (reqId === reqSeq.current) setLoading(false)
       })
-  }, [source, query])
+  }, [source, query, loadAttempt])
 
   const loadMore = useCallback(() => {
     if (!cursor || loadingMore) return
     const reqId = reqSeq.current
     setLoadingMore(true)
+    setError('')
     searchMcpRegistry({ source, query: query || undefined, cursor, limit: PAGE_LIMIT })
       .then((result) => {
         if (reqId !== reqSeq.current) return
@@ -169,11 +175,7 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
         </div>
       </div>
 
-      {error && (
-        <div className="mb-3 rounded-md border border-red-300/60 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-800/60 dark:bg-red-950/40 dark:text-red-300">
-          {error}
-        </div>
-      )}
+      <ErrorNotice message={error} />
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? (
@@ -186,7 +188,12 @@ export function McpRegistryBrowser({ existingServers, onInstall }: Props) {
               </div>
             ))}
           </div>
-        ) : items.length === 0 ? (
+        ) : items.length === 0 ? loadError ? (
+          <div className="flex h-40 flex-col items-center justify-center gap-2 px-6 text-center text-[13px] text-neutral-500">
+            <p role="alert" className="max-w-[480px] break-words">{loadError}</p>
+            <Button size="sm" onClick={() => setLoadAttempt((n) => n + 1)}>{t.chatRetry}</Button>
+          </div>
+        ) : (
           <div className="flex h-40 items-center justify-center text-[13px] text-neutral-400">{t.chatMcpNoMatch}</div>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, screen } from '@testing-library/react'
+import { render } from '../test/renderWithNotices'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { NotesCenter } from './NotesCenter'
 import type { Note } from '../api/tauri'
@@ -141,7 +142,7 @@ it('keeps a failed draft editable and retries it successfully before leaving', a
   typeContent('repaired draft')
   await back()
   expect(mocks.persisted?.content).toBe('repaired draft')
-  expect(screen.queryByText('disk full')).toBeNull()
+  expect(screen.queryByRole('alert')).toBeNull()
   await act(async () => { fireEvent.click(screen.getByText('Test note')) })
   expect(mocks.initialMarkdown).toBe('repaired draft')
 })
@@ -185,7 +186,7 @@ it('restores the draft and error when a save fails while the page is gone, then 
   expect(mocks.initialMarkdown).toBe('kept draft')
   await back()
   expect(mocks.persisted?.content).toBe('kept draft')
-  expect(screen.queryByText('disk full')).toBeNull()
+  expect(screen.queryByRole('alert')).toBeNull()
 })
 
 it('serializes an edit made during the flight and keeps it after the page is gone', async () => {

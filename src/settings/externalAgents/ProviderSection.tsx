@@ -9,6 +9,7 @@ import {
 } from '../../api/externalCliSettings'
 import type { ExternalCliAgentConfig, ExternalCliProvider } from '../../api/tauri'
 import { notifyError } from '../../components/appNoticeStore'
+import { ErrorNotice } from '../../components/AppNotice'
 import { Button, IconButton } from '../../components/Button'
 import { confirmDialog } from '../../components/dialogQueue'
 import { i18n, type Lang } from '../../components/i18n'
@@ -270,7 +271,7 @@ function DshOfficialKeyCard({ lang }: { lang: Lang }) {
       <p className="kv-row-desc">
         {writable ? t.externalAgentsDshOfficialKeyHint : t.externalAgentsDshOfficialKeyLocked}
       </p>
-      {error && <p className="kv-row-desc kv-dsh-field-error">{error}</p>}
+      <ErrorNotice message={error} />
     </div>
   )
 }

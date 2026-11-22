@@ -5,6 +5,7 @@ import type { I18n, Lang } from '../components/i18n'
 import { Input, Select, SettingRow, SettingsGroup, Toggle } from './components'
 import { PromptField } from './ScreenshotTranslationSettings'
 import { Button, IconButton } from '../components/Button'
+import { ErrorNotice } from '../components/AppNotice'
 import { isProviderConfigured, providerSupportsFetch, resolvedFetchProvider } from './webSearch'
 
 type WebSearchConfig = NonNullable<Settings['lens']['webSearch']>
@@ -450,9 +451,7 @@ function TinyfishMcpAuthRow({
             </Button>
           )}
         </div>
-        {error && (
-          <p className="max-w-[280px] text-right text-[12px] text-red-500">{error}</p>
-        )}
+        <ErrorNotice message={error} />
       </div>
     </SettingRow>
   )

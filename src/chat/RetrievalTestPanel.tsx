@@ -1,10 +1,11 @@
 // 检索测试台（D1）：选库 + 输入查询 → 走与 knowledge_search 完全相同的检索核心，
 // 分阶段展示向量/关键词命中、融合、重排(含降级)、阈值/去重淘汰与耗时。
 import { useState } from 'react'
-import { AlertCircle, Check, Copy, Search } from 'lucide-react'
+import { Check, Copy, Search } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { useT } from '../components/i18n'
 import { Button } from '../components/Button'
+import { ErrorNotice } from '../components/AppNotice'
 import { TextArea } from '../settings/public/controls'
 import {
   kbRetrievalTest,
@@ -144,12 +145,7 @@ export function RetrievalTestPanel({ libraries }: { libraries: KnowledgeLibrary[
             </Button>
           </div>
 
-          {error && (
-            <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[12px] text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
-              <AlertCircle size={14} className="shrink-0" />
-              <span className="min-w-0 flex-1 break-words">{error}</span>
-            </div>
-          )}
+          <ErrorNotice message={error} />
 
           {result && (
             <div className="space-y-3">

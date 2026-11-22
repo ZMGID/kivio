@@ -3,6 +3,7 @@ import { RefreshCw, Trash2, Download, Copy, Check, ChevronRight, Search, Termina
 import { FileIcon } from '../components/FileIcon'
 import { api, type RequestDebugRecord } from '../api/tauri'
 import { Button } from '../components/Button'
+import { ErrorNotice } from '../components/AppNotice'
 import { SettingRow, SettingsGroup, Toggle } from './components'
 
 type RequestDebugPanelProps = {
@@ -623,12 +624,14 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
   const [records, setRecords] = useState<RequestDebugRecord[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  // 加载失败留在列表里（顶部有刷新按钮可重试）；清空失败走右上角提示。
+  const [loadError, setLoadError] = useState('')
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
 
   const refresh = useCallback(async () => {
     setLoading(true)
-    setError('')
+    setLoadError('')
     try {
       const next = await api.getRequestDebugRecords()
       setRecords(next)
@@ -637,7 +640,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
         return next[0]?.id ?? null
       })
     } catch (err) {
-      setError(zh ? `加载失败：${err}` : `Load failed: ${err}`)
+      setLoadError(zh ? `加载失败：${err}` : `Load failed: ${err}`)
     } finally {
       setLoading(false)
     }
@@ -648,6 +651,7 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
   }, [refresh])
 
   const clearAll = useCallback(async () => {
+    setError('')
     try {
       await api.clearRequestDebugRecords()
       setRecords([])
@@ -731,7 +735,8 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
         </span>
       </div>
 
-      {error && <div className="text-[11px] text-red-500">{error}</div>}
+      {/* 已有记录时刷新失败不清空列表，改用提示告知。 */}
+      <ErrorNotice message={error || (records.length > 0 ? loadError : '')} />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(240px,340px)_1fr]">
         {/* 左列：搜索 + 请求列表。lg 下吸顶 + 撑到接近视口高，避免右列详情很长时左侧留大片空白。 */}
@@ -750,8 +755,10 @@ export function RequestDebugPanel({ lang, enabled, onToggleEnabled }: RequestDeb
           </div>
           <div className="flex-1 overflow-auto">
             {filtered.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[11px] text-neutral-400">
-                {records.length === 0
+              <div role={loadError ? 'alert' : undefined} className="break-words px-3 py-6 text-center text-[11px] text-neutral-400">
+                {loadError && records.length === 0
+                  ? loadError
+                  : records.length === 0
                   ? enabled
                     ? zh
                       ? '暂无记录。触发一次对话或翻译后刷新。'

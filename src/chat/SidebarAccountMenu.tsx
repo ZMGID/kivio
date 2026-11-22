@@ -6,6 +6,7 @@ import { i18n, type Lang } from '../components/i18n'
 import { api } from '../api/tauri'
 import { formatTokensCompact } from '../utils/tokens'
 import { Toggle } from '../settings/public/controls'
+import { ErrorNotice } from '../components/AppNotice'
 
 interface SidebarAccountMenuProps {
   /** 触发行的视口矩形：菜单开在它上方（bottom 贴 rect.top），不遮住触发行本身。 */
@@ -192,11 +193,7 @@ export function SidebarAccountMenu({
           />
         </div>
       </div>
-      {petError && (
-        <p role="alert" className="px-3 pb-2 text-xs text-[var(--danger)]">
-          {petError === 'load' ? t.desktopPetLoadFailed : t.desktopPetSaveFailed}
-        </p>
-      )}
+      <ErrorNotice message={petError && (petError === 'load' ? t.desktopPetLoadFailed : t.desktopPetSaveFailed)} />
     </div>
   )
 

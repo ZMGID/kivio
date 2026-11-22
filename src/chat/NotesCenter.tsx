@@ -396,11 +396,7 @@ export function NotesCenter() {
             />
           </div>
 
-          {(draft.error || error) && (
-            <div className="mt-3 shrink-0 rounded-md border border-red-200 bg-red-50 px-4 py-2.5 text-[13px] text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
-              {draft.error || error}
-            </div>
-          )}
+          <ErrorNotice message={draft.error || error} />
         </div>
       </div>
     )
