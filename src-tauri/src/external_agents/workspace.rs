@@ -5,7 +5,7 @@ use tauri::AppHandle;
 use crate::chat::storage::{
     conversations_dir, find_project_by_id, load_conversation, resolve_conversation_project,
 };
-use crate::chat::types::ChatProject;
+use crate::chat::types::{ChatProject, Conversation};
 use crate::external_agents::types::RuntimeAgentDef;
 use crate::utils::strip_windows_verbatim_prefix;
 
@@ -14,8 +14,33 @@ pub fn resolve_effective_cwd(
     conversation_id: &str,
     project_id: Option<&str>,
 ) -> Result<PathBuf, String> {
-    let project = project_cli_root_for_conversation(app, conversation_id, project_id)?;
-    if let Some(original) = bound_original_cwd(app, conversation_id)? {
+    let conversation = load_conversation(app, conversation_id).ok();
+    resolve_cwd(app, conversation_id, project_id, conversation.as_ref())
+}
+
+/// Display commands already hold the snapshot whose working directory they need.
+pub(crate) fn resolve_loaded_cwd(
+    app: &AppHandle,
+    conversation: &Conversation,
+) -> Result<PathBuf, String> {
+    resolve_cwd(
+        app,
+        &conversation.id,
+        conversation.project_id.as_deref(),
+        Some(conversation),
+    )
+}
+
+fn resolve_cwd(
+    app: &AppHandle,
+    conversation_id: &str,
+    project_id: Option<&str>,
+    conversation: Option<&Conversation>,
+) -> Result<PathBuf, String> {
+    let project = project_cli_root_for_conversation(app, conversation, project_id)?;
+    if let Some(original) = bound_cwd(app, conversation_id, || {
+        conversation.and_then(|c| c.external_cwd.clone())
+    })? {
         return validate_bound_cwd(&original, project.as_deref());
     }
     if let Some(path) = project {
@@ -41,6 +66,16 @@ pub fn resolve_effective_cwd(
 }
 
 pub(crate) fn bound_original_cwd(app: &AppHandle, id: &str) -> Result<Option<String>, String> {
+    bound_cwd(app, id, || {
+        load_conversation(app, id).ok().and_then(|c| c.external_cwd)
+    })
+}
+
+fn bound_cwd(
+    app: &AppHandle,
+    id: &str,
+    stored: impl FnOnce() -> Option<String>,
+) -> Result<Option<String>, String> {
     if let Some(record) = crate::external_agents::import::load_import_record(app, id) {
         return crate::external_agents::import::original_import_cwd(&record)
             .or_else(|| {
@@ -49,10 +84,7 @@ pub(crate) fn bound_original_cwd(app: &AppHandle, id: &str) -> Result<Option<Str
             .map(Some)
             .ok_or_else(|| "无法确认导入会话的原工作目录，请重新导入".into());
     }
-    if let Some(cwd) = load_conversation(app, id)
-        .ok()
-        .and_then(|conversation| conversation.external_cwd)
-    {
+    if let Some(cwd) = stored() {
         return Ok(Some(cwd));
     }
     if let Some(handle) = crate::external_agents::session::load_live_handle(app, id) {
@@ -105,17 +137,17 @@ pub(crate) fn validate_working_directory_override(
 
 fn project_cli_root_for_conversation(
     app: &AppHandle,
-    conversation_id: &str,
+    conversation: Option<&Conversation>,
     project_id: Option<&str>,
 ) -> Result<Option<PathBuf>, String> {
-    if let Ok(conversation) = load_conversation(app, conversation_id) {
+    if let Some(conversation) = conversation {
         // 选了独立 worktree 的对话，外部 CLI 也在 worktree 里运行。
         if let Some(worktree) = conversation.worktree.as_ref() {
             return cli_dir_if_exists(PathBuf::from(&worktree.path))
                 .map(Some)
                 .ok_or_else(|| format!("worktree 目录不存在：{}", worktree.path));
         }
-        if let Some(project) = resolve_conversation_project(app, &conversation)? {
+        if let Some(project) = resolve_conversation_project(app, conversation)? {
             return project_cli_root(project).map(Some);
         }
         return Ok(None);
@@ -189,7 +221,8 @@ pub fn resolve_detection_cwd(
     conversation_id: Option<&str>,
 ) -> Result<PathBuf, String> {
     if let Some(conversation_id) = conversation_id.filter(|id| !id.trim().is_empty()) {
-        if let Some(path) = project_cli_root_for_conversation(app, conversation_id, None)? {
+        let conversation = crate::chat::history_projection::get_metadata(app, conversation_id).ok();
+        if let Some(path) = project_cli_root_for_conversation(app, conversation.as_ref(), None)? {
             return Ok(path);
         }
     }

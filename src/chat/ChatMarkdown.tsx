@@ -3,9 +3,10 @@ import { useT } from '../components/i18n'
 import { createPortal } from 'react-dom'
 import { Code2, ExternalLink, Eye, Loader2 } from 'lucide-react'
 import type { BlockProps, Components, UrlTransform } from 'streamdown'
-import { Block, defaultRemarkPlugins, parseMarkdownIntoBlocks, Streamdown } from 'streamdown'
+import { Block, defaultRehypePlugins, defaultRemarkPlugins, normalizeHtmlIndentation, parseMarkdownIntoBlocks, Streamdown } from 'streamdown'
 import remend, { type RemendOptions } from 'remend'
-import type { PluggableList } from 'unified'
+import type { PluggableList, Plugin } from 'unified'
+import type { Root } from 'hast'
 import { cjk } from '@streamdown/cjk'
 import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import { code } from '@streamdown/code'
@@ -30,6 +31,7 @@ import { isWebCitation } from './webSearchCitations'
 import { ChatInlineImage } from './ChatInlineImage'
 import { MarkdownStreamingContext } from './markdownStreaming'
 import { LiveRevealContext, useRevealedText } from './streamReveal'
+import { readSettledBlock, rememberSettledBlock } from './settledMarkdownBlocks'
 import { buildMarkdownEntry, getSettledMarkdownCacheEntry, getSettledMarkdownOutline, type SettledMarkdownCacheEntry } from './settledMarkdownCache'
 import {
   outlineItemsForSource,
@@ -939,8 +941,29 @@ function MarkdownPre({ children }: { children?: ReactNode }) {
   return <DeferredCodeBlock code={codeChildrenToString(children)} language="" />
 }
 
+// Streamdown owns parsing, sanitization and URL transforms. This final component
+// receives its actual rendered children and adds no DOM around the block.
+function RenderedMarkdownBlock({ source, children }: { source?: string; children?: ReactNode }) {
+  const streaming = useContext(MarkdownStreamingContext)
+  useEffect(() => {
+    if (!streaming && source) rememberSettledBlock(source, children)
+  }, [children, source, streaming])
+  return <>{children}</>
+}
+
+const renderedBlockTag = 'kivio-rendered-markdown'
+const captureMarkdownBlock: Plugin<[], Root> = () => (tree, file) => {
+  tree.children = [{
+    type: 'element', tagName: renderedBlockTag,
+    properties: { source: String(file.value) },
+    children: tree.children.filter(node => node.type !== 'doctype'),
+  }]
+}
+const streamdownRehypePlugins: PluggableList = [...Object.values(defaultRehypePlugins), captureMarkdownBlock]
+
 // streamdown Components 的 pre 签名在版本间不完全一致；功能组件只消费 children。
 const markdownComponents = {
+  [renderedBlockTag]: RenderedMarkdownBlock,
   pre: MarkdownPre,
 
   // 表格：**每个单元格一个独立圆角块**，横竖都靠 border-spacing 的空隙分隔。
@@ -1431,6 +1454,12 @@ function renderPlainDataTable({ content, components }: BlockProps) {
 // destroys unchanged code, math, image and preview state on every correction.
 const ChatMarkdownBlock = memo(function ChatMarkdownBlock(props: BlockProps) {
   const streaming = useContext(MarkdownStreamingContext)
+  // Only reuse a cached element at mount. A live reply keeps its mounted
+  // images, previews and selection when its final text is committed.
+  const [warm] = useState(() => streaming || props.isIncomplete ? null : {
+    content: props.content,
+    children: readSettledBlock(props.shouldNormalizeHtmlIndentation ? normalizeHtmlIndentation(props.content) : props.content),
+  })
   const previousContentRef = useRef(props.content)
   const revisionRef = useRef(0)
   const previous = previousContentRef.current
@@ -1439,7 +1468,11 @@ const ChatMarkdownBlock = memo(function ChatMarkdownBlock(props: BlockProps) {
     revisionRef.current += 1
   }
   previousContentRef.current = props.content
-  return (!streaming && !props.isIncomplete && renderPlainDataTable(props)) || <Block key={revisionRef.current} {...props} />
+  if (!props.content.trim()) return null
+  if (warm?.children != null && warm.content === props.content && !streaming && !props.isIncomplete) return <>{warm.children}</>
+  const table = !streaming && !props.isIncomplete && renderPlainDataTable(props)
+  if (table) return <RenderedMarkdownBlock source={props.content}>{table}</RenderedMarkdownBlock>
+  return <Block key={revisionRef.current} {...props} />
 })
 
 const MarkdownDocument = memo(function MarkdownDocument({
@@ -1532,6 +1565,7 @@ const MarkdownDocument = memo(function MarkdownDocument({
       normalizeHtmlIndentation
       plugins={streamdownPlugins}
       remarkPlugins={remarkPlugins}
+      rehypePlugins={streamdownRehypePlugins}
       components={components}
       shikiTheme={['github-light', 'github-dark']}
       controls={{

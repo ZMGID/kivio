@@ -20,7 +20,7 @@ use crate::settings::Settings;
 use crate::skills;
 use crate::state::AppState;
 
-use super::history_tool_results::{defer_window_results, DeferredToolResults};
+use super::history_tool_results::DeferredToolResults;
 use super::messages::reconcile_orphan_tool_segments;
 
 /// 外部入口（如 Lens 交接）预置会话历史时的一条消息。
@@ -150,23 +150,25 @@ pub(crate) async fn chat_session_skills(
     conversation_id: String,
     reload: Option<bool>,
 ) -> Result<skills::SkillListResult, String> {
-    let conversation = crate::chat::repository::repository(&app)
-        .get(&app, &conversation_id)
-        .await
-        .map_err(crate::chat::repository::repository_error)?;
     let settings = state.settings_read().clone();
-    let cwd = if conversation.agent_runtime.is_external() {
-        crate::external_agents::workspace::resolve_effective_cwd(
-            &app,
-            &conversation.id,
-            conversation.project_id.as_deref(),
-        )?
-    } else {
-        crate::chat::storage::resolve_conversation_working_directory(
-            &app,
-            &conversation,
-            &settings.chat_tools.native_tools.working_directory,
-        )?
+    let cwd = {
+        let app = app.clone();
+        let id = conversation_id.clone();
+        let working_directory = settings.chat_tools.native_tools.working_directory.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let conversation = crate::chat::history_projection::get_metadata(&app, &id)?;
+            if conversation.agent_runtime.is_external() {
+                crate::external_agents::workspace::resolve_loaded_cwd(&app, &conversation)
+            } else {
+                crate::chat::storage::resolve_conversation_working_directory(
+                    &app,
+                    &conversation,
+                    &working_directory,
+                )
+            }
+        })
+        .await
+        .map_err(|e| format!("resolve session skill directory: {e}"))??
     };
     let registry = state
         .chat_runtime()
@@ -223,6 +225,8 @@ pub(crate) struct HistoryWindowResponse {
     conversation: Conversation,
     history_start: usize,
     history_total: usize,
+    history_turn_count: usize,
+    history_source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     history_gap: Option<std::ops::Range<usize>>,
     history_directory: Vec<Value>,
@@ -237,10 +241,12 @@ pub(crate) struct HistoryWindowResponse {
 pub(crate) struct HistoryPageResponse {
     success: bool,
     revision: u64,
+    history_source: String,
     start: usize,
     end: usize,
     total: usize,
     messages: Vec<ChatMessage>,
+    history_directory: Vec<Value>,
     history_artifacts: Vec<crate::chat::model::ModelArtifact>,
     #[serde(skip_serializing_if = "DeferredToolResults::is_empty")]
     deferred_tool_results: DeferredToolResults,
@@ -256,87 +262,57 @@ pub(crate) async fn chat_get_conversation_window(
     defer_tool_results: Option<bool>,
 ) -> Result<HistoryWindowResponse, String> {
     let started = std::time::Instant::now();
-    let repository = crate::chat::repository::repository(&app);
-    let mut conversation = match repository
-        .externalize_stored_images(&app, &conversation_id)
+    crate::chat::repository::repository(&app)
+        .with_existing_conversation_storage(&app, &conversation_id, move |app, id| {
+            crate::chat::history_projection::read(app, id, |view| {
+                let mut conversation = view.metadata(app)?;
+                let read_ms = started.elapsed().as_secs_f64() * 1_000.0;
+                let ranges = view.window_ranges(
+                    anchor_message_id.as_deref(),
+                    defer_tool_results.unwrap_or(false),
+                )?;
+                let start = ranges[0].start;
+                let history_gap = ranges.get(1).map(|tail| ranges[0].end..tail.start);
+                let history_directory = view.directory(&ranges)?;
+                let page = view.messages(app, id, &ranges, defer_tool_results.unwrap_or(false))?;
+                conversation.messages = page.messages;
+                Ok(HistoryWindowResponse {
+                    success: true,
+                    conversation,
+                    history_start: start,
+                    history_total: view.total,
+                    history_turn_count: view.turn_count,
+                    history_source: view.source.clone(),
+                    history_gap,
+                    history_directory,
+                    history_artifacts: page.artifacts,
+                    deferred_tool_results: page.deferred,
+                    read_ms,
+                    prepare_ms: started.elapsed().as_secs_f64() * 1_000.0 - read_ms,
+                })
+            })
+        })
         .await
-    {
-        Ok(conversation) => conversation,
-        Err(_) => repository
-            .get(&app, &conversation_id)
-            .await
-            .map_err(crate::chat::repository::repository_error)?,
-    };
-    let read_ms = started.elapsed().as_secs_f64() * 1_000.0;
-    let total = conversation.messages.len();
-    let tail_start = prepare_history_window(&mut conversation, total);
-    let mut start = tail_start;
-    let mut ranges = vec![tail_start..total];
-    let mut history_gap = None;
-    if let Some(index) = anchor_message_id.as_deref().and_then(|id| {
-        conversation.messages[..tail_start]
-            .iter()
-            .position(|message| message.id == id)
-    }) {
-        let end = prepare_forward_page(&mut conversation, index + 1, tail_start);
-        start = prepare_history_window(&mut conversation, index + 1);
-        if end == tail_start {
-            ranges[0].start = start;
-        } else {
-            ranges.insert(0, start..end);
-            history_gap = Some(end..tail_start);
-        }
-    }
-    let history_directory = conversation_history_directory(&conversation);
-    let mut history_artifacts = Vec::new();
-    let mut deferred_tool_results = DeferredToolResults::new();
-    for range in ranges {
-        history_artifacts.extend(crate::chat::artifacts::history_reference_artifacts(
-            &conversation.messages,
-            range.clone(),
-        ));
-        if defer_tool_results.unwrap_or(false) {
-            deferred_tool_results.extend(defer_window_results(&mut conversation.messages, range));
-        }
-    }
-    if let Some(gap) = &history_gap {
-        conversation.messages.drain(gap.clone());
-    }
-    conversation.messages.drain(..start);
-    Ok(HistoryWindowResponse {
-        success: true,
-        conversation,
-        history_start: start,
-        history_total: total,
-        history_gap,
-        history_directory,
-        history_artifacts,
-        deferred_tool_results,
-        read_ms,
-        prepare_ms: started.elapsed().as_secs_f64() * 1_000.0 - read_ms,
-    })
 }
 
-pub(super) fn conversation_history_directory(conversation: &Conversation) -> Vec<Value> {
+#[tauri::command]
+pub(crate) async fn chat_get_conversation_directory(
+    app: AppHandle,
+    conversation_id: String,
+) -> Result<Value, String> {
+    crate::chat::repository::repository(&app)
+        .with_existing_conversation_storage(&app, &conversation_id, |app, id| {
+            crate::chat::history_projection::read(app, id, |view| {
+                Ok(serde_json::json!({"revision":view.revision, "history_directory":view.directory(&[0..view.total])?}))
+            })
+        }).await
+}
+
+pub(crate) fn history_boundary_directory(
+    conversation: &Conversation,
+    message_indices: &std::collections::HashMap<String, usize>,
+) -> Vec<Value> {
     let mut directory = Vec::new();
-    let message_indices: std::collections::HashMap<&str, usize> = conversation
-        .messages
-        .iter()
-        .enumerate()
-        .map(|(index, message)| (message.id.as_str(), index))
-        .collect();
-    for (index, message) in conversation.messages.iter().enumerate() {
-        if message.role != "user" {
-            continue;
-        }
-        directory.push(serde_json::json!({
-            "kind": "turn",
-            "id": format!("turn-{}", message.id),
-            "message_id": message.id,
-            "message_index": index,
-            "title": message.content.chars().take(120).collect::<String>(),
-        }));
-    }
     for record in &conversation.context_state.compaction_boundaries {
         let anchor = record
             .display_after_message_id
@@ -399,56 +375,35 @@ pub(crate) async fn chat_get_conversation_page(
     after: Option<usize>,
     defer_tool_results: Option<bool>,
 ) -> Result<HistoryPageResponse, String> {
-    let mut conversation = crate::chat::repository::repository(&app)
-        .get(&app, &conversation_id)
+    crate::chat::repository::repository(&app)
+        .with_existing_conversation_storage(&app, &conversation_id, move |app, id| {
+            crate::chat::history_projection::read(app, id, |view| {
+                let range = view.page_range(before, after, defer_tool_results.unwrap_or(false))?;
+                let page = view.messages(
+                    app,
+                    id,
+                    std::slice::from_ref(&range),
+                    defer_tool_results.unwrap_or(false),
+                )?;
+                Ok(HistoryPageResponse {
+                    success: true,
+                    revision: view.revision,
+                    history_source: view.source.clone(),
+                    start: range.start,
+                    end: range.end,
+                    total: view.total,
+                    messages: page.messages,
+                    history_directory: view.directory(std::slice::from_ref(&range))?,
+                    history_artifacts: page.artifacts,
+                    deferred_tool_results: page.deferred,
+                })
+            })
+        })
         .await
-        .map_err(crate::chat::repository::repository_error)?;
-    let total = conversation.messages.len();
-    let end = before.min(total);
-    let (start, end) = match after {
-        Some(start) => {
-            let start = start.min(end);
-            (start, prepare_forward_page(&mut conversation, start, end))
-        }
-        None => (prepare_history_window(&mut conversation, end), end),
-    };
-    let history_artifacts =
-        crate::chat::artifacts::history_reference_artifacts(&conversation.messages, start..end);
-    let deferred_tool_results = if defer_tool_results.unwrap_or(false) {
-        defer_window_results(&mut conversation.messages, start..end)
-    } else {
-        DeferredToolResults::new()
-    };
-    Ok(HistoryPageResponse {
-        success: true,
-        revision: conversation.revision,
-        start,
-        end,
-        total,
-        messages: conversation.messages.drain(start..end).collect(),
-        history_artifacts,
-        deferred_tool_results,
-    })
 }
 
-const HISTORY_WINDOW_MESSAGES: usize = 60;
-const HISTORY_SIBLINGS: usize = 4;
-
-fn prepare_history_window(conversation: &mut Conversation, end: usize) -> usize {
-    // Include every possible group sibling and its user anchor before sizing
-    // the normalized rows. Off-page transcripts and orphan records never cross IPC.
-    let floor = end.saturating_sub(HISTORY_WINDOW_MESSAGES + HISTORY_SIBLINGS + 1);
-    normalize_history_candidates(conversation, floor..end);
-    history_window_start(&conversation.messages, end)
-}
-
-fn normalize_history_candidates(conversation: &mut Conversation, range: std::ops::Range<usize>) {
-    strip_conversation_replay(conversation);
-    let candidates = &mut conversation.messages[range];
-    for message in candidates
-        .iter_mut()
-        .filter(|message| message.role == "assistant")
-    {
+pub(crate) fn normalize_history_message(message: &mut ChatMessage) {
+    if message.role == "assistant" {
         reconcile_orphan_tool_segments(
             &mut message.tool_calls,
             &message.segments,
@@ -456,85 +411,6 @@ fn normalize_history_candidates(conversation: &mut Conversation, range: std::ops
         );
         strip_assistant_transcripts(message);
     }
-}
-
-fn prepare_forward_page(conversation: &mut Conversation, start: usize, limit: usize) -> usize {
-    let ceiling = (start + HISTORY_WINDOW_MESSAGES).min(limit);
-    normalize_history_candidates(
-        conversation,
-        start..(ceiling + HISTORY_SIBLINGS + 1).min(limit),
-    );
-    let messages = &conversation.messages;
-    let mut end = start;
-    let mut bytes = 0usize;
-    while end < ceiling {
-        let size = serde_json::to_vec(&messages[end]).map_or(usize::MAX, |data| data.len());
-        if end > start && bytes.saturating_add(size) > 512 * 1024 {
-            break;
-        }
-        bytes = bytes.saturating_add(size);
-        end += 1;
-    }
-    // Keep the question with its first answer and the remaining arms of that group.
-    if end > start
-        && end < limit
-        && messages[end - 1].role == "user"
-        && messages[end].role == "assistant"
-    {
-        end += 1;
-    }
-    if end > 0 {
-        if let Some(group) = messages[end - 1].group_id.as_deref() {
-            let ceiling = (end + HISTORY_SIBLINGS).min(limit);
-            while end < ceiling && messages[end].group_id.as_deref() == Some(group) {
-                end += 1;
-            }
-        }
-    }
-    end
-}
-
-pub(super) fn history_window_start(messages: &[crate::chat::ChatMessage], end: usize) -> usize {
-    let mut start = end;
-    let mut bytes: usize = 0;
-    while start > end.saturating_sub(HISTORY_WINDOW_MESSAGES) {
-        let size = serde_json::to_vec(&messages[start - 1]).map_or(usize::MAX, |data| data.len());
-        // Always include one message. A single large message remains intact;
-        // its process details are progressively disclosed by the renderer.
-        if start < end && bytes.saturating_add(size) > 512 * 1024 {
-            break;
-        }
-        bytes = bytes.saturating_add(size);
-        start -= 1;
-    }
-    if start == 0 || start >= end {
-        return start;
-    }
-    // Keep the first visible multi-answer arm with its siblings and user
-    // message. The extra allowance stays bounded even for corrupt old groups.
-    if messages[start].role == "assistant" {
-        if let Some(group) = messages[start].group_id.as_deref() {
-            let group_floor = start.saturating_sub(HISTORY_SIBLINGS);
-            while start > group_floor && messages[start - 1].group_id.as_deref() == Some(group) {
-                start -= 1;
-            }
-        }
-        if start > 0 && messages[start].role == "assistant" && messages[start - 1].role == "user" {
-            start -= 1;
-        }
-    }
-    start
-}
-
-#[tauri::command]
-pub(crate) async fn chat_get_conversation_revision(
-    app: AppHandle,
-    conversation_id: String,
-) -> Result<Option<u64>, String> {
-    crate::chat::repository::repository(&app)
-        .revision(&app, &conversation_id)
-        .await
-        .map_err(crate::chat::repository::repository_error)
 }
 
 /// 读取时对账(只读、不写盘):对每条 assistant 消息补齐孤立工具分段为中断态记录,

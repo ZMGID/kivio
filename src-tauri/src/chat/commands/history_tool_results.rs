@@ -1,15 +1,12 @@
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
-use std::ops::Range;
 
-use serde::Deserialize;
-use serde_json::{value::RawValue, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tauri::AppHandle;
 
 use crate::chat::{ChatMessage, ToolCallRecord, ToolCallStatus};
 
-pub(super) type DeferredToolResults = BTreeMap<String, BTreeMap<String, String>>;
+pub(crate) type DeferredToolResults = BTreeMap<String, BTreeMap<String, String>>;
 
 fn digest(preview: &str) -> String {
     format!("{:x}", Sha256::digest(preview.as_bytes()))
@@ -74,93 +71,32 @@ fn duplicate_ids<'a>(ids: impl Iterator<Item = &'a str>) -> HashSet<String> {
         .collect()
 }
 
-/// Only called on a read-view copy, after selecting the original byte-bounded window.
-/// The digest identifies the result independently of later turns and conversation revisions.
-pub(super) fn defer_window_results(
-    messages: &mut [ChatMessage],
-    range: Range<usize>,
-) -> DeferredToolResults {
-    let duplicate_messages = duplicate_ids(messages.iter().map(|m| m.id.as_str()));
-    let mut deferred = DeferredToolResults::new();
-    for message in &mut messages[range] {
-        if message.role != "assistant"
-            || message.id.trim().is_empty()
-            || duplicate_messages.contains(&message.id)
-            || !matches!(message.stream_outcome.as_deref(), None | Some("completed"))
-            || !message.tool_calls.iter().any(|tool| {
-                tool.result_preview
-                    .as_ref()
-                    .is_some_and(|p| p.len() > 4 * 1024)
-            })
-        {
-            continue;
-        }
-        let duplicate_tools = duplicate_ids(message.tool_calls.iter().map(|t| t.id.as_str()));
-        for tool in &mut message.tool_calls {
-            if !duplicate_tools.contains(&tool.id) && ordinary_large_result(tool) {
-                if let Some(preview) = tool.result_preview.take() {
-                    deferred
-                        .entry(message.id.clone())
-                        .or_default()
-                        .insert(tool.id.clone(), digest(&preview));
-                }
+/// Move eligible text into addressed disclosures while projecting a display row.
+/// Its digest survives later conversation revisions with the same result.
+pub(crate) fn extract_results(message: &mut ChatMessage) -> Vec<(String, String, String)> {
+    if message.role != "assistant"
+        || message.id.trim().is_empty()
+        || !matches!(message.stream_outcome.as_deref(), None | Some("completed"))
+        || !message.tool_calls.iter().any(|tool| {
+            tool.result_preview
+                .as_ref()
+                .is_some_and(|p| p.len() > 4 * 1024)
+        })
+    {
+        return Vec::new();
+    }
+    let ambiguous = duplicate_ids(message.tool_calls.iter().map(|t| t.id.as_str()));
+    message
+        .tool_calls
+        .iter_mut()
+        .filter_map(|tool| {
+            if ambiguous.contains(&tool.id) || !ordinary_large_result(tool) {
+                return None;
             }
-        }
-    }
-    deferred
-}
-
-/// Borrow raw nested JSON so opening one disclosure never materializes other tool
-/// results, attachments, segments, or either replay transcript.
-fn read_result(
-    source: &str,
-    message_id: &str,
-    tool_call_id: &str,
-    expected_hash: &str,
-) -> Result<String, String> {
-    #[derive(Deserialize)]
-    struct Snapshot<'a> {
-        #[serde(borrow)]
-        messages: Vec<Message<'a>>,
-    }
-    #[derive(Deserialize)]
-    struct Message<'a> {
-        #[serde(borrow)]
-        id: Cow<'a, str>,
-        #[serde(default, borrow)]
-        tool_calls: Option<&'a RawValue>,
-    }
-    #[derive(Deserialize)]
-    struct Tool<'a> {
-        #[serde(borrow)]
-        id: Cow<'a, str>,
-        #[serde(default, borrow)]
-        result_preview: Option<&'a RawValue>,
-    }
-    let corrupt = |err: serde_json::Error| format!("读取工具结果失败：{err}");
-    let snapshot: Snapshot = serde_json::from_str(source).map_err(corrupt)?;
-    let mut messages = snapshot.messages.into_iter().filter(|m| m.id == message_id);
-    let calls = messages
-        .next()
-        .and_then(|m| m.tool_calls)
-        .ok_or("工具结果已不存在")?;
-    if messages.next().is_some() {
-        return Err("消息标识重复，无法定位工具结果".into());
-    }
-    let tools: Vec<Tool> = serde_json::from_str(calls.get()).map_err(corrupt)?;
-    let mut matching = tools.into_iter().filter(|t| t.id == tool_call_id);
-    let raw = matching
-        .next()
-        .and_then(|t| t.result_preview)
-        .ok_or("工具结果已不存在")?;
-    if matching.next().is_some() {
-        return Err("工具标识重复，无法定位工具结果".into());
-    }
-    let result: String = serde_json::from_str(raw.get()).map_err(corrupt)?;
-    if digest(&result) != expected_hash {
-        return Err("工具结果已变更，请重新打开对话".into());
-    }
-    Ok(result)
+            let result = tool.result_preview.take()?;
+            Some((tool.id.clone(), digest(&result), result))
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -173,10 +109,9 @@ pub(crate) async fn chat_get_tool_result(
 ) -> Result<String, String> {
     crate::chat::repository::repository(&app)
         .with_existing_conversation_storage(&app, &conversation_id, move |app, id| {
-            let path = crate::chat::storage::conversation_file_path(app, id)?;
-            let source =
-                std::fs::read_to_string(path).map_err(|err| format!("读取工具结果失败：{err}"))?;
-            read_result(&source, &message_id, &tool_call_id, &expected_hash)
+            crate::chat::history_projection::read(app, id, |view| {
+                view.tool_result(&message_id, &tool_call_id, &expected_hash)
+            })
         })
         .await
 }
@@ -187,33 +122,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn window_result_round_trips_after_an_append_but_rejects_replacement_or_removal() {
-        let output = "文件内容\nquoted \"value\"\n".repeat(300);
-        let tool = json!({
-            "id": "read-id", "name": "Read", "source": "native", "status": "success",
-            "arguments": r#"{"path":"data.csv"}"#, "result_preview": output
-        });
-        let message = json!({"id":"answer", "role":"assistant", "content":"answer", "timestamp":1,
-                             "tool_calls":[tool]});
-        let mut store = json!({"messages":[message]});
-        let mut rows: Vec<ChatMessage> = serde_json::from_value(store["messages"].clone()).unwrap();
-        let deferred = defer_window_results(&mut rows, 0..1);
-        assert!(rows[0].tool_calls[0].result_preview.is_none());
-        let hash = &deferred["answer"]["read-id"];
-        store["messages"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({"id":"next"}));
-        let read = |store: &Value| read_result(&store.to_string(), "answer", "read-id", hash);
-        assert_eq!(read(&store).unwrap(), output);
-        store["messages"][0]["tool_calls"][0]["result_preview"] = json!("changed");
-        assert!(read(&store).is_err());
-        store["messages"][0]["tool_calls"] = json!([]);
-        assert!(read(&store).is_err());
-    }
-
-    #[test]
-    fn off_page_ambiguous_and_special_results_remain_inline() {
+    fn ambiguous_tool_ids_and_special_results_remain_inline() {
         let output = "x".repeat(5000);
         let tool = json!({
             "id": "read-id", "name": "Read", "source": "external_cli", "status": "success",
@@ -242,17 +151,11 @@ mod tests {
             special[field] = value;
             tools.push(special);
         }
-        let mut rows: Vec<ChatMessage> = serde_json::from_value(json!([
-            make_message("duplicate", vec![tool.clone()]),
-            make_message("older", vec![tool.clone()]),
-            make_message("duplicate", vec![tool]),
-            make_message("visible", tools),
-        ]))
-        .unwrap();
-        assert!(defer_window_results(&mut rows, 2..4).is_empty());
-        assert!(rows
+        let mut row: ChatMessage = serde_json::from_value(make_message("visible", tools)).unwrap();
+        assert!(extract_results(&mut row).is_empty());
+        assert!(row
+            .tool_calls
             .iter()
-            .flat_map(|row| &row.tool_calls)
             .all(|tool| tool.result_preview.as_deref() == Some(output.as_str())));
     }
 }

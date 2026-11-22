@@ -122,3 +122,10 @@ export function forgetChatReadingPosition(conversationId: string): void {
 export function clearChatReadingPositions(): void {
   positions.clear()
 }
+
+/** An anchored snapshot includes the saved row as well as the latest turn. */
+export function readingWindowAnchor(id: string, liveMessageId?: string | null) {
+  const position = recallChatReadingPosition(id)
+  if (!position || position.following || position.rowKey === liveMessageId) return undefined
+  return position.anchorMessageId ?? position.rowKey ?? undefined
+}

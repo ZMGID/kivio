@@ -1,5 +1,7 @@
 import { ErrorNotice } from '../components/AppNotice'
 import { Button } from '../components/Button'
+import { chatApi } from './api'
+import { notifyError } from '../components/appNoticeStore'
 import {
   memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState,
   type ComponentProps,
@@ -105,8 +107,6 @@ function sameOutlineItems(a: readonly MarkdownHeadingOutlineItem[], b: readonly 
 }
 
 export interface MessageListProps {
-  /** An inactive cached window can render before it owns the saved reading position. */
-  readOnlyPreview?: boolean
   waitingForBackgroundTasks?: boolean
   density?: 'default' | 'compact'
   conversationId?: string | null
@@ -118,6 +118,8 @@ export interface MessageListProps {
   onRestoreQueuedMessage?: (id: string) => void
   historyGap?: Conversation['history_gap']
   historyStart?: number
+  historyRevision?: number
+  historyTurnCount?: number
   historyDirectory?: NonNullable<Conversation['history_directory']>
   historyArtifacts?: ChatToolArtifact[]
   onLoadHistory?: (edge: 'older' | 'gap-start' | 'gap-end') => void | Promise<void>
@@ -348,7 +350,6 @@ const MessageRowBubble = memo(function MessageRowBubble({
 })
 
 function MessageListBase({
-  readOnlyPreview = false,
   density = 'default',
   waitingForBackgroundTasks = false,
   conversationId,
@@ -374,7 +375,7 @@ function MessageListBase({
   onSaveMessageToNote,
   onExecuteAgentPlan,
   onRetryLastUser,
-  groupSelections = {},
+  groupSelections,
   onSetGroupSelection,
   contextState = null,
   compactionInProgress = false,
@@ -386,12 +387,43 @@ function MessageListBase({
   onFocusMessageHandled,
   historyGap,
   historyStart = 0,
-  historyDirectory = EMPTY_HISTORY_DIRECTORY,
+  historyDirectory: windowDirectory = EMPTY_HISTORY_DIRECTORY,
+  historyRevision,
+  historyTurnCount,
   historyArtifacts = EMPTY_HISTORY_ARTIFACTS,
   onLoadHistory,
   historyLoadError,
   onFocusHistoryMessage,
 }: MessageListProps) {
+  // The turn rail reads its full directory only when the reader uses it. Keep
+  // the window anchors available while a request is pending or superseded.
+  const [railInterest, setRailInterest] = useState<string | null>(null)
+  const [directory, setDirectory] = useState<{
+    id: string; revision: number; entries: NonNullable<Conversation['history_directory']>
+  }>()
+  const completeDirectory = directory && directory.id === conversationId && directory.revision === historyRevision
+    ? directory.entries : undefined
+  const historyDirectory = completeDirectory ?? windowDirectory
+  const paged = Boolean(historyGap || historyStart > 0)
+  const openRail = useCallback(() => setRailInterest(conversationId ?? null), [conversationId])
+  useEffect(() => {
+    if (!paged || !conversationId || railInterest !== conversationId
+      || historyRevision === undefined || completeDirectory) return
+    let current = true
+    void chatApi.getConversationDirectory(conversationId).then(result => {
+      if (!current) return
+      if (result.revision === historyRevision) {
+        setDirectory({ id: conversationId, revision: result.revision, entries: result.history_directory })
+      } else {
+        setRailInterest(null)
+      }
+    }).catch((error: unknown) => {
+      if (!current) return
+      setRailInterest(null)
+      notifyError(error instanceof Error ? error.message : String(error))
+    })
+    return () => { current = false }
+  }, [completeDirectory, conversationId, historyRevision, paged, railInterest])
   // Subagent reports enter model context; their visible results live in task cards.
   // Match the reserved receipt identity, not quoted report text in ordinary messages.
   const messages = useMemo(() => storedMessages.filter(message => {
@@ -824,16 +856,17 @@ function MessageListBase({
 
   const boundaries = useMemo(() => {
     const resolved = resolveCompactionBoundaries(messages, contextState)
-    if (!historyGap || !resolved.length) return resolved
-    // A display anchor inside the gap still exists. Only use a fallback anchor
-    // when the full-snapshot directory says it was deleted.
+    if (!paged || !resolved.length) return resolved
+    // A split point can be on screen while the actual divider is in an
+    // unloaded interval. Only use a fallback confirmed by the stored directory.
     const anchors = new Map(historyDirectory.filter(entry => entry.kind === 'compaction')
       .map(entry => [entry.id, entry.message_id]))
-    return resolved.filter(boundary => {
-      const anchor = anchors.get(`compaction-${boundary.record.id}`)
-      return !anchor || messages[boundary.afterIndex]?.id === anchor
+    return resolved.filter(({ record, afterIndex }) => {
+      const anchor = anchors.get(`compaction-${record.id}`) ?? record.display_after_message_id
+        ?? record.displayAfterMessageId ?? record.source_until_message_id ?? record.sourceUntilMessageId
+      return messages[afterIndex]?.id === anchor
     })
-  }, [contextState, historyDirectory, historyGap, messages])
+  }, [contextState, historyDirectory, paged, messages])
 
   const clearBoundaries = useMemo(
     () => resolveClearBoundaries(messages, contextState),
@@ -1052,6 +1085,7 @@ function MessageListBase({
 
   // Persistent measurements apply only to history. The live handoff has one
   // temporary estimate, consumed by measureRow when the committed row mounts.
+  const viewportHeight = viewportEl?.clientHeight || 800
   const estimatedSizeByKey = useMemo(() => {
     const map = new Map<string, number>()
     for (const item of historyItems) {
@@ -1065,9 +1099,13 @@ function MessageListBase({
         map.set(item.key, cached)
         continue
       }
-      const messages = item.kind === 'message'
+      let messages = item.kind === 'message'
         ? [item.message]
         : item.kind === 'group' ? item.messages : []
+      if (item.kind === 'group' && multiAnswerViewMode === 'tabs') {
+        const active = messages.find(message => message.id === groupSelections?.[item.groupId]) ?? messages[0]
+        messages = active ? [active] : []
+      }
       let cost = 0
       let height = 0
       for (const message of messages) {
@@ -1085,7 +1123,7 @@ function MessageListBase({
           attachmentCount: (message.attachments ?? []).length,
           artifactCount,
         })
-        height += estimateMessageRenderHeight({
+        const messageHeight = estimateMessageRenderHeight({
           texts,
           // Ordinary replies keep their reading width even when a group widens the list.
           width: Math.min(contentWidth, 848),
@@ -1093,6 +1131,13 @@ function MessageListBase({
           attachmentCount: (message.attachments ?? []).length,
           artifactCount,
         })
+        height = Math.max(height, messageHeight)
+      }
+      // Columns scroll independently inside one height-limited row. A tabbed
+      // group lays out only its active answer. Both also render a model picker.
+      if (item.kind === 'group') {
+        if (multiAnswerViewMode === 'columns') height = Math.min(height, viewportHeight)
+        height += 48
       }
       const base = item.kind === 'group' ? 180 : 88
       // Mount cost decides the virtualized window; row size must be estimated in
@@ -1100,7 +1145,7 @@ function MessageListBase({
       map.set(item.key, Math.max(base, height + (cost > 800 ? 24 : 0)))
     }
     return map
-  }, [contentWidth, historyItems, layoutKey])
+  }, [contentWidth, groupSelections, historyItems, layoutKey, multiAnswerViewMode, viewportHeight])
 
   // Live is not a virtualizer row — chrome tail below carries live +
   // status/error/send-reserve, so token growth never remeasures a combined tail.
@@ -1150,7 +1195,6 @@ function MessageListBase({
     for (const item of initialMeasurementsCache) switchingVirtualizer.itemSizeCache.set(item.key, item.size)
   }
   const widthAnchorIndex = widthAnchorRef.current?.index ?? null
-  const viewportHeight = viewportEl?.clientHeight || 800
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: itemCount,
     enabled: true,
@@ -1424,7 +1468,7 @@ function MessageListBase({
     committedConversationRef.current = conversationId
     committedSavedRef.current = false
     saveMeasurementSnapshotRef.current = () => {
-      if (!viewportEl || readOnlyPreview) return
+      if (!viewportEl) return
       if (conversationId) {
         const scrollTop = viewportEl.scrollTop
         const anchor = virtualizer.getVirtualItems().find(row => {
@@ -1610,7 +1654,7 @@ function MessageListBase({
     ? outlineItemsByOwner.get(activeOutlineOwnerId) ?? []
     : []
   navigatorNodesRef.current = loadedNavigatorNodes
-  const navigatorTurnCount = navigatorNodes.reduce(
+  const navigatorTurnCount = (paged ? historyTurnCount : undefined) ?? navigatorNodes.reduce(
     (count, node) => count + (node.kind === 'turn' ? 1 : 0),
     0,
   )
@@ -2802,7 +2846,7 @@ function MessageListBase({
           )
         }
         case 'group': {
-          const selectedMessageId = groupSelections[item.groupId] ?? null
+          const selectedMessageId = groupSelections?.[item.groupId] ?? null
           return (
             <MessageGroup
               conversationId={conversationId}
@@ -3016,6 +3060,7 @@ function MessageListBase({
         <MessageNavigator
           key={conversationId}
           nodes={navigatorNodes}
+          onBrowse={openRail}
           activeNodeId={activeNavigatorNodeId}
           visibleNodeIds={visibleNavigatorNodeIds}
           onNavigate={navigateToNavigatorNode}

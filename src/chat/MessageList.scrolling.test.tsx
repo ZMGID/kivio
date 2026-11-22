@@ -3,6 +3,7 @@ import { act, fireEvent } from '@testing-library/react'
 import type { Virtualizer } from '@tanstack/react-virtual'
 import { afterEach, expect, it, vi } from 'vitest'
 import { MessageList } from './MessageList'
+import { chatApi } from './api'
 import { clearChatReadingPositions, recallChatReadingPosition, rememberChatReadingPosition } from './chatReadingPosition'
 import { reset, setCoarse, setSnapshot } from './streamingStore'
 import { createEmptyStreamSnapshot } from './conversationRuns'
@@ -142,21 +143,44 @@ it('falls back to the latest position when the saved row content changed', async
   expect(container.querySelector<HTMLElement>('.chat-scroll-viewport')!.scrollTop).toBe(0)
 })
 
+it('shows a compaction divider only when its display anchor has been loaded', async () => {
+  const messages: ChatMessage[] = [
+    { id: 'split', role: 'user', content: 'First question', timestamp: 1 },
+    { id: 'tail', role: 'user', content: 'Latest question', timestamp: 3 },
+  ]
+  const contextState = { compaction_boundaries: [{
+    id: 'boundary', source_until_message_id: 'split', display_after_message_id: 'anchor',
+    token_estimate_before: 100, token_estimate_after: 10, summary_content: 'summary',
+    trigger: 'manual' as const, created_at: 2,
+  }] }
+  const { container, rerender } = render(<MessageList conversationId="compaction-gap"
+    messages={messages} contextState={contextState} historyGap={{ start: 1, end: 2 }} />)
+  expect(container.querySelector('[data-compaction-divider-id="boundary"]')).toBeNull()
+  rerender(<MessageList conversationId="compaction-gap" contextState={contextState}
+    messages={[messages[0], { id: 'anchor', role: 'assistant', content: 'Reply', timestamp: 2 }, messages[1]]} />)
+  expect(container.querySelector('[data-compaction-divider-id="boundary"]')).toBeInTheDocument()
+})
+
 it('uses the lightweight directory to open a turn outside the first window', async () => {
   const focus = vi.fn()
-  const { container } = render(<MessageList
-    conversationId="directory"
-    messages={[{ id: 'recent', role: 'user', content: 'Recent', timestamp: 3 }]}
-    historyStart={2}
-    historyDirectory={[
+  const fullDirectory = vi.spyOn(chatApi, 'getConversationDirectory').mockResolvedValue({
+    revision: 7, history_directory: [
       { kind: 'turn', id: 'turn-old', message_id: 'old', message_index: 0, title: 'Old question' },
       { kind: 'compaction', id: 'compaction-middle', message_id: 'middle', message_index: 1, title: '已压缩此前上下文' },
       { kind: 'turn', id: 'turn-recent', message_id: 'recent', message_index: 2, title: 'Recent question' },
-    ]}
-    onFocusHistoryMessage={focus}
-    onLoadHistory={vi.fn()}
+    ],
+  })
+  const { container } = render(<MessageList
+    conversationId="directory"
+    messages={[{ id: 'recent', role: 'user', content: 'Recent', timestamp: 3 }]}
+    historyStart={2} historyRevision={7} historyTurnCount={2}
+    onFocusHistoryMessage={focus} onLoadHistory={vi.fn()}
   />)
-  await act(async () => { await Promise.resolve() })
+  expect(fullDirectory).not.toHaveBeenCalled()
+  await act(async () => {
+    fireEvent.pointerOver(container.querySelector('.chat-message-navigator')!)
+  })
+  expect(fullDirectory).toHaveBeenCalledWith('directory')
   fireEvent.click(container.querySelector('[data-message-navigator-id="turn-old"]')!)
   expect(focus).toHaveBeenCalledWith('directory', 'old', expect.any(AbortSignal), 'old')
   const firstSignal = focus.mock.calls[0][2] as AbortSignal
@@ -333,6 +357,24 @@ it('bounds offscreen rendering by viewport height while keeping short-message ov
   for (const index of [28, 32]) {
     expect(list.options.rangeExtractor({ ...range, startIndex: index, endIndex: index })).not.toContain(30)
   }
+})
+
+it('keeps nearby rows mounted when a hidden answer tab contains a long report', async () => {
+  const messages: ChatMessage[] = Array.from({ length: 40 }, (_, i) => ({
+    id: 'question-' + i, role: 'user', content: 'Short', timestamp: i,
+  }))
+  messages.splice(19, 1,
+    { id: 'short-answer', role: 'assistant', group_id: 'compare', content: 'Summary', timestamp: 19 },
+    { id: 'long-answer', role: 'assistant', group_id: 'compare', content: 'Report detail\n'.repeat(400), timestamp: 19 },
+  )
+  const props = { conversationId: 'group-overscan', messages }
+  const { rerender } = render(<MessageList {...props} groupSelections={{ compare: 'short-answer' }} />)
+  await act(async () => {})
+  const range = { startIndex: 17, endIndex: 17, overscan: 6, count: list.options.count }
+  expect(list.options.rangeExtractor(range)).toContain(21)
+  rerender(<MessageList {...props} groupSelections={{ compare: 'long-answer' }} />)
+  await act(async () => {})
+  expect(list.options.rangeExtractor(range)).not.toContain(21)
 })
 
 it('corrects a short cache when content grows without a ResizeObserver entry', async () => {

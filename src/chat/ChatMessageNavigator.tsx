@@ -18,6 +18,7 @@ interface MessageNavigatorProps {
   nodes: MessageNavigatorNode[]
   activeNodeId: string | null
   visibleNodeIds: string[]
+  onBrowse?: () => void
   onNavigate: (node: MessageNavigatorNode) => void
 }
 
@@ -40,6 +41,7 @@ function MessageNavigatorBase({
   activeNodeId,
   visibleNodeIds,
   onNavigate,
+  onBrowse,
 }: MessageNavigatorProps) {
   const t = useT()
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -138,7 +140,8 @@ function MessageNavigatorBase({
 
   return (
     <>
-      <aside className="chat-message-navigator" aria-label={t.chatTurnNavigator}>
+      <aside className="chat-message-navigator" aria-label={t.chatTurnNavigator}
+        onPointerEnter={onBrowse} onFocusCapture={onBrowse}>
         <div
           ref={viewportRef}
           className="chat-message-navigator-viewport"
@@ -219,6 +222,7 @@ export const MessageNavigator = memo(
     prev.activeNodeId === next.activeNodeId
     && prev.visibleNodeIds.length === next.visibleNodeIds.length
     && prev.visibleNodeIds.every((id, index) => id === next.visibleNodeIds[index])
+    && prev.onBrowse === next.onBrowse
     && prev.onNavigate === next.onNavigate
     && nodesEqual(prev.nodes, next.nodes)
   ),

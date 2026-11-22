@@ -299,6 +299,8 @@ export interface InputBarProps {
     options?: { onAccepted?: () => void },
   ) => boolean | void | Promise<boolean | void>
   disabled?: boolean
+  /** Keep local drafting available while the selected conversation catches up. */
+  draftOnly?: boolean
   /**
    * 生成中（`disabled`）时的发送入口。默认直接注入当前运行，
    * 不支持注入时由发送负责人保留消息并说明回退行为。
@@ -396,6 +398,7 @@ export interface InputBarProps {
 export const InputBar = memo(function InputBar({
   onSend,
   disabled,
+  draftOnly = false,
   onSendWhileRunning,
   onCancel,
   onStopBackgroundWait,
@@ -465,7 +468,7 @@ export const InputBar = memo(function InputBar({
   // 是纯本地状态，运行中做没有风险，所以走 composerLocked（比 disabled 宽）这道门。
   const runningInputMode = Boolean(disabled && onSendWhileRunning)
   const [sendPending, setSendPending] = useState(false)
-  const composerLocked = (Boolean(disabled) || sendPending) && !runningInputMode
+  const composerLocked = (Boolean(disabled) || sendPending) && !runningInputMode && !draftOnly
   const draftKeyValue = draftKey(conversationId)
   const [input, setInput] = useState(() => getComposerDraft(draftKeyValue)?.input ?? '')
   const historyRef = useRef<{ entries: string[]; index: number; draft: string } | null>(null)
@@ -1583,7 +1586,7 @@ export const InputBar = memo(function InputBar({
   }
 
   useEffect(() => {
-    if (!autoFocus || disabled) return
+    if (!autoFocus || (disabled && !draftOnly)) return
     requestAnimationFrame(() => {
       if (shouldComposerAutoFocus(document.activeElement)) {
         const el = editorRef.current
@@ -1592,7 +1595,7 @@ export const InputBar = memo(function InputBar({
         if (el) el.selectionStart = el.selectionEnd = el.value.length
       }
     })
-  }, [autoFocus, disabled])
+  }, [autoFocus, disabled, draftOnly])
 
   useEffect(() => {
     if (!autoFocus || !isTauriRuntime()) return
@@ -1602,7 +1605,7 @@ export const InputBar = memo(function InputBar({
     getCurrentWindow().onFocusChanged(({ payload: focused }) => {
       if (!focused || cancelled) return
       requestAnimationFrame(() => {
-        if (!cancelled && !disabled && shouldComposerAutoFocus(document.activeElement)) {
+        if (!cancelled && (!disabled || draftOnly) && shouldComposerAutoFocus(document.activeElement)) {
           editorRef.current?.focus({ preventScroll: true })
         }
       })
@@ -1620,7 +1623,7 @@ export const InputBar = memo(function InputBar({
       cancelled = true
       unlisten?.()
     }
-  }, [autoFocus, disabled])
+  }, [autoFocus, disabled, draftOnly])
 
   usePopoverMenu(toolPanelOpen, () => setToolPanelOpen(false), toolPanelRef)
   usePopoverMenu(projectMenuOpen, closeProjectMenu, projectMenuRef)

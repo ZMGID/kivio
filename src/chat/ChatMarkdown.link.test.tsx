@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { unified } from 'unified'
 
 const openExternal = vi.fn(() => Promise.resolve())
 const openLocalFile = vi.fn(() => Promise.resolve())
@@ -83,6 +84,34 @@ describe('ChatMarkdown 链接点击', () => {
     expect(event.defaultPrevented).toBe(true)
     expect(openLocalFile).toHaveBeenCalledWith('assets/index.html', null)
     expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('重开相同表格复用已清洗的解析结果，文件仍由当前对话打开', () => {
+    const table = '| **文件** | 备注 |\n| --- | --- |\n| [记录](notes/session.md) | <script>unsafe()</script>已确认 [1] |\n| [附件](artifact:art_report) | 已交付 |'
+    const parser = vi.spyOn(Object.getPrototypeOf(unified) as typeof unified, 'parse')
+    try {
+      const first = render(<ChatMarkdown content={table} conversationId="first" />)
+      expect(first.container.querySelector('table [data-streamdown="strong"]')).toHaveTextContent('文件')
+      expect(parser).toHaveBeenCalled()
+      first.unmount()
+      parser.mockClear()
+      const second = render(<ChatMarkdown content={table} conversationId="second" />)
+      expect(second.container.querySelector('table [data-streamdown="strong"]')).toHaveTextContent('文件')
+      expect(second.container.querySelector('script')).toBeNull()
+      fireEvent.click(screen.getByRole('link', { name: /记录/ }))
+      expect(openLocalFile).toHaveBeenCalledWith('notes/session.md', 'second')
+      expect(screen.getByRole('status')).toHaveTextContent('附件')
+      second.rerender(<ChatMarkdown content={table} conversationId="second"
+        artifacts={[{ id: 'art_report', name: 'report.pdf', path: '/B/report.pdf', mime_type: 'application/pdf' }]}
+        citations={new Map([[1, { kind: 'web', n: 1, title: 'B 来源', url: 'https://example.com/b', host: 'example.com' }]])}
+      />)
+      expect(screen.getByRole('button', { name: '打开文件 report.pdf' })).toBeVisible()
+      fireEvent.click(screen.getByRole('button', { name: '来源 1' }))
+      expect(within(screen.getByRole('dialog')).getByText('B 来源')).toBeVisible()
+      expect(parser).not.toHaveBeenCalled()
+    } finally {
+      parser.mockRestore()
+    }
   })
 
   it('不止 html：docx / zip 这类同样走默认程序', () => {

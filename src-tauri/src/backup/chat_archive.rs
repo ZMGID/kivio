@@ -51,6 +51,11 @@ pub(crate) fn export(root: &Path, destination: &Path) -> Result<(), String> {
         path: &Path,
         remaining: &mut u64,
     ) -> Result<(), String> {
+        if crate::chat::history_projection::is_archive_sidecar(
+            path.strip_prefix(root).map_err(error)?,
+        ) {
+            return Ok(());
+        }
         let metadata = fs::symlink_metadata(path).map_err(error)?;
         if metadata.file_type().is_symlink() {
             return Err(format!("不能备份符号链接：{}", path.display()));
@@ -185,6 +190,9 @@ pub(crate) fn prepare(root: &Path, archive: &Path) -> Result<(), String> {
                 .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
             return Err(format!("无效或重复的备份路径：{name}"));
+        }
+        if crate::chat::history_projection::is_archive_sidecar(path) {
+            continue;
         }
         let destination = data.join(path);
         if entry.is_dir() {

@@ -106,34 +106,6 @@ fn accumulate_source_ids_starts_after_context_clear() {
 }
 
 #[test]
-fn history_window_and_pages_resolve_only_missing_artifact_dependencies() {
-    let artifact = serde_json::json!({"id":"art_early", "name":"early.png",
-        "mime_type":"image/png", "data_url":"data:image/png;base64,AAAA", "path":"early.png"});
-    let mut messages: Vec<ChatMessage> = (0..130)
-        .map(|index| test_chat_message(&format!("m{index}"), "assistant", "reply", index))
-        .collect();
-    messages[0].artifacts = serde_json::from_value(serde_json::json!([
-        artifact, {"id":"art_unused", "name":"unused.png", "mime_type":"image/png", "data_url":"large-unused"}
-    ])).unwrap();
-    messages[129].content = "![earlier](artifact:art_early) `artifact:art_unused`".into();
-    messages[69].content = "[earlier again](artifact://art_early)".into();
-    for end in [130, 70] {
-        let start = super::catalog::history_window_start(&messages, end);
-        assert_eq!(end - start, 60);
-        let dependencies =
-            crate::chat::artifacts::history_reference_artifacts(&messages, start..end);
-        assert_eq!(dependencies.len(), 1);
-        assert_eq!(dependencies[0].id.as_deref(), Some("art_early"));
-        assert_eq!(dependencies[0].path.as_deref(), Some("early.png"));
-    }
-    assert!(
-        messages[129].artifacts.is_empty(),
-        "display dependencies must not change message ownership"
-    );
-    assert!(crate::chat::artifacts::history_reference_artifacts(&messages, 0..130).is_empty());
-}
-
-#[test]
 fn history_window_resolves_segment_and_presentation_dependencies_from_tools() {
     let artifact = serde_json::json!({"id":"art_tool", "name":"tool.png", "mime_type":"image/png", "data_url":""});
     let mut origin = test_chat_message("origin", "assistant", "", 1);
@@ -147,7 +119,7 @@ fn history_window_resolves_segment_and_presentation_dependencies_from_tools() {
     .unwrap();
     let mut messages = vec![origin, target];
     assert_eq!(
-        crate::chat::artifacts::history_reference_artifacts(&messages, 1..2).len(),
+        crate::chat::artifacts::missing_history_artifact_ids(&messages[1..2]).len(),
         1
     );
     messages[1].segments.clear();
@@ -156,25 +128,10 @@ fn history_window_resolves_segment_and_presentation_dependencies_from_tools() {
             "id":"present", "name":"present_artifacts", "source":"native", "arguments":"{}", "status":"success",
             "structured_content":{"type":"artifact_presentation", "artifactIds":["art_tool", "art_tool", "art_missing"], "mode":mode}
         }])).unwrap();
-        let dependencies = crate::chat::artifacts::history_reference_artifacts(&messages, 1..2);
-        assert_eq!(dependencies.len(), 1);
-        assert_eq!(dependencies[0].id.as_deref(), Some("art_tool"));
+        let dependencies = crate::chat::artifacts::missing_history_artifact_ids(&messages[1..2]);
+        assert!(dependencies.contains("art_tool"));
+        assert!(dependencies.contains("art_missing"));
     }
-}
-
-#[test]
-fn history_window_bounds_payload_and_keeps_oversized_message_reachable() {
-    let messages: Vec<ChatMessage> = (0..60)
-        .map(|index| {
-            serde_json::from_value(serde_json::json!({
-        "id": format!("m{index}"), "role": "user", "content": "x".repeat(180_000), "timestamp": 1
-    })).unwrap()
-        })
-        .collect();
-    assert!(super::catalog::history_window_start(&messages, 60) > 55);
-    let mut oversized = messages[0].clone();
-    oversized.content = "x".repeat(900_000);
-    assert_eq!(super::catalog::history_window_start(&[oversized], 1), 0);
 }
 
 #[test]
@@ -3811,7 +3768,13 @@ fn history_directory_keeps_compaction_after_display_anchor_deletion() {
         .context_state
         .compaction_boundaries
         .push(boundary);
-    let directory = super::catalog::conversation_history_directory(&conversation);
+    let indices = conversation
+        .messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| (m.id.clone(), i))
+        .collect();
+    let directory = super::catalog::history_boundary_directory(&conversation, &indices);
     let entry = directory
         .iter()
         .find(|entry| entry["kind"] == "compaction")

@@ -24,7 +24,6 @@ it('refreshes the chat draft from the saved setup before the first conversation'
   for (const key of Object.keys(api) as Array<keyof typeof api>) {
     if (key.startsWith('on') && typeof api[key] === 'function') vi.spyOn(api, key).mockResolvedValue(() => {})
   }
-  vi.spyOn(api, 'chatSyncState').mockResolvedValue(undefined)
   vi.spyOn(api, 'scheduledTasksSnapshot').mockResolvedValue({ tasks: [], liveRuns: [] })
   vi.spyOn(chatApi, 'getConversations').mockResolvedValue([])
   vi.spyOn(chatApi, 'getProjects').mockResolvedValue([])

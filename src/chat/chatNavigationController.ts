@@ -1,3 +1,4 @@
+import { createChatHistoryReader } from './chatHistoryReader'
 import { conversationHash, getRouteConversationId, hashPath, setHash } from './chatRoutes'
 import {
   awaitCurrentConversationNavigation,
@@ -9,19 +10,19 @@ import {
   invalidateConversationTransition,
   isCurrentConversationNavigation,
   isCurrentConversationTransition,
-  previewConversationTransition,
   type ConversationLoadHint,
 } from './conversationTransitionStore'
 import { forgetRememberedChatRoute } from './persistence'
 import { draftKey, migrateNewChatDraft } from './composerDraft'
 import type { Conversation } from './types'
-import { isPartialConversation, mergeConversationHistoryPage, type ConversationHistoryPage } from './conversationHistoryWindow'
+import type { ConversationHistoryPage } from './conversationHistoryWindow'
 
 
 type ClearChatDecision = 'busy' | 'cancelled' | 'confirmed'
 interface NavigationPorts {
   currentConversation: () => Conversation | null
   currentConversationId: () => string | null
+  isResumingConversation?: (id: string) => boolean
   listPopouts: () => Promise<ReadonlySet<string>>
   readConversation: (conversationId: string) => Promise<Conversation>
   readConversationWindow?: (
@@ -51,6 +52,7 @@ interface NavigationPorts {
   reportConversationChanged?: (conversationId: string) => void
   showConversation: (conversation: Conversation, context: {
     renderRequestId: number
+    retained?: boolean
     selection: boolean
     focusMessageId?: string
     focusReasoning?: boolean
@@ -79,87 +81,19 @@ function asError(value: unknown, fallback = '对话加载失败，已从列表�
 export function createChatNavigationController(ports: NavigationPorts) {
   const readInitialWindow = (conversationId: string, requestId?: number, anchorMessageId?: string) =>
     ports.readConversationWindow?.(conversationId, (candidate) => {
-      if (requestId === undefined) return
-      const known = ports.knownConversationRevision?.(conversationId) ?? 0
-      previewConversationTransition(requestId, candidate && candidate.revision >= known ? candidate : undefined)
+      if (!candidate || requestId === undefined || !isCurrentConversationTransition(requestId, conversationId)) return
+      ports.showConversation(candidate, { renderRequestId: requestId, selection: true, retained: true })
+      setHash(conversationHash(conversationId))
     }, anchorMessageId) ?? ports.readConversation(conversationId)
 
-  const readAndShowConversation = async (
-    conversationId: string,
-    read: (conversationId: string) => Promise<Conversation>,
-    isCurrent: () => boolean,
-    show: (conversation: Conversation) => void,
-  ): Promise<'shown' | 'superseded' | 'changed'> => {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const conversation = await read(conversationId)
-      if (!isCurrent()) return 'superseded'
-      if ((conversation.revision ?? 0) >= (ports.knownConversationRevision?.(conversationId) ?? 0)) {
-        show(conversation)
-        return 'shown'
-      }
-    }
-    return 'changed'
-  }
-
-  const historyPages = new Map<string, ReturnType<typeof captureConversationNavigation>>()
-  const loadHistoryPage = async (edge: 'older' | 'gap-start' | 'gap-end' = 'older') => {
-    const current = ports.currentConversation()
-    if (!current || !isPartialConversation(current)) return
-    const gap = current.history_gap
-    const before = edge === 'older' ? current.history_start : gap?.end
-    if (!before) return
-    const pending = historyPages.get(current.id)
-    if (pending && isCurrentConversationNavigation(pending)) return
-    const lease = captureConversationNavigation()
-    const canCommit = () => isCurrentConversationNavigation(lease)
-      && ports.currentConversationId() === current.id
-    historyPages.set(current.id, lease)
-    ports.reportHistoryError(current.id, null)
-    try {
-      const page = await ports.readHistoryPage(current.id, before, edge === 'gap-start' ? gap?.start : undefined)
-      if (!canCommit()) return
-      const latest = ports.currentConversation()
-      if (!latest || latest.id !== current.id || !isPartialConversation(latest)) return
-      if (latest.history_gap !== gap || latest.history_start !== current.history_start) return
-      const merged = mergeConversationHistoryPage(latest, page)
-      if (merged && merged.revision >= (ports.knownConversationRevision?.(current.id) ?? 0)) {
-        ports.showHistoryPage(merged)
-        return
-      }
-      const split = gap ? gap.start - (current.history_start ?? 0) : 0
-      const index = edge === 'gap-start' ? Math.max(0, split - 1) : edge === 'gap-end' ? split : 0
-      const anchor = current.messages[index]?.id
-      const outcome = await readAndShowConversation(current.id, id => readInitialWindow(id, undefined, anchor),
-        () => canCommit() && ports.currentConversation()?.messages === latest.messages, ports.showHistoryPage)
-      if (outcome === 'changed') ports.reportConversationChanged?.(current.id)
-    } catch (error) {
-      if (canCommit()) {
-        console.error('Failed to load older conversation history:', error)
-        ports.reportHistoryError(current.id, edge === 'older' ? '加载更早消息失败，请重试。' : '加载历史消息失败，请重试。')
-      }
-    } finally {
-      if (historyPages.get(current.id) === lease) historyPages.delete(current.id)
-    }
-  }
-  let historyFocusSequence = 0
-  const focusHistoryMessage = async (conversationId: string, messageId: string, signal: AbortSignal, anchorMessageId = messageId) => {
-    const sequence = ++historyFocusSequence
-    const navigation = captureConversationNavigation()
-    const isCurrent = () => !signal.aborted && sequence === historyFocusSequence
-      && isCurrentConversationNavigation(navigation)
-      && ports.currentConversationId() === conversationId
-    if (!isCurrent()) return
-    ports.reportHistoryError(conversationId, null)
-    try {
-      const outcome = await readAndShowConversation(conversationId, id => readInitialWindow(id, undefined, anchorMessageId), isCurrent,
-        (conversation) => ports.showHistoryTarget(conversation, messageId))
-      if (outcome === 'changed' && isCurrent()) ports.reportConversationChanged?.(conversationId)
-    } catch (error) {
-      if (!isCurrent()) return
-      console.error('Failed to load historical navigation target:', error)
-      ports.reportHistoryError(conversationId, '打开历史消息失败，请重试。')
-    }
-  }
+  const { readAndShowConversation, loadHistoryPage, focusHistoryMessage } = createChatHistoryReader({
+    ...ports,
+    readWindow: (id, anchor) => readInitialWindow(id, undefined, anchor),
+    captureView: () => {
+      const lease = captureConversationNavigation()
+      return () => isCurrentConversationNavigation(lease)
+    },
+  })
   const beginConversationCreation = () => {
     // A creation is a navigation intent even while its backend request is
     // pending. Revoking the previous generation also orders two creations
@@ -345,6 +279,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
     const current = ports.currentConversation()
     const alreadyOpen = ports.currentConversationId() === conversationId
       && current?.id === conversationId
+      && !ports.isResumingConversation?.(conversationId)
       && (!hint?.focusMessageId || current.messages.some(message => message.id === hint.focusMessageId))
     if (alreadyOpen) {
       if (getConversationTransitionSnapshot().loading) leaveConversation()
@@ -403,6 +338,12 @@ export function createChatNavigationController(ports: NavigationPorts) {
   }
 
   const reconcilePopouts = async (previous: ReadonlySet<string>, next: ReadonlySet<string>) => {
+    const pending = getConversationTransitionSnapshot()
+    const target = pending.targetConversationId
+    if (pending.loading && target && next.has(target) && !previous.has(target)) {
+      ports.occupyPopout(target)
+      return
+    }
     const currentId = ports.currentConversationId()
     if (!currentId) return
     if (next.has(currentId) && !previous.has(currentId)) {

@@ -1,9 +1,9 @@
 import { Profiler } from 'react'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, expect, it, vi } from 'vitest'
 import { api } from '../api/tauri'
 import type { ChatContextPayload, ChatStreamPayload } from '../api/tauri'
-import { CHAT_PROTOCOL_VERSION } from '../generated/chatProtocol'
+import { CHAT_PROTOCOL_VERSION, type ChatHistoryCursor } from '../generated/chatProtocol'
 import { chatApi } from './api'
 import Chat from './Chat'
 import { draftKey, updateComposerDraft } from './composerDraft'
@@ -18,16 +18,25 @@ vi.mock('../api/settingsCache', async (original) => ({
   getSettingsCached: () => Promise.resolve({ chat: {}, providers: [] }),
 }))
 
+beforeAll(() => {
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList
+  Range.prototype.getBoundingClientRect = () => new DOMRect()
+})
+
 afterEach(() => { act(() => reset()); vi.restoreAllMocks() })
+
+function checkpoint(after: ChatHistoryCursor | undefined, revision: number | null) {
+  return { conversationRevision: revision,
+    historyReplay: after && after.revision === revision ? { after, through: after, patches: [] } : undefined }
+}
 
 function mockConversationPair() {
   for (const key of Object.keys(api) as Array<keyof typeof api>) {
     if (key.startsWith('on') && typeof api[key] === 'function') vi.spyOn(api, key).mockResolvedValue(() => {})
   }
-  vi.spyOn(api, 'chatSyncState').mockResolvedValue(undefined)
   vi.spyOn(api, 'scheduledTasksSnapshot').mockResolvedValue({ tasks: [], liveRuns: [] })
   const conversations: Conversation[] = ['switch-a', 'switch-b'].map(id => ({
-    id, revision: 1, title: id, provider_id: '', model: '', created_at: 1, updated_at: 1,
+    id, revision: 1, title: id, provider_id: '', model: '', created_at: 1, updated_at: 1, history_start: 0, history_source: '1', history_total: 1,
     messages: [{ id: `${id}-question`, role: 'user', content: `${id} question`, timestamp: 1 }],
   }))
   const read = async (id: string) => conversations.find(conversation => conversation.id === id)!
@@ -39,70 +48,58 @@ function mockConversationPair() {
   vi.spyOn(chatApi, 'getAssistants').mockResolvedValue([])
   vi.spyOn(chatApi, 'getConversationPins').mockResolvedValue({})
   const windowReads = vi.spyOn(chatApi, 'getConversationWindow').mockImplementation(read)
-  vi.spyOn(chatApi, 'getConversationRevision').mockResolvedValue(1)
+  vi.spyOn(chatApi, 'syncConversation').mockImplementation(async (_id, after) => checkpoint(after, 1))
   vi.spyOn(chatApi, 'getConversation').mockImplementation(read)
   vi.spyOn(chatApi, 'getContextStats').mockResolvedValue({ contextState: {} })
   return { conversations, windowReads }
 }
 
-it('shows cached history read-only until validation, and cancels it when the open chat is reselected', async () => {
-  const { windowReads } = mockConversationPair()
+it('opens the retained draft immediately and enables sends after replaying a missed title', async () => {
+  const { conversations, windowReads } = mockConversationPair()
   window.history.replaceState(null, '', '#chat/switch-a')
-  const readOnlyCommits: Element[] = []
-  const observeCommit = () => {
-    const preview = document.querySelector('[inert] .chat-message-list')
-    if (preview) readOnlyCommits.push(preview)
-  }
-  const view = render(<Profiler id="warm-return" onRender={observeCommit}><Chat onSettingsChange={() => {}} /></Profiler>)
+  const view = render(<Chat onSettingsChange={() => {}} />)
   await act(async () => { await vi.dynamicImportSettled() })
   await screen.findByText('switch-a question')
   fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
   await screen.findByText('switch-b question')
-  // Hold the repository reply. Cached history can paint, but the old route
-  // remains authoritative and message actions stay inert until validation.
-  let validate!: (revision: number) => void
-  vi.mocked(chatApi.getConversationRevision).mockImplementationOnce(() => new Promise(done => { validate = done }))
+  const send = vi.spyOn(chatApi, 'sendMessage')
+  const replay = vi.mocked(chatApi.syncConversation)
+  replay.mockClear()
+  windowReads.mockClear()
+  let finish!: () => void
+  replay.mockImplementationOnce((_id, after) => new Promise(resolve => {
+    finish = () => resolve({ conversationRevision: 2, historyReplay: {
+      after: after!, through: { revision: 2, source: 'second' },
+      patches: [{ revision: 2, updatedAt: 2, events: [{ type: 'title_updated', title: '新标题' }] }],
+    } })
+  }))
   fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
-  const preview = await screen.findByText('switch-a question')
-  expect(preview.closest('[inert]')).not.toBeNull()
-  expect(window.location.hash).toBe('#chat/switch-b')
-  await act(async () => validate(1))
-  expect(screen.getByText('switch-a question')).toBe(preview)
-  expect(preview.closest('[inert]')).toBeNull()
+  const retained = await screen.findByText('switch-a question')
   expect(window.location.hash).toBe('#chat/switch-a')
-
-  // A late revision change from B cannot roll back a re-selection of A.
-  vi.mocked(chatApi.getConversationRevision).mockImplementationOnce(() => new Promise(done => { validate = done }))
-  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
-  expect((await screen.findByText('switch-b question')).closest('[inert]')).not.toBeNull()
-  fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
-  await screen.findByText('switch-a question')
-  await act(async () => validate(2))
-  expect(window.location.hash).toBe('#chat/switch-a')
-  expect(screen.getByText('switch-a question').closest('[inert]')).toBeNull()
-  expect(screen.queryByText('switch-b question')).not.toBeInTheDocument()
-
-  // B was invalidated. A subsequent visit must show its new durable content.
-  const fresh = {
-    id: 'switch-b', title: 'switch-b', revision: 2, provider_id: '', model: '', created_at: 1, updated_at: 2,
-    messages: [{ id: 'b-new', role: 'user' as const, content: 'new B question', timestamp: 2 }],
-  }
-  windowReads.mockResolvedValue(fresh)
-  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
-  await screen.findByText('new B question')
-  expect(window.location.hash).toBe('#chat/switch-b')
-
-  expect(readOnlyCommits.length).toBeGreaterThan(0)
-  readOnlyCommits.length = 0
-  fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
-  await screen.findByText('switch-a question')
-  expect(window.location.hash).toBe('#chat/switch-a')
-  expect(readOnlyCommits).toHaveLength(0)
+  expect(retained.closest('[inert]')).toBeNull()
+  const editor = screen.getByRole('textbox')
+  expect(editor).toHaveAttribute('contenteditable', 'true')
+  fireEvent.paste(editor, { clipboardData: { files: [], getData: (type: string) => type === 'text/plain' ? 'Draft while catching up' : '' } })
+  fireEvent.keyDown(editor, { key: 'Enter' })
+  expect(send).not.toHaveBeenCalled()
+  expect(editor.textContent).toBe('Draft while catching up')
+  const summaries = conversations.map(({ id, title }) => ({
+    id, title: id === 'switch-a' ? '新标题' : title, preview: '', provider_id: '', model: '',
+    message_count: 1, created_at: 1, updated_at: 2,
+  }))
+  vi.mocked(chatApi.getConversations).mockResolvedValue(summaries)
+  await act(async () => finish())
+  expect(await screen.findByRole('button', { name: '新标题' })).toBeVisible()
+  expect(screen.getByRole('button', { name: /^(Send|发送)$/ })).toBeEnabled()
+  expect(screen.getByText('switch-a question')).toBe(retained)
+  expect(screen.getByRole('textbox').textContent).toBe('Draft while catching up')
+  expect(replay).toHaveBeenCalledTimes(1)
+  expect(windowReads).not.toHaveBeenCalled()
   view.unmount()
 })
 
-it('withdraws deleted cached history while the definitive read is still pending', async () => {
-  const { windowReads } = mockConversationPair()
+it('applies a missed edit from a fresh window and rejects a late deletion after switching away', async () => {
+  const { conversations, windowReads } = mockConversationPair()
   window.history.replaceState(null, '', '#chat/switch-a')
   const view = render(<Chat onSettingsChange={() => {}} />)
   await act(async () => { await vi.dynamicImportSettled() })
@@ -110,17 +107,33 @@ it('withdraws deleted cached history while the definitive read is still pending'
   fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
   await screen.findByText('switch-b question')
 
-  let missing!: (revision: null) => void
-  vi.mocked(chatApi.getConversationRevision).mockImplementationOnce(() => new Promise(done => { missing = done }))
-  let failRead!: (error: Error) => void
-  windowReads.mockImplementationOnce(() => new Promise((_, reject) => { failRead = reject }))
+  let finish!: (revision: number | null) => void
+  const delayReplay = () => vi.mocked(chatApi.syncConversation).mockImplementationOnce(
+    (_id, after) => new Promise(resolve => { finish = revision => resolve(checkpoint(after, revision)) }))
+  delayReplay()
   fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
-  expect((await screen.findByText('switch-a question')).closest('[inert]')).not.toBeNull()
-  await act(async () => missing(null))
+  await screen.findByText('switch-a question')
+  const updated = { ...conversations[0], revision: 2, messages: [
+    { id: 'edited', role: 'user' as const, content: 'edited in another window', timestamp: 2 },
+  ] }
+  windowReads.mockResolvedValueOnce(updated)
+  await act(async () => finish(2))
+  await screen.findByText('edited in another window')
   expect(screen.queryByText('switch-a question')).not.toBeInTheDocument()
-  await act(async () => failRead(new Error('conversation no longer exists')))
+
+  delayReplay()
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
+  await screen.findByText('switch-b question')
+  vi.mocked(chatApi.syncConversation).mockImplementationOnce(async (_id, after) => checkpoint(after, 2))
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-a' }))
+  await screen.findByText('edited in another window')
+  await act(async () => finish(null))
+  expect(window.location.hash).toBe('#chat/switch-a')
+
+  windowReads.mockRejectedValueOnce(new Error('Conversation no longer exists'))
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
   await waitFor(() => expect(window.location.hash).toBe('#chat'))
-  expect(screen.queryByText('switch-a question')).not.toBeInTheDocument()
+  expect(screen.queryByText('switch-b question')).not.toBeInTheDocument()
   view.unmount()
 })
 
@@ -168,9 +181,13 @@ it('keeps previews, queued sends and pending approvals scoped to their running c
   // its loaded window, so coming back while it is unchanged reads nothing.
   windowReads.mockClear()
   for (const id of ['switch-b', 'switch-a', 'switch-b']) {
+    let finish!: (value: number) => void
+    vi.mocked(chatApi.syncConversation).mockImplementationOnce((_id, after) => new Promise(resolve => { finish = revision => resolve(checkpoint(after, revision)) }))
     fireEvent.click(await screen.findByRole('button', { name: id }))
     await screen.findByText(`${id} question`)
     await waitFor(() => expect(getSnapshot().messageId).toBe(`${id}-answer`))
+    expect(window.location.hash).toBe(`#chat/${id}`)
+    await act(async () => finish(1))
   }
   expect(mixedCommits).toEqual([])
   expect(windowReads).not.toHaveBeenCalled()
@@ -221,7 +238,6 @@ it('keeps sidebar reads idle while the open conversation receives context update
       vi.spyOn(api, key).mockResolvedValue(() => {})
     }
   }
-  vi.spyOn(api, 'chatSyncState').mockResolvedValue(undefined)
   vi.spyOn(api, 'scheduledTasksSnapshot').mockResolvedValue({ tasks: [], liveRuns: [] })
   let contextEvent!: (payload: ChatContextPayload) => void
   vi.spyOn(api, 'onChatContext').mockImplementation(async handler => {

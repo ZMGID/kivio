@@ -16,8 +16,8 @@ pub const CHAT_PROTOCOL_VERSION: u32 = 1;
 pub const CHAT_PROTOCOL_EVENT: &str = "chat-protocol";
 /// Channel 投递失败但窗口还在时，请该 WebView 重建通道并 `chat_sync_state`。
 pub const CHAT_PROTOCOL_CHANNEL_RESET_EVENT: &str = "chat-protocol-channel-reset";
-const MAX_REPLAY_EVENTS: usize = 512;
-const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
+pub(super) const MAX_REPLAY_EVENTS: usize = 512;
+pub(super) const MAX_REPLAY_BYTES: usize = 2 * 1024 * 1024;
 /// 运行中快照的正文/推理字段字节上限。replay 有 2MB 裁剪，但 fold_snapshot 持续
 /// 追加的快照本体没有——超长流式（多工具轮 + 长 reasoning）会让 popout 打开或
 /// sync 补缺口时一次性 clone + 序列化数 MB JSON 跨 IPC。留尾裁头：live 视图只要
@@ -1382,11 +1382,40 @@ pub struct ChatRunCursor {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[ts(rename_all = "camelCase")]
+pub struct ChatHistoryCursor {
+    pub revision: u64,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename_all = "camelCase")]
+pub struct ChatRevisionPatch {
+    pub revision: u64,
+    pub updated_at: i64,
+    pub events: Vec<ChatConversationEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename_all = "camelCase")]
+pub struct ChatHistoryReplay {
+    pub after: ChatHistoryCursor,
+    pub through: ChatHistoryCursor,
+    pub patches: Vec<ChatRevisionPatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(rename_all = "camelCase")]
 pub struct ChatSyncRequest {
     #[ts(type = "typeof CHAT_PROTOCOL_VERSION")]
     pub protocol_version: u32,
     pub conversation_id: String,
     pub cursors: Vec<ChatRunCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub after: Option<ChatHistoryCursor>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq)]
@@ -1414,7 +1443,10 @@ pub enum ChatRunSync {
 pub struct ChatSyncResult {
     #[ts(type = "typeof CHAT_PROTOCOL_VERSION")]
     pub protocol_version: u32,
-    pub conversation_revision: u64,
+    pub conversation_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub history_replay: Option<ChatHistoryReplay>,
     pub missing_run_ids: Vec<String>,
     pub runs: Vec<ChatRunSync>,
 }
@@ -1802,7 +1834,8 @@ impl ChatProtocolHub {
         }
         ChatSyncResult {
             protocol_version: CHAT_PROTOCOL_VERSION,
-            conversation_revision: 0,
+            conversation_revision: None,
+            history_replay: None,
             missing_run_ids,
             runs,
         }
@@ -3054,15 +3087,36 @@ pub async fn chat_sync_state(
     }
     let mut result = app.state::<AppState>().chat_protocol().hub().sync(&request);
     let repository = crate::chat::repository::repository(&app);
-    result.conversation_revision = match repository.revision(&app, &request.conversation_id).await {
-        Ok(Some(revision)) => revision,
-        // Legacy indexes may not contain revisions yet. Keep the old compatibility behavior.
-        _ => repository
-            .get(&app, &request.conversation_id)
+    if let Some(after) = request.after {
+        let app = app.clone();
+        let id = request.conversation_id.clone();
+        let (revision, replay) = repository
+            .with_conversation_storage(
+                &request.conversation_id,
+                move || {
+                    let path = super::storage::conversation_file_path(&app, &id)?;
+                    match std::fs::metadata(path) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            Ok((None, None))
+                        }
+                        Err(error) => Err(error.to_string()),
+                        Ok(_) => super::history_projection::read(&app, &id, |view| {
+                            Ok((Some(view.revision), view.replay(&after)?))
+                        }),
+                    }
+                },
+                "resume conversation history",
+            )
             .await
-            .map(|conversation| conversation.revision)
-            .unwrap_or(0),
-    };
+            .map_err(crate::chat::repository::repository_error)?;
+        result.conversation_revision = revision;
+        result.history_replay = replay;
+    } else {
+        result.conversation_revision = repository
+            .revision(&app, &request.conversation_id)
+            .await
+            .map_err(crate::chat::repository::repository_error)?;
+    }
     Ok(result)
 }
 
@@ -3380,6 +3434,7 @@ mod tests {
         )
         .unwrap();
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![ChatRunCursor {
@@ -3491,6 +3546,7 @@ mod tests {
             .unwrap();
         }
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![ChatRunCursor {
@@ -3536,6 +3592,7 @@ mod tests {
         )
         .unwrap();
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: Vec::new(),
@@ -3569,6 +3626,7 @@ mod tests {
         );
 
         let sync = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".to_string(),
             cursors: Vec::new(),
@@ -3621,6 +3679,7 @@ mod tests {
             .unwrap();
         }
         let sync = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![],
@@ -3644,6 +3703,7 @@ mod tests {
         )
         .unwrap();
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: Vec::new(),
@@ -3656,6 +3716,7 @@ mod tests {
         let mut hub = ChatProtocolHub::default();
         hub.register("conv", "run", "message", 0).unwrap();
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![ChatRunCursor {
@@ -3709,6 +3770,7 @@ mod tests {
             Some("最终🌱")
         );
         let sync = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![],
@@ -3929,6 +3991,7 @@ mod tests {
         }
 
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![],
@@ -4049,6 +4112,7 @@ mod tests {
         .unwrap();
         assert!(hub.runs["run"].replay.is_empty());
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![ChatRunCursor {
@@ -4115,6 +4179,7 @@ mod tests {
             .unwrap();
 
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![ChatRunCursor {
@@ -4200,6 +4265,7 @@ mod tests {
     fn sync_marks_evicted_cursor_for_persisted_conversation_fallback() {
         let mut hub = ChatProtocolHub::default();
         let result = hub.sync(&ChatSyncRequest {
+            after: None,
             protocol_version: CHAT_PROTOCOL_VERSION,
             conversation_id: "conv".into(),
             cursors: vec![ChatRunCursor {

@@ -30,13 +30,12 @@ pub(crate) async fn chat_get_context_stats(
     state: State<'_, AppState>,
     conversation_id: String,
 ) -> Result<serde_json::Value, String> {
-    let conversation = load_conversation(&app, &conversation_id)?;
+    let conversation = crate::chat::repository::repository(&app)
+        .get(&app, &conversation_id)
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
     let context_state = if conversation.agent_runtime.is_external() {
-        let cwd = crate::external_agents::workspace::resolve_effective_cwd(
-            &app,
-            &conversation.id,
-            conversation.project_id.as_deref(),
-        )?;
+        let cwd = crate::external_agents::workspace::resolve_loaded_cwd(&app, &conversation)?;
         crate::external_agents::context::compute_external_context_state_with_probe(
             &app,
             &conversation,
@@ -623,12 +622,8 @@ pub(super) fn compute_context_state(
         });
         // 执行 cwd（resolve_effective_cwd，每会话独立 workspace）与上面的探测 cwd 是两回事：
         // 它只用于按 workDir 关联 kimi 落盘的 wire.jsonl（见 kimi_usage 模块）。拿不到不影响其余。
-        let work_dir = crate::external_agents::workspace::resolve_effective_cwd(
-            app,
-            &conversation.id,
-            conversation.project_id.as_deref(),
-        )
-        .ok();
+        let work_dir =
+            crate::external_agents::workspace::resolve_loaded_cwd(app, conversation).ok();
         return crate::external_agents::context::compute_cached_external_context_state(
             app,
             conversation,

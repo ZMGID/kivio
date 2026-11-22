@@ -1,8 +1,10 @@
+import { createChatHistoryReader } from '../chatHistoryReader'
+import { readingWindowAnchor } from '../chatReadingPosition'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '../../api/tauri'
 import { notifyError } from '../../components/appNoticeStore'
 import { withExternalModel } from '../externalModelEffort'
-import { syncChatProtocol } from '../../api/chatProtocol'
+import { knownChatConversationRevision, syncChatProtocol } from '../../api/chatProtocol'
 import { getSettingsCached, updateSettingsCached } from '../../api/settingsCache'
 import {
   agentRuntimesEqual,
@@ -40,6 +42,8 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const committedConversationRef = useRef(conversation)
   useLayoutEffect(() => { committedConversationRef.current = conversation }, [conversation])
   const [loadError, setLoadError] = useState('')
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [focusMessageId, setFocusMessageId] = useState<string | null>(null)
   const [hookWarning, setHookWarning] = useState<ChatHookPayload | null>(null)
   const [approvalPolicy, setApprovalPolicy] = useState('readonly_auto_sensitive_confirm')
 
@@ -67,6 +71,27 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       : keepNewerContextMeasurement(keepNewerTodoState(next, current), current))
   }, [])
 
+  const readDisplayWindow = useCallback((id: string) => chatApi.getConversationWindow(
+    id, readingWindowAnchor(id, previewOwner.summary(id)?.messageId),
+  ), [previewOwner])
+  const historyReader = useMemo(() => createChatHistoryReader({
+    currentConversation: () => committedConversationRef.current,
+    currentConversationId: () => conversationIdRef.current,
+    knownConversationRevision: knownChatConversationRevision,
+    captureView: () => {
+      const epoch = incomingReadEpoch.current
+      return () => viewActiveRef.current && incomingReadEpoch.current === epoch
+    },
+    readWindow: chatApi.getConversationWindow,
+    readHistoryPage: chatApi.getConversationPage,
+    showHistoryPage: acceptPersistedConversation,
+    showHistoryTarget: (next, messageId) => {
+      acceptPersistedConversation(next)
+      setFocusMessageId(messageId)
+    },
+    reportHistoryError: (_, error) => setHistoryError(error),
+    reportConversationChanged: () => setHistoryError('对话仍在更新，请重试。'),
+  }), [acceptPersistedConversation])
   useEffect(() => {
     incomingReadEpoch.current += 1
     viewActiveRef.current = true
@@ -75,7 +100,9 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     interactionInbox.activate(conversationId)
     let cancelled = false
     setLoadError('')
-    void chatApi.getConversation(conversationId).then((conv) => {
+    setHistoryError(null)
+    setFocusMessageId(null)
+    void readDisplayWindow(conversationId).then((conv) => {
       if (cancelled) return
       acceptPersistedConversation(conv)
       void syncChatProtocol(conversationId).catch(() => {})
@@ -97,7 +124,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
       previewOwner.dispose()
       resetStreamStore()
     }
-  }, [acceptPersistedConversation, conversationId, executionOwner, interactionInbox, previewOwner])
+  }, [acceptPersistedConversation, conversationId, executionOwner, interactionInbox, previewOwner, readDisplayWindow])
 
   // The preview is replaced only after React commits the authoritative twin.
   useEffect(() => {
@@ -108,7 +135,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     const id = ready.terminal.conversationId
     void streamLifecycleOwner.settleExternalTerminal(
       ready.permit,
-      () => chatApi.getConversation(id),
+      () => readDisplayWindow(id),
       (outcome) => {
         if (conversationIdRef.current !== id) return
         if (outcome.kind === 'failed') {
@@ -125,7 +152,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
         }
       },
     )
-  }, [acceptPersistedConversation, previewOwner, streamLifecycleOwner])
+  }, [acceptPersistedConversation, previewOwner, readDisplayWindow, streamLifecycleOwner])
 
   useTauriEvent(api.onChatStream, (payload) => {
     if (payload.conversationId !== conversationIdRef.current) return
@@ -259,18 +286,18 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
 
   useTauriEvent(api.onChatTitle, ({ conversationId: id }) => {
     if (id !== conversationIdRef.current) return
-    void chatApi.getConversation(id).then((updated) => {
+    void readDisplayWindow(id).then((updated) => {
       if (id === conversationIdRef.current && viewActiveRef.current) acceptPersistedConversation(updated)
     }).catch((error) => console.error('Failed to refresh generated title:', error))
-  }, [acceptPersistedConversation])
+  }, [acceptPersistedConversation, readDisplayWindow])
 
   const refreshAgentMessages = useCallback((id: string) => {
     if (id !== conversationIdRef.current) return
     const epoch = incomingReadEpoch.current
-    void chatApi.getConversation(id).then(updated => {
+    void readDisplayWindow(id).then(updated => {
       if (epoch === incomingReadEpoch.current && id === conversationIdRef.current && viewActiveRef.current) acceptPersistedConversation(updated)
     }).catch(error => console.error('Failed to refresh agent messages:', error))
-  }, [acceptPersistedConversation])
+  }, [acceptPersistedConversation, readDisplayWindow])
   useTauriEvent(api.onChatSubagentIrc, message => {
     if (!message.observation) refreshAgentMessages(message.conversationId)
   }, [refreshAgentMessages])
@@ -286,7 +313,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     completeTerminal: async (terminal) => {
       const id = terminal.conversationId
       try {
-        const persisted = await chatApi.getConversation(id)
+        const persisted = await readDisplayWindow(id)
         if (conversationIdRef.current !== id) return
         acceptPersistedConversation(persisted)
         if (terminal.reason === 'error') {
@@ -305,7 +332,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     },
     abandonPreview: (id) => previewOwner.complete(id, { kind: 'error' }),
     settleQueue: () => {},
-  }), [acceptPersistedConversation, interactionInbox, previewOwner])
+  }), [acceptPersistedConversation, interactionInbox, previewOwner, readDisplayWindow])
 
   const handleSend = useCallback(async (
     content: string,
@@ -492,6 +519,17 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const messageListProps: MessageListProps = {
     conversationId,
     messages: displayMessages,
+    historyStart: conversation?.history_start,
+    historyGap: conversation?.history_gap,
+    historyDirectory: conversation?.history_directory,
+    historyTurnCount: conversation?.history_turn_count,
+    historyRevision: conversation?.revision,
+    historyArtifacts: conversation?.history_artifacts,
+    onLoadHistory: historyReader.loadHistoryPage,
+    onFocusHistoryMessage: historyReader.focusHistoryMessage,
+    historyLoadError: historyError,
+    focusMessageId,
+    onFocusMessageHandled: () => setFocusMessageId(null),
     lang,
     sessionProviderId: conversation?.provider_id,
     sessionModel: conversation?.model,

@@ -63,6 +63,9 @@ interface PendingModelProbe {
 // Retained pages and the composer can request the same catalog together.
 // Keep only in-flight work here; the native discovery owner controls cache freshness.
 const pendingModelProbes = new Map<string, PendingModelProbe>()
+// Availability is machine-wide. Share overlapping picker reads, then let the
+// next read pick up CLI overrides and provider settings from the backend.
+const pendingAvailability = new Map<boolean, Promise<DetectedExternalAgent[]>>()
 
 /** `chat_external_cli_scan_cc_switch` response; secret keys are never returned. */
 export interface CcSwitchProvider {
@@ -267,11 +270,14 @@ export const externalCliSettingsApi = {
         },
       }]
     }
-    const result = await invoke<{ success: boolean; agents: DetectedExternalAgent[] }>(
+    const pending = pendingAvailability.get(forceRefresh)
+    if (pending) return pending
+    const request = invoke<{ success: boolean; agents: DetectedExternalAgent[] }>(
       'chat_detect_external_agents',
       { forceRefresh, conversationId },
-    )
-    return result.agents ?? []
+    ).then(result => result.agents ?? []).finally(() => pendingAvailability.delete(forceRefresh))
+    pendingAvailability.set(forceRefresh, request)
+    return request
   },
 
   async detectExternalAgentModels(agentId: string, conversationId?: string | null, force = false, onSnapshot?: (result: ExternalAgentModels) => void): Promise<ExternalAgentModels> {

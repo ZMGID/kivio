@@ -8,7 +8,6 @@ import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import {
   subscribeChatProtocol,
   subscribeChatProtocolIssues,
-  syncChatProtocol,
   type ChatProtocolDelivery,
   type ChatProtocolIssue,
 } from './chatProtocol'
@@ -2413,7 +2412,6 @@ export const api = {
       listener({ issue, conversationId })
     }))
   },
-  chatSyncState: (conversationId: string) => syncChatProtocol(conversationId),
   onChatConversationsChanged: (listener: (payload: null) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return on<null>('chat-conversations-changed', listener)

@@ -1,138 +1,106 @@
-import type { Conversation } from './types'
+import type { ChatSyncCheckpoint } from '../api/chatProtocol'
+import type { ChatHistoryCursor, ChatHistoryReplay } from '../generated/chatProtocol'
+import type { Conversation, ConversationContextState } from './types'
 
-const TTL_MS = 5 * 60_000
-// Fast local index reads should commit once, without mounting an intermediate view.
-const PREVIEW_DELAY_MS = 32
-const MAX_ENTRIES = 4
-const MAX_BYTES = 24 * 1024 * 1024
-
-/** Extra validity beyond the stored revision, e.g. a snapshot taken during a run. */
-type StillCurrent = () => boolean
-type Entry = {
-  conversation: Conversation; bytes: number; expiresAt: number
-  timer: ReturnType<typeof setTimeout>; stillCurrent?: StillCurrent
+function applyReplay(window: Conversation, replay: ChatHistoryReplay): Conversation | null {
+  if (replay.after.revision !== window.revision || replay.after.source !== window.history_source) return null
+  if (!replay.patches.length && replay.through.source !== replay.after.source) return null
+  let current = window
+  for (const patch of replay.patches) {
+    if (patch.revision !== current.revision + 1) return null
+    current = { ...current, revision: patch.revision, updated_at: patch.updatedAt }
+    for (const event of patch.events) {
+      switch (event.type) {
+        case 'title_updated':
+          current.title = event.title
+          break
+        case 'todo_updated':
+          current.agent_todo_state = current.agentTodoState = {
+            ...event.todoState, items: event.todoState.items.map(item => ({ ...item, blocked_by: item.blockedBy })),
+          }
+          break
+        case 'plan_updated':
+          current.agent_plan_state = current.agentPlanState = event.planState
+          break
+        case 'context_updated':
+          current.context_state = current.contextState = event.contextState as ConversationContextState
+          break
+        case 'goal_updated':
+          current.goal_state = current.goalState = event.goalState
+          break
+        case 'subagent_activity_added':
+          return null
+      }
+    }
+  }
+  if (current.revision !== replay.through.revision) return null
+  return current.history_source === replay.through.source ? current : { ...current, history_source: replay.through.source }
 }
 
-/** Owns loaded display windows between short navigation round trips.
- * Only a revision-checked hit may become the active conversation. */
-export function createConversationWarmCache(now = Date.now) {
-  const entries = new Map<string, Entry>()
-  const pending = new Map<string, { conversation: Conversation; cancel: () => void; stillCurrent?: StillCurrent }>()
-  let usedBytes = 0
+const IDLE_TTL_MS = 5 * 60_000
 
-  const remove = (id: string) => {
+/** Keeps inactive display windows for the same five-minute idle lifetime as T3 threads. */
+type RetainedWindow = {
+  conversation: Conversation
+  bounding?: Promise<void>
+  owner: symbol
+  timer: ReturnType<typeof setTimeout>
+  stillCurrent?: () => boolean
+}
+
+export function createConversationWarmCache(readWindow: (id: string, anchor?: string) => Promise<Conversation>) {
+  const entries = new Map<string, RetainedWindow>()
+
+  const forget = (id: string) => {
     const entry = entries.get(id)
-    if (!entry) return
-    clearTimeout(entry.timer)
-    usedBytes -= entry.bytes
+    if (entry) clearTimeout(entry.timer)
     entries.delete(id)
-  }
-  const prune = () => {
-    for (const [id, entry] of entries) if (entry.expiresAt <= now()) remove(id)
-    while (entries.size > MAX_ENTRIES || usedBytes > MAX_BYTES) remove(entries.keys().next().value!)
-  }
-
-  const cancelPending = (id: string) => {
-    pending.get(id)?.cancel()
-    pending.delete(id)
-  }
-
-  const scheduleAfterPaint = (work: () => void): (() => void) => {
-    if (typeof window === 'undefined') {
-      const timer = setTimeout(work, 0)
-      return () => clearTimeout(timer)
-    }
-    if (typeof window.requestIdleCallback === 'function') {
-      const id = window.requestIdleCallback(work, { timeout: 1_000 })
-      return () => window.cancelIdleCallback(id)
-    }
-    let timer: number | null = null
-    const frame = window.requestAnimationFrame(() => { timer = window.setTimeout(work, 0) })
-    return () => {
-      window.cancelAnimationFrame(frame)
-      if (timer !== null) window.clearTimeout(timer)
-    }
-  }
-
-  const remember = (conversation: Conversation, stillCurrent?: StillCurrent) => {
-    cancelPending(conversation.id)
-    remove(conversation.id)
-    // A complete JSON snapshot is the transport representation. Measuring it
-    // here counts nested tool cards and metadata that text-only estimates miss.
-    const bytes = JSON.stringify(conversation).length * 2
-    if (bytes > MAX_BYTES) return
-    const id = conversation.id
-    entries.set(id, {
-      conversation, bytes, expiresAt: now() + TTL_MS, timer: setTimeout(() => remove(id), TTL_MS), stillCurrent,
-    })
-    usedBytes += bytes
-    prune()
   }
 
   return {
-    remember,
-    rememberSoon(conversation: Conversation, stillCurrent?: StillCurrent) {
-      cancelPending(conversation.id)
-      const cancel = scheduleAfterPaint(() => {
-        if (pending.get(conversation.id)?.conversation !== conversation) return
-        pending.delete(conversation.id)
-        remember(conversation, stillCurrent)
+    remember(conversation: Conversation, anchor?: string, stillCurrent?: () => boolean) {
+      const id = conversation.id
+      forget(id)
+      const owner = Symbol()
+      const entry: RetainedWindow = { owner, conversation, stillCurrent, timer: setTimeout(() => forget(id), IDLE_TTL_MS) }
+      entries.set(id, entry)
+      if (conversation.history_start != null && conversation.history_source) return
+      // Full mutation responses can be displayed on an immediate return. Release their
+      // large tool payloads as soon as the stored display window is available.
+      entry.bounding = readWindow(id, anchor).then(window => {
+        const current = entries.get(id)
+        if (current?.owner === owner) current.conversation = window
+      }, () => {
+        if (entries.get(id)?.owner === owner) forget(id)
       })
-      pending.set(conversation.id, { conversation, cancel, stillCurrent })
-      while (pending.size > MAX_ENTRIES) cancelPending(pending.keys().next().value!)
     },
     async get(
       id: string,
-      revision: (id: string) => Promise<number | null>,
-      preview?: (conversation: Conversation) => void,
+      resume: (id: string, after?: ChatHistoryCursor) => Promise<ChatSyncCheckpoint | undefined>,
+      display: (conversation: Conversation) => void,
     ): Promise<Conversation | null> {
-      prune()
-      // A rapid A → B → A return may precede the idle cache bookkeeping.
-      // Reuse that already-loaded window instead of loading the full history.
-      const held = pending.get(id) ?? entries.get(id)
-      const conversation = held?.conversation
-      if (!conversation) return null
-      if (held.stillCurrent && !held.stillCurrent()) {
-        cancelPending(id)
-        remove(id)
-        return null
-      }
-      const validating = revision(id)
-      const previewTimer = preview && setTimeout(() => {
-        const current = pending.get(id) ?? entries.get(id)
-        if (current?.conversation === conversation && (!current.stillCurrent || current.stillCurrent())) {
-          preview(conversation)
-        }
-      }, PREVIEW_DELAY_MS)
-      let currentRevision: number | null
-      try {
-        currentRevision = await validating
-      } finally {
-        clearTimeout(previewTimer)
-      }
-      const current = pending.get(id) ?? entries.get(id)
-      if (current?.conversation !== conversation) return null
-      if (
-        currentRevision === null || currentRevision !== conversation.revision
-        || (current.stillCurrent && !current.stillCurrent())
-      ) {
-        cancelPending(id)
-        remove(id)
-        return null
-      }
       const entry = entries.get(id)
-      if (entry) {
-        entries.delete(id)
-        entries.set(id, entry)
+      if (!entry) return null
+      display(entry.conversation)
+      if (entry.bounding) await entry.bounding
+      if (entries.get(id) !== entry) return null
+      const base = entry.conversation
+      const after = base.history_source ? { revision: base.revision, source: base.history_source } : undefined
+      const checkpoint = await resume(id, after)
+      if (entries.get(id) !== entry) return null
+      if (checkpoint?.conversationRevision === null) {
+        forget(id)
+        throw new Error('Conversation no longer exists')
       }
-      return conversation
+      const replay = checkpoint?.historyReplay
+      const current = replay && replay.through.revision === checkpoint.conversationRevision ? applyReplay(base, replay) : null
+      if (!current || (entry.stillCurrent && !entry.stillCurrent())) {
+        forget(id)
+        return null
+      }
+      return current
     },
-    forget(id: string) { cancelPending(id); remove(id) },
-    clear() {
-      for (const id of pending.keys()) cancelPending(id)
-      for (const id of entries.keys()) remove(id)
-      usedBytes = 0
-    },
-    stats() { prune(); return { entries: entries.size, bytes: usedBytes } },
+    forget,
+    clear() { for (const id of entries.keys()) forget(id) },
   }
 }

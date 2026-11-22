@@ -820,13 +820,10 @@ fn import_conversation(
 
 /// Window metadata only: resolve dependencies without changing message ownership,
 /// delivery state, or the stored conversation. No original image bytes are read.
-pub(crate) fn history_reference_artifacts(
-    messages: &[ChatMessage],
-    range: std::ops::Range<usize>,
-) -> Vec<ChatToolArtifact> {
+pub(crate) fn missing_history_artifact_ids(messages: &[ChatMessage]) -> HashSet<String> {
     let mut needed = HashSet::new();
     let mut present = HashSet::new();
-    for message in &messages[range] {
+    for message in messages {
         let mut text = message.content.clone();
         for segment in &message.segments {
             if let Some(segment_text) = &segment.text {
@@ -864,21 +861,7 @@ pub(crate) fn history_reference_artifacts(
         );
     }
     needed.retain(|id| !present.contains(id));
-    if needed.is_empty() {
-        return Vec::new();
-    }
-    let mut selected = std::collections::BTreeMap::new();
-    for artifact in messages.iter().flat_map(|message| {
-        message
-            .artifacts
-            .iter()
-            .chain(message.tool_calls.iter().flat_map(|tool| &tool.artifacts))
-    }) {
-        if let Some(id) = artifact.id.as_ref().filter(|id| needed.contains(*id)) {
-            selected.insert(id, artifact);
-        }
-    }
-    selected.into_values().cloned().collect()
+    needed
 }
 
 fn referenced_ids(text: &str) -> HashSet<String> {

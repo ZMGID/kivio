@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import { ChatMarkdown } from './ChatMarkdown'
 
@@ -26,4 +26,28 @@ describe('表格', () => {
     expect(container.querySelector('tbody tr:last-child td:first-child')).toHaveTextContent('重点')
   })
 
+})
+
+it('mounts every table and code block in a settled answer before scrolling', () => {
+  class OffscreenObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal('IntersectionObserver', OffscreenObserver)
+  try {
+    const sections = Array.from({ length: 32 }, (_, i) => [
+      `## Section ${i}`, '', '| Worker | Cost |', '| --- | ---: |', `| worker-${i} | **${i}** |`,
+      '', '```ts', `const worker${i} = ${i}`, '```', '', 'Review the complete measurement for this worker.', '',
+    ].join('\n'))
+    const { container } = render(<div className="chat-scroll-viewport">
+      <ChatMarkdown content={sections.join('\n')} />
+    </div>)
+    expect(container.querySelectorAll('table')).toHaveLength(sections.length)
+    expect(container.querySelectorAll('pre')).toHaveLength(sections.length)
+    expect(container.querySelectorAll('table')[31]).toHaveTextContent('worker-31')
+    expect(container.querySelectorAll('pre')[31]).toHaveTextContent('const worker31 = 31')
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })

@@ -117,6 +117,18 @@ describe('external CLI settings transport', () => {
     expect(await externalCliSettingsApi.detectExternalAgents(true)).toEqual([])
   })
 
+  it('shares concurrent availability reads across conversations and reads fresh settings on return', async () => {
+    vi.mocked(invoke).mockResolvedValue({ agents: [{ id: 'pi', disabled: false }] })
+    const lists = await Promise.all([
+      externalCliSettingsApi.detectExternalAgents(false, 'a'),
+      externalCliSettingsApi.detectExternalAgents(false, 'b'),
+    ])
+    expect(lists.map(list => list[0].disabled)).toEqual([false, false])
+    expect(invoke).toHaveBeenCalledTimes(1)
+    vi.mocked(invoke).mockResolvedValue({ agents: [{ id: 'pi', disabled: true }] })
+    expect((await externalCliSettingsApi.detectExternalAgents(false, 'a'))[0].disabled).toBe(true)
+  })
+
   it('does not subscribe to agent updates in browser preview', async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(false)
     const unlisten = await onExternalAgentsUpdated(vi.fn())

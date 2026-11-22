@@ -41,7 +41,7 @@ vi.mock('../../api/tauri', () => ({
     chatRespondSessionConsent: vi.fn(),
   },
 }))
-vi.mock('../../api/chatProtocol', () => ({ syncChatProtocol: vi.fn().mockResolvedValue(undefined) }))
+vi.mock('../../api/chatProtocol', () => ({ knownChatConversationRevision: () => 0, syncChatProtocol: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../../api/settingsCache', () => ({
   getSettingsCached: vi.fn().mockResolvedValue({}),
   updateSettingsCached: vi.fn(),
@@ -49,6 +49,8 @@ vi.mock('../../api/settingsCache', () => ({
 vi.mock('../api', () => ({
   chatApi: {
     getConversation: vi.fn(),
+    getConversationWindow: vi.fn(),
+    getConversationPage: vi.fn(),
     sendMessage: vi.fn(),
     cancelStream: vi.fn(),
     switchBranch: vi.fn(),
@@ -117,6 +119,23 @@ const subagentProgress = (overrides: Partial<ChatSubagentPayload> = {}): ChatSub
 })
 
 describe('usePopoutSession run settle', () => {
+  it('opens a bounded popout snapshot and reveals earlier messages only when requested', async () => {
+    vi.mocked(chatApi.getConversationWindow).mockResolvedValueOnce({
+      ...userOnly, history_start: 1, history_total: 2, history_turn_count: 2,
+    })
+    vi.mocked(chatApi.getConversationPage).mockResolvedValueOnce({
+      revision: 1, total: 2, start: 0, end: 1,
+      messages: [{ id: 'older', role: 'user', content: 'Older question', timestamp: 0 }],
+    })
+    const view = renderHook(() => usePopoutSession(CONVERSATION_ID, 'zh'))
+    await flush()
+    expect(mockGetConversation).not.toHaveBeenCalled()
+    expect(view.result.current.messageListProps.historyStart).toBe(1)
+    await act(async () => { await view.result.current.messageListProps.onLoadHistory?.('older') })
+    expect(view.result.current.messageListProps.messages.map(m => m.id)).toEqual(['older', 'user-1'])
+    expect(view.result.current.messageListProps.historyStart).toBe(0)
+  })
+
   it('switches history while idle and ignores a switch result after navigating away', async () => {
     mockGetConversation.mockResolvedValueOnce(userOnly)
     const rendered = renderHook(({ id }) => usePopoutSession(id, 'zh'), { initialProps: { id: CONVERSATION_ID } })
@@ -204,6 +223,7 @@ describe('usePopoutSession run settle', () => {
       setTimeout(() => callback(performance.now()), 0) as unknown as number)
     vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle))
     handlers.clear()
+    vi.mocked(chatApi.getConversationWindow).mockReset().mockImplementation(id => mockGetConversation(id))
     mockGetConversation.mockReset()
     mockSendMessage.mockReset()
     mockCancelStream.mockReset()

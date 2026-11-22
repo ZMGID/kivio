@@ -1,3 +1,4 @@
+import { useRefreshContextOnSettingsChange } from '../hooks/useConversationContext'
 import { isPlainBlankConversation } from '../conversationFields'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import {
@@ -15,7 +16,7 @@ import { chatApi, type AgentRuntimeConfig } from '../api'
 import { keepNewerContextMeasurement, mergeContextMeasurement, type ContextMeasurementIncoming } from '../contextPanel'
 import { ContextIndicator } from '../ContextIndicator'
 import { useTauriEvent } from '../hooks/useTauriEvent'
-import { keepNewerTodoState } from '../agentTodoState'
+import { isPartialConversation, mergeConversationMetadata } from '../conversationHistoryWindow'
 import type { InputBarProps } from '../InputBar'
 import {
   deriveDshPresetModes,
@@ -87,12 +88,9 @@ function applyConversationMeta(
   updated: Conversation,
 ) {
   setConversation((prev) => {
-    if (!prev || prev.id !== updated.id) return updated
+    if (!prev || prev.id !== updated.id) return prev
     if (updated.revision < prev.revision) return prev
-    return {
-      ...keepNewerContextMeasurement(keepNewerTodoState(updated, prev), prev),
-      messages: prev.messages,
-    }
+    return mergeConversationMetadata(prev, updated)
   })
 }
 
@@ -310,16 +308,7 @@ export function usePopoutComposer({
     if (event.state.kind !== 'connecting') void refreshToolIndicator()
   }, [refreshToolIndicator])
 
-  useEffect(() => {
-    void refreshContextStats()
-  }, [
-    conversationId,
-    conversation?.model,
-    conversation?.provider_id,
-    conversation?.updated_at,
-    storedActiveSkillId,
-    refreshContextStats,
-  ])
+  useRefreshContextOnSettingsChange(loadedId === conversationId ? conversation : null, refreshContextStats)
 
   useEffect(() => {
     if (!projectId) {
@@ -678,6 +667,13 @@ export function usePopoutComposer({
     conversationId,
     knowledgeBaseIds: conversation?.knowledge_base_ids ?? conversation?.knowledgeBaseIds ?? [],
     inputHistory: conversation?.messages.filter((message) => message.role === 'user').map((message) => message.content),
+    onLoadInputHistory: isPartialConversation(conversation) ? async () => {
+      const targetId = conversationIdRef.current
+      const complete = await chatApi.getConversation(targetId)
+      return conversationIdRef.current === targetId
+        ? complete.messages.filter(message => message.role === 'user').map(message => message.content)
+        : null
+    } : undefined,
     onChangeKnowledgeBaseIds: handleChangeKnowledgeBaseIds,
     forceKnowledgeSearch: conversation?.force_knowledge_search ?? conversation?.forceKnowledgeSearch ?? false,
     onToggleForceKnowledgeSearch: handleToggleForceKnowledgeSearch,

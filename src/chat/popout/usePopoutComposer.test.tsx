@@ -14,7 +14,7 @@ it.each([
 ])('opens the popout with the newest CLI measurement when sequence $earlySeq arrives before load', async ({
   earlySeq, earlyTokens, expectedPercent,
 }) => {
-  vi.spyOn(chatApi, 'getContextStats').mockImplementation(() => new Promise(() => {}))
+  const stats = vi.spyOn(chatApi, 'getContextStats').mockImplementation(() => new Promise(() => {}))
   let publish!: (event: ChatContextPayload) => void
   vi.spyOn(api, 'onChatContext').mockImplementation(async listener => {
     publish = listener
@@ -39,11 +39,13 @@ it.each([
     return <>{contextSlot}</>
   }
   render(<Window />)
+  expect(stats).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', { name: 'Context' }))
   await act(async () => {
     publish({ conversationId: saved.id, live: { usedTokens: earlyTokens, tokenCountSource: 'cli_reported', measurementSeq: earlySeq } })
   })
   await act(async () => load(saved))
+  expect(stats).not.toHaveBeenCalled()
   expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', expectedPercent)
   await act(async () => publish({ conversationId: saved.id, live: { usedTokens: 91000,
     tokenCountSource: 'cli_reported', contextWindowTokens: 100000, measurementSeq: 7 } }))

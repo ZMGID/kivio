@@ -17,7 +17,7 @@ function WorkBlock({ rows, estimatedHeight, liveTail }: {
   useLayoutEffect(() => {
     const element = block.current
     if (!element || liveTail || typeof IntersectionObserver === 'undefined') return
-    const viewport = element.closest<HTMLElement>('[data-work-scroll], .chat-scroll-viewport')
+    const viewport = element.closest<HTMLElement>('[data-work-scroll], .chat-message-group-col-body, .chat-scroll-viewport')
     if (!viewport) {
       setVisible(true)
       return

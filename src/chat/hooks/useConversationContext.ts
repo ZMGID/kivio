@@ -1,5 +1,7 @@
 import {
   useCallback,
+  useEffect,
+  useRef,
   useState,
   type Dispatch,
   type MutableRefObject,
@@ -17,6 +19,25 @@ import { useTauriEvent } from './useTauriEvent'
 const BOUNDARY_ANIMATION_MS = 1800
 /** 手动压缩成功后按住「压缩中」的最短时长，让分隔线动画有机会播完。 */
 const COMPRESS_SETTLE_MS = 360
+
+/** Navigation supplies the saved measurement; only a change to the open chat's
+ * settings needs a new calculation. Live usage arrives on the protocol stream. */
+export function useRefreshContextOnSettingsChange(conversation: Conversation | null, refresh: (id: string) => void) {
+  const id = conversation?.id
+  const provider = conversation?.provider_id
+  const model = conversation?.model
+  const skill = conversation?.active_skill_id ?? conversation?.activeSkillId
+  const runtime = conversation?.agent_runtime ?? conversation?.agentRuntime
+  const agent = runtime?.externalAgentId ?? runtime?.external_agent_id
+  const externalModel = runtime?.externalModel ?? runtime?.external_model
+  const previous = useRef<{ id?: string; settings: string }>()
+  useEffect(() => {
+    const settings = JSON.stringify([provider, model, skill, runtime?.kind, agent, externalModel])
+    const last = previous.current
+    previous.current = { id, settings }
+    if (id && last?.id === id && last.settings !== settings) refresh(id)
+  }, [id, provider, model, skill, runtime?.kind, agent, externalModel, refresh])
+}
 
 export interface UseConversationContextOptions {
   currentConversation: Conversation | null
@@ -123,6 +144,11 @@ export function useConversationContext({
       }
     }
   }, [currentConversationIdRef, patchContextState, setContextState])
+
+  useEffect(() => {
+    setContextLoading(false)
+    setContextError('')
+  }, [currentConversation?.id])
 
   const refreshCurrent = useCallback(() => {
     const conversationId = currentConversationIdRef.current
@@ -234,7 +260,6 @@ export function useConversationContext({
   return {
     contextState,
     contextLoading,
-    setContextLoading,
     contextError,
     resetContext,
     compactingConversationIds,

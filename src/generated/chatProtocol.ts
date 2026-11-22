@@ -149,8 +149,14 @@ statusNote: string | null, retryStatus?: ChatRetryStatusPayload, terminal: ChatT
 
 export type ChatRunCursor = { runId: string, lastSeq: number, };
 
-export type ChatSyncRequest = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, conversationId: string, cursors: Array<ChatRunCursor>, };
+export type ChatHistoryCursor = { revision: number, source: string, };
+
+export type ChatRevisionPatch = { revision: number, updatedAt: number, events: Array<ChatConversationEvent>, };
+
+export type ChatHistoryReplay = { after: ChatHistoryCursor, through: ChatHistoryCursor, patches: Array<ChatRevisionPatch>, };
+
+export type ChatSyncRequest = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, conversationId: string, cursors: Array<ChatRunCursor>, after?: ChatHistoryCursor, };
 
 export type ChatRunSync = { "kind": "events", runId: string, fromSeq: number, throughSeq: number, events: Array<ChatRunEventEnvelope>, } | { "kind": "snapshot", snapshot: ChatRunSnapshot, };
 
-export type ChatSyncResult = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, conversationRevision: number, missingRunIds: Array<string>, runs: Array<ChatRunSync>, };
+export type ChatSyncResult = { protocolVersion: typeof CHAT_PROTOCOL_VERSION, conversationRevision: number | null, historyReplay?: ChatHistoryReplay, missingRunIds: Array<string>, runs: Array<ChatRunSync>, };

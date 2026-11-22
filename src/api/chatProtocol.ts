@@ -2,6 +2,7 @@ import { Channel, invoke } from '@tauri-apps/api/core'
 import { validateEvent, validateSync } from 'virtual:chat-protocol-validators'
 import {
   CHAT_PROTOCOL_VERSION,
+  type ChatHistoryCursor,
   type ChatProtocolEvent,
   type ChatRunEvent,
   type ChatRunEventEnvelope,
@@ -27,7 +28,8 @@ const MAX_PENDING_EVENTS = 500
 const subscribers = new Set<Subscriber>()
 const issueSubscribers = new Set<(issue: ChatProtocolIssue, conversationId?: string) => void>()
 const runs = new Map<string, RunState>()
-const syncing = new Set<string>()
+export type ChatSyncCheckpoint = Pick<ChatSyncResult, 'conversationRevision' | 'historyReplay'>
+const syncing = new Map<string, { after?: ChatHistoryCursor; replay: Promise<ChatSyncCheckpoint | undefined> }>()
 const liveDuringSync = new Map<string, ChatRunEventEnvelope[]>()
 const conversationRevisions = new Map<string, number>()
 const syncRetryAttempts = new Map<string, number>()
@@ -269,10 +271,9 @@ function applyEvent(event: ChatProtocolEvent) {
   }
   if (syncing.has(event.conversationId)) {
     const queue = liveDuringSync.get(event.conversationId) ?? []
-    // 同 MAX_PENDING_EVENTS 那道护栏：sync 在飞的时候 live 事件改道进这里，
-    // 一次快速回答几千个 delta 照样能把内存撑起来。攒满就整队丢掉 + 丢 run 状态，
-    // sync 结束后第一个 live 事件必然判成 gap，走快照重建。
+    // A dropped suffix needs a new snapshot even if no more live events arrive.
     if (queue.length >= MAX_PENDING_EVENTS) {
+      projectionRecoveries.set(event.conversationId, Symbol())
       liveDuringSync.delete(event.conversationId)
       for (const [runId, state] of runs) {
         if (state.conversationId === event.conversationId) runs.delete(runId)
@@ -466,9 +467,23 @@ export function subscribeChatProtocolIssues(
   return () => issueSubscribers.delete(subscriber)
 }
 
-export async function syncChatProtocol(conversationId: string) {
-  if (!conversationId || syncing.has(conversationId)) return
-  syncing.add(conversationId)
+/** Concurrent gap recovery and navigation share a replay and its durable watermark. */
+export function syncChatProtocol(conversationId: string, after?: ChatHistoryCursor): Promise<ChatSyncCheckpoint | undefined> {
+  const inFlight = syncing.get(conversationId)
+  if (inFlight) {
+    if (!after || (after.revision === inFlight.after?.revision && after.source === inFlight.after.source)) {
+      return inFlight.replay
+    }
+    // A live gap request may have started without the newly selected window's cursor.
+    return inFlight.replay.then(() => syncChatProtocol(conversationId, after))
+  }
+  const replay = replayChatProtocol(conversationId, after)
+  syncing.set(conversationId, { after, replay })
+  return replay
+}
+
+async function replayChatProtocol(conversationId: string, after?: ChatHistoryCursor) {
+  let checkpoint: ChatSyncCheckpoint | undefined
   let acceptedSync = false
   let projectionRecovery: symbol | undefined
   try {
@@ -482,8 +497,9 @@ export async function syncChatProtocol(conversationId: string) {
     const cursors = projectionRecovery ? [] : [...runs.entries()]
       .filter(([, state]) => state.conversationId === conversationId && !state.terminal)
       .map(([runId, state]) => ({ runId, lastSeq: state.lastSeq }))
+    const revisionBeforeRequest = conversationRevisions.get(conversationId)
     const result = await invoke<unknown>('chat_sync_state', {
-      request: { protocolVersion: CHAT_PROTOCOL_VERSION, conversationId, cursors },
+      request: { protocolVersion: CHAT_PROTOCOL_VERSION, conversationId, cursors, ...(after ? { after } : {}) },
     })
     const resultVersion = typeof result === 'object' && result !== null
       ? (result as { protocolVersion?: unknown }).protocolVersion
@@ -518,10 +534,17 @@ export async function syncChatProtocol(conversationId: string) {
     // 任何有内容的会话 revision 都 > 0，把「没见过」当「落后」会导致
     // 第一次切进任何会话都必定触发一次多余的全量 reload。
     const knownRevision = conversationRevisions.get(conversationId)
-    if (knownRevision !== undefined && validated.conversationRevision > knownRevision) {
+    if (!after && knownRevision !== undefined && (validated.conversationRevision === null || validated.conversationRevision > knownRevision)) {
       reportIssue('resync_required', conversationId)
     }
-    recordChatConversationRevision(conversationId, validated.conversationRevision)
+    if (validated.conversationRevision !== null) {
+      // Restoring a backup can replace a source with an older revision. Only reset
+      // the old watermark if no newer live revision arrived during the handshake.
+      if (after && !validated.historyReplay && validated.conversationRevision < after.revision
+        && knownRevision === revisionBeforeRequest) {
+        conversationRevisions.set(conversationId, validated.conversationRevision)
+      } else recordChatConversationRevision(conversationId, validated.conversationRevision)
+    }
     if (validated.missingRunIds.length > 0) {
       for (const runId of validated.missingRunIds) runs.delete(runId)
       reportIssue('resync_required', conversationId)
@@ -532,6 +555,10 @@ export async function syncChatProtocol(conversationId: string) {
       } else {
         for (const event of run.events) applyRunEvent(event)
       }
+    }
+    // A missing cursor cannot establish the retained display window as current.
+    if (!validated.missingRunIds.length) {
+      checkpoint = { conversationRevision: validated.conversationRevision, historyReplay: validated.historyReplay }
     }
   } catch (error) {
     if (String(error).toLowerCase().includes('protocol version mismatch')) {
@@ -549,10 +576,12 @@ export async function syncChatProtocol(conversationId: string) {
     const unresolvedGap = [...runs.values()].some(
       (state) => state.conversationId === conversationId && state.pending.size > 0 && !state.terminal,
     )
+    if (unresolvedGap || projectionRecoveries.has(conversationId)) checkpoint = undefined
     if (acceptedSync && unresolvedGap) retrySync(conversationId)
     else if (acceptedSync) syncRetryAttempts.delete(conversationId)
     if (acceptedSync && projectionRecoveries.has(conversationId)) scheduleSync(conversationId)
   }
+  return checkpoint
 }
 
 export const chatProtocolTesting = {

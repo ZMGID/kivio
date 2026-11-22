@@ -25,15 +25,12 @@ pub async fn dock_resolve_cwd(
 
         // 会话已落盘：按其 runtime 走对应的解析器，和 agent 写文件的目录严格一致。
         if let Some(conv_id) = conversation_id.as_deref() {
-            if let Ok(conversation) = crate::chat::storage::load_conversation(&app, conv_id) {
+            if let Ok(conversation) = crate::chat::history_projection::get_metadata(&app, conv_id) {
                 if conversation.agent_runtime.is_external() {
                     // 右栏是用户主动打开的，且 `dock_fs_list` 要求 workdir 已存在 ⇒ 这里按需建。
                     // 与下面内置分支同一口径（项目根不建，避免把配错的路径悄悄建成空目录）。
-                    let path = crate::external_agents::workspace::ensure_effective_cwd(
-                        &app,
-                        &conversation.id,
-                        conversation.project_id.as_deref(),
-                    )?;
+                    let path = crate::external_agents::workspace::resolve_loaded_cwd(&app, &conversation)?;
+                    std::fs::create_dir_all(&path).map_err(|e| format!("create dock workspace: {e}"))?;
                     return Ok(path.to_string_lossy().to_string());
                 }
                 let settings = crate::settings::load_settings(&app);

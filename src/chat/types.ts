@@ -566,7 +566,9 @@ export interface Conversation {
   messages: ChatMessage[]
   /** Renderer-only partial window metadata. Omitted on complete snapshots. */
   history_start?: number
+  history_source?: string
   history_total?: number
+  history_turn_count?: number
   /** Missing half-open interval between a restored reading window and the latest messages. */
   history_gap?: { start: number; end: number }
   /** Only artifacts referenced by loaded messages but defined outside their window. */

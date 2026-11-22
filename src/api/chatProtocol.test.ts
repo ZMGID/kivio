@@ -6,6 +6,7 @@ import type {
 import {
   chatProtocolTesting,
   configureChatProtocolFilter,
+  knownChatConversationRevision,
   setExclusiveConversationIds,
   subscribeChatProtocolIssues,
   syncChatProtocol,
@@ -530,6 +531,44 @@ describe('chat protocol sync', () => {
     invokeMock.mockResolvedValue(syncResult(8))
     await syncChatProtocol('conversation')
     expect(issues).toEqual(['resync_required'])
+  })
+
+  it('accepts an older backup revision when the retained source has been replaced', async () => {
+    invokeMock.mockResolvedValue(syncResult(7))
+    await syncChatProtocol('conversation')
+    invokeMock.mockResolvedValue(syncResult(3))
+    const result = await syncChatProtocol('conversation', { revision: 7, source: 'replaced' })
+    expect(result?.conversationRevision).toBe(3)
+    expect(result?.historyReplay).toBeUndefined()
+    expect(knownChatConversationRevision('conversation')).toBe(3)
+  })
+
+  it('resumes one retained window and its live run while a concurrent event arrives', async () => {
+    const seen: number[] = []
+    chatProtocolTesting.subscribe(item => { if (item.scope === 'run') seen.push(item.seq) })
+    chatProtocolTesting.ingest(event(1))
+    const after = { revision: 1, source: 'old' }
+    const historyReplay = { after, through: { revision: 2, source: 'new' }, patches: [
+      { revision: 2, updatedAt: 10, events: [{ type: 'title_updated', title: 'Changed elsewhere' }] },
+    ] }
+    let release!: () => void
+    invokeMock.mockImplementation(async (command, args) => {
+      if (command !== 'chat_sync_state') return
+      expect(args.request).toMatchObject({ after, cursors: [{ runId: 'run', lastSeq: 1 }] })
+      await new Promise<void>(resolve => { release = resolve })
+      return { ...syncResult(2), historyReplay, runs: [
+        { kind: 'events', runId: 'run', fromSeq: 2, throughSeq: 2, events: [event(2, 'text_delta')] },
+      ] }
+    })
+    const resumed = syncChatProtocol('conversation', after)
+    const shared = syncChatProtocol('conversation', after)
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'))
+    chatProtocolTesting.ingest(event(3, 'text_delta'))
+    release()
+    expect(await resumed).toEqual({ conversationRevision: 2, historyReplay })
+    expect(await shared).toEqual(await resumed)
+    expect(seen).toEqual([1, 2, 3])
+    expect(invokeMock.mock.calls.filter(call => call[0] === 'chat_sync_state')).toHaveLength(1)
   })
 
   it('stops sending cursors once a run reaches a terminal state', async () => {

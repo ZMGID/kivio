@@ -40,6 +40,7 @@ pub(crate) mod resources;
 pub(crate) mod route_contract;
 pub(crate) mod runtime_state;
 pub(crate) mod slash_commands;
+pub(crate) mod history_projection;
 pub mod storage;
 pub mod sub_agent;
 pub mod todo;

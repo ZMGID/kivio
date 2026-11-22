@@ -152,6 +152,10 @@ pub(crate) fn write_conversation_file_at_path(
     let content =
         serde_json::to_string(&conversation).map_err(|e| format!("serialize conversation: {e}"))?;
     atomic_write(path, &content, "conversation")?;
+    if let Err(error) = crate::chat::history_projection::record_write(path, &content) {
+        // The JSON commit stands. The next view checks the fingerprint and repairs its rows.
+        eprintln!("could not index conversation {}: {error}", conversation.id);
+    }
     Ok(conversation)
 }
 
@@ -256,6 +260,7 @@ pub(crate) fn delete_conversation(app: &AppHandle, id: &str) -> Result<Vec<Strin
     if path.exists() {
         fs::remove_file(&path).map_err(|e| format!("delete conversation file: {e}"))?;
     }
+    let projection_warnings = crate::chat::history_projection::remove_files(&path);
     index.conversations.retain(|c| c.id != id);
     save_index(app, &index)?;
 
@@ -275,6 +280,8 @@ pub(crate) fn delete_conversation(app: &AppHandle, id: &str) -> Result<Vec<Strin
     };
     let mut warnings =
         remove_conversation_side_artifacts(workspace.as_deref(), attachments_dir.as_deref());
+
+    warnings.extend(projection_warnings);
 
     // 外部 CLI 的会话绑定也要跟着走，否则那条原生会话会永远显示"已导入"、再也导不进来。
     // 只删 Kivio 侧的绑定记录，**不动 CLI 自己的 transcript**（用户在终端里还要 resume）。

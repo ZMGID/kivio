@@ -1,173 +1,75 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { createConversationWarmCache } from './conversationWarmCache'
+import type { ChatHistoryCursor } from '../generated/chatProtocol'
 import type { Conversation } from './types'
 
-const conversation = (id: string, revision = 1): Conversation => ({
-  id, revision, title: id, provider_id: 'test', model: 'test',
+const windowFor = (id: string): Conversation => ({
+  id, revision: 1, title: id, provider_id: '', model: '', history_start: 0, history_source: 'first',
   messages: [], created_at: 1, updated_at: 1,
 })
 
-describe('conversation warm cache', () => {
-  it('reuses a conversation after a minute away while still validating its revision', async () => {
-    vi.useFakeTimers()
-    try {
-      const cache = createConversationWarmCache()
-      const snapshot = conversation('returning')
-      cache.remember(snapshot)
-      vi.advanceTimersByTime(60_000)
-      expect(await cache.get(snapshot.id, async () => 1)).toBe(snapshot)
-      expect(await cache.get(snapshot.id, async () => 2)).toBeNull()
-      cache.clear()
-    } finally { vi.useRealTimers() }
-  })
-  it('drops a snapshot whose own validity ended, even at an unchanged revision', async () => {
-    const cache = createConversationWarmCache()
-    let running = true
-    cache.remember(conversation('run'), () => running)
-    cache.rememberSoon(conversation('soon'), () => running)
-    expect(await cache.get('run', async () => 1)).not.toBeNull()
-    running = false
-    expect(await cache.get('run', async () => 1)).toBeNull()
-    expect(await cache.get('soon', async () => 1)).toBeNull()
-    expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
-    cache.clear()
-  })
-  it.each(['remember', 'rememberSoon'] as const)('rejects a run that ends during revision validation (%s)', async (remember) => {
-    vi.useFakeTimers()
-    const cache = createConversationWarmCache()
-    try {
-      let running = true
-      cache[remember](conversation('run'), () => running)
-      let complete!: (revision: number) => void
-      const pending = cache.get('run', () => new Promise(resolve => { complete = resolve }))
-      running = false
-      complete(1)
-      expect(await pending).toBeNull()
-      vi.advanceTimersByTime(100)
-      expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
-    } finally {
-      cache.clear()
-      vi.useRealTimers()
-    }
-  })
-  it.each([true, false])('rechecks run validity after idle registration during validation (valid=%s)', async (stillRunning) => {
-    vi.useFakeTimers()
-    const cache = createConversationWarmCache()
-    try {
-      let running = true
-      const snapshot = conversation('run')
-      cache.rememberSoon(snapshot, () => running)
-      let complete!: (revision: number) => void
-      const pending = cache.get('run', () => new Promise(resolve => { complete = resolve }))
-      vi.advanceTimersByTime(100)
-      expect(cache.stats().entries).toBe(1)
-      running = stillRunning
-      complete(1)
-      expect(await pending).toBe(stillRunning ? snapshot : null)
-      expect(cache.stats().entries).toBe(stillRunning ? 1 : 0)
-    } finally {
-      cache.clear()
-      vi.useRealTimers()
-    }
-  })
-  it('releases idle snapshots without another cache operation', () => {
-    vi.useFakeTimers()
-    try {
-      const cache = createConversationWarmCache(() => 0)
-      cache.remember(conversation('idle'))
-      vi.advanceTimersByTime(5 * 60_000)
-      expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
-      cache.clear()
-      expect(vi.getTimerCount()).toBe(0)
-    } finally { vi.useRealTimers() }
-  })
-  it('evicts by aggregate bytes and keeps accounting correct after replacement and removal', () => {
-    const cache = createConversationWarmCache()
-    const large = (id: string) => ({ ...conversation(id), messages: [
-      { id: 'm', role: 'user' as const, content: 'x'.repeat(7 * 1024 * 1024), timestamp: 1 },
-    ] })
-    const a = large('a')
-    const b = large('b')
-    cache.remember(a)
-    expect(cache.stats().bytes).toBe(JSON.stringify(a).length * 2)
-    cache.remember(b)
-    expect(cache.stats()).toEqual({ entries: 1, bytes: JSON.stringify(b).length * 2 })
-    const smaller = conversation('b', 2)
-    cache.remember(smaller)
-    expect(cache.stats()).toEqual({ entries: 1, bytes: JSON.stringify(smaller).length * 2 })
-    cache.forget('b')
-    expect(cache.stats()).toEqual({ entries: 0, bytes: 0 })
-  })
-  it('reuses a short-lived snapshot only when the repository revision still matches', async () => {
-    let clock = 0
-    const cache = createConversationWarmCache(() => clock)
-    const a = conversation('a')
-    cache.remember(a)
-    const head = vi.fn(async () => 1)
-    expect(await cache.get('a', head)).toBe(a)
-    expect(head).toHaveBeenCalledWith('a')
-    expect(await cache.get('a', async () => 2)).toBeNull()
-    cache.remember(a)
-    clock = 5 * 60_000
-    expect(await cache.get('a', head)).toBeNull()
-  })
+const replayCurrent = async (_id: string, after?: ChatHistoryCursor) => ({
+  conversationRevision: after?.revision ?? null, historyReplay: after ? { after, through: after, patches: [] } : undefined,
+})
 
-  it('rejects a deleted conversation and a stale validation result', async () => {
-    const cache = createConversationWarmCache()
-    cache.remember(conversation('a'))
-    expect(await cache.get('a', async () => null)).toBeNull()
-    cache.remember(conversation('a'))
-    let complete!: (value: number) => void
-    const pending = cache.get('a', () => new Promise((resolve) => { complete = resolve }))
-    cache.forget('a')
-    complete(1)
-    expect(await pending).toBeNull()
-  })
+afterEach(() => vi.useRealTimers())
 
-  it('bounds entry count and completed snapshot bytes', () => {
-    const cache = createConversationWarmCache()
-    for (let index = 0; index < 5; index += 1) cache.remember(conversation(String(index)))
-    expect(cache.stats().entries).toBe(4)
-    expect(cache.stats().bytes).toBeLessThanOrEqual(24 * 1024 * 1024)
-    const huge = conversation('huge')
-    huge.messages = [{ id: 'x', role: 'user', content: 'x'.repeat(13 * 1024 * 1024), timestamp: 1 }]
-    cache.remember(huge)
-    expect(cache.stats().entries).toBe(4)
-  })
+it('retains every recently visited window until its own five-minute idle expiry', async () => {
+  vi.useFakeTimers()
+  const cache = createConversationWarmCache(async id => windowFor(id))
+  for (let i = 0; i < 6; i++) cache.remember(windowFor(String(i)))
+  vi.advanceTimersByTime(60_000)
+  const resume = vi.fn(replayCurrent)
+  const display = vi.fn()
+  expect((await cache.get('0', resume, display))?.id).toBe('0')
+  vi.advanceTimersByTime(240_000)
+  expect(await cache.get('0', resume, display)).toBeNull()
+  expect(display).toHaveBeenCalledTimes(1)
+  expect(resume).toHaveBeenCalledTimes(1)
+  expect(vi.getTimerCount()).toBe(0)
+})
 
-  it('reuses a pending snapshot on a rapid return before idle serialization', async () => {
-    vi.useFakeTimers()
-    try {
-      const cache = createConversationWarmCache()
-      const first = conversation('a')
-      cache.rememberSoon(first)
-      expect(await cache.get('a', async () => 1)).toBe(first)
-      let resolve!: (revision: number) => void
-      const pending = cache.get('a', () => new Promise(done => { resolve = done }))
-      cache.rememberSoon(conversation('a', 2))
-      resolve(1)
-      expect(await pending).toBeNull()
-      cache.clear()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
+it('shows a completed send immediately and retains only its bounded window after projection', async () => {
+  const full = { ...windowFor('a'), history_start: undefined, revision: 2 }
+  const bounded = { ...windowFor('a'), history_start: 55, revision: 2 }
+  let supply!: (window: Conversation) => void
+  const read = vi.fn(() => new Promise<Conversation>(resolve => { supply = resolve }))
+  const cache = createConversationWarmCache(read)
+  cache.remember(full, 'anchored-message')
+  const display = vi.fn()
+  const restoring = cache.get('a', replayCurrent, display)
+  expect(display).toHaveBeenCalledWith(full)
+  expect(read).toHaveBeenCalledWith('a', 'anchored-message')
+  supply(bounded)
+  expect(await restoring).toBe(bounded)
+  cache.clear()
+})
 
-  it('defers serialization past navigation and cancels a deleted snapshot', () => {
-    vi.useFakeTimers()
-    try {
-      const cache = createConversationWarmCache()
-      cache.rememberSoon(conversation('a'))
-      expect(cache.stats().entries).toBe(0)
-      cache.forget('a')
-      vi.runAllTimers()
-      expect(cache.stats().entries).toBe(0)
-      cache.rememberSoon(conversation('a'))
-      vi.advanceTimersByTime(100)
-      expect(cache.stats().entries).toBe(1)
-      cache.clear()
-    } finally {
-      vi.useRealTimers()
-    }
-  })
+it('refetches when a run settles during replay even with an unchanged durable revision', async () => {
+  const cache = createConversationWarmCache(async id => windowFor(id))
+  let running = true
+  cache.remember(windowFor('run'), undefined, () => running)
+  expect(await cache.get('run', async (id, after) => { running = false; return replayCurrent(id, after) }, () => {})).toBeNull()
+  cache.clear()
+})
+
+it('replays contiguous metadata updates on the retained rows and reloads a broken chain', async () => {
+  const read = vi.fn(async id => windowFor(id))
+  const cache = createConversationWarmCache(read)
+  const window = windowFor('a')
+  cache.remember(window)
+  const after = { revision: 1, source: 'first' }
+  const through = { revision: 3, source: 'third' }
+  const todo = { updatedAt: 20, items: [] }
+  const patches = [
+    { revision: 2, updatedAt: 10, events: [{ type: 'title_updated' as const, title: 'New title' }] },
+    { revision: 3, updatedAt: 20, events: [{ type: 'todo_updated' as const, todoState: todo }] },
+  ]
+  const updated = await cache.get('a', async () => ({ conversationRevision: 3, historyReplay: { after, through, patches } }), () => {})
+  expect(updated).toMatchObject({ revision: 3, title: 'New title', updated_at: 20, agent_todo_state: todo, history_source: 'third' })
+  expect(updated?.messages).toBe(window.messages)
+  expect(read).not.toHaveBeenCalled()
+  const gap = await cache.get('a', async () => ({ conversationRevision: 3, historyReplay: { after, through, patches: patches.slice(1) } }), () => {})
+  expect(gap).toBeNull()
+  cache.clear()
 })

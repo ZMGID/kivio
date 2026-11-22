@@ -148,7 +148,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   onRender,
 }: ChatConversationPaneProps) {
   const transition = useConversationTransition()
-  const { readOnlyPreview } = messageListProps
   // 目标会话的数据到达前才遮挡；到达后同一个 MessageList 直接换内容，不再铺底色等排版稳定。
   const awaitingConversation = transition.loading && transition.targetConversationId !== currentConversationId
   const { streaming, streamFrozen } = useStreamCoarse()
@@ -186,11 +185,8 @@ export const ChatConversationPane = memo(function ChatConversationPane({
         </div>
       )}
 
-      <div
-        {...(readOnlyPreview ? { inert: '' } : {})}
-        className={`relative flex min-h-0 flex-1 flex-col ${readOnlyPreview ? '[&>:not(.chat-message-list)]:invisible' : ''}`}
-      >
-        {showEmptyHero && !readOnlyPreview ? (
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {showEmptyHero ? (
           <div data-momo-region className="chat-content-inset chat-empty-hero flex flex-1 flex-col items-center justify-center px-6 pb-10">
             <div className="chat-empty-hero-stack relative z-10 w-full max-w-4xl">
               <EmptyHeroHeading
@@ -257,12 +253,12 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             <Suspense fallback={<MessageListLoading />}>
               <Profiler id="MessageList" onRender={onRender}>
                 {/* 不按会话 key 重建：切换时复用同一列表，避免整块卸载重挂造成的闪烁。 */}
-                <MessageList {...messageListProps} pendingInjections={readOnlyPreview ? undefined : queuedMessages}
+                <MessageList {...messageListProps} pendingInjections={queuedMessages}
                   canInsertQueuedMessage={canInsertQueuedMessage}
                   onInsertQueuedMessage={onInsertQueuedMessage}
                   onRemoveQueuedMessage={onRemoveQueuedMessage}
                   onRestoreQueuedMessage={onRestoreQueuedMessage}
-                  waitingForBackgroundTasks={!readOnlyPreview && Boolean(stopBackgroundWait)} />
+                  waitingForBackgroundTasks={Boolean(stopBackgroundWait)} />
               </Profiler>
             </Suspense>
 
@@ -272,10 +268,10 @@ export const ChatConversationPane = memo(function ChatConversationPane({
             <InputBar {...inputBarProps} goalSlot={goalSlot} onStopBackgroundWait={stopBackgroundWait} />
           </>
         )}
-        {awaitingConversation && !readOnlyPreview && <ConversationLoadingState />}
+        {awaitingConversation && <ConversationLoadingState />}
       </div>
 
-      {!readOnlyPreview && imageViewerItem && (
+      {imageViewerItem && (
         <div className="absolute inset-0 z-40 flex flex-col">
           <ChatImageViewer item={imageViewerItem} onClose={onCloseImageViewer} />
         </div>

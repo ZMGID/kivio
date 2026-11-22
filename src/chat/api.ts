@@ -3,6 +3,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { isPlaceholderTitle, optimisticConversationTitle } from './conversationTitle'
 import { estimateTokens } from '../utils/tokens'
 import { isTauriRuntime } from './utils'
+import { syncChatProtocol, type ChatSyncCheckpoint } from '../api/chatProtocol'
+import type { ChatHistoryCursor } from '../generated/chatProtocol'
 import { recordChatPerfSample } from './chatPerformanceProbe'
 import { historyReferenceArtifacts, historyWindowEnd, historyWindowStart, type ConversationHistoryPage } from './conversationHistoryWindow'
 import { resolveCompactionBoundaries } from './compactionBoundary'
@@ -342,6 +344,29 @@ function withMockContext(conversation: Conversation): Conversation {
   }
 }
 
+function mockHistoryDirectory(conversation: Conversation) {
+  const directory: NonNullable<Conversation['history_directory']> = conversation.messages.flatMap((message, index) => message.role === 'user'
+    ? [{ kind: 'turn' as const, id: `turn-${message.id}`, message_id: message.id, message_index: index, title: message.content.slice(0, 120) }]
+    : [])
+  const indexById = new Map(conversation.messages.map((message, index) => [message.id, index]))
+  const context = conversation.context_state ?? conversation.contextState
+  for (const { record, afterIndex: index } of resolveCompactionBoundaries(conversation.messages, context)) {
+    const anchor = conversation.messages[index].id
+    directory.push({ kind: 'compaction', id: `compaction-${record.id}`, message_id: anchor,
+      message_index: index, title: '已压缩此前上下文',
+      answer_preview: (record.summary_content ?? record.summaryContent ?? '').slice(0, 120) })
+  }
+  for (const record of context?.clear_boundaries ?? context?.clearBoundaries ?? []) {
+    const anchor = record.source_until_message_id ?? record.sourceUntilMessageId
+    const index = anchor ? indexById.get(anchor) : undefined
+    if (index === undefined || !anchor) continue
+    directory.push({ kind: 'clear', id: `clear-${record.id}`, message_id: anchor,
+      message_index: index, title: '清空上下文' })
+  }
+  directory.sort((a, b) => a.message_index - b.message_index)
+  return directory
+}
+
 const mockChatApi = {
   async getConversations(
     offset = 0,
@@ -376,33 +401,18 @@ const mockChatApi = {
     const start = early ? historyWindowStart(conversation.messages, index + 1) : tailStart
     const end = early ? historyWindowEnd(conversation.messages, index + 1, tailStart) : total
     const gap = end < tailStart ? { start: end, end: tailStart } : undefined
-    const directory: NonNullable<Conversation['history_directory']> = conversation.messages.flatMap((message, index) => message.role === 'user'
-      ? [{ kind: 'turn' as const, id: `turn-${message.id}`, message_id: message.id, message_index: index, title: message.content.slice(0, 120) }]
-      : [])
-    const indexById = new Map(conversation.messages.map((message, index) => [message.id, index]))
-    const context = conversation.context_state ?? conversation.contextState
-    for (const { record, afterIndex: index } of resolveCompactionBoundaries(conversation.messages, context)) {
-      const anchor = conversation.messages[index].id
-      directory.push({ kind: 'compaction', id: `compaction-${record.id}`, message_id: anchor,
-        message_index: index, title: '已压缩此前上下文',
-        answer_preview: (record.summary_content ?? record.summaryContent ?? '').slice(0, 120) })
-    }
-    for (const record of context?.clear_boundaries ?? context?.clearBoundaries ?? []) {
-      const anchor = record.source_until_message_id ?? record.sourceUntilMessageId
-      const index = anchor ? indexById.get(anchor) : undefined
-      if (index === undefined || !anchor) continue
-      directory.push({ kind: 'clear', id: `clear-${record.id}`, message_id: anchor,
-        message_index: index, title: '清空上下文' })
-    }
-    directory.sort((a, b) => a.message_index - b.message_index)
+    const directory = mockHistoryDirectory(conversation)
     return {
       ...conversation,
       messages: gap ? [...conversation.messages.slice(start, gap.start), ...conversation.messages.slice(gap.end)]
         : conversation.messages.slice(start),
       history_gap: gap,
       history_start: start,
+      history_source: String(conversation.revision),
       history_total: total,
-      history_directory: directory,
+      history_turn_count: directory.filter(entry => entry.kind === 'turn').length,
+      history_directory: directory.filter(entry => entry.message_index >= start
+        && (!gap || entry.message_index < gap.start || entry.message_index >= gap.end)),
       history_artifacts: gap ? [...historyReferenceArtifacts(conversation.messages, start, gap.start),
         ...historyReferenceArtifacts(conversation.messages, gap.end, total)] : historyReferenceArtifacts(conversation.messages, start, total),
     }
@@ -411,16 +421,12 @@ const mockChatApi = {
   async getConversationPage(conversationId: string, before: number, after?: number) {
     const conversation = await mockChatApi.getConversation(conversationId)
     const limit = Math.min(before, conversation.messages.length)
-    const start = after == null ? historyWindowStart(conversation.messages, limit) : Math.min(limit, after)
-    const end = after == null ? limit : historyWindowEnd(conversation.messages, start, limit)
-    return { revision: conversation.revision, start, end, total: conversation.messages.length,
+    const start = after == null ? historyWindowStart(conversation.messages, limit, 20) : Math.min(limit, after)
+    const end = after == null ? limit : historyWindowEnd(conversation.messages, start, limit, 20)
+    return { revision: conversation.revision, history_source: String(conversation.revision), start, end, total: conversation.messages.length,
       messages: conversation.messages.slice(start, end),
+      history_directory: mockHistoryDirectory(conversation).filter(entry => entry.message_index >= start && entry.message_index < end),
       history_artifacts: historyReferenceArtifacts(conversation.messages, start, end) }
-  },
-
-  async getConversationRevision(conversationId: string): Promise<number | null> {
-    try { return (await mockChatApi.getConversation(conversationId)).revision }
-    catch { return null }
   },
 
   async createConversation(
@@ -1251,8 +1257,10 @@ export const chatApi = {
       success: boolean
       conversation: Conversation
       history_start: number
+      history_source: string
       history_total: number
       history_gap?: Conversation['history_gap']
+      history_turn_count: number
       history_directory: NonNullable<Conversation['history_directory']>
       history_artifacts?: Conversation['history_artifacts']
       read_ms: number
@@ -1262,17 +1270,29 @@ export const chatApi = {
     recordChatPerfSample({
       name: 'conversation-window-load', durationMs: performance.now() - started,
       mountedRows: 0, domNodes: 0,
-      detail: `${conversationId}:diskParse=${result.read_ms.toFixed(1)}ms:prepare=${result.prepare_ms.toFixed(1)}ms:transport=${Math.max(0, performance.now() - started - result.read_ms - result.prepare_ms).toFixed(1)}ms`,
+      detail: `${conversationId}:snapshotOpen=${result.read_ms.toFixed(1)}ms:prepare=${result.prepare_ms.toFixed(1)}ms:transport=${Math.max(0, performance.now() - started - result.read_ms - result.prepare_ms).toFixed(1)}ms`,
     })
     return {
       ...result.conversation,
       messages: historyMessages(conversationId, result.conversation.messages, result.deferred_tool_results),
       history_gap: result.history_gap,
       history_start: result.history_start,
+      history_source: result.history_source,
       history_total: result.history_total,
+      history_turn_count: result.history_turn_count,
       history_directory: result.history_directory,
       history_artifacts: result.history_artifacts,
     }
+  },
+
+  async getConversationDirectory(conversationId: string) {
+    if (!isTauriRuntime()) {
+      const conversation = await mockChatApi.getConversation(conversationId)
+      return { revision: conversation.revision, history_directory: mockHistoryDirectory(conversation) }
+    }
+    return invoke<{ revision: number; history_directory: NonNullable<Conversation['history_directory']> }>(
+      'chat_get_conversation_directory', { conversationId },
+    )
   },
 
   async getConversationPage(conversationId: string, before: number, after?: number): Promise<ConversationHistoryPage> {
@@ -1288,9 +1308,11 @@ export const chatApi = {
     return invoke<string>('chat_get_tool_result', { ...reference })
   },
 
-  async getConversationRevision(conversationId: string): Promise<number | null> {
-    if (!isTauriRuntime()) return mockChatApi.getConversationRevision(conversationId)
-    return invoke<number | null>('chat_get_conversation_revision', { conversationId })
+  async syncConversation(conversationId: string, after?: ChatHistoryCursor): Promise<ChatSyncCheckpoint | undefined> {
+    if (isTauriRuntime()) return syncChatProtocol(conversationId, after)
+    const revision = loadMockConversations().find(item => item.id === conversationId)?.revision ?? null
+    const historyReplay = after && after.revision === revision ? { after, through: after, patches: [] } : undefined
+    return { conversationRevision: revision, historyReplay }
   },
 
   async exportSetBackup(setId: string, path: string): Promise<void> {

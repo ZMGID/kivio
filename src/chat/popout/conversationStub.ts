@@ -30,6 +30,6 @@ export function emptyPopoutConversation(
 }
 
 export function stripConversationMessages(conversation: Conversation): Conversation {
-  if (conversation.messages.length === 0) return conversation
-  return { ...conversation, messages: [] }
+  return { ...conversation, messages: [], history_start: undefined, history_gap: undefined,
+    history_total: undefined, history_directory: undefined, history_artifacts: undefined }
 }
