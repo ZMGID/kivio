@@ -693,6 +693,7 @@ pub(crate) async fn create_chat_conversation_internal(
             let mut conversation = Conversation {
                 builtin_history: None,
                 external_history: None,
+                agent_handoffs: Vec::new(),
                 external_cwd: None,
                 worktree: None,
                 runtime_locked: false,
@@ -1114,6 +1115,7 @@ pub(crate) async fn chat_create_builder_conversation(
     let conversation = Conversation {
         builtin_history: None,
         external_history: None,
+        agent_handoffs: Vec::new(),
         external_cwd: None,
         worktree: None,
         runtime_locked: false,

@@ -60,8 +60,9 @@ function KivioMark({ size = 18, variant = 'agent' }: { size?: number; variant?: 
 export interface AgentModelPickerProps {
   agentRuntime: AgentRuntimeConfig
   conversationId?: string | null
-  /** 一 agent 一对话：已有消息的会话锁定代理，弹层仍可查看与换模型。 */
+  /** Imported native sessions remain bound to their original CLI. */
   locked?: boolean
+  busy?: boolean
   /** 内置运行时的服务商与模型。 */
   providerId: string
   model: string
@@ -81,6 +82,7 @@ function AgentModelPickerBase({
   agentRuntime,
   conversationId,
   locked = false,
+  busy = false,
   providerId,
   model,
   thinkingLevel,
@@ -145,7 +147,7 @@ function AgentModelPickerBase({
 
   const switchRuntime = (next: AgentRuntimeConfig, active: boolean) => {
     // 已选中的代理再点一次不重发：重发 default 会把用户刚选的模型和思考档清成 Auto。
-    if (locked || active) return
+    if (locked || busy || active) return
     onRuntimeChange(next)
   }
 
@@ -232,14 +234,14 @@ function AgentModelPickerBase({
                 label="Kivio Agent"
                 icon={<KivioMark size={18} variant="agent" />}
                 active={usesBuiltinAgent}
-                disabled={locked && !usesBuiltinAgent}
+                disabled={(locked || busy) && !usesBuiltinAgent}
                 onSelect={() => switchRuntime(BUILTIN, usesBuiltinAgent)}
               />
               <AgentOption
                 label="Kivio Chat"
                 icon={<KivioMark size={18} variant="chat" />}
                 active={usesChat}
-                disabled={locked && !usesChat}
+                disabled={(locked || busy) && !usesChat}
                 onSelect={() => switchRuntime(CHAT, usesChat)}
               />
               {availableAgents.length > 0 && <span className="kv-agent-picker__rail-sep" aria-hidden="true" />}
@@ -252,7 +254,7 @@ function AgentModelPickerBase({
                     title={agent.version ? `${agent.name} · ${agent.version}` : agent.name}
                     icon={<AgentIcon id={agent.id} size={18} />}
                     active={active}
-                    disabled={locked && !active}
+                    disabled={(locked || busy) && !active}
                     // 换代理时带回该 CLI 上次的模型/思考档。没有记录才走 default（胶囊显示 Auto）。
                     onSelect={() => switchRuntime(rememberedExternalRuntime(agent.id), active)}
                   />
@@ -274,6 +276,7 @@ function AgentModelPickerBase({
                 <BuiltinModelList
                   catalog={builtinCatalog}
                   currentProviderId={providerId}
+                  providerLocked={locked || busy}
                   currentModel={model}
                   autoFocusSearch
                   alwaysShowSearch

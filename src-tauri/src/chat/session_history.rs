@@ -23,6 +23,9 @@ pub struct BuiltinHistory {
     #[serde(default)]
     pub archived_branches: Vec<ArchivedBuiltinBranch>,
     pub migration: BuiltinHistoryMigration,
+    /// Identifies the visible prefix represented by this tree while a CLI owns new turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_prefix: Option<(usize, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +51,10 @@ fn migration_version<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Resul
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArchivedBuiltinBranch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<super::types::AgentIdentity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_handoffs: Vec<super::types::AgentHandoff>,
     pub id: String,
     pub leaf: Option<EntryId>,
     pub messages: Vec<ChatMessage>,
@@ -278,8 +285,73 @@ pub(crate) fn ensure_migrated(conversation: &mut Conversation) -> Result<(), Str
     if conversation.agent_runtime.is_external() || conversation.builtin_history.is_some() {
         return Ok(());
     }
-    let mut history = SessionHistory::from(vec![RuntimeMessage::system("")]);
-    let mut bindings = HashMap::new();
+    build_visible_history(conversation, None, 0)
+}
+
+pub(crate) fn prefix_digest(
+    conversation: &Conversation,
+    prefix: &[ChatMessage],
+) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    for message in prefix {
+        serde_json::to_writer(
+            &mut digest,
+            &(
+                message,
+                group_answer_excluded_from_context(conversation, message),
+            ),
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+pub(crate) fn suspend_for_external(conversation: &mut Conversation) -> Result<(), String> {
+    if conversation.builtin_history.is_some() {
+        let digest = prefix_digest(conversation, &conversation.messages)?;
+        conversation
+            .builtin_history
+            .as_mut()
+            .unwrap()
+            .external_prefix = Some((conversation.messages.len(), digest));
+    }
+    Ok(())
+}
+
+/// Reuse the bound SDK prefix, including its prior branches and tool facts. A CLI rewind or edit
+/// can invalidate that prefix; project the changed visible branch separately in the same tree.
+pub(crate) fn resume_from_external(conversation: &mut Conversation) -> Result<(), String> {
+    let Some(mut state) = conversation.builtin_history.take() else {
+        return ensure_migrated(conversation);
+    };
+    let mut start = 0;
+    if let Some((len, digest)) = state.external_prefix.take() {
+        if let Some(prefix) = conversation.messages.get(..len) {
+            if prefix_digest(conversation, prefix)? == digest {
+                start = len;
+            }
+        }
+    }
+    build_visible_history(conversation, Some(state), start)
+}
+
+fn build_visible_history(
+    conversation: &mut Conversation,
+    previous: Option<Box<BuiltinHistory>>,
+    start: usize,
+) -> Result<(), String> {
+    let mut history = previous
+        .as_ref()
+        .map(|state| state.snapshot.clone().into_history())
+        .unwrap_or_default();
+    let mut bindings = if start == 0 {
+        history.switch_branch(None)?;
+        history.push(RuntimeMessage::system(""));
+        HashMap::new()
+    } else {
+        previous.as_ref().expect("retained prefix").bindings.clone()
+    };
     let mut groups = HashSet::new();
     let summary = active_summary(conversation);
     let summary_through = summary.map(|s| {
@@ -300,7 +372,7 @@ pub(crate) fn ensure_migrated(conversation: &mut Conversation) -> Result<(), Str
         })
         .collect();
     clear_indices.extend(conversation.context_clear_until_index());
-    for (index, message) in conversation.messages.iter().enumerate() {
+    for (index, message) in conversation.messages.iter().enumerate().skip(start) {
         if let Some(group) = message
             .group_id
             .as_ref()
@@ -358,9 +430,15 @@ pub(crate) fn ensure_migrated(conversation: &mut Conversation) -> Result<(), Str
     let snapshot = history.snapshot()?;
     conversation.builtin_history = Some(Box::new(BuiltinHistory {
         snapshot,
-        active_branch_id: uuid::Uuid::new_v4().to_string(),
+        active_branch_id: previous
+            .as_ref()
+            .map(|state| state.active_branch_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
         bindings,
-        archived_branches: Vec::new(),
+        archived_branches: previous
+            .map(|state| state.archived_branches)
+            .unwrap_or_default(),
+        external_prefix: None,
         migration: BuiltinHistoryMigration {
             version: 1,
             source_revision: conversation.revision,
@@ -375,6 +453,61 @@ pub(crate) fn ensure_migrated(conversation: &mut Conversation) -> Result<(), Str
         },
     }));
     clear_legacy(conversation);
+    Ok(())
+}
+
+/// The destination provider gets a portable history block. Rich source facts stay in the tree
+/// for local navigation but cannot leak private reasoning, tool IDs, or signatures onto its wire.
+pub(crate) fn apply_provider_handoff(
+    conversation: &mut Conversation,
+    block: &str,
+    reverting: bool,
+) -> Result<(), String> {
+    ensure_migrated(conversation)?;
+    let state = conversation
+        .builtin_history
+        .as_mut()
+        .expect("native history");
+    let mut history = state.snapshot.clone().into_history();
+    if let Some(last) = history.active_path().last() {
+        if matches!(&last.kind, SessionEntryKind::ContextReset { replacement }
+            if replacement.iter().any(|message| message.source.contains_key("_provider_handoff")))
+        {
+            let parent = last.parent_id;
+            history.switch_branch(parent)?;
+        }
+    }
+    if !reverting {
+        let mut system = RuntimeMessage::system("");
+        system
+            .source
+            .insert("_provider_handoff".into(), Value::Bool(true));
+        let mut replacement = vec![system];
+        if !block.is_empty() {
+            replacement.push(RuntimeMessage::text(ModelRole::User, block));
+        }
+        history.reset_context(replacement)?;
+    }
+    state.snapshot = history.snapshot()?;
+    Ok(())
+}
+
+pub(crate) fn readmit_tail(chat: &mut Conversation, start: usize) -> Result<(), String> {
+    if start >= chat.messages.len() {
+        return Ok(());
+    }
+    let state = chat
+        .builtin_history
+        .as_mut()
+        .ok_or("Missing native history")?;
+    let mut history = state.snapshot.clone().into_history();
+    for message in &chat.messages[start..] {
+        state.bindings.insert(
+            message.id.clone(),
+            append(&mut history, message_facts(message)?),
+        );
+    }
+    state.snapshot = history.snapshot()?;
     Ok(())
 }
 
@@ -648,11 +781,14 @@ pub(crate) fn commit_interrupted_run(
 pub(crate) fn archive_branch(conversation: &mut Conversation) -> Result<(), String> {
     ensure_migrated(conversation)?;
     clear_legacy(conversation);
+    let owner = Some(super::agent_handoff::native_branch_owner(conversation));
     let state = conversation
         .builtin_history
         .as_mut()
         .ok_or("External conversation")?;
     state.archived_branches.push(ArchivedBuiltinBranch {
+        owner,
+        agent_handoffs: conversation.agent_handoffs.clone(),
         id: state.active_branch_id.clone(),
         leaf: state.snapshot.active_leaf(),
         messages: conversation.messages.clone(),
@@ -664,15 +800,21 @@ pub(crate) fn archive_branch(conversation: &mut Conversation) -> Result<(), Stri
     Ok(())
 }
 
+/// A parked SDK tree remains available when the user returns to Kivio. Only the active SDK
+/// runtime can expose or select its branches; a CLI continues its own bound native history.
+pub(crate) fn branch_history(conversation: &Conversation) -> Option<&BuiltinHistory> {
+    if conversation.agent_runtime.is_external() {
+        return None;
+    }
+    conversation.builtin_history.as_deref()
+}
+
 pub(crate) fn switch_branch(
     conversation: &mut Conversation,
     branch_id: &str,
 ) -> Result<(), String> {
     ensure_migrated(conversation)?;
-    let state = conversation
-        .builtin_history
-        .as_ref()
-        .ok_or("External conversation")?;
+    let state = branch_history(conversation).ok_or("External conversation")?;
     if state.active_branch_id == branch_id {
         return Ok(());
     }
@@ -695,6 +837,7 @@ pub(crate) fn switch_branch(
     state.active_branch_id = branch.id;
     state.snapshot = snapshot;
     state.bindings = branch.bindings;
+    conversation.agent_handoffs = branch.agent_handoffs;
     conversation.messages = branch.messages;
     conversation.group_selections = branch.group_selections;
     conversation.context_state = branch.context_state;
@@ -703,7 +846,7 @@ pub(crate) fn switch_branch(
     conversation.context_state.request_measurement = None;
     conversation.context_state.reported_context_tokens = None;
     conversation.context_state.last_measured_at = 0;
-    Ok(())
+    super::agent_handoff::restore_native_branch(conversation, branch.owner)
 }
 
 pub(crate) fn map_runtime_messages(
@@ -1250,6 +1393,7 @@ pub(crate) fn fork_prefix(
     let mut fork = source.clone();
     fork.messages = retained.to_vec();
     fork.builtin_history = Some(state);
+    super::agent_handoff::restore_after_truncation(&mut fork, source, retained.len())?;
     admit_pending_reports(&mut fork)?;
     fork.builtin_history
         .ok_or_else(|| "Missing fork history".into())

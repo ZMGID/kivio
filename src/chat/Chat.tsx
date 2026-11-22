@@ -99,7 +99,7 @@ import {
   pruneSettledOptimisticItems,
   settleOptimisticConversationListItems,
 } from './optimisticSidebar'
-import { additionalDirectoriesOf, conversationRuntimeLocked, isPlainBlankConversation } from './conversationFields'
+import { additionalDirectoriesOf, isPlainBlankConversation } from './conversationFields'
 import { isEmptyChatPresentation } from './emptyHero'
 import { scheduleIdleTask } from './idleTask'
 import {
@@ -830,6 +830,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const usesExternalRuntime = activeAgentRuntime.kind === 'external' && !!activeAgentRuntime.externalAgentId
   const usesChatRuntime = activeAgentRuntime.kind === 'chat'
   const {
+    savingSelection,
     changeModel: handleModelChange,
     changeThinkingLevel: handleThinkingLevelChange,
     setWebSearchMode: handleSetWebSearchMode,
@@ -2613,14 +2614,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       activeAgentRuntime={activeAgentRuntime}
       externalAgent={activeExternalAgent}
       conversationId={currentConversation?.id ?? null}
-      runtimeLocked={
-        // 一 agent 一对话：有消息后锁死 kind/agent（内置 Kivio 与本地 CLI 一律）。
-        // 拉出独立窗口后主窗卸掉了消息，仍按「已有对话」锁死。
-        !!currentConversation && (
-          conversationRuntimeLocked(currentConversation)
-          || popoutConversationIds.has(currentConversation.id)
-        )
-      }
+      runtimeLocked={Boolean(currentConversation?.runtime_locked) || conversationOccupied}
       usesExternalRuntime={usesExternalRuntime}
       usesChatRuntime={usesChatRuntime}
       activeProviderId={activeProviderId}
@@ -2641,7 +2635,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       onThinkingLevelChange={handleThinkingLevelChange}
       onApprovalPolicyChange={handleApprovalPolicyChange}
       onSandboxChange={handleExternalSandboxChange}
-      busy={streamCoarse.streaming}
+      busy={savingSelection || isCurrentConversationBusy() || streamCoarse.streaming || streamCoarse.streamFrozen || streamCoarse.cancelling}
       onOpenPopout={(conversationId) => { void handleOpenConversationPopout(conversationId) }}
       onToggleDock={handleToggleDock}
       workdir={dockWorkdir}
@@ -2693,6 +2687,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleOpenDockTasks,
     handleSwitchBranch,
     isCurrentConversationBusy,
+    savingSelection,
     conversationOccupied,
     conversationProject?.name,
     currentConversationIsBlank,
@@ -2700,7 +2695,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     composerDraftSetters,
     contextState,
     selectedProject?.name,
-    popoutConversationIds,
     streamCoarse.streaming,
     streamCoarse.streamFrozen,
     streamCoarse.cancelling,
@@ -2724,8 +2718,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     onSend: () => false, disabled: true, draftOnly: true,
   } : ({
     onSend: handleSendMessage,
-    onSendWhileRunning: handleSendWhileRunning,
-    disabled: isCurrentConversationBusy(),
+    onSendWhileRunning: savingSelection ? undefined : handleSendWhileRunning,
+    disabled: savingSelection || isCurrentConversationBusy(),
     onCancel: handleCancelStream,
     cancelVisible: streamCoarse.streaming,
     cancelling: streamCoarse.cancelling,
@@ -2837,6 +2831,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     handleToggleMcpServer,
     handleNewConversation,
     isCurrentConversationBusy,
+    savingSelection,
     mcpServers,
     openAssistantCenter,
     openSkillCenter,
@@ -2857,6 +2852,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const history = {
       conversationId: conversation?.id,
       messages: displayMessages,
+      agentHandoffs: conversation?.agent_handoffs,
+      externalHistory: conversation?.external_history,
       forkOrigin: conversation?.forked_from ?? conversation?.forkedFrom,
       onOpenConversation: handleSidebarSelectConversation,
       historyGap: conversation?.history_gap,

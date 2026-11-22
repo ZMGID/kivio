@@ -279,3 +279,45 @@ test('only an active compaction sweeps, including when the last message already 
   await expect(completed.last()).toContainText('3.0k → 800')
   expect(await animations(completed.last())).toEqual([])
 })
+
+test('switches agents in a populated conversation and keeps one handoff at its original position', async ({ page }) => {
+  const id = 'conv_agent_handoff'
+  await page.addInitScript(id => {
+    const key = 'kivio-chat-dev-conversations'
+    if (localStorage.getItem(key)) return
+    localStorage.setItem(key, JSON.stringify([{
+      id, title: '交接验收', revision: 1, created_at: 1, updated_at: 2,
+      provider_id: 'demo', model: 'chat-model',
+      agent_runtime: { kind: 'external', externalAgentId: 'codex', externalModel: 'source-model' },
+      messages: [
+        { id: 'q', role: 'user', content: '项目代号是蓝鹭。', timestamp: 1 },
+        { id: 'a', role: 'assistant', content: '记下了，代号是蓝鹭。', timestamp: 2 },
+      ],
+    }]))
+  }, id)
+  await page.goto('/#chat/' + id)
+  const source = page.getByText('记下了，代号是蓝鹭。', { exact: true })
+  await expect(source).toBeVisible()
+  const picker = page.locator('.kv-agent-picker > button').first()
+  await picker.click()
+  await page.getByRole('radio', { name: 'Kivio Agent', exact: true }).click()
+  const pending = page.getByRole('separator', { name: /^待交接上下文/ })
+  await expect(pending).toContainText('source-model')
+  // A different selection before sending replaces the destination in the same row.
+  await page.getByRole('radio', { name: 'Kivio Chat', exact: true }).click()
+  await expect(pending).toHaveCount(1)
+  await expect(pending).toHaveAccessibleName(/Kivio Chat/)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(pending).toBeVisible()
+  const editor = page.locator('[contenteditable=true]').last()
+  await editor.fill('项目代号是什么？')
+  await editor.press('Enter')
+  const handoff = page.getByRole('separator', { name: /^上下文交接/ })
+  await expect(handoff).toHaveCount(1)
+  await expect(pending).toHaveCount(0)
+  await expect(handoff).toHaveAccessibleName(/Kivio Chat/)
+  const followup = page.getByText('项目代号是什么？', { exact: true })
+  await expect(followup).toBeVisible()
+  expect((await handoff.boundingBox()).y).toBeGreaterThan((await source.boundingBox()).y)
+  expect((await handoff.boundingBox()).y).toBeLessThan((await followup.boundingBox()).y)
+})

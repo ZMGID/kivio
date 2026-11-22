@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
 import { ArrowLeftRight, ArrowRight, SlidersHorizontal } from 'lucide-react'
+import { AgentIcon } from '../components/AgentIcon'
 import { Button } from '../components/Button'
 import type { Lang } from '../components/i18n'
 import { formatEffortLabel } from './externalRuntimeCatalog'
-import type { TurnModel } from './types'
+import type { AgentHandoff, AgentIdentity, TurnModel } from './types'
 
 interface TimelineDividerProps {
   children: ReactNode
@@ -26,6 +27,34 @@ export function TimelineDivider({ children, label, title, animate, pending, acti
     {action ? <Button size="sm" variant="ghost" aria-label={action.label} onClick={action.open}>{content}</Button> : content}
     <span className="chat-timeline-divider-line" aria-hidden="true" />
   </div>
+}
+
+function handoffAgentName(agent: AgentIdentity) {
+  if (agent.kind === 'external') return agent.name || agent.agent_id
+  const runtime = agent.kind === 'chat' ? 'Kivio Chat' : 'Kivio Agent'
+  return [runtime, agent.name || agent.provider_id].filter(Boolean).join(' · ')
+}
+
+export function AgentHandoffDivider({ handoff, pending, lang }: { handoff: AgentHandoff; pending: boolean; lang: Lang }) {
+  const label = lang === 'zh'
+    ? pending ? '待交接上下文' : '上下文交接'
+    : pending ? 'Context handoff pending' : 'Context handoff'
+  const endpoint = (agent: AgentIdentity) => {
+    const name = handoffAgentName(agent)
+    const model = agent.model === 'default' ? undefined : agent.model
+    return <span className="inline-flex min-w-0 items-center gap-1" title={[name, model].filter(Boolean).join(' · ')}>
+      {agent.kind === 'external'
+        ? <AgentIcon id={agent.agent_id} size={13} />
+        : <img src="/logo-mark.png" alt="" width={13} height={13} className="dark:invert" />}
+      <span>{model && handoff.from.model !== handoff.to.model ? model : name}</span>
+    </span>
+  }
+  const detail = `${handoffAgentName(handoff.from)} → ${handoffAgentName(handoff.to)}`
+  return <TimelineDivider label={`${label} · ${detail}`} title={detail}>
+    <ArrowLeftRight size={13} aria-hidden="true" />
+    <span>{label}</span>
+    {endpoint(handoff.from)}<ArrowRight size={12} aria-hidden="true" />{endpoint(handoff.to)}
+  </TimelineDivider>
 }
 
 export function TurnModelDivider({ turn, lang }: { turn: TurnModel; lang: Lang }) {

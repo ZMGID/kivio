@@ -509,7 +509,7 @@ pub fn find_reusable_blank_conversation(
             continue;
         }
         if conversation.messages.is_empty()
-            && !conversation.runtime_locked
+            && !crate::external_agents::session::has_native_context(app, &conversation)
             && conversation.provider_id == provider_id
             && conversation.model == model
             && conversation.folder.as_deref() == folder

@@ -406,7 +406,8 @@ pub async fn chat_set_agent_runtime(
     conversation_id: String,
     agent_runtime: AgentRuntimeConfig,
 ) -> Result<serde_json::Value, String> {
-    let conversation = set_agent_runtime(&app, &conversation_id, agent_runtime).await?;
+    let mut conversation = set_agent_runtime(&app, &conversation_id, agent_runtime).await?;
+    crate::chat::commands::catalog::strip_transcripts_for_frontend(&mut conversation);
     Ok(serde_json::json!({
         "success": true,
         "conversation": conversation,
@@ -421,8 +422,27 @@ pub(crate) async fn set_agent_runtime(
     let persist_agent = agent_runtime.external_agent_id.clone();
     let persist_model = agent_runtime.external_model.clone();
     let persist_reasoning = agent_runtime.external_reasoning.clone();
+    let state = app.state::<AppState>();
+    let mut reservation = None;
+    let mut goal_paused = false;
     let conversation = crate::chat::repository::repository(app)
         .mutate(app, conversation_id, |conversation| {
+            use crate::chat::types::AgentProvider;
+            if AgentProvider::selected(&conversation.agent_runtime, &conversation.provider_id)
+                != AgentProvider::selected(&agent_runtime, &conversation.provider_id)
+            {
+                goal_paused = conversation
+                    .goal_state
+                    .as_ref()
+                    .is_some_and(|goal| crate::chat::goal::is_running(goal.status));
+                reservation = Some(
+                    crate::chat::commands::ChatSendReservation::try_acquire(
+                        state.inner(),
+                        conversation_id,
+                    )
+                    .ok_or(crate::chat::commands::CHAT_REPLY_BUSY_ERROR)?,
+                );
+            }
             if agent_runtime.is_external() {
                 crate::external_agents::context::reset_changed_external_meter(
                     &mut conversation.context_state,
@@ -438,6 +458,9 @@ pub(crate) async fn set_agent_runtime(
         })
         .await
         .map_err(crate::chat::repository::repository_error)?;
+    if goal_paused {
+        crate::chat::goal::emit_goal_state(app, &conversation);
+    }
     if let Some(agent_id) = persist_agent.as_deref() {
         if let Err(err) = crate::external_agents::provider_profile::persist_selected_model(
             agent_id,
@@ -450,108 +473,9 @@ pub(crate) async fn set_agent_runtime(
     Ok(conversation)
 }
 
-/// Pure binding rule for `chat_set_agent_runtime` (extracted so it is unit-testable without a Tauri
-/// `AppHandle`). Returns `Err` with a user-facing message when the switch is forbidden.
-///
-/// Rule: **one agent per conversation**. Only empty, unbound conversations may switch freely.
-/// Messages, native bindings and pending history freeze `kind` and `external_agent_id`.
-/// Same-agent model / reasoning / sandbox updates remain allowed.
-pub(crate) fn check_runtime_switch_allowed(
-    current: &AgentRuntimeConfig,
-    runtime_is_unbound: bool,
-    next: &AgentRuntimeConfig,
-) -> Result<(), String> {
-    if runtime_is_unbound {
-        return Ok(());
-    }
-    let normalize_id = |id: &Option<String>| {
-        id.as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let kind_changed = current.kind != next.kind;
-    let id_changed =
-        normalize_id(&current.external_agent_id) != normalize_id(&next.external_agent_id);
-    if kind_changed || id_changed {
-        let bound_name = if current.is_external() {
-            current
-                .external_agent_id
-                .as_deref()
-                .and_then(get_agent_def)
-                .map(|d| d.name.to_string())
-                .or_else(|| normalize_id(&current.external_agent_id))
-                .unwrap_or_else(|| "当前 CLI".to_string())
-        } else if current.is_chat() {
-            "Kivio Chat".to_string()
-        } else {
-            "Kivio Agent".to_string()
-        };
-        return Err(format!("会话已绑定 {bound_name}，新建会话可切换 Agent"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::types::AgentRuntimeKind;
-
-    fn external(id: &str, model: &str) -> AgentRuntimeConfig {
-        AgentRuntimeConfig {
-            kind: AgentRuntimeKind::External,
-            external_agent_id: Some(id.to_string()),
-            external_model: Some(model.to_string()),
-            external_reasoning: None,
-            external_service_tier: None,
-            external_sandbox: None,
-            external_agent_preset: None,
-        }
-    }
-
-    #[test]
-    fn empty_conversation_allows_any_switch() {
-        let current = external("claude", "default");
-        let next = AgentRuntimeConfig::default(); // builtin
-        assert!(check_runtime_switch_allowed(&current, true, &next).is_ok());
-        let next2 = external("codex", "default");
-        assert!(check_runtime_switch_allowed(&current, true, &next2).is_ok());
-    }
-
-    #[test]
-    fn non_empty_external_rejects_agent_and_kind_change() {
-        let current = external("claude", "default");
-        // Switch to a different CLI.
-        let to_other = external("codex", "default");
-        assert!(check_runtime_switch_allowed(&current, false, &to_other).is_err());
-        // Switch back to builtin.
-        let to_builtin = AgentRuntimeConfig::default();
-        assert!(check_runtime_switch_allowed(&current, false, &to_builtin).is_err());
-    }
-
-    #[test]
-    fn non_empty_external_allows_model_and_reasoning_change() {
-        let current = external("claude", "default");
-        let same_agent_new_model = external("claude", "sonnet");
-        assert!(check_runtime_switch_allowed(&current, false, &same_agent_new_model).is_ok());
-        let mut with_reasoning = external("claude", "default");
-        with_reasoning.external_reasoning = Some("high".to_string());
-        assert!(check_runtime_switch_allowed(&current, false, &with_reasoning).is_ok());
-    }
-
-    #[test]
-    fn non_empty_builtin_rejects_switch_to_external() {
-        let current = AgentRuntimeConfig::default(); // builtin
-        let to_external = external("claude", "default");
-        assert!(check_runtime_switch_allowed(&current, false, &to_external).is_err());
-    }
-
-    #[test]
-    fn non_empty_builtin_allows_same_kind_noop() {
-        let current = AgentRuntimeConfig::default();
-        let same = AgentRuntimeConfig::default();
-        assert!(check_runtime_switch_allowed(&current, false, &same).is_ok());
-    }
 
     /// 回归：缓存命中必须带回探测到的 reasoning_options。
     /// kimi 等 ACP CLI 的 def.reasoning_options 是空的；若命中时只回落 def 表，

@@ -199,7 +199,7 @@ pub(crate) async fn chat_clear_context(
     finalize_local_context_change(&app, &state, &conversation_id, conversation, None).await
 }
 
-pub(super) fn invalidate_context_measurement(state: &AppState, conversation: &mut Conversation) {
+pub(crate) fn invalidate_context_measurement(state: &AppState, conversation: &mut Conversation) {
     let context = &mut conversation.context_state;
     state.chat_runtime().seed_context_measurement(
         &conversation.id,

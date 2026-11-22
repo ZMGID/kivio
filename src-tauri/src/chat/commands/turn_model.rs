@@ -56,12 +56,23 @@ pub(super) fn record_turn_model(
             effort,
         }
     };
+    let handoff = conversation.messages[..index]
+        .iter()
+        .rev()
+        .find(|message| crate::chat::agent_handoff::timeline_message(message))
+        .is_some_and(|previous| {
+            conversation
+                .agent_handoffs
+                .iter()
+                .any(|h| h.after_message_id == previous.id)
+        });
     let previous = conversation.messages[..index]
         .iter()
         .rev()
         .find(|message| message.role == "user" && message.irc_message.is_none())
         .and_then(|message| message.turn_model.as_ref())
         .map(|turn| &turn.current)
+        .filter(|_| !handoff)
         .filter(|last| {
             last.provider != current.provider
                 || last.model != current.model

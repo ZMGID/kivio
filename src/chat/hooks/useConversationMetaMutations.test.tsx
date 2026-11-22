@@ -132,25 +132,16 @@ describe('useConversationMetaMutations: metadata fields', () => {
 })
 
 describe('useConversationMetaMutations: runtime', () => {
-  it('pauses an active goal before switching runtime and remembers the pick', async () => {
-    const paused = conversation({ goal_state: { status: 'paused' } } as Partial<Conversation>)
-    mockPause.mockResolvedValue(paused)
-    mockSetRuntime.mockResolvedValue(conversation({ revision: 3 }))
-    const { result, draft, applyConversationIfCurrent } = setup(
+  it('keeps the current selection and saved preferences when a handoff is refused', async () => {
+    mockSetRuntime.mockRejectedValueOnce(new Error('会话正在生成'))
+    const { result, draft, applyConversationMeta, setStreamErrorForConversation } = setup(
       conversation({ goal_state: { status: 'active' } } as Partial<Conversation>),
     )
     await act(async () => { await result.current.changeRuntime(EXTERNAL) })
-    expect(draft.setAgentRuntime).toHaveBeenCalledWith(EXTERNAL)
-    expect(saveLastAgentRuntime).toHaveBeenCalledWith(EXTERNAL)
-    expect(mockPause).toHaveBeenCalledWith('c1')
-    expect(mockSetRuntime).toHaveBeenCalledWith('c1', EXTERNAL)
-    expect(applyConversationIfCurrent).toHaveBeenCalledTimes(2)
-  })
-
-  it('does not pause a goal that is already settled', async () => {
-    mockSetRuntime.mockResolvedValue(conversation())
-    const { result } = setup(conversation({ goal_state: { status: 'completed' } } as Partial<Conversation>))
-    await act(async () => { await result.current.changeRuntime(BUILTIN) })
+    expect(setStreamErrorForConversation).toHaveBeenCalledWith('c1', '会话正在生成')
+    expect(applyConversationMeta).not.toHaveBeenCalled()
+    expect(draft.setAgentRuntime).not.toHaveBeenCalled()
+    expect(saveLastAgentRuntime).not.toHaveBeenCalled()
     expect(mockPause).not.toHaveBeenCalled()
   })
 

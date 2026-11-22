@@ -18,6 +18,7 @@ pub mod claude_init;
 pub mod claude_stream;
 pub mod codex_app_server;
 pub mod dsh_jsonrpc;
+pub(crate) mod handoff;
 pub mod live;
 pub mod pi_rpc;
 
@@ -166,12 +167,18 @@ fn rewound_marker_path(app: &AppHandle, conversation_id: &str) -> Result<PathBuf
 }
 
 pub fn runtime_locked(app: &AppHandle, conversation: &crate::chat::Conversation) -> bool {
-    !conversation.messages.is_empty()
+    crate::external_agents::import::has_import_record(app, &conversation.id)
+}
+
+pub(crate) fn has_native_context(
+    app: &AppHandle,
+    conversation: &crate::chat::Conversation,
+) -> bool {
+    conversation.runtime_locked
         || conversation.external_history.is_some()
         || conversation.external_cwd.is_some()
         || load_session(app, &conversation.id).is_some()
         || load_live_handle(app, &conversation.id).is_some()
-        || crate::external_agents::import::load_import_record(app, &conversation.id).is_some()
 }
 
 pub fn has_legacy_rewind(app: &AppHandle, conversation_id: &str) -> bool {
@@ -445,6 +452,8 @@ mod tests {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LiveSessionHandle {
+    #[serde(default)]
+    pub supports_load: bool,
     pub agent_id: String,
     /// `"codex_app_server"` | `"acp_json_rpc"` | `"claude_stream_json"`.
     pub protocol: String,
@@ -662,6 +671,9 @@ pub fn remove_all_bindings(app: &AppHandle, conversation_id: &str) -> Vec<String
     }
     if let Ok(base) = sessions_dir(app) {
         targets.push(base.join(format!("imported-{conversation_id}.json")));
+        for agent in crate::external_agents::registry::AGENT_DEFS {
+            targets.push(handoff::checkpoint_path(&base, conversation_id, agent.id));
+        }
     }
     if let Ok(path) = rewound_marker_path(app, conversation_id) {
         targets.push(path);
@@ -683,6 +695,7 @@ mod live_handle_tests {
 
     fn handle(cwd: &str) -> LiveSessionHandle {
         LiveSessionHandle {
+            supports_load: true,
             agent_id: "codex".to_string(),
             protocol: "codex_app_server".to_string(),
             native_id: "thr_keep".to_string(),

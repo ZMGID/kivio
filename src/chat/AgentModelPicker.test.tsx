@@ -356,7 +356,7 @@ describe('AgentModelPicker · external CLI models and effort', () => {
   })
 })
 
-describe('AgentModelPicker · agent rail（一 agent 一对话绑定锁）', () => {
+describe('AgentModelPicker · 切换代理', () => {
   beforeEach(() => {
     detectModels.mockReturnValue(new Promise(() => {}))
     detectAgents.mockResolvedValue([
@@ -371,12 +371,24 @@ describe('AgentModelPicker · agent rail（一 agent 一对话绑定锁）', () 
     await waitFor(() => expect(detectAgents).toHaveBeenCalled())
     openPicker()
     expect(await screen.findByRole('radio', { name: /OpenCode/ })).not.toBeDisabled()
-    expect(screen.getByText('已绑定')).toHaveAttribute('title', '会话已绑定当前 Agent，新建会话可切换')
+    expect(screen.getByText('已绑定')).toHaveAttribute('title', '当前会话已绑定代理')
     expect(screen.getByRole('radio', { name: 'Kivio Agent' })).toBeDisabled()
     expect(screen.getByRole('radio', { name: 'Kivio Chat' })).toBeDisabled()
     act(() => { fireEvent.click(screen.getByRole('radio', { name: 'Kivio Agent' })) })
     expect(onRuntimeChange).not.toHaveBeenCalled()
     expect(screen.getByRole('radio', { name: /Claude Code/ })).toBeDisabled()
+  })
+
+  it('当前轮运行时暂缓切换，结束后可在同一对话选择其他代理', async () => {
+    const onRuntimeChange = vi.fn()
+    const view = renderPicker({ agentRuntime: { ...runtime, externalAgentId: 'opencode' }, onRuntimeChange, conversationId: 'c1', busy: true })
+    openPicker()
+    const claude = await screen.findByRole('radio', { name: /Claude Code/ })
+    expect(claude).toBeDisabled()
+    expect(screen.queryByText('已绑定')).not.toBeInTheDocument()
+    view.rerenderWith({ busy: false })
+    act(() => { fireEvent.click(claude) })
+    expect(onRuntimeChange).toHaveBeenCalledWith(expect.objectContaining({ externalAgentId: 'claude' }))
   })
 
   it('再点当前外部代理不把模型和思考重置成 default', async () => {

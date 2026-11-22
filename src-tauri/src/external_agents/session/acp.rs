@@ -1778,6 +1778,7 @@ pub struct AcpSession {
     reader: Lines<BufReader<AgentStdout>>,
     session_id: String,
     trailing_usage_update: bool,
+    pub(crate) supports_load: bool,
     next_id: u64,
     /// Ring-buffered stderr tail (N1): drained for the process lifetime, joined on close / error
     /// so a silent handshake/turn failure surfaces the CLI's stderr.
@@ -2156,6 +2157,10 @@ impl AcpSession {
                     .pointer("/agentInfo/name")
                     .and_then(Value::as_str)
                     == Some("Kimi Code CLI"),
+                init_result
+                    .pointer("/agentCapabilities/loadSession")
+                    .and_then(Value::as_bool)
+                    == Some(true),
                 next_id,
                 model_config_id,
                 reasoning_config_id,
@@ -2170,6 +2175,7 @@ impl AcpSession {
             Ok((
                 session_id,
                 trailing_usage_update,
+                supports_load,
                 next_id,
                 model_config_id,
                 reasoning_config_id,
@@ -2189,6 +2195,7 @@ impl AcpSession {
                     reader,
                     session_id,
                     trailing_usage_update,
+                    supports_load,
                     next_id,
                     stderr_tail,
                     model_config_id,

@@ -846,6 +846,7 @@ async fn load_or_create_external_conversation(
     let conversation = Conversation {
         builtin_history: None,
         external_history: None,
+        agent_handoffs: Vec::new(),
         external_cwd: None,
         worktree: None,
         runtime_locked: false,

@@ -30,7 +30,7 @@ import type { MarkdownHeadingOutlineItem } from './markdownHeadingOutline'
 import { MessageContextMenu, type MessageMenuAnchor } from './MessageContextMenu'
 import { AddSelectionToChat } from './AddSelectionToChat'
 import { copyToClipboard } from '../utils/clipboard'
-import { TimelineDivider, TurnModelDivider } from './TimelineDivider'
+import { AgentHandoffDivider, TimelineDivider, TurnModelDivider } from './TimelineDivider'
 import { CompactionDivider } from './CompactionDivider'
 import { CompactionInProgress } from './CompactionInProgress'
 import { CompactionSummaryPanel } from './CompactionSummaryPanel'
@@ -117,6 +117,8 @@ export interface MessageListProps {
   onInsertQueuedMessage?: (id: string) => void
   onRemoveQueuedMessage?: (id: string) => void
   onRestoreQueuedMessage?: (id: string) => void
+  agentHandoffs?: Conversation['agent_handoffs']
+  externalHistory?: Conversation['external_history']
   forkOrigin?: Conversation['forked_from']
   onOpenConversation?: (id: string) => void
   historyGap?: Conversation['history_gap']
@@ -196,6 +198,7 @@ type HistoryRenderItem =
   | { kind: 'spacer'; key: 'padding-top' | 'padding-bottom'; size: number }
   | { kind: 'message'; key: string; message: ChatMessage; sentModels?: GroupModelLabel[] }
   | { kind: 'group'; key: string; groupId: string; messages: ChatMessage[] }
+  | { kind: 'agent-handoff'; key: string; handoff: NonNullable<Conversation['agent_handoffs']>[number]; pending: boolean }
   | { kind: 'fork-origin'; key: string; sourceId: string; title: string }
   | { kind: 'interruption'; key: string; message: ChatMessage }
   | { kind: 'compaction-divider'; key: string; boundary: CompactionBoundaryView }
@@ -357,6 +360,8 @@ function MessageListBase({
   waitingForBackgroundTasks = false,
   conversationId,
   messages: storedMessages,
+  agentHandoffs,
+  externalHistory,
   forkOrigin,
   onOpenConversation,
   pendingInjections,
@@ -983,6 +988,19 @@ function MessageListBase({
     // the complete history is loaded and the anchor really is absent.
     if (forkRow && !paged && (!forkAnchor || !messageIndexById.has(forkAnchor))) list.push(forkRow)
 
+    const handoffsByAnchor = new Map(agentHandoffs?.map(handoff => [handoff.after_message_id, handoff]))
+    // A CLI slash command can append messages without dispatching the waiting handoff.
+    const awaitingDispatch = externalHistory?.method === 'ProviderHandoff' && externalHistory.delivery.state === 'Ready'
+      ? externalHistory.through_message_id : null
+    const appendBoundaries = (index: number) => {
+      appendCompactionSlot(list, index)
+      const anchor = messages[index].id
+      const handoff = handoffsByAnchor.get(anchor)
+      if (handoff) list.push({
+        kind: 'agent-handoff', key: `handoff-${anchor}`, handoff, pending: anchor === awaitingDispatch || index === messages.length - 1,
+      })
+    }
+
     const appendInterruption = (message: ChatMessage) => {
       const outcome = message.stream_outcome ?? message.streamOutcome
       if (outcome === 'cancelled' || outcome === 'interrupted') {
@@ -1037,7 +1055,7 @@ function MessageListBase({
           if (index != null) boundaryIndices.add(index)
         }
         for (const index of boundaryIndices) {
-          appendCompactionSlot(list, index)
+          appendBoundaries(index)
         }
       } else {
         const message = item.message
@@ -1047,7 +1065,7 @@ function MessageListBase({
         appendInterruption(message)
         if (forkRow && message.id === forkAnchor) list.push(forkRow)
         const index = messageIndexById.get(message.id)
-        if (index != null) appendCompactionSlot(list, index)
+        if (index != null) appendBoundaries(index)
       }
     }
 
@@ -1055,7 +1073,7 @@ function MessageListBase({
   // liveRowKey / origins intentionally omitted: settle aliases are applied when
   // historyMessages/folded change (the twin re-enters history). Token frames must
   // not rebuild committed rows.
-  }, [appendCompactionSlot, beforeGap, folded, forkOrigin, paged, liveGroupModels, liveRowModel, messageIndexById])
+  }, [agentHandoffs, appendCompactionSlot, beforeGap, externalHistory, folded, forkOrigin, messages, paged, liveGroupModels, liveRowModel, messageIndexById])
 
   const errorItem = useMemo<RenderItem | null>(() => {
     if (!error) return null
@@ -1478,7 +1496,7 @@ function MessageListBase({
         rememberChatReadingPosition(conversationId, livePosition ?? {
           following,
           rowKey: item ? readingRowKey(item) : null,
-          anchorMessageId: item?.kind === 'message' || item?.kind === 'interruption' ? item.message.id : item?.kind === 'group'
+          anchorMessageId: item?.kind === 'agent-handoff' ? item.handoff.after_message_id : item?.kind === 'message' || item?.kind === 'interruption' ? item.message.id : item?.kind === 'group'
             ? item.messages[0].id : item && 'boundary' in item ? messages[item.boundary.afterIndex]?.id
               : undefined,
           rowRevision: item ? rowRevision(item, chatMessageReadingRevision) : null,
@@ -2798,6 +2816,8 @@ function MessageListBase({
       switch (item.kind) {
         case 'spacer':
           return <div aria-hidden="true" style={{ height: item.size }} />
+        case 'agent-handoff':
+          return <AgentHandoffDivider handoff={item.handoff} pending={item.pending} lang={lang} />
         case 'fork-origin': {
           const label = lang === 'zh' ? '分叉自对话' : 'Forked from conversation'
           return <TimelineDivider label={label} action={onOpenConversation && {

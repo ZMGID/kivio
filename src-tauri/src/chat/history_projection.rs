@@ -32,6 +32,20 @@ const SIBLINGS: usize = 4;
 const INITIAL_TURNS: usize = 10;
 const PAGE_TURNS: usize = 20;
 
+/// Optional resume evidence. The projection already hashed the precise JSON message array
+/// while committing this revision. Never rebuild a missing display cache just for a checkpoint.
+pub(crate) fn settled_message_digest(app: &AppHandle, id: &str, revision: u64) -> Option<String> {
+    let source = super::storage::conversation_file_path(app, id).ok()?;
+    let source_stamp = stamp(&File::open(&source).ok()?).ok()?;
+    let db = Connection::open_with_flags(
+        database_path(&source),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .ok()?;
+    db.query_row("SELECT lower(hex(messages)) FROM projection_digests JOIN snapshot USING(singleton) WHERE source=?1 AND revision=?2",
+        params![source_stamp, revision as i64], |r| r.get(0)).ok()
+}
+
 pub(crate) fn database_path(source: &Path) -> PathBuf {
     source.with_extension("history-v1.sqlite3")
 }
@@ -589,7 +603,7 @@ impl View<'_> {
     pub(crate) fn metadata(&self, app: &AppHandle) -> Result<Conversation> {
         let mut conversation = self.header()?;
         conversation.runtime_locked =
-            self.total != 0 || crate::external_agents::session::runtime_locked(app, &conversation);
+            crate::external_agents::session::runtime_locked(app, &conversation);
         Ok(conversation)
     }
 

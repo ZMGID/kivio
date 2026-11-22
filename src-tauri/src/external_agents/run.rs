@@ -418,10 +418,14 @@ async fn run_external_cli_reply_owned(
     use crate::chat::types::ExternalHistoryMethod;
     let history_transition =
         prepare_history_transition(app, conversation, run_generation, is_slash).await?;
+    let (returning, coverage) =
+        super::session::handoff::take_for_turn(app, conversation, def, &cwd, is_slash)?;
     let rewind = history_transition
         .as_ref()
         .map(|history| match history.method {
-            ExternalHistoryMethod::Replay => NativeRewind::Replay,
+            ExternalHistoryMethod::Replay | ExternalHistoryMethod::ProviderHandoff => {
+                NativeRewind::Replay
+            }
             ExternalHistoryMethod::NativeRewind => plan_native_rewind(
                 app,
                 def,
@@ -429,7 +433,13 @@ async fn run_external_cli_reply_owned(
                 &visible_user_prompts(conversation),
             ),
         });
-    if rewind == Some(NativeRewind::Replay) {
+    if (rewind == Some(NativeRewind::Replay) && returning.is_none())
+        || (is_slash
+            && conversation
+                .external_history
+                .as_ref()
+                .is_some_and(|h| h.method == ExternalHistoryMethod::ProviderHandoff))
+    {
         crate::external_agents::session::forget_native_session(app, &conversation.id)?;
     }
     let mut history_attempt = None;
@@ -502,6 +512,21 @@ async fn run_external_cli_reply_owned(
             resume_ctx.skip_instructions,
             latest_user_message,
         )
+    };
+    let mut return_prompt = match (&returning, &history_transition) {
+        (Some((_, seen)), Some(history)) => {
+            let delta = super::prompt::provider_handoff_delta(
+                conversation,
+                history.prefix(conversation)?,
+                *seen,
+            );
+            Some(super::prompt::compose_provider_prompt(
+                composed.clone(),
+                &delta,
+                latest_user_message,
+            ))
+        }
+        _ => None,
     };
     let mut composed = composed;
     // A fresh native session that replaces a rewound one carries the remaining visible history
@@ -606,6 +631,7 @@ async fn run_external_cli_reply_owned(
         for prompt in pi_regenerate_root_prompt
             .iter_mut()
             .chain(rewind_first_prompt.iter_mut())
+            .chain(return_prompt.iter_mut())
         {
             prompt.full_prompt.push_str(&image_note);
             prompt.full_prompt.push_str(&file_note);
@@ -1010,17 +1036,18 @@ async fn run_external_cli_reply_owned(
                         .map_or(composed.full_prompt.as_str(), |prompt| {
                             prompt.full_prompt.as_str()
                         }),
-                    &persistent_turn_prompt(
+                    &return_prompt.as_ref().map_or_else(|| persistent_turn_prompt(
                         def.stream_format,
                         &composed.full_prompt,
                         latest_user_message,
                         &attachment_note,
-                    ),
+                    ), |delta| std::borrow::Cow::Borrowed(delta.full_prompt.as_str())),
                     &image_blocks,
                     &extra_writable_roots,
                     &additional_cli_dirs,
                     pi_regenerate.as_ref(),
                     PersistentRewind {
+                        expected_resume_id: returning.as_ref().map(|(id, _)| id.clone()),
                         // The live process still holds the removed turns in memory.
                         reconnect: matches!(
                             rewind,
@@ -1299,6 +1326,16 @@ async fn run_external_cli_reply_owned(
     )
     .await?;
 
+    if terminal_outcome == "completed"
+        && !is_slash
+        && (entry == AgentRunEntry::Send || history_transition.is_some())
+    {
+        if let Err(error) =
+            super::session::handoff::remember_answer(app, conversation, def, coverage)
+        {
+            eprintln!("Could not checkpoint native handoff: {error}");
+        }
+    }
     crate::chat::protocol::finish_run(
         app,
         &run_id,
@@ -1631,6 +1668,7 @@ fn history_before_request(
 
 /// Rewind work that must happen while the persistent connection is established.
 struct PersistentRewind {
+    expected_resume_id: Option<String>,
     /// Replace the live process: it still holds the removed turns in memory.
     reconnect: bool,
     /// Codex: revert the resumed thread to these visible prompts before the turn.
@@ -1822,6 +1860,7 @@ where
                 busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             },
             LiveSessionHandle {
+                supports_load: true,
                 agent_id: agent_id.into(),
                 protocol: protocol_tag.into(),
                 native_id: native_id.clone(),
@@ -1869,6 +1908,10 @@ where
                     Err(err)
                         if !dropped_resume
                             && (is_missing_resume_target(&err, agent_id)
+                                || (rewind.expected_resume_id.is_some()
+                                    && protocol == StreamFormat::AcpJsonRpc
+                                    && err.contains("session/load")
+                                    && err.to_ascii_lowercase().contains("method not found"))
                                 || (protocol == StreamFormat::AntigravityStreamJson
                                     && resume_native.is_some()
                                     && err == MISSING_RESUME_TARGET)) =>
@@ -1940,7 +1983,44 @@ where
                     }
                     Err(err) => return Err(err),
                 };
+                // A resume acknowledgement for another native thread cannot receive even the full
+                // handoff. Close that connection without sending, then explicitly start a fresh one.
+                let connected = if connected.resumed
+                    && rewind
+                        .expected_resume_id
+                        .as_ref()
+                        .is_some_and(|expected| expected != &connected.native_id)
+                {
+                    close_live_control(&connected.control).await?;
+                    turn_args = drop_resume_for_fresh_session(
+                        app,
+                        conversation_id,
+                        agent_id,
+                        protocol,
+                        &turn_args,
+                    );
+                    connect_persistent_session(
+                        app,
+                        conversation_id,
+                        protocol,
+                        resolved_bin,
+                        &turn_args,
+                        cwd,
+                        model.as_deref(),
+                        reasoning.as_deref(),
+                        sandbox.as_deref(),
+                        preset.as_deref(),
+                        None,
+                        additional_directories,
+                        None,
+                        &mut launch_config,
+                    )
+                    .await?
+                } else {
+                    connected
+                };
                 let PersistentConnection {
+                    supports_load,
                     control,
                     native_id,
                     resumed,
@@ -1967,6 +2047,7 @@ where
                         busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     },
                     LiveSessionHandle {
+                        supports_load,
                         agent_id: agent_id.into(),
                         protocol: protocol_tag.into(),
                         native_id,
@@ -2264,6 +2345,7 @@ async fn reconnect_fresh(
     use crate::external_agents::session::LiveSessionHandle;
 
     let PersistentConnection {
+        supports_load,
         control,
         native_id,
         resumed,
@@ -2304,6 +2386,7 @@ async fn reconnect_fresh(
             busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
         },
         LiveSessionHandle {
+            supports_load,
             agent_id: agent_id.into(),
             protocol: protocol_tag.into(),
             native_id: native_id.clone(),
@@ -3235,7 +3318,7 @@ impl ApprovalHost<'_> {
     }
 }
 
-fn persistent_protocol_tag(protocol: StreamFormat) -> &'static str {
+pub(super) fn persistent_protocol_tag(protocol: StreamFormat) -> &'static str {
     match protocol {
         StreamFormat::ClaudeStreamJson => "claude_stream_json",
         StreamFormat::CodexAppServer => "codex_app_server",
@@ -3251,6 +3334,7 @@ fn persistent_protocol_tag(protocol: StreamFormat) -> &'static str {
 /// `child_pid` 是纯元数据（写进注册表条目供诊断 / 判定「两轮是不是同一个进程」），
 /// 任何关停路径都走 actor 的 `Close`，绝不按 pid 杀。
 struct PersistentConnection {
+    supports_load: bool,
     control: crate::external_agents::session::live::SessionControl,
     native_id: String,
     resumed: bool,
@@ -4144,6 +4228,7 @@ async fn connect_persistent_session_once(
                     let native_id = session.session_id().to_string();
                     let child_pid = session.child_pid();
                     Ok(PersistentConnection {
+                        supports_load: true,
                         control: spawn_antigravity_session_actor(session),
                         native_id,
                         resumed: resume_native.is_some(),
@@ -4207,6 +4292,7 @@ async fn connect_persistent_session_once(
                     let id = session.session_id().to_string();
                     let child_pid = session.child_pid();
                     Ok(PersistentConnection {
+                        supports_load: true,
                         control: spawn_claude_stream_session_actor_with_sink(
                             session,
                             background_task_sink,
@@ -4253,6 +4339,7 @@ async fn connect_persistent_session_once(
                         let id = session.thread_id().to_string();
                         let child_pid = session.child_pid();
                         return Ok(PersistentConnection {
+                            supports_load: true,
                             control: spawn_codex_session_actor(session),
                             native_id: id,
                             resumed: true,
@@ -4274,6 +4361,7 @@ async fn connect_persistent_session_once(
                     let id = session.thread_id().to_string();
                     let child_pid = session.child_pid();
                     Ok(PersistentConnection {
+                        supports_load: true,
                         control: spawn_codex_session_actor(session),
                         native_id: id,
                         resumed: false,
@@ -4321,6 +4409,7 @@ async fn connect_persistent_session_once(
                         let id = session.session_id().to_string();
                         let child_pid = session.child_pid();
                         return Ok(PersistentConnection {
+                            supports_load: session.supports_load,
                             control: spawn_acp_session_actor(session),
                             native_id: id,
                             resumed: true,
@@ -4344,6 +4433,7 @@ async fn connect_persistent_session_once(
                     let id = session.session_id().to_string();
                     let child_pid = session.child_pid();
                     Ok(PersistentConnection {
+                        supports_load: session.supports_load,
                         control: spawn_acp_session_actor(session),
                         native_id: id,
                         resumed: false,
@@ -4380,6 +4470,7 @@ async fn connect_persistent_session_once(
                         let id = session.session_id().to_string();
                         let child_pid = session.child_pid();
                         return Ok(PersistentConnection {
+                            supports_load: true,
                             control: spawn_dsh_session_actor_with_sink(
                                 session,
                                 dsh_idle_sink,
@@ -4408,6 +4499,7 @@ async fn connect_persistent_session_once(
                     let resumed = session.resumed();
                     let child_pid = session.child_pid();
                     Ok(PersistentConnection {
+                        supports_load: true,
                         control: spawn_dsh_session_actor_with_sink(
                             session,
                             dsh_idle_sink,
@@ -4433,6 +4525,7 @@ async fn connect_persistent_session_once(
                     let resumed = session.resumed();
                     let child_pid = session.child_pid();
                     Ok(PersistentConnection {
+                        supports_load: true,
                         control:
                             crate::external_agents::session::pi_rpc::spawn_pi_rpc_session_actor(
                                 session,

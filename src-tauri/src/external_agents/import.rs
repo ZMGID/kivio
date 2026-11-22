@@ -791,6 +791,13 @@ pub fn save_import_record(app: &tauri::AppHandle, record: &ImportRecord) -> Resu
     crate::chat::storage::atomic_write(&path, &raw, "import record")
 }
 
+pub(crate) fn has_import_record(app: &tauri::AppHandle, conversation_id: &str) -> bool {
+    // A damaged or temporarily unreadable import record still represents a pinned CLI.
+    import_record_path(app, conversation_id)
+        .and_then(|path| path.try_exists().map_err(|e| e.to_string()))
+        .unwrap_or(true)
+}
+
 pub fn load_import_record(app: &tauri::AppHandle, conversation_id: &str) -> Option<ImportRecord> {
     let raw = std::fs::read_to_string(import_record_path(app, conversation_id).ok()?).ok()?;
     serde_json::from_str(&raw).ok()
@@ -1399,6 +1406,7 @@ async fn publish_import(
     let conversation = Conversation {
         builtin_history: None,
         external_history: None,
+        agent_handoffs: Vec::new(),
         external_cwd: None,
         worktree: None,
         runtime_locked: false,
@@ -1462,6 +1470,7 @@ async fn publish_import(
             app,
             &conversation_id,
             &crate::external_agents::session::LiveSessionHandle {
+                supports_load: true,
                 agent_id: agent_id.to_string(),
                 protocol: protocol_label(def.stream_format).to_string(),
                 native_id: session_id.to_string(),

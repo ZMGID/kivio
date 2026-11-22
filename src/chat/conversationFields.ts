@@ -10,12 +10,14 @@ export function additionalDirectoriesOf(conversation: Conversation | null | unde
 export function isPlainBlankConversation(conversation: Conversation | null): boolean {
   return Boolean(
     conversation
-    && !conversationRuntimeLocked(conversation)
-    && conversation.messages.length === 0
+    && !hasEstablishedRuntime(conversation)
     && !(conversation.assistant_id ?? conversation.assistantId),
   )
 }
 
-export function conversationRuntimeLocked(conversation: Conversation | null): boolean {
-  return Boolean(conversation && (conversation.runtime_locked || conversation.messages.length > 0))
+/** An established conversation keeps its saved selection when an unrelated composer draft is sent. */
+export function hasEstablishedRuntime(conversation: Conversation | null): boolean {
+  if (!conversation) return false
+  return Boolean(conversation.runtime_locked || conversation.forked_from || conversation.forkedFrom
+    || (conversation.history_total ?? 0) > 0 || conversation.messages.length > 0)
 }

@@ -1056,21 +1056,53 @@ impl ConversationRepository {
             .as_ref()
             .map(|_| latest.goal_state.clone());
         let previous_runtime = latest.agent_runtime.clone();
-        let runtime_is_unbound = !latest.runtime_locked;
+        let previous_provider = latest.provider_id.clone();
+        let previous_model = latest.model.clone();
+        let imported = latest.runtime_locked;
         if !mutation(&mut latest)? {
             return Ok(None);
         }
-        crate::external_agents::commands::check_runtime_switch_allowed(
+        let retire_cli = super::agent_handoff::update_selection(
+            app,
+            &mut latest,
             &previous_runtime,
-            runtime_is_unbound,
-            &latest.agent_runtime,
+            &previous_provider,
+            &previous_model,
+            imported,
         )?;
         if let Some(previous_goal) = previous_goal {
             self.note_goal_change(id, previous_goal.as_ref(), latest.goal_state.as_ref());
         }
         increment_revision(&mut latest)?;
         latest.updated_at = chrono::Local::now().timestamp();
-        self.persist_locked(app, latest).await.map(Some)
+        let state = app.try_state::<crate::state::AppState>();
+        let _retirement = if let Some(state) = state.as_ref().filter(|_| retire_cli) {
+            Some(
+                state
+                    .external_live_sessions()
+                    .retire_conversation(id)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let result = self.persist_locked(app, latest).await;
+        if retire_cli
+            && (result.is_ok()
+                || matches!(&result, Err(ConversationRepositoryError::Committed { .. })))
+        {
+            crate::external_agents::session::clear_history_rewound(app, id);
+            if let Err(message) = crate::external_agents::session::forget_native_session(app, id) {
+                if let Ok(chat) = &result {
+                    return Err(ConversationRepositoryError::Committed {
+                        id: id.into(),
+                        revision: chat.revision,
+                        message,
+                    });
+                }
+            }
+        }
+        result.map(Some)
     }
 
     /// pretty 序列化 + `atomic_write`（含 fsync）都是毫秒级同步 IO，全部走

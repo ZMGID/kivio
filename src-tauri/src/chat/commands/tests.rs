@@ -1978,6 +1978,7 @@ fn test_conversation_with_summary(stale: bool) -> Conversation {
     Conversation {
         builtin_history: None,
         external_history: None,
+        agent_handoffs: Vec::new(),
         external_cwd: None,
         worktree: None,
         runtime_locked: false,
@@ -2475,6 +2476,7 @@ fn auxiliary_vision_result_becomes_text_for_main_chat_model() {
     let conversation = Conversation {
         builtin_history: None,
         external_history: None,
+        agent_handoffs: Vec::new(),
         external_cwd: None,
         worktree: None,
         runtime_locked: false,
@@ -3309,6 +3311,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
     let conversation = Conversation {
         builtin_history: None,
         external_history: None,
+        agent_handoffs: Vec::new(),
         external_cwd: None,
         worktree: None,
         runtime_locked: false,
@@ -3487,6 +3490,7 @@ fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
     let conversation = Conversation {
         builtin_history: None,
             external_history: None,
+            agent_handoffs: Vec::new(),
             external_cwd: None,
         worktree: None,
             runtime_locked: false,
@@ -3629,6 +3633,7 @@ fn test_conversation_with_messages(messages: Vec<ChatMessage>) -> Conversation {
     Conversation {
         builtin_history: None,
         external_history: None,
+        agent_handoffs: Vec::new(),
         external_cwd: None,
         worktree: None,
         runtime_locked: false,

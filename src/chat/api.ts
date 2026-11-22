@@ -13,6 +13,7 @@ import { externalCliSettingsApi } from '../api/externalCliSettings'
 import { notifyError } from '../components/appNoticeStore'
 import type { ConversationPin } from './conversationPins'
 import type {
+  AgentIdentity,
   AgentRuntimeConfig,
   ChatAssistant,
   ChatAssistantSnapshot,
@@ -162,6 +163,34 @@ function loadMockConversations(): Conversation[] {
 
 function saveMockConversations(conversations: Conversation[]) {
   window.localStorage.setItem(mockStorageKey, JSON.stringify(conversations))
+}
+
+// The browser preview stores the same timeline boundary returned by the desktop commands.
+function mockAgentIdentity(conversation: Conversation): AgentIdentity {
+  const runtime = normalizeAgentRuntime(conversation)
+  if (runtime.kind === 'external' && runtime.externalAgentId) {
+    return { kind: 'external', agent_id: runtime.externalAgentId, model: runtime.externalModel || undefined }
+  }
+  return { kind: runtime.kind === 'chat' ? 'chat' : 'builtin', provider_id: conversation.provider_id, model: conversation.model }
+}
+
+function recordMockHandoff(previous: Conversation, next: Conversation) {
+  const from = mockAgentIdentity(previous)
+  const to = mockAgentIdentity(next)
+  const identity = (agent: AgentIdentity) => agent.kind === 'external' ? `cli:${agent.agent_id}` : `${agent.kind}:${agent.provider_id}`
+  const changed = identity(from) !== identity(to)
+  if (previous.runtime_locked && changed) throw new Error('导入的会话只能由原 CLI 继续')
+  const anchor = [...previous.messages].reverse().find(message =>
+    !message.id.startsWith('subagent-result-') && !(message.irc_message ?? message.ircMessage))?.id
+  if (!anchor) return
+  const records = previous.agent_handoffs ?? []
+  const latest = records.at(-1)
+  const pending = latest?.after_message_id === anchor ? latest : undefined
+  if (!changed && !pending) return
+  const source = pending?.from ?? from
+  const retained = pending ? records.slice(0, -1) : records
+  next.agent_handoffs = identity(source) === identity(to)
+    ? retained : [...retained, { after_message_id: anchor, from: source, to }]
 }
 
 function loadMockProjects(): ChatProject[] {
@@ -876,6 +905,7 @@ const mockChatApi = {
       conversation.additional_directories = updates.additionalDirectories
       conversation.additionalDirectories = updates.additionalDirectories
     }
+    if (updates.providerId !== undefined || updates.model !== undefined) recordMockHandoff(conversations[index], conversation)
     const contextState = estimateMockContext(conversation)
     conversation.context_state = contextState
     conversation.contextState = contextState
@@ -2171,12 +2201,14 @@ export const chatApi = {
       const conversations = loadMockConversations()
       const index = conversations.findIndex((item) => item.id === conversationId)
       if (index < 0) throw new Error('Conversation not found')
-      conversations[index] = {
+      const next = {
         ...conversations[index],
         agent_runtime: agentRuntime,
         agentRuntime: agentRuntime,
         updated_at: nowSeconds(),
       }
+      recordMockHandoff(conversations[index], next)
+      conversations[index] = next
       saveMockConversations(conversations)
       return conversations[index]
     }

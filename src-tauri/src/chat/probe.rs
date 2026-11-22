@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::chat::types::{ConversationContextState, ToolCallStatus};
+use crate::chat::types::{AgentRuntimeConfig, ConversationContextState, ToolCallStatus};
 use crate::state::AppState;
 
 #[cfg(target_os = "windows")]
@@ -65,6 +65,10 @@ pub(crate) struct ProbeRequest {
     /// Invoke chat_send_message in a real WebView, including its IPC wrapper and send reservation.
     #[serde(default)]
     pub(crate) send_through_ipc: bool,
+    /// 切换已有会话的 Agent 后发送，通过 WebView 调用 `chat_set_agent_runtime`。
+    /// 需要 `conversationId` 和 `sendThroughIpc`。
+    #[serde(default)]
+    pub(crate) switch_agent_runtime: Option<AgentRuntimeConfig>,
     pub(crate) prompt: String,
     #[serde(default)]
     pub(crate) provider: Option<String>,
@@ -93,11 +97,11 @@ pub(crate) struct ProbeRequest {
     #[serde(default)]
     pub(crate) conversation_id: Option<String>,
     /// 把**新建**的会话钉到外部 CLI 运行时（`claude` / `codex` / …）。省略 = 跟随
-    /// `settings.chat.defaultAgentRuntime`。续聊时忽略（有消息的外部会话禁切运行时）。
+    /// `settings.chat.defaultAgentRuntime`。续聊时使用 `switchAgentRuntime` 切换。
     #[serde(default)]
     pub(crate) external_agent_id: Option<String>,
-    /// 外部 CLI 的模型 / 推理档位 / sandbox 档位。**新建与续聊都生效**——spec 第 3b 条只禁切
-    /// kind/agent，这三项明确放行，而它们是 claude 的**启动参数**，中途改动会触发
+    /// 外部 CLI 的模型 / 推理档位 / sandbox 档位。新建与续聊都生效。它们是 claude 的
+    /// 启动参数，中途改动会触发
     /// `LaunchConfig` 指纹不匹配 ⇒ 换进程 + 原生 resume（spec 第 26 条）。这条路此前
     /// 完全无法从 app 层验证。
     #[serde(default)]

@@ -1007,8 +1007,7 @@ impl Default for ChatConfig {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExternalCliAgentConfig {
-    /// 停用后不出现在 Chat 的运行时选择器里。已绑定该 CLI 的旧会话不受影响——
-    /// 一 agent 一对话，停用是「别再新建」而不是「把历史会话弄坏」。
+    /// 停用后从 Chat 的代理选择列表隐藏，已选用该 CLI 的会话仍可继续。
     pub disabled: bool,
     /// 自定义可执行文件路径；空 = 走 PATH 探测。
     pub path: String,

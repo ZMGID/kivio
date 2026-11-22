@@ -66,15 +66,15 @@ impl Drop for ProbeCancelTask {
 /// `sendThroughIpc` 则由 WebView 调用生产发送命令 →
 /// 取回生成的 assistant 消息。**会话与项目都保留**（不删除），以便在会话列表里观察调试。
 ///
-/// `conversationId = Some(..)` 续聊已有会话（不新建、不改标题/项目/运行时）。**多轮场景
+/// `conversationId = Some(..)` 续聊已有会话，`switchAgentRuntime` 通过 WebView 切换 Agent。**多轮场景
 /// 只有这条路能测**：跨轮记忆、外部 CLI 常驻会话复用、压缩边界，都需要同一个会话连发多轮。
 ///
 /// `externalAgentId = Some(..)` 把新建的会话钉到外部 CLI 运行时。没有它就只能去改
 /// `settings.chat.defaultAgentRuntime`——那是全局副作用，且改错嵌套层级不会报错、只会静默
 /// 跑回内置路径（真机验收时踩过）。
 ///
-/// `externalModel` / `externalReasoning` / `externalSandbox` **新建与续聊都生效**（spec 第 3b
-/// 条只禁切 kind/agent，这三项放行）：它们是 claude 的启动参数，中途改动会触发 `LaunchConfig`
+/// `externalModel` / `externalReasoning` / `externalSandbox` 新建与续聊都生效：
+/// 它们是 claude 的启动参数，中途改动会触发 `LaunchConfig`
 /// 指纹不匹配 ⇒ 换进程 + 原生 resume（spec 第 26 条）。配上 result 里的 `liveSession.childPid`
 /// 就能断言「pid 变了但上下文还在」。
 ///
@@ -99,6 +99,12 @@ pub(crate) async fn run_chat_probe(
         conversation_id,
         error,
     };
+    if req.switch_agent_runtime.is_some() && (resume_id.is_none() || !req.send_through_ipc) {
+        return Err(fail(
+            resume_id.map(str::to_string),
+            "switchAgentRuntime requires conversationId and sendThroughIpc".into(),
+        ));
+    }
 
     let mut conversation = match resume_id {
         Some(id) => load_conversation(app, id).map_err(|e| fail(Some(id.to_string()), e))?,
@@ -274,11 +280,19 @@ async fn send_probe_through_ipc(
         "planMessageId": null,
         "userMessageId": null,
     });
+    let switch_args = req.switch_agent_runtime.as_ref().map(
+        |runtime| serde_json::json!({"conversationId": conversation_id, "agentRuntime": runtime}),
+    );
+    let switch_args = serde_json::to_string(&switch_args).map_err(|error| error.to_string())?;
     let event_json = serde_json::to_string(&event_name).map_err(|error| error.to_string())?;
     let script = format!(
         r#"void (async () => {{
             let payload;
             try {{
+                const switchArgs = {switch_args};
+                if (switchArgs) {{
+                    await window.__TAURI_INTERNALS__.invoke("chat_set_agent_runtime", switchArgs);
+                }}
                 payload = {{result: await window.__TAURI_INTERNALS__.invoke("chat_send_message", {args})}};
             }} catch (error) {{
                 payload = {{error: String(error)}};
@@ -468,8 +482,7 @@ async fn new_probe_conversation(
         let head: String = req.prompt.chars().take(60).collect();
         format!("🔬 {head}")
     };
-    // 外部 CLI 运行时：只在新建时钉一次。续聊会话的运行时不许改——有消息的外部会话禁切
-    // kind/agent（spec 第 3b 条），改了会被后端校验拒绝。
+    // 新建时选择外部 CLI；续聊切换由 switchAgentRuntime 调用生产命令。
     if let Some(agent) = req
         .external_agent_id
         .as_deref()

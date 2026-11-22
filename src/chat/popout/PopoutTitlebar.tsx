@@ -1,4 +1,3 @@
-import { conversationRuntimeLocked } from '../conversationFields'
 import { ChatTitlebar } from '../ChatTitlebar'
 import { PermissionPicker } from '../PermissionPicker'
 import { ExternalCliAccount } from '../ExternalCliAccount'
@@ -56,7 +55,6 @@ function TitlebarPills({
   const title = displayConversationTitle(conversation?.title, titleFallback) || 'Kivio'
   const providerId = conversation?.provider_id ?? ''
   const model = conversation?.model ?? ''
-  const locked = conversationRuntimeLocked(conversation)
   const showWorkspace = runtime.kind !== 'chat'
 
   return (
@@ -66,7 +64,8 @@ function TitlebarPills({
           <AgentModelPicker
             agentRuntime={runtime}
             conversationId={conversation?.id}
-            locked={locked}
+            locked={!!conversation?.runtime_locked}
+            busy={busy}
             providerId={providerId}
             model={model}
             thinkingLevel={conversation?.thinking_level ?? conversation?.thinkingLevel ?? null}

@@ -1,4 +1,5 @@
 import { createChatHistoryReader } from '../chatHistoryReader'
+import { mergeConversationMetadata } from '../conversationHistoryWindow'
 import { readingWindowAnchor } from '../chatReadingPosition'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { api } from '../../api/tauri'
@@ -16,6 +17,7 @@ import { useTauriEvent } from '../hooks/useTauriEvent'
 import { keepNewerTodoState, patchTodoState } from '../agentTodoState'
 import { keepNewerContextMeasurement } from '../contextPanel'
 import { findSubagentToolIndex, mergeSubagentProgress, messageToolCalls, userPromptEventToRecord, isStreamTerminal } from '../streamApply'
+import { useAgentSelection } from '../hooks/useAgentSelection'
 import { useTurnModelUpdates } from '../hooks/useTurnModelUpdates'
 import { createChatExecutionOwner } from '../chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from '../chatStreamLifecycleOwner'
@@ -411,25 +413,26 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
 
   const resolveSessionConsent = useCallback((granted: boolean) => interactionInbox.respondConsent(granted), [interactionInbox])
 
-  const handleModelChange = useCallback(async (providerId: string, model: string) => {
+  const { pending: savingSelection, save: saveSelection } = useAgentSelection(conversationId)
+  const acceptSelection = useCallback((updated: Conversation) => {
+    setConversation(current => current?.id === updated.id && current.revision <= updated.revision
+      ? mergeConversationMetadata(current, updated) : current)
+  }, [])
+  const handleModelChange = useCallback((providerId: string, model: string) => saveSelection(conversationId, async () => {
     const next = await chatApi.updateConversation(conversationId, { providerId, model })
-    acceptPersistedConversation(next)
-  }, [acceptPersistedConversation, conversationId])
+    acceptSelection(next)
+  }).catch(err => notifyError(String(err))), [acceptSelection, conversationId, saveSelection])
 
   const handleThinkingLevelChange = useCallback(async (level: ThinkingLevel | null) => {
     const next = await chatApi.updateConversation(conversationId, { thinkingLevel: level })
     acceptPersistedConversation(next)
   }, [acceptPersistedConversation, conversationId])
 
-  const handleRuntimeChange = useCallback(async (runtime: AgentRuntimeConfig) => {
+  const handleRuntimeChange = useCallback((runtime: AgentRuntimeConfig) => saveSelection(conversationId, async () => {
     if (conversation && agentRuntimesEqual(normalizeAgentRuntime(conversation), runtime)) return
-    const goal = conversation?.goal_state ?? conversation?.goalState
-    if (goal && !['completed', 'cancelled', 'paused'].includes(goal.status)) {
-      acceptPersistedConversation(await chatApi.pauseGoal(conversationId))
-    }
     const next = await chatApi.setAgentRuntime(conversationId, runtime)
-    acceptPersistedConversation(next)
-  }, [acceptPersistedConversation, conversation, conversationId])
+    acceptSelection(next)
+  }).catch(err => notifyError(String(err))), [acceptSelection, conversation, conversationId, saveSelection])
 
   const handleExternalModelChange = useCallback(async (model: string, reasoning?: string | null, serviceTier?: string | null) => {
     const current = normalizeAgentRuntime(conversation)
@@ -514,13 +517,15 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     onCancel: handleCancel,
     cancelVisible: streamCoarse.streaming,
     cancelling: streamCoarse.cancelling,
-    disabled: streamCoarse.streaming || executionOwner.snapshot(conversationId).inFlight,
+    disabled: savingSelection || streamCoarse.streaming || executionOwner.snapshot(conversationId).inFlight,
   })
 
   const messageListProps: MessageListProps = {
     conversationId,
     compactionInProgress: contextCompressing,
     contextState: conversation?.context_state ?? conversation?.contextState,
+    agentHandoffs: conversation?.agent_handoffs,
+    externalHistory: conversation?.external_history,
     forkOrigin: conversation?.forked_from ?? conversation?.forkedFrom,
     onOpenConversation: id => { void chatApi.openConversationPopout(id).catch(error => notifyError(String(error))) },
     messages: displayMessages,

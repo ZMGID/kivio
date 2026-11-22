@@ -1,3 +1,4 @@
+pub(crate) mod agent_handoff;
 pub(crate) mod agent_presentation;
 pub(crate) mod context_notes;
 pub(crate) mod runtime_injections;

@@ -1,4 +1,4 @@
-import { conversationRuntimeLocked, isPlainBlankConversation } from './conversationFields'
+import { hasEstablishedRuntime, isPlainBlankConversation } from './conversationFields'
 import { resolveProviderWebSearchMode } from '../api/tauri'
 import { agentRuntimesEqual, chatApi, normalizeAgentRuntime } from './api'
 import type {
@@ -108,7 +108,7 @@ export async function prepareConversationForSend(
   }
 
   const draft = intent.draft
-  if (!conversationRuntimeLocked(conversation) && !agentRuntimesEqual(normalizeAgentRuntime(conversation), draft.agentRuntime)) {
+  if (!hasEstablishedRuntime(conversation) && !agentRuntimesEqual(normalizeAgentRuntime(conversation), draft.agentRuntime)) {
     const error = await apply('runtime', () => persistence.setAgentRuntime(conversation!.id, draft.agentRuntime))
     if (error) return error
   }

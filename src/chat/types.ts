@@ -581,7 +581,24 @@ export interface ConversationWorktree {
   branch: string
 }
 
+export type AgentIdentity = (
+  | { kind: 'builtin' | 'chat'; provider_id: string }
+  | { kind: 'external'; agent_id: string }
+) & { name?: string; model?: string }
+
+export interface AgentHandoff {
+  after_message_id: string
+  from: AgentIdentity
+  to: AgentIdentity
+}
+
 export interface Conversation {
+  agent_handoffs?: AgentHandoff[]
+  external_history?: {
+    method: 'ProviderHandoff' | 'NativeRewind' | 'Replay'
+    through_message_id?: string | null
+    delivery: { state: 'Ready' | 'MayHaveSent' }
+  } | null
   runtime_locked?: boolean
   id: string
   revision: number

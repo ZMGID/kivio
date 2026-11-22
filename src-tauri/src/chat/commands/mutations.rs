@@ -72,7 +72,9 @@ pub(super) fn remove_assistant_answer(
             }
             history.id = Uuid::new_v4().to_string();
             history.committed_revision = conversation.revision.saturating_add(1);
-            history.method = crate::chat::types::ExternalHistoryMethod::Replay;
+            if history.method != crate::chat::types::ExternalHistoryMethod::ProviderHandoff {
+                history.method = crate::chat::types::ExternalHistoryMethod::Replay;
+            }
         }
     }
     if let Some(group_id) = removed.group_id.as_deref() {
@@ -480,6 +482,7 @@ pub(crate) async fn chat_regenerate_message(
                 apply_regenerate_truncation(latest, idx, next_content)?;
                 let index = last_turn_user_index(&latest.messages)
                     .ok_or("缺少对应的用户消息，无法重新生成")?;
+                crate::chat::agent_handoff::restore_after_truncation(latest, &snapshot, index)?;
                 latest.messages[index].stream_outcome = None;
                 super::turn_model::record_turn_model(latest, index, &state.settings_read());
                 let existing_ids: std::collections::HashSet<String> = latest
@@ -666,6 +669,8 @@ pub(crate) async fn chat_delete_message(
     let (mut conversation, context_state) = loop {
         let mut candidate = snapshot.clone();
         remove_assistant_answer(&mut candidate, &message_id)?;
+        candidate.agent_handoffs =
+            crate::chat::agent_handoff::retained_handoffs(&snapshot, &candidate.messages);
         super::context::invalidate_context_measurement(&state, &mut candidate);
         let context_state = compute_context_state(&app, state.inner(), &candidate);
         candidate.context_state = context_state.clone();
@@ -787,6 +792,11 @@ pub(crate) async fn chat_rewind_to_message(
                 } else {
                     crate::chat::session_history::truncate_before(latest, &message_id)?;
                 }
+                crate::chat::agent_handoff::restore_after_truncation(
+                    latest,
+                    &snapshot,
+                    latest.messages.len(),
+                )?;
                 let existing_ids: std::collections::HashSet<String> = latest
                     .messages
                     .iter()
@@ -1014,6 +1024,7 @@ async fn fork_conversation_owned(
     let mut conversation = Conversation {
         builtin_history,
         external_history: None,
+        agent_handoffs: crate::chat::agent_handoff::retained_handoffs(&source, &messages),
         external_cwd: None,
         // 分叉继承源对话的 worktree，继续在同一个工作树里改。
         worktree: source.worktree.clone(),
@@ -1064,7 +1075,6 @@ async fn fork_conversation_owned(
             &conversation,
             crate::chat::types::ExternalHistoryMethod::Replay,
         ));
-        conversation.runtime_locked = true;
     } else {
         let retained: std::collections::HashSet<_> = conversation
             .messages
@@ -1642,12 +1652,23 @@ pub(crate) async fn chat_update_conversation(
         || model.is_some()
         || additional_directories.is_some()
         || reply_models.is_some();
-    if pauses_goal {
-        state.cancel_chat_generation(&conversation_id);
-    }
+    let mut switch_reservation = None;
     let mut conversation = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, |conversation| {
+            if !conversation.agent_runtime.is_external()
+                && provider_id
+                    .as_ref()
+                    .is_some_and(|id| *id != conversation.provider_id)
+            {
+                switch_reservation = Some(
+                    ChatSendReservation::try_acquire(state.inner(), &conversation_id)
+                        .ok_or(CHAT_REPLY_BUSY_ERROR)?,
+                );
+            }
             if pauses_goal {
+                if switch_reservation.is_none() {
+                    state.cancel_chat_generation(&conversation_id);
+                }
                 if let Some(goal) = conversation
                     .goal_state
                     .as_mut()
@@ -2097,7 +2118,7 @@ pub(crate) async fn chat_get_branches(
         .get(&app, &conversation_id)
         .await
         .map_err(crate::chat::repository::repository_error)?;
-    let Some(history) = &conversation.builtin_history else {
+    let Some(history) = crate::chat::session_history::branch_history(&conversation) else {
         return Ok(serde_json::json!({"success":true,"branches":[]}));
     };
     let label = |messages: &[ChatMessage]| {

@@ -90,6 +90,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
             agentRuntime={activeAgentRuntime}
             conversationId={conversationId}
             locked={runtimeLocked}
+            busy={busy}
             providerId={activeProviderId}
             model={activeModel}
             thinkingLevel={thinkingLevel}

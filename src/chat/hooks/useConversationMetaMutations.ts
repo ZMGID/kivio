@@ -2,6 +2,7 @@ import { useCallback, type MutableRefObject } from 'react'
 import { persistLastChatModelToSettings, saveLastThinkingLevel, saveLastWebSearchMode } from '../composerPreferences'
 import { saveLastModel } from '../../data/chatModelPreference'
 import { chatApi } from '../api'
+import { useAgentSelection } from './useAgentSelection'
 import { withExternalModel } from '../externalModelEffort'
 import { saveLastAgentRuntime } from '../lastAgentRuntime'
 import type {
@@ -47,6 +48,7 @@ export function useConversationMetaMutations({
   applyConversationIfCurrent,
   setStreamErrorForConversation,
 }: UseConversationMetaMutationsOptions) {
+  const { pending: savingSelection, save } = useAgentSelection(currentConversationRef.current?.id ?? null)
   /**
    * 「先改草稿，有会话再落库」的公共骨架。`onError` 为空时静默（知识库这类不值得打断的更新）。
    */
@@ -68,11 +70,23 @@ export function useConversationMetaMutations({
   }, [applyConversationMeta, currentConversationRef, setStreamErrorForConversation])
 
   const changeModel = useCallback(async (providerId: string, model: string) => {
-    draft.setProviderModel(providerId, model)
-    saveLastModel(providerId, model)
-    void persistLastChatModelToSettings(providerId, model)
-    await updateMeta({ providerId, model }, 'change model', '模型切换失败')
-  }, [draft, updateMeta])
+    const remember = () => {
+      draft.setProviderModel(providerId, model)
+      saveLastModel(providerId, model)
+      void persistLastChatModelToSettings(providerId, model)
+    }
+    const id = currentConversationRef.current?.id
+    if (!id) return remember()
+    await save(id, async () => {
+      try {
+        const updated = await chatApi.updateConversation(id, { providerId, model })
+        applyConversationMeta(updated)
+        if (currentConversationRef.current?.id === id) remember()
+      } catch (err) {
+        setStreamErrorForConversation(id, errorMessage(err, '模型切换失败'))
+      }
+    })
+  }, [applyConversationMeta, currentConversationRef, draft, save, setStreamErrorForConversation])
 
   const changeThinkingLevel = useCallback(async (level: ThinkingLevel | null) => {
     draft.setThinkingLevel(level)
@@ -114,25 +128,23 @@ export function useConversationMetaMutations({
   }, [currentConversationRef, draft, draftForceKnowledgeSearch, updateMeta])
 
   const changeRuntime = useCallback(async (runtime: AgentRuntimeConfig) => {
-    draft.setAgentRuntime(runtime)
-    saveLastAgentRuntime(runtime)
-    const conversation = currentConversationRef.current
-    if (!conversation) return
-    const conversationId = conversation.id
-    try {
-      // 切运行时前先暂停进行中的 Goal：另一套运行时接不上它的循环。
-      const goal = conversation.goal_state ?? conversation.goalState
-      if (goal && !['completed', 'cancelled', 'paused'].includes(goal.status)) {
-        const paused = await chatApi.pauseGoal(conversationId)
-        applyConversationIfCurrent(conversationId, paused)
-      }
-      const updated = await chatApi.setAgentRuntime(conversationId, runtime)
-      applyConversationIfCurrent(conversationId, updated)
-    } catch (err) {
-      console.error('Failed to change agent runtime:', err)
-      setStreamErrorForConversation(conversationId, errorMessage(err, 'Agent 切换失败'))
+    const remember = () => {
+      draft.setAgentRuntime(runtime)
+      saveLastAgentRuntime(runtime)
     }
-  }, [applyConversationIfCurrent, currentConversationRef, draft, setStreamErrorForConversation])
+    const conversation = currentConversationRef.current
+    if (!conversation) return remember()
+    const id = conversation.id
+    await save(id, async () => {
+      try {
+        const updated = await chatApi.setAgentRuntime(id, runtime)
+        applyConversationMeta(updated)
+        if (currentConversationRef.current?.id === id) remember()
+      } catch (err) {
+        setStreamErrorForConversation(id, errorMessage(err, 'Agent 切换失败'))
+      }
+    })
+  }, [applyConversationMeta, currentConversationRef, draft, save, setStreamErrorForConversation])
 
   // 下面三个都经 changeRuntime：没有会话时草稿也要更新（首次发送创建会话时应用）。
   const changeExternalModel = useCallback(async (model: string, reasoning?: string | null, serviceTier?: string | null) => {
@@ -198,6 +210,7 @@ export function useConversationMetaMutations({
   const cancelGoal = useCallback(() => runGoalMutation(chatApi.cancelGoal), [runGoalMutation])
 
   return {
+    savingSelection,
     changeModel,
     changeThinkingLevel,
     setWebSearchMode,

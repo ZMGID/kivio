@@ -91,6 +91,7 @@ export function BuiltinModelList({
   catalog,
   currentProviderId,
   currentModel,
+  providerLocked = false,
   onSelect,
   autoFocusSearch = false,
   alwaysShowSearch = false,
@@ -100,6 +101,7 @@ export function BuiltinModelList({
   catalog: BuiltinModelCatalog
   currentProviderId: string
   currentModel: string
+  providerLocked?: boolean
   onSelect: (providerId: string, model: string) => void
   autoFocusSearch?: boolean
   /** 合一选择器里搜索框兼作右栏标题，始终显示。 */
@@ -134,7 +136,8 @@ export function BuiltinModelList({
     return result
   }, [favoriteEntries, normalizedQuery, t.chatFavorites, visibleProviders])
 
-  const enterTarget = normalizedQuery ? sections[0]?.rows[0] : undefined
+  const firstAvailable = sections.flatMap(section => section.rows).find(row => !providerLocked || row.providerId === currentProviderId)
+  const enterTarget = normalizedQuery ? firstAvailable : undefined
 
   const renderModelRow = (providerId: string, model: string, inFavorites: boolean) => {
     const selected = currentProviderId === providerId && currentModel === model
@@ -151,6 +154,7 @@ export function BuiltinModelList({
         <button
           type="button"
           aria-current={selected ? 'true' : undefined}
+          disabled={providerLocked && providerId !== currentProviderId}
           onClick={() => onSelect(providerId, model)}
           className={modelRowButtonClass(selected)}
         >
@@ -186,8 +190,7 @@ export function BuiltinModelList({
           placeholder={searchPlaceholder ?? t.chatSearchModels}
           trailing={searchTrailing}
           onSubmit={() => {
-            const first = sections[0]?.rows[0]
-            if (first) onSelect(first.providerId, first.model)
+            if (firstAvailable) onSelect(firstAvailable.providerId, firstAvailable.model)
           }}
         />
       )}

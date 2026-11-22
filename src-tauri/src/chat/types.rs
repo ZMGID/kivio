@@ -595,6 +595,53 @@ impl AgentRuntimeConfig {
     }
 }
 
+/// Execution identity at a conversation boundary. Names and models are display snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AgentProvider {
+    Builtin { provider_id: String },
+    Chat { provider_id: String },
+    External { agent_id: String },
+}
+
+impl AgentProvider {
+    pub(crate) fn selected(runtime: &AgentRuntimeConfig, provider_id: &str) -> Self {
+        match runtime.kind {
+            AgentRuntimeKind::External => Self::External {
+                agent_id: runtime
+                    .external_agent_id
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .into(),
+            },
+            AgentRuntimeKind::Chat => Self::Chat {
+                provider_id: provider_id.into(),
+            },
+            AgentRuntimeKind::Builtin => Self::Builtin {
+                provider_id: provider_id.into(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentIdentity {
+    #[serde(flatten)]
+    pub provider: AgentProvider,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentHandoff {
+    pub after_message_id: String,
+    pub from: AgentIdentity,
+    pub to: AgentIdentity,
+}
+
 /// 会话级联网搜索模式（任务 07-23）。
 /// - `Off`：不联网。
 /// - `Builtin`：模型原生内置搜索（仅部分 provider 支持，按 `api_format` 判定）。
@@ -640,6 +687,7 @@ impl WebSearchMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ExternalHistoryMethod {
     NativeRewind,
+    ProviderHandoff,
     Replay,
 }
 
@@ -660,6 +708,8 @@ pub struct ExternalHistoryTransition {
     pub committed_revision: u64,
     pub through_message_id: Option<String>,
     pub method: ExternalHistoryMethod,
+    #[serde(default)]
+    pub allow_provider_resume: bool,
     pub delivery: ExternalHistoryDelivery,
 }
 
@@ -672,7 +722,17 @@ impl ExternalHistoryTransition {
                 .messages
                 .last()
                 .map(|message| message.id.clone()),
-            method,
+            method: if !conversation.agent_handoffs.is_empty()
+                || conversation
+                    .external_history
+                    .as_ref()
+                    .is_some_and(|old| old.method == ExternalHistoryMethod::ProviderHandoff)
+            {
+                ExternalHistoryMethod::ProviderHandoff
+            } else {
+                method
+            },
+            allow_provider_resume: false,
             delivery: ExternalHistoryDelivery::Ready,
         }
     }
@@ -715,6 +775,8 @@ pub struct Conversation {
     pub builtin_history: Option<Box<crate::chat::session_history::BuiltinHistory>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_history: Option<ExternalHistoryTransition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agent_handoffs: Vec<AgentHandoff>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_cwd: Option<String>,
     /// 新对话选择「新建 worktree」后，agent 在这个独立工作树里读写。发出第一条消息前确定，之后不再改变。

@@ -22,7 +22,7 @@ pub(crate) async fn chat_create_conversation_worktree(
     base_branch: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let conversation = load_conversation(&app, &conversation_id)?;
-    ensure_worktree_allowed(&conversation)?;
+    ensure_worktree_allowed(&app, &conversation)?;
     let project = resolve_conversation_project(&app, &conversation)?
         .ok_or_else(|| "只有项目对话可以使用 worktree。".to_string())?;
     let root = project
@@ -38,8 +38,8 @@ pub(crate) async fn chat_create_conversation_worktree(
     .map_err(|e| format!("create worktree join: {e}"))??;
     let worktree = ConversationWorktree { path, branch };
     let mut conversation = crate::chat::repository::repository(&app)
-        .mutate(&app, &conversation_id, move |conversation| {
-            ensure_worktree_allowed(conversation)?;
+        .mutate(&app, &conversation_id, |conversation| {
+            ensure_worktree_allowed(&app, conversation)?;
             conversation.worktree = Some(worktree);
             Ok(())
         })
@@ -49,14 +49,17 @@ pub(crate) async fn chat_create_conversation_worktree(
     Ok(serde_json::json!({ "success": true, "conversation": conversation }))
 }
 
-fn ensure_worktree_allowed(conversation: &crate::chat::Conversation) -> Result<(), String> {
+fn ensure_worktree_allowed(
+    app: &AppHandle,
+    conversation: &crate::chat::Conversation,
+) -> Result<(), String> {
     if conversation.worktree.is_some() {
         return Err("这条对话已经在使用 worktree。".to_string());
     }
     if !conversation.messages.is_empty() {
         return Err("对话开始后不能再切换环境。".to_string());
     }
-    if conversation.external_cwd.is_some() {
+    if crate::external_agents::session::has_native_context(app, conversation) {
         return Err("这条对话绑定了原工作目录，不能切换到 worktree。".to_string());
     }
     Ok(())

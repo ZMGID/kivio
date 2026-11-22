@@ -76,7 +76,7 @@ fn attachment_placeholder(attachment: &Attachment, labels: ExportLabels) -> Stri
 
 /// Display/export projection, independent of stored content and model replay.
 /// Kept in sync with messageBody.ts through tests/fixtures/message-body.json.
-fn message_body_text(message: &ChatMessage) -> String {
+pub(crate) fn message_body_text(message: &ChatMessage) -> String {
     if message.role != "assistant" {
         return message.content.clone();
     }
@@ -271,6 +271,7 @@ mod tests {
         Conversation {
             builtin_history: None,
             external_history: None,
+            agent_handoffs: Vec::new(),
             external_cwd: None,
             worktree: None,
             runtime_locked: false,

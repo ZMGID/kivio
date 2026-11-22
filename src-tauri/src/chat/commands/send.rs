@@ -232,7 +232,13 @@ fn main_recovery(conversation: &Conversation) -> Option<MainRecovery<'_>> {
         .iter()
         .rposition(|message| message.role == "user")?;
     let user = &conversation.messages[user_index];
-    if user.group_id.is_some()
+    let handed_off = conversation.agent_handoffs.last().is_some_and(|handoff| {
+        conversation.messages[user_index..]
+            .iter()
+            .any(|m| m.id == handoff.after_message_id)
+    });
+    if handed_off
+        || user.group_id.is_some()
         || user_index < super::context::context_replay_start_index(conversation)
     {
         return None;
@@ -819,6 +825,7 @@ async fn send_reserved(
     };
     let saved = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, {
+            let app = app.clone();
             let app_state = state.inner();
             let user_message = user_message.clone();
             let provisional_title = provisional_title.clone();
@@ -834,7 +841,9 @@ async fn send_reserved(
                 {
                     return Err(format!("message already exists: {}", user_message.id));
                 }
-                if !latest.agent_runtime.is_external() {
+                if latest.agent_runtime.is_external() {
+                    crate::external_agents::session::handoff::check_before_user_append(&app, latest)?;
+                } else {
                     crate::chat::session_history::ensure_migrated(latest)?;
                     crate::chat::session_history::admit_pending_reports(latest)?;
                     crate::chat::session_history::admit_input(latest, &user_message.id, vec![user_fact])?;
