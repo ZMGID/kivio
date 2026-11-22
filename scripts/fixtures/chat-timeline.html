@@ -73,6 +73,7 @@ function Harness() {
     }),
   }), []);
   window.chatTimeline = {
+    showConversation: conversation => setCurrent(conversation),
     crossSearch: (focusMessageId = 'beta-answer-0') => { void nav.selectConversation('beta', {focusMessageId}); },
     resolveSearch: () => openRead(),
     sameSearch: (focusMessageId, focusReasoning) =>
@@ -147,6 +148,8 @@ function Harness() {
   };
   return React.createElement('div', {className:'chat-main-pane', style:{height:'100vh', width:narrow?'740px':'100%', display:'flex', flexDirection:'column'}},
     React.createElement(MessageList, {
+      compactionInProgress: current.compacting, contextState: current.context_state,
+      forkOrigin: current.forked_from, onOpenConversation: id => window.chatTimeline.switchTo(id),
       conversationId: current.id, messages: current.messages, focusMessageId: focus?.messageId, focusReasoning: focus?.reasoning,
       onFocusMessageHandled: () => { events.push(['handled', current.id, focus?.messageId]); setFocus(null); },
     }),

@@ -323,6 +323,7 @@ mod tests {
 
     fn draft(id: &str, content: &str) -> ChatMessage {
         ChatMessage {
+            turn_model: None,
             irc_message: None,
             id: id.to_string(),
             role: "assistant".to_string(),

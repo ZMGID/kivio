@@ -26,6 +26,7 @@ pub(crate) mod worktree;
 mod tooling;
 
 mod messages;
+mod turn_model;
 
 mod sanitization;
 

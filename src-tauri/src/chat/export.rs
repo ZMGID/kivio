@@ -281,6 +281,7 @@ mod tests {
             model: "gpt-test".to_string(),
             messages: vec![
                 ChatMessage {
+                    turn_model: None,
                     irc_message: None,
                     id: "user_1".to_string(),
                     role: "user".to_string(),
@@ -313,6 +314,7 @@ mod tests {
                     degraded: None,
                 },
                 ChatMessage {
+                    turn_model: None,
                     irc_message: None,
                     id: "assistant_1".to_string(),
                     role: "assistant".to_string(),
@@ -405,6 +407,7 @@ mod tests {
         let mut conversation = conversation();
         let before = render_conversation_markdown(&conversation, "en");
         conversation.messages.push(ChatMessage {
+            turn_model: None,
             irc_message: None,
             id: "assistant_empty".to_string(),
             role: "assistant".to_string(),

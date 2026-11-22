@@ -158,6 +158,9 @@ export function createChatExecutionOwner(
     activeConversationIds: () => [...new Set([...active.keys(), ...external])],
     isCancellationRequested: (conversationId: string) => cancellations.has(conversationId),
     overlayMessages: optimistic.overlay,
+    updateTurnModel(...args: Parameters<typeof optimistic.updateTurnModel>) {
+      if (optimistic.updateTurnModel(...args)) publish()
+    },
     /** Grants one cancellation attempt for the current execution. The permit
      * remains the identity of its content fence until failure or run turnover. */
     requestCancellation(conversationId: string, runId: string | null = null): CancellationPermit | null {

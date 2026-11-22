@@ -7,7 +7,7 @@ import {
   type ComponentProps,
 } from 'react'
 import { flushSync } from 'react-dom'
-import { ChevronDown, RotateCw } from 'lucide-react'
+import { ChevronDown, CircleStop, GitFork, RotateCw } from 'lucide-react'
 import {
   observeElementRect as observeVirtualRect,
   useVirtualizer,
@@ -30,11 +30,12 @@ import type { MarkdownHeadingOutlineItem } from './markdownHeadingOutline'
 import { MessageContextMenu, type MessageMenuAnchor } from './MessageContextMenu'
 import { AddSelectionToChat } from './AddSelectionToChat'
 import { copyToClipboard } from '../utils/clipboard'
+import { TimelineDivider, TurnModelDivider } from './TimelineDivider'
 import { CompactionDivider } from './CompactionDivider'
 import { CompactionInProgress } from './CompactionInProgress'
 import { CompactionSummaryPanel } from './CompactionSummaryPanel'
 import { ContextClearDivider } from './ContextClearDivider'
-import { resolveCompactionBoundaries, resolvePendingCompactionAfterIndex, type CompactionBoundaryView } from './compactionBoundary'
+import { resolveCompactionBoundaries, type CompactionBoundaryView } from './compactionBoundary'
 import { resolveClearBoundaries, type ContextClearBoundaryView } from './contextClearBoundary'
 import { hasAgentPlanText } from './agentPlan'
 import { artifactId } from './artifactPresentation'
@@ -116,6 +117,8 @@ export interface MessageListProps {
   onInsertQueuedMessage?: (id: string) => void
   onRemoveQueuedMessage?: (id: string) => void
   onRestoreQueuedMessage?: (id: string) => void
+  forkOrigin?: Conversation['forked_from']
+  onOpenConversation?: (id: string) => void
   historyGap?: Conversation['history_gap']
   historyStart?: number
   historyRevision?: number
@@ -147,7 +150,6 @@ export interface MessageListProps {
   onSetGroupSelection?: (groupId: string, messageId: string) => void
   contextState?: ConversationContextState | null
   compactionInProgress?: boolean
-  animateCompactionBoundaryId?: string | null
   animateClearBoundaryId?: string | null
   lang?: Lang
   /** 全局搜索：打开会话后滚到该消息并短暂高亮。 */
@@ -194,9 +196,10 @@ type HistoryRenderItem =
   | { kind: 'spacer'; key: 'padding-top' | 'padding-bottom'; size: number }
   | { kind: 'message'; key: string; message: ChatMessage; sentModels?: GroupModelLabel[] }
   | { kind: 'group'; key: string; groupId: string; messages: ChatMessage[] }
-  | { kind: 'compaction-divider'; key: string; boundary: CompactionBoundaryView; animate: boolean }
+  | { kind: 'fork-origin'; key: string; sourceId: string; title: string }
+  | { kind: 'interruption'; key: string; message: ChatMessage }
+  | { kind: 'compaction-divider'; key: string; boundary: CompactionBoundaryView }
   | { kind: 'compaction-summary'; key: string; boundary: CompactionBoundaryView }
-  | { kind: 'compaction-progress'; key: string; afterIndex: number }
   | { kind: 'context-clear-divider'; key: string; boundary: ContextClearBoundaryView; animate: boolean }
 
 type LiveBubbleState = {
@@ -354,6 +357,8 @@ function MessageListBase({
   waitingForBackgroundTasks = false,
   conversationId,
   messages: storedMessages,
+  forkOrigin,
+  onOpenConversation,
   pendingInjections,
   canInsertQueuedMessage,
   onInsertQueuedMessage,
@@ -379,7 +384,6 @@ function MessageListBase({
   onSetGroupSelection,
   contextState = null,
   compactionInProgress = false,
-  animateCompactionBoundaryId = null,
   animateClearBoundaryId = null,
   lang = 'zh',
   focusMessageId = null,
@@ -895,15 +899,6 @@ function MessageListBase({
 
   const folded = useMemo(() => foldMessageGroups(historyMessages), [historyMessages])
 
-  const pendingCompactionAfterIndex = useMemo(
-    () => (
-      compactionInProgress
-        ? resolvePendingCompactionAfterIndex(messages, contextState, animateCompactionBoundaryId)
-        : null
-    ),
-    [animateCompactionBoundaryId, compactionInProgress, contextState, messages],
-  )
-
   const appendCompactionItems = useCallback((
     list: HistoryRenderItem[],
     afterIndex: number,
@@ -916,7 +911,6 @@ function MessageListBase({
         kind: 'compaction-divider',
         key: `compaction-divider-${recordId}`,
         boundary,
-        animate: animateCompactionBoundaryId === recordId,
       })
       list.push({
         kind: 'compaction-summary',
@@ -924,25 +918,12 @@ function MessageListBase({
         boundary,
       })
     }
-  }, [animateCompactionBoundaryId, boundariesByAfterIndex])
+  }, [boundariesByAfterIndex])
 
   const appendCompactionSlot = useCallback((
     list: HistoryRenderItem[],
     afterIndex: number,
   ) => {
-    const hasBoundary = boundariesByAfterIndex.has(afterIndex)
-    if (
-      compactionInProgress
-      && pendingCompactionAfterIndex === afterIndex
-      && !hasBoundary
-    ) {
-      list.push({
-        kind: 'compaction-progress',
-        key: `compaction-progress-after-${afterIndex}`,
-        afterIndex,
-      })
-      return
-    }
     appendCompactionItems(list, afterIndex)
     const clears = clearBoundariesByAfterIndex.get(afterIndex)
     if (!clears) return
@@ -958,10 +939,7 @@ function MessageListBase({
   }, [
     appendCompactionItems,
     animateClearBoundaryId,
-    boundariesByAfterIndex,
     clearBoundariesByAfterIndex,
-    compactionInProgress,
-    pendingCompactionAfterIndex,
   ])
 
   // The row claims its stable key before the first token. Content is not part of
@@ -996,6 +974,21 @@ function MessageListBase({
       { kind: 'spacer', key: 'padding-top', size: LIST_EDGE_PADDING_PX },
     ]
 
+    const sourceId = forkOrigin?.conversation_id ?? forkOrigin?.conversationId
+    const forkRow = sourceId && forkOrigin
+      ? { kind: 'fork-origin' as const, key: `fork-${sourceId}`, sourceId, title: forkOrigin.title }
+      : null
+    const forkAnchor = forkOrigin?.display_after_message_id ?? forkOrigin?.message_id ?? forkOrigin?.messageId
+    // Old forks may exclude their source anchor. Only fall back to the top when
+    // the complete history is loaded and the anchor really is absent.
+    if (forkRow && !paged && (!forkAnchor || !messageIndexById.has(forkAnchor))) list.push(forkRow)
+
+    const appendInterruption = (message: ChatMessage) => {
+      const outcome = message.stream_outcome ?? message.streamOutcome
+      if (outcome === 'cancelled' || outcome === 'interrupted') {
+        list.push({ kind: 'interruption', key: `interrupted-${message.id}`, message })
+      }
+    }
     // 多模型一问多答（任务 06-30）：把同一 group_id 的连续 assistant 消息折成一个 group item，
     // 横向并排多列；其余消息线性 push（折叠逻辑是纯函数 foldMessageGroups，便于单测）。
     // R8：先收集 group_id → 本次所发模型列表，给该组对应 user 消息加模型标签行。
@@ -1038,6 +1031,8 @@ function MessageListBase({
         })
         const boundaryIndices = new Set<number>()
         for (const message of item.messages) {
+          appendInterruption(message)
+          if (forkRow && message.id === forkAnchor) list.push(forkRow)
           const index = messageIndexById.get(message.id)
           if (index != null) boundaryIndices.add(index)
         }
@@ -1049,6 +1044,8 @@ function MessageListBase({
         const groupId = message.role === 'user' ? (message.group_id ?? message.groupId ?? null) : null
         const sentModels = groupId ? sentModelsByGroup.get(groupId) : undefined
         list.push({ kind: 'message', key: liveRowModel.resolveMessageKey(message.id), message, sentModels })
+        appendInterruption(message)
+        if (forkRow && message.id === forkAnchor) list.push(forkRow)
         const index = messageIndexById.get(message.id)
         if (index != null) appendCompactionSlot(list, index)
       }
@@ -1058,7 +1055,7 @@ function MessageListBase({
   // liveRowKey / origins intentionally omitted: settle aliases are applied when
   // historyMessages/folded change (the twin re-enters history). Token frames must
   // not rebuild committed rows.
-  }, [appendCompactionSlot, beforeGap, folded, liveGroupModels, liveRowModel, messageIndexById])
+  }, [appendCompactionSlot, beforeGap, folded, forkOrigin, paged, liveGroupModels, liveRowModel, messageIndexById])
 
   const errorItem = useMemo<RenderItem | null>(() => {
     if (!error) return null
@@ -1481,9 +1478,9 @@ function MessageListBase({
         rememberChatReadingPosition(conversationId, livePosition ?? {
           following,
           rowKey: item ? readingRowKey(item) : null,
-          anchorMessageId: item?.kind === 'message' ? item.message.id : item?.kind === 'group'
+          anchorMessageId: item?.kind === 'message' || item?.kind === 'interruption' ? item.message.id : item?.kind === 'group'
             ? item.messages[0].id : item && 'boundary' in item ? messages[item.boundary.afterIndex]?.id
-              : item?.kind === 'compaction-progress' ? messages[item.afterIndex]?.id : undefined,
+              : undefined,
           rowRevision: item ? rowRevision(item, chatMessageReadingRevision) : null,
           rowOffset: anchor ? scrollTop - anchor.start : 0,
           scrollTop,
@@ -2801,12 +2798,26 @@ function MessageListBase({
       switch (item.kind) {
         case 'spacer':
           return <div aria-hidden="true" style={{ height: item.size }} />
+        case 'fork-origin': {
+          const label = lang === 'zh' ? '分叉自对话' : 'Forked from conversation'
+          return <TimelineDivider label={label} action={onOpenConversation && {
+            label: `${label} · ${item.title}`, open: () => onOpenConversation(item.sourceId),
+          }}><GitFork size={13} aria-hidden="true" />{label} · {item.title}</TimelineDivider>
+        }
+        case 'interruption': {
+          const label = lang === 'zh' ? '运行已中断' : 'Run interrupted'
+          const message = item.message
+          const detail = message.degraded?.reason || ((message.group_id ?? message.groupId) && message.model)
+          return <TimelineDivider label={label}><CircleStop size={13} aria-hidden="true" />
+            {label}{detail && <span>· {detail}</span>}
+          </TimelineDivider>
+        }
         case 'message': {
           const msg = item.message
           const assistantStats = msg.role === 'assistant'
             ? assistantStreamStatsByMessageId[msg.id]
             : undefined
-          return (
+          const bubble = (
             <MessageRowBubble
               message={msg}
               conversationId={conversationId}
@@ -2844,6 +2855,8 @@ function MessageListBase({
               onOutlineSourceChange={handleOutlineSourceChange}
             />
           )
+          return msg.role === 'user' && msg.turn_model?.previous
+            ? <><TurnModelDivider turn={msg.turn_model} lang={lang} />{bubble}</> : bubble
         }
         case 'group': {
           const selectedMessageId = groupSelections?.[item.groupId] ?? null
@@ -2910,7 +2923,6 @@ function MessageListBase({
             <CompactionDivider
               boundary={item.boundary}
               lang={lang}
-              animate={item.animate}
             />
           )
         case 'compaction-summary':
@@ -2920,8 +2932,6 @@ function MessageListBase({
               lang={lang}
             />
           )
-        case 'compaction-progress':
-          return <CompactionInProgress lang={lang} />
         case 'context-clear-divider':
           return (
             <ContextClearDivider
@@ -2960,6 +2970,7 @@ function MessageListBase({
       onSaveMessageToNote,
       onExecuteAgentPlan,
       onRetryLastUser,
+      onOpenConversation,
       streaming,
       streamFrozen,
       lastAssistantTurn,
@@ -3026,6 +3037,11 @@ function MessageListBase({
             : <div className="chat-reading-content">{renderItem(item)}</div>}
         </div>
       ))}
+      {compactionInProgress && (
+        <div className="chat-reading-content pb-0.5" data-chat-message-list-item="compaction-progress">
+          <CompactionInProgress lang={lang} />
+        </div>
+      )}
       {errorItem && (
         <div className="chat-reading-content pb-0.5" data-chat-message-list-item={errorItem.kind}>
           {renderItem(errorItem)}

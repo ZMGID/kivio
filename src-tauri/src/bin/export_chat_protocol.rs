@@ -75,6 +75,8 @@ fn typescript() -> String {
         ChatContextUsageSegmentPayload::decl(&config),
         ChatFileLedgerPayload::decl(&config),
         ChatContextSummaryPayload::decl(&config),
+        kivio::chat::types::TurnModelSelection::decl(&config),
+        kivio::chat::types::TurnModel::decl(&config),
         ChatContextStatePayload::decl(&config),
         ChatAskUserOptionPayload::decl(&config),
         ChatAskUserQuestionPayload::decl(&config),

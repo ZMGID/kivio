@@ -1,5 +1,7 @@
 use std::borrow::Cow;
 
+use super::messages::{is_subagent_report, last_turn_user, last_turn_user_index};
+
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
@@ -356,19 +358,6 @@ pub(crate) async fn chat_update_message(
     }))
 }
 
-fn is_subagent_report(message: &ChatMessage) -> bool {
-    message.role == "assistant"
-        && (message.id.starts_with("subagent-result-") || message.irc_message.is_some())
-}
-
-fn last_turn_user(messages: &[ChatMessage]) -> Option<&ChatMessage> {
-    messages
-        .iter()
-        .rev()
-        .find(|message| !is_subagent_report(message))
-        .filter(|message| message.role == "user")
-}
-
 /// `chat_regenerate_message` 的截断/编辑核心（纯函数，便于单测）：
 /// - assistant：截到它之前（`new_content` 无意义 → 报错）。
 /// - user + `new_content`：trim 校验非空 → 替换内容（编辑提问；附件保留）→ 保留该条截掉其后。
@@ -489,9 +478,10 @@ pub(crate) async fn chat_regenerate_message(
             .mutate_expected(&app, &conversation_id, Some(snapshot.revision), |latest| {
                 let idx = find_message_index(latest, &message_id)?;
                 apply_regenerate_truncation(latest, idx, next_content)?;
-                if last_turn_user(&latest.messages).is_none() {
-                    return Err("缺少对应的用户消息，无法重新生成".to_string());
-                }
+                let index = last_turn_user_index(&latest.messages)
+                    .ok_or("缺少对应的用户消息，无法重新生成")?;
+                latest.messages[index].stream_outcome = None;
+                super::turn_model::record_turn_model(latest, index, &state.settings_read());
                 let existing_ids: std::collections::HashSet<String> = latest
                     .messages
                     .iter()
@@ -532,11 +522,15 @@ pub(crate) async fn chat_regenerate_message(
             Err(err) => return Err(crate::chat::repository::repository_error(err)),
         }
     };
+    if let Some(user) = last_turn_user(&conversation.messages) {
+        super::turn_model::emit_turn_model(&app, &conversation, user);
+    }
     state.invalidate_chat_context_notifications(&conversation_id);
     if !state
         .sub_agents
         .resume_user_turn(&conversation_id, interruption_epoch)
     {
+        super::interaction::mark_unanswered_stop(&app, &mut conversation).await?;
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(
             serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
@@ -604,6 +598,7 @@ pub(crate) async fn chat_regenerate_message(
         }
     }
     if state.sub_agents.user_interrupted(&conversation_id) {
+        super::interaction::mark_unanswered_stop(&app, &mut conversation).await?;
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(
             serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
@@ -621,6 +616,9 @@ pub(crate) async fn chat_regenerate_message(
         None,
     )
     .await;
+    if reply_outcome.as_ref().is_err_and(|e| e == "cancelled") {
+        super::interaction::mark_unanswered_stop(&app, &mut conversation).await?;
+    }
     strip_transcripts_for_frontend(&mut conversation);
     match reply_outcome {
         Ok(()) => Ok(serde_json::json!({
@@ -1012,6 +1010,7 @@ async fn fork_conversation_owned(
             &messages,
         )?)
     };
+    let display_after_message_id = messages.last().map(|message| message.id.clone());
     let mut conversation = Conversation {
         builtin_history,
         external_history: None,
@@ -1052,6 +1051,7 @@ async fn fork_conversation_owned(
         reply_models: source.reply_models.clone(),
         group_selections,
         forked_from: Some(ForkOrigin {
+            display_after_message_id,
             conversation_id: source.id.clone(),
             message_id: source.messages[anchor_idx].id.clone(),
             title: source.title.clone(),

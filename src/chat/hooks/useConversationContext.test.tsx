@@ -143,8 +143,7 @@ describe('useConversationContext: stats', () => {
 })
 
 describe('useConversationContext: compaction', () => {
-  it('marks the conversation compacting for the whole call, flashes the boundary and refreshes the sidebar', async () => {
-    vi.useFakeTimers()
+  it('marks the conversation compacting until the boundary arrives and refreshes the sidebar', async () => {
     let resolveCompress: (value: { contextState: ConversationContextState; conversation: Conversation }) => void = () => {}
     mockCompress.mockImplementation(() => new Promise((resolve) => { resolveCompress = resolve }))
     const { result, refreshSidebar } = setup()
@@ -157,21 +156,11 @@ describe('useConversationContext: compaction', () => {
         contextState: state({ compaction_boundaries: [{ id: 'b1', created_at: 1 }] } as Partial<ConversationContextState>),
         conversation: conversation(),
       })
-      await Promise.resolve()
-    })
-    expect(result.current.ctx.animateCompactionBoundaryId).toBe('b1')
-    expect(refreshSidebar).toHaveBeenCalledTimes(1)
-    // still held during the 360ms settle window
-    expect(result.current.ctx.compactingConversationIds.has('c1')).toBe(true)
-
-    await act(async () => {
-      vi.advanceTimersByTime(400)
       await pending
     })
+    expect(result.current.ctx.contextState?.compaction_boundaries?.[0].id).toBe('b1')
+    expect(refreshSidebar).toHaveBeenCalledTimes(1)
     expect(result.current.ctx.compactingConversationIds.has('c1')).toBe(false)
-
-    act(() => { vi.advanceTimersByTime(1800) })
-    expect(result.current.ctx.animateCompactionBoundaryId).toBeNull()
   })
 
   it('is idempotent while a compaction is already running', async () => {
@@ -205,7 +194,7 @@ describe('useConversationContext: compaction', () => {
     })
     expect(result.current.ctx.compactingConversationIds.has('bg')).toBe(false)
     // background completion never touches the current conversation's boundaries
-    expect(result.current.ctx.animateCompactionBoundaryId).toBeNull()
+    expect(result.current.ctx.contextState?.compaction_boundaries).toBeUndefined()
   })
 
   it('appends a completed boundary to the current conversation exactly once', async () => {
@@ -218,7 +207,6 @@ describe('useConversationContext: compaction', () => {
     })
     expect(result.current.current?.context_state?.compaction_boundaries).toEqual([boundary])
     expect(result.current.ctx.contextState?.compactionBoundaries).toEqual([boundary])
-    expect(result.current.ctx.animateCompactionBoundaryId).toBe('b9')
   })
 })
 

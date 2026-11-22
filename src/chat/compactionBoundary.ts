@@ -106,34 +106,6 @@ export function compactionRecordTokens(record: CompactionBoundaryRecord) {
   }
 }
 
-/**
- * Resolve the timeline slot for an in-flight compaction. Compaction is always
- * triggered "now", and the persisted divider anchors to the last message at
- * trigger time (`display_after_message_id`) — so the animation renders after the
- * current last message, guaranteed to match where the divider will land. Once the
- * boundary record arrives (`pendingBoundaryId`), its actual anchor wins.
- */
-export function resolvePendingCompactionAfterIndex(
-  messages: ChatMessage[],
-  contextState: ConversationContextState | null | undefined,
-  pendingBoundaryId?: string | null,
-): number | null {
-  if (pendingBoundaryId) {
-    const match = resolveCompactionBoundaries(messages, contextState)
-      .find((view) => view.record.id === pendingBoundaryId)
-    if (match) return match.afterIndex
-  }
-  return messages.length > 0 ? messages.length - 1 : null
-}
-
-export function latestCompactionBoundaryId(
-  contextState?: ConversationContextState | null,
-): string | null {
-  const records = collectCompactionRecords(contextState)
-  const latest = records[records.length - 1]
-  return latest?.id ?? null
-}
-
 /** Preserve compaction timeline markers when a partial context refresh omits them. */
 export function mergeCompactionContextState(
   prev: ConversationContextState | null | undefined,

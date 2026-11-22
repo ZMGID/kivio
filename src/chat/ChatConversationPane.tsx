@@ -1,5 +1,5 @@
 import { lazy, memo, Profiler, Suspense, useRef, type ProfilerOnRenderCallback, type ReactNode } from 'react'
-import { GitBranch, TriangleAlert, X } from 'lucide-react'
+import { TriangleAlert, X } from 'lucide-react'
 import { ChatImageViewer } from './ChatImageViewer'
 import { ConversationLoadingState } from './ConversationLoadingState'
 import { ChatTitlebarActions } from './ChatTitlebarActions'
@@ -92,8 +92,6 @@ export interface ChatConversationPaneProps {
   hookWarning: ChatHookPayload | null
   currentConversationId: string | null
   onDismissHookWarning: () => void
-  forkOrigin: { sourceId: string; title: string } | null
-  onSelectConversation: (id: string) => void
   importedHistoryStale: boolean
   pendingSlot: ReactNode
   goalSlot?: ReactNode
@@ -132,8 +130,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
   hookWarning,
   currentConversationId,
   onDismissHookWarning,
-  forkOrigin,
-  onSelectConversation,
   importedHistoryStale,
   pendingSlot,
   goalSlot,
@@ -222,20 +218,6 @@ export const ChatConversationPane = memo(function ChatConversationPane({
                     <X size={12} />
                   </IconButton>
                 </div>
-              </div>
-            )}
-
-            {forkOrigin && (
-              <div className="chat-content-inset flex justify-center px-4 pt-2">
-                <button
-                  type="button"
-                  onClick={() => onSelectConversation(forkOrigin.sourceId)}
-                  className="inline-flex max-w-full items-center gap-1 rounded-full bg-neutral-100 px-2.5 py-1 text-[11px] text-neutral-500 transition-colors hover:bg-neutral-200 hover:text-neutral-700"
-                  title={`分叉自「${forkOrigin.title}」，点击回到源对话`}
-                >
-                  <GitBranch size={12} strokeWidth={2} className="shrink-0" />
-                  <span className="truncate">分叉自 {forkOrigin.title}</span>
-                </button>
               </div>
             )}
 

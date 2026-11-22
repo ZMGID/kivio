@@ -114,7 +114,7 @@ export function usePopoutComposer({
   cancelVisible,
   cancelling,
   disabled,
-}: UsePopoutComposerArgs): InputBarProps {
+}: UsePopoutComposerArgs): InputBarProps & { contextCompressing: boolean } {
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
 
@@ -609,6 +609,7 @@ export function usePopoutComposer({
 
 
   return {
+    contextCompressing,
     onSend: send,
     disabled: disabled || contextCompressing,
     onCancel,

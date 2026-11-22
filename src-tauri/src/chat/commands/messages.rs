@@ -216,6 +216,7 @@ pub(super) fn build_assistant_message(
     };
 
     ChatMessage {
+        turn_model: None,
         irc_message: None,
         id: message_id,
         role: "assistant".to_string(),
@@ -559,6 +560,7 @@ pub(super) fn build_partial_assistant_snapshot(
         &tool_records,
     );
     let draft = ChatMessage {
+        turn_model: None,
         irc_message: None,
         id: message_id.to_string(),
         role: "assistant".to_string(),
@@ -1001,4 +1003,20 @@ fn mark_tool_result_errors(messages: &mut [ModelMessage], tool_calls: &[ToolCall
             }
         }
     }
+}
+
+pub(super) fn is_subagent_report(message: &ChatMessage) -> bool {
+    message.role == "assistant"
+        && (message.id.starts_with("subagent-result-") || message.irc_message.is_some())
+}
+
+pub(super) fn last_turn_user(messages: &[ChatMessage]) -> Option<&ChatMessage> {
+    last_turn_user_index(messages).map(|index| &messages[index])
+}
+
+pub(super) fn last_turn_user_index(messages: &[ChatMessage]) -> Option<usize> {
+    messages
+        .iter()
+        .rposition(|message| !is_subagent_report(message))
+        .filter(|&index| messages[index].role == "user")
 }

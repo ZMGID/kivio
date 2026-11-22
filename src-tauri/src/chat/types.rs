@@ -424,9 +424,31 @@ pub struct ChatMessageSegment {
     pub tool_call_id: Option<String>,
 }
 
+/// Model selection of an admitted single-model user turn, preserved across history windows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, ts_rs::TS)]
+pub struct TurnModel {
+    pub current: TurnModelSelection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub previous: Option<TurnModelSelection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, ts_rs::TS)]
+pub struct TurnModelSelection {
+    pub provider: String,
+    pub provider_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub model_name: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
 /// 对话消息
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_model: Option<Box<TurnModel>>,
     pub id: String,
     pub role: String, // "user" | "assistant"
     pub content: String,
@@ -899,6 +921,9 @@ pub struct ModelRef {
 /// 全部为分叉时的快照——源对话后续改名/删除都不影响此处显示与回跳。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForkOrigin {
+    /// Last copied message in the fork. The source anchor itself may be excluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_after_message_id: Option<String>,
     /// 源对话 id（回跳目标）。
     pub conversation_id: String,
     /// 分叉锚点消息 id（源对话中被「建分支」的那条）。

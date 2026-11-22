@@ -972,6 +972,10 @@ pub struct ChatRunEventEnvelope {
 )]
 #[ts(tag = "type", rename_all = "snake_case")]
 pub enum ChatConversationEvent {
+    TurnModelUpdated {
+        message_id: String,
+        turn_model: crate::chat::types::TurnModel,
+    },
     SubagentActivityAdded,
     TitleUpdated {
         title: String,

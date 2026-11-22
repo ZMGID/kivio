@@ -314,6 +314,7 @@ mod tests {
 
     fn test_message(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
+            turn_model: None,
             irc_message: None,
             id: format!("msg_{}_{}", role, content.len()),
             role: role.to_string(),

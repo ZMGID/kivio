@@ -9,16 +9,12 @@ import {
 } from 'react'
 import { api } from '../../api/tauri'
 import { chatApi } from '../api'
-import { latestCompactionBoundaryId } from '../compactionBoundary'
 import { latestClearBoundaryId } from '../contextClearBoundary'
 import { mergeContextMeasurement } from '../contextPanel'
 import type { Conversation, ConversationContextState, ContextCompactionResult } from '../types'
 import { useTauriEvent } from './useTauriEvent'
 
-/** 边界（压缩 / 清空）落地后高亮的时长，与 CompactionDivider 的入场动画对齐。 */
-const BOUNDARY_ANIMATION_MS = 1800
-/** 手动压缩成功后按住「压缩中」的最短时长，让分隔线动画有机会播完。 */
-const COMPRESS_SETTLE_MS = 360
+const CLEAR_BOUNDARY_ANIMATION_MS = 1800
 
 /** Navigation supplies the saved measurement; only a change to the open chat's
  * settings needs a new calculation. Live usage arrives on the protocol stream. */
@@ -81,7 +77,6 @@ export function useConversationContext({
   const [compactingConversationIds, setCompactingConversationIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   )
-  const [animateCompactionBoundaryId, setAnimateCompactionBoundaryId] = useState<string | null>(null)
   const [animateClearBoundaryId, setAnimateClearBoundaryId] = useState<string | null>(null)
 
   const markConversationCompacting = useCallback((conversationId: string, compacting: boolean) => {
@@ -94,18 +89,11 @@ export function useConversationContext({
     })
   }, [])
 
-  const flashCompactionBoundary = useCallback((boundaryId: string) => {
-    setAnimateCompactionBoundaryId(boundaryId)
-    window.setTimeout(() => {
-      setAnimateCompactionBoundaryId((current) => (current === boundaryId ? null : current))
-    }, BOUNDARY_ANIMATION_MS)
-  }, [])
-
   const flashClearBoundary = useCallback((boundaryId: string) => {
     setAnimateClearBoundaryId(boundaryId)
     window.setTimeout(() => {
       setAnimateClearBoundaryId((current) => (current === boundaryId ? null : current))
-    }, BOUNDARY_ANIMATION_MS)
+    }, CLEAR_BOUNDARY_ANIMATION_MS)
   }, [])
 
   /** 离开 / 删除当前会话时把面板状态归零。 */
@@ -162,13 +150,8 @@ export function useConversationContext({
     try {
       const result = await chatApi.compressContext(conversationId)
       if (currentConversationIdRef.current === conversationId) {
-        const latestId = latestCompactionBoundaryId(result.contextState)
-        if (latestId) flashCompactionBoundary(latestId)
         patchContextState(result.contextState)
         refreshSidebar()
-        await new Promise<void>((resolve) => {
-          window.setTimeout(resolve, COMPRESS_SETTLE_MS)
-        })
       }
       return { status: 'completed', conversation: result.conversation }
     } catch (err) {
@@ -181,7 +164,7 @@ export function useConversationContext({
       markConversationCompacting(conversationId, false)
     }
   }, [
-    compactingConversationIds, currentConversationIdRef, flashCompactionBoundary,
+    compactingConversationIds, currentConversationIdRef,
     markConversationCompacting, patchContextState, refreshSidebar,
   ])
 
@@ -236,10 +219,9 @@ export function useConversationContext({
       markConversationCompacting(conversationId, payload.phase === 'started' || payload.phase === 'retrying')
     }
     if (payload.phase === 'started' || payload.phase === 'retrying') return
-    // 下面这些改的是当前会话的展示状态（边界动画 / currentConversation），仍要按当前会话过滤。
+    // 下面这些改的是当前会话的展示状态，仍要按当前会话过滤。
     if (conversationId !== currentConversationIdRef.current) return
     const boundary = payload.boundary
-    if (boundary?.id) flashCompactionBoundary(boundary.id)
     if (boundary && payload.phase === 'completed') {
       setCurrentConversation((conversation) => {
         if (!conversation) return conversation
@@ -255,7 +237,7 @@ export function useConversationContext({
         return { ...conversation, context_state: nextState, contextState: nextState }
       })
     }
-  }, [flashCompactionBoundary, markConversationCompacting, setCurrentConversation])
+  }, [markConversationCompacting, setCurrentConversation])
 
   return {
     contextState,
@@ -264,7 +246,6 @@ export function useConversationContext({
     resetContext,
     compactingConversationIds,
     markConversationCompacting,
-    animateCompactionBoundaryId,
     animateClearBoundaryId,
     patchContextState,
     refreshContextStats,

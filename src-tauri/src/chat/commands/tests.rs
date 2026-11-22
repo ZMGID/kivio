@@ -1757,6 +1757,7 @@ fn normalize_segments_inserts_tool_segments_before_synthesis_text() {
 fn editing_assistant_reply_replaces_final_text_segments_only() {
     let tool_call = test_tool_record("call_blocked", "native", 1, ToolCallStatus::Skipped);
     let mut message = ChatMessage {
+        turn_model: None,
         irc_message: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
@@ -1855,6 +1856,7 @@ fn editing_assistant_reply_replaces_final_text_segments_only() {
 #[test]
 fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
     let mut message = ChatMessage {
+        turn_model: None,
         irc_message: None,
         id: "msg_assistant".to_string(),
         role: "assistant".to_string(),
@@ -1944,6 +1946,7 @@ fn editing_assistant_reply_rewrites_replay_to_edited_final_answer() {
 
 fn test_chat_message(id: &str, role: &str, content: &str, timestamp: i64) -> ChatMessage {
     ChatMessage {
+        turn_model: None,
         irc_message: None,
         id: id.to_string(),
         role: role.to_string(),
@@ -3316,6 +3319,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
         model: "model".to_string(),
         messages: vec![
             ChatMessage {
+                turn_model: None,
                 irc_message: None,
                 id: "msg_user_1".to_string(),
                 role: "user".to_string(),
@@ -3342,6 +3346,7 @@ fn build_chat_api_messages_replays_hidden_tool_transcript() {
                 degraded: None,
             },
             ChatMessage {
+                turn_model: None,
                 irc_message: None,
                 id: "msg_assistant_1".to_string(),
                 role: "assistant".to_string(),
@@ -3493,6 +3498,7 @@ fn build_chat_api_messages_sanitizes_image_payloads_in_replayed_history() {
             messages: vec![
                 test_chat_message("msg_user_1", "user", "make an image", 1),
                 ChatMessage {
+            turn_model: None,
             irc_message: None,
                     id: "msg_assistant_1".to_string(),
                     role: "assistant".to_string(),

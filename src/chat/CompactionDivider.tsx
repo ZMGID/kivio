@@ -1,5 +1,5 @@
-import { useLayoutEffect, useState } from 'react'
-import { Scissors } from 'lucide-react'
+import { TimelineDivider } from './TimelineDivider'
+import { Minimize2 } from 'lucide-react'
 import { formatTokens } from '../utils/tokens'
 import { i18n, type Lang } from '../components/i18n'
 import {
@@ -12,7 +12,6 @@ import {
 interface CompactionDividerProps {
   boundary: CompactionBoundaryView
   lang?: Lang
-  animate?: boolean
 }
 
 function formatDurationHint(record: CompactionBoundaryView['record']): string {
@@ -21,32 +20,12 @@ function formatDurationHint(record: CompactionBoundaryView['record']): string {
   return new Date(created * 1000).toLocaleString()
 }
 
-export function CompactionDivider({ boundary, lang = 'zh', animate = false }: CompactionDividerProps) {
+export function CompactionDivider({ boundary, lang = 'zh' }: CompactionDividerProps) {
   const t = i18n[lang]
   const { record } = boundary
   const tokens = compactionRecordTokens(record)
   const showTokens = hasCompactionTokenDetail(record)
   const trigger = compactionTriggerLabel(record.trigger, t)
-  const [entered, setEntered] = useState(!animate)
-
-  useLayoutEffect(() => {
-    if (!animate) {
-      setEntered(true)
-      return
-    }
-    setEntered(false)
-    let cancelled = false
-    const frame = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (!cancelled) setEntered(true)
-      })
-    })
-    return () => {
-      cancelled = true
-      cancelAnimationFrame(frame)
-    }
-  }, [animate, record.id])
-
   const tooltip = showTokens
     ? [
       `${t.contextCompactionDivider} (${trigger})`,
@@ -59,24 +38,13 @@ export function CompactionDivider({ boundary, lang = 'zh', animate = false }: Co
     : `${t.contextCompactionDivider} (${trigger})`
 
   return (
-    <div
-      className={`chat-compaction-divider ${entered ? 'chat-compaction-divider--animate' : 'chat-compaction-divider--pre-enter'}`}
-      data-compaction-divider-id={record.id}
-      title={tooltip}
-      role="separator"
-      aria-label={t.contextCompactionDividerAria}
-    >
-      <span className="chat-compaction-divider-line" aria-hidden="true" />
-      <span className="chat-compaction-divider-content">
-        <Scissors size={14} aria-hidden="true" />
-        <span>{t.contextCompactionDivider}</span>
-        {showTokens && (
-          <span className="chat-compaction-divider-arrow">
-            {formatTokens(tokens.before)} → {formatTokens(tokens.after)}
-          </span>
-        )}
-      </span>
-      <span className="chat-compaction-divider-line" aria-hidden="true" />
-    </div>
+    <TimelineDivider data-compaction-divider-id={record.id}
+      title={tooltip} label={t.contextCompactionDividerAria}>
+      <Minimize2 size={14} aria-hidden="true" />
+      <span>{t.contextCompactionDivider}</span>
+      {showTokens && <span className="chat-compaction-divider-arrow">
+        {formatTokens(tokens.before)} → {formatTokens(tokens.after)}
+      </span>}
+    </TimelineDivider>
   )
 }

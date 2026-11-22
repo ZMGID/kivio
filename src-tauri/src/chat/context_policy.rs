@@ -1093,6 +1093,7 @@ mod tests {
 
     fn chat_msg(id: &str, role: &str, content: &str) -> ChatMessage {
         ChatMessage {
+            turn_model: None,
             irc_message: None,
             id: id.to_string(),
             role: role.to_string(),

@@ -6,7 +6,7 @@ use tokio::time::timeout;
 
 use crate::chat::agent::execute::truncate_chars;
 use crate::chat::attachments::{compose_text_attachments_for_api, TextAttachmentInput};
-use crate::chat::{AgentPlanState, ChatMessageSegment, ToolCallRecord};
+use crate::chat::{AgentPlanState, ChatMessage, ChatMessageSegment, Conversation, ToolCallRecord};
 use crate::external_agents::types::CapabilitySupport;
 use crate::state::AppState;
 
@@ -224,6 +224,64 @@ async fn stop_generation(
         (Err(fence), Err(goal)) => Some(format!("Generation stopped. Its stop marker and Goal state could not be published. {fence}\n{goal}")),
     };
     Ok(StopOutcome { warning })
+}
+
+/// A stop can win before a reply or its first token is written. Anchor that stop
+/// on the question so it survives reload without inventing an assistant reply.
+pub(super) async fn mark_unanswered_stop(
+    app: &AppHandle,
+    conversation: &mut Conversation,
+) -> Result<(), String> {
+    let Some(user) = super::messages::last_turn_user(&conversation.messages) else {
+        return Ok(());
+    };
+    let user_id = &user.id;
+    let saved = crate::chat::repository::repository(app)
+        .mutate_if(app, &conversation.id, None, |latest| {
+            Ok(record_unanswered_stop(&mut latest.messages, user_id))
+        })
+        .await
+        .map_err(crate::chat::repository::repository_error)?;
+    if let Some(saved) = saved {
+        *conversation = saved;
+    }
+    Ok(())
+}
+
+fn record_unanswered_stop(messages: &mut [ChatMessage], user_id: &str) -> bool {
+    let Some(index) = super::messages::last_turn_user_index(messages) else {
+        return false;
+    };
+    let user = &mut messages[index];
+    if user.id != user_id || user.stream_outcome.as_deref() == Some("cancelled") {
+        return false;
+    }
+    user.stream_outcome = Some("cancelled".into());
+    true
+}
+
+#[cfg(test)]
+mod timeline_stop_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_unanswered_question_records_an_early_stop() {
+        let message = |id: &str, role: &str| {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "role": role, "content": "", "timestamp": 1
+            }))
+            .unwrap()
+        };
+        let mut messages = vec![message("first", "user"), message("next", "user")];
+        assert!(!record_unanswered_stop(&mut messages, "first"));
+        assert!(record_unanswered_stop(&mut messages, "next"));
+        assert_eq!(messages[1].stream_outcome.as_deref(), Some("cancelled"));
+        assert!(!record_unanswered_stop(&mut messages, "next"));
+        messages.push(message("reply", "assistant"));
+        messages[1].stream_outcome = None;
+        assert!(!record_unanswered_stop(&mut messages, "next"));
+        assert!(messages[1].stream_outcome.is_none());
+    }
 }
 
 fn write_stop_fence(app: &AppHandle, id: &str, path: &std::path::Path) -> Result<(), String> {

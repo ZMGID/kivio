@@ -152,6 +152,7 @@ function visibleMetaRevision(message: ChatMessage): string {
   const streamOutcome = message.stream_outcome ?? message.streamOutcome
   const usage = message.usage
   return [
+    message.turn_model?.previous ? JSON.stringify(message.turn_model) : '',
     runEntry === 'regenerate' ? runEntry : '',
     streamOutcome === 'cancelled' || streamOutcome === 'error' || streamOutcome === 'interrupted'
       ? streamOutcome

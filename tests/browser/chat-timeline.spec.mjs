@@ -191,3 +191,91 @@ for (const history of [
     await expect(worked).toHaveAttribute('aria-expanded', 'false')
   })
 }
+
+test('a resumed timeline shows the model change above its question and one interruption after the answer', async ({ page }) => {
+  await open(page)
+  await page.setViewportSize({ width: 390, height: 640 })
+  await page.evaluate(() => {
+    const from = { provider: 'cli:claude', provider_name: 'Claude', model: 'opus', model_name: 'Opus 5.5', effort: 'high' }
+    const to = { ...from, model: 'sonnet', model_name: 'Sonnet 5.5', effort: 'medium' }
+    chatTimeline.showConversation({
+      id: 'branch', forked_from: { conversation_id: 'alpha', message_id: 'excluded', display_after_message_id: 'a', title: 'Source' }, messages: [
+        { id: 'q', role: 'user', timestamp: 1, content: 'Review the change', turn_model: { previous: from, current: to } },
+        { id: 'a', role: 'assistant', timestamp: 2, content: 'Partial reply', stream_outcome: 'cancelled' },
+        { id: 'next', role: 'user', timestamp: 3, content: 'Continue', turn_model: {
+          previous: to, current: { ...to, effort: 'xhigh' },
+        } },
+      ],
+    })
+  })
+  const switches = page.getByRole('separator', { name: '模型设置变更' })
+  await expect(switches).toHaveCount(2)
+  await expect(switches.first()).toHaveAttribute('title', 'Opus 5.5 High → Sonnet 5.5 Medium')
+  await expect(switches.last()).toHaveAttribute('title', 'Medium → XHigh')
+  const interrupted = page.getByRole('separator', { name: '运行已中断' })
+  await expect(interrupted).toHaveCount(1)
+  const box = locator => locator.boundingBox()
+  expect((await box(switches.first())).y).toBeLessThan((await box(page.getByText('Review the change'))).y)
+  expect((await box(interrupted)).y).toBeGreaterThan((await box(page.getByText('Partial reply'))).y)
+  expect((await box(interrupted)).y).toBeLessThan((await box(switches.last())).y)
+  const source = page.getByRole('button', { name: '分叉自对话 · Source' })
+  expect((await box(source)).y).toBeGreaterThan((await box(interrupted)).y)
+  expect((await box(source)).y).toBeLessThan((await box(switches.last())).y)
+  await source.click()
+  await expect(page.locator('[data-message-id=alpha-answer-13]')).toBeInViewport()
+})
+
+test('changing providers with the same model shows both provider names once', async ({ page }) => {
+  await open(page)
+  await page.evaluate(() => {
+    const from = { provider: 'a', provider_name: 'Team A', model: 'shared', effort: 'high' }
+    chatTimeline.showConversation({ id: 'providers', messages: [
+      { id: 'old', role: 'user', content: 'Older question without a saved model', timestamp: 1 },
+      { id: 'admitted', role: 'user', content: 'Use the second account', timestamp: 2, turn_model: {
+        previous: from, current: { ...from, provider: 'b', provider_name: 'Team B' },
+      } },
+    ] })
+  })
+  const change = page.getByRole('separator', { name: '模型设置变更' })
+  await expect(change).toHaveCount(1)
+  await expect(change).toHaveAttribute('title', 'Team A shared → Team B shared')
+})
+
+test('only an active compaction sweeps, including when the last message already has a boundary', async ({ page }) => {
+  await open(page)
+  const conversation = {
+    id: 'compaction', messages: [{ id: 'a', role: 'assistant', timestamp: 1, content: '已整理好对话记录。' }],
+    context_state: { compaction_boundaries: [
+      { id: 'first', display_after_message_id: 'a', token_estimate_before: 12000, token_estimate_after: 3000 },
+    ] },
+  }
+  await page.evaluate(c => chatTimeline.showConversation({ ...c, compacting: true }), conversation)
+  const active = page.getByRole('status', { name: '压缩中' })
+  const completed = page.getByRole('separator', { name: '上下文压缩边界' })
+  await expect(active).toBeInViewport()
+  await expect(completed).toContainText('12.0k → 3.0k')
+
+  const animations = row => row.evaluate(el => el.getAnimations({ subtree: true }).map(a => ({
+    running: a.playState, target: a.effect.target.getAttribute('aria-hidden'),
+  })))
+  await expect.poll(() => animations(active)).toEqual([{ running: 'running', target: 'true' }])
+  const position = () => active.locator('.chat-compaction-highlight').evaluate(el => getComputedStyle(el).maskPosition)
+  const initial = await position()
+  await expect.poll(position).not.toBe(initial)
+  expect(await animations(completed)).toEqual([])
+
+  for (const media of [{ reducedMotion: 'reduce' }, { reducedMotion: 'no-preference', forcedColors: 'active' }]) {
+    await page.emulateMedia(media)
+    await expect(active).toBeVisible()
+    await expect.poll(() => animations(active)).toEqual([])
+  }
+
+  await page.emulateMedia({ forcedColors: 'none' })
+  conversation.context_state.compaction_boundaries.push({
+    id: 'second', display_after_message_id: 'a', token_estimate_before: 3000, token_estimate_after: 800,
+  })
+  await page.evaluate(c => chatTimeline.showConversation(c), conversation)
+  await expect(active).toHaveCount(0)
+  await expect(completed.last()).toContainText('3.0k → 800')
+  expect(await animations(completed.last())).toEqual([])
+})

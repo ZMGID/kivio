@@ -2156,7 +2156,7 @@ button.chat-composer-status-item:hover {
 }
 
 
-.chat-compaction-divider {
+.chat-timeline-divider {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2167,48 +2167,35 @@ button.chat-composer-status-item:hover {
   user-select: none;
 }
 
-.chat-compaction-divider--animate {
-  animation: chat-compaction-divider-in 680ms var(--kv-ease-standard) both;
+.chat-timeline-divider--animate {
+  animation: chat-timeline-divider-in 680ms var(--kv-ease-standard) both;
 }
 
-.chat-compaction-divider--pre-enter {
-  opacity: 0;
-}
-
-.chat-compaction-divider--pre-enter .chat-compaction-divider-line {
-  opacity: 0;
-  transform: scaleX(0);
-}
-
-.chat-compaction-divider--pre-enter .chat-compaction-divider-content {
-  opacity: 0;
-  transform: translateY(6px);
-}
-
-.chat-compaction-divider-line {
+.chat-timeline-divider-line {
   flex: 1;
   height: 1px;
   background: color-mix(in srgb, var(--text) 28%, transparent);
   transform-origin: center;
 }
 
-.chat-compaction-divider--animate .chat-compaction-divider-line {
+.chat-timeline-divider--animate .chat-timeline-divider-line {
   animation: chat-compaction-line-in 560ms var(--kv-ease-standard) both;
 }
 
-.chat-compaction-divider--animate .chat-compaction-divider-content {
+.chat-timeline-divider--animate .chat-timeline-divider-content {
   animation: chat-compaction-content-in 560ms 120ms var(--kv-ease-standard) both;
 }
 
-.chat-compaction-divider-line--dim {
-  opacity: 0.55;
-}
-
-.chat-compaction-divider-content {
+.chat-timeline-divider-content {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 90%;
+  justify-content: center;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .chat-compaction-divider-arrow {
@@ -2224,17 +2211,39 @@ button.chat-composer-status-item:hover {
   background: var(--bg-primary, transparent);
 }
 
-.chat-compaction-progress {
-  display: flex;
+.chat-compaction-progress-label,
+.chat-compaction-highlight {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 12px 0 4px;
-  animation: chat-compaction-progress-in 320ms var(--kv-ease-standard) both;
+  gap: 6px;
+  white-space: nowrap;
 }
 
 .chat-compaction-progress-label {
-  font-size: 11px;
-  white-space: nowrap;
+  position: relative;
+}
+
+.chat-compaction-highlight {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: var(--text);
+  mask-image: linear-gradient(90deg, transparent, rgb(0 0 0 / 12%) 15%, rgb(0 0 0 / 55%) 35%, black 50%, rgb(0 0 0 / 55%) 65%, rgb(0 0 0 / 12%) 85%, transparent);
+  mask-size: 4.5rem 100%;
+  mask-repeat: no-repeat;
+  animation: chat-compaction-sweep 2.2s steps(30) infinite;
+}
+
+@keyframes chat-compaction-sweep {
+  from { mask-position: -4.5rem 0; }
+  to { mask-position: calc(100% + 4.5rem) 0; }
+}
+
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .chat-compaction-highlight {
+    display: none;
+    animation: none;
+  }
 }
 
 .chat-compaction-summary {
@@ -2295,23 +2304,12 @@ button.chat-composer-status-item:hover {
   }
 }
 
-@keyframes chat-compaction-divider-in {
+@keyframes chat-timeline-divider-in {
   from {
     opacity: 0;
   }
   to {
     opacity: 1;
-  }
-}
-
-@keyframes chat-compaction-progress-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 
@@ -2415,11 +2413,9 @@ button.chat-composer-status-item:hover {
   .chat-motion-row,
   .chat-motion-soft-pulse,
   .chat-motion-search-reveal,
-  .chat-compaction-divider--pre-enter,
-  .chat-compaction-divider--animate,
-  .chat-compaction-divider--animate .chat-compaction-divider-line,
-  .chat-compaction-divider--animate .chat-compaction-divider-content,
-  .chat-compaction-progress {
+  .chat-timeline-divider--animate,
+  .chat-timeline-divider--animate .chat-timeline-divider-line,
+  .chat-timeline-divider--animate .chat-timeline-divider-content {
     animation: none;
   }
 

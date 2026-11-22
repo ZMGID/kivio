@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { collectCompactionRecords, resolveCompactionBoundaries, resolvePendingCompactionAfterIndex } from './compactionBoundary'
+import { collectCompactionRecords, resolveCompactionBoundaries } from './compactionBoundary'
 import type { ChatMessage, ConversationContextState } from './types'
 
 const messages: ChatMessage[] = [
@@ -92,28 +92,5 @@ describe('compactionBoundary', () => {
       },
     }
     expect(collectCompactionRecords(contextState)).toHaveLength(0)
-  })
-
-  it('renders the in-progress animation after the current last message', () => {
-    // Compaction fires "now" → the animation slot is the end of the timeline,
-    // exactly where the persisted divider (display_after_message_id) will land.
-    expect(resolvePendingCompactionAfterIndex(messages, null)).toBe(2)
-    expect(resolvePendingCompactionAfterIndex([], null)).toBeNull()
-  })
-
-  it('prefers actual boundary anchor over the tail slot while compacting', () => {
-    const contextState: ConversationContextState = {
-      compaction_boundaries: [{
-        id: 'b-new',
-        source_until_message_id: 'm1',
-        display_after_message_id: 'm2',
-        token_estimate_before: 1000,
-        token_estimate_after: 200,
-        summary_content: 'summary',
-        trigger: 'manual',
-        created_at: 10,
-      }],
-    }
-    expect(resolvePendingCompactionAfterIndex(messages, contextState, 'b-new')).toBe(1)
   })
 })

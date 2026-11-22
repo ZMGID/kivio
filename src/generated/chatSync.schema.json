@@ -541,6 +541,27 @@
         {
           "additionalProperties": false,
           "properties": {
+            "messageId": {
+              "type": "string"
+            },
+            "turnModel": {
+              "$ref": "#/$defs/TurnModel"
+            },
+            "type": {
+              "const": "turn_model_updated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "turnModel"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
             "type": {
               "const": "subagent_activity_added",
               "type": "string"
@@ -3290,6 +3311,63 @@
         "interrupted"
       ],
       "type": "string"
+    },
+    "TurnModel": {
+      "additionalProperties": false,
+      "description": "Model selection of an admitted single-model user turn, preserved across history windows.",
+      "properties": {
+        "current": {
+          "$ref": "#/$defs/TurnModelSelection"
+        },
+        "previous": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnModelSelection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "current"
+      ],
+      "type": "object"
+    },
+    "TurnModelSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "provider_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "provider_name"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

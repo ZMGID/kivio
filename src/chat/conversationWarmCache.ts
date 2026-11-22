@@ -28,6 +28,7 @@ function applyReplay(window: Conversation, replay: ChatHistoryReplay): Conversat
         case 'goal_updated':
           current.goal_state = current.goalState = event.goalState
           break
+        case 'turn_model_updated':
         case 'subagent_activity_added':
           return null
       }

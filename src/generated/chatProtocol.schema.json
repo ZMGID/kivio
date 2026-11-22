@@ -507,6 +507,47 @@
             "conversationId": {
               "type": "string"
             },
+            "messageId": {
+              "type": "string"
+            },
+            "protocolVersion": {
+              "const": 1,
+              "type": "integer"
+            },
+            "revision": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "scope": {
+              "const": "conversation",
+              "type": "string"
+            },
+            "turnModel": {
+              "$ref": "#/$defs/TurnModel"
+            },
+            "type": {
+              "const": "turn_model_updated",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "messageId",
+            "turnModel",
+            "protocolVersion",
+            "scope",
+            "conversationId",
+            "revision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "conversationId": {
+              "type": "string"
+            },
             "protocolVersion": {
               "const": 1,
               "type": "integer"
@@ -2793,6 +2834,63 @@
         "interrupted"
       ],
       "type": "string"
+    },
+    "TurnModel": {
+      "additionalProperties": false,
+      "description": "Model selection of an admitted single-model user turn, preserved across history windows.",
+      "properties": {
+        "current": {
+          "$ref": "#/$defs/TurnModelSelection"
+        },
+        "previous": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnModelSelection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "current"
+      ],
+      "type": "object"
+    },
+    "TurnModelSelection": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "provider_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "provider_name"
+      ],
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

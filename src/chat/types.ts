@@ -201,7 +201,10 @@ export interface ChatMessageSegment {
   toolCallId?: string | null
 }
 
+export type TurnModel = import('../generated/chatProtocol').TurnModel
+
 export interface ChatMessage {
+  turn_model?: TurnModel | null
   id: string
   role: 'user' | 'assistant'
   content: string
@@ -656,6 +659,7 @@ export interface Conversation {
 
 /** 对话分支来源快照（方案 B）。 */
 export interface ForkOrigin {
+  display_after_message_id?: string | null
   conversation_id?: string
   conversationId?: string
   message_id?: string

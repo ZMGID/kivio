@@ -37,6 +37,13 @@ export function createOptimisticUserPresentation() {
       publish()
       return { token, message }
     },
+    updateTurnModel: (conversationId: string, messageId: string, turnModel: NonNullable<ChatMessage['turn_model']>) => {
+      const claim = pending.get(conversationId)
+      if (!claim || claim.message.id !== messageId) return false
+      claim.message = { ...claim.message, turn_model: turnModel }
+      publish()
+      return true
+    },
     settle: (conversationId: string, token: number) => {
       if (pending.get(conversationId)?.token !== token) return
       pending.delete(conversationId)

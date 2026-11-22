@@ -16,8 +16,10 @@ use super::context::{
     compute_context_state, emit_chat_context_state, persist_context_state_best_effort,
 };
 use super::fan_out::run_reply_fan_out;
+use super::interaction::mark_unanswered_stop;
 use super::reply_runtime::{resolve_reply_arms, ChatSendReservation, CHAT_REPLY_BUSY_ERROR};
 use super::title::{generate_title, is_placeholder_title};
+use super::turn_model::{emit_turn_model, record_turn_model};
 
 /// Continue an already-active Goal without creating a synthetic user message.
 #[tauri::command]
@@ -426,6 +428,39 @@ mod recovery_tests {
     }
 
     #[test]
+    fn turn_model_uses_the_retained_user_turn_after_reload_and_regenerate() {
+        let mut chat = conversation(vec![user("first"), user("second"), user("third")]);
+        let settings = crate::settings::Settings::default();
+        chat.agent_runtime.kind = crate::chat::types::AgentRuntimeKind::External;
+        chat.agent_runtime.external_agent_id = Some("claude".into());
+        chat.agent_runtime.external_model = Some("claude-opus-5-5".into());
+        chat.agent_runtime.external_reasoning = Some("high".into());
+        super::record_turn_model(&mut chat, 0, &settings);
+        super::record_turn_model(&mut chat, 1, &settings);
+        assert!(chat.messages[1]
+            .turn_model
+            .as_ref()
+            .unwrap()
+            .previous
+            .is_none());
+        chat.agent_runtime.external_model = Some("claude-sonnet-5-5".into());
+        chat.agent_runtime.external_reasoning = Some("medium".into());
+        super::record_turn_model(&mut chat, 2, &settings);
+        let mut reopened: Conversation =
+            serde_json::from_slice(&serde_json::to_vec(&chat).unwrap()).unwrap();
+        let turn = reopened.messages[2].turn_model.as_ref().unwrap();
+        assert_eq!(
+            turn.previous.as_ref().unwrap().model_name.as_deref(),
+            Some("Opus 5.5")
+        );
+        assert_eq!(turn.current.model_name.as_deref(), Some("Sonnet 5.5"));
+        assert_eq!(turn.current.effort.as_deref(), Some("medium"));
+        reopened.messages.truncate(2);
+        super::record_turn_model(&mut reopened, 1, &settings);
+        assert_eq!(reopened.messages[1].turn_model, chat.messages[2].turn_model);
+    }
+
+    #[test]
     fn latest_parent_checkpoint_survives_background_reports_but_not_a_newer_turn() {
         let mut conversation = conversation(vec![
             user("old-user"),
@@ -740,6 +775,7 @@ async fn send_reserved(
 
     // 创建用户消息
     let user_message = ChatMessage {
+        turn_model: None,
         irc_message: None,
         id: user_message_id,
         role: "user".to_string(),
@@ -783,6 +819,7 @@ async fn send_reserved(
     };
     let saved = crate::chat::repository::repository(&app)
         .mutate(&app, &conversation_id, {
+            let app_state = state.inner();
             let user_message = user_message.clone();
             let provisional_title = provisional_title.clone();
             let goal_started = goal_started.clone();
@@ -803,6 +840,10 @@ async fn send_reserved(
                     crate::chat::session_history::admit_input(latest, &user_message.id, vec![user_fact])?;
                 }
                 latest.messages.push(user_message);
+                if !fan_out {
+                    let index = latest.messages.len() - 1;
+                    record_turn_model(latest, index, &app_state.settings_read());
+                }
                 // 往归档对话里继续发 = 重新启用。否则侧栏排除归档后，乐观行一剪这条就消失。
                 latest.archived = false;
                 if let Some(plan) = selected_plan {
@@ -850,6 +891,13 @@ async fn send_reserved(
         }
         Err(error) => return Err(crate::chat::repository::repository_error(error)),
     };
+    if let Some(message) = conversation.messages.last().filter(|m| {
+        m.turn_model
+            .as_ref()
+            .is_some_and(|turn| turn.previous.is_some())
+    }) {
+        emit_turn_model(&app, &conversation, message);
+    }
     let resumed = state
         .sub_agents
         .resume_user_turn(&conversation_id, interruption_epoch);
@@ -860,6 +908,7 @@ async fn send_reserved(
         on_user_message_saved();
     }
     if !resumed {
+        mark_unanswered_stop(&app, &mut conversation).await?;
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(
             serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
@@ -888,6 +937,7 @@ async fn send_reserved(
         .map(str::to_string);
 
     if state.sub_agents.user_interrupted(&conversation_id) {
+        mark_unanswered_stop(&app, &mut conversation).await?;
         strip_transcripts_for_frontend(&mut conversation);
         return Ok(
             serde_json::json!({ "success": true, "conversation": conversation, "warning": warning }),
@@ -910,6 +960,9 @@ async fn send_reserved(
             forced_skill_id.as_deref(),
         )
         .await;
+        if fan_out_outcome.as_ref().is_err_and(|e| e == "cancelled") {
+            mark_unanswered_stop(&app, &mut conversation).await?;
+        }
         strip_transcripts_for_frontend(&mut conversation);
         return match fan_out_outcome {
             Ok(()) => Ok(serde_json::json!({
@@ -953,6 +1006,7 @@ async fn send_reserved(
             }))
         }
         Err(err) if err == "cancelled" => {
+            mark_unanswered_stop(&app, &mut conversation).await?;
             strip_transcripts_for_frontend(&mut conversation);
             Ok(serde_json::json!({
                 "success": true,

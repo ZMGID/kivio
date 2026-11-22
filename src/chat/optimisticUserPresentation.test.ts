@@ -19,8 +19,12 @@ describe('optimistic user presentation', () => {
     const owner = createOptimisticUserPresentation()
     const first = owner.begin('a', 'first', [], 100_000)
     const second = owner.begin('a', 'second', [], 101_000)
+    const turn = { current: { provider: 'p', provider_name: 'P', model: 'm', effort: 'medium' } }
+    owner.updateTurnModel('a', first.message.id, turn)
     owner.settle('a', first.token)
     expect(owner.overlay('a', [])).toEqual([second.message])
+    owner.updateTurnModel('a', second.message.id, turn)
+    expect(owner.overlay('a', [])[0].turn_model).toEqual(turn)
     owner.settle('a', second.token)
     expect(owner.overlay('a', [])).toEqual([])
   })

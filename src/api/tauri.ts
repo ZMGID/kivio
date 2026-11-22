@@ -2188,6 +2188,12 @@ export const api = {
       }
     })
   },
+  onTurnModelUpdated: (listener: (event: Extract<ChatProtocolEvent, { type: 'turn_model_updated' }>) => void) => {
+    if (!isTauriRuntime()) return Promise.resolve(() => {})
+    return onChatProtocol(event => {
+      if (event.type === 'turn_model_updated') listener(event)
+    })
+  },
   onChatContext: (listener: (payload: ChatContextPayload) => void) => {
     if (!isTauriRuntime()) return Promise.resolve(() => {})
     return onChatProtocol((event) => {

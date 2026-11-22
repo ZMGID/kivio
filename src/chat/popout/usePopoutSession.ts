@@ -16,6 +16,7 @@ import { useTauriEvent } from '../hooks/useTauriEvent'
 import { keepNewerTodoState, patchTodoState } from '../agentTodoState'
 import { keepNewerContextMeasurement } from '../contextPanel'
 import { findSubagentToolIndex, mergeSubagentProgress, messageToolCalls, userPromptEventToRecord, isStreamTerminal } from '../streamApply'
+import { useTurnModelUpdates } from '../hooks/useTurnModelUpdates'
 import { createChatExecutionOwner } from '../chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from '../chatStreamLifecycleOwner'
 import { createStreamPreviewOwner } from '../streamPreviewOwner'
@@ -52,6 +53,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
   const viewActiveRef = useRef(false)
   const incomingReadEpoch = useRef(0)
   const [executionOwner] = useState(createChatExecutionOwner)
+  useTurnModelUpdates(executionOwner, setConversation)
   const [previewOwner] = useState(createStreamPreviewOwner)
   const [streamLifecycleOwner] = useState(() => createChatStreamLifecycleOwner(executionOwner, previewOwner))
   useSyncExternalStore(executionOwner.subscribe, executionOwner.getRevision)
@@ -497,7 +499,7 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
     conversation?.worktree?.path,
   )
 
-  const inputBarProps = usePopoutComposer({
+  const { contextCompressing, ...inputBarProps } = usePopoutComposer({
     conversation,
     setConversation,
     conversationId,
@@ -517,6 +519,10 @@ export function usePopoutSession(conversationId: string, lang: Lang) {
 
   const messageListProps: MessageListProps = {
     conversationId,
+    compactionInProgress: contextCompressing,
+    contextState: conversation?.context_state ?? conversation?.contextState,
+    forkOrigin: conversation?.forked_from ?? conversation?.forkedFrom,
+    onOpenConversation: id => { void chatApi.openConversationPopout(id).catch(error => notifyError(String(error))) },
     messages: displayMessages,
     historyStart: conversation?.history_start,
     historyGap: conversation?.history_gap,

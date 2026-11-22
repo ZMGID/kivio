@@ -18,6 +18,7 @@ import { EMPTY_HISTORY_DIRECTORY, isPartialConversation, mergeConversationMetada
 import { keepNewerTodoState, patchTodoState } from './agentTodoState'
 import { keepNewerContextMeasurement } from './contextPanel'
 import { forgetChatReadingPosition, readingWindowAnchor } from './chatReadingPosition'
+import { useTurnModelUpdates } from './hooks/useTurnModelUpdates'
 import { createChatExecutionOwner } from './chatExecutionOwner'
 import { createChatStreamLifecycleOwner, type StreamLifecycleResult } from './chatStreamLifecycleOwner'
 import { createChatPopoutOwnershipOwner } from './chatPopoutOwnershipOwner'
@@ -409,6 +410,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const streamCoarse = useStreamCoarse()
   /** 会话执行身份与乐观用户消息跨导航存活；高频正文仍在专用展示 store。 */
   const executionOwner = useRef(createChatExecutionOwner()).current
+  useTurnModelUpdates(executionOwner, setCurrentConversation)
   const [previewOwner] = useState(createStreamPreviewOwner)
   const [streamLifecycleOwner] = useState(() => createChatStreamLifecycleOwner(executionOwner, previewOwner))
   const [interactionInbox] = useState(() => createRunInteractionInbox({
@@ -518,7 +520,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     resetContext,
     compactingConversationIds,
     markConversationCompacting,
-    animateCompactionBoundaryId,
     animateClearBoundaryId,
     refreshContextStats,
     refreshCurrent: handleRefreshContext,
@@ -2315,6 +2316,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
   const showEmptyHero = chatView === 'conversation'
     && !conversationOccupied
     && !goalDraft && !goalActive
+    && !(currentConversation?.forked_from ?? currentConversation?.forkedFrom)
     && isEmptyChatPresentation(displayMessages.length, streamCoarse)
 
   // 输入栏是聊天主区里除 MessageList 外最大的常驻子树。把它的 slot 和对象值稳定下来，
@@ -2855,6 +2857,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     const history = {
       conversationId: conversation?.id,
       messages: displayMessages,
+      forkOrigin: conversation?.forked_from ?? conversation?.forkedFrom,
+      onOpenConversation: handleSidebarSelectConversation,
       historyGap: conversation?.history_gap,
       historyStart: conversation?.history_start ?? 0,
       historyTurnCount: conversation?.history_turn_count,
@@ -2896,7 +2900,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       onExecuteAgentPlan: handleExecuteAgentPlan,
       onSetGroupSelection: handleSetGroupSelection,
       compactionInProgress: contextCompressing,
-      animateCompactionBoundaryId: animateCompactionBoundaryId,
       animateClearBoundaryId: animateClearBoundaryId,
       focusMessageId: messageFocus?.messageId,
       focusReasoning: messageFocus?.reasoning,
@@ -2904,7 +2907,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     }
   }, [
     resuming,
-    animateCompactionBoundaryId,
     animateClearBoundaryId,
     assistantStreamStatsByMessageId,
     contextCompressing,
@@ -2916,6 +2918,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     navigation.focusHistoryMessage,
     navigation.loadHistoryPage,
     handleConversationFirstCommit,
+    handleSidebarSelectConversation,
     handleDeleteMessage,
     handleExecuteAgentPlan,
     handleForkMessage,
@@ -2930,13 +2933,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     usesExternalRuntime,
     activeAgentPlanMode,
   ])
-
-  const forkOrigin = useMemo(() => {
-    const origin = currentConversation?.forked_from ?? currentConversation?.forkedFrom
-    if (!origin) return null
-    const sourceId = origin.conversation_id ?? origin.conversationId
-    return sourceId ? { sourceId, title: origin.title } : null
-  }, [currentConversation])
 
   const cancellingInteractions = currentConversation ? executionOwner.isCancellationRequested(currentConversation.id) : false
   const pendingSlot = useMemo(() => cancellingInteractions ? null : (
@@ -3196,8 +3192,6 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             hookWarning={hookWarning}
             currentConversationId={currentConversation?.id ?? null}
             onDismissHookWarning={handleDismissHookWarning}
-            forkOrigin={forkOrigin}
-            onSelectConversation={handleSelectConversation}
             importedHistoryStale={importedHistoryStale}
             pendingSlot={resuming ? null : pendingSlot}
             goalSlot={!resuming && visibleGoal ? (
