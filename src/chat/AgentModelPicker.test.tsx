@@ -100,9 +100,9 @@ describe('AgentModelPicker · external CLI models and effort', () => {
     // 调强度不关闭弹层，方便继续设置。
     expect(panel()).toBeInTheDocument()
     view.rerenderWith({ agentRuntime: { ...selected, externalReasoning: 'custom-budget' } })
-    // CLI 默认不占滑杆落点，由「恢复默认强度」交回。
-    fireEvent.click(screen.getByRole('button', { name: '恢复默认强度' }))
-    expect(onExternalModelChange).toHaveBeenLastCalledWith('custom/reasoner', 'default')
+    // CLI 默认不占滑杆落点，也不再放「恢复默认」按钮。
+    expect(screen.queryByRole('menuitemradio', { name: 'Default' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '恢复默认强度' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'custom/plain' }))
     expect(onExternalModelChange).toHaveBeenLastCalledWith('custom/plain', null)
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
@@ -110,6 +110,16 @@ describe('AgentModelPicker · external CLI models and effort', () => {
     expect(trigger().querySelector('.chat-thinking-level-label')).toBeNull()
     openPicker()
     expect(screen.queryByRole('menuitemradio')).not.toBeInTheDocument()
+  })
+
+  it('换到还在探测的 CLI：弹层定高、底栏先占位，探测提示稍等才出现，不一闪而过', async () => {
+    detectModels.mockImplementation(() => new Promise(() => {}))
+    renderPicker({ agentRuntime: runtime })
+    openPicker()
+    expect(panel().style.height).not.toBe('')
+    expect(panel().querySelector('.kv-effort__track.is-placeholder')).not.toBeNull()
+    expect(screen.queryByText('正在探测模型…')).not.toBeInTheDocument()
+    expect(await screen.findByText('正在探测模型…')).toBeInTheDocument()
   })
 
   it('shows saved models during refresh without restoring a stale selection or overwriting a user choice', async () => {
@@ -521,7 +531,21 @@ describe('AgentModelPicker · built-in models and thinking level', () => {
     expect(screen.queryByText('尚未确认此模型是否支持关闭思考。')).not.toBeInTheDocument()
   })
 
-  it('滑杆：方向键吸附到相邻可用档，恢复默认清掉显式档位', async () => {
+  it('胶囊显示当前代理的图标：内置是 Kivio 标志，Chat 用染色变体', async () => {
+    await act(async () => { renderPicker() })
+    expect(trigger().querySelector('img.kv-agent-picker__logo')).not.toBeNull()
+    expect(trigger().querySelector('.kv-agent-picker__logo--chat')).toBeNull()
+    // 代理图标 / 模型图标：有具体模型时才带分隔符。
+    expect(trigger().querySelector('.kv-agent-picker__crumb-sep')).toHaveTextContent('/')
+    document.body.innerHTML = ''
+    await act(async () => { renderPicker({ model: '' }) })
+    expect(trigger().querySelector('.kv-agent-picker__crumb-sep')).toBeNull()
+    document.body.innerHTML = ''
+    await act(async () => { renderPicker({ agentRuntime: { ...builtin, kind: 'chat' } }) })
+    expect(trigger().querySelector('img.kv-agent-picker__logo--chat')).not.toBeNull()
+  })
+
+  it('滑杆：方向键吸附到相邻可用档', async () => {
     thinkingCapabilitiesForModel.mockResolvedValue({ levels: ['low', 'high', 'max'], offMode: 'unsupported' })
     const onThinkingLevelChange = vi.fn()
     await act(async () => { renderPicker({ thinkingLevel: 'low', onThinkingLevelChange }) })
@@ -530,8 +554,6 @@ describe('AgentModelPicker · built-in models and thinking level', () => {
     expect(low).toHaveAttribute('aria-checked', 'true')
     fireEvent.keyDown(low, { key: 'ArrowRight' })
     expect(onThinkingLevelChange).toHaveBeenLastCalledWith('high')
-    fireEvent.click(screen.getByRole('button', { name: '恢复默认强度' }))
-    expect(onThinkingLevelChange).toHaveBeenLastCalledWith(null)
   })
 
   it('滑杆拖动时只预览，松手才提交一次', async () => {
@@ -565,6 +587,10 @@ describe('AgentModelPicker · built-in models and thinking level', () => {
     expect(search).toHaveValue('')
     expect(panel()).toBeInTheDocument()
     fireEvent.change(search, { target: { value: 'm2' } })
+    // 中文输入法按回车上屏：WebKit 里 isComposing 已是 false，只有 keyCode 229，不能当成选中。
+    fireEvent.keyDown(search, { key: 'Enter', keyCode: 229 })
+    expect(onModelChange).not.toHaveBeenCalled()
+    expect(panel()).toBeInTheDocument()
     fireEvent.keyDown(search, { key: 'Enter' })
     expect(onModelChange).toHaveBeenCalledWith('p1', 'm2')
   })

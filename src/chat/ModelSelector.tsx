@@ -59,7 +59,9 @@ export function ModelSearchField({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
-          if (event.nativeEvent.isComposing) return
+          // IME 合成中（中/日/韩输入法按回车上屏）跳过。WebKit（Tauri macOS）里上屏那次回车的
+          // isComposing 已是 false，只剩 keyCode 229 可认；漏掉它就会把上屏当成「选中首项」并关掉弹层。
+          if (event.nativeEvent.isComposing || event.keyCode === 229) return
           // 有搜索词时 Esc 先清空，不直接关掉整个弹层。
           if (event.key === 'Escape' && value) {
             event.preventDefault()

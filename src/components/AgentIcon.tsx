@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react'
 import Antigravity from '@lobehub/icons/es/Antigravity/components/Color'
 import './agentIcon.css'
 
+// codex.svg 是 Codex 自己的品牌图标（渐变云朵 + >_），不是 OpenAI 标志；自带颜色，不走单色蒙版。
 const ICON_EXT: Record<string, 'svg'> = {
   claude: 'svg',
   codex: 'svg',
@@ -14,7 +15,7 @@ const ICON_EXT: Record<string, 'svg'> = {
   dsh: 'svg',
 }
 
-const MONO_ICONS = new Set(['codex', 'opencode', 'hermes', 'grok'])
+const MONO_ICONS = new Set(['opencode', 'hermes', 'grok'])
 
 interface AgentIconProps {
   id: string

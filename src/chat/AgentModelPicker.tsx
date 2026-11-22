@@ -1,5 +1,5 @@
-import { memo, useCallback, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { Lock, RotateCcw, Zap } from 'lucide-react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { Lock, Zap } from 'lucide-react'
 import { AgentIcon } from '../components/AgentIcon'
 import { ModelIcon } from '../components/ModelIcon'
 import { IconButton } from '../components/Button'
@@ -129,6 +129,9 @@ function AgentModelPickerBase({
     ? (external.reasoningOptions.length > 0 ? external.reasoningLabel : null)
     : (thinking.hidden ? null : thinking.effectiveLabel)
   const fastOn = usesExternal && external.fastOn
+  const pillModelId = usesExternal
+    ? (external.activeModelId !== 'default' ? external.activeModelId : null)
+    : model || null
   const providerName = !usesExternal && model ? builtinCatalog.currentProvider?.name : undefined
   const summary = [
     agentLabel,
@@ -153,8 +156,7 @@ function AgentModelPickerBase({
     )
     : null
   const searchPlaceholder = t.chatSearchAgentModels.replace('{agent}', agentLabel)
-  // 档位落点：CLI 的 default（交回 CLI 默认）不占轨道位置，由「恢复默认」承担。
-  const hasCliDefaultEffort = usesExternal && external.reasoningOptions.some((option) => option.id === 'default')
+  // 档位落点：CLI 的 default 不占轨道位置；未显式选择时滑杆显示 CLI 实际在用的档。
   const effortSteps: EffortStep[] = usesExternal
     ? external.reasoningOptions
       .filter((option) => option.id !== 'default')
@@ -186,13 +188,17 @@ function AgentModelPickerBase({
         title={summary}
         className={`${chatTitlebarPillButtonClass} max-w-full min-w-0`}
       >
-        {/* 胶囊回答「现在用的是哪个模型」：内置运行时显示模型品牌图标，外部 CLI 显示 CLI 图标
-            （直接按 externalAgentId 取，不等检测结果）。Kivio Agent / Chat 的区别在左栏与悬停提示里。 */}
+        {/* 胶囊像面包屑：代理图标 / 模型图标 模型名 强度。代理图标直接按 externalAgentId 取，不等检测结果；
+            CLI 未定具体模型（Auto）时只留代理图标。 */}
         {usesExternal && agentRuntime.externalAgentId
           ? <AgentIcon id={agentRuntime.externalAgentId} size={16} />
-          : model
-            ? <ModelIcon model={model} size={16} />
-            : <KivioMark size={16} variant={usesChat ? 'chat' : 'agent'} />}
+          : <KivioMark size={16} variant={usesChat ? 'chat' : 'agent'} />}
+        {pillModelId && (
+          <>
+            <span className="kv-agent-picker__crumb-sep" aria-hidden="true">/</span>
+            <ModelIcon model={pillModelId} size={16} />
+          </>
+        )}
         <span
           className={`chat-model-selector-label max-w-[200px] truncate font-medium ${
             usesExternal && external.initialLoading ? 'reasoning-shimmer-text' : 'text-neutral-800'
@@ -213,7 +219,8 @@ function AgentModelPickerBase({
             ref={menuRef}
             role="dialog"
             aria-label={summary}
-            style={{ maxHeight }}
+            // 定高：换代理时列表长短、底栏有无都不该让弹层伸缩。
+            style={{ height: maxHeight }}
             className="kv-agent-picker__popover kv-menu chat-motion-popover"
           >
             {/* 左栏只放代理图标（名字在悬停提示和右侧搜索框里），把宽度留给模型列表。
@@ -285,12 +292,7 @@ function AgentModelPickerBase({
                   if (usesExternal) external.selectReasoning(value)
                   else onThinkingLevelChange(value as ThinkingLevel)
                 }}
-                canReset={usesExternal ? external.reasoningValue !== 'default' : thinkingLevel != null}
-                onReset={() => {
-                  // 外部 CLI 交回它自己的默认；内置清掉显式档位，按模型默认档处理。
-                  if (usesExternal) external.selectReasoning(hasCliDefaultEffort ? 'default' : null)
-                  else onThinkingLevelChange(null)
-                }}
+                pending={usesExternal && external.initialLoading}
                 fastTier={usesExternal ? external.fastTier : undefined}
                 fastOn={fastOn}
                 onToggleFast={external.toggleFast}
@@ -329,10 +331,23 @@ function AgentOption({
       onClick={onSelect}
       className={`kv-agent-picker__agent${active ? ' is-active' : ''}`}
     >
-      {/* 包一层：灰阶滤镜加在外层，不会被 Kivio Chat 标志自带的染色滤镜覆盖。 */}
       <span className="kv-agent-picker__agent-icon">{icon}</span>
     </button>
   )
+}
+
+/** `active` 持续超过 `delayMs` 才变 true；变回 false 立即生效。用来压掉一闪而过的加载提示。 */
+function useDelayedFlag(active: boolean, delayMs: number): boolean {
+  const [shown, setShown] = useState(false)
+  useEffect(() => {
+    if (!active) {
+      setShown(false)
+      return
+    }
+    const timer = window.setTimeout(() => setShown(true), delayMs)
+    return () => window.clearTimeout(timer)
+  }, [active, delayMs])
+  return active && shown
 }
 
 function ExternalModelList({
@@ -356,6 +371,10 @@ function ExternalModelList({
   const searchRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const { models, loading, source, probeError } = catalog
+  // 换代理时先有缓存快照（通常几十毫秒内到）：空窗口先留白，超过一小段时间仍在探测才显示提示，
+  // 避免「正在探测」一闪而过。
+  const probing = loading && models.length === 0
+  const showProbing = useDelayedFlag(probing, 300)
   useAutoFocusSearch(autoFocusSearch, searchRef)
   useRevealCurrentRow(listRef)
   const normalizedQuery = query.trim().toLowerCase()
@@ -391,9 +410,11 @@ function ExternalModelList({
       )}
       <div ref={listRef} className="custom-scrollbar min-h-0 flex-1 overflow-y-auto px-1 pb-1" key={agentId}>
         {models.length === 0 ? (
-          <div className={`kv-menu-row ${loading ? 'reasoning-shimmer-text' : 'text-neutral-500'}`}>
-            {loading ? t.chatRuntimeProbingModels : t.chatRuntimeNoModels}
-          </div>
+          probing && !showProbing ? null : (
+            <div className={`kv-menu-row ${loading ? 'reasoning-shimmer-text' : 'text-neutral-500'}`}>
+              {loading ? t.chatRuntimeProbingModels : t.chatRuntimeNoModels}
+            </div>
+          )
         ) : visibleModels.length === 0 ? (
           <div className="px-4 py-6 text-center text-[12px] text-neutral-500">{t.chatNoMatchingModels}</div>
         ) : (
@@ -444,7 +465,7 @@ function stepPosition(ratio: number): string {
 }
 
 /**
- * 思考强度滑杆（一行）：左侧档位名，中间轨道按档位等距落点，右侧恢复默认与快速模式；
+ * 思考强度滑杆（一行）：左侧档位名，中间轨道按档位等距落点，右侧快速模式；
  * 拖动或点击吸附到最近的可用档，松手才提交。档位列表由模型库决定，这里只负责呈现。
  */
 function EffortSlider({
@@ -453,8 +474,7 @@ function EffortSlider({
   title,
   disabled,
   onSelect,
-  canReset,
-  onReset,
+  pending,
   fastTier,
   fastOn,
   onToggleFast,
@@ -465,8 +485,8 @@ function EffortSlider({
   title: string
   disabled: boolean
   onSelect: (value: string) => void
-  canReset: boolean
-  onReset: () => void
+  /** 外部 CLI 首次探测中：档位未到，先占住底栏（空凹槽），到了再填，弹层不跳。 */
+  pending: boolean
   fastTier: { id: string; label: string } | undefined
   fastOn: boolean
   onToggleFast: () => void
@@ -476,7 +496,15 @@ function EffortSlider({
   const trackRef = useRef<HTMLDivElement>(null)
   const dotRefs = useRef<(HTMLButtonElement | null)[]>([])
   const [dragIndex, setDragIndex] = useState<number | null>(null)
-  if (steps.length === 0 && !fastTier) return null
+  if (steps.length === 0 && !fastTier) {
+    if (!pending) return null
+    return (
+      <div className="kv-agent-picker__effort" aria-hidden="true">
+        <span className="kv-effort__value" />
+        <div className="kv-effort__track is-placeholder" />
+      </div>
+    )
+  }
 
   const count = steps.length
   const valueIndex = value == null ? -1 : steps.findIndex((step) => step.value === value)
@@ -532,7 +560,7 @@ function EffortSlider({
 
   return (
     <div className="kv-agent-picker__effort">
-      {/* 一行：档位名（定宽，换档时轨道不跳）→ 滑杆 → 恢复默认 → 快速模式。 */}
+      {/* 一行：档位名（定宽，换档时轨道不跳）→ 滑杆 → 快速模式。 */}
       <span className={`kv-effort__value${count > 0 ? '' : ' kv-effort__value--solo'}`} title={t.chatThinkingEffort} aria-live="polite">
         {/* 换档时文字重新淡入（按文字换 key 重挂）。 */}
         <span key={count > 0 ? shownTitle : 'fast'} className="kv-effort__value-text">{count > 0 ? shownTitle : t.chatFastMode}</span>
@@ -606,11 +634,6 @@ function EffortSlider({
           ))}
           {shownIndex >= 0 && <span className="kv-effort__knob" style={{ left: stepPosition(ratio) }} aria-hidden="true" />}
         </div>
-      )}
-      {count > 0 && (
-        <IconButton size="sm" variant="ghost" label={t.chatThinkingReset} onClick={onReset} disabled={!canReset || disabled}>
-          <RotateCcw size={14} />
-        </IconButton>
       )}
       {fastButton}
     </div>
