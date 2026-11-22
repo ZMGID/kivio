@@ -318,7 +318,12 @@ pub(super) fn reprice(
     providers: &[ModelProvider],
     only_missing: bool,
 ) -> Result<(), String> {
-    let tx = db.transaction().map_err(|e| e.to_string())?;
+    // Read-then-write: take the write lock up front so busy_timeout applies. A deferred
+    // transaction fails immediately with "database is locked" when another writer commits
+    // between the read snapshot and the first UPDATE (WAL cannot upgrade a stale snapshot).
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("usage database: {e}"))?;
     let rows = tx
         .prepare("SELECT * FROM records WHERE cost_source NOT IN ('user_override','cli_reported') AND (?1=0 OR cost_usd IS NULL)")
         .map_err(|e| e.to_string())?
