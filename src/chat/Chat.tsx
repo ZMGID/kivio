@@ -90,6 +90,7 @@ import {
   resolveSendSkillId,
   normalizeSkill,
   skillRecommendedTools,
+  skillsForExpert,
 } from './skillSelection'
 import {
   conversationLastMessageContent,
@@ -923,10 +924,13 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     if (!id) return null
     return { id, name: currentConversation?.folder ?? '' }
   }, [currentConversation?.project_id, currentConversation?.projectId, currentConversation?.folder])
-  const enabledSkills = useMemo(
+  const currentAssistantSnapshot =
+    currentConversation?.assistant_snapshot ?? currentConversation?.assistantSnapshot ?? null
+  const availableSkills = useMemo(
     () => skills.filter((skill) => !disabledSkillIds.includes(skill.id)),
     [disabledSkillIds, skills],
   )
+  const enabledSkills = useMemo(() => skillsForExpert(availableSkills, currentAssistantSnapshot), [availableSkills, currentAssistantSnapshot])
   const slashSkills = useMemo(
     () => enabledSkills.map((skill) => ({
       id: skill.id,
@@ -955,8 +959,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     [effectiveSkill],
   )
 
-  const currentAssistantSnapshot =
-    currentConversation?.assistant_snapshot ?? currentConversation?.assistantSnapshot ?? null
+
   const currentAssistantId =
     currentConversation?.assistant_id
     ?? currentConversation?.assistantId
@@ -998,7 +1001,10 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
       const lease = captureConversationNavigation()
       const cached = await warmConversationCache.get(conversationId, chatApi.syncConversation, preview)
       if (!isCurrentConversationNavigation(lease)) throw new Error('Conversation selection changed')
-      if (cached && cached.revision >= knownChatConversationRevision(conversationId)) return cached
+      if (cached) {
+        if (cached.revision >= knownChatConversationRevision(conversationId)) return cached
+        warmConversationCache.forget(conversationId)
+      }
       return readDisplayWindow(conversationId)
     },
     readHistoryPage: chatApi.getConversationPage,
@@ -2772,6 +2778,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         conversationId={currentConversation?.id}
         generating={streamCoarse.streaming}
         messages={displayMessages}
+        sessionUsage={currentConversation?.history_usage}
         lang={uiLang}
         apiFormats={providerApiFormats}
         defaultApiFormat={currentConversation ? (providerApiFormats[currentConversation.provider_id] ?? '') : ''}
@@ -3075,7 +3082,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
             {centerPageTopStrip}
             <Suspense fallback={null}>
               <AssistantCenter
-                skills={enabledSkills}
+                skills={availableSkills}
                 currentAssistantId={currentAssistantId}
                 onStartAssistantChat={(assistant) => void handleStartAssistantChat(assistant)}
                 onStartBuilder={() => void handleStartBuilderChat()}

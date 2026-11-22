@@ -58,6 +58,9 @@ pub(super) fn map_conversation_resource_paths(
                 crate::chat::model::MessagePart::Image {
                     path: Some(path), ..
                 }
+                | crate::chat::model::MessagePart::GeminiNativePart {
+                    path: Some(path), ..
+                }
                 | crate::chat::model::MessagePart::Video {
                     path: Some(path), ..
                 }

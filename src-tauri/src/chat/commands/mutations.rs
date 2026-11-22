@@ -1629,6 +1629,7 @@ pub(crate) async fn chat_update_conversation(
     active_skill_id: Option<String>,
     assistant_id: Option<String>,
     knowledge_base_ids: Option<Vec<String>>,
+    attach_knowledge_base_ids: Option<Vec<String>>,
     force_knowledge_search: Option<bool>,
     additional_directories: Option<Vec<AdditionalDirectory>>,
     thinking_level: Option<String>,
@@ -1752,11 +1753,20 @@ pub(crate) async fn chat_update_conversation(
             if let Some(ids) = knowledge_base_ids {
                 // Drop blanks/dups; order preserved.
                 let mut seen = std::collections::HashSet::new();
-                conversation.knowledge_base_ids = ids
+                conversation.set_knowledge_bases(
+                    ids.into_iter()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+                        .collect(),
+                );
+            }
+            if let Some(ids) = attach_knowledge_base_ids {
+                let ids: Vec<_> = ids
                     .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty() && seen.insert(s.clone()))
+                    .map(|id| id.trim().to_owned())
+                    .filter(|id| !id.is_empty())
                     .collect();
+                conversation.attach_manual_knowledge_bases(&ids);
             }
             if let Some(force) = force_knowledge_search {
                 conversation.force_knowledge_search = force;

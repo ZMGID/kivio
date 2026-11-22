@@ -364,6 +364,11 @@ fn context_window_from_model_id_params(model_id: &str) -> Option<u32> {
         })
 }
 
+fn reported_model_window(model: &Value) -> Option<u32> {
+    let tokens = model.pointer("/_meta/totalContextTokens")?.as_u64()?;
+    u32::try_from(tokens).ok().filter(|tokens| *tokens > 0)
+}
+
 fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
     let mut out = vec![default_model_option()];
     let mut seen = HashSet::from(["default".to_string()]);
@@ -378,6 +383,20 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
         .filter(|s| !s.is_empty());
 
     if let Some(config_options) = result.get("configOptions").and_then(|v| v.as_array()) {
+        // Grok sends picker labels in configOptions and capacity in availableModels.
+        let catalog_windows: HashMap<_, _> = result
+            .pointer("/models/availableModels")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|model| {
+                Some((
+                    model.get("modelId")?.as_str()?,
+                    reported_model_window(model)?,
+                ))
+            })
+            .collect();
+
         for raw_option in config_options {
             let option = match raw_option.as_object() {
                 Some(o) => o,
@@ -410,11 +429,8 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                     // 里 13 个带 `context=`，全都没有 `_meta.totalContextTokens`。
                     // 这里若留 None，cursor 的分母就永远没来源、只能吃兜底。
                     // `_meta.totalContextTokens` 仍优先（显式字段比字符串提示可靠）。
-                    let window = value
-                        .get("_meta")
-                        .and_then(|m| m.get("totalContextTokens"))
-                        .and_then(|v| v.as_u64())
-                        .map(|v| v as u32)
+                    let window = reported_model_window(raw_value)
+                        .or_else(|| catalog_windows.get(id).copied())
                         .or_else(|| context_window_from_model_id_params(id));
                     if current_id == Some(id) {
                         out[0].label = format!("Default ({name})");
@@ -448,11 +464,7 @@ fn normalize_models(result: &Value) -> Vec<RuntimeModelOption> {
                 let name = model.get("name").and_then(|v| v.as_str()).unwrap_or(id);
                 // 窗口优先级：`_meta.totalContextTokens`（显式字段，grok）> modelId 方括号里的
                 // `context=300k`（字符串提示，cursor）> None。显式字段比字符串提示可靠。
-                let window = model
-                    .get("_meta")
-                    .and_then(|m| m.get("totalContextTokens"))
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32)
+                let window = reported_model_window(model)
                     .or_else(|| context_window_from_model_id_params(id));
                 if current_id == Some(id) {
                     out[0].label = format!("Default ({name})");
@@ -3966,20 +3978,28 @@ mod tests {
 
     #[test]
     fn acp_models_default_slot_enriched_by_current_model_id() {
-        // grok 形态：session/new 结果带 models.currentModelId + availableModels（含 _meta 窗口）。
-        // default 占位应富化为 "Default (Grok 4.5)" 并继承窗口，真实模型进列表。
-        let lines = [
-            r#"{"id":2,"result":{"sessionId":"s1","models":{"currentModelId":"grok-4.5","availableModels":[{"modelId":"grok-4.5","name":"Grok 4.5","_meta":{"totalContextTokens":500000}}]}}}"#,
-        ];
-        let models = collect_acp_models_from_lines(&lines).expect("models");
-        assert_eq!(models[0].id, "default");
-        assert_eq!(models[0].label, "Default (Grok 4.5)");
-        assert_eq!(models[0].context_window_tokens, Some(500_000));
-        let real = models
-            .iter()
-            .find(|m| m.id == "grok-4.5")
-            .expect("real model");
-        assert_eq!(real.context_window_tokens, Some(500_000));
+        // Grok can additionally send a picker without capacity, alongside the model metadata.
+        for options in [
+            json!([]),
+            json!([{"id":"model","options":[{"value":"grok-4.5","name":"Grok 4.5"}]}]),
+        ] {
+            let frame = json!({"id":2,"result":{
+                "sessionId":"s1","configOptions":options,
+                "models":{"currentModelId":"grok-4.5","availableModels":[
+                    {"modelId":"grok-4.5","name":"Grok 4.5","_meta":{"totalContextTokens":500000}}
+                ]}
+            }})
+            .to_string();
+            let models = collect_acp_models_from_lines(&[&frame]).expect("models");
+            assert_eq!(models[0].id, "default");
+            assert_eq!(models[0].label, "Default (Grok 4.5)");
+            assert_eq!(models[0].context_window_tokens, Some(500_000));
+            let real = models
+                .iter()
+                .find(|m| m.id == "grok-4.5")
+                .expect("real model");
+            assert_eq!(real.context_window_tokens, Some(500_000));
+        }
     }
 
     #[test]

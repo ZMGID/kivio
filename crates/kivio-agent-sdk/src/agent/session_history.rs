@@ -335,6 +335,9 @@ impl SessionHistory {
                         MessagePart::Image {
                             path: Some(path), ..
                         }
+                        | MessagePart::GeminiNativePart {
+                            path: Some(path), ..
+                        }
                         | MessagePart::Video {
                             path: Some(path), ..
                         }

@@ -100,4 +100,19 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
   await act(async () => {})
   expect(detect).toHaveBeenCalledTimes(1)
   expect(get).toHaveBeenCalledTimes(beforeAvailabilityUpdate)
+
+  get.mockImplementation(async (id, _, mode) => {
+    if (id === 'claude') throw new Error('Account service timed out')
+    return {
+      agentId: id, account: null, credits: null, checkedAt: 123,
+      unavailable: mode === 'refresh' ? null : 'Kimi CLI sign-in required',
+      windows: mode === 'refresh' ? windows.grok : [],
+    }
+  })
+  await act(async () => onAvailability([agent('kimi', 'Kimi', 'native'), agent('claude', 'Claude', 'native')]))
+  expect(await screen.findByText(/Account service timed out/)).toBeVisible()
+  expect(screen.getByText(/Kimi CLI sign-in required/)).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh usage limits' }))
+  expect(await screen.findByRole('progressbar', { name: 'Monthly' })).toBeVisible()
+  expect(screen.queryByText(/Account service timed out/)).not.toBeInTheDocument()
 })

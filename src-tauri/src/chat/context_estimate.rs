@@ -38,6 +38,13 @@ pub(crate) fn request_image_tokens(
             .iter()
             .map(|value| request_image_tokens(value, provider, model))
             .sum(),
+        Value::Object(_) if value["type"] == "gemini_native_part" => native_gemini_image_tokens(
+            &value["part"],
+            value["source_model"].as_str(),
+            value["source_provider_id"].as_str(),
+            provider,
+            model,
+        ),
         Value::Object(object)
             if object
                 .get("type")
@@ -102,23 +109,49 @@ pub(crate) fn runtime_message_image_tokens(
             MessagePart::AnthropicNativeBlock { block, .. } => {
                 request_image_tokens(block, provider, model)
             }
-            MessagePart::GeminiNativePart { part, .. }
-                if part["inlineData"]["mimeType"]
-                    .as_str()
-                    .is_some_and(|mime| mime.starts_with("image/")) =>
-            {
-                estimate_image_tokens(
-                    provider,
-                    model,
-                    part["inlineData"]["data"]
-                        .as_str()
-                        .and_then(image_header_dimensions),
-                    None,
-                )
-            }
+            MessagePart::GeminiNativePart {
+                part,
+                source_model,
+                source_provider_id,
+                ..
+            } => native_gemini_image_tokens(
+                part,
+                Some(source_model),
+                source_provider_id.as_deref(),
+                provider,
+                model,
+            ),
             _ => 0,
         })
         .sum()
+}
+
+fn native_gemini_image_tokens(
+    part: &Value,
+    source_model: Option<&str>,
+    source_provider: Option<&str>,
+    provider: Option<&ModelProvider>,
+    model: &str,
+) -> usize {
+    if source_model != Some(model) || source_provider != provider.map(|p| p.id.as_str()) {
+        return 0;
+    }
+    let Some(inline) = part.get("inlineData") else {
+        return 0;
+    };
+    if !inline["mimeType"]
+        .as_str()
+        .unwrap_or("image/png")
+        .starts_with("image/")
+    {
+        return 0;
+    }
+    estimate_image_tokens(
+        provider,
+        model,
+        inline["data"].as_str().and_then(image_header_dimensions),
+        None,
+    )
 }
 
 pub(crate) fn estimate_image_tokens(

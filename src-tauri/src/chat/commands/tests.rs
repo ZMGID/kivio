@@ -246,7 +246,7 @@ fn builder_args_produce_valid_assistant() {
     assert!(!a.built_in);
     assert_eq!(a.mcp_server_ids, vec!["mcp-1", "mcp-2"]); // 空串被过滤
     assert_eq!(a.skill_ids, vec!["doc"]);
-    assert_eq!(a.knowledge_base_ids, ["kb_docs", "kb_faq"]);
+    assert_eq!(a.defaults.knowledge_base_ids, ["kb_docs", "kb_faq"]);
 }
 
 #[test]
@@ -259,15 +259,23 @@ fn expert_knowledge_defaults_follow_switches_and_leave_manual_sources_attached()
         }))
         .unwrap()
     };
-    chat.apply_assistant(Some(expert("a", &["kb_one", "kb_shared"])));
+    let mut older = chat.clone();
+    older.assistant_snapshot = Some(expert("pre-provenance", &["kb_manual"]));
+    older.apply_assistant(None);
+    assert_eq!(older.knowledge_base_ids, ["kb_manual"]);
+    chat.apply_assistant(Some(expert("a", &["kb_one", "kb_shared", "kb_manual"])));
     assert_eq!(
         chat.knowledge_base_ids,
         ["kb_manual", "kb_one", "kb_shared"]
     );
     chat.apply_assistant(Some(expert("b", &["kb_shared"])));
     assert_eq!(chat.knowledge_base_ids, ["kb_manual", "kb_shared"]);
+    chat.set_knowledge_bases(vec!["kb_manual".into()]);
+    chat.attach_manual_knowledge_bases(&["kb_shared".into()]);
+    let mut chat: Conversation =
+        serde_json::from_value(serde_json::to_value(chat).unwrap()).unwrap();
     chat.apply_assistant(None);
-    assert_eq!(chat.knowledge_base_ids, ["kb_manual"]);
+    assert_eq!(chat.knowledge_base_ids, ["kb_manual", "kb_shared"]);
 }
 
 #[test]
@@ -2025,7 +2033,15 @@ fn strip_transcripts_for_frontend_keeps_interrupted_draft_drops_completed() {
             "function": { "name": "read_file", "arguments": "{}" }
         }]
     })];
-    draft.model_messages = vec![ModelMessage::text(ModelRole::Assistant, "partial answer")];
+    let native_image = serde_json::json!({
+        "type":"gemini_native_part","source_model":"gemini",
+        "part":{"inlineData":{"mimeType":"image/png","data":"image-bytes-for-model"},"thoughtSignature":"signed"}
+    });
+    draft.api_messages[0]["gemini_content"] = serde_json::json!([native_image]);
+    draft.model_messages = vec![ModelMessage {
+        role: ModelRole::Assistant,
+        content: vec![serde_json::from_value(native_image).unwrap()],
+    }];
     draft.stream_outcome = Some("interrupted".to_string());
 
     // 旧对话：完成但没有 model_messages，回放需回落 api_messages，DTO 不应剥。
@@ -2050,6 +2066,9 @@ fn strip_transcripts_for_frontend_keeps_interrupted_draft_drops_completed() {
     // 中断草稿：两份都保住，「继续」要靠它恢复工具上下文。
     assert!(!conversation.messages[2].api_messages.is_empty());
     assert!(!conversation.messages[2].model_messages.is_empty());
+    let dto = serde_json::to_string(&conversation.messages[2]).unwrap();
+    assert!(!dto.contains("image-bytes-for-model"));
+    assert!(dto.contains("signed"));
     // legacy（无 model_messages）：api_messages 也剥——前端不读，后端回放读盘上完整副本。
     assert!(conversation.messages[3].api_messages.is_empty());
     // user 消息不动。
@@ -3617,11 +3636,47 @@ fn test_conversation_with_messages(messages: Vec<ChatMessage>) -> Conversation {
 }
 
 #[test]
+fn legacy_expert_allowlist_survives_resave_and_applies_to_discovery_slash_and_skill_tools() {
+    let profile: crate::chat::types::ChatAssistant = serde_json::from_value(serde_json::json!({
+        "id":"asst_legacy", "name":"legacy", "created_at":1, "updated_at":1,
+        "mcp_server_ids":["docs"], "skill_ids":["read"]
+    }))
+    .unwrap();
+    let snapshot = crate::chat::types::ChatAssistantSnapshot::from(&profile);
+    let mut chat = test_conversation_with_messages(vec![]);
+    chat.apply_assistant(Some(snapshot));
+    let chat: Conversation = serde_json::from_slice(&serde_json::to_vec(&chat).unwrap()).unwrap();
+    let settings = Settings::default();
+    assert_eq!(
+        super::tooling::allowed_mcp_server_ids(&chat, &settings),
+        Some(["docs".to_owned()].as_slice())
+    );
+    let mut catalog = slash_skill_registry(slash_skill_record("read", "Read", vec!["/read"]));
+    catalog
+        .records
+        .push(slash_skill_record("write", "Write", vec!["/write"]));
+    let all = std::sync::Arc::new(catalog);
+    let scoped = crate::skills::for_assistant(&all, chat.assistant_snapshot.as_ref());
+    assert!(try_apply_skill_slash_trigger(&scoped, &settings.chat_tools, "/read").is_some());
+    assert!(try_apply_skill_slash_trigger(&scoped, &settings.chat_tools, "/write").is_none());
+    assert!(crate::skills::for_run(scoped).load("write", None).is_err());
+    let new_profile = assistant_from_builder_args(
+        &serde_json::json!({"name":"new","system_prompt":"test","skill_ids":["read"]}),
+    )
+    .unwrap();
+    let snapshot = crate::chat::types::ChatAssistantSnapshot::from(&new_profile);
+    assert!(std::sync::Arc::ptr_eq(
+        &all,
+        &crate::skills::for_assistant(&all, Some(&snapshot))
+    ));
+}
+
+#[test]
 fn chat_without_read_only_mcp_skips_discovery_before_tool_filtering() {
     let mut conversation = test_conversation_with_messages(Vec::new());
     conversation.assistant_snapshot = Some(
         serde_json::from_value(serde_json::json!({
-            "id": "expert", "name": "Expert", "mcp_server_ids": ["docs"]
+            "id": "expert", "name": "Expert", "mcp_server_ids": ["docs"], "knowledge_base_ids": []
         }))
         .unwrap(),
     );

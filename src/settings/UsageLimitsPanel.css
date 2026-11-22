@@ -186,6 +186,10 @@
   margin: 0;
 }
 
+.cli-limits-message {
+  overflow-wrap: anywhere;
+}
+
 .cli-limits-stale {
   color: var(--warn);
 }

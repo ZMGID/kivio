@@ -7,16 +7,20 @@ use crate::state::AppState;
 
 /// Determine which MCP servers can survive this conversation's tool filters
 /// before opening any transports. None means unrestricted; Some([]) means none.
-pub(super) fn allowed_mcp_server_ids(
-    conversation: &crate::chat::Conversation,
+pub(super) fn allowed_mcp_server_ids<'a>(
+    conversation: &'a crate::chat::Conversation,
     settings: &Settings,
-) -> Option<&'static [String]> {
+) -> Option<&'a [String]> {
     if super::catalog::is_builder_conversation(conversation)
         || (conversation.agent_runtime.is_chat() && !settings.chat.chat_mode.mcp_read_only)
     {
         return Some(&[]);
     }
-    None
+    conversation
+        .assistant_snapshot
+        .as_ref()
+        .filter(|assistant| assistant.restricts_tools())
+        .map(|assistant| assistant.mcp_server_ids.as_slice())
 }
 
 /// Resolve explicit skill commands anywhere outside code/URLs in the user task.

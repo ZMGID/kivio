@@ -52,7 +52,7 @@ pub use conversations::{
 pub use index::load_index;
 pub(crate) use index::{
     conversation_index_needs_persist, load_index_or_scan, persist_healed_conversation_index,
-    save_index,
+    publish_verified_legacy_rows, save_index,
 };
 pub(crate) use migration::rewrite_conversation_artifact_paths;
 pub use migration::{

@@ -1702,7 +1702,9 @@ fn anthropic_content_blocks(
                     }
                 }
             }
-            MessagePart::ReasoningItem { .. } | MessagePart::ChatReasoning { .. } => {}
+            MessagePart::ReasoningItem { .. }
+            | MessagePart::XaiOutput { .. }
+            | MessagePart::ChatReasoning { .. } => {}
         }
     }
     if allow_unsigned

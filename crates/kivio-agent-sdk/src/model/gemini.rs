@@ -369,6 +369,7 @@ pub fn validate_request_body(model: &str, body: &Value) -> Result<(), ModelError
 fn native_part(part: &Value, model: &str, provider_id: Option<&str>) -> MessagePart {
     MessagePart::GeminiNativePart {
         part: part.clone(),
+        path: None,
         source_model: model.into(),
         source_provider_id: provider_id.map(str::to_string),
     }
@@ -636,14 +637,20 @@ fn gemini_parts_from_message(
                 part,
                 source_model,
                 source_provider_id,
+                path,
             } => {
-                let same_origin = source_model == model
-                    && !source_provider_id
-                        .as_deref()
-                        .zip(provider_id)
-                        .is_some_and(|(source, current)| source != current);
+                let same_origin =
+                    source_model == model && source_provider_id.as_deref() == provider_id;
                 if same_origin && message.role == ModelRole::Assistant {
-                    parts.push(part.clone());
+                    if path.is_some()
+                        && part["inlineData"]["data"]
+                            .as_str()
+                            .is_none_or(str::is_empty)
+                    {
+                        parts.push(serde_json::json!({"text":super::MISSING_IMAGE_PLACEHOLDER}));
+                    } else {
+                        parts.push(part.clone());
+                    }
                 } else if part["thought"] != true {
                     if let Some(text) = part["text"].as_str().filter(|text| !text.is_empty()) {
                         parts.push(serde_json::json!({"text":text}));
@@ -762,7 +769,8 @@ fn gemini_parts_from_message(
                 }
             }
             // OpenAI Responses 专属的原生推理项：其它协议不识别，回放时忽略。
-            MessagePart::ReasoningItem { .. }
+            MessagePart::XaiOutput { .. }
+            | MessagePart::ReasoningItem { .. }
             | MessagePart::ChatReasoning { .. }
             | MessagePart::AnthropicThinking { .. }
             | MessagePart::AnthropicRedactedThinking { .. } => {}

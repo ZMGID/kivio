@@ -4,6 +4,7 @@ import {
   normalizeSkill,
   resolveSendSkillId,
   skillRecommendedTools,
+  skillsForExpert,
 } from './skillSelection'
 
 const skill = (id: string, name = id): SkillMeta => ({
@@ -20,6 +21,13 @@ describe('resolveSendSkillId', () => {
   it('does not replace an unavailable selection with a skill of a conventional name', () => {
     expect(resolveSendSkillId(skills, 'disabled', false)).toBeNull()
     expect(resolveSendSkillId(skills, null, false)).toBeNull()
+  })
+
+  it('limits the composer to a legacy allowlist and leaves new expert preferences available', () => {
+    const expert = { id: 'expert', name: 'Expert', skill_ids: ['pdf'] }
+    expect(skillsForExpert(skills, expert)).toEqual([skills[1]])
+    expect(skillsForExpert(skills, { ...expert, skill_ids: [] })).toEqual([])
+    expect(skillsForExpert(skills, { ...expert, knowledge_base_ids: [] })).toBe(skills)
   })
 
   it('never attaches a skill to the chat runtime', () => {

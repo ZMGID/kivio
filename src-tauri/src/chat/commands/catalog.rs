@@ -226,6 +226,7 @@ pub(crate) struct HistoryWindowResponse {
     history_start: usize,
     history_total: usize,
     history_turn_count: usize,
+    history_usage: Vec<crate::chat::history_projection::ProviderTokenUsage>,
     history_source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     history_gap: Option<std::ops::Range<usize>>,
@@ -282,6 +283,7 @@ pub(crate) async fn chat_get_conversation_window(
                     history_start: start,
                     history_total: view.total,
                     history_turn_count: view.turn_count,
+                    history_usage: view.usage()?,
                     history_source: view.source.clone(),
                     history_gap,
                     history_directory,
@@ -486,8 +488,16 @@ fn strip_image_payloads_from_model_messages(messages: &mut [crate::chat::model::
             | crate::chat::model::MessagePart::Video { data, .. } = part
             {
                 data.clear();
+            } else if let crate::chat::model::MessagePart::GeminiNativePart { part, .. } = part {
+                strip_gemini_inline_data(part);
             }
         }
+    }
+}
+
+fn strip_gemini_inline_data(part: &mut serde_json::Value) {
+    if let Some(data) = part.pointer_mut("/inlineData/data") {
+        *data = serde_json::Value::String(String::new());
     }
 }
 
@@ -496,6 +506,18 @@ fn strip_image_payloads_from_model_messages(messages: &mut [crate::chat::model::
 /// `kivio-attachment://` 哨兵（见 `attachments::externalize_api_message_images`）。
 fn strip_image_payloads_from_api_messages(messages: &mut [serde_json::Value]) {
     for message in messages.iter_mut() {
+        for entry in message
+            .get_mut("gemini_content")
+            .and_then(serde_json::Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if entry["type"] == "gemini_native_part" {
+                if let Some(part) = entry.get_mut("part") {
+                    strip_gemini_inline_data(part);
+                }
+            }
+        }
         let Some(parts) = message.get_mut("content").and_then(|c| c.as_array_mut()) else {
             continue;
         };
@@ -672,11 +694,10 @@ pub(crate) async fn create_chat_conversation_internal(
         // an expert must use its current defaults, including after the expert was edited.
         let reusable = reusable.filter(|conv| {
             assistant_snapshot.as_ref().is_none_or(|assistant| {
-                conv.knowledge_base_ids == assistant.knowledge_base_ids
-                    && conv
-                        .assistant_snapshot
-                        .as_ref()
-                        .is_some_and(|old| old.knowledge_base_ids == assistant.knowledge_base_ids)
+                conv.knowledge_base_ids == assistant.defaults.knowledge_base_ids
+                    && conv.assistant_snapshot.as_ref().is_some_and(|old| {
+                        old.defaults.knowledge_base_ids == assistant.defaults.knowledge_base_ids
+                    })
             })
         });
         if let Some(conversation) = reusable {
@@ -982,7 +1003,7 @@ pub(super) fn assistant_from_builder_args(arguments: &Value) -> Result<ChatAssis
         model: String::new(),
         mcp_server_ids: str_arr("mcp_server_ids"),
         skill_ids: str_arr("skill_ids"),
-        knowledge_base_ids: str_arr("knowledge_base_ids"),
+        defaults: crate::chat::types::AssistantDefaults::preferences(str_arr("knowledge_base_ids")),
         enabled: true,
         installed: true,
         archived: false,
@@ -1098,7 +1119,8 @@ pub(crate) async fn chat_create_builder_conversation(
         model: String::new(),
         mcp_server_ids: Vec::new(),
         skill_ids: Vec::new(),
-        knowledge_base_ids: Vec::new(),
+        defaults: crate::chat::types::AssistantDefaults::preferences(Vec::new()),
+        mounted_default_ids: Vec::new(),
     };
 
     let now = chrono::Local::now().timestamp();

@@ -187,7 +187,7 @@ fn build_neutral_reduced_messages(
 /// 为什么不只发拼好的文本：降级信息此前是一段纯文本塞进 assistant 正文，看起来和
 /// 模型的真实回答一模一样，会被复制、会进对话历史再发回模型。结构化后正文归正文、
 /// 故障归卡片。`text` 保留同样的纯文本，供旧前端与外部 CLI 回落。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DegradedAnswer {
     /// 失败归类的稳定标识（`rate_limited` / `context_overflow` / `moderation` /
@@ -208,7 +208,7 @@ pub struct DegradedAnswer {
     pub text: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DegradedToolSummary {
     pub name: String,

@@ -597,7 +597,10 @@ fn prepare_assistant_reply<'a: 'prepare, 'state: 'a, 'prepare>(
         let skill_registry = if builder_mode {
             std::sync::Arc::default()
         } else {
-            resources.skills.clone()
+            crate::skills::for_assistant(
+                &resources.skills,
+                conversation.assistant_snapshot.as_ref(),
+            )
         };
         let mut effective_chat_tools = settings.chat_tools.clone();
         // Read the stored text, before attachment/vision augmentation, so those

@@ -152,6 +152,7 @@ export function mergeConversationMetadata(current: Conversation, updated: Conver
     history_source: updated.revision === current.revision ? current.history_source : undefined,
     history_total: current.history_total,
     history_turn_count: current.history_turn_count,
+    history_usage: current.history_usage,
     history_directory: current.history_directory,
     history_artifacts: current.history_artifacts,
   }

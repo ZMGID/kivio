@@ -65,19 +65,15 @@ pub(super) fn history_unchanged(
     {
         return false;
     }
+    let mut by_id = HashMap::with_capacity(latest.messages.len());
+    for message in &latest.messages {
+        by_id.entry(message.id.as_str()).or_insert(message);
+    }
     source
         .messages
         .iter()
-        .filter(|m| Some(m.id.as_str()) != skip_id)
-        .all(|expected| {
-            let Some(actual) = latest.messages.iter().find(|m| m.id == expected.id) else {
-                return false;
-            };
-            match (serde_json::to_value(expected), serde_json::to_value(actual)) {
-                (Ok(expected), Ok(actual)) => expected == actual,
-                _ => false,
-            }
-        })
+        .filter(|message| Some(message.id.as_str()) != skip_id)
+        .all(|expected| by_id.get(expected.id.as_str()).copied() == Some(expected))
 }
 
 /// 多答组的列标识：(group_id, provider_id, model)。单模型为 None（字段写 None）。

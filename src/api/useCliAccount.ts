@@ -3,6 +3,7 @@ import {
   externalCliSettingsApi,
   onExternalCliAccountUpdated,
   type AccountSnapshotMode,
+  type DetectedExternalAgent,
   type ExternalCliAccount,
 } from './externalCliSettings'
 import { peekSettings, subscribeSettings } from './settingsCache'
@@ -139,6 +140,29 @@ export function useCliAccount(agentId: string | null | undefined, conversationId
     ...view,
     refresh: () => entry?.load('refresh').catch(() => {}) ?? Promise.resolve(),
   }), [entry, view])
+}
+
+/** Subscribe the limits page to its installed CLIs as one list, sharing the individual account caches. */
+export function useCliAccounts(agents: DetectedExternalAgent[]) {
+  const store = useMemo(() => {
+    const sources = agents.map(agent => ({ agent, entry: accountEntry(agent.id) }))
+    const read = () => sources.map(({ agent, entry }) => {
+      const view = entry.getSnapshot()
+      return { agent, view, checking: view === EMPTY || view.loading }
+    })
+    let snapshot = read()
+    return {
+      subscribe(listener: () => void) {
+        const subscriptions = sources.map(({ entry }) => entry.subscribe(listener))
+        return () => subscriptions.forEach(unsubscribe => unsubscribe())
+      },
+      getSnapshot() {
+        if (sources.some(({ entry }, i) => entry.getSnapshot() !== snapshot[i].view)) snapshot = read()
+        return snapshot
+      },
+    }
+  }, [agents])
+  return useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot)
 }
 
 export function refreshCliAccount(agentId: string) {

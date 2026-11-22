@@ -114,6 +114,7 @@ fn restart_goal_candidates_use_files_even_when_index_is_stale_or_invalid() {
         fs::write(dir.path().join("index.json"), index).unwrap();
         let mut ids: Vec<_> = restart_goal_candidates_in_dir(dir.path())
             .unwrap()
+            .goals
             .into_iter()
             .map(|(id, _)| id)
             .collect();
@@ -180,10 +181,70 @@ fn restart_goal_recovery_resource_regression() {
     let optimized_elapsed = started.elapsed();
     assert!(restart_goal_candidates_in_dir(dir.path())
         .unwrap()
+        .goals
         .is_empty());
     assert!(bytes.get() < baseline_file_bytes / 10);
     eprintln!(
         "restart fixture: 24 ordinary conversations; old full-file reads={baseline_file_bytes} bytes, retained message content={retained_body_bytes} bytes, elapsed={baseline_elapsed:?}; new header reads={} bytes, retained message content=0 bytes, elapsed={optimized_elapsed:?}",
         bytes.get()
     );
+}
+
+#[test]
+fn cold_legacy_sidebar_uses_index_then_reconciles_once_per_file_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = "conv_legacy_startup";
+    let path = dir.path().join(format!("{id}.json"));
+    let mut current = conversation(id, "retained message");
+    let stale = ConversationListItem::from(&current);
+    current.title = "authoritative title".into();
+    // The legacy writer can keep revision zero across distinct contents.
+    add_goal(&mut current, super::super::GoalStatus::Active);
+    let write_legacy = |conversation: &Conversation| {
+        let body = serde_json::to_string(conversation).unwrap();
+        // An older writer can place a large history before revision and goal_state.
+        let legacy = format!(
+            "{{\"legacy_history\":\"{}\",{}",
+            "x".repeat(4 * 1024 * 1024),
+            &body[1..]
+        );
+        atomic_write(&path, &legacy, "test").unwrap();
+    };
+    write_legacy(&current);
+    let index_path = dir.path().join("index.json");
+    let save_row = |row: ConversationListItem| {
+        fs::write(
+            &index_path,
+            serde_json::to_vec(&ConversationIndex {
+                conversations: vec![row],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+    };
+    save_row(stale);
+    assert!(super::conversations::index_revision(&path).is_err());
+    let (immediate, healed) = load_index_or_scan_in_dir(dir.path()).unwrap();
+    assert!(!healed);
+    assert_ne!(immediate.conversations[0].title, current.title);
+    let mut scan = restart_goal_candidates_in_dir(dir.path()).unwrap();
+    assert_eq!(scan.goals[0].0, id);
+    let row = scan.verified_rows.pop().unwrap();
+    assert_eq!(row.title, current.title);
+    assert_eq!(row.preview, "retained message");
+    save_row(row);
+    let cached = restart_goal_candidates_in_dir(dir.path()).unwrap();
+    assert_eq!(cached.goals, scan.goals);
+    assert!(cached.verified_rows.is_empty());
+    current.revision += 1;
+    current.goal_state = None;
+    write_legacy(&current);
+    let replaced = restart_goal_candidates_in_dir(dir.path()).unwrap();
+    assert!(replaced.goals.is_empty());
+    assert_eq!(replaced.verified_rows[0].revision, Some(current.revision));
+    save_row(replaced.verified_rows.into_iter().next().unwrap());
+    current.title = "restored in modern layout".into();
+    atomic_write(&path, &serde_json::to_string(&current).unwrap(), "test").unwrap();
+    let modern = restart_goal_candidates_in_dir(dir.path()).unwrap();
+    assert_eq!(modern.verified_rows[0].title, current.title);
 }

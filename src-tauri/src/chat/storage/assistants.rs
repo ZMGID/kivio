@@ -141,6 +141,7 @@ pub fn update_assistant(
     {
         return Err("助手名称已存在".to_string());
     }
+    next.defaults.tool_policy = index.assistants[pos].defaults.tool_policy;
     next.built_in = index.assistants[pos].built_in;
     next.created_at = index.assistants[pos].created_at;
     index.assistants[pos] = next.clone();
@@ -188,9 +189,10 @@ pub fn assistant_snapshot(
         return Err("助手不可用".to_string());
     }
     let mut snapshot = ChatAssistantSnapshot::from(&assistant);
-    if !snapshot.knowledge_base_ids.is_empty() {
+    if !snapshot.defaults.knowledge_base_ids.is_empty() {
         let libraries = crate::chat::knowledge_base::load_libraries(app)?;
         snapshot
+            .defaults
             .knowledge_base_ids
             .retain(|id| libraries.iter().any(|library| &library.id == id));
     }
@@ -225,7 +227,8 @@ fn normalize_assistant(assistant: &mut ChatAssistant) -> Result<(), String> {
     assistant.mcp_server_ids = normalize_string_list(&assistant.mcp_server_ids, 64, 200);
     retire_cua_mcp_server_ids(&mut assistant.mcp_server_ids);
     assistant.skill_ids = normalize_string_list(&assistant.skill_ids, 64, 200);
-    assistant.knowledge_base_ids = normalize_string_list(&assistant.knowledge_base_ids, 64, 200);
+    assistant.defaults.knowledge_base_ids =
+        normalize_string_list(&assistant.defaults.knowledge_base_ids, 64, 200);
     Ok(())
 }
 

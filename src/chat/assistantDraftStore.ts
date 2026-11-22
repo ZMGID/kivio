@@ -1,6 +1,6 @@
 import { createWindowStore } from '../utils/windowStore'
 import { chatApi } from './api'
-import type { ChatAssistant } from './types'
+import { assistantToolPolicy, type ChatAssistant } from './types'
 
 export type AssistantSaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
@@ -53,6 +53,7 @@ export function resetAssistantDraftStore() {
 export function normalizeAssistantForDraft(assistant: ChatAssistant): ChatAssistant {
   return {
     ...assistant,
+    tool_policy: assistantToolPolicy(assistant),
     description: assistant.description ?? '',
     icon: assistant.icon ?? 'bot',
     color: assistant.color ?? '#6A8FBD',

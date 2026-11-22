@@ -353,7 +353,7 @@ pub enum ToolCallStatus {
 }
 
 /// Chat 工具调用记录。字段保持 snake_case 存储，前端可同时兼容 camelCase 事件。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolCallRecord {
     pub id: String,
     pub name: String,
@@ -425,7 +425,7 @@ pub struct ChatMessageSegment {
 }
 
 /// 对话消息
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub id: String,
     pub role: String, // "user" | "assistant"
@@ -500,7 +500,7 @@ pub struct ChatMessage {
 }
 
 /// 附件
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Attachment {
     pub id: String,
     #[serde(rename = "type")]
@@ -766,18 +766,40 @@ impl Conversation {
     pub(crate) fn apply_assistant(&mut self, snapshot: Option<ChatAssistantSnapshot>) {
         if let Some(previous) = &self.assistant_snapshot {
             self.knowledge_base_ids
-                .retain(|id| !previous.knowledge_base_ids.contains(id));
+                .retain(|id| !previous.mounted_default_ids.contains(id));
         }
-        if let Some(next) = &snapshot {
-            for id in &next.knowledge_base_ids {
+        let mut snapshot = snapshot;
+        if let Some(next) = &mut snapshot {
+            let mut mounted = Vec::new();
+            for id in &next.defaults.knowledge_base_ids {
                 if !self.knowledge_base_ids.contains(id) {
                     self.knowledge_base_ids.push(id.clone());
+                    mounted.push(id.clone());
                 }
             }
+            next.mounted_default_ids = mounted;
         }
         self.active_skill_id = None;
         self.assistant_id = snapshot.as_ref().map(|assistant| assistant.id.clone());
         self.assistant_snapshot = snapshot;
+    }
+
+    pub(crate) fn set_knowledge_bases(&mut self, ids: Vec<String>) {
+        if let Some(snapshot) = &mut self.assistant_snapshot {
+            snapshot.mounted_default_ids.retain(|id| ids.contains(id));
+        }
+        self.knowledge_base_ids = ids;
+    }
+
+    pub(crate) fn attach_manual_knowledge_bases(&mut self, ids: &[String]) {
+        if let Some(snapshot) = &mut self.assistant_snapshot {
+            snapshot.mounted_default_ids.retain(|id| !ids.contains(id));
+        }
+        for id in ids {
+            if !id.is_empty() && !self.knowledge_base_ids.contains(id) {
+                self.knowledge_base_ids.push(id.clone());
+            }
+        }
     }
 
     /// Changing a selected answer also changes the input represented by a saved
@@ -873,9 +895,24 @@ pub struct ForkOrigin {
     pub title: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct RestartGoal {
+    pub id: String,
+    pub version: u64,
+    pub status: GoalStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LegacyIndexHeader {
+    pub source: String,
+    pub goal: Option<RestartGoal>,
+}
+
 /// 对话列表项（index.json 中的元数据）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversationListItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) legacy_header: Option<LegacyIndexHeader>,
     pub id: String,
     /// `None` identifies a legacy index entry that must be reconciled from the
     /// conversation file before the index can be trusted again.
@@ -1012,6 +1049,52 @@ pub struct ConversationPin {
     pub row: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolPolicy {
+    Allowlist,
+    Preferences,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "StoredAssistantDefaults")]
+pub struct AssistantDefaults {
+    pub tool_policy: AssistantToolPolicy,
+    pub knowledge_base_ids: Vec<String>,
+}
+
+impl AssistantDefaults {
+    pub fn preferences(knowledge_base_ids: Vec<String>) -> Self {
+        Self {
+            tool_policy: AssistantToolPolicy::Preferences,
+            knowledge_base_ids,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct StoredAssistantDefaults {
+    tool_policy: Option<AssistantToolPolicy>,
+    knowledge_base_ids: Option<Vec<String>>,
+}
+
+impl From<StoredAssistantDefaults> for AssistantDefaults {
+    fn from(stored: StoredAssistantDefaults) -> Self {
+        // v4 allowlists predate the always-serialized knowledge_base_ids field.
+        let tool_policy = stored
+            .tool_policy
+            .unwrap_or(if stored.knowledge_base_ids.is_some() {
+                AssistantToolPolicy::Preferences
+            } else {
+                AssistantToolPolicy::Allowlist
+            });
+        Self {
+            tool_policy,
+            knowledge_base_ids: stored.knowledge_base_ids.unwrap_or_default(),
+        }
+    }
+}
+
 /// 可复用 Chat 助手配置。存储字段保持 snake_case，与 Conversation JSON 一致。
 /// 重建后只保留：身份(name/desc/icon/color) + 系统提示词 + 模型 + MCP/技能使用偏好。
 /// 旧文件里的 author/tags/quick_commands/data_connectors/knowledge_skills 等字段由 serde 忽略未知字段容错。
@@ -1033,14 +1116,14 @@ pub struct ChatAssistant {
     pub provider_id: String,
     #[serde(default)]
     pub model: String,
-    /// 该助手优先使用的 MCP 服务器 ID。空表示无偏好。
+    /// Allowed servers for legacy experts, preferred servers for new experts.
     #[serde(default)]
     pub mcp_server_ids: Vec<String>,
-    /// 该助手优先使用的技能 ID。空表示无偏好。
+    /// Interpreted with the same tool policy as mcp_server_ids.
     #[serde(default)]
     pub skill_ids: Vec<String>,
-    #[serde(default)]
-    pub knowledge_base_ids: Vec<String>,
+    #[serde(flatten)]
+    pub defaults: AssistantDefaults,
     #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_true")]
@@ -1072,8 +1155,19 @@ pub struct ChatAssistantSnapshot {
     pub mcp_server_ids: Vec<String>,
     #[serde(default)]
     pub skill_ids: Vec<String>,
-    #[serde(default)]
-    pub knowledge_base_ids: Vec<String>,
+    #[serde(flatten)]
+    pub defaults: AssistantDefaults,
+    /// Defaults this expert actually added, excluding libraries the user had already mounted.
+    // Older snapshots have no ownership evidence. Keep their existing mounts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mounted_default_ids: Vec<String>,
+}
+
+impl ChatAssistantSnapshot {
+    pub fn restricts_tools(&self) -> bool {
+        self.defaults.tool_policy == AssistantToolPolicy::Allowlist
+            && !crate::chat::voice_orchestrator::is_brain_snapshot(self)
+    }
 }
 
 impl From<&ChatAssistant> for ChatAssistantSnapshot {
@@ -1088,7 +1182,8 @@ impl From<&ChatAssistant> for ChatAssistantSnapshot {
             model: assistant.model.clone(),
             mcp_server_ids: assistant.mcp_server_ids.clone(),
             skill_ids: assistant.skill_ids.clone(),
-            knowledge_base_ids: assistant.knowledge_base_ids.clone(),
+            defaults: assistant.defaults.clone(),
+            mounted_default_ids: Vec::new(),
         }
     }
 }
@@ -1117,6 +1212,7 @@ impl From<&Conversation> for ConversationListItem {
             .unwrap_or_default();
 
         ConversationListItem {
+            legacy_header: None,
             id: conv.id.clone(),
             revision: Some(conv.revision),
             title: conv.title.clone(),

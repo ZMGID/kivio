@@ -14,18 +14,20 @@ const replayCurrent = async (_id: string, after?: ChatHistoryCursor) => ({
 
 afterEach(() => vi.useRealTimers())
 
-it('retains every recently visited window until its own five-minute idle expiry', async () => {
+it('evicts older windows above four entries and expires the remainder after five idle minutes', async () => {
   vi.useFakeTimers()
   const cache = createConversationWarmCache(async id => windowFor(id))
-  for (let i = 0; i < 6; i++) cache.remember(windowFor(String(i)))
+  const ids = Array.from({ length: 40 }, (_, i) => String(i))
+  for (const id of ids) cache.remember(windowFor(id))
   vi.advanceTimersByTime(60_000)
   const resume = vi.fn(replayCurrent)
   const display = vi.fn()
-  expect((await cache.get('0', resume, display))?.id).toBe('0')
+  const results = await Promise.all(ids.map(id => cache.get(id, resume, display)))
+  expect(results.flatMap(window => window ? [window.id] : [])).toEqual(['36', '37', '38', '39'])
   vi.advanceTimersByTime(240_000)
-  expect(await cache.get('0', resume, display)).toBeNull()
-  expect(display).toHaveBeenCalledTimes(1)
-  expect(resume).toHaveBeenCalledTimes(1)
+  expect(await cache.get('39', resume, display)).toBeNull()
+  expect(display).toHaveBeenCalledTimes(4)
+  expect(resume).toHaveBeenCalledTimes(4)
   expect(vi.getTimerCount()).toBe(0)
 })
 
@@ -71,5 +73,21 @@ it('replays contiguous metadata updates on the retained rows and reloads a broke
   expect(read).not.toHaveBeenCalled()
   const gap = await cache.get('a', async () => ({ conversationRevision: 3, historyReplay: { after, through, patches: patches.slice(1) } }), () => {})
   expect(gap).toBeNull()
+  cache.clear()
+})
+
+it('bounds the combined payload including nested tool arguments and rejects a single oversized entry', async () => {
+  const cache = createConversationWarmCache(async id => windowFor(id))
+  const remember = (id: string, length: number) => cache.remember({ ...windowFor(id), messages: [{
+    id: 'answer', role: 'assistant', content: '', timestamp: 1,
+    tool_calls: [{ id: 'tool', name: 'read', arguments: { payload: 'x'.repeat(length) } }],
+  }] })
+  const display = vi.fn()
+  remember('first', 7 * 1024 * 1024)
+  remember('second', 7 * 1024 * 1024)
+  expect((await cache.get('first', replayCurrent, display))?.id).toBeUndefined()
+  expect((await cache.get('second', replayCurrent, display))?.id).toBe('second')
+  remember('oversized', 13 * 1024 * 1024)
+  expect((await cache.get('oversized', replayCurrent, display))?.id).toBeUndefined()
   cache.clear()
 })

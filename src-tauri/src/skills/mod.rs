@@ -12,6 +12,7 @@ pub use kivio_agent_sdk::skills::{
     substitute_arguments, SkillTool,
 };
 pub use parse::parse_skill_markdown;
+pub(crate) use runtime::for_assistant;
 pub use runtime::{for_run, read_selected, SkillRunContext};
 pub use types::{
     SkillDetail, SkillImportResult, SkillListResult, SkillMeta, SkillOpenFolderResult,

@@ -85,6 +85,7 @@ function createBlankAssistant(): AssistantDraft {
     system_prompt: '',
     provider_id: '',
     model: '',
+    tool_policy: 'preferences',
     mcp_server_ids: [],
     skill_ids: [],
     knowledge_base_ids: [],
@@ -671,11 +672,11 @@ export function AssistantCenter({
           <section className="space-y-3">
             <h3 className="flex items-center gap-2 text-[17px] font-semibold text-neutral-950">
               <Wrench size={16} className="text-neutral-400" />
-              {t.chatAssistantMcpServers} <span className="text-neutral-400">({mcpNames.length})</span>
+              {assistant.tool_policy === 'allowlist' ? t.chatAssistantAllowedMcp : t.chatAssistantMcpServers} <span className="text-neutral-400">({mcpNames.length})</span>
             </h3>
             <div className="flex flex-wrap gap-1.5">
               {mcpNames.length === 0 ? (
-                <span className="text-[13px] text-neutral-400">{t.chatAssistantNoMcp}</span>
+                <span className="text-[13px] text-neutral-400">{assistant.tool_policy === 'allowlist' ? t.chatAssistantNoneAllowedMcp : t.chatAssistantNoMcp}</span>
               ) : mcpNames.map((name) => (
                 <span key={name} className="rounded-md bg-neutral-100 px-2.5 py-1 text-[12px] text-neutral-700">
                   {name}
@@ -687,11 +688,11 @@ export function AssistantCenter({
           <section className="space-y-3">
             <h3 className="flex items-center gap-2 text-[17px] font-semibold text-neutral-950">
               <BookOpen size={16} className="text-neutral-400" />
-              {t.chatAssistantSkills} <span className="text-neutral-400">({skillNames.length})</span>
+              {assistant.tool_policy === 'allowlist' ? t.chatAssistantAllowedSkills : t.chatAssistantSkills} <span className="text-neutral-400">({skillNames.length})</span>
             </h3>
             <div className="flex flex-wrap gap-1.5">
               {skillNames.length === 0 ? (
-                <span className="text-[13px] text-neutral-400">{t.chatAssistantNoSkills}</span>
+                <span className="text-[13px] text-neutral-400">{assistant.tool_policy === 'allowlist' ? t.chatAssistantNoneAllowedSkills : t.chatAssistantNoSkills}</span>
               ) : skillNames.map((name) => (
                 <span key={name} className="rounded-md bg-neutral-100 px-2.5 py-1 text-[12px] text-neutral-700">
                   {name}
@@ -801,7 +802,7 @@ export function AssistantCenter({
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[12px] font-medium text-neutral-600">{t.chatAssistantMcpServers}</span>
+                  <span className="text-[12px] font-medium text-neutral-600">{draft.tool_policy === 'allowlist' ? t.chatAssistantAllowedMcp : t.chatAssistantMcpServers}</span>
                   <span className="text-[11px] text-neutral-400">{t.chatAssistantSelectedCount.replace('{n}', String(draftMcpIds.length))}</span>
                 </div>
                 <div className="custom-scrollbar max-h-56 space-y-1 overflow-y-auto rounded-md border border-neutral-200 p-2">
@@ -821,7 +822,7 @@ export function AssistantCenter({
               </div>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-[12px] font-medium text-neutral-600">{t.chatAssistantSkills}</span>
+                  <span className="text-[12px] font-medium text-neutral-600">{draft.tool_policy === 'allowlist' ? t.chatAssistantAllowedSkills : t.chatAssistantSkills}</span>
                   <span className="text-[11px] text-neutral-400">{t.chatAssistantSelectedCount.replace('{n}', String(draftSkillIds.length))}</span>
                 </div>
                 <div className="custom-scrollbar max-h-56 space-y-1 overflow-y-auto rounded-md border border-neutral-200 p-2">

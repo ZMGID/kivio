@@ -3798,6 +3798,7 @@ dependencies = [
  "url",
  "uuid",
  "wait-timeout",
+ "winapi-util",
  "window-vibrancy",
  "windows 0.61.3",
  "xcap",

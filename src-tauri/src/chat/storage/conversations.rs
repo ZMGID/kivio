@@ -3,18 +3,22 @@ use super::migration::{
     conversation_has_project_binding, conversation_list_item_has_project_binding,
 };
 use super::*;
+use std::io::Seek;
 
 pub(crate) fn read_conversation_file(path: &Path, id: &str) -> Result<Conversation, String> {
     let content = fs::read_to_string(path).map_err(|e| format!("读取对话文件失败（{id}）：{e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("对话文件已损坏，无法加载（{id}）：{e}"))
 }
 
-/// Only the identity needed to recheck a restart candidate under its keyed lock.
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-pub(crate) struct RestartGoal {
-    pub id: String,
-    pub version: u64,
-    pub status: crate::chat::GoalStatus,
+pub(crate) use crate::chat::types::RestartGoal;
+
+// Modern files start with id, revision and goal_state. Old files can put megabytes
+// of native history first. Sidebar reads leave these to background startup recovery.
+const HEADER_BYTES: u64 = 8192;
+
+pub(super) fn index_revision(path: &Path) -> Result<u64, String> {
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    read_conversation_field(file.take(HEADER_BYTES), "revision").map(|rev| rev.unwrap_or(0))
 }
 
 /// Stop as soon as goal_state is decoded. New files put it before messages;
@@ -39,13 +43,27 @@ pub(crate) fn conversation_uses_external_runtime(path: &Path) -> Result<bool, St
 
 /// Per-conversation freshness reads the authoritative atomic body, independently of index.json.
 pub(crate) fn conversation_file_revision(path: &Path) -> Result<Option<u64>, String> {
-    match fs::File::open(path) {
-        Ok(file) => read_conversation_field(file, "revision")
-            .map(|revision| Some(revision.unwrap_or(0)))
-            .map_err(|error| format!("read conversation revision: {error}")),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("open conversation revision: {error}")),
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("open conversation revision: {error}")),
+    };
+    let mut prefix = (&mut file).take(HEADER_BYTES);
+    match read_conversation_field(&mut prefix, "revision") {
+        Ok(rev) => return Ok(Some(rev.unwrap_or(0))),
+        Err(error) if prefix.limit() > 0 => return Err(error),
+        Err(_) => {}
     }
+    if let Some(revision) = crate::chat::history_projection::stamp(&file)
+        .ok()
+        .and_then(|source| super::index::verified_legacy_revision(path, &source))
+    {
+        return Ok(Some(revision));
+    }
+    file.rewind().map_err(|e| e.to_string())?;
+    read_conversation_field(file, "revision")
+        .map(|rev| Some(rev.unwrap_or(0)))
+        .map_err(|e| format!("read conversation revision: {e}"))
 }
 
 fn read_conversation_field<T: serde::de::DeserializeOwned>(
@@ -93,37 +111,85 @@ fn read_conversation_field<T: serde::de::DeserializeOwned>(
     }
 }
 
-pub(crate) fn restart_goal_candidates(
-    app: &AppHandle,
-) -> Result<Vec<(String, RestartGoal)>, String> {
+#[derive(Default)]
+pub(crate) struct RestartScan {
+    pub goals: Vec<(String, RestartGoal)>,
+    pub verified_rows: Vec<ConversationListItem>,
+}
+
+pub(crate) fn restart_goal_candidates(app: &AppHandle) -> Result<RestartScan, String> {
     restart_goal_candidates_in_dir(&conversations_dir(app)?)
 }
 
-pub(super) fn restart_goal_candidates_in_dir(
-    dir: &Path,
-) -> Result<Vec<(String, RestartGoal)>, String> {
-    // Read the actual files, not index.json: a crash between the conversation
-    // write and the index write must not conceal a running Goal.
-    let mut candidates = Vec::new();
+pub(super) fn restart_goal_candidates_in_dir(dir: &Path) -> Result<RestartScan, String> {
+    let index = super::index::load_index_in_dir(dir).unwrap_or_default();
+    let rows: HashMap<_, _> = index
+        .conversations
+        .into_iter()
+        .map(|row| (row.id.clone(), row))
+        .collect();
+    let mut scan = RestartScan::default();
     for id in conversation_file_ids_in_dir(dir)? {
         let path = dir.join(format!("{id}.json"));
-        let file = match fs::File::open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+        let row = rows.get(&id);
+        let goal = match scan_restart_file(&path, row, &mut scan.verified_rows) {
+            Ok(goal) => goal,
             Err(error) => {
-                eprintln!("skip unreadable Goal recovery file {id}: {error}");
+                eprintln!("skip invalid Goal recovery file {id}: {error}");
                 continue;
             }
         };
-        match read_restart_goal(file) {
-            Ok(Some(goal)) if crate::chat::goal::is_running(goal.status) => {
-                candidates.push((id, goal))
-            }
-            Ok(_) => {}
-            Err(error) => eprintln!("skip invalid Goal recovery file {id}: {error}"),
+        if let Some(goal) = goal.filter(|g| crate::chat::goal::is_running(g.status)) {
+            scan.goals.push((id, goal));
         }
     }
-    Ok(candidates)
+    Ok(scan)
+}
+
+fn scan_restart_file(
+    path: &Path,
+    indexed: Option<&ConversationListItem>,
+    verified: &mut Vec<ConversationListItem>,
+) -> Result<Option<RestartGoal>, String> {
+    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let stamp = crate::chat::history_projection::stamp(&file).ok();
+    if let Some(cache) = indexed
+        .and_then(|r| r.legacy_header.as_ref())
+        .filter(|h| Some(&h.source) == stamp.as_ref())
+    {
+        return Ok(cache.goal.clone());
+    }
+    let mut prefix = Vec::with_capacity(HEADER_BYTES as usize);
+    (&mut file)
+        .take(HEADER_BYTES)
+        .read_to_end(&mut prefix)
+        .map_err(|e| e.to_string())?;
+    // An import may replace a previously verified legacy file with a modern file
+    // at the same revision. Rebuild that row from its new contents as well.
+    if indexed.is_none_or(|row| row.legacy_header.is_none()) {
+        if let Ok(goal) = read_restart_goal(prefix.as_slice()) {
+            if read_conversation_field::<u64>(prefix.as_slice(), "revision").is_ok() {
+                return Ok(goal);
+            }
+        }
+    }
+    file.rewind().map_err(|e| e.to_string())?;
+    let conversation: Conversation =
+        serde_json::from_reader(BufReader::new(file)).map_err(|e| e.to_string())?;
+    let goal = conversation.goal_state.as_ref().map(|g| RestartGoal {
+        id: g.id.clone(),
+        version: g.version,
+        status: g.status,
+    });
+    if let Some(source) = stamp {
+        let mut row = ConversationListItem::from(&conversation);
+        row.legacy_header = Some(crate::chat::types::LegacyIndexHeader {
+            source,
+            goal: goal.clone(),
+        });
+        verified.push(row);
+    }
+    Ok(goal)
 }
 
 /// 加载对话详情

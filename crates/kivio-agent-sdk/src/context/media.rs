@@ -65,6 +65,25 @@ pub fn prune_runtime_images(messages: &mut [RuntimeMessage], budget: usize) -> u
                         + optional_bytes("detail", detail)
                         + optional_bytes("path", path),
                 ),
+                // Signed parts must remain byte-for-byte intact on same-provider replay.
+                MessagePart::GeminiNativePart {
+                    part: native,
+                    source_model,
+                    source_provider_id,
+                    ..
+                } if native.get("thoughtSignature").is_none()
+                    && native["inlineData"]["mimeType"]
+                        .as_str()
+                        .is_some_and(|mime| mime.starts_with("image/")) =>
+                {
+                    let data = native["inlineData"]["data"]
+                        .as_str()
+                        .filter(|data| !data.is_empty())?;
+                    (
+                        hasher.hash_one((data, source_model, source_provider_id)),
+                        data.len(),
+                    )
+                }
                 MessagePart::ImageUrl { url, detail } => (
                     hasher.hash_one((url, detail)),
                     IMAGE_URL_ENVELOPE.len()

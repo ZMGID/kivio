@@ -2,12 +2,14 @@ import { useEffect, useId, useMemo, useState } from 'react'
 import { api, type ConversationCost } from '../api/tauri'
 import { formatTokensK } from '../utils/tokens'
 import { i18n, type Lang } from '../components/i18n'
-import type { ChatMessage } from './types'
+import type { ChatMessage, ProviderTokenUsage } from './types'
+import { sessionTokenUsage } from './sessionTokenUsage'
 
 interface SessionUsageStripProps {
   conversationId?: string
   generating?: boolean
   messages: ChatMessage[]
+  sessionUsage?: ProviderTokenUsage[]
   lang: Lang
   /** provider id → apiFormat；用于判断该 provider 的 input_tokens 是否已含缓存。
    *   Anthropic 的 input_tokens 是纯非缓存部分，OpenAI 系 / Gemini 的 input 含缓存。 */
@@ -35,13 +37,14 @@ function formatCachePercent(cached: number, input: number): string {
 }
 
 /**
- * 已加载消息的 provider 实报用量，以及独立于消息窗口的完整对话和子代理估算费用。
+ * 完整会话的 provider 实报用量，以及对话和子代理的估算费用。
  * 输入排除缓存命中；缓存命中率以新鲜输入与缓存命中的总和为分母。
  */
 export function SessionUsageStrip({
   conversationId,
   generating = false,
   messages,
+  sessionUsage,
   lang,
   apiFormats = {},
   defaultApiFormat = '',
@@ -53,40 +56,29 @@ export function SessionUsageStrip({
     let input = 0
     let cached = 0
     let output = 0
-    let hasAny = false
     let hasInput = false
     let hasOutput = false
     let hasCached = false
-    for (const message of messages) {
-      const usage = message.usage
-      if (!usage) continue
-      const providerId = message.provider_id ?? message.providerId
-      const apiFormat = (providerId && apiFormats[providerId]) || defaultApiFormat
-      const rawInput = usage.input_tokens ?? usage.inputTokens
-      const rawOutput = usage.output_tokens ?? usage.outputTokens
-      const rawCached = usage.cached_input_tokens ?? usage.cachedInputTokens
-      const rawWrite = usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? 0
-      if (rawInput != null) {
-        // Anthropic / 外部 CLI（dsh 等）的 input 已排除缓存；OpenAI 系 input 含缓存，减掉后同口径。
-        const included = cacheIncludedInInput
-          ?? (apiFormat !== 'anthropic_messages')
-        input += included ? Math.max(0, rawInput - (rawCached ?? 0)) : rawInput + rawWrite
-        hasAny = true
+    for (const usage of sessionUsage ?? sessionTokenUsage(messages)) {
+      const format = (usage.provider_id && apiFormats[usage.provider_id]) || defaultApiFormat
+      const included = cacheIncludedInInput ?? (format !== 'anthropic_messages')
+      const fresh = included ? usage.input_less_cached : usage.input_plus_cache_write
+      if (fresh != null) {
+        input += fresh
         hasInput = true
       }
-      if (rawOutput != null) {
-        output += rawOutput
-        hasAny = true
+      if (usage.output != null) {
+        output += usage.output
         hasOutput = true
       }
-      if (rawCached != null) {
-        cached += rawCached
-        hasAny = true
+      if (usage.cached != null) {
+        cached += usage.cached
         hasCached = true
       }
     }
+    const hasAny = hasInput || hasOutput || hasCached
     return { input, cached, output, hasAny, hasInput, hasOutput, hasCached }
-  }, [apiFormats, cacheIncludedInInput, defaultApiFormat, messages])
+  }, [apiFormats, cacheIncludedInInput, defaultApiFormat, messages, sessionUsage])
 
   const [costSnapshot, setCostSnapshot] = useState<{ id: string; value: ConversationCost | null } | null>(null)
   const messageCount = messages.length

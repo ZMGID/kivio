@@ -65,9 +65,8 @@ export function useAssistantActions({
         assistant.id,
         identity.setId ?? null,
       )
-      const mounted = conv.knowledge_base_ids ?? conv.knowledgeBaseIds ?? []
-      if (draftIds.some((id) => !mounted.includes(id))) {
-        conv = await chatApi.updateConversation(conv.id, { knowledgeBaseIds: [...new Set([...mounted, ...draftIds])] })
+      if (draftIds.length) {
+        conv = await chatApi.updateConversation(conv.id, { attachKnowledgeBaseIds: draftIds })
       }
       refreshSidebar()
       if (navigation.commitCreatedConversation(creation, conv)) {

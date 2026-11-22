@@ -1,4 +1,4 @@
-use super::conversations::{conversation_file_revision, read_conversation_file};
+use super::conversations::{index_revision, read_conversation_file};
 use super::*;
 
 struct ConversationIndexCacheEntry {
@@ -9,6 +9,24 @@ struct ConversationIndexCacheEntry {
 fn conversation_index_cache() -> &'static Mutex<HashMap<PathBuf, ConversationIndexCacheEntry>> {
     static CACHE: OnceLock<Mutex<HashMap<PathBuf, ConversationIndexCacheEntry>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A legacy revision is reusable only for the exact authoritative file verified at startup.
+pub(super) fn verified_legacy_revision(path: &Path, source: &str) -> Option<u64> {
+    let id = path.file_stem()?.to_str()?;
+    let cache = conversation_index_cache()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let row = cache
+        .get(path.parent()?)?
+        .index
+        .conversations
+        .iter()
+        .find(|row| row.id == id)?;
+    row.legacy_header
+        .as_ref()
+        .filter(|header| header.source == source)?;
+    row.revision
 }
 
 pub(super) fn forget_index_cache(dir: &Path) {
@@ -92,8 +110,8 @@ pub(super) fn load_index_or_scan_in_dir(dir: &Path) -> Result<(ConversationIndex
         let path = dir.join(format!("{id}.json"));
         let position = positions.get(&id).copied();
         if let Some(position) = position {
-            match conversation_file_revision(&path) {
-                Ok(Some(revision)) if index.conversations[position].revision != Some(revision) => {}
+            match index_revision(&path) {
+                Ok(revision) if index.conversations[position].revision != Some(revision) => {}
                 _ => continue,
             }
         }
@@ -111,6 +129,44 @@ pub(super) fn load_index_or_scan_in_dir(dir: &Path) -> Result<(ConversationIndex
         }
     }
     Ok((index, healed))
+}
+
+/// Called under the index publication lock. A concurrent save or delete can replace
+/// a file while background verification is reading its old inode.
+pub(crate) fn publish_verified_legacy_rows(
+    app: &AppHandle,
+    rows: Vec<ConversationListItem>,
+) -> Result<bool, String> {
+    let dir = conversations_dir(app)?;
+    let mut index = load_index_or_scan(app)?;
+    let mut changed = false;
+    let positions: HashMap<_, _> = index
+        .conversations
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (r.id.clone(), i))
+        .collect();
+    for row in rows {
+        let Some(pos) = positions.get(&row.id).copied() else {
+            continue;
+        };
+        let path = dir.join(format!("{}.json", row.id));
+        let stamp = fs::File::open(path)
+            .ok()
+            .and_then(|file| crate::chat::history_projection::stamp(&file).ok());
+        let Some(header) = &row.legacy_header else {
+            continue;
+        };
+        if stamp.as_ref() != Some(&header.source) {
+            continue;
+        }
+        index.conversations[pos] = row;
+        changed = true;
+    }
+    if changed {
+        save_index(app, &index)?;
+    }
+    Ok(changed)
 }
 
 /// 纯逻辑:扫描给定目录,收集有效对话 id(只看文件名,不读内容)。

@@ -185,6 +185,17 @@ export function createChatNavigationController(ports: NavigationPorts) {
     }
   }
 
+  // A retained preview has already changed both the route and the composer scope.
+  // If its revision cannot be verified, leave that view with its draft still keyed by id.
+  const finishStaleRead = (id: string, requestId?: number, embedded = false) => {
+    if (requestId !== undefined) cancelConversationTransition(requestId)
+    const displayed = ports.currentConversationId()
+    const tentative = displayed && ports.isResumingConversation?.(displayed)
+    if (tentative) ports.resetConversation()
+    if (!embedded && (tentative || getRouteConversationId() === id)) syncConversationRoute(ports.currentConversationId())
+    ports.reportConversationChanged?.(id)
+  }
+
   const reloadConversation = async (conversationId: string, options?: ReloadOptions) => {
     const transitionRequestId = options?.transitionRequestId
     const navigationLease = captureConversationNavigation()
@@ -230,11 +241,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
         }
       })
       if (outcome === 'changed' && canCommitResult()) {
-        if (transitionRequestId !== undefined) cancelConversationTransition(transitionRequestId)
-        if (!options?.embedded && getRouteConversationId() === conversationId) {
-          syncConversationRoute(ports.currentConversationId())
-        }
-        ports.reportConversationChanged?.(conversationId)
+        finishStaleRead(conversationId, transitionRequestId, options?.embedded)
       }
     } catch (value) {
       const transition = getConversationTransitionSnapshot()
@@ -325,8 +332,7 @@ export function createChatNavigationController(ports: NavigationPorts) {
           syncConversationRoute(conversationId)
         })
       if (outcome === 'changed' && isCurrent()) {
-        cancelConversationTransition(requestId)
-        ports.reportConversationChanged?.(conversationId)
+        finishStaleRead(conversationId, requestId)
       }
     } catch (value) {
       if (!isCurrent()) return

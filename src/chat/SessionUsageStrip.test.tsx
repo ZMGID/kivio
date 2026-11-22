@@ -2,9 +2,13 @@ import { act, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type ConversationCost } from '../api/tauri'
 import { SessionUsageStrip } from './SessionUsageStrip'
+import { chatApi } from './api'
+import { mergeConversationHistoryPage } from './conversationHistoryWindow'
 import type { ChatMessage, MessageUsage } from './types'
 
-vi.mock('../api/tauri', () => ({ api: { usageGetConversationCost: vi.fn() } }))
+vi.mock('../api/tauri', async original => ({
+  ...await original<typeof import('../api/tauri')>(), api: { usageGetConversationCost: vi.fn() },
+}))
 
 let seq = 0
 
@@ -100,6 +104,36 @@ describe('SessionUsageStrip', () => {
     expect(card().queryByText('$99.00')).toBeNull()
     rerender(<SessionUsageStrip conversationId="new" generating={false} lang="zh" messages={[]} />)
     expect(await card().findByText('$0.50')).toBeTruthy()
+  })
+
+  it('shows every turn before paging and updates after deleting an offscreen reply', async () => {
+    const id = 'usage-history'
+    const messages = Array.from({ length: 12 }, (_, i) => [
+      { id: `u${i}`, role: 'user', content: 'question', timestamp: i },
+      { id: `a${i}`, role: 'assistant', content: 'answer', timestamp: i, usage: { inputTokens: 1000 } },
+    ]).flat()
+    localStorage.setItem('kivio-chat-dev-conversations', JSON.stringify([{
+      id, title: id, revision: 1, provider_id: '', model: '', created_at: 1, updated_at: 1, messages,
+    }]))
+    try {
+      const window = await chatApi.getConversationWindow(id)
+      expect(window.messages).toHaveLength(20)
+      const show = (conversation: typeof window) => <SessionUsageStrip hideCost lang="en"
+        messages={conversation.messages} sessionUsage={conversation.history_usage} />
+      const { rerender } = render(show(window))
+      expect(card().getByLabelText('Input')).toHaveTextContent('12.0K')
+      const page = await chatApi.getConversationPage(id, window.history_start!)
+      const complete = mergeConversationHistoryPage(window, page)!
+      rerender(show(complete))
+      expect(card().getByLabelText('Input')).toHaveTextContent('12.0K')
+      const edited = await chatApi.deleteMessage(id, 'a0')
+      rerender(show(edited))
+      expect(card().getByLabelText('Input')).toHaveTextContent('11.0K')
+      rerender(show(await chatApi.getConversationWindow(id)))
+      expect(card().getByLabelText('Input')).toHaveTextContent('11.0K')
+    } finally {
+      localStorage.removeItem('kivio-chat-dev-conversations')
+    }
   })
 
   it('includes Anthropic cache writes in fresh input and cache hit denominator', () => {

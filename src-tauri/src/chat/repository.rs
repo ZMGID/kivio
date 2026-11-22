@@ -343,7 +343,7 @@ impl ConversationRepository {
         &self,
         app: &AppHandle,
     ) -> RepositoryResult<usize> {
-        let candidates = {
+        let scan = {
             let _barrier = self.barrier.read().await;
             let app = app.clone();
             Self::spawn_storage(
@@ -353,7 +353,26 @@ impl ConversationRepository {
             .await?
         };
         let mut changed = 0;
-        for (id, candidate) in candidates {
+        if !scan.verified_rows.is_empty() {
+            let _barrier = self.barrier.read().await;
+            let _index = self.index_lock.lock().await;
+            let handle = app.clone();
+            match Self::spawn_storage(
+                move || super::storage::publish_verified_legacy_rows(&handle, scan.verified_rows),
+                "verify legacy conversation index",
+            )
+            .await
+            {
+                Ok(true) => {
+                    let _ = tauri::Emitter::emit(app, "chat-conversations-changed", ());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    eprintln!("could not publish legacy conversation metadata: {error:?}")
+                }
+            }
+        }
+        for (id, candidate) in scan.goals {
             let _barrier = self.barrier.read().await;
             let lock = self.conversation_lock(&id);
             let _conversation = lock.lock().await;
@@ -1241,7 +1260,7 @@ impl ConversationRepository {
                     conversation.set_id = set_id;
                 }
                 ConversationMetadataMutation::KnowledgeBases { ids, force_search } => {
-                    conversation.knowledge_base_ids = ids;
+                    conversation.set_knowledge_bases(ids);
                     conversation.force_knowledge_search = force_search;
                 }
                 ConversationMetadataMutation::AdditionalDirectories(value) => {

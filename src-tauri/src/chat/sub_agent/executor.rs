@@ -2780,7 +2780,9 @@ async fn prepare(
             Some(host.task.clone()),
         )
     });
-    let catalog = resources.skills.clone();
+    let skills =
+        crate::skills::for_assistant(&resources.skills, conversation.assistant_snapshot.as_ref());
+    let catalog = skills.clone();
     let selected = definition.skills.clone();
     let loaded = host
         .until_inactive(tauri::async_runtime::spawn_blocking(move || {
@@ -2904,7 +2906,7 @@ async fn prepare(
     let mut prompt = prepare_worker_prompt(
         &language,
         thinking_enabled,
-        &resources.skills,
+        &skills,
         &effective,
         &tools,
         &rendered_persona,
@@ -2995,7 +2997,7 @@ async fn prepare(
         tools,
         prompt,
         persona,
-        skills: resources.skills.clone(),
+        skills,
         hooks: host.workflow_hooks.get().cloned().unwrap_or_default(),
         cwd: cwd.ok_or("Subagent cwd unavailable")?,
         isolation,

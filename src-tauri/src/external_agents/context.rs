@@ -11,7 +11,7 @@ use crate::external_agents::session::claude_init::{
     context_window_from_claude_model_alias, context_window_from_claude_resolved_model,
 };
 use crate::external_agents::types::{
-    ContextWindowStrategy, RuntimeModelOption, UsageFallbackStrategy,
+    ContextWindowStrategy, RuntimeAgentDef, RuntimeModelOption, UsageFallbackStrategy,
 };
 
 pub const CONTEXT_SOURCE_BUILTIN: &str = "kivio_builtin";
@@ -641,36 +641,40 @@ pub async fn compute_external_context_state_with_probe(
     probe_cwd: Option<&Path>,
     work_dir: Option<&Path>,
 ) -> ConversationContextState {
-    let (agent_id, model) = external_runtime(conversation);
-    // A model-list subprocess cannot improve a reported capacity or recover an
-    // unknown post-compaction numerator. Do not wait for it on refresh or /compact.
-    let stored = &conversation.context_state;
-    let settled = has_settled_context(conversation, compact_usage);
-    let needs_probe = !settled
-        || (stored.context_window_tokens.is_none()
-            && stored.token_count_source.as_deref() == Some(TOKEN_COUNT_CLI)
-            && model != "default");
-    let detected_models = if probe_models && needs_probe {
-        if let Some(def) = get_agent_def(agent_id) {
+    let detected_models = match context_probe_agent(conversation, compact_usage) {
+        Some(def) if probe_models => {
             let fallback_cwd = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
             Some(
-                detect_single_agent(def, probe_cwd.unwrap_or(fallback_cwd.as_path()))
+                detect_single_agent(def, probe_cwd.unwrap_or(&fallback_cwd))
                     .await
                     .models,
             )
-        } else {
-            None
         }
-    } else {
-        cached_models.map(|models| models.to_vec())
+        _ => None,
     };
     compute_cached_external_context_state(
         app,
         conversation,
         compact_usage,
-        detected_models.as_deref(),
+        detected_models.as_deref().or(cached_models),
         work_dir,
     )
+}
+
+fn context_probe_agent(
+    conversation: &Conversation,
+    compact_usage: Option<&ModelUsage>,
+) -> Option<&'static RuntimeAgentDef> {
+    let stored = &conversation.context_state;
+    let (agent_id, _) = external_runtime(conversation);
+    // A model catalog can fill a missing denominator but cannot recover usage after compaction.
+    if has_settled_context(conversation, compact_usage)
+        && (stored.context_window_tokens.is_some()
+            || stored.token_count_source.as_deref() != Some(TOKEN_COUNT_CLI))
+    {
+        return None;
+    }
+    get_agent_def(agent_id)
 }
 
 pub(crate) fn compute_cached_external_context_state(
@@ -1189,6 +1193,43 @@ mod tests {
             assert_eq!(state.measurement_seq, 5);
             assert_eq!(state.lifecycle_id, 1);
         }
+    }
+
+    #[test]
+    fn refresh_probes_a_default_model_only_for_a_missing_capacity() {
+        let mut conversation = empty_conversation();
+        conversation.agent_runtime.external_agent_id = Some("grok".into());
+        conversation.agent_runtime.external_model = None;
+        let stored = &mut conversation.context_state;
+        stored.context_source = Some(CONTEXT_SOURCE_EXTERNAL.into());
+        stored.external_agent_id = Some("grok".into());
+        stored.token_count_source = Some(TOKEN_COUNT_CLI.into());
+        stored.estimated_input_tokens = 25_000;
+        stored.measurement_seq = 7;
+        assert_eq!(
+            context_probe_agent(&conversation, None).map(|def| def.id),
+            Some("grok")
+        );
+        let catalog = [RuntimeModelOption {
+            id: "default".into(),
+            label: "Default (Grok)".into(),
+            context_window_tokens: Some(500_000),
+            capabilities: None,
+        }];
+        conversation.context_state = compute_external_context_state(
+            &conversation,
+            "grok",
+            "default",
+            Some(&catalog),
+            None,
+            None,
+        );
+        assert_eq!(conversation.context_state.usage_ratio, Some(0.05));
+        assert_eq!(conversation.context_state.measurement_seq, 7);
+        assert!(context_probe_agent(&conversation, None).is_none());
+        conversation.context_state.context_window_tokens = None;
+        conversation.context_state.token_count_source = None;
+        assert!(context_probe_agent(&conversation, None).is_none());
     }
 
     #[test]

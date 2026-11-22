@@ -335,6 +335,13 @@ fn externalize_model_message_images_in_dir(
     let mut changed = false;
     for model_message in messages.iter_mut() {
         for part in model_message.content.iter_mut() {
+            if let MessagePart::GeminiNativePart { part, path, .. } = part {
+                if let Some(file) = externalize_gemini_image(dir, part) {
+                    *path = Some(file);
+                    changed = true;
+                }
+                continue;
+            }
             if let MessagePart::ImageUrl { url, .. } = part {
                 let mut wire = vec![
                     serde_json::json!({"content":[{"type":"image_url", "image_url":{"url":url}}]}),
@@ -392,10 +399,55 @@ fn externalize_model_message_images_in_dir(
     changed
 }
 
+fn inline_gemini_image(part: &serde_json::Value) -> Option<(&str, &str)> {
+    let inline = part.get("inlineData")?;
+    let mime = inline["mimeType"].as_str().unwrap_or("image/png");
+    let data = inline["data"].as_str().filter(|s| !s.is_empty())?;
+    mime.starts_with("image/").then_some((mime, data))
+}
+
+fn externalize_gemini_image(dir: &Path, part: &mut serde_json::Value) -> Option<String> {
+    let (mime, data) = inline_gemini_image(part)?;
+    let bytes = general_purpose::STANDARD.decode(data).ok()?;
+    // Use the same content address as the generated image shown in the UI.
+    let file = format!(
+        "artifact-{}.{}",
+        sha256_hex(&bytes),
+        extension_for_image_mime(mime)
+    );
+    write_artifact_bytes(dir, &file, &bytes).ok()?;
+    part["inlineData"]["data"] = serde_json::Value::String(String::new());
+    Some(file)
+}
+
+fn rehydrate_gemini_image(dir: &Path, part: &mut serde_json::Value, file: &str) {
+    let Some(data) = part
+        .pointer_mut("/inlineData/data")
+        .filter(|data| data.as_str() == Some(""))
+    else {
+        return;
+    };
+    let path = Path::new(file);
+    if path.file_name().is_none_or(|name| name != path.as_os_str())
+        || file.contains(['/', '\\', ':'])
+    {
+        return;
+    }
+    let path = dir.join(path);
+    if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_file()) {
+        if let Ok(bytes) = fs::read(path) {
+            *data = general_purpose::STANDARD.encode(bytes).into();
+        }
+    }
+}
+
 /// 廉价预扫描：`model_messages` 里有没有"带 base64 且没 path"的图片部件。
 pub(crate) fn message_has_model_message_image_to_externalize(message: &ChatMessage) -> bool {
     message.model_messages.iter().any(|model_message| {
         model_message.content.iter().any(|part| {
+            if let MessagePart::GeminiNativePart { part, .. } = part {
+                return inline_gemini_image(part).is_some();
+            }
             if let MessagePart::ToolResult { artifacts, .. } = part {
                 return artifacts
                     .iter()
@@ -596,6 +648,9 @@ pub(crate) fn rehydrate_model_message_images(
 ) {
     if !messages.iter().any(|model_message| {
         model_message.content.iter().any(|part| {
+            if let MessagePart::GeminiNativePart { part, path:Some(_), .. } = part {
+                return inline_gemini_image(part).is_none();
+            }
             if let MessagePart::ImageUrl { url, .. } = part {
                 return url.starts_with(ATTACHMENT_URI_SCHEME);
             }
@@ -618,6 +673,15 @@ fn rehydrate_model_message_images_in_dir(
 ) {
     for model_message in messages.iter_mut() {
         for part in model_message.content.iter_mut() {
+            if let MessagePart::GeminiNativePart {
+                part,
+                path: Some(path),
+                ..
+            } = part
+            {
+                rehydrate_gemini_image(dir, part, path);
+                continue;
+            }
             if let MessagePart::ImageUrl { url, detail } = part {
                 if let Some((mime_type, file_name)) = parse_attachment_uri(url) {
                     let data = fs::read(dir.join(file_name))
@@ -707,6 +771,22 @@ fn externalize_api_message_images(
 fn externalize_api_message_images_in_dir(dir: &Path, messages: &mut [serde_json::Value]) -> bool {
     let mut changed = false;
     for message in messages.iter_mut() {
+        for entry in message
+            .get_mut("gemini_content")
+            .and_then(serde_json::Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if entry["type"] == "gemini_native_part" {
+                if let Some(file) = entry
+                    .get_mut("part")
+                    .and_then(|part| externalize_gemini_image(dir, part))
+                {
+                    entry["path"] = file.into();
+                    changed = true;
+                }
+            }
+        }
         for url_slot in api_message_image_url_slots(message) {
             let Some(url) = url_slot.as_str() else {
                 continue;
@@ -743,6 +823,17 @@ fn externalize_api_message_images_in_dir(dir: &Path, messages: &mut [serde_json:
 /// 廉价预扫描：`api_messages` 里有没有内联 base64 图片。
 pub(crate) fn message_has_api_message_image_to_externalize(message: &ChatMessage) -> bool {
     message.api_messages.iter().any(|api_message| {
+        if api_message["gemini_content"]
+            .as_array()
+            .is_some_and(|parts| {
+                parts.iter().any(|entry| {
+                    entry["type"] == "gemini_native_part"
+                        && inline_gemini_image(&entry["part"]).is_some()
+                })
+            })
+        {
+            return true;
+        }
         let mut probe = api_message.clone();
         api_message_image_url_slots(&mut probe)
             .into_iter()
@@ -776,6 +867,13 @@ pub(crate) fn rehydrate_api_message_images(
 }
 
 fn api_message_has_attachment_uri(message: &serde_json::Value) -> bool {
+    if message["gemini_content"].as_array().is_some_and(|parts| {
+        parts
+            .iter()
+            .any(|entry| entry["type"] == "gemini_native_part" && entry["path"].is_string())
+    }) {
+        return true;
+    }
     let mut probe = message.clone();
     api_message_image_url_slots(&mut probe)
         .into_iter()
@@ -788,6 +886,20 @@ fn api_message_has_attachment_uri(message: &serde_json::Value) -> bool {
 /// [`rehydrate_api_message_images`] 的纯目录版（可单测，不需要 `AppHandle`）。
 fn rehydrate_api_message_images_in_dir(dir: &Path, messages: &mut [serde_json::Value]) {
     for message in messages.iter_mut() {
+        for entry in message
+            .get_mut("gemini_content")
+            .and_then(serde_json::Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            if entry["type"] == "gemini_native_part" {
+                if let Some(file) = entry["path"].as_str().map(str::to_owned) {
+                    if let Some(part) = entry.get_mut("part") {
+                        rehydrate_gemini_image(dir, part, &file);
+                    }
+                }
+            }
+        }
         for url_slot in api_message_image_url_slots(message) {
             let Some(url) = url_slot.as_str() else {
                 continue;
@@ -1004,15 +1116,8 @@ fn externalize_artifact_in_dir(dir: &Path, artifact: &mut ChatToolArtifact) -> b
                 .unwrap_or("bin")
         }
     );
-    if !dir.join(&file_name).is_file() {
-        let temporary = dir.join(format!("{file_name}.{}.tmp", Uuid::new_v4()));
-        if fs::write(&temporary, &bytes)
-            .and_then(|()| fs::rename(&temporary, dir.join(&file_name)))
-            .is_err()
-        {
-            let _ = fs::remove_file(&temporary);
-            return false;
-        }
+    if write_artifact_bytes(dir, &file_name, &bytes).is_err() {
+        return false;
     }
 
     artifact.size_bytes = Some(bytes.len() as u64);
@@ -1028,6 +1133,19 @@ fn externalize_artifact_in_dir(dir: &Path, artifact: &mut ChatToolArtifact) -> b
         dir.join(file_name).to_string_lossy().into_owned()
     });
     true
+}
+
+fn write_artifact_bytes(dir: &Path, file_name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let destination = dir.join(file_name);
+    if destination.is_file() {
+        return Ok(());
+    }
+    let temporary = dir.join(format!("{file_name}.{}.tmp", Uuid::new_v4()));
+    let result = fs::write(&temporary, bytes).and_then(|()| fs::rename(&temporary, destination));
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
 }
 
 /// 解析 `data:<mime>;base64,<payload>`，返回 (小写 mime, payload)。非 base64 data URL 返回 None。
@@ -2180,6 +2298,73 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn signed_gemini_image_survives_storage_fork_and_replay() {
+        use kivio_agent_sdk::agent::{RuntimeMessage, SessionHistory};
+        use kivio_agent_sdk::model::{gemini, GenerateRequest};
+        use serde_json::json;
+
+        let source = tempfile::tempdir().unwrap();
+        let fork = tempfile::tempdir().unwrap();
+        let model = "gemini-3.1-flash-image";
+        let data = general_purpose::STANDARD.encode(b"large generated image".repeat(8192));
+        let parts = json!([{"text":"before"}, {"inlineData":{"mimeType":"image/png","data":data},
+            "thoughtSignature":"signed-image"}, {"text":"after"}]);
+        let raw = json!({"candidates":[{"content":{"parts":parts},"finishReason":"STOP"}]});
+        let output = gemini::decode_gemini_body(
+            &raw.to_string(),
+            "fixture",
+            model,
+            Some("source"),
+            gemini::GeminiResponseFormat::Native,
+        )
+        .unwrap();
+        let mut history = SessionHistory::default();
+        history.push(RuntimeMessage::model(output.replay_message()));
+        externalize_history_media_in_dir(source.path(), &mut history).unwrap();
+        assert!(!serde_json::to_string(&history.snapshot().unwrap())
+            .unwrap()
+            .contains(&data));
+        assert_eq!(history.attachment_references().len(), 1);
+        // Interrupted turns and old compaction snapshots use the compatibility representation.
+        let mut wire =
+            kivio_agent_sdk::model::openai_messages_from_model_messages(&[output.replay_message()]);
+        assert!(externalize_api_message_images_in_dir(
+            source.path(),
+            &mut wire
+        ));
+        assert!(!serde_json::to_string(&wire).unwrap().contains(&data));
+        assert_eq!(fs::read_dir(source.path()).unwrap().count(), 1);
+        copy_history_resources_in_dirs(source.path(), fork.path(), &history).unwrap();
+        rehydrate_api_message_images_in_dir(fork.path(), &mut wire);
+        assert_eq!(wire[0]["gemini_content"][1]["part"], parts[1]);
+        let mut messages = vec![history.context()[0].model_message().unwrap().clone()];
+        rehydrate_model_message_images_in_dir(fork.path(), &mut messages);
+        let request = GenerateRequest {
+            model: model.into(),
+            messages,
+            system: String::new(),
+            tools: vec![],
+            options: Default::default(),
+            metadata: Default::default(),
+        };
+        let body = |provider: &str| {
+            gemini::request_body(
+                &request,
+                &gemini::GeminiOptions {
+                    provider_id: Some(provider.into()),
+                    ..Default::default()
+                },
+            )
+        };
+        assert_eq!(body("source")["contents"][0]["parts"], parts);
+        let other = body("other");
+        assert_eq!(
+            other["contents"][0]["parts"],
+            json!([{"text":"before"},{"text":"after"}])
+        );
     }
 
     /// 造一条只含图片部件的 `model_messages`。

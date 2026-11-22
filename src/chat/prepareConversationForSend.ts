@@ -124,11 +124,11 @@ export async function prepareConversationForSend(
   }
 
   const kb = conversation.knowledge_base_ids ?? conversation.knowledgeBaseIds ?? []
-  // A welcome-page draft can add sources to the defaults supplied by the expert.
-  const selectedIds = [...new Set([...kb, ...draft.knowledgeBaseIds])]
-  if (selectedIds.length > kb.length) {
+  const expert = conversation.assistant_snapshot ?? conversation.assistantSnapshot
+  const inherited = expert?.mounted_default_ids ?? []
+  if (draft.knowledgeBaseIds.some(id => !kb.includes(id) || inherited.includes(id))) {
     const error = await apply('knowledgeBase', () => persistence.updateConversation(conversation!.id, {
-      knowledgeBaseIds: selectedIds,
+      attachKnowledgeBaseIds: draft.knowledgeBaseIds,
     }))
     if (error) return error
   }

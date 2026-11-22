@@ -5,6 +5,7 @@ import { api } from '../api/tauri'
 import type { ChatContextPayload, ChatStreamPayload } from '../api/tauri'
 import { CHAT_PROTOCOL_VERSION, type ChatHistoryCursor } from '../generated/chatProtocol'
 import { chatApi } from './api'
+import { recordChatConversationRevision } from '../api/chatProtocol'
 import Chat from './Chat'
 import { draftKey, updateComposerDraft } from './composerDraft'
 import { getSnapshot, reset } from './streamingStore'
@@ -95,6 +96,41 @@ it('opens the retained draft immediately and enables sends after replaying a mis
   expect(screen.getByRole('textbox').textContent).toBe('Draft while catching up')
   expect(replay).toHaveBeenCalledTimes(1)
   expect(windowReads).not.toHaveBeenCalled()
+  view.unmount()
+})
+
+it('releases an unverified preview after stale reads and restores its draft on a fresh selection', async () => {
+  const { conversations, windowReads } = mockConversationPair()
+  const id = 'warm-stale-target'
+  conversations[0] = { ...conversations[0], id, title: id }
+  vi.mocked(chatApi.getConversations).mockResolvedValue(conversations.map(({ id }) => ({
+    id, title: id, preview: '', provider_id: '', model: '', message_count: 1, created_at: 1, updated_at: 1,
+  })))
+  window.history.replaceState(null, '', `#chat/${id}`)
+  const view = render(<Chat onSettingsChange={() => {}} />)
+  await act(async () => { await vi.dynamicImportSettled() })
+  await screen.findByText('switch-a question')
+  fireEvent.click(await screen.findByRole('button', { name: 'switch-b' }))
+  await screen.findByText('switch-b question')
+  let resume!: () => void
+  vi.mocked(chatApi.syncConversation).mockImplementationOnce(() => new Promise(resolve => {
+    resume = () => resolve({ conversationRevision: 2 })
+  }))
+  fireEvent.click(await screen.findByRole('button', { name: id }))
+  await screen.findByText('switch-a question')
+  fireEvent.paste(screen.getByRole('textbox'), { clipboardData: {
+    files: [], getData: (type: string) => type === 'text/plain' ? 'Only for this conversation' : '',
+  } })
+  recordChatConversationRevision(id, 2)
+  await act(async () => resume())
+  expect(window.location.hash).toBe('#chat')
+  expect(screen.queryByText('switch-a question')).toBeNull()
+  expect(screen.getByRole('textbox')).not.toHaveTextContent('Only for this conversation')
+  windowReads.mockResolvedValueOnce({ ...conversations[0], revision: 2 })
+  fireEvent.click(await screen.findByRole('button', { name: id }))
+  await screen.findByText('switch-a question')
+  expect(screen.getByRole('textbox')).toHaveTextContent('Only for this conversation')
+  expect(screen.getByRole('button', { name: /^(Send|发送)$/ })).toBeEnabled()
   view.unmount()
 })
 

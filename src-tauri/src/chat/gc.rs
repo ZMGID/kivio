@@ -344,6 +344,7 @@ pub fn referenced_attachment_names(conversation: &super::Conversation) -> HashSe
             for part in &model_message.content {
                 match part {
                     crate::chat::model::MessagePart::Image { path, .. }
+                    | crate::chat::model::MessagePart::GeminiNativePart { path, .. }
                     | crate::chat::model::MessagePart::Video { path, .. } => {
                         if let Some(path) = path.as_deref().filter(|p| !p.is_empty()) {
                             referenced.insert(path.to_string());
@@ -417,6 +418,11 @@ fn collect_attachment_uri_names(value: &serde_json::Value, out: &mut HashSet<Str
             }
         }
         serde_json::Value::Object(map) => {
+            if map.get("type").and_then(serde_json::Value::as_str) == Some("gemini_native_part") {
+                if let Some(path) = map.get("path").and_then(serde_json::Value::as_str) {
+                    out.insert(path.to_owned());
+                }
+            }
             for item in map.values() {
                 collect_attachment_uri_names(item, out);
             }

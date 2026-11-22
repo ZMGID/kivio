@@ -62,7 +62,11 @@ pub fn estimate_value_tokens(value: &Value) -> usize {
         Value::String(text) => estimate_tokens(text),
         Value::Array(items) => items.iter().map(estimate_value_tokens).sum(),
         Value::Object(map) => {
-            if map.contains_key("reasoning_items") || map.contains_key("anthropic_content") {
+            if map.contains_key("reasoning_items")
+                || map.contains_key("anthropic_content")
+                || map.contains_key("gemini_content")
+                || map.contains_key("xai_output")
+            {
                 return map
                     .iter()
                     .filter(|(key, _)| {
@@ -72,6 +76,8 @@ pub fn estimate_value_tokens(value: &Value) -> usize {
                                 | "reasoning_content"
                                 | "reasoning"
                                 | "anthropic_content"
+                                | "gemini_content"
+                                | "xai_output"
                         )
                     })
                     .map(|(key, value)| estimate_tokens(key) + estimate_value_tokens(value))
@@ -138,6 +144,13 @@ fn estimate_model_message_tokens(message: &ModelMessage) -> usize {
         .iter()
         .filter_map(|part| match part {
             MessagePart::ReasoningItem { item, .. } => Some(estimate_reasoning_item_tokens(item)),
+            MessagePart::XaiOutput { items, .. } => Some(
+                items
+                    .iter()
+                    .filter(|item| item["type"] == "reasoning")
+                    .map(estimate_reasoning_item_tokens)
+                    .sum(),
+            ),
             MessagePart::ChatReasoning {
                 blocks, details, ..
             } => Some(estimate_tokens(
@@ -204,6 +217,7 @@ fn estimate_model_message_tokens(message: &ModelMessage) -> usize {
             MessagePart::Image { .. }
             | MessagePart::Video { .. }
             | MessagePart::ImageUrl { .. }
+            | MessagePart::XaiOutput { .. }
             | MessagePart::ReasoningItem { .. }
             | MessagePart::ChatReasoning { .. }
             | MessagePart::AnthropicRedactedThinking { .. } => 0,

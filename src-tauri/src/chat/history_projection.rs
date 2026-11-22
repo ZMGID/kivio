@@ -2,7 +2,7 @@
 //! JSON remains the replay and edit authority. A reader verifies the source file
 //! identity in the same transaction that supplies its metadata, rows and pages.
 use std::collections::{BTreeMap, HashMap};
-use std::fs::{File, Metadata};
+use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -70,12 +70,20 @@ pub(crate) fn remove_files(source: &Path) -> Vec<String> {
         .collect()
 }
 
-fn stamp(metadata: &Metadata) -> Result<String> {
-    let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
+pub(crate) fn stamp(file: &File) -> Result<String> {
+    let metadata = file.metadata()?;
+    let modified = metadata
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .map(|time| time.as_nanos() as i128)
+        .unwrap_or_else(|before| -(before.duration().as_nanos() as i128));
     #[cfg(unix)]
-    let identity = std::os::unix::fs::MetadataExt::ino(metadata);
-    #[cfg(not(unix))]
-    let identity = 0;
+    let identity = std::os::unix::fs::MetadataExt::ino(&metadata);
+    #[cfg(windows)]
+    let identity = {
+        let info = winapi_util::file::information(file)?;
+        format!("{}-{}", info.volume_serial_number(), info.file_index())
+    };
     Ok(format!("{identity}-{}-{modified}", metadata.len()))
 }
 
@@ -105,7 +113,7 @@ fn open_database(path: &Path) -> Result<Connection> {
 }
 
 fn schema(db: &Connection) -> Result<()> {
-    if db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? == 3 {
+    if db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))? == 4 {
         return Ok(());
     }
     db.execute_batch("BEGIN IMMEDIATE;
@@ -136,7 +144,17 @@ fn schema(db: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS metadata_replay (
             revision INTEGER PRIMARY KEY, previous_source TEXT NOT NULL, source TEXT NOT NULL, patch TEXT NOT NULL
         );
-        PRAGMA user_version=3;
+        CREATE TABLE IF NOT EXISTS message_usage (
+            ordinal INTEGER PRIMARY KEY, provider_id TEXT, input REAL, cache_read REAL,
+            cache_write REAL, output REAL
+        );
+        DELETE FROM message_usage;
+        INSERT INTO message_usage
+            SELECT ordinal, json_extract(payload,'$.provider_id'), json_extract(payload,'$.usage.input_tokens'),
+                json_extract(payload,'$.usage.cached_input_tokens'), json_extract(payload,'$.usage.cache_creation_input_tokens'),
+                json_extract(payload,'$.usage.output_tokens')
+            FROM messages WHERE json_type(payload,'$.usage')='object';
+        PRAGMA user_version=4;
         COMMIT;")?;
     Ok(())
 }
@@ -185,7 +203,7 @@ fn with_snapshot<T>(
     operation: impl FnOnce(&View<'_>) -> Result<T>,
 ) -> Result<T> {
     let file = File::open(source)?;
-    let source_stamp = stamp(&file.metadata()?)?;
+    let source_stamp = stamp(&file)?;
     let tx = db.transaction()?;
     if let Some(view) = snapshot(&tx, &source_stamp)? {
         return operation(&view);
@@ -195,7 +213,7 @@ fn with_snapshot<T>(
     // first click may already have migrated/replaced the atomic source.
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut file = File::open(source)?;
-    let source_stamp = stamp(&file.metadata()?)?;
+    let source_stamp = stamp(&file)?;
     if snapshot(&tx, &source_stamp)?.is_none() {
         let mut content = String::new();
         file.read_to_string(&mut content)?;
@@ -227,7 +245,7 @@ fn snapshot<'a>(db: &'a Connection, stamp: &str) -> Result<Option<View<'a>>> {
 
 pub(crate) fn record_write(path: &Path, content: &str) -> Result<()> {
     // The conversation writer owns the repository lock through this operation.
-    let source_stamp = stamp(&std::fs::metadata(path)?)?;
+    let source_stamp = stamp(&File::open(path)?)?;
     let mut db = open_database(&database_path(path))?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     if snapshot(&tx, &source_stamp)?.is_none() {
@@ -393,7 +411,7 @@ fn update_rows(tx: &Transaction<'_>, raw_messages: &RawValue) -> Result<()> {
         write_message(tx, ordinal, &mut message, &digest)?;
     }
     if old.len() > messages.len() {
-        for table in ["items", "messages", "results", "artifacts"] {
+        for table in ["items", "messages", "results", "artifacts", "message_usage"] {
             tx.execute(
                 &format!("DELETE FROM {table} WHERE ordinal>=?1"),
                 [messages.len() as i64],
@@ -448,6 +466,20 @@ fn write_message(
                 .execute(params![ordinal, id, serde_json::to_string(artifact)?])?;
         }
     }
+    if let Some(usage) = &message.usage {
+        tx.prepare_cached("INSERT OR REPLACE INTO message_usage VALUES (?1,?2,?3,?4,?5,?6)")?
+            .execute(params![
+                ordinal,
+                message.provider_id,
+                usage.input_tokens.map(|n| n as f64),
+                usage.cached_input_tokens.map(|n| n as f64),
+                usage.cache_creation_input_tokens.map(|n| n as f64),
+                usage.output_tokens.map(|n| n as f64)
+            ])?;
+    } else {
+        tx.prepare_cached("DELETE FROM message_usage WHERE ordinal=?1")?
+            .execute([ordinal])?;
+    }
     let extracted = extract_results(message);
     let payload = serde_json::to_string(message)?;
     let mut inline_bytes = payload.len();
@@ -482,7 +514,34 @@ struct Candidate {
     bytes: usize,
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct ProviderTokenUsage {
+    provider_id: Option<String>,
+    input_less_cached: Option<f64>,
+    input_plus_cache_write: Option<f64>,
+    cached: Option<f64>,
+    output: Option<f64>,
+}
+
 impl View<'_> {
+    pub(crate) fn usage(&self) -> Result<Vec<ProviderTokenUsage>> {
+        let mut statement = self.db.prepare(
+            "SELECT provider_id, SUM(MAX(0,input-COALESCE(cache_read,0))),
+                SUM(input+COALESCE(cache_write,0)), SUM(cache_read), SUM(output)
+             FROM message_usage GROUP BY provider_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(ProviderTokenUsage {
+                provider_id: row.get(0)?,
+                input_less_cached: row.get(1)?,
+                input_plus_cache_write: row.get(2)?,
+                cached: row.get(3)?,
+                output: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub(crate) fn replay(&self, after: &ChatHistoryCursor) -> Result<Option<ChatHistoryReplay>> {
         if after.revision > self.revision {
             return Ok(None);
@@ -939,6 +998,52 @@ mod tests {
                 view.window_ranges(Some("m80"), true)?,
                 vec![62..102, 200..220]
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn usage_survives_v3_upgrade_and_follows_replaced_and_truncated_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conv_fixture.json");
+        let mut messages = vec![
+            message(0, "assistant"),
+            message(1, "assistant"),
+            message(2, "assistant"),
+        ];
+        messages[0]["usage"] =
+            json!({"input_tokens":1,"cached_input_tokens":10,"cache_creation_input_tokens":4});
+        messages[1]["usage"] = json!({"input_tokens":20,"output_tokens":0});
+        messages[2]["usage"] = json!({"output_tokens":50});
+        messages[2]["provider_id"] = json!("other");
+        let mut doc = source(messages);
+        std::fs::write(&path, doc.to_string()).unwrap();
+        reopen(&path, |_| Ok(()));
+        // Existing v3 sidecars already have normalized message rows and an up-to-date source stamp.
+        open_database(&database_path(&path))
+            .unwrap()
+            .execute_batch("DROP TABLE message_usage; PRAGMA user_version=3;")
+            .unwrap();
+        reopen(&path, |view| {
+            let rows = view.usage()?;
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].input_less_cached, Some(20.0));
+            assert_eq!(rows[0].input_plus_cache_write, Some(25.0));
+            assert_eq!(rows[0].cached, Some(10.0));
+            assert_eq!(rows[0].output, Some(0.0));
+            assert_eq!(rows[1].provider_id.as_deref(), Some("other"));
+            assert_eq!(rows[1].input_less_cached, None);
+            assert_eq!(rows[1].output, Some(50.0));
+            Ok(())
+        });
+        doc["messages"][0]["usage"] = Value::Null;
+        doc["messages"].as_array_mut().unwrap().pop();
+        std::fs::write(&path, doc.to_string()).unwrap();
+        reopen(&path, |view| {
+            let rows = view.usage()?;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].input_plus_cache_write, Some(20.0));
+            assert_eq!(rows[0].cached, None);
             Ok(())
         });
     }

@@ -1,3 +1,4 @@
+import { sessionTokenUsage } from './sessionTokenUsage'
 // Chat API 调用封装
 import { invoke } from '@tauri-apps/api/core'
 import { isPlaceholderTitle, optimisticConversationTitle } from './conversationTitle'
@@ -30,7 +31,7 @@ import type {
   PendingAttachment,
 } from './types'
 import type { ThinkingLevel, WebSearchMode, ModelRef, AdditionalDirectory } from './types'
-import type { CliImportResult, ImportableCliSession } from './types'
+import { assistantToolPolicy, type CliImportResult, type ImportableCliSession } from './types'
 
 export type { AgentRuntimeConfig }
 export interface ConversationBranch {
@@ -182,7 +183,9 @@ function loadMockAssistants(): ChatAssistant[] {
   try {
     const raw = window.localStorage.getItem(mockAssistantsStorageKey)
     const parsed = raw ? JSON.parse(raw) : []
-    const assistants = Array.isArray(parsed) ? parsed : []
+    const assistants: ChatAssistant[] = Array.isArray(parsed) ? parsed.map((item: ChatAssistant) => ({
+      ...item, tool_policy: assistantToolPolicy(item),
+    })) : []
     assistants.sort((a, b) => b.updated_at - a.updated_at || a.name.localeCompare(b.name, 'zh-CN'))
     return assistants
   } catch {
@@ -208,6 +211,7 @@ function normalizeAssistant(assistant: ChatAssistant): ChatAssistant {
     model: (assistant.model ?? '').trim(),
     mcp_server_ids: assistant.mcp_server_ids ?? assistant.mcpServerIds ?? [],
     skill_ids: assistant.skill_ids ?? assistant.skillIds ?? [],
+    tool_policy: assistantToolPolicy(assistant),
     knowledge_base_ids: assistant.knowledge_base_ids ?? assistant.knowledgeBaseIds ?? [],
     enabled: assistant.enabled ?? true,
     installed: assistant.installed ?? true,
@@ -229,6 +233,8 @@ function assistantSnapshot(assistant: ChatAssistant): ChatAssistantSnapshot {
     model: assistant.model ?? '',
     mcp_server_ids: assistant.mcp_server_ids ?? assistant.mcpServerIds ?? [],
     skill_ids: assistant.skill_ids ?? assistant.skillIds ?? [],
+    tool_policy: assistantToolPolicy(assistant),
+    mounted_default_ids: assistant.knowledge_base_ids ?? assistant.knowledgeBaseIds ?? [],
     knowledge_base_ids: assistant.knowledge_base_ids ?? assistant.knowledgeBaseIds ?? [],
   }
 }
@@ -412,6 +418,7 @@ const mockChatApi = {
       history_start: start,
       history_source: String(conversation.revision),
       history_total: total,
+      history_usage: sessionTokenUsage(conversation.messages),
       history_turn_count: directory.filter(entry => entry.kind === 'turn').length,
       history_directory: directory.filter(entry => entry.message_index >= start
         && (!gap || entry.message_index < gap.start || entry.message_index >= gap.end)),
@@ -586,6 +593,7 @@ const mockChatApi = {
     if (index < 0) throw new Error('助手不存在')
     const next = normalizeAssistant({
       ...assistant,
+      tool_policy: assistants[index].tool_policy,
       built_in: assistants[index].built_in,
       created_at: assistants[index].created_at,
     })
@@ -791,6 +799,7 @@ const mockChatApi = {
       activeSkillId?: string | null
       assistantId?: string | null
       knowledgeBaseIds?: string[]
+      attachKnowledgeBaseIds?: string[]
       additionalDirectories?: AdditionalDirectory[]
     }
   ): Promise<Conversation> {
@@ -827,7 +836,7 @@ const mockChatApi = {
     }
     if ('assistantId' in updates) {
       const previous = conversation.assistant_snapshot ?? conversation.assistantSnapshot
-      const previousIds = previous?.knowledge_base_ids ?? previous?.knowledgeBaseIds ?? []
+      const previousIds = previous?.mounted_default_ids ?? []
       const manualIds = (conversation.knowledge_base_ids ?? conversation.knowledgeBaseIds ?? [])
         .filter((id) => !previousIds.includes(id))
       const assistantId = updates.assistantId?.trim() ?? ''
@@ -842,6 +851,7 @@ const mockChatApi = {
         )
         if (!assistant) throw new Error('助手不存在或不可用')
         const snapshot = assistantSnapshot(assistant)
+        snapshot.mounted_default_ids = snapshot.knowledge_base_ids?.filter(id => !manualIds.includes(id))
         conversation.assistant_id = snapshot.id
         conversation.assistantId = snapshot.id
         conversation.assistant_snapshot = snapshot
@@ -850,7 +860,16 @@ const mockChatApi = {
       }
       conversation.knowledge_base_ids = [...new Set([...manualIds, ...(conversation.assistant_snapshot?.knowledge_base_ids ?? [])])]
     }
+    const expert = conversation.assistant_snapshot ?? conversation.assistantSnapshot
     if (updates.knowledgeBaseIds !== undefined) conversation.knowledge_base_ids = updates.knowledgeBaseIds
+    if (updates.attachKnowledgeBaseIds) {
+      conversation.knowledge_base_ids = [...new Set([...(conversation.knowledge_base_ids ?? []), ...updates.attachKnowledgeBaseIds])]
+    }
+    if (expert && (updates.knowledgeBaseIds || updates.attachKnowledgeBaseIds)) {
+      const owned = expert.mounted_default_ids ?? []
+      expert.mounted_default_ids = owned.filter(id =>
+        conversation.knowledge_base_ids?.includes(id) && !updates.attachKnowledgeBaseIds?.includes(id))
+    }
     conversation.knowledgeBaseIds = conversation.knowledge_base_ids
     conversation.activeSkillId = conversation.active_skill_id
     if (updates.additionalDirectories !== undefined) {
@@ -1272,6 +1291,7 @@ export const chatApi = {
       history_total: number
       history_gap?: Conversation['history_gap']
       history_turn_count: number
+      history_usage: Conversation['history_usage']
       history_directory: NonNullable<Conversation['history_directory']>
       history_artifacts?: Conversation['history_artifacts']
       read_ms: number
@@ -1291,6 +1311,7 @@ export const chatApi = {
       history_source: result.history_source,
       history_total: result.history_total,
       history_turn_count: result.history_turn_count,
+      history_usage: result.history_usage,
       history_directory: result.history_directory,
       history_artifacts: result.history_artifacts,
     }
@@ -1790,6 +1811,7 @@ export const chatApi = {
       activeSkillId?: string | null
       assistantId?: string | null
       knowledgeBaseIds?: string[]
+      attachKnowledgeBaseIds?: string[]
       forceKnowledgeSearch?: boolean
       additionalDirectories?: AdditionalDirectory[]
       thinkingLevel?: ThinkingLevel | null
@@ -1818,6 +1840,7 @@ export const chatApi = {
         activeSkillId: updates.activeSkillId,
         assistantId: updates.assistantId,
         knowledgeBaseIds: updates.knowledgeBaseIds,
+        attachKnowledgeBaseIds: updates.attachKnowledgeBaseIds,
         forceKnowledgeSearch: updates.forceKnowledgeSearch,
         additionalDirectories: updates.additionalDirectories,
         // null/未知 → 空串，后端解析为 None（回到「跟随全局」）。

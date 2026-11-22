@@ -243,6 +243,16 @@ export interface ChatMessage {
   timestamp: number
 }
 
+/** The provider format can change after opening a window. Keep both input
+ * conventions, with per-message clamping applied before adding messages. */
+export interface ProviderTokenUsage {
+  provider_id: string | null
+  input_less_cached: number | null
+  input_plus_cache_write: number | null
+  cached: number | null
+  output: number | null
+}
+
 export interface MessageUsage {
   /** Latest CLI agent request footprint; distinct from accumulated token consumption. */
   context_tokens?: number | null
@@ -314,6 +324,7 @@ export interface ChatSet {
 }
 
 export interface ChatAssistant {
+  tool_policy?: 'allowlist' | 'preferences'
   id: string
   name: string
   description?: string
@@ -345,6 +356,8 @@ export interface ChatAssistant {
 }
 
 export interface ChatAssistantSnapshot {
+  mounted_default_ids?: string[]
+  tool_policy?: 'allowlist' | 'preferences'
   id: string
   name: string
   description?: string
@@ -360,6 +373,11 @@ export interface ChatAssistantSnapshot {
   skillIds?: string[]
   knowledge_base_ids?: string[]
   knowledgeBaseIds?: string[]
+}
+
+/** v4 stored allowlists before experts gained knowledge-base preferences. */
+export function assistantToolPolicy(expert: ChatAssistantSnapshot): 'allowlist' | 'preferences' {
+  return expert.tool_policy ?? (expert.knowledge_base_ids || expert.knowledgeBaseIds ? 'preferences' : 'allowlist')
 }
 
 export type ContextUsageStatus =
@@ -573,6 +591,7 @@ export interface Conversation {
   history_source?: string
   history_total?: number
   history_turn_count?: number
+  history_usage?: ProviderTokenUsage[]
   /** Missing half-open interval between a restored reading window and the latest messages. */
   history_gap?: { start: number; end: number }
   /** Only artifacts referenced by loaded messages but defined outside their window. */

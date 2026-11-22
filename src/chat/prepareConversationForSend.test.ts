@@ -96,8 +96,21 @@ describe('prepare conversation for send', () => {
       createConversation: async () => created, setAgentRuntime: vi.fn(), updateConversation,
     }, vi.fn())
     expect(updateConversation).toHaveBeenCalledWith('expert', {
-      knowledgeBaseIds: ['kb-docs', 'kb-guide', 'kb-a'],
+      attachKnowledgeBaseIds: ['kb-a'],
     })
+  })
+
+  it('keeps a welcome-page selection when the expert already mounted that library', async () => {
+    const created = {
+      ...conversation('expert'),
+      knowledge_base_ids: ['kb-a'],
+      assistant_snapshot: { id: 'expert', name: 'Expert', mounted_default_ids: ['kb-a'] },
+    }
+    const updateConversation = vi.fn().mockResolvedValue(created)
+    await prepareConversationForSend(intent(), {
+      createConversation: async () => created, setAgentRuntime: vi.fn(), updateConversation,
+    }, vi.fn())
+    expect(updateConversation).toHaveBeenCalledWith('expert', { attachKnowledgeBaseIds: ['kb-a'] })
   })
 
   it('returns a created partial conversation and recoverable error when a draft patch fails', async () => {

@@ -122,6 +122,9 @@ pub enum MessagePart {
     /// tool context). Only the source model/provider can replay its opaque data.
     GeminiNativePart {
         part: Value,
+        /// Host-owned reference when inline image bytes have been externalized.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
         source_model: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_provider_id: Option<String>,
@@ -200,6 +203,14 @@ pub enum MessagePart {
         source_model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_provider_id: Option<String>,
+    },
+    /// Ordered Responses output for stateless xAI server-tool turns. Portable
+    /// text and client calls remain separate for editing and switching providers.
+    XaiOutput {
+        model: String,
+        items: Vec<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<ResponsesReasoningSource>,
     },
     /// Opaque encrypted reasoning carried across stateless Responses turns.
     /// New items are replayed only to the source model and transport.
@@ -397,7 +408,7 @@ pub struct GenerateRequest {
     pub metadata: RequestMetadata,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -1101,6 +1112,14 @@ pub fn model_message_from_openai_message(message: &Value) -> Option<ModelMessage
             }
         }
     }
+    if role == ModelRole::Assistant {
+        if let Some(replay) = message.get("xai_output") {
+            if let Ok(part @ MessagePart::XaiOutput { .. }) = serde_json::from_value(replay.clone())
+            {
+                parts.push(part);
+            }
+        }
+    }
     // Responses 原生 reasoning items（自定义键搭车，见 MessagePart::ReasoningItem）。
     // 放在 parts 头部：原生输出顺序就是 reasoning → message → function_call。
     if let Some(items) = message.get("reasoning_items").and_then(Value::as_array) {
@@ -1438,7 +1457,8 @@ fn openai_messages_from_model_message(
                     }
                 }
             }
-            MessagePart::ChatReasoning { .. }
+            MessagePart::XaiOutput { .. }
+            | MessagePart::ChatReasoning { .. }
             | MessagePart::AnthropicRedactedThinking { .. }
             | MessagePart::ToolResult { .. } => {}
         }
@@ -1470,6 +1490,15 @@ fn openai_messages_from_model_message(
     }
     if let Some(reasoning) = reasoning {
         out["reasoning_content"] = Value::String(reasoning);
+    }
+    if preserve_legacy_metadata {
+        if let Some(native) = message
+            .content
+            .iter()
+            .find(|part| matches!(part, MessagePart::XaiOutput { .. }))
+        {
+            out["xai_output"] = serde_json::json!(native);
+        }
     }
     if !reasoning_items.is_empty() {
         out["reasoning_items"] = Value::Array(reasoning_items);
@@ -1562,6 +1591,10 @@ fn responses_items_from_model_message(
         return;
     }
 
+    if let Some(native) = super::responses::xai_replay_items(message, can_replay) {
+        items.extend_from_slice(native);
+        return;
+    }
     let is_assistant = message.role == ModelRole::Assistant;
     let text_part_type = if is_assistant {
         "output_text"
@@ -1658,6 +1691,7 @@ fn responses_items_from_model_message(
             // Reasoning summary text is omitted on replay (the native item carries the
             // real chain); ToolResult only appears on Tool messages.
             MessagePart::Reasoning { .. }
+            | MessagePart::XaiOutput { .. }
             | MessagePart::ChatReasoning { .. }
             | MessagePart::ToolResult { .. }
             | MessagePart::AnthropicThinking { .. }

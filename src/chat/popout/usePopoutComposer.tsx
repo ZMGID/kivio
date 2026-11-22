@@ -696,6 +696,7 @@ export function usePopoutComposer({
         conversationId={conversation?.id}
         generating={streaming}
         messages={displayMessages}
+        sessionUsage={conversation?.history_usage}
         lang={lang}
         apiFormats={providerApiFormats}
         defaultApiFormat={conversation ? (providerApiFormats[conversation.provider_id] ?? '') : ''}

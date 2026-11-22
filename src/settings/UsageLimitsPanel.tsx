@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { CircleAlert, Clock, RefreshCw } from 'lucide-react'
 import { cliCreditAmount, cliRemaining, cliResetTime, cliWindowLabel } from '../api/cliAccountFormat'
 import {
@@ -7,7 +7,7 @@ import {
   type DetectedExternalAgent,
   type ExternalCliAccount,
 } from '../api/externalCliSettings'
-import { refreshCliAccount, useCliAccount } from '../api/useCliAccount'
+import { refreshCliAccount, useCliAccounts } from '../api/useCliAccount'
 import { AgentIcon } from '../components/AgentIcon'
 import { Button } from '../components/Button'
 import { notifyError } from '../components/appNoticeStore'
@@ -118,10 +118,14 @@ function LimitRow({ window, now, lang, stale }: { window: QuotaWindow; now: numb
   )
 }
 
-function AgentLimits({ agent, lang, now }: { agent: DetectedExternalAgent; lang: Lang; now: number }) {
+function AgentLimits({ agent, account, error, lang, now }: {
+  agent: DetectedExternalAgent
+  account: ExternalCliAccount
+  error: string | null
+  lang: Lang
+  now: number
+}) {
   const t = i18n[lang]
-  const { account, error } = useCliAccount(agent.id)
-  if (!account?.windows.length) return null
   const identity = [account.account?.email, account.account?.plan].filter(Boolean).join(' · ')
   const updatedAt = new Date(account.checkedAt * 1000)
   return (
@@ -161,7 +165,12 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
     return () => window.clearInterval(timer)
   }, [])
 
-  const available = agents?.filter(agent => agent.available && agent.capabilities.account === 'native') ?? []
+  const available = useMemo(() => agents?.filter(agent => agent.available && agent.capabilities.account === 'native') ?? [], [agents])
+  const accounts = useCliAccounts(available)
+  const readings = accounts.flatMap(({ agent, view }) => view.account?.windows.length
+    ? [<AgentLimits key={agent.id} agent={agent} account={view.account} error={view.error} now={now} lang={lang} />]
+    : [])
+  const checking = accounts.some(account => account.checking)
   const refresh = async () => {
     setRefreshing(true)
     try {
@@ -188,7 +197,15 @@ export function UsageLimitsPanel({ lang }: { lang: Lang }) {
       </div>
       {available.length
         ? <div className="cli-limits-list">
-            {available.map(agent => <AgentLimits key={agent.id} agent={agent} now={now} lang={lang} />)}
+            {readings.length ? readings : <div className="cli-limits-message" role="status">
+              {checking ? t.cliLimitsChecking : <>
+                <p>{t.cliLimitsNoReadings}</p>
+                {accounts.map(({ agent, view }) => {
+                  const reason = view.error || view.account?.unavailable
+                  return reason && <p key={agent.id}>{agent.name} · {reason}</p>
+                })}
+              </>}
+            </div>}
           </div>
         : <p className="cli-limits-message" role="status">{scanFailed ? t.cliLimitsScanFailed : agents ? t.cliLimitsEmpty : t.cliLimitsScanning}</p>}
     </div>

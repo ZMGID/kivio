@@ -2,7 +2,7 @@ import { refreshSettings } from '../api/settingsCache'
 import { api, type SkillMeta as ApiSkillMeta } from '../api/tauri'
 import { normalizeAgentRuntime } from './api'
 import { deriveToolStatusHint, findUnavailableRecommendedTools, readChatToolAvailability } from './toolAvailability'
-import type { Conversation, SkillMeta } from './types'
+import { assistantToolPolicy, type ChatAssistantSnapshot, type Conversation, type SkillMeta } from './types'
 import { isTauriRuntime } from './utils'
 
 /** 把 IPC 层的 SkillMeta 收窄成聊天页使用的形状。 */
@@ -21,6 +21,12 @@ export function normalizeSkill(skill: ApiSkillMeta): SkillMeta {
 
 export function skillRecommendedTools(skill?: SkillMeta | null): string[] {
   return skill?.recommended_tools ?? skill?.recommendedTools ?? []
+}
+
+export function skillsForExpert(skills: SkillMeta[], expert?: ChatAssistantSnapshot | null): SkillMeta[] {
+  if (!expert || expert.id === 'asst_voice_orchestrator') return skills
+  const allowed = expert.skill_ids ?? expert.skillIds ?? []
+  return assistantToolPolicy(expert) === 'allowlist' ? skills.filter(skill => allowed.includes(skill.id)) : skills
 }
 
 /** One send policy for the main view and conversation popouts. */
@@ -43,7 +49,7 @@ export async function readQueuedSendSkillPolicy(conversation: Conversation) {
     if (chatTools?.disabledSkillIds?.includes(selected)) return noSkill
     const result = await api.chatSessionSkills(conversation.id)
     if (!result.success) return { ...noSkill, disabledReason: result.error || '读取会话技能失败，请重试。' }
-    const skills = result.skills.map(normalizeSkill)
+    const skills = skillsForExpert(result.skills.map(normalizeSkill), conversation.assistant_snapshot ?? conversation.assistantSnapshot)
     const attachmentSkillId = resolveSendSkillId(skills, selected, false)
     const recommendedTools = skillRecommendedTools(skills.find((skill) => skill.id === attachmentSkillId))
     if (!recommendedTools.length) return { attachmentSkillId, disabledReason: '' }

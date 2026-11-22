@@ -39,11 +39,35 @@ function applyReplay(window: Conversation, replay: ChatHistoryReplay): Conversat
 
 const IDLE_TTL_MS = 5 * 60_000
 
-/** Keeps inactive display windows for the same five-minute idle lifetime as T3 threads. */
+const MAX_ENTRIES = 4
+const MAX_BYTES = 24 * 1024 * 1024
+
+// Charge strings at UTF-16 width and account for collection slots and field names.
+// Walk the already-loaded JSON values without building a serialized copy of tool results.
+function retainedBytes(value: unknown, budget = MAX_BYTES, depth = 0): number {
+  if (typeof value === 'string') return 16 + value.length * 2
+  if (value == null || typeof value !== 'object') return 8
+  if (depth > 128) return MAX_BYTES + 1
+  let bytes = 32
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      bytes += 8 + retainedBytes(item, budget - bytes, depth + 1)
+      if (bytes > budget) break
+    }
+  } else {
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue
+      bytes += 16 + 2 * key.length + retainedBytes(Reflect.get(value, key), budget - bytes, depth + 1)
+      if (bytes > budget) break
+    }
+  }
+  return bytes
+}
+
 type RetainedWindow = {
-  conversation: Conversation
+  conversation: Conversation | null
   bounding?: Promise<void>
-  owner: symbol
+  bytes: number
   timer: ReturnType<typeof setTimeout>
   stillCurrent?: () => boolean
 }
@@ -51,27 +75,49 @@ type RetainedWindow = {
 export function createConversationWarmCache(readWindow: (id: string, anchor?: string) => Promise<Conversation>) {
   const entries = new Map<string, RetainedWindow>()
 
+  let usedBytes = 0
+
   const forget = (id: string) => {
     const entry = entries.get(id)
-    if (entry) clearTimeout(entry.timer)
+    if (!entry) return
+    clearTimeout(entry.timer)
+    usedBytes -= entry.bytes
     entries.delete(id)
+    // Pending reads may still hold this entry until their promise settles.
+    entry.conversation = null
+  }
+
+  const trim = () => {
+    for (const id of entries.keys()) {
+      if (usedBytes <= MAX_BYTES && entries.size <= MAX_ENTRIES) break
+      forget(id)
+    }
   }
 
   return {
     remember(conversation: Conversation, anchor?: string, stillCurrent?: () => boolean) {
       const id = conversation.id
       forget(id)
-      const owner = Symbol()
-      const entry: RetainedWindow = { owner, conversation, stillCurrent, timer: setTimeout(() => forget(id), IDLE_TTL_MS) }
+      const bytes = retainedBytes(conversation)
+      if (bytes > MAX_BYTES) return
+      const entry: RetainedWindow = { conversation, bytes, stillCurrent, timer: setTimeout(() => forget(id), IDLE_TTL_MS) }
       entries.set(id, entry)
+      usedBytes += bytes
+      trim()
       if (conversation.history_start != null && conversation.history_source) return
-      // Full mutation responses can be displayed on an immediate return. Release their
-      // large tool payloads as soon as the stored display window is available.
       entry.bounding = readWindow(id, anchor).then(window => {
-        const current = entries.get(id)
-        if (current?.owner === owner) current.conversation = window
+        if (entries.get(id) !== entry) return
+        const bytes = retainedBytes(window)
+        if (bytes > MAX_BYTES) {
+          forget(id)
+          return
+        }
+        usedBytes += bytes - entry.bytes
+        entry.bytes = bytes
+        entry.conversation = window
+        trim()
       }, () => {
-        if (entries.get(id)?.owner === owner) forget(id)
+        if (entries.get(id) === entry) forget(id)
       })
     },
     async get(
@@ -81,13 +127,14 @@ export function createConversationWarmCache(readWindow: (id: string, anchor?: st
     ): Promise<Conversation | null> {
       const entry = entries.get(id)
       if (!entry) return null
-      display(entry.conversation)
+      if (entry.conversation) display(entry.conversation)
       if (entry.bounding) await entry.bounding
-      if (entries.get(id) !== entry) return null
-      const base = entry.conversation
-      const after = base.history_source ? { revision: base.revision, source: base.history_source } : undefined
+      if (entries.get(id) !== entry || !entry.conversation) return null
+      const after = entry.conversation.history_source
+        ? { revision: entry.conversation.revision, source: entry.conversation.history_source } : undefined
       const checkpoint = await resume(id, after)
-      if (entries.get(id) !== entry) return null
+      if (entries.get(id) !== entry || !entry.conversation) return null
+      const base = entry.conversation
       if (checkpoint?.conversationRevision === null) {
         forget(id)
         throw new Error('Conversation no longer exists')

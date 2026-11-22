@@ -756,7 +756,8 @@ mod tests {
             model: String::new(),
             mcp_server_ids: mcp_server_ids.into_iter().map(str::to_string).collect(),
             skill_ids: skill_ids.into_iter().map(str::to_string).collect(),
-            knowledge_base_ids: Vec::new(),
+            defaults: crate::chat::types::AssistantDefaults::preferences(Vec::new()),
+            mounted_default_ids: Vec::new(),
         }
     }
 
