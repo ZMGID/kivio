@@ -55,7 +55,8 @@ it('refreshes the chat draft from the saved setup before the first conversation'
   expect(screen.getByRole('button', { name: '最小化' }).closest('.ob-top')).not.toBeNull()
   for (let step = 0; step < 4; step++) fireEvent.click(screen.getByRole('button', { name: '下一步' }))
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '进入 Kivio' })) })
-  await waitFor(() => expect(screen.getByRole('button', { name: binding.model })).toBeInTheDocument())
-  expect(screen.queryByRole('button', { name: initial.chatModel })).not.toBeInTheDocument()
+  // 顶栏合一选择器的可访问名称是「代理 · 服务商：模型 · 思考等级」摘要。
+  await waitFor(() => expect(screen.getByRole('button', { name: new RegExp(binding.model) })).toBeInTheDocument())
+  expect(screen.queryByRole('button', { name: new RegExp(initial.chatModel) })).not.toBeInTheDocument()
   expect(cached.onboardingStatus).toBe('completed')
 })

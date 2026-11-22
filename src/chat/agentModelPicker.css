@@ -1,0 +1,426 @@
+/* 顶栏「代理 · 模型 · 思考强度」合一选择器。
+   外壳沿用 .kv-menu 的表面、边框、圆角与阴影；这里只管布局与左栏代理项。 */
+
+.kv-agent-picker {
+  position: relative;
+  display: inline-flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.kv-agent-picker__logo {
+  display: block;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+/* logo-mark.png 是纯黑单色 mark，暗色下黑贴黑不可见 → 反色成白。 */
+.dark .kv-agent-picker__logo {
+  filter: invert(1);
+}
+
+/* Kivio Chat 用同一 mark，只染成品牌天蓝。 */
+.kv-agent-picker__logo.kv-agent-picker__logo--chat {
+  filter: invert(48%) sepia(92%) saturate(1800%) hue-rotate(170deg) brightness(0.95) contrast(0.95);
+}
+
+.dark .kv-agent-picker__logo.kv-agent-picker__logo--chat {
+  filter: invert(70%) sepia(60%) saturate(1200%) hue-rotate(170deg) brightness(1.15) contrast(0.95);
+}
+
+/* 胶囊上的强度：不加分隔符，只靠留白和更淡的字色从属于模型名（像「Opus 5.5 High」）。
+   不写 display，窄窗时由 .chat-thinking-level-label 的容器查询收起。 */
+.kv-agent-picker__effort-label {
+  flex-shrink: 0;
+  max-width: 88px;
+  margin-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+/* 外壳用 .kv-menu 的表面、边框、圆角与阴影；内边距归各区自己管，
+   这样左栏分隔线、搜索与底栏分隔线都能通到边。 */
+.kv-menu.kv-agent-picker__popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  width: 420px;
+  max-width: calc(100vw - 16px);
+  min-height: 280px;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* 左栏：代理图标列 */
+.kv-agent-picker__rail {
+  display: flex;
+  width: 52px;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 0;
+  border-right: 1px solid var(--theme-surface-border);
+  background: color-mix(in srgb, var(--text) 2%, transparent);
+}
+
+.kv-agent-picker__agent {
+  appearance: none;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: default;
+  outline: none;
+  transition:
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    box-shadow var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+/* 未选中的代理图标统一压成灰阶：品牌图标有的是实心黑块、有的是细线彩色，
+   原样摆在一列里轻重悬殊。悬停或选中才恢复原色。 */
+.kv-agent-picker__agent-icon {
+  display: grid;
+  place-items: center;
+  filter: grayscale(1);
+  opacity: 0.55;
+  transition:
+    filter var(--kv-dur-fast) var(--kv-ease-out),
+    opacity var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+.kv-agent-picker__agent:hover:not(:disabled),
+.kv-agent-picker__agent:focus-visible {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.kv-agent-picker__agent:hover:not(:disabled) .kv-agent-picker__agent-icon,
+.kv-agent-picker__agent:focus-visible .kv-agent-picker__agent-icon,
+.kv-agent-picker__agent.is-active .kv-agent-picker__agent-icon {
+  filter: none;
+  opacity: 1;
+}
+
+.kv-agent-picker__agent:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* 当前代理：抬升成一枚小卡片（与分段控件的选中片段同一语言），不跟模型行的悬停灰混淆。 */
+.kv-agent-picker__agent.is-active {
+  background: var(--theme-surface);
+  box-shadow:
+    0 0 0 1px var(--theme-surface-border-strong),
+    0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.dark .kv-agent-picker__agent.is-active {
+  background: var(--theme-surface-active);
+}
+
+.kv-agent-picker__agent:disabled .kv-agent-picker__agent-icon {
+  opacity: 0.25;
+}
+
+.kv-agent-picker__agent .kv-agent-picker__logo {
+  width: 18px;
+  height: 18px;
+}
+
+.kv-agent-picker__rail-sep {
+  width: 20px;
+  height: 1px;
+  flex-shrink: 0;
+  margin: 4px 0;
+  background: var(--theme-surface-border);
+}
+
+/* 右侧：搜索（兼作标题）+ 模型列表 + 强度底栏 */
+.kv-agent-picker__pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  padding: 4px;
+}
+
+.kv-agent-picker__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 底部思考强度：一行 —— 档位名 / 吸附滑杆 / 恢复默认 / 快速模式。 */
+.kv-agent-picker__effort {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 12px;
+  margin: 4px -4px -4px;
+  padding: 12px 10px 12px 16px;
+  border-top: 1px solid var(--theme-surface-border);
+}
+
+/* 定宽：Off / Medium / XHigh 切换时轨道不左右跳；超长的 CLI 档位名省略，悬停看全。 */
+.kv-effort__value {
+  width: 52px;
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* 只有快速模式、没有档位时，标签占满一行。 */
+.kv-effort__value--solo {
+  width: auto;
+  flex: 1 1 auto;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+/* 轨道：浅凹槽 + 强调色渐变填充（随档位露出、越高越深）+ 等距落点 + 白色旋钮。 */
+.kv-effort__track {
+  --kv-effort-from: color-mix(in srgb, var(--accent) 38%, #fff);
+  --kv-effort-to: color-mix(in srgb, var(--accent) 88%, #3b2fd6);
+  position: relative;
+  min-width: 0;
+  height: 20px;
+  flex: 1 1 auto;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  box-shadow: inset 0 1px 2px rgba(24, 24, 27, 0.08);
+  touch-action: none;
+}
+
+.kv-effort__track.is-disabled {
+  opacity: 0.5;
+}
+
+/* 光晕层：档位越高越亮（--kv-effort-ratio 0→1）。 */
+.kv-effort__glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  filter: drop-shadow(0 0 calc(var(--kv-effort-ratio, 0) * 7px) color-mix(in srgb, var(--accent) 55%, transparent));
+  transition: filter var(--kv-dur-slow) var(--kv-ease-out);
+  pointer-events: none;
+}
+
+.kv-effort__fill {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 55%),
+    linear-gradient(90deg, var(--kv-effort-from), var(--accent) 62%, var(--kv-effort-to));
+  /* 轻弹吸附：换档时填充带一点回弹落到位。 */
+  transition: clip-path var(--kv-dur-slow) var(--kv-ease-spring);
+}
+
+/* 扫光：一道斜向高光从左扫到右，只跑一次。 */
+.kv-effort__sheen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(100deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.55) 50%, rgba(255, 255, 255, 0) 100%);
+  transform: translateX(-120%);
+  animation: kv-effort-sheen 900ms var(--kv-ease-out) 120ms both;
+}
+
+@keyframes kv-effort-sheen {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(260%); }
+}
+
+.kv-effort__dot {
+  appearance: none;
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  transform: translateX(-50%);
+  cursor: default;
+  outline: none;
+}
+
+.kv-effort__dot::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 28%, transparent);
+  transform: translate(-50%, -50%);
+  transition:
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    transform var(--kv-dur-fast) var(--kv-ease-spring);
+}
+
+.kv-effort__dot.is-filled::after {
+  background: rgba(255, 255, 255, 0.75);
+}
+
+/* 悬停轨道时落点略放大，提示可以点到每一档。 */
+.kv-effort__track:not(.is-disabled):hover .kv-effort__dot::after {
+  transform: translate(-50%, -50%) scale(1.35);
+}
+
+.kv-effort__dot:disabled::after {
+  opacity: 0.35;
+}
+
+.kv-effort__dot:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.kv-effort__knob {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  /* 两种主题都用纯白旋钮，带一点立体感的顶光。 */
+  background: radial-gradient(circle at 50% 30%, #fff 0%, #fff 55%, #eef2f8 100%);
+  box-shadow:
+    0 0 0 0.5px rgba(24, 24, 27, 0.12),
+    0 1px 2px rgba(24, 24, 27, 0.12),
+    0 3px 8px -2px color-mix(in srgb, var(--accent) 35%, rgba(24, 24, 27, 0.2));
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition:
+    left var(--kv-dur-slow) var(--kv-ease-spring),
+    transform var(--kv-dur-fast) var(--kv-ease-spring),
+    box-shadow var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+/* 悬停：旋钮外浮一圈强调色光环；拖动：再放大一点，手感更「抓得住」。 */
+.kv-effort__track:not(.is-disabled):hover .kv-effort__knob,
+.kv-effort__track.is-dragging .kv-effort__knob,
+.kv-effort__track:has(.kv-effort__dot:focus-visible) .kv-effort__knob {
+  box-shadow:
+    0 0 0 0.5px rgba(24, 24, 27, 0.12),
+    0 0 0 5px color-mix(in srgb, var(--accent) 16%, transparent),
+    0 3px 8px -2px color-mix(in srgb, var(--accent) 40%, rgba(24, 24, 27, 0.2));
+}
+
+.kv-effort__track.is-dragging .kv-effort__knob {
+  transform: translate(-50%, -50%) scale(1.12);
+}
+
+.dark .kv-effort__track {
+  /* 深色起点不能掺白，否则左段发灰发白；从压暗的强调色起步。 */
+  --kv-effort-from: color-mix(in srgb, var(--accent) 45%, var(--theme-surface));
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
+.dark .kv-effort__knob {
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.4),
+    0 1px 3px rgba(0, 0, 0, 0.5),
+    0 3px 10px -2px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* 档位名：强调色，与滑杆同一色系；换档时轻轻上浮淡入。 */
+.kv-effort__value-text {
+  display: inline-block;
+  color: var(--accent);
+  animation: kv-effort-label-in var(--kv-dur-normal) var(--kv-ease-standard) both;
+}
+
+.kv-effort__value--solo .kv-effort__value-text {
+  color: inherit;
+  animation: none;
+}
+
+@keyframes kv-effort-label-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 探测失败降级提示：一行文案 + 重试。 */
+.kv-agent-picker__fallback {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding: 6px 8px;
+  border: 1px solid rgb(234 179 8 / 0.35);
+  border-radius: 6px;
+  font-size: 12px;
+  color: rgb(133 77 14);
+}
+
+.dark .kv-agent-picker__fallback {
+  border-color: rgb(234 179 8 / 0.3);
+  background: rgb(66 32 6 / 0.4);
+  color: rgb(253 224 71);
+}
+
+.kv-agent-picker__fallback-retry {
+  appearance: none;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: inherit;
+  text-decoration: underline;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kv-agent-picker__agent,
+  .kv-agent-picker__agent-icon,
+  .kv-effort__glow,
+  .kv-effort__fill,
+  .kv-effort__dot::after,
+  .kv-effort__knob {
+    transition: none !important;
+  }
+
+  .kv-effort__sheen,
+  .kv-effort__value-text {
+    animation: none;
+  }
+
+  .kv-effort__sheen {
+    display: none;
+  }
+}

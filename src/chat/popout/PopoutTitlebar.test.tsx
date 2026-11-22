@@ -7,12 +7,9 @@ import { LangContext } from '../../components/i18n'
 import type { AgentRuntimeConfig } from '../types'
 import { PopoutTitlebar } from './PopoutTitlebar'
 
-vi.mock('../RuntimePicker', () => ({
-  RuntimePicker: ({ locked }: { locked: boolean }) => <button data-testid="runtime-picker" disabled={locked} />,
-  ExternalModelSelector: () => <span />,
+vi.mock('../AgentModelPicker', () => ({
+  AgentModelPicker: ({ locked }: { locked: boolean }) => <button data-testid="runtime-picker" disabled={locked} />,
 }))
-vi.mock('../ModelSelector', () => ({ ModelSelector: () => <span data-testid="model-selector" /> }))
-vi.mock('../ThinkingLevelSelector', () => ({ ThinkingLevelSelector: () => <span /> }))
 vi.mock('../PermissionPicker', () => ({ PermissionPicker: () => <span /> }))
 vi.mock('../dock/WorkspaceActionsMenu', () => ({
   WorkspaceActionsMenu: ({ inlineAllowed }: { inlineAllowed?: boolean }) => (

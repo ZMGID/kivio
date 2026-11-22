@@ -195,27 +195,14 @@ export function ContextIndicator({
     ? t.contextCompressionCount.replace('{count}', String(compressionCount))
     : null
 
-  // 锚定在圆环旁：优先左侧 + 底边与按钮对齐（贴底栏，少盖对话消息）；
-  // 左侧不够再翻到按钮正上方。用 bottom/right，不依赖量高。
+  // 锚定在圆环正上方、右缘对齐：不压进输入框，宽度不够时向左收进视口。
+  // 用 bottom/right，不依赖量高。
   const place = useCallback(() => {
     const trigger = triggerRef.current
     if (!trigger) return
     const rect = trigger.getBoundingClientRect()
     const width = Math.min(PANEL_WIDTH, window.innerWidth - VIEW_MARGIN * 2)
-    const spaceLeft = rect.left - VIEW_MARGIN
     const spaceAbove = rect.top - VIEW_MARGIN - PANEL_GAP
-    const openLeft = spaceLeft >= width + PANEL_GAP
-
-    if (openLeft) {
-      // 底边对齐圆环底 → 弹层坐在底栏高度带，只向上长一截
-      const bottom = Math.max(VIEW_MARGIN, window.innerHeight - rect.bottom)
-      const right = window.innerWidth - rect.left + PANEL_GAP
-      const maxH = Math.max(96, Math.min(PANEL_MAX_H, window.innerHeight - bottom - VIEW_MARGIN))
-      setPos({ bottom, right, maxH, width })
-      return
-    }
-
-    // 回退：贴在圆环正上方，右缘对齐
     const bottom = window.innerHeight - rect.top + PANEL_GAP
     const right = Math.min(window.innerWidth - width - VIEW_MARGIN, Math.max(VIEW_MARGIN, window.innerWidth - rect.right))
     const maxH = Math.max(96, Math.min(PANEL_MAX_H, spaceAbove))
@@ -257,7 +244,7 @@ export function ContextIndicator({
           {...(open ? {} : { inert: '' })}
           style={{
             display: open ? 'flex' : 'none',
-            padding: 10,
+            padding: '12px 12px 8px',
             bottom: pos?.bottom ?? 0,
             right: pos?.right ?? 0,
             width: pos?.width ?? PANEL_WIDTH,
@@ -267,8 +254,23 @@ export function ContextIndicator({
           }}
           data-tauri-drag-region="false"
         >
+          <div className="flex shrink-0 items-center gap-2" title={sourceLabel || undefined}>
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-neutral-800">{t.contextPanelTitle}</span>
+            <span className="shrink-0 text-[11px] tabular-nums text-neutral-500">{displayMetric}</span>
+            <IconButton
+              variant="ghost"
+              size="xs"
+              label={t.contextRefreshAria}
+              title={t.contextRefresh}
+              onClick={onRefresh}
+              disabled={loading}
+              className="-my-1 -mr-1"
+            >
+              <RefreshCw size={12} strokeWidth={1.9} className={loading ? 'animate-spin' : ''} />
+            </IconButton>
+          </div>
           <div
-            className="custom-scrollbar min-h-0 flex-1 overflow-y-auto"
+            className="custom-scrollbar mt-2 min-h-0 flex-1 overflow-y-auto"
             role="region"
             aria-label={t.contextPanelTitle}
             tabIndex={0}
@@ -278,12 +280,7 @@ export function ContextIndicator({
               }
             }}
           >
-            <div className="mb-1.5 flex items-center justify-between gap-2" title={sourceLabel || undefined}>
-              <span className="text-[12px] font-medium text-neutral-800">{t.contextPanelTitle}</span>
-              <span className="text-[11px] tabular-nums text-neutral-500">{displayMetric}</span>
-            </div>
-
-            <div className="h-1 shrink-0 overflow-hidden rounded-full bg-neutral-100"
+            <div className="h-1.5 shrink-0 overflow-hidden rounded-full bg-[color-mix(in_srgb,var(--text)_8%,transparent)]"
               role="progressbar" aria-label={t.contextPanelTitle}
               aria-valuenow={usageRatio == null ? undefined : Math.min(100, usageRatio * 100)}
               aria-valuemin={0} aria-valuemax={100} aria-valuetext={displayMetric}>
@@ -296,8 +293,11 @@ export function ContextIndicator({
                 </div>
               )}
             </div>
+            {reportedTokens == null && (
+              <p className="mt-2 text-[11px] text-neutral-400 dark:text-neutral-500">{t.contextEmptyHint}</p>
+            )}
             {!isExternalContext && segments.length > 0 && (
-              <div className="mt-2" title={t.contextBreakdownHint}>
+              <div className="mt-2.5" title={t.contextBreakdownHint}>
                 <div className="pb-1 text-right text-[10px] leading-none text-neutral-400">{t.contextCharacterShare}</div>
                 <dl className="space-y-1">
                   {segments.map((segment) => (
@@ -332,22 +332,12 @@ export function ContextIndicator({
               </p>
             )}
           </div>
-          <div className="mt-1.5 flex shrink-0 items-center justify-end gap-1 border-t border-[var(--theme-surface-border)] pt-1">
+          <div className="mt-3 flex shrink-0 items-center justify-end gap-1 border-t border-[var(--theme-surface-border)] pt-2">
             {compressMeta && (
               <span className="min-w-0 flex-1 truncate text-[10px] text-neutral-400 dark:text-neutral-500" title={compressMeta}>
                 {compressMeta}
               </span>
             )}
-            <IconButton
-              variant="ghost"
-              size="sm"
-              label={t.contextRefreshAria}
-              title={t.contextRefresh}
-              onClick={onRefresh}
-              disabled={loading}
-            >
-              <RefreshCw size={13} strokeWidth={1.9} className={loading ? 'animate-spin' : ''} />
-            </IconButton>
             <Button
               variant="ghost"
               size="sm"
@@ -405,8 +395,10 @@ export function ContextIndicator({
             cy="10"
             r={RING_RADIUS}
             fill="none"
-            strokeWidth="3"
-            className="stroke-black/[0.16] dark:stroke-white/[0.20]"
+            strokeWidth={ringRatio > 0 ? 3 : 2}
+            className={ringRatio > 0
+              ? 'stroke-black/[0.16] dark:stroke-white/[0.20]'
+              : 'stroke-black/[0.12] dark:stroke-white/[0.16]'}
           />
           {ringRatio > 0 && (
             <circle

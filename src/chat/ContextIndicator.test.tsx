@@ -193,7 +193,7 @@ it('keeps usage details inside a narrow viewport when the trigger is inset', () 
   try {
     render(<ContextIndicator lang="en" />)
     const trigger = screen.getByRole('button', { name: 'Context' })
-    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({
+    vi.spyOn(trigger.parentElement!, 'getBoundingClientRect').mockReturnValue({
       x: 250, y: 350, left: 250, right: 275, top: 350, bottom: 375,
       width: 25, height: 25, toJSON: () => ({}),
     })
@@ -203,6 +203,27 @@ it('keeps usage details inside a narrow viewport when the trigger is inset', () 
     const width = parseFloat(panel.style.width)
     expect(360 - right - width).toBeGreaterThanOrEqual(8)
     expect(right).toBeGreaterThanOrEqual(8)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+it('opens above the ring instead of covering the composer and explains empty usage', () => {
+  vi.stubGlobal('innerWidth', 1200)
+  vi.stubGlobal('innerHeight', 800)
+  try {
+    render(<ContextIndicator lang="en" />)
+    const trigger = screen.getByRole('button', { name: 'Context' })
+    // place() 量的是包住圆环按钮的锚点容器。
+    vi.spyOn(trigger.parentElement!, 'getBoundingClientRect').mockReturnValue({
+      x: 1000, y: 700, left: 1000, right: 1028, top: 700, bottom: 728,
+      width: 28, height: 28, toJSON: () => ({}),
+    })
+    fireEvent.click(trigger)
+    const panel = document.getElementById(trigger.getAttribute('aria-controls')!)!
+    expect(parseFloat(panel.style.bottom)).toBeGreaterThan(800 - 700)
+    expect(parseFloat(panel.style.right)).toBe(1200 - 1028)
+    expect(screen.getByText('Usage appears after you send a message')).toBeVisible()
   } finally {
     vi.unstubAllGlobals()
   }

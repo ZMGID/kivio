@@ -2,11 +2,9 @@ import { memo } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { IconButton } from '../components/Button'
 import { i18n, type Lang } from '../components/i18n'
-import { ExternalModelSelector, RuntimePicker } from './RuntimePicker'
-import { ModelSelector } from './ModelSelector'
+import { AgentModelPicker } from './AgentModelPicker'
 import { PermissionPicker } from './PermissionPicker'
 import { ExternalCliAccount } from './ExternalCliAccount'
-import { ThinkingLevelSelector } from './ThinkingLevelSelector'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
 import { usesNativeTitlebar } from './platform'
 import { WorkspaceActionsMenu, type WorkspaceEnvironment } from './dock/WorkspaceActionsMenu'
@@ -87,39 +85,20 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   return (
     <>
       <div className="flex min-w-0 items-center gap-1">
-        <div className="shrink-0" data-tauri-drag-region="false">
-          <RuntimePicker
+        <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">
+          <AgentModelPicker
             agentRuntime={activeAgentRuntime}
-            onRuntimeChange={onRuntimeChange}
             conversationId={conversationId}
             locked={runtimeLocked}
+            providerId={activeProviderId}
+            model={activeModel}
+            thinkingLevel={thinkingLevel}
+            onRuntimeChange={onRuntimeChange}
+            onModelChange={onModelChange}
+            onExternalModelChange={onExternalModelChange}
+            onThinkingLevelChange={onThinkingLevelChange}
           />
         </div>
-        <div className="min-w-0 max-w-full shrink" data-tauri-drag-region="false">
-          {usesExternalRuntime ? (
-            <ExternalModelSelector
-              agentRuntime={activeAgentRuntime}
-              onModelChange={onExternalModelChange}
-              conversationId={conversationId}
-            />
-          ) : (
-            <ModelSelector
-              currentProviderId={activeProviderId}
-              currentModel={activeModel}
-              onModelChange={onModelChange}
-            />
-          )}
-        </div>
-        {!usesExternalRuntime && (
-          <div className="shrink-0 chat-thinking-pill-wrap" data-tauri-drag-region="false">
-            <ThinkingLevelSelector
-              currentProviderId={activeProviderId}
-              currentModel={activeModel}
-              value={thinkingLevel}
-              onChange={onThinkingLevelChange}
-            />
-          </div>
-        )}
         <div className="shrink-0" data-tauri-drag-region="false">
           <PermissionPicker
             agentRuntime={activeAgentRuntime}

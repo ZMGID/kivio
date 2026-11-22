@@ -11,7 +11,9 @@ const ITEM_SELECTOR = [
 function menuItems(menu: HTMLElement): HTMLElement[] {
   return [...menu.querySelectorAll<HTMLElement>(ITEM_SELECTOR)]
     // role 选择器也会命中带 disabled 的 <button>；它 focus() 不动，会把方向键卡住。
-    .filter((el) => !el.hasAttribute('disabled') && !el.closest('[inert], [hidden], [aria-hidden="true"]'))
+    // data-menu-skip：行内的次级按钮（如收藏星标）不占方向键的一步，Tab 仍可到达。
+    .filter((el) => !el.hasAttribute('disabled') && !el.hasAttribute('data-menu-skip')
+      && !el.closest('[inert], [hidden], [aria-hidden="true"]'))
 }
 
 function openedWithKeyboard(el: Element | null): boolean {

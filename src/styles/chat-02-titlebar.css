@@ -313,3 +313,46 @@
     display: none;
   }
 }
+
+/* 顶栏文字触发器（模型选择等）：静止透明，融进标题栏；悬停浮出一层带细边的浅底；
+   展开时抬升成与弹层同材质的小卡片。按下只略加深，不缩放内容。 */
+.chat-titlebar-pill--card {
+  transition:
+    background-color var(--kv-dur-fast) var(--kv-ease-out),
+    box-shadow var(--kv-dur-fast) var(--kv-ease-out);
+}
+
+.chat-titlebar-pill--card:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  box-shadow: inset 0 0 0 0.5px color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.chat-titlebar-pill--card:active {
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.chat-titlebar-pill--card[aria-expanded='true'] {
+  background: var(--theme-surface);
+  box-shadow:
+    0 0 0 0.5px var(--theme-surface-border-strong),
+    0 1px 2px rgba(24, 24, 27, 0.05),
+    0 4px 10px -4px rgba(24, 24, 27, 0.12);
+}
+
+.dark .chat-titlebar-pill--card[aria-expanded='true'] {
+  background: var(--theme-surface-active);
+  box-shadow:
+    0 0 0 0.5px var(--theme-surface-border-strong),
+    0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+.chat-titlebar-pill--card:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-titlebar-pill--card {
+    transition: none;
+  }
+}

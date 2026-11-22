@@ -1604,6 +1604,12 @@ button.chat-composer-status-item:hover {
   text-align: left;
 }
 
+/* 宽松一档：模型选择这类需要逐行扫读的长列表用 32px / 13px，普通操作菜单仍用 28px。 */
+.kv-menu-row--lg {
+  min-height: 32px;
+  font-size: 13px;
+}
+
 .kv-menu-item--danger {
   color: var(--danger);
 }

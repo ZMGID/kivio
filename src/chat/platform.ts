@@ -26,11 +26,13 @@ export const chatTitlebarMacInsetClass = usesNativeTitlebar ? 'pl-[92px]' : ''
 export const chatTitlebarGhostHoverClass =
   'hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
 
-/** 文字 / 复合触发控件（模型选择、侧栏操作组容器等）。 */
+/**
+ * 文字 / 复合触发控件（模型选择等）。悬停、按下、展开三态由 `.chat-titlebar-pill--card`
+ * 负责（chat-02-titlebar.css）：悬停浮出带细边的浅底，展开抬升成小卡片，按下不缩放。
+ */
 export const chatTitlebarPillButtonClass = [
-  'chat-titlebar-pill',
-  'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2.5 text-sm transition duration-[var(--kv-dur-instant)] active:scale-[0.97]',
-  chatTitlebarGhostHoverClass,
+  'chat-titlebar-pill chat-titlebar-pill--card',
+  'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-transparent bg-transparent px-2.5 text-sm',
 ].join(' ')
 
 /** 纯图标触发控件（Runtime / Permission 等），与 pill 同高、同圆角的方形钮。 */

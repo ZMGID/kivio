@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="UTF-8"><title>Agent model picker</title>
+<style>
+  body { margin: 0; background: var(--theme-surface); }
+  .fixture-titlebar { display: flex; align-items: center; gap: 4px; height: 52px; padding: 8px 12px 0 96px; }
+</style>
+</head>
+<body><div id="root"></div><script type="module">
+// Synthetic data only. Renders the real titlebar picker with a stubbed Tauri bridge so the
+// popover, rail, model list and effort slider can be inspected and screenshotted in a browser.
+const params = new URLSearchParams(location.search);
+
+const providers = [
+  { id: 'loki', name: 'Loki qwen', enabled: true, apiKeys: [], baseUrl: '', apiFormat: 'openai_chat',
+    enabledModels: ['qwen3.8-flash-next', 'deepseek-v4.1-flash', 'mimo-v2.6-flash', 'glm-5.3-flash', 'qwen3.8-27b'], availableModels: [] },
+  { id: 'antigravity', name: 'Antigravity OAuth', enabled: true, apiKeys: [], baseUrl: '', apiFormat: 'openai_chat',
+    enabledModels: ['claude-opus-4-6-thinking', 'gemini-3.8-flash-medium', 'claude-sonnet-4-6'], availableModels: [] },
+  { id: 'dsivio', name: 'Dsivio API', enabled: true, apiKeys: [], baseUrl: '', apiFormat: 'openai_chat',
+    enabledModels: ['gpt-6-luna', 'grok-imagine-image-2.0', 'kimi-k3'], availableModels: [] },
+];
+const agents = [
+  ['claude', 'Claude Code'], ['codex', 'Codex CLI'], ['opencode', 'OpenCode'], ['pi', 'Pi'],
+  ['grok', 'Grok CLI'], ['dsh', 'DeepSeek Harness'], ['antigravity', 'Antigravity CLI'],
+].map(([id, name]) => ({ id, name, available: true, models: [{ id: 'default', label: 'Default' }] }));
+
+window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} };
+window.__TAURI_INTERNALS__ = {
+  transformCallback: () => 1,
+  unregisterCallback: () => {},
+  invoke: async (command, args = {}) => {
+    switch (command) {
+      case 'get_settings':
+        return { settings: { providers, favoriteModels: ['dsivio:gpt-6-luna'] }, version: { epoch: 'fixture', revision: 1 } };
+      case 'chat_thinking_capabilities_for_model':
+        return { levels: ['low', 'medium', 'xhigh'], offMode: 'unknown' };
+      case 'chat_detect_external_agents':
+        return { success: true, agents };
+      case 'chat_detect_external_agent_models':
+        return {
+          models: [{ id: 'default', label: 'Default' }, { id: 'gpt-6.2-sol', label: 'GPT-6.2-Sol',
+            capabilities: { serviceTiers: [{ id: 'default', label: 'Standard' }, { id: 'priority', label: 'Fast' }] } }],
+          reasoningOptions: [{ id: 'low', label: 'low' }, { id: 'medium', label: 'medium' }, { id: 'high', label: 'high' }, { id: 'xhigh', label: 'xhigh' }],
+          source: 'probed', currentModel: 'gpt-6.2-sol', currentReasoning: 'high',
+        };
+      default:
+        if (command.startsWith('plugin:event|')) return 1;
+        return null;
+    }
+  },
+};
+
+const React = await import('react');
+const { createRoot } = await import('react-dom/client');
+const { AgentModelPicker } = await import('/src/chat/AgentModelPicker.tsx');
+const { LangContext } = await import('/src/components/i18n.ts');
+await import('/src/styles/app.css');
+const { applyThemeSettings } = await import('/src/theme/theme.ts');
+applyThemeSettings({ theme: params.get('theme') === 'dark' ? 'dark' : 'light', themeColor: 'neutral' });
+
+function Fixture() {
+  const external = params.get('agent');
+  const [runtime, setRuntime] = React.useState(external
+    ? { kind: 'external', externalAgentId: external, externalModel: 'default', externalReasoning: null }
+    : { kind: 'builtin', externalAgentId: null, externalModel: null, externalReasoning: null });
+  const [selection, setSelection] = React.useState({ providerId: 'loki', model: 'qwen3.8-flash-next' });
+  const [level, setLevel] = React.useState('xhigh');
+  return React.createElement(LangContext.Provider, { value: 'zh' },
+    React.createElement('div', { className: 'chat-titlebar-strip-content fixture-titlebar' },
+      React.createElement(AgentModelPicker, {
+        agentRuntime: runtime,
+        conversationId: 'fixture',
+        locked: params.get('locked') === '1',
+        providerId: selection.providerId,
+        model: selection.model,
+        thinkingLevel: level,
+        onRuntimeChange: setRuntime,
+        onModelChange: (providerId, model) => setSelection({ providerId, model }),
+        onExternalModelChange: (model, reasoning, serviceTier) => setRuntime(current => ({
+          ...current, externalModel: model,
+          ...(reasoning !== undefined ? { externalReasoning: reasoning } : {}),
+          ...(serviceTier !== undefined ? { externalServiceTier: serviceTier } : {}),
+        })),
+        onThinkingLevelChange: setLevel,
+      })));
+}
+createRoot(document.getElementById('root')).render(React.createElement(Fixture));
+</script></body></html>

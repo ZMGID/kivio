@@ -5,15 +5,10 @@ import { chatApi } from './api'
 
 vi.mock('./api', () => ({ chatApi: { getBranches: vi.fn() } }))
 
-vi.mock('./RuntimePicker', () => ({
-  RuntimePicker: () => <div data-testid="runtime-picker" />,
-  ExternalModelSelector: () => <div data-testid="external-model" />,
-}))
-vi.mock('./ModelSelector', () => ({
-  ModelSelector: () => <div data-testid="model-selector" />,
-}))
-vi.mock('./ThinkingLevelSelector', () => ({
-  ThinkingLevelSelector: () => <div data-testid="thinking" />,
+vi.mock('./AgentModelPicker', () => ({
+  AgentModelPicker: ({ agentRuntime, locked }: { agentRuntime: { kind: string }; locked: boolean }) => (
+    <div data-testid="agent-model-picker" data-kind={agentRuntime.kind} data-locked={String(locked)} />
+  ),
 }))
 vi.mock('./PermissionPicker', () => ({
   PermissionPicker: () => <div data-testid="permission" />,
@@ -81,30 +76,20 @@ describe('ConversationTitlebarControls', () => {
     expect(queryByTestId('workspace-panel')).not.toBeNull()
   })
 
-  it('renders the external model picker for a CLI runtime', () => {
-    const { getByTestId, queryByTestId } = render(
+  it('renders one combined agent, model and effort picker for every runtime', () => {
+    const { getByTestId, rerender } = render(
       <ConversationTitlebarControls
         {...base}
         activeAgentRuntime={{ kind: 'external', externalAgentId: 'claude' }}
         usesExternalRuntime
+        runtimeLocked
       />,
     )
-    expect(getByTestId('external-model')).toBeTruthy()
-    expect(queryByTestId('model-selector')).toBeNull()
-    expect(queryByTestId('thinking')).toBeNull()
-  })
-
-  it('renders the built-in model + thinking selectors otherwise', () => {
-    const { getByTestId, queryByTestId } = render(
-      <ConversationTitlebarControls
-        {...base}
-        activeAgentRuntime={{ kind: 'builtin' }}
-        usesExternalRuntime={false}
-      />,
-    )
-    expect(getByTestId('model-selector')).toBeTruthy()
-    expect(getByTestId('thinking')).toBeTruthy()
-    expect(queryByTestId('external-model')).toBeNull()
+    expect(getByTestId('agent-model-picker')).toHaveAttribute('data-kind', 'external')
+    expect(getByTestId('agent-model-picker')).toHaveAttribute('data-locked', 'true')
+    rerender(<ConversationTitlebarControls {...base} activeAgentRuntime={{ kind: 'builtin' }} usesExternalRuntime={false} />)
+    expect(screen.getAllByTestId('agent-model-picker')).toHaveLength(1)
+    expect(getByTestId('agent-model-picker')).toHaveAttribute('data-kind', 'builtin')
     expect(screen.queryByRole('button', { name: '面板' })).toBeNull()
   })
 

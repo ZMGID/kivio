@@ -1,5 +1,6 @@
 import type { CSSProperties } from 'react'
 import Antigravity from '@lobehub/icons/es/Antigravity/components/Color'
+import './agentIcon.css'
 
 const ICON_EXT: Record<string, 'svg'> = {
   claude: 'svg',
