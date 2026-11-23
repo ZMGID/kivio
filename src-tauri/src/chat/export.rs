@@ -125,6 +125,7 @@ pub(crate) fn message_body_text(message: &ChatMessage) -> String {
     let content = message.content.trim();
     let is_content_mirror = parts.contains(&content)
         || content == parts.join("\n\n")
+        || content == parts.join("\n")
         || content == raw_parts.join("").trim()
         || content == final_parts.join("\n\n");
     if !content.is_empty() && !is_content_mirror {

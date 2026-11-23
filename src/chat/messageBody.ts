@@ -26,6 +26,7 @@ export function messageBodySegments(message: Pick<ChatMessage, 'content' | 'segm
   const content = message.content.trim()
   const isContentMirror = parts.includes(content)
     || content === parts.join('\n\n')
+    || content === parts.join('\n')
     // Live content concatenates raw deltas; persisted content joins only
     // Plain/Synthesis text. Neither mirror is an additional body segment.
     || content === rawParts.join('').trim()

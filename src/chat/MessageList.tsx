@@ -227,7 +227,7 @@ type LiveRenderItem =
   }
 
 type RenderItem = HistoryRenderItem | LiveRenderItem
-  | { kind: 'error'; key: 'error'; text: string; retryMessageId: string | null }
+  | { kind: 'error'; key: 'error'; degraded: DegradedAnswer; retryMessageId: string | null }
 
 function readingRowKey(item: RenderItem): string {
   if (item.kind === 'message') return item.message.id
@@ -1081,11 +1081,18 @@ function MessageListBase({
   }, [agentHandoffs, appendCompactionSlot, beforeGap, externalHistory, folded, forkOrigin, messages, paged, liveGroupModels, liveRowModel, messageIndexById])
 
   const errorItem = useMemo<RenderItem | null>(() => {
-    if (!error) return null
-    const last = messages[messages.length - 1]
-    const retryMessageId = last && last.role === 'user' ? last.id : null
-    return { kind: 'error', key: 'error', text: error, retryMessageId }
-  }, [error, messages])
+    const last = tail.at(-1)
+    const retryMessageId = last?.role === 'user' ? last.id : null
+    if (error) return { kind: 'error', key: 'error', degraded: streamErrorDegraded(error, i18n[lang]), retryMessageId }
+    // 只显示本轮最近的失败，下一条用户消息自然结束它的展示。
+    for (let i = tail.length - 1; i >= 0 && tail[i].role === 'assistant'; i--) {
+      const degraded = tail[i].degraded
+      if (degraded && degraded.kind !== 'collaboration_incomplete') {
+        return { kind: 'error', key: 'error', degraded, retryMessageId: null }
+      }
+    }
+    return null
+  }, [error, lang, tail])
 
   const [multiAnswerViewMode] = useMultiAnswerViewMode()
   const hasWideGroups = multiAnswerViewMode === 'columns'
@@ -2975,7 +2982,7 @@ function MessageListBase({
         case 'error':
           return (
             <div className="chat-motion-fade-up flex w-full min-w-0 flex-col items-start gap-2 py-3">
-              <DegradedAnswerCard degraded={streamErrorDegraded(item.text, i18n[lang])} />
+              <DegradedAnswerCard degraded={item.degraded} />
               {item.retryMessageId && onRetryLastUser && (
                 <Button size="sm" onClick={() => onRetryLastUser(item.retryMessageId!)}>
                   <RotateCw size={13} strokeWidth={2} />

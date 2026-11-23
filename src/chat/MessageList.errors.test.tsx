@@ -3,7 +3,10 @@ import { afterEach, expect, it } from 'vitest'
 import { MessageList } from './MessageList'
 import { reset, setCoarse } from './streamingStore'
 
-afterEach(() => act(() => reset()))
+afterEach(() => act(() => {
+  reset()
+  setCoarse({ streamError: '' })
+}))
 
 it.each([
   ['Goal mode does not support Orchestrate in this version', 'unknown', '调用失败'],
@@ -25,6 +28,32 @@ it.each([
   expect(screen.getByRole('status')).toHaveAttribute('data-degraded-kind', kind)
   expect(screen.getByText(label)).toBeVisible()
   expect(screen.getByText(error)).toBeVisible()
+})
+
+const failedReply = {
+  id: 'failed', role: 'assistant' as const, content: '', timestamp: 2,
+  degraded: { kind: 'rate_limited', reason: '模型服务限流', detail: '429 Too Many Requests', text: 'raw 429', totalToolCalls: null },
+}
+
+it('shows a single current error even when the conversation also records a failure', () => {
+  act(() => setCoarse({ streamError: 'HTTP 429: Too Many Requests' }))
+  render(<MessageList conversationId="failed-once" messages={[failedReply]} />)
+  expect(screen.getAllByRole('status')).toHaveLength(1)
+  expect(screen.getByText('HTTP 429: Too Many Requests')).toBeVisible()
+})
+
+it('keeps the partial answer and removes its failure card on the next send', () => {
+  const partial = { ...failedReply, content: '已经生成的回答', segments: [
+    { id: 'partial', kind: 'text' as const, phase: 'partial_answer' as const, order: 0, text: '已经生成的回答' },
+    { id: 'error-copy', kind: 'text' as const, phase: 'plain' as const, order: 1, text: failedReply.degraded.text },
+  ] }
+  const next = { id: 'u2', role: 'user' as const, content: '继续', timestamp: 3 }
+  const { rerender } = render(<MessageList conversationId="partial-continue" messages={[partial]} />)
+  expect(screen.getByRole('status')).toHaveTextContent(partial.degraded.reason)
+  rerender(<MessageList conversationId="partial-continue" messages={[partial, next]} />)
+  expect(screen.getByText(partial.content)).toBeVisible()
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(screen.queryByText(failedReply.degraded.text)).toBeNull()
 })
 
 it('shows queued input immediately in the transcript and reconciles a delivered record once', () => {

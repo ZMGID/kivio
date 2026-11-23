@@ -516,19 +516,26 @@ export type TimelineGroupItem =
 export function groupTimelineSegments(
   orderedSegments: ChatMessageSegment[],
   state: 'running' | 'completed' | 'stopped' = 'completed',
-  isPresentation?: (segment: ChatMessageSegment) => boolean,
+  toolRole?: (segment: ChatMessageSegment, afterReply: boolean) => 'presentation' | 'external_cli' | undefined,
 ): TimelineGroupItem[] {
-  // 交付卡属于结果，不应切分 Work，也不应成为隐藏前面正文的过程边界。
   const lastTextIndex = orderedSegments.reduce((last, segment, index) =>
     segment.kind === 'text' && segmentHasContent(segment) ? index : last, -1)
-  const presentations = new Set(orderedSegments.filter(segment =>
-    segment.kind === 'tool' && isPresentation?.(segment)))
+  const presentations = new Set<ChatMessageSegment>()
+  let lastCliToolIndex = -1
   let lastProcessIndex = -1
-  // Native CLIs can persist commentary as Plain/Synthesis. An explicit delivered answer
-  // gives us a reliable boundary; keep all delivered answers and unknown trailing text.
   let lastAnswerIndex = -1
   orderedSegments.forEach((segment, index) => {
-    if (presentations.has(segment) || isSubagentTimelineSegment(segment)) return
+    if (isSubagentTimelineSegment(segment)) return
+    if (segment.kind === 'tool') {
+      const afterReply = lastTextIndex >= 0 && index > lastTextIndex
+        && (state !== 'running' || orderedSegments[lastTextIndex].phase === 'answer')
+      const role = toolRole?.(segment, afterReply)
+      if (role === 'presentation') {
+        presentations.add(segment)
+        return
+      }
+      if (role === 'external_cli') lastCliToolIndex = index
+    }
     if (segment.kind === 'text' && segmentHasContent(segment)
       && (segment.phase === 'answer' || (segment.phase === 'partial_answer' && index === lastTextIndex))) {
       lastAnswerIndex = index
@@ -546,6 +553,11 @@ export function groupTimelineSegments(
   const hasCancellationNotice = orderedSegments.some(segment =>
     segment.kind === 'text' && segmentHasContent(segment)
     && /^seg_\d+_cancelled_synthesis$/.test(segment.id))
+  // Unphased CLI replies use Plain/Synthesis for both progress and answers.
+  // Keep the trailing reply intact, and keep partial output if the turn stopped.
+  const foldBefore = lastAnswerIndex < 0 && state === 'completed' && hasFinalAnswer && !hasCancellationNotice
+    ? lastCliToolIndex
+    : lastAnswerIndex
   let process: ChatMessageSegment[] = []
   const body: TimelineGroupItem[] = []
   const flushProcess = () => {
@@ -560,9 +572,8 @@ export function groupTimelineSegments(
       body.push({ type: 'presentation', segment })
       return
     }
-    // Without an explicit answer, tool order alone cannot classify legacy body text.
     const foldText = state !== 'running'
-      && ((index < lastAnswerIndex && segment.phase !== 'answer'
+      && ((index < foldBefore && segment.phase !== 'answer'
         && (state !== 'stopped' || segment.phase !== 'partial_answer'))
         || (state === 'completed' && segment.phase === 'partial_answer' && index < lastTextIndex)
         || ((segment.phase === 'tool_loop' || segment.phase === 'auxiliary')

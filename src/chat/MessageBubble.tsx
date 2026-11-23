@@ -22,7 +22,6 @@ import { ChatAttachments } from './ChatAttachments'
 import { ChatDotGridBackground } from './ChatDotGridBackground'
 import { ChatMarkdown, type ChatMarkdownOutlineSource, type MarkdownOutlineSourceUpdate } from './ChatMarkdown'
 import { HtmlFrame } from './HtmlFrame'
-import { DegradedAnswerCard } from './DegradedAnswerCard'
 import { GeneratedFileArtifacts } from './GeneratedFileArtifacts'
 import { MarkdownStreamingContext } from './markdownStreaming'
 import { LiveRevealContext } from './streamReveal'
@@ -858,15 +857,16 @@ function TimelineWorkHeader({ generating, open, title, onToggle, children }: {
   generating: boolean
   open: boolean
   title: string
-  onToggle: () => void
+  onToggle?: () => void
   children?: ReactNode
 }) {
   return (
     <button
       type="button"
       onClick={onToggle}
-      aria-expanded={open}
-      data-chat-disclosure
+      disabled={!onToggle}
+      aria-expanded={onToggle ? open : undefined}
+      data-chat-disclosure={onToggle ? true : undefined}
       data-tauri-drag-region="false"
       className="mb-1 flex w-full items-center gap-1.5 text-left text-[15px] leading-6 font-medium text-neutral-400 transition-colors hover:text-neutral-600 dark:text-neutral-500"
     >
@@ -950,8 +950,9 @@ function TimelineGroupBlock({
   if (!showHeader && (!renderDetails || segments.length === 0)) return null
 
   return (
-    <section aria-label={t.chatMsgWorkGroups} className="not-prose" data-chat-process-group>
-      {summary && <TimelineWorkHeader generating={generating} open={renderDetails} title={title} onToggle={onToggle}>
+    <section aria-label={segments.length ? t.chatMsgWorkGroups : undefined} className="not-prose"
+      data-chat-process-group={segments.length > 0 || undefined}>
+      {summary && <TimelineWorkHeader generating={generating} open={renderDetails} title={title} onToggle={allProcessSegments.length ? onToggle : undefined}>
           {summary.diffStats && (
             <span className="shrink-0 font-mono text-[13px] tabular-nums">
               <span className="text-success">+{summary.diffStats.additions}</span>
@@ -962,7 +963,7 @@ function TimelineGroupBlock({
             <span className="shrink-0 text-[var(--text-muted)]">{t.chatMsgStoppedOrSkipped.replace('{n}', String(summary.stoppedCount))}</span>
           )}
       </TimelineWorkHeader>}
-      <ChatDisclosureBody open={renderDetails} animate={animateDisclosure}>
+      {segments.length > 0 && <ChatDisclosureBody open={renderDetails} animate={animateDisclosure}>
         {() => (
           <div className="space-y-1.5">
             {/* A new tool can move existing commentary into this group. Keep
@@ -984,7 +985,7 @@ function TimelineGroupBlock({
             })}
           </div>
         )}
-      </ChatDisclosureBody>
+      </ChatDisclosureBody>}
     </section>
   )
 }
@@ -1092,10 +1093,16 @@ function TimelineSegments({
     const groupItems = groupTimelineSegments(
       [...orphanSegments, ...ordered],
       messageStreaming ? 'running' : completed ? 'completed' : 'stopped',
-      segment => {
+      (segment, afterReply) => {
         const tool = toolCallById.get(segmentToolCallId(segment))
-        return Boolean(tool && (isVisiblePresentation(tool) || isUserInjectedToolCall(tool)
-          || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)))
+        if (!tool) return
+        if (isVisiblePresentation(tool) || isUserInjectedToolCall(tool)
+          || isAwaitingAskUser(tool) || isPendingPermissionTool(tool)) return 'presentation'
+        if (afterReply && tool.status) {
+          const status = normalizeToolCallStatus(tool.status)
+          if (status === 'running' || status === 'pending' || status === 'error') return 'presentation'
+        }
+        if (tool.source === 'external_cli') return 'external_cli'
       },
     )
     const processGroups = groupItems.filter(item => item.type === 'group')
@@ -1162,6 +1169,39 @@ function TimelineSegments({
   const deferredKeys = new Set<string>()
   const lastWork = processGroups.at(-1)
   const lastWorkIndex = lastWork ? groupItems.lastIndexOf(lastWork) : -1
+  // The turn owns the heading. Only adjacent leading work shares its row.
+  const leadingGroup = groupItems[0]?.type === 'group' ? groupItems[0] : undefined
+  const showWorkHeader = !turnWork && (messageStreaming || processGroups.length > 0)
+  function renderWorkGroup(segments: ChatMessageSegment[], key: string, showHeader: boolean) {
+    return (
+      <TimelineGroupBlock
+        key={key}
+        segments={segments}
+        allProcessSegments={allProcessSegments}
+        showHeader={showHeader}
+        userOpen={turnWork?.open ?? userOpen}
+        defaultOpen={defaultOpen}
+        animateDisclosure={turnWork !== undefined || (!searchOpened && !readingOpened && manualOpen !== null)}
+        onReasoningExpand={handleReasoningExpand}
+        revealReasoning={revealReasoning}
+        onToggle={() => {
+          setSearchOpened(false)
+          setDismissedReadingAnchor(readingAnchor)
+          setManualOpen(!(userOpen ?? defaultOpen))
+        }}
+        toolCalls={toolCalls}
+        toolCallById={toolCallById}
+        artifacts={artifacts}
+        citations={citations}
+        conversationId={conversationId}
+        messageStreaming={messageStreaming}
+        reasoningStreaming={reasoningStreaming && segments === lastWork?.segments}
+        reasoningDurationMs={reasoningDurationMs}
+        reasoningDurationMsBySegmentId={reasoningDurationMsBySegmentId}
+        reasoningSegmentCount={reasoningSegmentCount}
+      />
+    )
+  }
   const rows = groupItems.map((item: TimelineGroupItem, index) => {
     if (item.type === 'presentation') {
       return <TimelineToolSegment
@@ -1206,41 +1246,16 @@ function TimelineSegments({
         </div>
       )
     }
+    if (item === leadingGroup && showWorkHeader) return null
     const firstGroup = item === processGroups[0]
-    const groupKey = firstGroup ? `work-${ownerMessageId}` : `work-after-${item.segments[0].id}`
-    if (!firstGroup && !(turnWork?.open ?? userOpen ?? defaultOpen)) return null
-    if (!firstGroup) deferredKeys.add(groupKey)
-    return (
-      <TimelineGroupBlock
-        key={groupKey}
-        segments={item.segments}
-        allProcessSegments={allProcessSegments}
-        showHeader={firstGroup && !turnWork}
-        userOpen={turnWork?.open ?? userOpen}
-        defaultOpen={defaultOpen}
-        animateDisclosure={turnWork !== undefined || (!searchOpened && !readingOpened && manualOpen !== null)}
-        onReasoningExpand={handleReasoningExpand}
-        revealReasoning={revealReasoning}
-        onToggle={() => {
-          setSearchOpened(false)
-          setDismissedReadingAnchor(readingAnchor)
-          setManualOpen(!(userOpen ?? defaultOpen))
-        }}
-        toolCalls={toolCalls}
-        toolCallById={toolCallById}
-        artifacts={artifacts}
-        citations={citations}
-        conversationId={conversationId}
-        messageStreaming={messageStreaming}
-        reasoningStreaming={reasoningStreaming && item === processGroups[processGroups.length - 1]}
-        reasoningDurationMs={reasoningDurationMs}
-        reasoningDurationMsBySegmentId={reasoningDurationMsBySegmentId}
-        reasoningSegmentCount={reasoningSegmentCount}
-      />
-    )
+    if (!(turnWork?.open ?? userOpen ?? defaultOpen)) return null
+    const key = `work-after-${item.segments[0].id}`
+    if (!firstGroup) deferredKeys.add(key)
+    return renderWorkGroup(item.segments, key, false)
   }).filter(row => row !== null)
   return (
     <section aria-label={t.chatMsgAnswerTimeline} className="space-y-1.5">
+      {showWorkHeader && renderWorkGroup(leadingGroup?.segments ?? [], `work-${ownerMessageId}`, true)}
       <WorkTimelineWindow rows={rows} canDefer={row => deferredKeys.has(String(row.key))} rowHeight={96} />
       {showFallbackFiles && <section aria-label={t.chatMsgDeliveredFiles} className="not-prose text-xs text-neutral-500">
         <span>{t.chatMsgFiles}</span>
@@ -1352,11 +1367,8 @@ function MessageBubbleComponent({
       const savedIds = Array.isArray(structured.timelineAgentIds) ? structured.timelineAgentIds : []
       return { ...tool, structured_content: { ...structured, timelineAgentIds: [...savedIds, ...agentIds] } }
     }) : visibleCalls
-    // 后端 recovery.rs 产出的降级描述；旧会话无此字段 → null → 不渲染卡片。
-    const degraded = message.degraded ?? null
-    // 降级文案同时走三条路：content、时间线 text 分段、以及这张卡片。卡片已完整表达，
-    // 另外两条都要按文本相等剔掉，否则同一段话在气泡里出现两遍（正是用户看到的样子）。
-    const degradedText = degraded?.text.trim() ?? ''
+    // 错误卡片由消息列表统一展示，正文和分段都跳过旧消息里的同文副本。
+    const degradedText = message.degraded?.text.trim() ?? ''
     const bodySegments = messageBodySegments(message).filter(
       segment => !degradedText || segment.kind !== 'text' || segmentText(segment).trim() !== degradedText,
     )
@@ -1432,8 +1444,6 @@ function MessageBubbleComponent({
     return {
       attachments,
       toolCalls,
-      degraded,
-      degradedText,
       timelineSegments,
       hasTimelineSegments,
       renderArtifacts,
@@ -1448,7 +1458,6 @@ function MessageBubbleComponent({
   const {
     attachments,
     toolCalls,
-    degraded,
     timelineSegments,
     hasTimelineSegments,
     renderArtifacts,
@@ -1467,9 +1476,6 @@ function MessageBubbleComponent({
       onChange: onOutlineSourceChange,
     }
   }, [message.id, messageStreaming, onOutlineSourceChange, outlineEligible])
-  // 后端 recovery.rs 产出的降级描述；旧会话无此字段 → undefined → 不渲染卡片。
-  // content 仍保留同一段文本（旧前端 / 外部 CLI 只读 content），但卡片已经完整表达了
-  // 同样的信息 —— 这里不再把它当正文渲染，避免一模一样的内容出现两遍。
   const [copied, setCopied] = useState(false)
   const [toolsExpanded, setToolsExpanded] = useState(false)
   // 消息级悬停：鼠标在这条消息上 → 底部操作/元信息条显示，移走 → 隐藏。
@@ -1604,6 +1610,9 @@ function MessageBubbleComponent({
     )
   }
 
+  if (message.degraded && !hasAnswerContent && !hasTimelineSegments && !toolCalls.length
+    && !message.reasoning && !hasGeneratedImages && !hasGeneratedFiles && !isAgentPlanMessage) return null
+
   return (
     <MarkdownStreamingContext.Provider value={markdownStreaming}>
     <LiveRevealContext.Provider value={messageStreaming}>
@@ -1615,6 +1624,9 @@ function MessageBubbleComponent({
     >
       <div className="w-full min-w-0">
         <TurnWorkHeader work={turnWork} />
+        {!turnWork && messageStreaming && !hasTimelineSegments && (
+          <TimelineWorkHeader generating open title={workingGroupTitle(true, null)} />
+        )}
         {toolCalls.length > 0 && !hasTimelineSegments && (
           <section
             aria-label={t.chatMsgToolCalls}
@@ -1724,9 +1736,6 @@ function MessageBubbleComponent({
           )
         )}
 
-        {/* 降级兜底渲染成独立卡片：故障不混进正文，也不会被复制/回灌给模型。 */}
-        {degraded && <DegradedAnswerCard degraded={degraded} />}
-
         {isAgentPlanMessage && !isDirectImageGenerationPending && (
           <AgentPlanAction
             messageId={message.id}
@@ -1736,7 +1745,7 @@ function MessageBubbleComponent({
           />
         )}
 
-        {showAnswer && bodyText.trim().length > 0 && !isDirectImageGenerationPending && (
+        {showAnswer && hasAnswerContent && (
           <AssistantMessageMeta
             readOnly={readOnly}
             content={bodyText}

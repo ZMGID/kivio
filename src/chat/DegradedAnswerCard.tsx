@@ -69,9 +69,9 @@ export function DegradedAnswerCard({ degraded }: { degraded: DegradedAnswer }) {
           )}
 
           {/* 工具结果本身已在上方的工具卡片里，这里只给一句计数指路，不再复述一遍列表。 */}
-          {(degraded.totalToolCalls != null || summaries.length > 0) && (
+          {(Boolean(degraded.totalToolCalls) || summaries.length > 0) && (
             <div className="mt-2 text-[12px] text-neutral-500 dark:text-neutral-500">
-              {degraded.totalToolCalls != null
+              {degraded.totalToolCalls
                 ? t.chatDegradedToolCallsTotal.replace('{n}', String(degraded.totalToolCalls))
                 : t.chatDegradedRecentToolResults.replace('{n}', String(summaries.length))}
             </div>

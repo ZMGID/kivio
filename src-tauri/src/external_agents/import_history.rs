@@ -11,6 +11,7 @@
 //! 解析器是**纯函数**：不碰 `AppHandle`、不写盘。内联图片原样吐给调用方，由导入命令决定
 //! 落到哪个对话的附件目录——那才是知道对话 id 的地方。
 
+use super::session::codex_app_server::codex_message_phase;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -76,6 +77,7 @@ impl Pending {
     fn push_segment(
         &mut self,
         kind: ChatMessageSegmentKind,
+        phase: ChatMessageSegmentPhase,
         text: Option<String>,
         tool: Option<String>,
     ) {
@@ -84,7 +86,7 @@ impl Pending {
         self.segments.push(ChatMessageSegment {
             id: Uuid::new_v4().to_string(),
             kind,
-            phase: ChatMessageSegmentPhase::Plain,
+            phase,
             order,
             step_number: None,
             round: None,
@@ -194,6 +196,7 @@ pub fn parse_claude_history(raw: &str) -> Vec<ImportedMessage> {
             pending.text.push_str(text.trim());
             pending.push_segment(
                 ChatMessageSegmentKind::Text,
+                ChatMessageSegmentPhase::Plain,
                 Some(text.trim().to_string()),
                 None,
             );
@@ -260,6 +263,7 @@ fn apply_user_block(block: &Value, pending: &mut Pending, out: &mut [ImportedMes
                 pending.text.push_str(text.trim());
                 pending.push_segment(
                     ChatMessageSegmentKind::Text,
+                    ChatMessageSegmentPhase::Plain,
                     Some(text.trim().to_string()),
                     None,
                 );
@@ -316,6 +320,7 @@ fn apply_assistant_block(block: &Value, pending: &mut Pending) {
                 pending.text.push_str(text.trim());
                 pending.push_segment(
                     ChatMessageSegmentKind::Text,
+                    ChatMessageSegmentPhase::Plain,
                     Some(text.trim().to_string()),
                     None,
                 );
@@ -334,6 +339,7 @@ fn apply_assistant_block(block: &Value, pending: &mut Pending) {
                 pending.reasoning.push_str(text.trim());
                 pending.push_segment(
                     ChatMessageSegmentKind::Reasoning,
+                    ChatMessageSegmentPhase::Plain,
                     Some(text.trim().to_string()),
                     None,
                 );
@@ -357,7 +363,12 @@ fn apply_assistant_block(block: &Value, pending: &mut Pending) {
                 .get("input")
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "{}".to_string());
-            pending.push_segment(ChatMessageSegmentKind::Tool, None, Some(id.clone()));
+            pending.push_segment(
+                ChatMessageSegmentKind::Tool,
+                ChatMessageSegmentPhase::Plain,
+                None,
+                Some(id.clone()),
+            );
             pending.tool_calls.push(ToolCallRecord {
                 id,
                 name,
@@ -420,6 +431,10 @@ fn image_from_block(block: &Value) -> Option<ImportedImage> {
 
 impl Pending {
     fn push_text(&mut self, text: &str) {
+        self.push_text_in_phase(text, ChatMessageSegmentPhase::Plain);
+    }
+
+    fn push_text_in_phase(&mut self, text: &str, phase: ChatMessageSegmentPhase) {
         let text = text.trim();
         if text.is_empty() {
             return;
@@ -428,7 +443,12 @@ impl Pending {
             self.text.push('\n');
         }
         self.text.push_str(text);
-        self.push_segment(ChatMessageSegmentKind::Text, Some(text.to_string()), None);
+        self.push_segment(
+            ChatMessageSegmentKind::Text,
+            phase,
+            Some(text.to_string()),
+            None,
+        );
     }
 
     fn push_reasoning(&mut self, text: &str) {
@@ -442,6 +462,7 @@ impl Pending {
         self.reasoning.push_str(text);
         self.push_segment(
             ChatMessageSegmentKind::Reasoning,
+            ChatMessageSegmentPhase::Plain,
             Some(text.to_string()),
             None,
         );
@@ -451,7 +472,12 @@ impl Pending {
         if id.is_empty() {
             return;
         }
-        self.push_segment(ChatMessageSegmentKind::Tool, None, Some(id.clone()));
+        self.push_segment(
+            ChatMessageSegmentKind::Tool,
+            ChatMessageSegmentPhase::Plain,
+            None,
+            Some(id.clone()),
+        );
         self.tool_calls.push(ToolCallRecord {
             id,
             name,
@@ -715,7 +741,11 @@ pub fn parse_codex_history(raw: &str) -> Vec<ImportedMessage> {
             }
             ("event_msg", "agent_message") => {
                 switch_role(&mut pending, &mut out, "assistant", ts);
-                pending.push_text(payload.get("message").and_then(Value::as_str).unwrap_or(""));
+                pending.push_text_in_phase(
+                    payload.get("message").and_then(Value::as_str).unwrap_or(""),
+                    codex_message_phase(payload.get("phase").and_then(Value::as_str))
+                        .unwrap_or(ChatMessageSegmentPhase::Plain),
+                );
             }
             // 0.152+ 默认 paginated 线程不再写 `user_message` / `agent_message`，正文只在
             // `item_completed` 的 TurnItem 里（本机 0.158 rollout 核实）。两种格式不会同文件混写。
@@ -724,7 +754,9 @@ pub fn parse_codex_history(raw: &str) -> Vec<ImportedMessage> {
                     continue;
                 };
                 switch_role(&mut pending, &mut out, role, ts);
-                pending.push_text(&text);
+                let phase =
+                    codex_message_phase(payload.pointer("/item/phase").and_then(Value::as_str));
+                pending.push_text_in_phase(&text, phase.unwrap_or(ChatMessageSegmentPhase::Plain));
             }
             ("response_item", "reasoning") => {
                 switch_role(&mut pending, &mut out, "assistant", ts);
@@ -934,7 +966,12 @@ fn append_acp_text(pending: &mut Pending, update: &Value, is_reasoning: bool) {
         } else {
             ChatMessageSegmentKind::Text
         };
-        pending.push_segment(kind, Some(String::new()), None);
+        pending.push_segment(
+            kind,
+            ChatMessageSegmentPhase::Plain,
+            Some(String::new()),
+            None,
+        );
     }
     // 段落文本跟着累积的正文走，避免和 `content` 不一致。
     let latest = if is_reasoning {
@@ -1137,6 +1174,20 @@ mod tests {
         assert_eq!(msgs[0].message.content, "修一下闪烁");
         assert!(msgs[1].message.content.contains("先看渲染流程。"));
         assert!(msgs[1].message.content.contains("已修复。"));
+        let phases: Vec<_> = msgs[1]
+            .message
+            .segments
+            .iter()
+            .filter(|s| s.kind == ChatMessageSegmentKind::Text)
+            .map(|s| &s.phase)
+            .collect();
+        assert_eq!(
+            phases,
+            [
+                &ChatMessageSegmentPhase::ToolLoop,
+                &ChatMessageSegmentPhase::Answer
+            ]
+        );
         assert_eq!(msgs[1].message.tool_calls.len(), 1);
     }
 

@@ -430,8 +430,15 @@ describe('assistant body visibility', () => {
       id: 'questions-before-tools', role: 'assistant', content: '', timestamp: 1,
       segments: [{ id: 'questions', kind: 'text', phase: 'tool_loop', order: 1, text: questions }],
     }
-    const { rerender } = render(<MessageBubble message={message} messageStreaming />)
-    expect(screen.getByText(questions)).toBeVisible()
+    const { rerender } = render(<MessageBubble message={{ ...message, segments: [] }} messageStreaming />)
+    expect(screen.getByText('Working')).toBeVisible()
+    rerender(<MessageBubble message={message} messageStreaming />)
+    const expectWorkingFirst = () => {
+      const note = screen.getByText(questions)
+      expect(note).toBeVisible()
+      expect(screen.getByText('Working').compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    }
+    expectWorkingFirst()
     const completed: ChatMessage = {
       ...message,
       content: '环境检查完成。请回答上面四个问题。',
@@ -443,7 +450,7 @@ describe('assistant body visibility', () => {
       tool_calls: [{ id: 'check', name: 'bash', source: 'native', status: 'completed' }],
     }
     rerender(<MessageBubble message={completed} messageStreaming />)
-    expect(screen.getByText(questions)).toBeVisible()
+    expectWorkingFirst()
     rerender(<MessageBubble message={completed} />)
     expect(screen.queryByText(questions)).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^Worked/ })).toHaveAttribute('aria-expanded', 'false')
