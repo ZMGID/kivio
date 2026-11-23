@@ -2770,6 +2770,38 @@ a.kv-btn { text-decoration: none; }
   color: var(--text-muted);
 }
 
+/* ---- 网络搜索页 ----
+   沿用上面的「左列表 + 右详情」。服务商列表比 CLI 长得多，左栏随页面滚动、不吸顶，
+   每行收成单行：图标、名称，右侧是承担的角色和配置状态点。 */
+.kv-websearch-nav {
+  position: static;
+  width: 232px;
+}
+@container settings-shell (max-width: 720px) {
+  .kv-websearch-nav { width: 100%; }
+}
+.kv-websearch-nav .kv-cli-nav-select {
+  gap: 9px;
+  padding: 5px 0 5px 6px;
+}
+.kv-websearch-nav-group {
+  padding: 6px 8px 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+.kv-websearch-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+.kv-websearch-dot.ok {
+  background: var(--success);
+  box-shadow: none;
+}
+
 /* ---- 供应商 ---- */
 .kv-cli-provider { gap: 10px; }
 .kv-cli-provider .kv-row-text { min-width: 0; }

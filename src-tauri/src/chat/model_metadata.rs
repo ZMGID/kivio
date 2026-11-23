@@ -439,6 +439,7 @@ pub(crate) fn agent_model_capabilities(
         builtin_web_search: if builtin_web_search_supported(provider) {
             overrides
                 .and_then(|caps| caps.web_search)
+                .or_else(|| deepseek_hosted_web_search(&provider.base_url, model).map(|_| true))
                 .or_else(|| database("webSearch"))
         } else {
             Some(false)
@@ -537,6 +538,26 @@ pub(crate) fn builtin_web_search_supported(provider: &ModelProvider) -> bool {
                     .and_then(reqwest::Url::host_str)
                     == Some("api.openai.com")
         }
+    }
+}
+
+/// 内置联网声明哪种服务端搜索工具。官方 DeepSeek 的 Flash 只认 `deepseek_web_search`
+/// （网页、以图搜索、思考模式下的深度搜索），标准 `web_search` 只有 V4 Pro 生效、在 Flash 上被忽略。
+/// 旧名 `deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 同样由 Flash 服务。
+pub(crate) fn deepseek_hosted_web_search(
+    base_url: &str,
+    model: &str,
+) -> Option<kivio_agent_sdk::model::HostedWebSearchTool> {
+    use kivio_agent_sdk::model::HostedWebSearchTool;
+    if !crate::utils::is_official_deepseek_api(base_url) {
+        return None;
+    }
+    match model {
+        "deepseek-flash" | "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" => {
+            Some(HostedWebSearchTool::DeepseekWebSearch)
+        }
+        "deepseek-v4-pro" => Some(HostedWebSearchTool::Standard),
+        _ => None,
     }
 }
 

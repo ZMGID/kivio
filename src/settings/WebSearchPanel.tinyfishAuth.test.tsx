@@ -36,7 +36,7 @@ function connectCalls() {
 
 function openPanel(onChange = vi.fn()) {
   const view = render(
-    <WebSearchPanel t={i18n.zh} lang="zh" webSearch={undefined} onChange={onChange} />,
+    <WebSearchPanel t={i18n.zh} webSearch={undefined} onChange={onChange} />,
   )
   fireEvent.click(screen.getByRole('button', { name: 'TinyFish MCP' }))
   return { ...view, onChange }

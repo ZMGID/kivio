@@ -48,6 +48,8 @@ pub struct AnthropicMessagesOptions {
     pub provider_id: Option<String>,
     pub system_prefix: Option<String>,
     pub cache: Option<AnthropicCacheTtl>,
+    /// Hosted search tool declared for `builtin_web_search`.
+    pub hosted_web_search: super::HostedWebSearchTool,
     pub extra_body: Value,
 }
 
@@ -62,6 +64,7 @@ impl Default for AnthropicMessagesOptions {
             provider_id: None,
             system_prefix: None,
             cache: None,
+            hosted_web_search: Default::default(),
             extra_body: Value::Null,
         }
     }
@@ -247,6 +250,36 @@ impl crate::agent::provider_runtime::ModelRuntime for AnthropicMessagesProvider 
     }
 }
 
+/// Search queries of a hosted search call. Anthropic `web_search` carries one
+/// `input.query`; DeepSeek `deepseek_web_search` lists `input.queries` (empty for
+/// image search, and its page opens and in-page finds carry none).
+fn server_search_queries(block: &Value) -> Vec<String> {
+    if !matches!(
+        block.get("name").and_then(Value::as_str),
+        Some("web_search" | "deepseek_web_search")
+    ) {
+        return Vec::new();
+    }
+    let Some(input) = block.get("input") else {
+        return Vec::new();
+    };
+    let single = input.get("query").and_then(Value::as_str);
+    let listed = input
+        .get("queries")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str);
+    let mut queries: Vec<String> = Vec::new();
+    for query in single.into_iter().chain(listed) {
+        let query = query.trim();
+        if !query.is_empty() && !queries.iter().any(|existing| existing == query) {
+            queries.push(query.to_string());
+        }
+    }
+    queries
+}
+
 pub fn request_body(
     request: &GenerateRequest,
     stream: bool,
@@ -277,7 +310,14 @@ pub fn request_body(
     }
     let mut tools = anthropic_tools_from_model_tools(&request.tools);
     if request.options.builtin_web_search {
-        tools.push(serde_json::json!({ "type":"web_search_20250305", "name":"web_search" }));
+        tools.push(match options.hosted_web_search {
+            super::HostedWebSearchTool::Standard => {
+                serde_json::json!({ "type":"web_search_20250305", "name":"web_search" })
+            }
+            super::HostedWebSearchTool::DeepseekWebSearch => {
+                serde_json::json!({ "type":"deepseek_web_search", "name":"deepseek_web_search" })
+            }
+        });
     }
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
@@ -1180,17 +1220,9 @@ fn parse_anthropic_response(response: &Value) -> AnthropicParsedResponse {
                 // （`web_search_tool_result`）带来源。二者都由 Anthropic 服务端产生，
                 // 不进 tool_calls（那是客户端函数工具），只收进 web_search 供卡片可视化。
                 "server_tool_use" => {
-                    if block.get("name").and_then(Value::as_str) == Some("web_search") {
-                        if let Some(query) = block
-                            .get("input")
-                            .and_then(|input| input.get("query"))
-                            .and_then(Value::as_str)
-                            .map(str::trim)
-                            .filter(|value| !value.is_empty())
-                        {
-                            if !web_search.queries.iter().any(|q| q == query) {
-                                web_search.queries.push(query.to_string());
-                            }
+                    for query in server_search_queries(block) {
+                        if !web_search.queries.contains(&query) {
+                            web_search.queries.push(query);
                         }
                     }
                 }
@@ -1398,17 +1430,12 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
                 }),
                 // 内置搜索服务端块：查询词（server_tool_use.input.query）或结果（web_search_tool_result）。
                 Some("server_tool_use") => {
-                    if block.get("name").and_then(Value::as_str) != Some("web_search") {
+                    let queries = server_search_queries(block);
+                    if queries.is_empty() {
                         return None;
                     }
-                    let query = block
-                        .get("input")
-                        .and_then(|input| input.get("query"))
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())?;
                     Some(AnthropicSseEvent::WebSearch(BuiltinWebSearch {
-                        queries: vec![query.to_string()],
+                        queries,
                         citations: Vec::new(),
                     }))
                 }
@@ -2360,6 +2387,69 @@ mod tests {
         assert_eq!(web_search.citations[0].title, "A 站");
         assert_eq!(web_search.citations[1].title, "https://b.com");
         assert_eq!(parsed.content, "见来源。");
+    }
+
+    #[test]
+    fn deepseek_web_search_blocks_collect_queries_and_image_results() {
+        let response = serde_json::json!({
+            "content": [
+                { "type": "server_tool_use", "id": "s1", "name": "deepseek_web_search",
+                  "input": { "action": "search", "queries": ["Iceland population 2025", " "] }, "kind": "search" },
+                { "type": "web_search_tool_result", "tool_use_id": "s1", "kind": "search", "content": [
+                    { "type": "web_search_result", "url": "https://a.com", "title": "A", "encrypted_content": "x" }
+                ]},
+                // Image search: no queries; results carry an extra image_url.
+                { "type": "server_tool_use", "id": "s2", "name": "deepseek_web_search",
+                  "input": { "action": "search", "queries": [] }, "kind": "image_search" },
+                { "type": "web_search_tool_result", "tool_use_id": "s2", "kind": "image_search", "content": [
+                    { "type": "web_search_result", "url": "https://b.com/item", "title": "B",
+                      "image_url": "https://b.com/i.jpg", "encrypted_content": "y" }
+                ]},
+                // Deep thinking search opens a page: no query to show.
+                { "type": "server_tool_use", "id": "s3", "name": "deepseek_web_search",
+                  "input": { "action": "open_page", "url": "https://a.com" }, "kind": "deep_search" },
+                { "type": "text", "text": "About 394,000." }
+            ],
+            "stop_reason": "end_turn"
+        });
+        let parsed = parse_anthropic_response(&response);
+        let web_search = parsed.web_search.expect("web_search present");
+        assert_eq!(web_search.queries, ["Iceland population 2025"]);
+        let urls: Vec<&str> = web_search
+            .citations
+            .iter()
+            .map(|c| c.url.as_str())
+            .collect();
+        assert_eq!(urls, ["https://a.com", "https://b.com/item"]);
+
+        let line = "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"server_tool_use\",\"name\":\"deepseek_web_search\",\"input\":{\"action\":\"search\",\"queries\":[\"a\",\"b\",\"a\"]},\"kind\":\"deep_search\"}}";
+        match parse_anthropic_sse_event(line) {
+            Some(AnthropicSseEvent::WebSearch(ws)) => assert_eq!(ws.queries, ["a", "b"]),
+            _ => panic!("expected WebSearch query increment"),
+        }
+        let open_page = "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"server_tool_use\",\"name\":\"deepseek_web_search\",\"input\":{\"action\":\"open_page\",\"url\":\"https://a.com\"},\"kind\":\"deep_search\"}}";
+        assert!(parse_anthropic_sse_event(open_page).is_none());
+    }
+
+    #[test]
+    fn deepseek_web_search_tool_replaces_the_standard_tool() {
+        let mut request = GenerateRequest {
+            model: "deepseek-flash".into(),
+            system: String::new(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            options: Default::default(),
+            metadata: Default::default(),
+        };
+        request.options.builtin_web_search = true;
+        let options = AnthropicMessagesOptions {
+            hosted_web_search: crate::model::HostedWebSearchTool::DeepseekWebSearch,
+            ..Default::default()
+        };
+        assert_eq!(
+            request_body(&request, false, &options)["tools"],
+            serde_json::json!([{ "type": "deepseek_web_search", "name": "deepseek_web_search" }])
+        );
     }
 
     #[test]

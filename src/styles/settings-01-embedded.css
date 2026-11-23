@@ -107,14 +107,12 @@
   padding: 8px 28px 40px;
 }
 
-.kv-scroll > .websearch-panel-root,
 .kv-scroll > .kv-providers-root {
   flex: 1 1 auto;
   min-height: 100%;
   align-self: stretch;
 }
 
-.kv-scroll:has(> .websearch-panel-root),
 .kv-scroll:has(> .kv-providers-root) {
   display: flex;
   flex-direction: column;

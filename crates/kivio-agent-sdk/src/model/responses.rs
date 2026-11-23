@@ -62,6 +62,8 @@ pub struct OpenAiResponsesOptions {
     /// Host provider identifier. Distinguishes configurations sharing an endpoint.
     pub provider_id: Option<String>,
     pub cache_retention: Option<super::openai::CacheRetention>,
+    /// Hosted search tool declared for `builtin_web_search`.
+    pub hosted_web_search: super::HostedWebSearchTool,
     pub extra_body: Value,
 }
 
@@ -76,6 +78,7 @@ impl Default for OpenAiResponsesOptions {
             endpoint: None,
             provider_id: None,
             cache_retention: None,
+            hosted_web_search: Default::default(),
             extra_body: Value::Null,
         }
     }
@@ -825,7 +828,12 @@ pub fn request_body(
         })
         .collect();
     if request.options.builtin_web_search {
-        tools.push(serde_json::json!({ "type": "web_search" }));
+        tools.push(match options.hosted_web_search {
+            super::HostedWebSearchTool::Standard => serde_json::json!({ "type": "web_search" }),
+            super::HostedWebSearchTool::DeepseekWebSearch => {
+                serde_json::json!({ "type": "deepseek_web_search" })
+            }
+        });
     }
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
@@ -1985,16 +1993,22 @@ fn web_search_from_responses_output(output: &[Value]) -> Option<BuiltinWebSearch
     for item in output {
         match item.get("type").and_then(Value::as_str) {
             Some("web_search_call") => {
-                // 查询词可能在 action.query 或顶层 query（wire 随版本略有差异，两处都试）。
-                let query = item
-                    .get("action")
+                // 查询词可能在 action.query、action.queries（DeepSeek 一次多条）或顶层 query。
+                let action = item.get("action");
+                let single = action
                     .and_then(|action| action.get("query"))
                     .or_else(|| item.get("query"))
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty());
-                if let Some(query) = query {
-                    if !result.queries.iter().any(|existing| existing == query) {
+                    .and_then(Value::as_str);
+                let listed = action
+                    .and_then(|action| action.get("queries"))
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str);
+                for query in single.into_iter().chain(listed) {
+                    let query = query.trim();
+                    if !query.is_empty() && !result.queries.iter().any(|existing| existing == query)
+                    {
                         result.queries.push(query.to_string());
                     }
                 }
@@ -2868,6 +2882,48 @@ mod tests {
         assert_eq!(parsed.citations[0].url, "https://a.com");
         // 缺 title 时回退用 url。
         assert_eq!(parsed.citations[1].title, "https://b.com");
+    }
+
+    #[test]
+    fn deepseek_web_search_call_lists_queries_and_sources() {
+        let output = serde_json::json!([
+            { "type": "web_search_call", "status": "completed", "kind": "search",
+              "action": { "type": "search", "queries": ["DeepSeek V4.1", "DeepSeek V4.1 notes"],
+                "sources": [{ "type": "url", "url": "https://example.com/news", "title": "News" }] } },
+            { "type": "web_search_call", "status": "completed", "kind": "image_search",
+              "action": { "type": "search", "queries": [],
+                "sources": [{ "type": "url", "url": "https://img.example/item", "title": "Item" }] } },
+            { "type": "message", "content": [{ "type": "output_text", "text": "Answer." }] }
+        ]);
+        let parsed = web_search_from_responses_output(output.as_array().unwrap())
+            .expect("web_search present");
+        assert_eq!(parsed.queries, ["DeepSeek V4.1", "DeepSeek V4.1 notes"]);
+        let urls: Vec<&str> = parsed.citations.iter().map(|c| c.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["https://example.com/news", "https://img.example/item"]
+        );
+    }
+
+    #[test]
+    fn deepseek_web_search_tool_replaces_the_standard_tool() {
+        let mut request = request();
+        request.options.builtin_web_search = true;
+        let options = OpenAiResponsesOptions {
+            hosted_web_search: crate::model::HostedWebSearchTool::DeepseekWebSearch,
+            ..Default::default()
+        };
+        let body = request_body(&request, false, &options);
+        let hosted: Vec<&Value> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tool| tool["type"] != "function")
+            .collect();
+        assert_eq!(
+            hosted,
+            [&serde_json::json!({ "type": "deepseek_web_search" })]
+        );
     }
 
     #[test]

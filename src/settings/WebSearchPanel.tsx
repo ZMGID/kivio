@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Info, Loader2, Play, SlidersHorizontal } from 'lucide-react'
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { AlertCircle, CheckCircle2, Eye, EyeOff, ExternalLink, Globe, Loader2, Search, SlidersHorizontal } from 'lucide-react'
 import { api, type Settings, type WebSearchMcpAuth, type WebSearchProviderId } from '../api/tauri'
-import type { I18n, Lang } from '../components/i18n'
-import { Input, Select, SettingRow, SettingsGroup, Toggle } from './components'
+import type { I18n } from '../components/i18n'
+import { Input, Select, SettingRow, Toggle } from './components'
 import { PromptField } from './ScreenshotTranslationSettings'
 import { Button, IconButton } from '../components/Button'
 import { ErrorNotice } from '../components/AppNotice'
+import { Row, Section } from './externalAgents/shared'
 import { isProviderConfigured, providerSupportsFetch, resolvedFetchProvider } from './webSearch'
 
 type WebSearchConfig = NonNullable<Settings['lens']['webSearch']>
@@ -14,7 +15,6 @@ type ProviderId = WebSearchProviderId
 
 type WebSearchPanelProps = {
   t: I18n
-  lang: Lang
   webSearch: WebSearchConfig | undefined
   onChange: (updates: Partial<WebSearchConfig>) => void
 }
@@ -292,7 +292,7 @@ const PROVIDERS: ProviderDef[] = [
   },
 ]
 
-/** 品牌图标：优先本地真实 logo（public/search-icons），加载失败回退到灰底首字母。 */
+/** 品牌图标：优先本地真实 logo（public/search-icons），加载失败回退到首字母。 */
 function ProviderMark({ name, icon, size = 20 }: { name: string; icon?: string; size?: number }) {
   const [failed, setFailed] = useState(false)
   if (icon && !failed) {
@@ -304,18 +304,39 @@ function ProviderMark({ name, icon, size = 20 }: { name: string; icon?: string; 
         height={size}
         draggable={false}
         onError={() => setFailed(true)}
-        className="shrink-0 rounded-[6px] object-contain"
+        className="shrink-0 rounded-[4px] object-contain"
         style={{ width: size, height: size }}
       />
     )
   }
   return (
     <span
-      className="grid shrink-0 place-items-center rounded-[6px] bg-zinc-100 font-semibold uppercase text-zinc-500"
-      style={{ width: size, height: size, fontSize: size * 0.46, lineHeight: 1 }}
+      className="grid shrink-0 place-items-center font-semibold uppercase text-[var(--text-muted)]"
+      style={{ width: size, height: size, fontSize: size * 0.62, lineHeight: 1 }}
     >
       {name.slice(0, 1)}
     </span>
+  )
+}
+
+/** 与本地 CLI 页同款的描边图标框，服务商 logo 或线性图标放在里面。 */
+function IconFrame({ size, children }: { size: number; children: ReactNode }) {
+  return (
+    <span
+      className="kv-cli-iconbox text-[var(--text-muted)]"
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+    >
+      {children}
+    </span>
+  )
+}
+
+function ProviderFrame({ provider, size }: { provider: ProviderDef; size: number }) {
+  return (
+    <IconFrame size={size}>
+      <ProviderMark name={provider.name} icon={provider.icon} size={Math.round(size * 0.6)} />
+    </IconFrame>
   )
 }
 
@@ -324,34 +345,38 @@ function hostname(url: string): string {
 }
 
 function ApiKeyField({
+  t,
   value,
   placeholder,
   onChange,
 }: {
+  t: I18n
   value: string
   placeholder: string
   onChange: (value: string) => void
 }) {
   const [reveal, setReveal] = useState(false)
+  const label = reveal ? t.externalAgentsProviderHideKey : t.externalAgentsProviderShowKey
   return (
-    <div className="relative w-full">
+    <div className="flex w-full items-center gap-1.5">
       <Input
         type={reveal ? 'text' : 'password'}
         value={value}
         onChange={onChange}
         placeholder={placeholder}
         mono
-        className="w-full pr-9"
+        autoComplete="off"
+        spellCheck={false}
+        className="min-w-0 flex-1"
       />
-      <button
-        type="button"
+      <IconButton
+        variant="ghost"
+        label={label}
         onClick={() => setReveal((v) => !v)}
-        className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600"
         data-tauri-drag-region="false"
-        aria-label={reveal ? 'Hide' : 'Show'}
       >
-        {reveal ? <EyeOff size={15} /> : <Eye size={15} />}
-      </button>
+        {reveal ? <EyeOff size={14} /> : <Eye size={14} />}
+      </IconButton>
     </div>
   )
 }
@@ -471,13 +496,14 @@ type TestState =
   | { status: 'error'; message: string }
 
 /** 测试搜索：用当前（可能未保存的）配置真实跑一次搜索，展示结果或错误。 */
-function TestSearch({ t, config }: { t: I18n; config: WebSearchConfig }) {
+function TestSearch({ t, config, desc }: { t: I18n; config: WebSearchConfig; desc?: string }) {
   const [query, setQuery] = useState('')
   const [state, setState] = useState<TestState>({ status: 'idle' })
+  const running = state.status === 'running'
 
   const run = async () => {
     const q = query.trim()
-    if (!q || state.status === 'running') return
+    if (!q || running) return
     setState({ status: 'running' })
     try {
       const res = await api.testWebSearch(config, q)
@@ -493,105 +519,116 @@ function TestSearch({ t, config }: { t: I18n; config: WebSearchConfig }) {
   }
 
   return (
-    <SettingsGroup title={t.webSearchTestSection}>
-      <div className="flex items-center gap-2">
-        <Input
-          value={query}
-          onChange={setQuery}
-          placeholder={t.webSearchTestPlaceholder}
-          className="flex-1"
-        />
-        <IconButton
-          onClick={() => void run()}
-          disabled={!query.trim() || state.status === 'running'}
-          data-tauri-drag-region="false"
-          label={t.webSearchTestSection}
-        >
-          {state.status === 'running'
-            ? <Loader2 className="animate-spin" />
-            : <Play />}
-        </IconButton>
-      </div>
-
-      {state.status === 'running' && (
-        <p className="mt-2 flex items-center gap-1.5 text-[12px] text-zinc-400">
-          <Loader2 size={12} className="animate-spin" /> {t.webSearchTesting}
-        </p>
-      )}
-      {state.status === 'error' && (
-        <p className="mt-2 flex items-start gap-1.5 text-[12px] text-danger">
-          <AlertCircle size={13} className="mt-px shrink-0" /> <span className="break-all">{state.message}</span>
-        </p>
-      )}
-      {state.status === 'ok' && (
-        <div className="mt-2 space-y-1.5">
-          <p className="flex items-center gap-1.5 text-[12px] text-success">
-            <CheckCircle2 size={13} className="shrink-0" />
-            {state.count > 0
-              ? t.webSearchTestResults.replace('{n}', String(state.count))
-              : t.webSearchTestEmpty}
-          </p>
-          {state.results.length > 0 && (
-            <ul className="space-y-1 rounded-lg border border-zinc-200 bg-zinc-50/60 p-2">
-              {state.results.map((r, i) => (
-                <li key={`${r.url}-${i}`} className="min-w-0 truncate text-[12px] text-zinc-600">
-                  <span className="text-zinc-400">{i + 1}.</span> {r.title || r.url}
-                </li>
-              ))}
-            </ul>
-          )}
+    <Section title={t.webSearchTestSection} desc={desc}>
+      <div className="kv-cli-card">
+        <div className="flex items-center gap-2 py-3">
+          <Input
+            value={query}
+            onChange={setQuery}
+            placeholder={t.webSearchTestPlaceholder}
+            aria-label={t.webSearchTestPlaceholder}
+            className="min-w-0 flex-1"
+            onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.key !== 'Enter') return
+              event.preventDefault()
+              void run()
+            }}
+          />
+          <Button
+            onClick={() => void run()}
+            disabled={!query.trim() || running}
+            data-tauri-drag-region="false"
+          >
+            {running ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}
+            {running ? t.webSearchTesting : t.webSearchTestRun}
+          </Button>
         </div>
-      )}
-    </SettingsGroup>
+
+        {state.status === 'error' && (
+          <p className="flex items-start gap-1.5 border-t border-[var(--border)] py-3 text-[12px] text-danger">
+            <AlertCircle size={13} className="mt-px shrink-0" />
+            <span className="min-w-0 break-all">{state.message}</span>
+          </p>
+        )}
+        {state.status === 'ok' && (
+          <div className="border-t border-[var(--border)] py-3">
+            <p className="flex items-center gap-1.5 text-[12px] text-success">
+              <CheckCircle2 size={13} className="shrink-0" />
+              {state.count > 0
+                ? t.webSearchTestResults.replace('{n}', String(state.count))
+                : t.webSearchTestEmpty}
+            </p>
+            {state.results.length > 0 && (
+              <ol className="mt-2 space-y-1">
+                {state.results.map((r, i) => (
+                  <li key={`${r.url}-${i}`} className="flex min-w-0 items-baseline gap-2 text-[12px]">
+                    <span className="w-3 shrink-0 text-right tabular-nums text-[var(--text-faint)]">{i + 1}</span>
+                    <span className="min-w-0 flex-1 truncate text-[var(--text)]">{r.title || r.url}</span>
+                    <span className="max-w-[40%] shrink-0 truncate font-mono text-[11px] text-[var(--text-faint)]">
+                      {hostname(r.url)}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
+        )}
+      </div>
+    </Section>
   )
 }
 
 const FETCH_FOLLOW = 'follow'
 
-const NAV_ITEM =
-  'flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition'
-const NAV_ITEM_ACTIVE =
-  'bg-accent-soft font-medium text-accent'
-const NAV_ITEM_IDLE =
-  'text-zinc-700 hover:bg-zinc-100'
+/** 换搜索源。它原本被单独选作 Fetch 时改回「跟随搜索」，同一家不在两个字段里各存一份。 */
+function searchProviderPatch(config: WebSearchConfig, id: ProviderId): Partial<WebSearchConfig> {
+  return { provider: id, ...(config.fetchProvider === id ? { fetchProvider: null } : {}) }
+}
 
-function ConfigureLink({
-  t,
-  onClick,
-}: {
-  t: I18n
-  onClick: () => void
-}) {
+/** 换 Fetch 源。选「跟随」或与搜索同一家时清空，交给搜索源决定。 */
+function fetchProviderPatch(config: WebSearchConfig, value: string): Partial<WebSearchConfig> {
+  return value === FETCH_FOLLOW || value === config.provider
+    ? { fetchProvider: null }
+    : { fetchProvider: value as ProviderId }
+}
+
+function findProvider(id: ProviderId): ProviderDef | undefined {
+  return PROVIDERS.find((provider) => provider.id === id)
+}
+
+/** 默认页里服务商没配好时的提示：一句状态加一个跳到该服务商的链接。 */
+function SetupHint({ t, onConfigure }: { t: I18n; onConfigure: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="shrink-0 whitespace-nowrap text-[12px] text-accent hover:underline"
-      data-tauri-drag-region="false"
-    >
-      {t.webSearchConfigureProvider} →
-    </button>
+    <span className="inline-flex flex-wrap items-center gap-x-1.5 text-[var(--warn)]">
+      {t.webSearchStatusMissing}
+      <button
+        type="button"
+        onClick={onConfigure}
+        className="text-accent hover:underline"
+        data-tauri-drag-region="false"
+      >
+        {t.webSearchConfigureProvider} →
+      </button>
+    </span>
   )
 }
 
 function DefaultsPage({
   t,
-  lang,
   config,
   onChange,
   onOpenProvider,
 }: {
   t: I18n
-  lang: Lang
   config: WebSearchConfig
   onChange: (updates: Partial<WebSearchConfig>) => void
   onOpenProvider: (id: ProviderId) => void
 }) {
-  const searchName = PROVIDERS.find((provider) => provider.id === config.provider)?.name
-    ?? config.provider
+  const search = findProvider(config.provider)
+  const searchName = search?.name ?? config.provider
   const followsSearch = !config.fetchProvider || config.fetchProvider === config.provider
   const resolvedFetch = resolvedFetchProvider(config)
-  const fetchValue = followsSearch ? FETCH_FOLLOW : config.fetchProvider!
+  const fetch = resolvedFetch ? findProvider(resolvedFetch) : undefined
   const searchReady = isProviderConfigured(config, config.provider)
   const fetchReady = !resolvedFetch || isProviderConfigured(config, resolvedFetch)
   const fetchOptions = [
@@ -603,310 +640,384 @@ function DefaultsPage({
     },
     ...PROVIDERS
       .filter((provider) => providerSupportsFetch(provider.id) && provider.id !== config.provider)
-      .map((provider) => ({
-        value: provider.id,
-        label: provider.name,
-      })),
+      .map((provider) => ({ value: provider.id, label: provider.name })),
   ]
 
   return (
     <>
-        <SettingsGroup title={t.webSearchDefaultsTitle} description={t.webSearchRolesHint}>
-          <SettingRow label={t.webSearchSearchProvider}>
-            {!searchReady && (
-              <ConfigureLink t={t} onClick={() => onOpenProvider(config.provider)} />
-            )}
+      <header className="kv-cli-head">
+        <IconFrame size={40}>
+          <SlidersHorizontal size={18} />
+        </IconFrame>
+        <div className="kv-cli-head-main">
+          <h2 className="kv-cli-head-title">{t.webSearchDefaultsNav}</h2>
+        </div>
+      </header>
+
+      <Section title={t.webSearchDefaultsTitle} desc={t.webSearchRolesHint}>
+        <div className="kv-cli-card">
+          <Row
+            lead={search ? <ProviderFrame provider={search} size={28} /> : undefined}
+            label={t.webSearchSearchProvider}
+            desc={searchReady
+              ? undefined
+              : <SetupHint t={t} onConfigure={() => onOpenProvider(config.provider)} />}
+          >
             <Select
               className="kv-ctl"
               value={config.provider}
-              onChange={(value) => onChange({
-                provider: value as ProviderId,
-                ...(config.fetchProvider === value ? { fetchProvider: null } : {}),
-              })}
-              options={PROVIDERS.map((provider) => ({
-                value: provider.id,
-                label: provider.name,
-              }))}
+              onChange={(value) => onChange(searchProviderPatch(config, value as ProviderId))}
+              options={PROVIDERS.map((provider) => ({ value: provider.id, label: provider.name }))}
             />
-          </SettingRow>
-
-          <SettingRow
+          </Row>
+          <Row
+            lead={fetch
+              ? <ProviderFrame provider={fetch} size={28} />
+              : <IconFrame size={28}><Globe size={14} /></IconFrame>}
             label={t.webSearchFetchProvider}
-            description={!resolvedFetch ? t.webSearchFetchDirectHint : undefined}
+            desc={!resolvedFetch
+              ? t.webSearchFetchDirectHint
+              : fetchReady
+                ? undefined
+                : <SetupHint t={t} onConfigure={() => onOpenProvider(resolvedFetch)} />}
           >
-            {resolvedFetch && !fetchReady && (
-              <ConfigureLink t={t} onClick={() => onOpenProvider(resolvedFetch)} />
-            )}
             <Select
               className="kv-ctl"
-              value={fetchValue}
-              onChange={(value) => {
-                if (value === FETCH_FOLLOW || value === config.provider) {
-                  onChange({ fetchProvider: null })
-                  return
-                }
-                onChange({ fetchProvider: value as ProviderId })
-              }}
+              value={followsSearch ? FETCH_FOLLOW : config.fetchProvider!}
+              onChange={(value) => onChange(fetchProviderPatch(config, value))}
               options={fetchOptions}
             />
-          </SettingRow>
-        </SettingsGroup>
+          </Row>
+        </div>
+      </Section>
 
-        <SettingsGroup title={t.webSearchGeneralSection}>
-          <SettingRow label={t.lensWebSearchMaxResults}>
+      <Section title={t.webSearchGeneralSection}>
+        <div className="kv-cli-card">
+          <Row label={t.lensWebSearchMaxResults} desc={t.webSearchMaxResultsHint}>
             <Input
               type="number"
               min={1}
               max={10}
               className="kv-ctl-num"
+              aria-label={t.lensWebSearchMaxResults}
               value={String(config.maxResults ?? 5)}
               onChange={(value) => onChange({
                 maxResults: Math.min(10, Math.max(1, Number.parseInt(value, 10) || 1)),
               })}
             />
-          </SettingRow>
-        </SettingsGroup>
+          </Row>
+        </div>
+      </Section>
 
-        <SettingsGroup title={t.webSearchLensSection}>
-          <SettingRow label={t.enabled} description={t.lensWebSearchHint}>
+      <Section title={t.webSearchUsageSection}>
+        <div className="kv-cli-card">
+          <Row label={t.webSearchLensSection} desc={t.lensWebSearchHint}>
             <Toggle
               checked={config.enabled === true}
               onChange={(enabled) => onChange({ enabled })}
+              ariaLabel={t.webSearchLensSection}
             />
-          </SettingRow>
-        </SettingsGroup>
+          </Row>
+          <Row label={t.webSearchChatSection} desc={t.webSearchChatToolsHint} />
+        </div>
+      </Section>
 
-        <p className="kv-row-desc mt-3 px-0.5">
-          {lang === 'zh'
-            ? 'Chat 联网开关在 MCP → 内置工具。'
-            : 'Chat web toggles: MCP → Built-in tools.'}
-        </p>
+      <TestSearch key="defaults" t={t} config={config} desc={t.webSearchTestDefaultsHint} />
     </>
   )
 }
 
-export function WebSearchPanel({ t, lang, webSearch, onChange }: WebSearchPanelProps) {
-  const config = { ...DEFAULT_WEB_SEARCH, ...(webSearch ?? {}) }
-  const [selectedId, setSelectedId] = useState<ProviderId | null>(null)
-
-  const selected = useMemo(
-    () => (selectedId ? PROVIDERS.find((provider) => provider.id === selectedId) : undefined),
-    [selectedId],
-  )
-  const keyValue = selected?.keyField ? config[selected.keyField] || '' : ''
-  const showingDefaults = !selected
+function ProviderDetail({
+  t,
+  provider,
+  config,
+  onChange,
+}: {
+  t: I18n
+  provider: ProviderDef
+  config: WebSearchConfig
+  onChange: (updates: Partial<WebSearchConfig>) => void
+}) {
+  const keyValue = provider.keyField ? config[provider.keyField] || '' : ''
+  const ready = isProviderConfigured(config, provider.id)
+  const supportsFetch = providerSupportsFetch(provider.id)
+  const usedForSearch = config.provider === provider.id
+  const usedForFetch = resolvedFetchProvider(config) === provider.id
+  const urlHints: Record<NonNullable<ProviderDef['urlHint']>, string> = {
+    searxng: t.webSearchSearxngHint,
+    exaMcp: t.webSearchExaMcpKeyless,
+    tinyfishMcp: t.webSearchTinyfishMcpHint,
+    kimi: t.webSearchKimiHint,
+    deepseek: t.webSearchDeepseekHint,
+  }
+  const urlHint = provider.urlHint ? urlHints[provider.urlHint] : undefined
+  const inUse = <span className="kv-tag accent">{t.webSearchInUse}</span>
 
   return (
-    <div className="websearch-panel-root flex min-h-full items-stretch gap-0">
-      <nav className="relative flex h-full min-h-full w-44 shrink-0 flex-col self-stretch pr-3">
-        <div
-          className="pointer-events-none absolute inset-y-0 right-0 w-px bg-[var(--divider)]"
-          aria-hidden
-        />
-        <div className="space-y-0.5">
-          <button
-            type="button"
-            onClick={() => setSelectedId(null)}
-            className={`${NAV_ITEM} ${showingDefaults ? NAV_ITEM_ACTIVE : NAV_ITEM_IDLE}`}
-            data-tauri-drag-region="false"
-          >
-            <SlidersHorizontal size={16} className="shrink-0 opacity-70" />
-            <span className="min-w-0 flex-1 truncate">{t.webSearchDefaultsNav}</span>
-          </button>
+    <>
+      <header className="kv-cli-head">
+        <ProviderFrame provider={provider} size={40} />
+        <div className="kv-cli-head-main">
+          <h2 className="kv-cli-head-title">{provider.name}</h2>
+          <span className="kv-cli-version min-w-0 truncate">{hostname(provider.site)}</span>
+          <span className={`kv-tag ${ready ? 'ok' : 'warn'}`}>
+            {ready ? t.webSearchStatusReady : t.webSearchStatusMissing}
+          </span>
         </div>
-        <div className="px-2 pb-1 pt-3 text-[11px] font-medium text-[var(--text-faint)]">
-          {t.webSearchApiSection}
-        </div>
-        <div className="space-y-0.5">
-          {PROVIDERS.map((provider) => {
-            const active = provider.id === selectedId
-            return (
-              <button
-                key={provider.id}
-                type="button"
-                onClick={() => setSelectedId(provider.id)}
-                className={`${NAV_ITEM} ${active ? NAV_ITEM_ACTIVE : NAV_ITEM_IDLE}`}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => void api.openExternal(provider.site)}
+          data-tauri-drag-region="false"
+        >
+          <ExternalLink size={12} />
+          {t.webSearchOpenSite}
+        </Button>
+      </header>
+
+      <Section title={t.webSearchRolesSection}>
+        <div className="kv-cli-card">
+          <Row label={t.webSearchSearchProvider}>
+            {usedForSearch ? inUse : (
+              <Button
+                size="sm"
+                onClick={() => onChange(searchProviderPatch(config, provider.id))}
                 data-tauri-drag-region="false"
               >
-                <ProviderMark name={provider.name} icon={provider.icon} size={20} />
-                <span className="min-w-0 flex-1 truncate">{provider.name}</span>
-              </button>
-            )
-          })}
-        </div>
-      </nav>
-
-      <div className="min-w-0 flex-1 pl-5">
-        {showingDefaults || !selected ? (
-          <DefaultsPage
-            t={t}
-            lang={lang}
-            config={config}
-            onChange={onChange}
-            onOpenProvider={setSelectedId}
-          />
-        ) : (
-          <>
-            <div className="mb-5 flex items-center gap-3 px-0.5">
-              <ProviderMark name={selected.name} icon={selected.icon} size={32} />
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[15px] font-semibold text-[var(--text)]">
-                    {selected.name}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => void api.openExternal(selected.site)}
-                    className="text-zinc-400 hover:text-accent"
-                    data-tauri-drag-region="false"
-                    aria-label="Open site"
-                  >
-                    <ExternalLink size={13} />
-                  </button>
-                </div>
-                <div className="truncate text-[12px] text-[var(--text-muted)]">{hostname(selected.site)}</div>
-              </div>
-            </div>
-
-        <div className="space-y-6">
-          <SettingsGroup title={t.webSearchCapabilities}>
-            <div className="kv-row">
-              <span className="kv-row-label">
-                {providerSupportsFetch(selected.id)
-                  ? t.webSearchCapabilitySearchFetch
-                  : t.webSearchCapabilitySearch}
-              </span>
-            </div>
-          </SettingsGroup>
-
-          <SettingsGroup title={t.webSearchProviderSection}>
-            {selected.keyField && (
-              <SettingRow label={t.lensWebSearchApiKey} stack>
-                <div className="w-full space-y-1">
-                  <ApiKeyField
-                    value={keyValue}
-                    placeholder={selected.keyPlaceholder || 'API key'}
-                    onChange={(value) => onChange({ [selected.keyField!]: value } as Partial<WebSearchConfig>)}
-                  />
-                  {selected.apiKeyUrl && (
-                    <button
-                      type="button"
-                      onClick={() => void api.openExternal(selected.apiKeyUrl!)}
-                      className="inline-flex items-center text-[12px] text-accent hover:underline"
-                      data-tauri-drag-region="false"
-                    >
-                      {t.webSearchGetKey} ↗
-                    </button>
-                  )}
-                </div>
-              </SettingRow>
+                {t.webSearchSetDefault}
+              </Button>
             )}
-
-            {!selected.modelBased && (
-              <SettingRow
-                label={t.webSearchApiUrl}
-                description={
-                  selected.urlHint === 'searxng'
-                    ? t.webSearchSearxngHint
-                    : selected.urlHint === 'exaMcp'
-                      ? t.webSearchExaMcpKeyless
-                      : selected.urlHint === 'tinyfishMcp'
-                        ? t.webSearchTinyfishMcpHint
-                        : selected.urlHint === 'kimi'
-                          ? t.webSearchKimiHint
-                          : selected.urlHint === 'deepseek'
-                            ? t.webSearchDeepseekHint
-                            : undefined
-                }
-                stack
+          </Row>
+          <Row
+            label={t.webSearchFetchProvider}
+            desc={supportsFetch ? undefined : t.webSearchFetchUnsupported}
+          >
+            {supportsFetch && (usedForFetch ? inUse : (
+              <Button
+                size="sm"
+                onClick={() => onChange(fetchProviderPatch(config, provider.id))}
+                data-tauri-drag-region="false"
               >
-                {selected.endpointField ? (
-                  <Input
-                    value={config[selected.endpointField] || ''}
-                    onChange={(value) => onChange({ [selected.endpointField!]: value } as Partial<WebSearchConfig>)}
-                    placeholder={selected.endpointPlaceholder}
-                    mono
-                    className="w-full"
-                  />
-                ) : selected.baseUrlField ? (
-                  <Input
-                    value={config[selected.baseUrlField] ?? ''}
-                    onChange={(value) => onChange({ [selected.baseUrlField!]: value } as Partial<WebSearchConfig>)}
-                    placeholder={selected.baseUrlPlaceholder}
-                    mono
-                    className="w-full"
-                  />
-                ) : null}
-              </SettingRow>
-            )}
+                {t.webSearchSetDefault}
+              </Button>
+            ))}
+          </Row>
+        </div>
+      </Section>
 
-            {selected.urlHint === 'tinyfishMcp' && (
-              <TinyfishMcpAuthRow
-                t={t}
-                url={config.tinyfishMcpUrl || ''}
-                auth={config.tinyfishMcpAuth}
-                onChange={(tinyfishMcpAuth) => onChange({ tinyfishMcpAuth })}
-              />
-            )}
-
-            {selected.modelBased && selected.modelField && selected.systemPromptField && (
-              <>
-                <SettingRow label={t.webSearchModel} stack>
-                  <Input
-                    value={String(config[selected.modelField] || '')}
-                    onChange={(value) => onChange({ [selected.modelField!]: value } as Partial<WebSearchConfig>)}
-                    placeholder={selected.modelPlaceholder}
-                    mono
-                    className="w-full"
-                  />
-                </SettingRow>
-                <SettingRow label={t.webSearchCustomUrl} stack>
-                  <Input
-                    value={selected.baseUrlField ? String(config[selected.baseUrlField] ?? '') : ''}
-                    onChange={(value) => selected.baseUrlField
-                      && onChange({ [selected.baseUrlField]: value } as Partial<WebSearchConfig>)}
-                    placeholder={selected.baseUrlPlaceholder}
-                    mono
-                    className="w-full"
-                  />
-                </SettingRow>
-                <PromptField
-                  label={t.webSearchSystemPrompt}
-                  value={String(config[selected.systemPromptField] || '')}
-                  defaultText=""
-                  t={t}
-                  onChange={(value) => onChange({ [selected.systemPromptField!]: value } as Partial<WebSearchConfig>)}
-                />
-              </>
-            )}
-
-            {selected.supportsDepth && (
-              <SettingRow label={t.lensWebSearchDepth}>
-                <Select
-                  className="w-44"
-                  value={config.searchDepth || 'basic'}
-                  onChange={(v) => onChange({ searchDepth: v as WebSearchConfig['searchDepth'] })}
-                  options={[
-                    { value: 'ultra-fast', label: 'Ultra fast' },
-                    { value: 'fast', label: 'Fast' },
-                    { value: 'basic', label: 'Basic' },
-                    { value: 'advanced', label: 'Advanced' },
-                  ]}
-                />
-              </SettingRow>
-            )}
-
-                {selected.keyField && !keyValue.trim() && (
-                  <p className="flex items-center gap-1.5 px-1 pt-1 text-[12px] text-zinc-400">
-                    <Info size={12} /> {t.webSearchApiKeyRequired}
-                  </p>
-                )}
-              </SettingsGroup>
-
-              <TestSearch key={selected.id} t={t} config={{ ...config, provider: selected.id }} />
-            </div>
-          </>
+      <Section
+        title={t.webSearchProviderSection}
+        desc={provider.keyField && !ready ? t.webSearchApiKeyRequired : undefined}
+        actions={provider.apiKeyUrl && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void api.openExternal(provider.apiKeyUrl!)}
+            data-tauri-drag-region="false"
+          >
+            {t.webSearchGetKey}
+            <ExternalLink size={12} />
+          </Button>
         )}
+      >
+        <div className="kv-cli-card">
+          {provider.keyField && (
+            <SettingRow label={t.lensWebSearchApiKey} stack>
+              <ApiKeyField
+                t={t}
+                value={keyValue}
+                placeholder={provider.keyPlaceholder || 'API key'}
+                onChange={(value) => onChange({ [provider.keyField!]: value } as Partial<WebSearchConfig>)}
+              />
+            </SettingRow>
+          )}
+
+          {!provider.modelBased && (
+            <SettingRow label={t.webSearchApiUrl} description={urlHint} stack>
+              {provider.endpointField ? (
+                <Input
+                  value={config[provider.endpointField] || ''}
+                  onChange={(value) => onChange({ [provider.endpointField!]: value } as Partial<WebSearchConfig>)}
+                  placeholder={provider.endpointPlaceholder}
+                  mono
+                  className="w-full"
+                />
+              ) : provider.baseUrlField ? (
+                <Input
+                  value={config[provider.baseUrlField] ?? ''}
+                  onChange={(value) => onChange({ [provider.baseUrlField!]: value } as Partial<WebSearchConfig>)}
+                  placeholder={provider.baseUrlPlaceholder}
+                  mono
+                  className="w-full"
+                />
+              ) : null}
+            </SettingRow>
+          )}
+
+          {provider.urlHint === 'tinyfishMcp' && (
+            <TinyfishMcpAuthRow
+              t={t}
+              url={config.tinyfishMcpUrl || ''}
+              auth={config.tinyfishMcpAuth}
+              onChange={(tinyfishMcpAuth) => onChange({ tinyfishMcpAuth })}
+            />
+          )}
+
+          {provider.modelBased && provider.modelField && provider.systemPromptField && (
+            <>
+              <SettingRow label={t.webSearchModel} stack>
+                <Input
+                  value={String(config[provider.modelField] || '')}
+                  onChange={(value) => onChange({ [provider.modelField!]: value } as Partial<WebSearchConfig>)}
+                  placeholder={provider.modelPlaceholder}
+                  mono
+                  className="w-full"
+                />
+              </SettingRow>
+              <SettingRow label={t.webSearchCustomUrl} stack>
+                <Input
+                  value={provider.baseUrlField ? String(config[provider.baseUrlField] ?? '') : ''}
+                  onChange={(value) => provider.baseUrlField
+                    && onChange({ [provider.baseUrlField]: value } as Partial<WebSearchConfig>)}
+                  placeholder={provider.baseUrlPlaceholder}
+                  mono
+                  className="w-full"
+                />
+              </SettingRow>
+              <PromptField
+                label={t.webSearchSystemPrompt}
+                value={String(config[provider.systemPromptField] || '')}
+                defaultText=""
+                t={t}
+                onChange={(value) => onChange({ [provider.systemPromptField!]: value } as Partial<WebSearchConfig>)}
+              />
+            </>
+          )}
+
+          {provider.supportsDepth && (
+            <SettingRow label={t.lensWebSearchDepth}>
+              <Select
+                className="w-44"
+                value={config.searchDepth || 'basic'}
+                onChange={(v) => onChange({ searchDepth: v as WebSearchConfig['searchDepth'] })}
+                options={[
+                  { value: 'ultra-fast', label: 'Ultra fast' },
+                  { value: 'fast', label: 'Fast' },
+                  { value: 'basic', label: 'Basic' },
+                  { value: 'advanced', label: 'Advanced' },
+                ]}
+              />
+            </SettingRow>
+          )}
+        </div>
+      </Section>
+
+      <TestSearch key={provider.id} t={t} config={{ ...config, provider: provider.id }} />
+    </>
+  )
+}
+
+/** 左栏一行：图标、名称，右侧是它当前承担的角色和是否已配置。 */
+function NavItem({
+  active,
+  label,
+  icon,
+  trailing,
+  describedBy,
+  onSelect,
+}: {
+  active: boolean
+  label: string
+  icon: ReactNode
+  trailing?: ReactNode
+  describedBy?: string
+  onSelect: () => void
+}) {
+  return (
+    <div className={`kv-cli-nav-item ${active ? 'active' : ''}`}>
+      <button
+        type="button"
+        className="kv-cli-nav-select"
+        onClick={onSelect}
+        aria-label={label}
+        aria-describedby={describedBy}
+        aria-current={active ? 'true' : undefined}
+        data-tauri-drag-region="false"
+      >
+        {icon}
+        <span className="kv-cli-nav-text">
+          <span className="kv-cli-nav-name">{label}</span>
+        </span>
+        {trailing}
+      </button>
+    </div>
+  )
+}
+
+export function WebSearchPanel({ t, webSearch, onChange }: WebSearchPanelProps) {
+  const config = { ...DEFAULT_WEB_SEARCH, ...(webSearch ?? {}) }
+  const [selectedId, setSelectedId] = useState<ProviderId | null>(null)
+  const statusId = useId()
+  const selected = selectedId ? findProvider(selectedId) : undefined
+  const resolvedFetch = resolvedFetchProvider(config)
+
+  return (
+    <div className="kv-providers-root">
+      <div className="kv-cli">
+        <nav className="kv-cli-nav kv-websearch-nav" aria-label={t.tabWebSearch}>
+          <div className="kv-cli-nav-list">
+            <NavItem
+              active={!selected}
+              label={t.webSearchDefaultsNav}
+              icon={<IconFrame size={24}><SlidersHorizontal size={13} /></IconFrame>}
+              onSelect={() => setSelectedId(null)}
+            />
+          </div>
+          <div className="kv-websearch-nav-group">{t.webSearchApiSection}</div>
+          <div className="kv-cli-nav-list">
+            {PROVIDERS.map((provider) => {
+              const ready = isProviderConfigured(config, provider.id)
+              const roles: string[] = []
+              if (config.provider === provider.id) roles.push(t.webSearchSearchBadge)
+              if (resolvedFetch === provider.id) roles.push(t.webSearchFetchBadge)
+              const status = ready ? t.webSearchStatusReady : t.webSearchStatusMissing
+              const describedBy = `${statusId}-${provider.id}`
+              return (
+                <NavItem
+                  key={provider.id}
+                  active={provider.id === selectedId}
+                  label={provider.name}
+                  icon={<ProviderFrame provider={provider} size={24} />}
+                  describedBy={describedBy}
+                  onSelect={() => setSelectedId(provider.id)}
+                  trailing={
+                    <>
+                      <span id={describedBy} className="sr-only">
+                        {[status, ...roles].join(', ')}
+                      </span>
+                      {roles.map((role) => (
+                        <span key={role} className="kv-tag accent" aria-hidden="true">{role}</span>
+                      ))}
+                      <span
+                        className={`kv-websearch-dot ${ready ? 'ok' : ''}`}
+                        title={status}
+                        aria-hidden="true"
+                      />
+                    </>
+                  }
+                />
+              )
+            })}
+          </div>
+        </nav>
+
+        <div className="kv-cli-detail">
+          {selected ? (
+            <ProviderDetail t={t} provider={selected} config={config} onChange={onChange} />
+          ) : (
+            <DefaultsPage t={t} config={config} onChange={onChange} onOpenProvider={setSelectedId} />
+          )}
+        </div>
       </div>
     </div>
   )

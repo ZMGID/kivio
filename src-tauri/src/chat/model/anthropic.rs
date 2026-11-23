@@ -393,6 +393,11 @@ impl AnthropicMessagesProvider<'_> {
                 self.config.base_url,
             ),
             provider_id: Some(self.config.id.to_string()),
+            hosted_web_search: crate::chat::model_metadata::deepseek_hosted_web_search(
+                self.config.base_url,
+                &request.model,
+            )
+            .unwrap_or_default(),
             system_prefix: self
                 .config
                 .claude_code
@@ -1112,6 +1117,29 @@ mod tests {
                 .any(|t| t["type"] == "web_search_20250305" && t["name"] == "web_search"),
             "body: {on}"
         );
+
+        // 官方 DeepSeek：Flash 换成 deepseek_web_search（标准工具在 Flash 上被忽略），V4 Pro 保持标准工具。
+        for (model, expected) in [
+            ("deepseek-flash", "deepseek_web_search"),
+            ("deepseek-v4-pro", "web_search"),
+        ] {
+            let mut deepseek = provider.clone();
+            deepseek.base_url = "https://api.deepseek.com/anthropic".into();
+            let adapter = AnthropicMessagesProvider::new(
+                ModelTransport::for_test(&state, &deepseek),
+                ProviderConfig::from_settings(&deepseek),
+            );
+            let mut req = req.clone();
+            req.model = model.into();
+            let body = adapter.request_body(&req, false);
+            let names: Vec<&str> = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|t| t["name"].as_str())
+                .collect();
+            assert_eq!(names, [expected], "{model}: {body}");
+        }
     }
 
     #[test]

@@ -418,6 +418,11 @@ impl OpenAiResponsesProvider<'_> {
             prompt_cache_retention,
             endpoint: reqwest::Url::parse(self.config.base_url).ok(),
             provider_id: Some(self.config.id.into()),
+            hosted_web_search: crate::chat::model_metadata::deepseek_hosted_web_search(
+                self.config.base_url,
+                &request.model,
+            )
+            .unwrap_or_default(),
             cache_retention: Some(match self.config.cache_retention {
                 CacheRetention::None => kivio_agent_sdk::model::openai::CacheRetention::None,
                 CacheRetention::Long => kivio_agent_sdk::model::openai::CacheRetention::Long,
@@ -743,6 +748,74 @@ mod tests {
         )
         .request_body(&request, false)
         .unwrap()
+    }
+
+    #[test]
+    fn deepseek_flash_declares_deepseek_web_search_and_pro_keeps_standard_tool() {
+        let state = crate::state::test_app_state();
+        for (base, model, expected) in [
+            (
+                "https://api.deepseek.com",
+                "deepseek-flash",
+                "deepseek_web_search",
+            ),
+            (
+                "https://api.deepseek.com/v1",
+                "deepseek-v4-flash-vision-exp",
+                "deepseek_web_search",
+            ),
+            ("https://api.deepseek.com", "deepseek-v4-pro", "web_search"),
+            // A gateway serving the same model name keeps the standard tool.
+            ("https://relay.example/v1", "deepseek-flash", "web_search"),
+        ] {
+            let provider = ModelProvider {
+                id: "deepseek".into(),
+                name: "DeepSeek".into(),
+                api_keys: vec!["sk-test".into()],
+                api_key_legacy: None,
+                base_url: base.into(),
+                available_models: vec![model.into()],
+                enabled_models: vec![model.into()],
+                enabled: true,
+                api_format: "openai_responses".into(),
+                model_overrides: Default::default(),
+                compress_request_body: false,
+                request: Default::default(),
+                active_key_index: 0,
+            };
+            let request = GenerateRequest {
+                model: model.into(),
+                system: String::new(),
+                messages: vec![ModelMessage::text(
+                    ModelRole::User,
+                    "What is in this photo?",
+                )],
+                tools: vec![kivio_agent_sdk::model::ModelTool {
+                    name: "read".into(),
+                    description: "Read a file".into(),
+                    input_schema: serde_json::json!({"type":"object"}),
+                }],
+                options: GenerateOptions {
+                    builtin_web_search: true,
+                    ..Default::default()
+                },
+                metadata: Default::default(),
+            };
+            let body = OpenAiResponsesProvider::new(
+                ModelTransport::for_test(&state, &provider),
+                ProviderConfig::from_settings(&provider),
+            )
+            .request_body(&request, false)
+            .unwrap();
+            let types: Vec<&str> = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["type"].as_str())
+                .collect();
+            // Function tools stay; exactly one hosted search tool is declared.
+            assert_eq!(types, ["function", expected], "{base} {model}");
+        }
     }
 
     fn codex_identity_case(

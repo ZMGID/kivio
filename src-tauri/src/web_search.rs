@@ -1617,8 +1617,12 @@ struct DeepseekSearchResponse {
 struct DeepseekSearchResult {
     title: String,
     url: String,
+    #[serde(default)]
     summary: String,
+    #[serde(default)]
     snippet: String,
+    /// Empty when the page body is unavailable even with `need_content`.
+    #[serde(default)]
     content: String,
     date: Option<String>,
     rerank_score: Option<f64>,

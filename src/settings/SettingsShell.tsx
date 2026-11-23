@@ -1271,7 +1271,6 @@ export const SettingsShell = forwardRef<SettingsShellHandle, SettingsShellProps>
             {activeTab === 'webSearch' && (
               <WebSearchPanel
                 t={t}
-                lang={lang}
                 webSearch={settings.lens?.webSearch}
                 onChange={updateLensWebSearch}
               />

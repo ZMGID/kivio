@@ -314,6 +314,18 @@ impl ModelTool {
     }
 }
 
+/// Provider-hosted search tool declared when `builtin_web_search` is on.
+/// Hosts choose it per provider and model; the SDK does not infer model names.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HostedWebSearchTool {
+    /// Responses `web_search` / Anthropic `web_search_20250305`.
+    #[default]
+    Standard,
+    /// DeepSeek `deepseek_web_search`: web, image and deep thinking search.
+    /// Cannot be declared together with the standard tool.
+    DeepseekWebSearch,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolChoice {
