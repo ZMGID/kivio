@@ -1237,7 +1237,7 @@ pub(crate) fn chat_create_project(
     description: Option<String>,
     color: Option<String>,
     root_path: Option<String>,
-    // 为 true 时：root_path 不存在则在父目录下创建该文件夹（新建空白项目）。
+    // 为 true 时：root_path 必须是尚不存在的同名子文件夹（新建空白项目）。
     ensure_root_dir: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let now = chrono::Local::now().timestamp();
@@ -1261,7 +1261,7 @@ pub(crate) fn chat_create_project(
     }))
 }
 
-/// 从 Git 仓库新建项目：克隆到 `parent_dir/name` 并登记，失败时不留下文件夹。
+/// 从 Git 仓库新建项目：克隆到 `parent_dir/name` 并登记，克隆期间只写临时目录。
 #[tauri::command]
 pub(crate) async fn chat_clone_project(
     app: AppHandle,

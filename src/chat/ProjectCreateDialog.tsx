@@ -247,7 +247,9 @@ export function ProjectCreateDialog({ saving = false, error = '', onCreate, onCl
   const activeIndex = Math.min(active, Math.max(items.length - 1, 0))
   const optionId = (index: number) => `${listId}-${index}`
 
-  const nameValid = Boolean(name.trim())
+  const invalidFolderName = (step === 'blank' || step === 'clone')
+    && (/[\\/:*?"<>|\p{Cc}]/u.test(name) || name.trimEnd().endsWith('.'))
+  const nameValid = Boolean(name.trim()) && !invalidFolderName
   const canSubmit = !saving && !picking && nameValid && (
     step === 'folder' ? Boolean(rootPath)
       : step === 'blank' ? Boolean(parentDir)
@@ -285,6 +287,8 @@ export function ProjectCreateDialog({ saving = false, error = '', onCreate, onCl
         id={`${formId}-name`}
         value={name}
         maxLength={80}
+        aria-invalid={invalidFolderName || undefined}
+        aria-describedby={invalidFolderName ? `${formId}-name-error` : undefined}
         onChange={(value) => {
           setName(value)
           setNameTouched(true)
@@ -293,6 +297,7 @@ export function ProjectCreateDialog({ saving = false, error = '', onCreate, onCl
         data-autofocus={step === 'clone' ? undefined : true}
         disabled={saving}
       />
+      {invalidFolderName && <p id={`${formId}-name-error`} className="kv-inline-error">{t.projectCreateInvalidFolderName}</p>}
     </FieldBlock>
   )
 

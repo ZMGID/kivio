@@ -459,7 +459,8 @@ impl CodexUsageTotals {
 }
 
 #[derive(Default)]
-struct CodexTurnUsage {
+struct CodexTurnState {
+    message_phases: HashMap<String, crate::chat::ChatMessageSegmentPhase>,
     billing_base: Option<CodexUsageTotals>,
     compaction_item: Option<String>,
     recount: Option<u64>,
@@ -470,7 +471,7 @@ fn map_codex_notification(
     method: &str,
     params: &Value,
     emitted_tools: &mut HashSet<String>,
-    turn_usage: &mut CodexTurnUsage,
+    turn_state: &mut CodexTurnState,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
 ) -> CodexMapResult {
     match method {
@@ -482,6 +483,7 @@ fn map_codex_notification(
                             sink(UnifiedAgentEvent::TextItemDelta {
                                 id: id.to_string(),
                                 delta: delta.to_string(),
+                                phase: turn_state.message_phases.get(id).cloned(),
                             });
                         }
                     } else {
@@ -508,10 +510,16 @@ fn map_codex_notification(
         "item/started" => {
             if let Some(item) = params.get("item").and_then(|v| v.as_object()) {
                 if map_str(item, "type") == Some("contextCompaction") {
-                    turn_usage.compaction_item = item_id(item);
-                    turn_usage.recount = None;
+                    turn_state.compaction_item = item_id(item);
+                    turn_state.recount = None;
                 } else {
-                    emit_thread_item(item, emitted_tools, sink, false);
+                    emit_thread_item(
+                        item,
+                        emitted_tools,
+                        &mut turn_state.message_phases,
+                        sink,
+                        false,
+                    );
                 }
             }
         }
@@ -525,11 +533,11 @@ fn map_codex_notification(
                     {
                         return CodexMapResult::Continue;
                     }
-                    let post_tokens = turn_usage
+                    let post_tokens = turn_state
                         .recount
                         .take()
-                        .filter(|_| turn_usage.compaction_item == id);
-                    turn_usage.compaction_item = id;
+                        .filter(|_| turn_state.compaction_item == id);
+                    turn_state.compaction_item = id;
                     sink(UnifiedAgentEvent::CliCompacted {
                         trigger: "auto".into(),
                         pre_tokens: None,
@@ -538,7 +546,13 @@ fn map_codex_notification(
                         duration_ms: None,
                     });
                 } else {
-                    emit_thread_item(item, emitted_tools, sink, true);
+                    emit_thread_item(
+                        item,
+                        emitted_tools,
+                        &mut turn_state.message_phases,
+                        sink,
+                        true,
+                    );
                 }
             }
         }
@@ -586,7 +600,7 @@ fn map_codex_notification(
             let last_parts = last.map(CodexUsageTotals::parse);
             let billing = match (last_parts, total) {
                 (Some(last), Some(total)) => {
-                    let base = *turn_usage
+                    let base = *turn_state
                         .billing_base
                         .get_or_insert_with(|| total.minus(last));
                     total.minus(base)
@@ -609,9 +623,9 @@ fn map_codex_notification(
             // app-server recounts the retained conversation before completing the item.
             // That snapshot has a total but no billed input or output. The summary
             // request itself also reports usage, so it cannot stand in for this recount.
-            if turn_usage.compaction_item.is_some() {
+            if turn_state.compaction_item.is_some() {
                 if let Some(parts) = last_parts {
-                    turn_usage.recount = last
+                    turn_state.recount = last
                         .and_then(|fields| fields.get("totalTokens"))
                         .and_then(Value::as_u64)
                         .filter(|_| {
@@ -673,7 +687,7 @@ fn map_codex_notification(
             });
             return CodexMapResult::Continue;
         }
-        "thread/compacted" if turn_usage.compaction_item.is_none() => {
+        "thread/compacted" if turn_state.compaction_item.is_none() => {
             // Deprecated in current app-server; still emitted by older CLIs.
             sink(UnifiedAgentEvent::CliCompacted {
                 trigger: "auto".to_string(),
@@ -912,30 +926,44 @@ fn codex_error_message(error: &Value) -> String {
     }
 }
 
+pub(crate) fn codex_message_phase(
+    phase: Option<&str>,
+) -> Option<crate::chat::ChatMessageSegmentPhase> {
+    use crate::chat::ChatMessageSegmentPhase::*;
+    match phase? {
+        "final_answer" => Some(Answer),
+        "partial_answer" => Some(PartialAnswer),
+        "commentary" => Some(ToolLoop),
+        _ => None,
+    }
+}
+
 fn emit_thread_item(
     item: &serde_json::Map<String, Value>,
     emitted_tools: &mut HashSet<String>,
+    message_phases: &mut HashMap<String, crate::chat::ChatMessageSegmentPhase>,
     sink: &mut dyn FnMut(UnifiedAgentEvent),
     include_result: bool,
 ) {
     match item.get("type").and_then(|v| v.as_str()) {
+        Some("agentMessage") if !include_result => {
+            if let (Some(id), Some(phase)) =
+                (item_id(item), codex_message_phase(map_str(item, "phase")))
+            {
+                message_phases.insert(id, phase);
+            }
+        }
         Some("agentMessage") if include_result => {
             if let (Some(id), Some(text)) =
                 (item_id(item), item.get("text").and_then(Value::as_str))
             {
                 if emitted_tools.insert(format!("codex-text-{id}")) {
+                    let started_phase = message_phases.remove(&id);
+                    let phase = codex_message_phase(map_str(item, "phase")).or(started_phase);
                     sink(UnifiedAgentEvent::TextItemCompleted {
                         id,
                         text: text.to_string(),
-                        phase: match item.get("phase").and_then(Value::as_str) {
-                            Some("final_answer" | "partial_answer") => {
-                                Some(crate::chat::types::ChatMessageSegmentPhase::Answer)
-                            }
-                            Some("commentary") => {
-                                Some(crate::chat::types::ChatMessageSegmentPhase::ToolLoop)
-                            }
-                            _ => None,
-                        },
+                        phase,
                     });
                 }
             }
@@ -2089,7 +2117,7 @@ impl CodexAppServerSession {
         let chosen_model = model.filter(|m| !m.is_empty() && *m != "default");
         let chosen_effort = normalize_codex_effort(reasoning);
         // 本轮计费基线：由本轮第一条 tokenUsage 定下，轮次之间不复用。
-        let mut turn_usage = CodexTurnUsage::default();
+        let mut turn_state = CodexTurnState::default();
         let mut input = if codex_skill_command(prompt).is_some() {
             // Resolve against this live session's working directory. The picker cache
             // is presentation data; only the runtime can authorize the skill path.
@@ -2402,7 +2430,7 @@ impl CodexAppServerSession {
                     method,
                     &params,
                     &mut self.emitted_tools,
-                    &mut turn_usage,
+                    &mut turn_state,
                     &mut |e| buf.push(e),
                 );
                 for mut e in buf {
@@ -4124,7 +4152,7 @@ mod tests {
             ),
             (
                 "partial_answer",
-                Some(crate::chat::types::ChatMessageSegmentPhase::Answer),
+                Some(crate::chat::types::ChatMessageSegmentPhase::PartialAnswer),
             ),
             (
                 "commentary",
@@ -4945,7 +4973,7 @@ mod tests {
         assert_eq!(ended, CodexMapResult::Continue);
         assert!(matches!(
             events.first(),
-            Some(UnifiedAgentEvent::TextItemDelta { id, delta }) if id == "i" && delta == "hi"
+            Some(UnifiedAgentEvent::TextItemDelta { id, delta, .. }) if id == "i" && delta == "hi"
         ));
     }
 
@@ -5181,7 +5209,7 @@ mod tests {
     #[test]
     fn token_usage_bills_whole_turn_but_reports_last_request_as_context() {
         // 一轮两次请求（中间有工具往返），且 thread 在本轮前已累计 100K（resume 的历史）。
-        let mut base = CodexTurnUsage::default();
+        let mut base = CodexTurnState::default();
         let mut tools = HashSet::new();
         let mut events = Vec::new();
         for raw in [
@@ -6479,7 +6507,7 @@ mod tests {
     fn map_codex_frames(frames: &[(&str, Value)]) -> Vec<UnifiedAgentEvent> {
         let mut events = Vec::new();
         let mut tools = HashSet::new();
-        let mut usage = CodexTurnUsage::default();
+        let mut usage = CodexTurnState::default();
         for (method, params) in frames {
             map_codex_notification(method, params, &mut tools, &mut usage, &mut |e| {
                 events.push(e)

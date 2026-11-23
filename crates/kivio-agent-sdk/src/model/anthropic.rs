@@ -254,10 +254,12 @@ impl crate::agent::provider_runtime::ModelRuntime for AnthropicMessagesProvider 
 /// `input.query`; DeepSeek `deepseek_web_search` lists `input.queries` (empty for
 /// image search, and its page opens and in-page finds carry none).
 fn server_search_queries(block: &Value) -> Vec<String> {
-    if !matches!(
-        block.get("name").and_then(Value::as_str),
-        Some("web_search" | "deepseek_web_search")
-    ) {
+    if block["type"] != "server_tool_use"
+        || !matches!(
+            block.get("name").and_then(Value::as_str),
+            Some("web_search" | "deepseek_web_search")
+        )
+    {
         return Vec::new();
     }
     let Some(input) = block.get("input") else {
@@ -558,7 +560,7 @@ pub async fn decode_anthropic_stream(
     let mut current_tool_initial_input = serde_json::json!({});
     let mut finish_reason = FinishReason::new(FinishKind::Stop, "");
     let mut usage: Option<ModelUsage> = None;
-    // 内置搜索引用（服务端块尽力收集，随 content_block_start 完整到达）。
+    // 内置搜索引用（查询输入可能分多帧到达）。
     let mut web_search: Option<BuiltinWebSearch> = None;
 
     loop {
@@ -570,8 +572,7 @@ pub async fn decode_anthropic_stream(
             break;
         };
         for data in sse.push(&chunk)? {
-            content_blocks.push(&data);
-            match parse_anthropic_sse_event(&format!("data: {data}")) {
+            match content_blocks.event(&data) {
                 Some(AnthropicSseEvent::Usage(next)) => {
                     merge_stream_usage(&mut usage, next, sink)?;
                 }
@@ -600,8 +601,8 @@ pub async fn decode_anthropic_stream(
                             id: current_tool_id.clone(),
                             delta: json.clone(),
                         })?;
+                        current_tool_input_parts.push(json);
                     }
-                    current_tool_input_parts.push(json);
                 }
                 Some(AnthropicSseEvent::ContentBlockStop) => {
                     if !current_tool_id.is_empty() {
@@ -1295,13 +1296,13 @@ struct AnthropicContentAccumulator {
 }
 
 impl AnthropicContentAccumulator {
-    fn push(&mut self, data: &str) {
-        let Ok(value) = serde_json::from_str::<Value>(data) else {
-            return;
-        };
-        let Some(index) = value["index"].as_u64() else {
-            return;
-        };
+    fn event(&mut self, data: &str) -> Option<AnthropicSseEvent> {
+        let value: Value = serde_json::from_str(data).ok()?;
+        self.accumulate(&value).or_else(|| anthropic_event(&value))
+    }
+
+    fn accumulate(&mut self, value: &Value) -> Option<AnthropicSseEvent> {
+        let index = value["index"].as_u64()?;
         match value["type"].as_str().unwrap_or_default() {
             "content_block_start" => {
                 if let Some(block) = value.get("content_block") {
@@ -1309,9 +1310,7 @@ impl AnthropicContentAccumulator {
                 }
             }
             "content_block_delta" => {
-                let Some(block) = self.blocks.get_mut(&index) else {
-                    return;
-                };
+                let block = self.blocks.get_mut(&index)?;
                 let delta = &value["delta"];
                 let key = match delta["type"].as_str().unwrap_or_default() {
                     "text_delta" => "text",
@@ -1327,15 +1326,15 @@ impl AnthropicContentAccumulator {
                                 .unwrap()
                                 .push(citation.clone());
                         }
-                        return;
+                        return None;
                     }
                     "input_json_delta" => {
                         if let Some(partial) = delta["partial_json"].as_str() {
                             self.tool_input.entry(index).or_default().push_str(partial);
                         }
-                        return;
+                        return None;
                     }
-                    _ => return,
+                    _ => return None,
                 };
                 if let Some(partial) = delta[key].as_str() {
                     let mut text = block[key].as_str().unwrap_or_default().to_string();
@@ -1344,15 +1343,25 @@ impl AnthropicContentAccumulator {
                 }
             }
             "content_block_stop" => {
+                self.completed.insert(index);
                 if let Some(raw) = self.tool_input.remove(&index) {
                     if let Some(block) = self.blocks.get_mut(&index) {
+                        let previous = server_search_queries(block);
                         block["input"] = serde_json::from_str(&raw).unwrap_or(Value::Null);
+                        let mut queries = server_search_queries(block);
+                        queries.retain(|query| !previous.contains(query));
+                        if !queries.is_empty() {
+                            return Some(AnthropicSseEvent::WebSearch(BuiltinWebSearch {
+                                queries,
+                                citations: Vec::new(),
+                            }));
+                        }
                     }
                 }
-                self.completed.insert(index);
             }
             _ => {}
         }
+        None
     }
 
     fn message(&self) -> ModelMessage {
@@ -1391,16 +1400,12 @@ enum AnthropicSseEvent {
     Error(ModelError),
 }
 
+#[cfg(test)]
 fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
-    let line = line.trim();
-    if !line.starts_with("data:") {
-        return None;
-    }
-    let data = line.trim_start_matches("data:").trim();
-    if data.is_empty() {
-        return None;
-    }
-    let value: Value = serde_json::from_str(data).ok()?;
+    AnthropicContentAccumulator::default().event(line.trim().strip_prefix("data:")?.trim())
+}
+
+fn anthropic_event(value: &Value) -> Option<AnthropicSseEvent> {
     match value
         .get("type")
         .and_then(|value| value.as_str())
@@ -1488,7 +1493,7 @@ fn parse_anthropic_sse_event(line: &str) -> Option<AnthropicSseEvent> {
                 .to_string();
             Some(AnthropicSseEvent::MessageStopWithReason {
                 reason,
-                usage: model_usage_from_anthropic_value(&value),
+                usage: model_usage_from_anthropic_value(value),
             })
         }
         "message_stop" => Some(AnthropicSseEvent::MessageStop),
@@ -2450,6 +2455,50 @@ mod tests {
             request_body(&request, false, &options)["tools"],
             serde_json::json!([{ "type": "deepseek_web_search", "name": "deepseek_web_search" }])
         );
+    }
+
+    #[tokio::test]
+    async fn fragmented_hosted_search_emits_queries_once_and_preserves_client_tools() {
+        use serde_json::json;
+        for (name, input, expected) in [
+            ("web_search", json!({"query":"one"}), vec!["one"]),
+            (
+                "deepseek_web_search",
+                json!({"queries":["one","two"]}),
+                vec!["one", "two"],
+            ),
+        ] {
+            for kind in ["server_tool_use", "tool_use"] {
+                let mut events = vec![json!({"type":"content_block_start","index":0,
+                    "content_block":{"type":kind,"id":"call","name":name,"input":{}}})];
+                let raw = input.to_string();
+                let (first, second) = raw.split_at(raw.len() / 2);
+                for fragment in [first, second] {
+                    events.push(json!({"type":"content_block_delta","index":0,
+                        "delta":{"type":"input_json_delta","partial_json":fragment}}));
+                }
+                events.push(json!({"type":"content_block_stop","index":0}));
+                events.push(json!({"type":"message_stop"}));
+                let (parts, output) = streamed(events, None, None).await;
+                let output = output.unwrap();
+                let cards: Vec<_> = parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        StreamPart::WebSearch { queries, .. } => Some(queries.as_slice()),
+                        _ => None,
+                    })
+                    .collect();
+                if kind == "tool_use" {
+                    assert!(cards.is_empty());
+                    assert!(output.web_search.is_none());
+                    assert_eq!(output.tool_calls.len(), 1);
+                } else {
+                    assert_eq!(cards, [expected.as_slice()]);
+                    assert_eq!(output.web_search.unwrap().queries, expected);
+                    assert!(output.tool_calls.is_empty());
+                }
+            }
+        }
     }
 
     #[test]

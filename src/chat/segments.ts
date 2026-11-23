@@ -519,6 +519,8 @@ export function groupTimelineSegments(
   isPresentation?: (segment: ChatMessageSegment) => boolean,
 ): TimelineGroupItem[] {
   // 交付卡属于结果，不应切分 Work，也不应成为隐藏前面正文的过程边界。
+  const lastTextIndex = orderedSegments.reduce((last, segment, index) =>
+    segment.kind === 'text' && segmentHasContent(segment) ? index : last, -1)
   const presentations = new Set(orderedSegments.filter(segment =>
     segment.kind === 'tool' && isPresentation?.(segment)))
   let lastProcessIndex = -1
@@ -527,7 +529,8 @@ export function groupTimelineSegments(
   let lastAnswerIndex = -1
   orderedSegments.forEach((segment, index) => {
     if (presentations.has(segment) || isSubagentTimelineSegment(segment)) return
-    if (segment.kind === 'text' && segment.phase === 'answer' && segmentHasContent(segment)) {
+    if (segment.kind === 'text' && segmentHasContent(segment)
+      && (segment.phase === 'answer' || (segment.phase === 'partial_answer' && index === lastTextIndex))) {
       lastAnswerIndex = index
     }
     if (segmentHasContent(segment) && (segment.kind !== 'text'
@@ -538,7 +541,7 @@ export function groupTimelineSegments(
   const hasFinalAnswer = orderedSegments.some((segment, index) =>
     segment.kind === 'text' && segmentHasContent(segment)
     && !/^seg_\d+_cancelled_synthesis$/.test(segment.id)
-    && (segment.phase === 'answer' || (index > lastProcessIndex
+    && (index === lastAnswerIndex || (index > lastProcessIndex
       && (segment.phase === 'plain' || segment.phase === 'synthesis'))))
   const hasCancellationNotice = orderedSegments.some(segment =>
     segment.kind === 'text' && segmentHasContent(segment)
@@ -559,7 +562,9 @@ export function groupTimelineSegments(
     }
     // Without an explicit answer, tool order alone cannot classify legacy body text.
     const foldText = state !== 'running'
-      && ((index < lastAnswerIndex && segment.phase !== 'answer')
+      && ((index < lastAnswerIndex && segment.phase !== 'answer'
+        && (state !== 'stopped' || segment.phase !== 'partial_answer'))
+        || (state === 'completed' && segment.phase === 'partial_answer' && index < lastTextIndex)
         || ((segment.phase === 'tool_loop' || segment.phase === 'auxiliary')
           && (state === 'stopped' || hasCancellationNotice || hasFinalAnswer)))
     if (segment.kind === 'text' && !foldText) {

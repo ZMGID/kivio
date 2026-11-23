@@ -168,6 +168,7 @@ test('opens an offscreen heading in a saved CLI reply without mounting the whole
   const heading = page.getByRole('heading', { name: 'Inspection 46' })
   const link = page.getByRole('button', { name: '跳转到：Inspection 46' })
   await expect(link).toBeAttached()
+  await expect(page.getByRole('button', { name: '跳转到：Internal inspection notes' })).toHaveCount(0)
   await expect(heading).toHaveCount(0)
   await link.click()
   await expect(heading).toBeInViewport()

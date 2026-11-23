@@ -1,12 +1,15 @@
 //! 「克隆 Git 仓库」新建项目：校验地址与文件夹名，克隆到存放位置下的新文件夹，再登记为项目。
-//! 克隆或登记失败时删除本次新建的文件夹，不留下半成品。
+//! Git 仅写临时目录，成功后独占发布，绝不递归清理用户可见的目标路径。
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tauri::AppHandle;
 
-use crate::chat::ChatProject;
+use crate::chat::{
+    storage::{projects_file_path, register_project, validate_folder_name, ProjectRoot},
+    ChatProject,
+};
 
 const CLONE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -49,23 +52,30 @@ pub(crate) fn normalize_clone_url(input: &str) -> Result<String, String> {
     Err("无法识别的仓库地址：请填写 Git 地址或 GitHub 的 owner/repo。".into())
 }
 
-fn validate_folder_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
-        return Err("项目名称不能为空".into());
-    }
-    if name.chars().count() > 80 {
-        return Err("项目名称不能超过 80 个字符".into());
-    }
-    if name == "."
-        || name == ".."
-        || name.ends_with('.')
-        || name
-            .chars()
-            .any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+/// Publish the completed directory on the same filesystem without replacing an existing entry.
+pub(crate) fn publish_clone(staged: &Path, target: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
     {
-        return Err("项目名称会用作文件夹名，不能包含 / \\ : * ? \" < > | 等字符。".into());
+        use rustix::fs::{renameat_with, RenameFlags, CWD};
+        Ok(renameat_with(
+            CWD,
+            staged,
+            CWD,
+            target,
+            RenameFlags::NOREPLACE,
+        )?)
     }
-    Ok(())
+    #[cfg(windows)]
+    {
+        use windows::{core::HSTRING, Win32::Storage::FileSystem::MoveFileW};
+        unsafe {
+            MoveFileW(
+                &HSTRING::from(staged.as_os_str()),
+                &HSTRING::from(target.as_os_str()),
+            )
+        }
+        .map_err(|err| std::io::Error::from_raw_os_error(err.code().0 & 0xffff))
+    }
 }
 
 async fn run_git_clone(url: &str, target: &Path) -> Result<(), String> {
@@ -135,10 +145,12 @@ pub(crate) async fn clone_project(
     if target.exists() {
         return Err(format!("存放位置下已有「{name}」，请换一个名称或位置。"));
     }
-    if let Err(err) = run_git_clone(&url, &target).await {
-        let _ = std::fs::remove_dir_all(&target);
-        return Err(err);
-    }
+    let staging = tempfile::Builder::new()
+        .prefix(".kivio-clone-")
+        .tempdir_in(&parent)
+        .map_err(|err| format!("创建临时克隆目录失败：{err}"))?;
+    let staged = staging.path().join("repo");
+    run_git_clone(&url, &staged).await?;
     let now = chrono::Local::now().timestamp();
     let project = ChatProject {
         id: format!("proj_{}", uuid::Uuid::new_v4()),
@@ -149,9 +161,11 @@ pub(crate) async fn clone_project(
         created_at: now,
         updated_at: now,
     };
-    crate::chat::storage::create_project(app, project).inspect_err(|_| {
-        let _ = std::fs::remove_dir_all(&target);
-    })
+    register_project(
+        &projects_file_path(app)?,
+        project,
+        ProjectRoot::Cloned(&staged),
+    )
 }
 
 #[cfg(test)]
@@ -193,6 +207,28 @@ mod tests {
         ] {
             assert!(normalize_clone_url(url).is_err(), "{url}");
         }
+    }
+
+    #[test]
+    fn a_late_clone_cannot_replace_an_empty_or_completed_destination() {
+        let parent = tempfile::tempdir().unwrap();
+        let target = parent.path().join("target");
+        let first = parent.path().join("first");
+        let second = parent.path().join("second");
+        for path in [&first, &second, &target] {
+            std::fs::create_dir(path).unwrap();
+        }
+        std::fs::write(first.join("result"), "first").unwrap();
+        std::fs::write(second.join("result"), "second").unwrap();
+        assert!(publish_clone(&first, &target).is_err());
+        assert_eq!(target.read_dir().unwrap().count(), 0);
+        std::fs::remove_dir(&target).unwrap();
+        publish_clone(&first, &target).unwrap();
+        assert!(publish_clone(&second, &target).is_err());
+        assert_eq!(
+            std::fs::read_to_string(target.join("result")).unwrap(),
+            "first"
+        );
     }
 
     #[test]

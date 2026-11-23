@@ -71,3 +71,18 @@ it('folds progress around explicit delivered answers together with tools after c
   for (const text of notes) expect(screen.queryByText(text)).not.toBeInTheDocument()
   expect(screen.getByText('修复已完成。')).toBeVisible()
 })
+
+it.each(['error', 'cancelled', 'interrupted'])('shows every partial Codex answer when a turn ends with %s', outcome => {
+  render(<MessageBubble message={{
+    id: 'stopped-codex', role: 'assistant', timestamp: 1, content: '', stream_outcome: outcome,
+    segments: [
+      { id: 'first', kind: 'text', phase: 'partial_answer', order: 0, text: 'First finding.' },
+      { id: 'read', kind: 'tool', phase: 'tool_loop', order: 1, tool_call_id: 'read' },
+      { id: 'second', kind: 'text', phase: 'partial_answer', order: 2, text: 'Second finding.' },
+    ],
+  }} />)
+  const worked = screen.getByRole('button', { name: /^Worked/ })
+  if (worked.getAttribute('aria-expanded') === 'true') fireEvent.click(worked)
+  expect(screen.getByText('First finding.')).toBeVisible()
+  expect(screen.getByText('Second finding.')).toBeVisible()
+})

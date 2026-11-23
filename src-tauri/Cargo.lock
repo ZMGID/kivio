@@ -3784,6 +3784,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rusqlite",
+ "rustix 1.1.3",
  "schemars 1.2.2",
  "scraper",
  "screencapturekit",

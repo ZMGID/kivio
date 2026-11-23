@@ -55,8 +55,10 @@ async fn offline_replay_recorded_codex_turn_emits_text_usage_and_delivery() {
     let mut usage = None;
     while let Ok(event) = output.try_recv() {
         match event {
-            UnifiedAgentEvent::TextDelta { delta }
-            | UnifiedAgentEvent::TextItemDelta { delta, .. } => text.push_str(&delta),
+            UnifiedAgentEvent::TextItemDelta { delta, phase, .. } => {
+                assert_eq!(phase, Some(crate::chat::ChatMessageSegmentPhase::Answer));
+                text.push_str(&delta);
+            }
             UnifiedAgentEvent::TextItemCompleted { id, text, .. } => completed.push((id, text)),
             UnifiedAgentEvent::Usage { usage: value } => usage = Some(value),
             _ => {}

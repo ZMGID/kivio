@@ -808,6 +808,7 @@ pub(super) fn content_from_segments(segments: &[ChatMessageSegment]) -> Option<S
                 ChatMessageSegmentPhase::Plain
                     | ChatMessageSegmentPhase::Synthesis
                     | ChatMessageSegmentPhase::Answer
+                    | ChatMessageSegmentPhase::PartialAnswer
             )
     });
     if content.trim().is_empty() {
@@ -879,6 +880,7 @@ pub(super) fn replace_final_text_segments_for_edit(message: &mut ChatMessage, co
                 ChatMessageSegmentPhase::Plain
                     | ChatMessageSegmentPhase::Synthesis
                     | ChatMessageSegmentPhase::Answer
+                    | ChatMessageSegmentPhase::PartialAnswer
             ))
     });
     let order = next_segment_order(&segments);

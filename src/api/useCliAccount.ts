@@ -24,7 +24,7 @@ function connect() {
       for (const entry of entries.values()) if (entry.visible()) void entry.load('automatic')
     })
     connection = onExternalCliAccountUpdated(id => {
-      for (const entry of entries.values()) if (entry.agentId === id) void entry.load('cached')
+      for (const entry of entries.values()) if (entry.agentId === id) entry.accountUpdated()
     }).catch(() => {})
   }
   return connection
@@ -38,6 +38,7 @@ function createEntry(agentId: string, conversationId?: string | null) {
   ] as const
   let configuration = scope(peekSettings())
   let view: View = EMPTY
+  let cacheInvalidated = false
   let nextCheckAt = 0
   let configurationRevision = 0
   let sequence = 0
@@ -90,6 +91,10 @@ function createEntry(agentId: string, conversationId?: string | null) {
   return {
     agentId,
     load,
+    accountUpdated() {
+      if (listeners.size) void load('cached')
+      else cacheInvalidated = true
+    },
     getSnapshot: () => view,
     visible: () => listeners.size !== 0,
     evictable: () => listeners.size === 0 && !pending,
@@ -97,6 +102,7 @@ function createEntry(agentId: string, conversationId?: string | null) {
       const next = scope(settings)
       if (next[1] === configuration[1] && JSON.stringify(next[0]) === JSON.stringify(configuration[0])) return
       configuration = next
+      cacheInvalidated = false
       configurationRevision += 1
       nextCheckAt = 0
       pending = undefined
@@ -107,7 +113,13 @@ function createEntry(agentId: string, conversationId?: string | null) {
     subscribe(listener: () => void, cachedFirst = false) {
       listeners.add(listener)
       void connect().then(async () => {
-        if (cachedFirst && listeners.has(listener) && view === EMPTY) {
+        if (!listeners.has(listener)) return
+        if (cacheInvalidated) {
+          cacheInvalidated = false
+          nextCheckAt = 0
+          initialCacheRead = load('cached')
+          await initialCacheRead
+        } else if (cachedFirst && view === EMPTY) {
           initialCacheRead ??= load('cached')
           await initialCacheRead
         }

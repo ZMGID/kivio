@@ -25,8 +25,8 @@ fixtures.tools = { messages: [{ id: 'large-process', role: 'assistant', timestam
   segments: Array.from({length: 500}, (_, i) => ({id: `segment-${i}`, kind: 'tool', phase: 'tool_loop', order: i, tool_call_id: `tool-${i}`})),
 }] };
 const historySteps = Array.from({length: 400}, (_, i) => {
-  const text = (i === 46 || i === 125 ? `## Inspection ${i}\n\n` : '') + `Inspected local file ${i}.`;
-  return [{id: `note-${i}`, kind: 'text', phase: 'synthesis', order: 2*i, text},
+  const text = (i === 0 ? '## Internal inspection notes\n\n' : i === 46 || i === 125 ? `## Inspection ${i}\n\n` : '') + `Inspected local file ${i}.`;
+  return [{id: `note-${i}`, kind: 'text', phase: i === 0 ? 'tool_loop' : 'answer', order: 2*i, text},
     {id: `action-${i}`, kind: 'tool', phase: 'tool_loop', order: 2*i+1, tool_call_id: `read-${i}`}];
 });
 fixtures.savedWork = { messages: [{id: 'cli-answer', role: 'assistant', timestamp: 1, content: 'Inspection complete.',

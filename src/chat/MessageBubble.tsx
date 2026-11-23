@@ -1176,11 +1176,10 @@ function TimelineSegments({
     if (item.type === 'text') {
       if (!showAnswer) return null
       if (!segmentText(item.segment).trim()) return null
-      // External CLIs also emit plain/synthesis narration between tools. Keep
-      // explicit answers and trailing output mounted.
-      const workText = item.segment.phase === 'tool_loop' || item.segment.phase === 'auxiliary'
-        || (index < lastWorkIndex && item.segment.phase !== 'answer')
-      if (workText) {
+      // Keep live answers and the trailing reply mounted. Earlier sections of a
+      // completed reply can use the same offscreen blocks as work between tools.
+      if (item.segment.phase === 'tool_loop' || item.segment.phase === 'auxiliary'
+        || (index < lastWorkIndex && (completed || item.segment.phase !== 'answer'))) {
         deferredKeys.add(item.segment.id)
       }
       const sourceId = JSON.stringify([ownerMessageId, item.segment.id])

@@ -69,6 +69,9 @@ describe('ProjectCreateDialog', () => {
 
     const name = screen.getByLabelText('项目名称')
     expect(name).toHaveFocus()
+    await user.type(name, '../existing{Enter}')
+    expect(onCreate).not.toHaveBeenCalled()
+    await user.clear(name)
     await user.type(name, '发布计划{Enter}')
     expect(onCreate).toHaveBeenCalledWith({
       kind: 'local', name: '发布计划', rootPath: '/work/发布计划', ensureRootDir: true,

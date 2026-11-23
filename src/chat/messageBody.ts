@@ -9,15 +9,16 @@ export function messageBodySegments(message: Pick<ChatMessage, 'content' | 'segm
   const segments = [...(message.segments ?? [])].sort(compareTimelineSegments).filter(segment => {
     if (segment.kind !== 'text') return true
     const text = segment.text?.trim() ?? ''
+    const bodyPhase = segment.phase === 'plain' || segment.phase === 'synthesis'
+      || segment.phase === 'answer' || segment.phase === 'partial_answer'
     // normalize_assistant_segments appended this known fallback when there was no
     // Plain/Synthesis text. Only suppress a proven copy of preceding body text.
-    if (/^seg_\d+_synthesis_text$/.test(segment.id)
-      && (segment.phase === 'plain' || segment.phase === 'synthesis' || segment.phase === 'answer')
+    if (bodyPhase && /^seg_\d+_synthesis_text$/.test(segment.id)
       && text && (text === parts.join('\n\n') || text === rawParts.join('').trim())) return false
     rawParts.push(segment.text ?? '')
     if (!text) return true
     parts.push(text)
-    if (segment.phase === 'plain' || segment.phase === 'synthesis' || segment.phase === 'answer') finalParts.push(text)
+    if (bodyPhase) finalParts.push(text)
     return !/^seg_\d+_cancelled_synthesis$/.test(segment.id)
   })
   // The stored content may be a mirror of a segment, a full body, or an answer

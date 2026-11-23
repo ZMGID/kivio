@@ -2536,13 +2536,14 @@
             "auxiliary",
             "plain",
             "tool_loop",
-            "synthesis"
+            "synthesis",
+            "partial_answer"
           ],
           "type": "string"
         },
         {
           "const": "answer",
-          "description": "Explicit provider answer, including a partial answer.",
+          "description": "Final provider answer. Older records also used this for partial answers.",
           "type": "string"
         }
       ]

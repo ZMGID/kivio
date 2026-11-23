@@ -106,6 +106,7 @@ pub(crate) fn message_body_text(message: &ChatMessage) -> String {
                 ChatMessageSegmentPhase::Plain
                     | ChatMessageSegmentPhase::Synthesis
                     | ChatMessageSegmentPhase::Answer
+                    | ChatMessageSegmentPhase::PartialAnswer
             );
         if synthesized && text == parts.join("\n\n") {
             continue;
@@ -116,6 +117,7 @@ pub(crate) fn message_body_text(message: &ChatMessage) -> String {
             ChatMessageSegmentPhase::Plain
                 | ChatMessageSegmentPhase::Synthesis
                 | ChatMessageSegmentPhase::Answer
+                | ChatMessageSegmentPhase::PartialAnswer
         ) {
             final_parts.push(text);
         }

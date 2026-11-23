@@ -59,8 +59,8 @@ function WorkBlock({ rows, estimatedHeight, liveTail }: {
   </div>
 }
 
-// Keep interactive deliveries and answers in the normal timeline. Only batch
-// consecutive process rows, leaving the leading header and live tail mounted.
+// Batch consecutive deferrable rows. Interactive deliveries, the leading
+// rows and the tail stay mounted.
 export function WorkTimelineWindow({ rows, canDefer, rowHeight }: {
   rows: ReactElement[]
   canDefer?: (row: ReactElement) => boolean

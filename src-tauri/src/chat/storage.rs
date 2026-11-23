@@ -64,6 +64,7 @@ pub use projects::{
     find_project_by_name, get_projects, load_project_index, normalize_additional_directories,
     reorder_projects, reorder_sets, save_project_index, update_project,
 };
+pub(crate) use projects::{register_project, validate_folder_name, ProjectRoot};
 pub use sets::{
     create_set, delete_set, find_set_by_id, get_sets, live_set_system_prompt, load_set_index,
     save_set_index, sets_file_path, update_set,

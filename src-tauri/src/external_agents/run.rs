@@ -4754,7 +4754,7 @@ fn apply_unified_event(
             );
             emit_run_event(app, run_id, cli_stream_delta(&segments[segment], delta));
         }
-        UnifiedAgentEvent::TextItemDelta { id, delta } => {
+        UnifiedAgentEvent::TextItemDelta { id, delta, phase } => {
             let segment = segment_tracker.append_text_item(
                 &id,
                 &delta,
@@ -4762,6 +4762,9 @@ fn apply_unified_event(
                 segment_order,
                 tool_calls.len(),
             );
+            if let Some(phase) = phase {
+                segments[segment].phase = phase;
+            }
             let tail = !segments[segment + 1..]
                 .iter()
                 .any(|segment| segment.kind == ChatMessageSegmentKind::Text);

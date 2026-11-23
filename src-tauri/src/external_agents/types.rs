@@ -606,6 +606,7 @@ pub enum UnifiedAgentEvent {
     TextItemDelta {
         id: String,
         delta: String,
+        phase: Option<crate::chat::types::ChatMessageSegmentPhase>,
     },
     TextItemCompleted {
         id: String,

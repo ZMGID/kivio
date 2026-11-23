@@ -146,8 +146,9 @@ pub enum ChatSegmentPhase {
     Plain,
     ToolLoop,
     Synthesis,
-    /// Explicit provider answer, including a partial answer.
+    /// Final provider answer. Older records also used this for partial answers.
     Answer,
+    PartialAnswer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
@@ -190,6 +191,9 @@ impl ChatSegmentPayload {
                 crate::chat::ChatMessageSegmentPhase::ToolLoop => ChatSegmentPhase::ToolLoop,
                 crate::chat::ChatMessageSegmentPhase::Synthesis => ChatSegmentPhase::Synthesis,
                 crate::chat::ChatMessageSegmentPhase::Answer => ChatSegmentPhase::Answer,
+                crate::chat::ChatMessageSegmentPhase::PartialAnswer => {
+                    ChatSegmentPhase::PartialAnswer
+                }
             },
             order: segment.order,
             step_number: segment.step_number,

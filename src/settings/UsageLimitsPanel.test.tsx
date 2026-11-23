@@ -105,6 +105,8 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
 
   const beforeAvailabilityUpdate = get.mock.calls.length
   secondVisit.unmount()
+  await act(async () => onUpdate?.('codex'))
+  expect(get).toHaveBeenCalledTimes(beforeAvailabilityUpdate)
   const onAvailability = vi.mocked(onExternalAgentsUpdated).mock.calls[0][0]
   await act(async () => onAvailability([agent('codex', 'Codex', 'native')]))
   render(<UsageLimitsPanel lang="en" />)
@@ -112,7 +114,7 @@ it('keeps usable limits across visits and updates just the affected CLI', async 
   expect(screen.queryByRole('region', { name: 'Antigravity CLI' })).not.toBeInTheDocument()
   await act(async () => {})
   expect(detect).toHaveBeenCalledTimes(1)
-  expect(get).toHaveBeenCalledTimes(beforeAvailabilityUpdate)
+  expect(get.mock.calls.slice(beforeAvailabilityUpdate)).toEqual([['codex', null, 'cached']])
 
   const expiresAt = Math.floor((Date.now() + 86_400_000) / 1000)
   const cardDetails = { description: null, resetType: 'codexRateLimits', grantedAt: expiresAt - 172800 }
