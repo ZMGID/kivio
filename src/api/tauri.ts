@@ -1586,6 +1586,10 @@ export type UsageGroupStats = {
 }
 
 export type UsageStatsResponse = {
+  revision: number
+  sampledAt: number
+  validUntil: number
+  utcOffset: number
   summary: UsageSummary
   trend: UsageTrendPoint[]
   logs: UsageRecord[]
@@ -1593,6 +1597,11 @@ export type UsageStatsResponse = {
   modelStats: UsageGroupStats[]
   totalLogs: number
   skippedRecords: number
+}
+
+export type UsageScanReport = {
+  revision: number
+  sources: { id: string; label: string; files: number; records: number; skipped: number; errors: string[] }[]
 }
 
 /** 一条 provider 请求调试记录（内存环形缓冲，脱敏，仅开发者面板可见）。 */
@@ -1970,7 +1979,7 @@ export const api = {
   usageGetConversationCost: (conversationId: string) =>
     invoke<ConversationCost>('usage_get_conversation_cost', { conversationId }),
   usageClear: () => invoke<void>('usage_clear'),
-  usageSyncCli: (forcePrices = false) => invoke<{ sources: { id: string; label: string; files: number; records: number; skipped: number; errors: string[] }[] }>('usage_sync_cli', { forcePrices }),
+  usageSyncCli: (forcePrices = false) => invoke<UsageScanReport>('usage_sync_cli', { forcePrices }),
   getRequestDebugRecords: () =>
     invoke<RequestDebugRecord[]>('get_request_debug_records'),
   clearRequestDebugRecords: () => invoke<void>('clear_request_debug_records'),

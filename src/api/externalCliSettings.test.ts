@@ -69,11 +69,13 @@ describe('external CLI settings transport', () => {
 
   it('does not probe again when the snapshot is fresh', async () => {
     vi.mocked(invoke).mockResolvedValue({ models: [{ id: 'cached', label: 'Cached' }], refreshing: false })
-    expect((await externalCliSettingsApi.detectExternalAgentModels('codex', null, false, vi.fn())).models[0].id).toBe('cached')
+    const onSnapshot = vi.fn()
+    expect((await externalCliSettingsApi.detectExternalAgentModels('codex', null, false, onSnapshot)).models[0].id).toBe('cached')
+    expect(onSnapshot).not.toHaveBeenCalled()
     expect(invoke).toHaveBeenCalledTimes(1)
   })
 
-  it('shares a pending model refresh and replays its snapshot to a later subscriber', async () => {
+  it.each([true, false])('shows a snapshot to a later subscriber while sharing the ongoing refresh (first subscriber requests snapshot: %s)', async firstWantsSnapshot => {
     const snapshot = { models: [{ id: 'saved', label: 'Saved' }], refreshing: true }
     const finishes: Array<(value: unknown) => void> = []
     vi.mocked(invoke).mockImplementation((_command, args) => {
@@ -81,8 +83,9 @@ describe('external CLI settings transport', () => {
       return new Promise((resolve) => { finishes.push(resolve) })
     })
     const firstSnapshot = vi.fn()
-    const first = externalCliSettingsApi.detectExternalAgentModels('codex', 'shared', false, firstSnapshot)
-    await vi.waitFor(() => expect(firstSnapshot).toHaveBeenCalledOnce())
+    const first = externalCliSettingsApi.detectExternalAgentModels('codex', 'shared', false, firstWantsSnapshot ? firstSnapshot : undefined)
+    await vi.waitFor(() => expect(finishes).toHaveLength(1))
+    if (firstWantsSnapshot) expect(firstSnapshot).toHaveBeenCalledOnce()
     const secondSnapshot = vi.fn()
     const second = externalCliSettingsApi.detectExternalAgentModels('codex', 'shared', false, secondSnapshot)
     await vi.waitFor(() => expect(secondSnapshot).toHaveBeenCalledWith(expect.objectContaining(snapshot)))

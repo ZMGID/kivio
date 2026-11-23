@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { FileIcon } from '../../sdk/ui'
 import { loadReadingPdf } from './pdfDocument'
+import { storedThumbnail, storeThumbnail } from './thumbnailStorage'
 import { readingApi } from '../api/reading'
 
 // Small previews are shared across list remounts. Only one PDF is decoded at a time.
@@ -9,7 +10,13 @@ type PreviewRequest = { promise: Promise<string | undefined>; users: number }
 const pending = new Map<string, PreviewRequest>()
 let queue: Promise<unknown> = Promise.resolve()
 
-function thumbnail(id: string, key: string): { promise: Promise<string | undefined>; release: () => void } {
+function remember(key: string, source: string) {
+  if (previews.size >= 128) previews.delete(previews.keys().next().value!)
+  previews.set(key, source)
+  return source
+}
+
+function thumbnail(id: string, key: string, persist: boolean): { promise: Promise<string | undefined>; release: () => void } {
   const cached = previews.get(key)
   if (cached) return { promise: Promise.resolve(cached), release: () => {} }
   const existing = pending.get(key)
@@ -22,6 +29,11 @@ function thumbnail(id: string, key: string): { promise: Promise<string | undefin
     .catch(() => undefined)
     .then(async () => {
       if (!request.users) return undefined
+      if (persist) {
+        const saved = await storedThumbnail(key)
+        if (saved) return remember(key, saved)
+        if (!request.users) return undefined
+      }
       const task = loadReadingPdf(await readingApi.pdf(id))
       try {
         const pdf = await task.promise
@@ -35,9 +47,8 @@ function thumbnail(id: string, key: string): { promise: Promise<string | undefin
         canvas.height = Math.ceil(viewport.height)
         await page.render({ canvas, viewport, background: '#ffffff' }).promise
         const result = canvas.toDataURL('image/png')
-        if (previews.size >= 128) previews.delete(previews.keys().next().value!)
-        previews.set(key, result)
-        return result
+        if (persist) void storeThumbnail(key, result)
+        return remember(key, result)
       } finally {
         await task.destroy()
       }
@@ -58,7 +69,8 @@ export function PdfThumbnail({
   fingerprint?: string
   name: string
 }) {
-  const key = `${id}:${fingerprint ?? ''}`
+  const key = JSON.stringify([id, fingerprint])
+  const persist = Boolean(fingerprint)
   const host = useRef<HTMLSpanElement>(null)
   const [source, setSource] = useState(() => previews.get(key))
   const [failed, setFailed] = useState(false)
@@ -71,7 +83,7 @@ export function PdfThumbnail({
       ([entry]) => {
         if (!entry.isIntersecting) { request?.release(); request = undefined; return }
         if (request) return
-        const current = thumbnail(id, key)
+        const current = thumbnail(id, key, persist)
         request = current
         void current.promise
           .then((url) => {
@@ -89,7 +101,7 @@ export function PdfThumbnail({
       request?.release()
       observer.disconnect()
     }
-  }, [id, key])
+  }, [id, key, persist])
   return (
     <span
       ref={host}

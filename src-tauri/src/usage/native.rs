@@ -7,6 +7,7 @@ use std::io::{BufRead, BufReader, Read};
 #[derive(Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanReport {
+    pub revision: i64,
     pub sources: Vec<SourceReport>,
 }
 #[derive(Default, Serialize)]
@@ -160,13 +161,25 @@ fn scan_path(
         return Ok(());
     }
     report.files += 1;
-    let stamp = format!(
+    let mut stamp = format!(
         "v4:{}:{:?}",
         metadata.len(),
         metadata.modified().map_err(|e| e.to_string())?
     );
     let key = format!("{id}:{}", canonical.display());
-    if id != "opencode" && store::cli_file_unchanged(db, &key, &stamp)? {
+    if id == "opencode" {
+        // A committed OpenCode write can still live in the WAL, without touching the main file.
+        match fs::metadata(canonical.with_extension("db-wal")) {
+            Ok(wal) => stamp.push_str(&format!(
+                ";wal:{}:{:?}",
+                wal.len(),
+                wal.modified().map_err(|e| e.to_string())?
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => stamp.push_str(";no-wal"),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    if store::cli_file_unchanged(db, &key, &stamp)? {
         return Ok(());
     }
     let (records, skipped, superseded) = if id == "opencode" {
@@ -1343,6 +1356,57 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].total_tokens, Some(105));
         assert_eq!(rows[0].cost_usd, Some(0.25));
+    }
+
+    #[test]
+    fn opencode_skips_unchanged_history_but_imports_commits_still_in_wal() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("opencode.db");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE message (id TEXT,session_id TEXT,data TEXT)")
+            .unwrap();
+        let value = json!({"role":"assistant","modelID":"custom","time":{"created":1794614400000i64},"tokens":{"input":10,"output":5},"cost":0.25});
+        let add = |id: &str| {
+            db.execute(
+                "INSERT INTO message VALUES (?1,'s',?2)",
+                rusqlite::params![id, value.to_string()],
+            )
+            .unwrap()
+        };
+        let dir = temp.path().join("ledger");
+        let mut ledger_db = store::open(&dir).unwrap();
+        let ledger = UsageLedger::default();
+        let stats = || {
+            ledger
+                .stats(
+                    &dir,
+                    UsageStatsQuery {
+                        range: "all".into(),
+                        ..Default::default()
+                    },
+                )
+                .unwrap()
+        };
+        let mut scan = || {
+            scan_path(
+                &mut ledger_db,
+                "opencode",
+                &path,
+                &mut HashSet::new(),
+                &mut SourceReport::default(),
+            )
+            .unwrap();
+        };
+        add("m1");
+        scan();
+        let first = stats();
+        assert_eq!(first.total_logs, 1);
+        scan();
+        assert_eq!(stats().revision, first.revision);
+
+        add("m2");
+        scan();
+        assert_eq!(stats().total_logs, 2);
     }
     #[test]
     fn partial_usage_channels_merge_without_losing_uncached_input() {

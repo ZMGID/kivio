@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, ChevronDown, RefreshCw, Terminal, Workflow, Globe } from 'lucide-react'
 import { FileIcon } from '../components/FileIcon'
 import {
@@ -14,6 +14,11 @@ import { dshPluginShortName } from './dshPluginNames'
 import { i18n, type Lang } from '../components/i18n'
 
 type TabId = 'config' | 'list'
+type PluginInventory =
+  | { status: 'idle'; entries: null }
+  | { status: 'loading'; entries: DshPluginEntry[] | null }
+  | { status: 'ready'; entries: DshPluginEntry[] }
+  | { status: 'error'; entries: DshPluginEntry[] | null; message: string }
 
 function errorMessage(err: unknown): string {
   if (typeof err === 'string' && err.trim()) return err
@@ -46,6 +51,8 @@ export function DshPluginsSettings({
   const [snapshot, setSnapshot] = useState<DshPluginSettingsSnapshot | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [inventory, setInventory] = useState<PluginInventory>({ status: 'idle', entries: null })
+  const inventoryRequest = useRef(0)
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -63,6 +70,30 @@ export function DshPluginsSettings({
   useEffect(() => {
     void reload()
   }, [reload])
+
+  const reloadInventory = useCallback(async () => {
+    const request = ++inventoryRequest.current
+    setInventory(current => ({ status: 'loading', entries: current.entries }))
+    try {
+      const entries = await dshPluginSettingsApi.dshPluginInventory()
+      if (request === inventoryRequest.current) setInventory({ status: 'ready', entries })
+    } catch (err) {
+      if (request === inventoryRequest.current) {
+        const message = errorMessage(err)
+        setInventory(current => ({ status: 'error', entries: current.entries, message }))
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (tab === 'list' && inventory.status === 'idle') void reloadInventory()
+  }, [tab, inventory.status, reloadInventory])
+
+  const applySavedSettings = (next: DshPluginSettingsSnapshot) => {
+    setSnapshot(next)
+    inventoryRequest.current += 1
+    setInventory({ status: 'idle', entries: null })
+  }
 
   return (
     <section className="kv-dsh-plugins">
@@ -123,10 +154,10 @@ export function DshPluginsSettings({
             </Button>
           </div>
         ) : (
-          <ConfigTab lang={lang} snapshot={snapshot} onSaved={setSnapshot} />
+          <ConfigTab lang={lang} snapshot={snapshot} onSaved={applySavedSettings} />
         )
       ) : (
-        <InventoryTab lang={lang} />
+        <InventoryTab lang={lang} inventory={inventory} onReload={reloadInventory} />
       )}
     </section>
   )
@@ -558,30 +589,15 @@ function WebSearchCard({
   )
 }
 
-function InventoryTab({ lang }: { lang: Lang }) {
+function InventoryTab({ lang, inventory, onReload }: {
+  lang: Lang
+  inventory: PluginInventory
+  onReload: () => Promise<void>
+}) {
   const t = i18n[lang]
   const [query, setQuery] = useState('')
-  const [entries, setEntries] = useState<DshPluginEntry[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState<string | null>(null)
-
-  const reload = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      setEntries(await dshPluginSettingsApi.dshPluginInventory())
-    } catch (err) {
-      setError(errorMessage(err))
-      setEntries(null)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void reload()
-  }, [reload])
+  const { entries } = inventory
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -593,22 +609,22 @@ function InventoryTab({ lang }: { lang: Lang }) {
     })
   }, [entries, query])
 
-  if (loading) {
-    return <p className="kv-row-desc kv-dsh-plugins-status">{t.externalAgentsDshPluginsListLoading}</p>
-  }
-  if (entries === null) {
-    return (
-      <div className="kv-dsh-plugins-failure">
-        <div>
-          <p role="alert">{t.externalAgentsDshPluginsListError}</p>
-          {error && <p className="kv-row-desc">{error}</p>}
-        </div>
-        <Button size="sm" onClick={() => void reload()}>
+  const loading = inventory.status === 'loading'
+  const loadingStatus = <p className="kv-row-desc kv-dsh-plugins-status" role="status">{t.externalAgentsDshPluginsListLoading}</p>
+  const failure = inventory.status === 'error' ? (
+    <div className="kv-dsh-plugins-failure">
+      <div>
+        <p role="alert">{t.externalAgentsDshPluginsListError}</p>
+        {inventory.message && <p className="kv-row-desc">{inventory.message}</p>}
+      </div>
+      {entries === null && (
+        <Button size="sm" onClick={() => void onReload()}>
           {t.externalAgentsDshPluginsListRetry}
         </Button>
-      </div>
-    )
-  }
+      )}
+    </div>
+  ) : null
+  if (entries === null) return failure ?? loadingStatus
 
   return (
     <div className="kv-dsh-inventory">
@@ -624,16 +640,19 @@ function InventoryTab({ lang }: { lang: Lang }) {
         <IconButton
           size="sm"
           label={t.externalAgentsDshPluginsListRetry}
-          onClick={() => void reload()}
+          disabled={loading}
+          onClick={() => void onReload()}
         >
-          <RefreshCw size={13} />
+          <RefreshCw size={13} className={loading ? 'animate-spin' : undefined} />
         </IconButton>
       </div>
+      {loading && loadingStatus}
+      {failure}
       <div className="kv-dsh-inventory-count">
         <span>{t.externalAgentsDshPluginsListCatalog}</span>
         <span>{filtered.length}</span>
       </div>
-      {entries && entries.length === 0 ? (
+      {entries.length === 0 ? (
         <p className="kv-row-desc">{t.externalAgentsDshPluginsListEmpty}</p>
       ) : filtered.length === 0 ? (
         <p className="kv-row-desc">{t.externalAgentsDshPluginsListEmptySearch}</p>

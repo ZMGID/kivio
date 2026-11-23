@@ -43,6 +43,11 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+function notifyMarketChange() {
+  const [event, handler] = vi.mocked(listen).mock.calls.at(-1)!
+  handler({ event, id: 1, payload: null })
+}
+
 beforeEach(() => {
   resetMarketWindow()
   vi.resetAllMocks()
@@ -74,6 +79,26 @@ describe('pluginAction', () => {
 })
 
 describe('MarketPage', () => {
+  it('reuses a fresh inventory on focus and re-entry and picks up changes received while closed', async () => {
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin()))
+    const first = render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    await screen.findByRole('button', { name: '安装' })
+    fireEvent.focus(window)
+    fireEvent.focus(window)
+    first.unmount()
+    const second = render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    await screen.findByRole('button', { name: '安装' })
+    for (const read of [marketApi.snapshot, marketplaceApi.list, packageApi.list]) {
+      expect(read).toHaveBeenCalledTimes(1)
+    }
+    second.unmount()
+    vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin({ status: 'ready', enabled: true, error: null })))
+    await act(() => notifyMarketChange())
+    render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    expect(await screen.findByRole('heading', { name: '已安装' })).toBeInTheDocument()
+    expect(marketApi.snapshot).toHaveBeenCalledTimes(2)
+  })
+
   it('shows native bundled capabilities without a principal skill or duplicate installed package', async () => {
     const native = plugin({ status: 'ready', enabled: true, error: null, packageId: 'bundled-id' })
     native.manifest = { ...native.manifest, id: 'github', name: 'GitHub', mainSkillId: null, skillIds: [], setupSkillId: 'github:setup',
@@ -119,7 +144,7 @@ describe('MarketPage', () => {
     vi.mocked(packageApi.list).mockResolvedValue([{ id: 'adobe', name: 'Adobe', description: 'Creative tools', source: '/copy', format: 'claude', enabled: false, version: null, revision: null, components: {}, diagnostics: [], marketplace: { source, name: 'claude-plugins-official', plugin: adobe.name } }])
     // Removing a market must not make the installed plugin lose its known logo.
     vi.mocked(marketplaceApi.list).mockResolvedValue([])
-    fireEvent(window, new Event('focus'))
+    act(() => notifyMarketChange())
     fireEvent.click(screen.getByRole('button', { name: '插件市场' }))
     const installed = await screen.findByRole('button', { name: 'Adobe' })
     expect(installed.querySelector('img')).toHaveAttribute('src', expect.stringContaining('/adobe-for-creativity/icon.png'))
@@ -195,7 +220,7 @@ describe('MarketPage', () => {
     expect(marketplaceApi.install).not.toHaveBeenCalled()
   })
 
-  it('preserves the catalog after a failed refresh and supersedes an older focus read after add', async () => {
+  it('preserves the catalog after a failed refresh and supersedes an older inventory read after add', async () => {
     vi.mocked(marketApi.snapshot).mockResolvedValue(snapshot(plugin()))
     vi.mocked(marketplaceApi.list).mockResolvedValue([customMarket])
     vi.mocked(marketplaceApi.refresh).mockRejectedValue('Offline')
@@ -208,7 +233,7 @@ describe('MarketPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '完成' }))
     let finishRead!: (next: Marketplace[]) => void
     vi.mocked(marketplaceApi.list).mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve }))
-    fireEvent(window, new Event('focus'))
+    act(() => notifyMarketChange())
     vi.mocked(marketplaceApi.add).mockResolvedValue([customMarket, { ...customMarket, id: 'second', name: 'second-tools', source: 'https://github.com/team/second' }])
     fireEvent.click(screen.getByRole('button', { name: '添加' }))
     fireEvent.click(screen.getByRole('menuitem', { name: '添加插件市场' }))
@@ -311,7 +336,7 @@ describe('MarketPage', () => {
     vi.mocked(marketApi.install).mockResolvedValue(installed)
     render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
     await screen.findByRole('button', { name: '安装' })
-    fireEvent.focus(window)
+    act(() => notifyMarketChange())
     fireEvent.click(screen.getByRole('button', { name: '安装' }))
     fireEvent.click(await screen.findByRole('button', { name: '飞书 CLI' }))
     await screen.findByRole('button', { name: '使用' })
@@ -326,7 +351,7 @@ describe('MarketPage', () => {
       .mockImplementationOnce(() => new Promise((_resolve, reject) => { failRefresh = reject }))
       .mockResolvedValue(snapshot(plugin()))
     render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
-    fireEvent.focus(window)
+    act(() => notifyMarketChange())
     await screen.findByRole('button', { name: '安装' })
     await act(async () => { failRefresh('old network failure') })
     expect(screen.queryByRole('status')).not.toBeInTheDocument()

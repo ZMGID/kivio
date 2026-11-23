@@ -1,6 +1,7 @@
+import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { isTauriRuntime } from '../../api/tauri'
-import { marketApi, marketplaceApi, type Marketplace, type MarketplacePlugin, type MarketPlugin, type MarketSnapshot } from '../../api/market'
+import { MARKET_CHANGED_EVENT, marketApi, marketplaceApi, type Marketplace, type MarketplacePlugin, type MarketPlugin, type MarketSnapshot } from '../../api/market'
 import { packageApi, type PluginPackage } from '../../api/pluginPackages'
 import { refreshSettings } from '../../api/settingsCache'
 import { createWindowStore } from '../../utils/windowStore'
@@ -73,6 +74,10 @@ function initialWindow(): MarketWindowState {
 /** 安装、更新、移除、市场来源和导入的锁、草稿与结果都留在这个窗口里。 */
 export const marketWindow = createWindowStore(initialWindow())
 
+const INVENTORY_FRESH_MS = 15_000
+let freshUntil = 0
+let inventoryRead: Promise<void> | undefined
+let inventoryListener: Promise<() => void> | undefined
 let catalogVersion = 0
 let packageVersion = 0
 let marketVersion = 0
@@ -91,6 +96,10 @@ function abandoned(epoch: number) {
 
 export function resetMarketWindow() {
   operationEpoch += 1
+  void inventoryListener?.then(stop => stop())
+  inventoryListener = undefined
+  inventoryRead = undefined
+  freshUntil = 0
   catalogVersion += 1
   packageVersion += 1
   marketVersion += 1
@@ -105,6 +114,24 @@ export function subscribeMarketWindow(handlers: {
   onIntent: (intent: MarketIntent) => void | Promise<void>
 }): () => void {
   skillsListeners.add(handlers.onSkills)
+  if (isTauriRuntime() && !inventoryListener) {
+    const epoch = operationEpoch
+    inventoryListener = listen(MARKET_CHANGED_EVENT, () => {
+      if (abandoned(epoch)) return
+      if (skillsListeners.size) void refreshMarketInventory()
+      else {
+        // The next visitor must read changes that happened while the page was closed.
+        freshUntil = 0
+        inventoryRead = undefined
+        catalogVersion++
+        packageVersion++
+        marketVersion++
+      }
+    }).catch(() => {
+      if (!abandoned(epoch)) inventoryListener = undefined
+      return () => {}
+    })
+  }
   intentListeners.add(handlers.onIntent)
   if (marketWindow.getSnapshot().skillsDirty) {
     marketWindow.setState(s => s.skillsDirty ? { ...s, skillsDirty: false } : s)
@@ -114,13 +141,6 @@ export function subscribeMarketWindow(handlers: {
     skillsListeners.delete(handlers.onSkills)
     intentListeners.delete(handlers.onIntent)
   }
-}
-
-/** 页面不再接收清单事件后，进行中的读取不能写回窗口。 */
-export function discardMarketInventoryReads() {
-  catalogVersion += 1
-  packageVersion += 1
-  marketVersion += 1
 }
 
 function notifySkills() {
@@ -190,10 +210,24 @@ export function bumpImportPicker(kind: ImportKind) {
   patchImport(kind, draft => ({ ...draft, picker: draft.picker + 1 }))
 }
 
-/** 离开后再进来时以后端清单为准；进行中的写入仍用更高的代次覆盖过期读取。 */
-export async function refreshMarketInventory() {
+export function ensureMarketInventory() {
+  if (inventoryRead || (inventoryListener && performance.now() < freshUntil)) return
+  void refreshMarketInventory()
+}
+
+export function refreshMarketInventory(): Promise<void> {
+  freshUntil = 0
+  const read = readInventory().then(() => {
+    if (inventoryRead !== read) return
+    const { loadError, packageError, marketError } = marketWindow.getSnapshot()
+    if (!loadError && !packageError && !marketError) freshUntil = performance.now() + INVENTORY_FRESH_MS
+  }).finally(() => { if (inventoryRead === read) inventoryRead = undefined })
+  inventoryRead = read
+  return read
+}
+
+async function readInventory() {
   const epoch = operationEpoch
-  if (abandoned(epoch)) return
   if (!isTauriRuntime()) {
     marketWindow.setState(s => s.loading ? { ...s, loading: false } : s)
     return

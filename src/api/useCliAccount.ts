@@ -59,7 +59,15 @@ function createEntry(agentId: string, conversationId?: string | null) {
     const task = Promise.resolve().then(async () => {
       try {
         const account = await externalCliSettingsApi.getExternalCliAccount(agentId, conversationId, mode)
-        if (revision !== configurationRevision || (mode === 'cached' && !account)) return
+        if (revision !== configurationRevision) return
+        if (mode === 'cached' && !account) {
+          if (request >= applied && view.account) {
+            nextCheckAt = 0
+            update({ account: null, error: null })
+            if (listeners.size) void load('automatic')
+          }
+          return
+        }
         const previousCheck = view.account?.nextRefreshAt
         const currentCheck = account?.nextRefreshAt
         if (previousCheck != null && currentCheck != null && previousCheck !== currentCheck) {
@@ -110,7 +118,7 @@ function createEntry(agentId: string, conversationId?: string | null) {
       update(EMPTY)
       if (listeners.size) void load('automatic')
     },
-    subscribe(listener: () => void, cachedFirst = false) {
+    subscribe(listener: () => void) {
       listeners.add(listener)
       void connect().then(async () => {
         if (!listeners.has(listener)) return
@@ -119,7 +127,7 @@ function createEntry(agentId: string, conversationId?: string | null) {
           nextCheckAt = 0
           initialCacheRead = load('cached')
           await initialCacheRead
-        } else if (cachedFirst && view === EMPTY) {
+        } else if (!conversationId && !view.account) {
           initialCacheRead ??= load('cached')
           await initialCacheRead
         }
@@ -171,7 +179,7 @@ export function useCliAccounts(agents: DetectedExternalAgent[]) {
     let snapshot = read()
     return {
       subscribe(listener: () => void) {
-        const subscriptions = sources.map(({ entry }) => entry.subscribe(listener, true))
+        const subscriptions = sources.map(({ entry }) => entry.subscribe(listener))
         return () => subscriptions.forEach(unsubscribe => unsubscribe())
       },
       getSnapshot() {

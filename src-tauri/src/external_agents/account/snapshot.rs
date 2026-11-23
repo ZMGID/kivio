@@ -114,7 +114,7 @@ fn same_reported_account(previous: &Value, next: &Value) -> bool {
     })
 }
 
-type SlotKey = (LaunchIdentity, PathBuf);
+type SlotKey = (LaunchIdentity, PathBuf, Option<String>);
 
 /// The desktop process owns quotas across webviews. Project-sensitive profiles
 /// stay isolated by cwd, and native launch changes make old snapshots unreachable.
@@ -133,20 +133,23 @@ impl AccountSnapshots {
         mode: AccountSnapshotMode,
         requested: Instant,
     ) -> Option<Value> {
-        let (identity, slot) = {
+        let (identity, owner, slot) = {
             let slots = self.slots.lock().unwrap_or_else(|err| err.into_inner());
-            let ((identity, _), (_, slot)) = slots
+            let ((identity, _, owner), (_, slot)) = slots
                 .iter()
-                .filter(|((identity, scope), _)| {
+                .filter(|((identity, scope, _), _)| {
                     scope == cwd && identity.binary_for(def.id).is_some()
                 })
                 .max_by_key(|(_, (accessed, _))| *accessed)?;
-            (identity.clone(), slot.clone())
+            (identity.clone(), owner.clone(), slot.clone())
         };
         let snapshot = slot.snapshot(mode, requested)?;
-        identity
-            .still_current(def, identity.binary_for(def.id)?)
-            .then_some(snapshot)
+        let binary = identity.binary_for(def.id)?;
+        if !identity.still_current(def, binary) {
+            return None;
+        }
+        let current = PersistedQuota::for_cli(None, def, binary, cwd);
+        (current.as_ref().map(PersistedQuota::owner) == owner.as_deref()).then_some(snapshot)
     }
 
     fn slot(&self, key: SlotKey, mode: AccountSnapshotMode) -> Option<Arc<Slot>> {
@@ -176,7 +179,7 @@ impl AccountSnapshots {
     pub(in crate::external_agents) async fn read<F>(
         &self,
         agent: &str,
-        key: SlotKey,
+        key: (LaunchIdentity, PathBuf),
         mode: AccountSnapshotMode,
         requested: Instant,
         validate: impl Fn() -> Result<(), String>,
@@ -187,33 +190,45 @@ impl AccountSnapshots {
         F: Future<Output = Result<ProbeReading, String>>,
     {
         validate()?;
-        let restored = (mode == AccountSnapshotMode::Cached)
-            .then(|| disk.and_then(PersistedQuota::restore))
-            .flatten();
-        let slot_mode = if restored.is_some() {
-            AccountSnapshotMode::Automatic
-        } else {
-            mode
+        let key = (key.0, key.1, disk.map(|disk| disk.owner().to_owned()));
+        let slot = match self.slot(key.clone(), AccountSnapshotMode::Cached) {
+            Some(slot) => slot,
+            None => {
+                let restored = disk.and_then(PersistedQuota::restore);
+                let slot_mode = if restored.is_some() {
+                    AccountSnapshotMode::Automatic
+                } else {
+                    mode
+                };
+                let Some(slot) = self.slot(key, slot_mode) else {
+                    return Ok((None, false));
+                };
+                if let Some(value) = restored {
+                    validate()?;
+                    slot.restore(value);
+                }
+                slot
+            }
         };
-        let Some(slot) = self.slot(key, slot_mode) else {
-            return Ok((None, false));
-        };
-        if let Some(value) = restored {
-            validate()?;
-            slot.restore(value);
-        }
+        let matches_owner = || disk.is_none_or(PersistedQuota::matches_current_profile);
         let snapshot = slot.snapshot(mode, requested);
         if snapshot.is_some() || mode == AccountSnapshotMode::Cached {
-            return Ok((snapshot, false));
+            return Ok((snapshot.filter(|_| matches_owner()), false));
         }
         let _refresh = slot.refresh.lock().await;
         validate()?;
+        if !matches_owner() {
+            return Ok((None, false));
+        }
         let snapshot = slot.snapshot(mode, requested);
         if snapshot.is_some() {
             return Ok((snapshot, false));
         }
         let reading = probe().await;
         validate()?;
+        if !matches_owner() {
+            return Ok((None, false));
+        }
         let removed = reading
             .as_ref()
             .is_ok_and(|reading| reading.definitively_unavailable);
@@ -235,7 +250,7 @@ mod tests {
     use crate::external_agents::registry::get_agent_def;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    fn key(scope: &str) -> SlotKey {
+    fn key(scope: &str) -> (LaunchIdentity, PathBuf) {
         let def = get_agent_def("antigravity").unwrap();
         (
             LaunchIdentity::capture(def, &PathBuf::from("agy-fixture")),

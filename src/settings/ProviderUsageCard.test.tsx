@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, type ProviderOAuthUsage } from '../api/tauri'
 import { ProviderUsageCard } from './ProviderUsageCard'
@@ -8,7 +8,11 @@ vi.mock('../api/tauri', async () => {
   return { ...actual, api: { ...actual.api, providerOAuthUsage: vi.fn() } }
 })
 const baseProvider = makeProvider()
-const provider = { ...baseProvider, request: { ...baseProvider.request, oauth: { provider: 'kimi' as const, credentialId: 'test-only' } } }
+const account = (credentialId: string): typeof baseProvider => ({
+  ...baseProvider,
+  request: { ...baseProvider.request, oauth: { provider: 'kimi', credentialId } },
+})
+const provider = account('first-account')
 const usage: ProviderOAuthUsage = { plan: null, fetchedAt: 1700000000, windows: [{ label: 'Weekly', usedPercent: 75, used: 75, limit: 100, resetsAt: 1700600000 }] }
 beforeEach(() => { vi.resetAllMocks(); vi.mocked(api.providerOAuthUsage).mockResolvedValue(usage) })
 describe('ProviderUsageCard', () => {
@@ -22,25 +26,69 @@ describe('ProviderUsageCard', () => {
   })
 
   it('loads account limits and shows remaining rather than used percent', async () => {
-    render(<ProviderUsageCard provider={provider} lang="zh" />)
+    const view = render(<ProviderUsageCard provider={provider} lang="zh" />)
     expect(await screen.findByText('剩余 25%')).toBeInTheDocument()
     expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '25')
-    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
-    await waitFor(() => expect(api.providerOAuthUsage).toHaveBeenCalledTimes(2))
+    view.unmount()
+    render(<ProviderUsageCard provider={provider} lang="zh" />)
+    expect(screen.getByText('剩余 25%')).toBeInTheDocument()
+    expect(api.providerOAuthUsage).toHaveBeenCalledTimes(1)
   })
   it('shows unavailable data and errors without a misleading full bar', async () => {
     vi.mocked(api.providerOAuthUsage).mockResolvedValue({ ...usage, windows: [{ ...usage.windows[0], usedPercent: null, used: null }] })
-    render(<ProviderUsageCard provider={provider} lang="zh" />)
+    render(<ProviderUsageCard provider={account('no-percent')} lang="zh" />)
     expect(await screen.findByText('暂无比例')).toBeInTheDocument()
     expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
     vi.mocked(api.providerOAuthUsage).mockRejectedValue(new Error('network'))
     fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    expect(screen.getByText('暂无比例')).toBeInTheDocument()
     expect(await screen.findByRole('alert')).toHaveTextContent('暂时无法获取')
+    expect(screen.getByText('暂无比例')).toBeInTheDocument()
+  })
+  it('scopes snapshots and late refreshes to the credential that requested them', async () => {
+    const first = account('original-account')
+    const second = account('replacement-account')
+    const view = render(<ProviderUsageCard provider={first} lang="zh" />)
+    expect(await screen.findByText('剩余 25%')).toBeInTheDocument()
+
+    let finish: (result: ProviderOAuthUsage) => void = () => {}
+    vi.mocked(api.providerOAuthUsage)
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      .mockResolvedValueOnce({ ...usage, windows: [{ ...usage.windows[0], usedPercent: 10 }] })
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    expect(screen.getByText('剩余 25%')).toBeInTheDocument()
+    view.rerender(<ProviderUsageCard provider={second} lang="zh" />)
+    expect(screen.queryByText('剩余 25%')).not.toBeInTheDocument()
+    expect(await screen.findByText('剩余 90%')).toBeInTheDocument()
+    await act(async () => finish({ ...usage, windows: [{ ...usage.windows[0], usedPercent: 60 }] }))
+    expect(screen.getByText('剩余 90%')).toBeInTheDocument()
+  })
+  it('keeps separate snapshots when the same credential uses different request settings', async () => {
+    const provider = account('shared-account')
+    const direct = { ...provider, request: { ...provider.request, useSystemProxy: false } }
+    const proxied = { ...provider, request: { ...provider.request, useSystemProxy: true } }
+    const view = render(<ProviderUsageCard provider={direct} lang="zh" />)
+    expect(await screen.findByText('剩余 25%')).toBeInTheDocument()
+
+    let finishDirect: (result: ProviderOAuthUsage) => void = () => {}
+    vi.mocked(api.providerOAuthUsage)
+      .mockImplementationOnce(() => new Promise(resolve => { finishDirect = resolve }))
+      .mockResolvedValueOnce({ ...usage, windows: [{ ...usage.windows[0], usedPercent: 10 }] })
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }))
+    view.rerender(<ProviderUsageCard provider={proxied} lang="zh" />)
+    expect(screen.queryByText('剩余 25%')).not.toBeInTheDocument()
+    expect(await screen.findByText('剩余 90%')).toBeInTheDocument()
+
+    await act(async () => finishDirect({ ...usage, windows: [{ ...usage.windows[0], usedPercent: 60 }] }))
+    expect(screen.getByText('剩余 90%')).toBeInTheDocument()
+    view.rerender(<ProviderUsageCard provider={direct} lang="zh" />)
+    expect(screen.getByText('剩余 40%')).toBeInTheDocument()
+    expect(api.providerOAuthUsage).toHaveBeenCalledTimes(3)
   })
   it('never fetches unsupported or disconnected accounts and ignores stale responses', async () => {
     let finish!: (result: ProviderOAuthUsage) => void
     vi.mocked(api.providerOAuthUsage).mockImplementation(() => new Promise(resolve => { finish = resolve }))
-    const view = render(<ProviderUsageCard provider={provider} lang="zh" />)
+    const view = render(<ProviderUsageCard provider={account('disconnected-account')} lang="zh" />)
     view.rerender(<ProviderUsageCard provider={{ ...provider, request: { ...provider.request, oauth: { provider: 'chatgpt' } } }} lang="zh" />)
     await act(async () => finish(usage))
     expect(screen.queryByRole('region')).not.toBeInTheDocument()

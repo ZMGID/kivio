@@ -2,19 +2,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    ffi::{OsStr, OsString},
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
 };
 
-use super::super::{provider_profile, spawn::agent_cli_command, types::RuntimeAgentDef, wsl};
+use super::super::{
+    provider_profile,
+    spawn::agent_cli_command,
+    types::{AccountProtocol, RuntimeAgentDef},
+    wsl,
+};
+use super::{command_env, explicit_command_env, grok_identity, kimi_binding};
 
 const MAX_FILE_BYTES: u64 = 256 * 1024;
 
-/// Store the last quota reading for a locally identifiable Codex account.
+/// Store display-only quota for a locally identifiable CLI account.
 pub(in crate::external_agents) struct PersistedQuota {
-    path: PathBuf,
+    path: Option<PathBuf>,
+    protocol: AccountProtocol,
+    agent: &'static str,
     home: PathBuf,
     cwd: PathBuf,
     owner: String,
@@ -47,69 +54,64 @@ enum ResetTime {
 }
 
 impl PersistedQuota {
-    pub(in crate::external_agents) fn path(usage_dir: &Path) -> PathBuf {
-        usage_dir.join("codex-quota-v1.json")
+    pub(in crate::external_agents) fn path(
+        usage_dir: &Path,
+        def: &RuntimeAgentDef,
+    ) -> Option<PathBuf> {
+        account_type(def.account?.protocol)?;
+        Some(usage_dir.join(format!("{}-quota-v1.json", def.id)))
     }
 
-    pub(in crate::external_agents) fn for_codex(
-        path: PathBuf,
+    pub(in crate::external_agents) fn for_cli(
+        path: Option<PathBuf>,
         def: &RuntimeAgentDef,
         binary: &Path,
         cwd: &Path,
     ) -> Option<Self> {
-        if def.id != "codex" || wsl::is_wsl_target(binary) {
+        let protocol = def.account?.protocol;
+        account_type(protocol)?;
+        if wsl::is_wsl_target(binary) {
             return None;
         }
         let command = agent_cli_command(def, binary);
-        let command_env = |key: &str| -> Option<Option<OsString>> {
-            command.as_std().get_envs().find_map(|(name, value)| {
-                let matches = if cfg!(windows) {
-                    name.to_string_lossy().eq_ignore_ascii_case(key)
-                } else {
-                    name == OsStr::new(key)
-                };
-                matches.then(|| value.map(OsStr::to_os_string))
-            })
-        };
-        let env = |key: &str| command_env(key).unwrap_or_else(|| std::env::var_os(key));
-        if [
-            "CODEX_ACCESS_TOKEN",
-            "CODEX_API_KEY",
-            "OPENAI_API_KEY",
-            "OPENAI_IDENTITY_TOKEN_FILE",
-        ]
-        .into_iter()
-        .any(|key| env(key).is_some_and(|value| !value.is_empty()))
-        {
-            return None;
-        }
-        let home = match env("CODEX_HOME").filter(|home| !home.is_empty()) {
-            Some(home) => PathBuf::from(home),
-            None => {
-                if command_env("HOME").is_some() || command_env("USERPROFILE").is_some() {
+        let home = match protocol {
+            AccountProtocol::CodexAppServer => codex_home(&command)?,
+            AccountProtocol::GrokBilling => {
+                if command_env(&command, "GROK_AUTH").is_some() {
                     return None;
                 }
-                provider_profile::native_codex_home()?
+                grok_identity::profile_home(&command, binary, cwd)?
             }
+            AccountProtocol::KimiWeb => kimi_binding::profile_home(&command)?,
+            _ => return None,
         };
-        if !home.is_absolute() {
-            return None;
-        }
-        Self::for_profile(path, fs::canonicalize(home).ok()?, cwd.to_owned())
+        Self::for_profile(path, def, home, cwd.to_owned())
     }
 
-    fn for_profile(path: PathBuf, home: PathBuf, cwd: PathBuf) -> Option<Self> {
-        let owner = account_fingerprint(&home, &cwd)?;
+    fn for_profile(
+        path: Option<PathBuf>,
+        def: &RuntimeAgentDef,
+        home: PathBuf,
+        cwd: PathBuf,
+    ) -> Option<Self> {
+        let protocol = def.account?.protocol;
+        let owner = account_fingerprint(protocol, &home, &cwd)?;
         Some(Self {
             path,
+            protocol,
+            agent: def.id,
             home,
             cwd,
             owner,
         })
     }
 
-    fn matches_current_profile(&self) -> bool {
-        account_fingerprint(&self.home, &self.cwd).as_deref() == Some(self.owner.as_str())
+    pub(super) fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    pub(super) fn matches_current_profile(&self) -> bool {
+        account_fingerprint(self.protocol, &self.home, &self.cwd).as_deref() == Some(self.owner())
     }
 
     pub(super) fn restore(&self) -> Option<Value> {
@@ -118,15 +120,18 @@ impl PersistedQuota {
             return None;
         }
         Some(json!({
-            "agentId": "codex",
-            "account": reading.plan.map(|plan| json!({"type":"chatgpt","email":null,"plan":plan})),
+            "agentId": self.agent,
+            "account": reading.plan.map(|plan| json!({"type":account_type(self.protocol),"email":null,"plan":plan})),
             "credits": null, "unavailable": null,
             "checkedAt": reading.checked_at, "windows": reading.windows, "nextRefreshAt": 0,
         }))
     }
 
     pub(super) fn save(&self, snapshot: &Value) {
-        if snapshot["account"]["type"] != "chatgpt" {
+        let Some(path) = &self.path else {
+            return;
+        };
+        if snapshot["account"]["type"].as_str() != account_type(self.protocol) {
             return;
         }
         let Some(checked_at) = snapshot["checkedAt"].as_i64() else {
@@ -145,23 +150,36 @@ impl PersistedQuota {
             windows,
         };
         if let Ok(content) = serde_json::to_string(&reading) {
-            let _ = crate::chat::storage::atomic_write(&self.path, &content, "CLI quota cache");
+            let _ = crate::chat::storage::atomic_write(path, &content, "CLI quota cache");
         }
     }
 
     pub(super) fn invalidate(&self) {
+        let Some(path) = &self.path else {
+            return;
+        };
         if self.matches_current_profile()
             && self
                 .read()
                 .is_some_and(|reading| reading.owner == self.owner)
         {
-            let _ = fs::remove_file(&self.path);
+            let _ = fs::remove_file(path);
         }
     }
 
     fn read(&self) -> Option<Reading> {
-        let reading: Reading = serde_json::from_slice(&read_small(&self.path).ok()?).ok()?;
+        let reading: Reading =
+            serde_json::from_slice(&read_small(self.path.as_ref()?).ok()?).ok()?;
         valid_reading(reading.checked_at, &reading.windows).then_some(reading)
+    }
+}
+
+fn account_type(protocol: AccountProtocol) -> Option<&'static str> {
+    match protocol {
+        AccountProtocol::CodexAppServer => Some("chatgpt"),
+        AccountProtocol::GrokBilling => Some("grok"),
+        AccountProtocol::KimiWeb => Some("kimiCode"),
+        _ => None,
     }
 }
 
@@ -169,7 +187,7 @@ fn valid_reading(checked_at: i64, windows: &[Window]) -> bool {
     checked_at > 0 && checked_at <= chrono::Utc::now().timestamp() && !windows.is_empty()
 }
 
-fn read_small(path: &Path) -> io::Result<Vec<u8>> {
+pub(super) fn read_small(path: &Path) -> io::Result<Vec<u8>> {
     if !fs::metadata(path)?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -188,7 +206,53 @@ fn read_small(path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn account_fingerprint(home: &Path, cwd: &Path) -> Option<String> {
+pub(super) fn fingerprint(input: &impl Serialize) -> Option<String> {
+    Some(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(input).ok()?)
+    ))
+}
+
+fn account_fingerprint(protocol: AccountProtocol, home: &Path, cwd: &Path) -> Option<String> {
+    match protocol {
+        AccountProtocol::CodexAppServer => codex_fingerprint(home, cwd),
+        AccountProtocol::GrokBilling => grok_identity::quota_owner(&fs::canonicalize(home).ok()?),
+        AccountProtocol::KimiWeb => kimi_binding::quota_owner(&fs::canonicalize(home).ok()?),
+        _ => None,
+    }
+}
+
+fn codex_home(command: &tokio::process::Command) -> Option<PathBuf> {
+    let env = |key| explicit_command_env(command, key).unwrap_or_else(|| std::env::var_os(key));
+    if [
+        "CODEX_ACCESS_TOKEN",
+        "CODEX_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_IDENTITY_TOKEN_FILE",
+    ]
+    .into_iter()
+    .any(|key| env(key).is_some_and(|value| !value.is_empty()))
+    {
+        return None;
+    }
+    let home = match env("CODEX_HOME").filter(|home| !home.is_empty()) {
+        Some(home) => PathBuf::from(home),
+        None => {
+            if explicit_command_env(command, "HOME").is_some()
+                || explicit_command_env(command, "USERPROFILE").is_some()
+            {
+                return None;
+            }
+            provider_profile::native_codex_home()?
+        }
+    };
+    if !home.is_absolute() {
+        return None;
+    }
+    fs::canonicalize(home).ok()
+}
+
+fn codex_fingerprint(home: &Path, cwd: &Path) -> Option<String> {
     if managed_codex_configuration() {
         return None;
     }
@@ -220,9 +284,7 @@ fn account_fingerprint(home: &Path, cwd: &Path) -> Option<String> {
         return None;
     }
     let tokens = &auth["tokens"];
-    let bytes =
-        serde_json::to_vec(&(home, cwd, &tokens["account_id"], &tokens["id_token"])).ok()?;
-    Some(format!("{:x}", Sha256::digest(bytes)))
+    fingerprint(&(home, cwd, &tokens["account_id"], &tokens["id_token"]))
 }
 
 fn file_absent(path: &Path) -> bool {
@@ -238,7 +300,10 @@ fn managed_codex_configuration() -> bool {
         .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
         .join("OpenAI/Codex");
     #[cfg(target_os = "macos")]
-    if managed_codex_preferences() {
+    if managed_preferences(
+        "com.openai.codex",
+        &["config_toml_base64", "requirements_toml_base64"],
+    ) {
         return true;
     }
     ["config.toml", "requirements.toml", "managed_config.toml"]
@@ -247,7 +312,7 @@ fn managed_codex_configuration() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn managed_codex_preferences() -> bool {
+pub(super) fn managed_preferences(application: &str, keys: &[&str]) -> bool {
     use core_foundation::{
         base::TCFType,
         string::{CFString, CFStringRef},
@@ -258,19 +323,17 @@ fn managed_codex_preferences() -> bool {
         fn CFPreferencesAppValueIsForced(key: CFStringRef, application_id: CFStringRef) -> u8;
     }
 
-    let application = CFString::new("com.openai.codex");
-    ["config_toml_base64", "requirements_toml_base64"]
-        .into_iter()
-        .any(|key| {
-            let key = CFString::new(key);
-            // Both references belong to CFString values kept alive through the call.
-            unsafe {
-                CFPreferencesAppValueIsForced(
-                    key.as_concrete_TypeRef(),
-                    application.as_concrete_TypeRef(),
-                ) != 0
-            }
-        })
+    let application = CFString::new(application);
+    keys.iter().any(|key| {
+        let key = CFString::new(key);
+        // Both references belong to CFString values kept alive through the call.
+        unsafe {
+            CFPreferencesAppValueIsForced(
+                key.as_concrete_TypeRef(),
+                application.as_concrete_TypeRef(),
+            ) != 0
+        }
+    })
 }
 
 #[cfg(test)]
@@ -283,19 +346,21 @@ mod tests {
     use super::super::{AccountSnapshotMode, AccountSnapshots, ProbeReading};
 
     struct Profile {
+        def: &'static RuntimeAgentDef,
         directory: tempfile::TempDir,
         home: PathBuf,
         workspace: PathBuf,
     }
 
     impl Profile {
-        fn new() -> Self {
+        fn new(agent: &str) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let home = directory.path().join("home");
             let workspace = directory.path().join("workspace");
             fs::create_dir(&home).unwrap();
             fs::create_dir(&workspace).unwrap();
             let profile = Self {
+                def: get_agent_def(agent).unwrap(),
                 directory,
                 home,
                 workspace,
@@ -305,6 +370,38 @@ mod tests {
         }
 
         fn login(&self, user: &str, token: &str) {
+            if self.def.id == "grok" {
+                let auth = json!({
+                    "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828":{
+                        "auth_mode":"oidc", "email":"user@example.test", "key":token,
+                        "user_id":user, "principal_type":"User", "principal_id":user,
+                        "team_id":"workspace-fixture"
+                    }
+                });
+                fs::write(self.home.join("auth.json"), auth.to_string()).unwrap();
+                return;
+            }
+            if self.def.id == "kimi" {
+                let auth = json!({"access_token":token, "refresh_token":format!("{user}-{token}")});
+                fs::write(
+                    self.home.join("config.toml"),
+                    r#"[providers."managed:kimi-code"]
+type = "kimi"
+base_url = "https://api.kimi.com/coding/v1"
+[providers."managed:kimi-code".oauth]
+storage = "file"
+key = "oauth/kimi-code"
+"#,
+                )
+                .unwrap();
+                fs::create_dir_all(self.home.join("credentials")).unwrap();
+                fs::write(
+                    self.home.join("credentials/kimi-code.json"),
+                    auth.to_string(),
+                )
+                .unwrap();
+                return;
+            }
             let claims = URL_SAFE_NO_PAD.encode(
                 serde_json::to_vec(&json!({
                     "sub": user, "https://api.openai.com/auth": {
@@ -321,12 +418,16 @@ mod tests {
         }
 
         fn path(&self) -> PathBuf {
-            PersistedQuota::path(self.directory.path())
+            PersistedQuota::path(self.directory.path(), self.def).unwrap()
         }
 
-        fn disk(&self) -> PersistedQuota {
-            PersistedQuota::for_profile(self.path(), self.home.clone(), self.workspace.clone())
-                .unwrap()
+        fn disk(&self) -> Option<PersistedQuota> {
+            PersistedQuota::for_profile(
+                Some(self.path()),
+                self.def,
+                self.home.clone(),
+                self.workspace.clone(),
+            )
         }
 
         async fn read(
@@ -335,24 +436,28 @@ mod tests {
             mode: AccountSnapshotMode,
             probe: impl FnOnce() -> Result<ProbeReading, String>,
         ) -> (Option<Value>, bool) {
-            let def = get_agent_def("codex").unwrap();
-            let env = [("CODEX_HOME".into(), self.home.clone().into_os_string())].into();
+            let home_key = match self.def.id {
+                "grok" => "GROK_HOME",
+                "kimi" => "KIMI_CODE_HOME",
+                _ => "CODEX_HOME",
+            };
+            let env = [(home_key.into(), self.home.clone().into_os_string())].into();
             let identity = LaunchIdentity::from_environment(
-                def,
-                Path::new("codex-fixture"),
+                self.def,
+                Path::new("cli-fixture"),
                 Some(0),
                 None,
                 &env,
             );
             cache
                 .read(
-                    def.id,
+                    self.def.id,
                     (identity, self.workspace.clone()),
                     mode,
                     Instant::now(),
                     || Ok(()),
                     || ready(probe()),
-                    Some(&self.disk()),
+                    self.disk().as_ref(),
                 )
                 .await
                 .unwrap()
@@ -373,7 +478,7 @@ mod tests {
 
     #[tokio::test]
     async fn reopens_quota_and_plan_before_refresh() {
-        let profile = Profile::new();
+        let profile = Profile::new("codex");
         let first = AccountSnapshots::default();
         assert!(
             profile
@@ -421,7 +526,7 @@ mod tests {
         let mut legacy: Value = serde_json::from_str(&content).unwrap();
         legacy.as_object_mut().unwrap().remove("plan");
         fs::write(profile.path(), legacy.to_string()).unwrap();
-        let legacy = profile.disk().restore().unwrap();
+        let legacy = profile.disk().unwrap().restore().unwrap();
         assert_eq!(legacy["windows"], restored["windows"]);
         assert!(legacy["account"].is_null());
 
@@ -434,7 +539,7 @@ mod tests {
 
     #[tokio::test]
     async fn changed_account_and_corrupt_file_cannot_restore_quota() {
-        let profile = Profile::new();
+        let profile = Profile::new("codex");
         profile
             .read(
                 &AccountSnapshots::default(),
@@ -481,11 +586,94 @@ mod tests {
             "cli_auth_credentials_store = 'auto'",
         )
         .unwrap();
-        assert!(PersistedQuota::for_profile(
-            profile.path(),
-            profile.home.clone(),
-            profile.workspace.clone()
-        )
-        .is_none());
+        assert!(profile.disk().is_none());
+    }
+
+    #[tokio::test]
+    async fn grok_and_kimi_reopen_the_owned_reading_and_hide_it_after_a_login_change() {
+        for (agent, kind, plan, credential) in [
+            ("grok", "grok", "SuperGrok", "auth.json"),
+            ("kimi", "kimiCode", "Andante", "credentials/kimi-code.json"),
+        ] {
+            let profile = Profile::new(agent);
+            let quota = || {
+                let mut reading = reported();
+                reading.snapshot["agentId"] = json!(agent);
+                reading.snapshot["account"]["type"] = json!(kind);
+                reading.snapshot["account"]["plan"] = json!(plan);
+                reading
+            };
+            let first = AccountSnapshots::default();
+            assert!(
+                profile
+                    .read(&first, AccountSnapshotMode::Automatic, || Ok(quota()))
+                    .await
+                    .1
+            );
+            let content = fs::read_to_string(profile.path()).unwrap();
+            for private in [
+                "profile-user-one",
+                "workspace-fixture",
+                "fixture-token-one",
+                "user@example.test",
+                "balance",
+            ] {
+                assert!(!content.contains(private));
+            }
+            if agent == "grok" {
+                profile.login("profile-user-one", "rotated");
+            }
+            let restarted = AccountSnapshots::default();
+            let (restored, updated) = profile
+                .read(&restarted, AccountSnapshotMode::Cached, || {
+                    panic!("cached read must not launch a quota probe")
+                })
+                .await;
+            assert!(!updated);
+            let restored = restored.unwrap();
+            assert_eq!(restored["agentId"], agent);
+            assert_eq!(restored["account"]["plan"], plan);
+            assert_eq!(restored["windows"][0]["usedPercent"], 51.0);
+            let (stale, _) = profile
+                .read(
+                    &AccountSnapshots::default(),
+                    AccountSnapshotMode::Automatic,
+                    || Err("temporary error".into()),
+                )
+                .await;
+            let stale = stale.unwrap();
+            assert_eq!(stale["refreshError"], "temporary error");
+            assert_eq!(stale["windows"], restored["windows"]);
+
+            let raced = profile
+                .read(&restarted, AccountSnapshotMode::Refresh, || {
+                    profile.login("different-user", "switched-token");
+                    Ok(quota())
+                })
+                .await;
+            assert_eq!(raced, (None, false));
+            assert_eq!(fs::read_to_string(profile.path()).unwrap(), content);
+            assert_eq!(
+                profile
+                    .read(&restarted, AccountSnapshotMode::Cached, || panic!(
+                        "no probe"
+                    ))
+                    .await,
+                (None, false)
+            );
+
+            profile
+                .read(&restarted, AccountSnapshotMode::Refresh, || Ok(quota()))
+                .await;
+            fs::remove_file(profile.home.join(credential)).unwrap();
+            assert_eq!(
+                profile
+                    .read(&restarted, AccountSnapshotMode::Cached, || panic!(
+                        "no probe"
+                    ))
+                    .await,
+                (None, false)
+            );
+        }
     }
 }

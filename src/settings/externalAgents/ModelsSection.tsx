@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import {
   externalCliSettingsApi,
-  type DetectedExternalAgent,
+  type ExternalAgentModels,
 } from '../../api/externalCliSettings'
 import { isConcreteCliModel } from '../../api/cliModelId'
 import type { ExternalCliAgentConfig } from '../../api/tauri'
@@ -15,7 +15,7 @@ import { Section } from './shared'
 const FILTER_THRESHOLD = 8
 
 type CustomModel = NonNullable<ExternalCliAgentConfig['customModels']>[number]
-type ProbedModel = DetectedExternalAgent['models'][number]
+type ProbedModel = ExternalAgentModels['models'][number]
 
 function contextLabel(model: ProbedModel): string | null {
   const tokens = model.contextWindowTokens ?? model.context_window_tokens
@@ -40,7 +40,7 @@ export function ModelsSection({
   onChange: (models: CustomModel[]) => void
 }) {
   const t = i18n[lang]
-  const [probed, setProbed] = useState<ProbedModel[]>([])
+  const [catalog, setCatalog] = useState<{ agentId: string; models: ProbedModel[] } | null>(null)
   const [query, setQuery] = useState('')
   const [newId, setNewId] = useState('')
   const [newLabel, setNewLabel] = useState('')
@@ -48,13 +48,14 @@ export function ModelsSection({
 
   useEffect(() => {
     let cancelled = false
+    const applyCatalog = ({ models }: ExternalAgentModels) => {
+      if (!cancelled) setCatalog({ agentId, models })
+    }
     void externalCliSettingsApi
-      .detectExternalAgentModels(agentId, null, false)
-      .then(({ models }) => {
-        if (!cancelled) setProbed(models)
-      })
+      .detectExternalAgentModels(agentId, null, false, applyCatalog)
+      .then(applyCatalog)
       .catch(() => {
-        // 探测失败时这里就只剩自定义模型；失败原因在聊天里选模型时会报。
+        // 保留已有快照和自定义模型；失败原因在聊天里选模型时会报。
       })
     return () => {
       cancelled = true
@@ -63,6 +64,7 @@ export function ModelsSection({
 
   const custom = customModels.filter((model) => model.id.trim())
   const customIds = new Set(custom.map((model) => model.id))
+  const probed = catalog?.agentId === agentId ? catalog.models : []
   const builtIn = probed.filter((model) => !customIds.has(model.id))
   const total = builtIn.length + custom.length
   const needle = query.trim().toLowerCase()

@@ -1,10 +1,9 @@
 import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 import { ErrorNotice } from '../../components/AppNotice'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { listen } from '@tauri-apps/api/event'
 import { ArrowLeft, ChevronRight, ExternalLink, GitBranch, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import { api, isTauriRuntime } from '../../api/tauri'
-import { MARKET_CHANGED_EVENT, type Marketplace, type MarketplacePlugin, type MarketPlugin } from '../../api/market'
+import type { Marketplace, MarketplacePlugin, MarketPlugin } from '../../api/market'
 import type { PluginPackage } from '../../api/pluginPackages'
 import { Button, IconButton } from '../../components/Button'
 import { confirmDialog } from '../../components/dialogQueue'
@@ -18,7 +17,7 @@ import { MarketplaceDialog } from './MarketplaceDialog'
 import { claudeMarketplaceIcon, marketDetailHash, marketHash, marketPluginIdFromHash, pluginAction } from './marketModel'
 import { PluginContents } from './PluginContents'
 import {
-  discardMarketInventoryReads,
+  ensureMarketInventory,
   entryKey,
   marketWindow,
   packageKey,
@@ -114,21 +113,10 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
   }, [])
 
   useEffect(() => {
-    void refreshMarketInventory()
+    ensureMarketInventory()
     if (!isTauriRuntime()) return
-    let disposed = false
-    let unlisten: (() => void) | undefined
-    void listen(MARKET_CHANGED_EVENT, () => { if (!disposed) void refreshMarketInventory() })
-      .then((fn) => { if (disposed) fn(); else unlisten = fn })
-      .catch(() => { /* 窗口聚焦时仍会刷新 */ })
-    const onFocus = () => { if (!disposed) void refreshMarketInventory() }
-    window.addEventListener('focus', onFocus)
-    return () => {
-      disposed = true
-      discardMarketInventoryReads()
-      unlisten?.()
-      window.removeEventListener('focus', onFocus)
-    }
+    window.addEventListener('focus', ensureMarketInventory)
+    return () => window.removeEventListener('focus', ensureMarketInventory)
   }, [])
 
   useEffect(() => {

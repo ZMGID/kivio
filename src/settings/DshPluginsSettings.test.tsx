@@ -1,7 +1,7 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { externalCliSettingsApi, type DshPluginSettingsSnapshot } from '../api/externalCliSettings'
+import { externalCliSettingsApi, type DshPluginEntry, type DshPluginSettingsSnapshot } from '../api/externalCliSettings'
 import { DshPluginsSettings } from './DshPluginsSettings'
 import { dshPluginShortName } from './dshPluginNames'
 
@@ -58,12 +58,11 @@ describe('DshPluginsSettings', () => {
     ])
   })
 
-  it('renders official config cards and saves a shell override', async () => {
+  it('refreshes the visible plugin list after a pending shell override saves', async () => {
     const user = userEvent.setup()
-    vi.mocked(externalCliSettingsApi.dshPluginSettingsSave).mockResolvedValue({
-      ...snapshot,
-      shell: { ...snapshot.shell, timeoutMs: 45000 },
-    })
+    let finishSave: (result: DshPluginSettingsSnapshot) => void = () => {}
+    vi.mocked(externalCliSettingsApi.dshPluginSettingsSave)
+      .mockImplementation(() => new Promise(resolve => { finishSave = resolve }))
     render(<DshPluginsSettings lang="zh" />)
     await waitFor(() => expect(screen.getByText('终端')).toBeInTheDocument())
     expect(screen.getByText('Agent 循环')).toBeInTheDocument()
@@ -71,6 +70,9 @@ describe('DshPluginsSettings', () => {
     expect(screen.getByText('已覆盖')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '恢复默认' })).toBeInTheDocument()
 
+    await user.click(screen.getByRole('tab', { name: '插件列表' }))
+    expect(await screen.findByText('timer')).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: '插件配置' }))
     const timeout = await screen.findByRole('textbox', { name: '命令超时（毫秒）' })
     await user.clear(timeout)
     await user.type(timeout, '45000')
@@ -81,9 +83,26 @@ describe('DshPluginsSettings', () => {
         shell: { timeoutMs: 45000, maxOutputBytes: null },
       }),
     )
+
+    await user.click(screen.getByRole('tab', { name: '插件列表' }))
+    expect(await screen.findByText('timer')).toBeInTheDocument()
+
+    let finishOldInventory: (entries: DshPluginEntry[]) => void = () => {}
+    vi.mocked(externalCliSettingsApi.dshPluginInventory).mockImplementationOnce(
+      () => new Promise(resolve => { finishOldInventory = resolve }),
+    )
+    await user.click(screen.getByRole('button', { name: '重试' }))
+    vi.mocked(externalCliSettingsApi.dshPluginInventory).mockResolvedValue([
+      { id: 'updated', moduleName: '@deepseek-ai/dsh-updated', enabled: true },
+    ])
+    await act(async () => finishSave({ ...snapshot, shell: { ...snapshot.shell, timeoutMs: 45000 } }))
+    expect(await screen.findByText('updated')).toBeInTheDocument()
+    await act(async () => finishOldInventory([{ id: 'timer', moduleName: '@deepseek-ai/dsh-timer', enabled: true }]))
+    expect(screen.getByText('updated')).toBeInTheDocument()
+    expect(screen.queryByText('timer')).not.toBeInTheDocument()
   })
 
-  it('lists composed plugins and filters by search', async () => {
+  it('filters composed plugins, reuses them across tabs, and refreshes on request', async () => {
     render(<DshPluginsSettings lang="zh" />)
     fireEvent.click(screen.getByRole('tab', { name: '插件列表' }))
     await waitFor(() => expect(screen.getByText('timer')).toBeInTheDocument())
@@ -95,6 +114,26 @@ describe('DshPluginsSettings', () => {
     expect(screen.queryByText('timer')).not.toBeInTheDocument()
     expect(screen.getByText('tool-bash')).toBeInTheDocument()
     expect(screen.getByText('1')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: '插件配置' }))
+    fireEvent.click(screen.getByRole('tab', { name: '插件列表' }))
+    expect(screen.getByText('timer')).toBeInTheDocument()
+    expect(externalCliSettingsApi.dshPluginInventory).toHaveBeenCalledTimes(1)
+
+    let rejectRefresh: (reason: string) => void = () => {}
+    vi.mocked(externalCliSettingsApi.dshPluginInventory)
+      .mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRefresh = reject }))
+      .mockResolvedValueOnce([])
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(screen.getByText('timer')).toBeInTheDocument()
+    await act(async () => rejectRefresh('dsh 读取超时'))
+    expect(screen.getByRole('alert')).toHaveTextContent('暂时无法读取插件。')
+    expect(screen.getByText('dsh 读取超时')).toBeInTheDocument()
+    expect(screen.getByText('timer')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByText('暂无插件。')).toBeInTheDocument()
+    expect(externalCliSettingsApi.dshPluginInventory).toHaveBeenCalledTimes(3)
   })
 
   it('surfaces the inventory error detail instead of swallowing it', async () => {

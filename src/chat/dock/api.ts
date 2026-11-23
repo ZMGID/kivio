@@ -62,6 +62,11 @@ const MOCK_MUTATION: GitMutationResult = {
   message: 'Dock requires the desktop app',
 }
 
+// A full object ID identifies immutable content. Symbolic refs and worktree diffs always go to Git.
+const commitDiffs = new Map<string, Promise<GitDiffResult>>()
+const MAX_COMMIT_DIFFS = 24
+const MAX_DIFF_CHARS = 384 * 1024
+
 export const dockApi = {
   async projectIcon(workdir: string): Promise<string | null> {
     if (!isTauriRuntime()) return null
@@ -205,8 +210,29 @@ export const dockApi = {
 
   async gitCommitDiff(workdir: string, commit: string, path?: string): Promise<GitDiffResult> {
     if (!isTauriRuntime()) return MOCK_EMPTY_DIFF
-    const raw = await invoke('dock_git_commit_diff', { workdir, commit, path: path ?? null })
-    return normalizeGitDiffResult(raw)
+    const read = () => invoke('dock_git_commit_diff', { workdir, commit, path: path ?? null }).then(normalizeGitDiffResult)
+    if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit)) return read()
+
+    const key = JSON.stringify([workdir, commit, path])
+    const hit = commitDiffs.get(key)
+    if (hit) {
+      commitDiffs.delete(key)
+      commitDiffs.set(key, hit)
+      return hit
+    }
+    const request = read().then(diff => {
+      // Include the file list and stats, which can be large even when the patch was truncated.
+      if (commitDiffs.get(key) === request && (diff.patch.length > MAX_DIFF_CHARS || JSON.stringify(diff).length > MAX_DIFF_CHARS)) {
+        commitDiffs.delete(key)
+      }
+      return diff
+    }, error => {
+      if (commitDiffs.get(key) === request) commitDiffs.delete(key)
+      throw error
+    })
+    if (commitDiffs.size >= MAX_COMMIT_DIFFS) commitDiffs.delete(commitDiffs.keys().next().value!)
+    commitDiffs.set(key, request)
+    return request
   },
 
   async gitBranches(workdir: string): Promise<GitBranchesResult> {

@@ -4,32 +4,67 @@ import { api, type ModelProvider, type ProviderOAuthUsage } from '../api/tauri'
 import { Button } from '../components/Button'
 import type { Lang } from '../components/i18n'
 
-export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider; lang: Lang }) {
+type UsageCardProps = { provider: ModelProvider; lang: Lang }
+
+const USAGE_FRESHNESS_MS = 60_000
+const USAGE_CACHE_LIMIT = 32
+const usageByAccount = new Map<string, { data: ProviderOAuthUsage; expiresAt: number }>()
+const pendingUsage = new Map<string, Promise<ProviderOAuthUsage>>()
+
+function fetchUsage({ provider, usageKey }: { provider: ModelProvider; usageKey: string }) {
+  const pending = pendingUsage.get(usageKey)
+  if (pending) return pending
+  const result = api.providerOAuthUsage(provider).then(data => {
+    usageByAccount.delete(usageKey)
+    usageByAccount.set(usageKey, { data, expiresAt: Date.now() + USAGE_FRESHNESS_MS })
+    if (usageByAccount.size > USAGE_CACHE_LIMIT) {
+      const oldest = usageByAccount.keys().next()
+      if (!oldest.done) usageByAccount.delete(oldest.value)
+    }
+    return data
+  }).finally(() => {
+    pendingUsage.delete(usageKey)
+  })
+  pendingUsage.set(usageKey, result)
+  return result
+}
+
+export function ProviderUsageCard({ provider, lang }: UsageCardProps) {
   const auth = provider.request.oauth
   const supported = auth?.provider === 'kimi' || auth?.provider === 'codex' || auth?.provider === 'antigravity'
-  const [data, setData] = useState<ProviderOAuthUsage | null>(null)
-  const [error, setError] = useState(false)
-  const [busy, setBusy] = useState(false)
+  if (!supported || !auth.credentialId) return null
+
+  const usageKey = JSON.stringify([
+    auth.provider, auth.credentialId, provider.baseUrl, provider.apiFormat, provider.request.useSystemProxy,
+  ])
+  return <AccountUsageCard key={usageKey} usageKey={usageKey} provider={provider} lang={lang} />
+}
+
+function AccountUsageCard({ usageKey, provider, lang }: UsageCardProps & { usageKey: string }) {
+  const [data, setData] = useState(() => usageByAccount.get(usageKey)?.data)
+  const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle')
   const [refresh, setRefresh] = useState(0)
   const current = useRef(provider)
   current.current = provider
   const zh = lang === 'zh'
   useEffect(() => {
-    setData(null); setError(false)
-    if (!supported || !auth?.credentialId) { setBusy(false); return }
+    const cached = usageByAccount.get(usageKey)
+    if (cached) setData(cached.data)
+    if (!refresh && cached && cached.expiresAt > Date.now() && !pendingUsage.has(usageKey)) return
+
     let cancelled = false
-    setBusy(true)
-    api.providerOAuthUsage(current.current).then(result => {
-      if (!cancelled) setData(result)
+    setStatus('loading')
+    void fetchUsage({ provider: current.current, usageKey }).then(result => {
+      if (cancelled) return
+      setData(result)
+      setStatus('idle')
     }).catch(() => {
-      if (!cancelled) setError(true)
-    }).finally(() => {
-      if (!cancelled) setBusy(false)
+      if (!cancelled) setStatus('error')
     })
     return () => { cancelled = true }
-  }, [provider.id, auth?.provider, auth?.credentialId, provider.baseUrl, provider.apiFormat, provider.request.useSystemProxy, supported, refresh])
+  }, [usageKey, refresh])
 
-  if (!supported || !auth?.credentialId) return null
+  const busy = status === 'loading'
   const label = (value: string) => zh ? ({ Weekly: '每周额度', Session: '会话额度' }[value] ?? value.replace('Code review · ', '代码审查 · ').replace(/^(\d+)h$/, '$1 小时额度')) : value
   return <section aria-label={zh ? '账户用量' : 'Account usage'} className="kv-provider-usage">
     <div className="flex items-center justify-between gap-3">
@@ -42,9 +77,9 @@ export function ProviderUsageCard({ provider, lang }: { provider: ModelProvider;
       </Button>
     </div>
     {busy && <p className="mt-3 text-xs opacity-60" role="status">{zh ? '正在获取账户额度…' : 'Fetching account limits…'}</p>}
-    {error && <p className="mt-3 text-xs text-[var(--danger)]" role="alert">{zh ? '暂时无法获取用量，请检查网络或授权后重试。' : 'Could not fetch usage. Check your connection or authorization and retry.'}</p>}
+    {status === 'error' && <p className="mt-3 text-xs text-[var(--danger)]" role="alert">{zh ? '暂时无法获取用量，请检查网络或授权后重试。' : 'Could not fetch usage. Check your connection or authorization and retry.'}</p>}
     {data && data.windows.length === 0 && <p className="mt-3 text-xs opacity-60">{zh ? '供应商暂未返回额度数据' : 'No quota data returned by the provider'}</p>}
-    {auth?.provider === 'antigravity' && data && data.windows.length > 0 && <p className="mt-2 text-xs opacity-60">{zh ? '显示接口返回的额度组；部分账号可能不提供完整周额度。' : 'Reported quota groups; full weekly limits may not be available for every account.'}</p>}
+    {provider.request.oauth?.provider === 'antigravity' && data && data.windows.length > 0 && <p className="mt-2 text-xs opacity-60">{zh ? '显示接口返回的额度组；部分账号可能不提供完整周额度。' : 'Reported quota groups; full weekly limits may not be available for every account.'}</p>}
     {data?.windows.map((window, i) => {
       const remaining = window.usedPercent === null ? null : Math.max(0, Math.min(100, 100 - window.usedPercent))
       return <div key={`${window.label}-${i}`} className="mt-3">

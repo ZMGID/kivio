@@ -94,14 +94,25 @@ it('renders a newer shared snapshot without requesting another probe', async () 
   await act(async () => listener('event-cli'))
   expect(get).toHaveBeenLastCalledWith('event-cli', 'c1', 'cached')
   expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 60%')
+
+  // The desktop no longer has a reading for this identity, for example after logout.
+  get.mockResolvedValueOnce(null).mockResolvedValueOnce({ ...reading, windows: [], unavailable: 'Sign-in required' })
+  await act(async () => listener('event-cli'))
+  expect(screen.queryByRole('button', { name: 'CLI 账号与额度' })).toBeNull()
+  expect(get).toHaveBeenLastCalledWith('event-cli', 'c1', 'automatic')
 })
 
-it('joins an account request already in flight when another entry point refreshes it', async () => {
+it('shows the saved global account and shares its in-flight refresh across entry points', async () => {
   let reply!: (value: Account) => void
-  get.mockReturnValueOnce(new Promise<Account>(resolve => { reply = resolve }))
   const id = 'maintenance-cli'
+  get.mockImplementation(async (_, __, mode) => mode === 'cached' ? {
+    agentId: id, account: { email: null, type: null, plan: 'Pro 20×' }, credits: null, unavailable: null, checkedAt: 122,
+    windows: [{ name: 'five_hour', usedPercent: 40, resetsAt: null, windowDurationMins: 300 }], nextRefreshAt: 0,
+  } : new Promise<Account>(resolve => { reply = resolve }))
   render(<ExternalCliAccount agent={{ id, name: 'Maintenance CLI', capabilities }} />)
   await waitFor(() => expect(get).toHaveBeenCalledWith(id, null, 'automatic'))
+  fireEvent.click(await screen.findByRole('button', { name: 'CLI 账号与额度' }))
+  expect(screen.getByText('Pro 20×')).toBeVisible()
 
   await act(async () => {
     const refreshed = refreshCliAccount(id)
@@ -112,6 +123,6 @@ it('joins an account request already in flight when another entry point refreshe
     await refreshed
   })
 
-  expect(get).toHaveBeenCalledTimes(1)
+  expect(get.mock.calls.map(([, , mode]) => mode)).toEqual(['cached', 'automatic'])
   expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 80%')
 })

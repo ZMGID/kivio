@@ -138,7 +138,8 @@ describe('market window lifetime', () => {
     vi.mocked(packageApi.import).mockResolvedValue(pluginPackage)
     render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
     await screen.findByRole('button', { name: '安装' })
-    fireEvent(window, new Event('focus'))
+    const [event, changed] = vi.mocked(listen).mock.calls.at(-1)!
+    act(() => changed({ event, id: 1, payload: null }))
     await waitFor(() => expect(packageApi.list).toHaveBeenCalledTimes(2))
     expect(vi.mocked(packageApi.list).mock.results[1]?.value).toBe(packages.promise)
     fireEvent.click(screen.getByRole('button', { name: '添加' }))

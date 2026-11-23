@@ -19,6 +19,7 @@ import {
   type UsageGroupStats,
   type UsageRange,
   type UsageRecord,
+  type UsageScanReport,
   type UsageStatsResponse,
   type UsageSummary,
   type UsageTrendPoint,
@@ -29,6 +30,7 @@ import { ModelIcon, ProviderIcon } from '../components/ModelIcon'
 import { SearchInput, Select } from './components'
 import { confirmDialog } from '../components/dialogQueue'
 import { useDocumentDark } from '../theme/useDocumentDark'
+import { isCurrentUsageStats, usageStatsCache } from './usageStatsCache'
 
 type UsageView = 'logs' | 'providers' | 'models'
 type UsageMetric = 'cost' | 'tokens'
@@ -1078,46 +1080,53 @@ export function UsageStatsPanel({ lang, view, providers, providerIcons }: UsageS
   const [debouncedModelSearch, setDebouncedModelSearch] = useState('')
   const [filtersOpen, setFiltersOpen] = useState(view === 'calls')
   const [logPageIndex, setLogPageIndex] = useState(0)
-  const [stats, setStats] = useState<UsageStatsResponse | null>(null)
+  const query = useMemo(() => ({
+    range,
+    source,
+    status,
+    providerSearch: debouncedProviderSearch,
+    modelSearch: debouncedModelSearch,
+    limit: LOG_PAGE_SIZE,
+    offset: logPageIndex * LOG_PAGE_SIZE,
+  }), [debouncedModelSearch, debouncedProviderSearch, logPageIndex, range, source, status])
+  const [stats, setStats] = useState(() => usageStatsCache.peek(query))
   const [metric, setMetric] = useState<UsageMetric>('cost')
   const [syncing, setSyncing] = useState(false)
-  const [scan, setScan] = useState<Awaited<ReturnType<typeof api.usageSyncCli>> | null>(null)
+  const [scan, setScan] = useState<UsageScanReport | null>(() => usageStatsCache.lastScan)
   const [loading, setLoading] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [error, setError] = useState('')
   const [hoverSource, setHoverSource] = useState<string | null>(null)
 
   const statsGeneration = useRef(0)
-  const loadStats = useCallback(async () => {
+  const statsRequest = useRef<Promise<UsageStatsResponse> | null>(null)
+  const loadStats = useCallback(async (fresh = false) => {
     const generation = ++statsGeneration.current
     setLoading(true)
     setError('')
     try {
-      const data = await api.usageGetStats({
-        range,
-        source,
-        status,
-        providerSearch: debouncedProviderSearch,
-        modelSearch: debouncedModelSearch,
-        limit: LOG_PAGE_SIZE,
-        offset: logPageIndex * LOG_PAGE_SIZE,
-      })
+      const request = usageStatsCache.load(query, fresh)
+      statsRequest.current = request
+      const data = await request
       if (generation === statsGeneration.current) setStats(data)
     } catch (err) {
       if (generation === statsGeneration.current) setError(err instanceof Error ? err.message : String(err))
     } finally {
       if (generation === statsGeneration.current) setLoading(false)
     }
-  }, [debouncedModelSearch, debouncedProviderSearch, logPageIndex, range, source, status])
+  }, [query])
 
   useEffect(() => {
+    const nextProviderSearch = providerSearch.trim()
+    const nextModelSearch = modelSearch.trim()
+    if (nextProviderSearch === debouncedProviderSearch && nextModelSearch === debouncedModelSearch) return
     const timer = window.setTimeout(() => {
       setLogPageIndex(0)
-      setDebouncedProviderSearch(providerSearch.trim())
-      setDebouncedModelSearch(modelSearch.trim())
+      setDebouncedProviderSearch(nextProviderSearch)
+      setDebouncedModelSearch(nextModelSearch)
     }, SEARCH_DEBOUNCE_MS)
     return () => window.clearTimeout(timer)
-  }, [modelSearch, providerSearch])
+  }, [debouncedModelSearch, debouncedProviderSearch, modelSearch, providerSearch])
 
   useEffect(() => {
     void loadStats()
@@ -1126,26 +1135,32 @@ export function UsageStatsPanel({ lang, view, providers, providerIcons }: UsageS
 
   const loadStatsRef = useRef(loadStats)
   useEffect(() => { loadStatsRef.current = loadStats }, [loadStats])
-  const refresh = useCallback(async () => {
+  const syncStats = useCallback(async (force: boolean, isCurrent: () => boolean = () => true) => {
     setSyncing(true)
+    setError('')
     try {
-      setScan(await api.usageSyncCli(true))
-      await loadStatsRef.current()
+      const result = await usageStatsCache.sync(force)
+      if (!isCurrent()) return
+      setScan(result)
+      const pending = statsRequest.current
+      const displayed = await pending?.catch(() => null)
+      if (isCurrent() && pending === statsRequest.current && (
+        !displayed || displayed.revision < result.revision || !isCurrentUsageStats(displayed)
+      )) {
+        await loadStatsRef.current(true)
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally { setSyncing(false) }
+      if (isCurrent()) setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (isCurrent()) setSyncing(false)
+    }
   }, [])
   useEffect(() => {
     if (view !== 'app') { setSyncing(false); return }
-    let cancelled = false
-    setSyncing(true)
-    void api.usageSyncCli().then(async result => {
-      if (!cancelled) { setScan(result); await loadStatsRef.current() }
-    }).catch(err => {
-      if (!cancelled) setError(err instanceof Error ? err.message : String(err))
-    }).finally(() => { if (!cancelled) setSyncing(false) })
-    return () => { cancelled = true }
-  }, [view])
+    let active = true
+    void syncStats(false, () => active)
+    return () => { active = false }
+  }, [syncStats, view])
 
   const clearStats = useCallback(async () => {
     const ok = await confirmDialog({
@@ -1158,14 +1173,15 @@ export function UsageStatsPanel({ lang, view, providers, providerIcons }: UsageS
     setError('')
     try {
       await api.usageClear()
+      usageStatsCache.clear()
       setScan(null)
-      await loadStats()
+      await loadStatsRef.current(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setClearing(false)
     }
-  }, [lang, loadStats])
+  }, [lang])
 
   const summary = stats?.summary
   const totalLogs = stats?.totalLogs ?? 0
@@ -1258,7 +1274,7 @@ export function UsageStatsPanel({ lang, view, providers, providerIcons }: UsageS
               <span className="pointer-events-none absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--accent)]" aria-hidden="true" />
             )}
           </span>
-          <IconButton variant="ghost" label={zh ? '刷新' : 'Refresh'} onClick={() => void refresh()} disabled={busy} data-tauri-drag-region="false">
+          <IconButton variant="ghost" label={zh ? '刷新' : 'Refresh'} onClick={() => void syncStats(true)} disabled={busy} data-tauri-drag-region="false">
             <RefreshCw size={14} className={busy ? 'animate-spin' : ''} />
           </IconButton>
           <IconButton variant="danger" label={zh ? '清空' : 'Clear'} onClick={() => void clearStats()} disabled={clearing || busy} data-tauri-drag-region="false">

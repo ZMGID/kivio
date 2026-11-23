@@ -3,6 +3,7 @@ use rusqlite::{
     params, params_from_iter, types::Value, Connection, OptionalExtension, TransactionBehavior,
 };
 use std::io::{BufRead, BufReader};
+use std::sync::Mutex;
 
 fn unsigned<T: TryFrom<i64>>(value: i64) -> rusqlite::Result<T> {
     T::try_from(value).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(0, value))
@@ -257,10 +258,10 @@ fn summary_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageSummary> {
     })
 }
 
-fn filters(query: &UsageStatsQuery) -> (String, Vec<Value>) {
+fn filters(query: &UsageStatsQuery, start: Option<i64>) -> (String, Vec<Value>) {
     let mut clauses = Vec::new();
     let mut values = Vec::new();
-    if let Some(start) = range_start(&query.range) {
+    if let Some(start) = start {
         clauses.push("created_at >= ?");
         values.push(Value::Integer(start));
     }
@@ -366,11 +367,12 @@ fn trend(
     filter: &str,
     values: &[Value],
     range: &str,
+    now: &chrono::DateTime<Local>,
 ) -> Result<Vec<UsageTrendPoint>, String> {
     let hourly = matches!(range, "today" | "1d");
     let format = if hourly { "%Y-%m-%d %H" } else { "%Y-%m-%d" };
     let label = if hourly { "%H:00" } else { "%m/%d" };
-    let mut points: BTreeMap<_, _> = empty_trend(range)
+    let mut points: BTreeMap<_, _> = empty_trend(range, now)
         .into_iter()
         .map(|p| (p.date.clone(), p))
         .collect();
@@ -422,6 +424,51 @@ fn trend(
 #[derive(Default)]
 pub(crate) struct UsageLedger {
     pub(super) price_refresh: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<String>>,
+    stats_reader: Mutex<Option<StatsReader>>,
+}
+
+struct StatsReader {
+    dir: PathBuf,
+    db: Connection,
+    cached: Option<CachedStats>,
+}
+
+struct CachedStats {
+    query: UsageStatsQuery,
+    page: (usize, i64),
+    response: UsageStatsResponse,
+}
+
+fn read_revision(db: &Connection) -> Result<i64, String> {
+    db.query_row("PRAGMA data_version", [], |row| row.get(0))
+        .map_err(db_error)
+}
+
+fn valid_until(
+    range: &str,
+    now: &chrono::DateTime<Local>,
+    start: Option<i64>,
+    first_record: Option<i64>,
+) -> i64 {
+    let seconds_since_bucket = if matches!(range, "today" | "1d") {
+        now.minute() * 60 + now.second()
+    } else {
+        now.num_seconds_from_midnight()
+    };
+    let bucket_seconds = if matches!(range, "today" | "1d") {
+        3600
+    } else {
+        86_400
+    };
+    let next_bucket = now.timestamp() + i64::from(bucket_seconds - seconds_since_bucket);
+    match (range, start, first_record) {
+        ("today", _, _) | (_, None, _) | (_, _, None) => next_bucket,
+        (_, Some(start), Some(first_record)) => next_bucket.min(
+            first_record
+                .saturating_add(now.timestamp() - start)
+                .saturating_add(1),
+        ),
+    }
 }
 
 impl UsageLedger {
@@ -434,39 +481,30 @@ impl UsageLedger {
         dir: &Path,
         query: UsageStatsQuery,
     ) -> Result<UsageStatsResponse, String> {
-        let mut db = open(dir)?;
-        let tx = db.transaction().map_err(db_error)?;
-        let (filter, mut values) = filters(&query);
-        let summary = summary(&tx, &filter, &values)?;
-        let trend = trend(&tx, &filter, &values, &query.range)?;
-        let provider_stats = groups(&tx, &filter, &values, false)?;
-        let model_stats = groups(&tx, &filter, &values, true)?;
-        let skipped_records = skipped(&tx)?;
-        values.push(Value::Integer(
-            query.limit.unwrap_or(DEFAULT_LOG_LIMIT).min(MAX_LOG_LIMIT) as i64,
-        ));
-        values.push(Value::Integer(
-            i64::try_from(query.offset.unwrap_or(0)).unwrap_or(i64::MAX),
-        ));
-        let mut stmt = tx
-            .prepare(&format!(
-                "SELECT * FROM records{filter} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
-            ))
-            .map_err(db_error)?;
-        let logs = stmt
-            .query_map(params_from_iter(&values), read_record)
-            .map_err(db_error)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(db_error)?;
-        Ok(UsageStatsResponse {
-            total_logs: summary.total_requests as usize,
-            summary,
-            trend,
-            provider_stats,
-            model_stats,
-            logs,
-            skipped_records,
-        })
+        self.with_stats_reader(dir, |reader| reader.stats(query, Local::now()))
+    }
+
+    pub(super) fn stats_revision(&self, dir: &Path) -> Result<i64, String> {
+        self.with_stats_reader(dir, |reader| read_revision(&reader.db))
+    }
+
+    fn with_stats_reader<T>(
+        &self,
+        dir: &Path,
+        read: impl FnOnce(&mut StatsReader) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut slot = self.stats_reader.lock().map_err(db_error)?;
+        match slot.as_mut() {
+            Some(reader) if reader.dir == dir => read(reader),
+            _ => {
+                let reader = slot.insert(StatsReader {
+                    dir: dir.to_path_buf(),
+                    db: open(dir)?,
+                    cached: None,
+                });
+                read(reader)
+            }
+        }
     }
 
     pub(super) fn conversation_cost(
@@ -512,6 +550,89 @@ impl UsageLedger {
     }
 }
 
+impl StatsReader {
+    fn stats(
+        &mut self,
+        mut query: UsageStatsQuery,
+        now: chrono::DateTime<Local>,
+    ) -> Result<UsageStatsResponse, String> {
+        let limit = query
+            .limit
+            .take()
+            .unwrap_or(DEFAULT_LOG_LIMIT)
+            .min(MAX_LOG_LIMIT);
+        let offset = i64::try_from(query.offset.take().unwrap_or(0)).unwrap_or(i64::MAX);
+        let page = (limit, offset);
+        let tx = self.db.transaction().map_err(db_error)?;
+        // Read the version inside the transaction so it describes these exact rows.
+        let revision = read_revision(&tx)?;
+        let utc_offset = now.offset().local_minus_utc();
+        let cached = self.cached.as_mut().filter(|entry| {
+            entry.query == query
+                && entry.response.revision == revision
+                && entry.response.sampled_at <= now.timestamp()
+                && now.timestamp() < entry.response.valid_until
+                && entry.response.utc_offset == utc_offset
+        });
+        if let Some(entry) = &cached {
+            if entry.page == page {
+                return Ok(entry.response.clone());
+            }
+        }
+
+        let start = range_start_at(&query.range, &now);
+        let (filter, values) = filters(&query, start);
+        let logs = if limit == 0 {
+            Vec::new()
+        } else {
+            let mut parameters = values.clone();
+            parameters.extend([Value::Integer(limit as i64), Value::Integer(offset)]);
+            let mut stmt = tx
+                .prepare(&format!(
+                "SELECT * FROM records{filter} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+            ))
+                .map_err(db_error)?;
+            let rows = stmt
+                .query_map(params_from_iter(&parameters), read_record)
+                .map_err(db_error)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(db_error)?
+        };
+        if let Some(entry) = cached {
+            entry.page = page;
+            entry.response.logs = logs;
+            return Ok(entry.response.clone());
+        }
+
+        let (summary, first_record) = tx
+            .query_row(
+                &format!("SELECT {TOTALS}, min(created_at) FROM accounted{filter}"),
+                params_from_iter(&values),
+                |row| Ok((summary_row(row)?, row.get(14)?)),
+            )
+            .map_err(db_error)?;
+        let response = UsageStatsResponse {
+            revision,
+            sampled_at: now.timestamp(),
+            valid_until: valid_until(&query.range, &now, start, first_record),
+            utc_offset,
+            total_logs: summary.total_requests as usize,
+            summary,
+            trend: trend(&tx, &filter, &values, &query.range, &now)?,
+            provider_stats: groups(&tx, &filter, &values, false)?,
+            model_stats: groups(&tx, &filter, &values, true)?,
+            logs,
+            skipped_records: skipped(&tx)?,
+        };
+        self.cached = Some(CachedStats {
+            query,
+            page,
+            response: response.clone(),
+        });
+        Ok(response)
+    }
+}
+
 pub(super) fn today(dir: &Path) -> Result<TodayUsage, String> {
     let mut db = open(dir)?;
     let tx = db.transaction().map_err(db_error)?;
@@ -519,7 +640,8 @@ pub(super) fn today(dir: &Path) -> Result<TodayUsage, String> {
         range: "today".into(),
         ..Default::default()
     };
-    let (filter, values) = filters(&query);
+    let now = Local::now();
+    let (filter, values) = filters(&query, range_start_at("today", &now));
     let missing_cost_requests = tx
         .query_row(
             &format!("SELECT count(*) FROM (SELECT cost_usd FROM records{filter}) WHERE cost_usd IS NULL"),
@@ -528,7 +650,7 @@ pub(super) fn today(dir: &Path) -> Result<TodayUsage, String> {
         )
         .map_err(db_error)?;
     Ok(TodayUsage {
-        date: Local::now().date_naive(),
+        date: now.date_naive(),
         summary: summary(&tx, &filter, &values)?,
         missing_cost_requests,
         skipped_records: skipped(&tx)?,
@@ -599,4 +721,40 @@ pub(super) fn save_cli_file(
     )
     .map_err(db_error)?;
     tx.commit().map_err(db_error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rolling_stats_drop_expired_records_without_a_ledger_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut reader = StatsReader {
+            dir: dir.path().to_path_buf(),
+            db: open(dir.path()).unwrap(),
+            cached: None,
+        };
+        let now = Local.with_ymd_and_hms(2026, 11, 24, 12, 0, 0).unwrap();
+        let start = now.timestamp() - 86_400;
+        reader.db.execute(
+            "INSERT INTO records (id,created_at,completed_at,duration_ms,source,operation,provider_id,provider_name,model,api_format,status,usage_source,cost_source) VALUES ('old',?1,?1,0,'chat','test','p','P','model','openai_chat','success','missing','unavailable')",
+            [start],
+        ).unwrap();
+        let query = UsageStatsQuery {
+            range: "1d".into(),
+            ..UsageStatsQuery::default()
+        };
+        let included = reader.stats(query.clone(), now).unwrap();
+        assert_eq!(included.logs[0].id, "old");
+        assert_eq!(included.summary.total_requests, 1);
+
+        let expired = reader
+            .stats(query, now + ChronoDuration::seconds(1))
+            .unwrap();
+        assert_eq!(expired.revision, included.revision);
+        assert_eq!(expired.summary.total_requests, 0);
+        assert!(expired.logs.is_empty());
+        assert!(expired.trend.iter().all(|point| point.requests == 0));
+    }
 }

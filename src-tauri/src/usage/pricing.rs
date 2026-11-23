@@ -332,8 +332,8 @@ pub(super) fn reprice(
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
     for mut r in rows {
-        r.cost_usd = None;
-        r.cost_source = "unavailable".into();
+        let previous_cost = r.cost_usd.take();
+        let previous_source = std::mem::replace(&mut r.cost_source, "unavailable".into());
         if let Some(provider) = providers
             .iter()
             .find(|provider| provider.id == r.provider_id)
@@ -355,11 +355,13 @@ pub(super) fn reprice(
             r.cost_usd = Some(cost);
             r.cost_source = "litellm".into();
         }
-        tx.execute(
-            "UPDATE records SET cost_usd=?1,cost_source=?2 WHERE id=?3",
-            rusqlite::params![r.cost_usd, r.cost_source, r.id],
-        )
-        .map_err(|e| e.to_string())?;
+        if r.cost_usd != previous_cost || r.cost_source != previous_source {
+            tx.execute(
+                "UPDATE records SET cost_usd=?1,cost_source=?2 WHERE id=?3",
+                rusqlite::params![r.cost_usd, r.cost_source, r.id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
     }
     tx.commit().map_err(|e| e.to_string())
 }

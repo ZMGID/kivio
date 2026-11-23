@@ -68,7 +68,7 @@ pub struct UsageRecord {
     pub error_kind: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageStatsQuery {
     #[serde(default = "default_range")]
@@ -161,6 +161,10 @@ pub struct UsageGroupStats {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageStatsResponse {
+    pub revision: i64,
+    pub sampled_at: i64,
+    pub valid_until: i64,
+    pub utc_offset: i32,
     pub summary: UsageSummary,
     pub trend: Vec<UsageTrendPoint>,
     pub logs: Vec<UsageRecord>,
@@ -546,8 +550,10 @@ pub async fn usage_sync_cli(
         .err();
     tauri::async_runtime::spawn_blocking(move || {
         let mut report = native::scan(&dir)?;
-        let providers = app.state::<AppState>().settings_read().providers.clone();
+        let state = app.state::<AppState>();
+        let providers = state.settings_read().providers.clone();
         pricing::reprice(&mut store::open(&dir)?, &providers, false)?;
+        report.revision = state.usage_ledger.stats_revision(&dir)?;
         if let Some(error) = price_error {
             report.sources.push(native::SourceReport {
                 id: "prices".into(),
@@ -617,23 +623,28 @@ fn filter_records(mut records: Vec<UsageRecord>, query: &UsageStatsQuery) -> Vec
     records
 }
 
-fn range_start(range: &str) -> Option<i64> {
-    let now = Local::now().timestamp();
+fn range_start_at(range: &str, now: &chrono::DateTime<Local>) -> Option<i64> {
+    let timestamp = now.timestamp();
     match range {
         // 「当天」= 本地日历日起点（今日 00:00），随后各档为滚动窗口。
-        "today" => Local::now()
+        "today" => now
             .date_naive()
             .and_hms_opt(0, 0, 0)
             .and_then(|naive| Local.from_local_datetime(&naive).single())
             .map(|dt| dt.timestamp()),
-        "1d" => Some(now.saturating_sub(86_400)),
-        "30d" => Some(now.saturating_sub(30 * 86_400)),
-        "90d" => Some(now.saturating_sub(90 * 86_400)),
-        "365d" => Some(now.saturating_sub(365 * 86_400)),
+        "1d" => Some(timestamp.saturating_sub(86_400)),
+        "30d" => Some(timestamp.saturating_sub(30 * 86_400)),
+        "90d" => Some(timestamp.saturating_sub(90 * 86_400)),
+        "365d" => Some(timestamp.saturating_sub(365 * 86_400)),
         "all" => None,
         // default 7d
-        _ => Some(now.saturating_sub(7 * 86_400)),
+        _ => Some(timestamp.saturating_sub(7 * 86_400)),
     }
+}
+
+#[cfg(test)]
+fn range_start(range: &str) -> Option<i64> {
+    range_start_at(range, &Local::now())
 }
 
 fn normalized_filter(value: Option<&str>) -> Option<String> {
@@ -738,14 +749,13 @@ fn record_total_tokens(record: &UsageRecord) -> u64 {
     })
 }
 
-fn empty_trend(range: &str) -> Vec<UsageTrendPoint> {
+fn empty_trend(range: &str, now: &chrono::DateTime<Local>) -> Vec<UsageTrendPoint> {
     let mut points: BTreeMap<String, UsageTrendPoint> = BTreeMap::new();
     // 「当天」按小时分桶（今日 00:00 至当前小时），其余档位按天分桶。
     let hourly = matches!(range, "today" | "1d");
     if range == "1d" {
-        let now = Local::now();
         for offset in (0..=24).rev() {
-            let dt = now - ChronoDuration::hours(offset);
+            let dt = *now - ChronoDuration::hours(offset);
             let key = dt.format("%Y-%m-%d %H").to_string();
             points.insert(
                 key.clone(),
@@ -757,7 +767,6 @@ fn empty_trend(range: &str) -> Vec<UsageTrendPoint> {
             );
         }
     } else if hourly {
-        let now = Local::now();
         let today = now.date_naive();
         for hour in 0..=now.hour() {
             let key = format!("{} {:02}", today.format("%Y-%m-%d"), hour);
@@ -771,7 +780,7 @@ fn empty_trend(range: &str) -> Vec<UsageTrendPoint> {
             );
         }
     } else if let Some(days) = range_days(range) {
-        let today = Local::now().date_naive();
+        let today = now.date_naive();
         for offset in (0..days).rev() {
             let date = today - ChronoDuration::days(offset as i64);
             let key = date.format("%Y-%m-%d").to_string();
@@ -791,7 +800,7 @@ fn empty_trend(range: &str) -> Vec<UsageTrendPoint> {
 #[cfg(test)]
 fn build_trend(records: &[UsageRecord], range: &str) -> Vec<UsageTrendPoint> {
     let hourly = matches!(range, "today" | "1d");
-    let mut points: BTreeMap<_, _> = empty_trend(range)
+    let mut points: BTreeMap<_, _> = empty_trend(range, &Local::now())
         .into_iter()
         .map(|p| (p.date.clone(), p))
         .collect();
@@ -1299,7 +1308,16 @@ mod tests {
         let second = ledger.stats(dir.path(), query(1)).unwrap();
         assert_eq!(first.total_logs, 3);
         assert_eq!(first.summary.total_requests, second.summary.total_requests);
+        assert_eq!(first.revision, second.revision);
         assert_ne!(first.logs[0].id, second.logs[0].id);
+        store::open(dir.path())
+            .unwrap()
+            .execute("UPDATE records SET cost_usd=2.5 WHERE id='record-1'", [])
+            .unwrap();
+        let repriced = ledger.stats(dir.path(), query(1)).unwrap();
+        assert_ne!(repriced.revision, first.revision);
+        assert_eq!(repriced.summary.total_cost_usd, 2.5);
+        assert_eq!(repriced.logs[0].cost_usd, Some(2.5));
         ledger
             .append(dir.path(), &base_record("openai_responses"))
             .unwrap();

@@ -60,11 +60,9 @@ function modelResult(result: Partial<ExternalAgentModels>): ExternalAgentModels 
   }
 }
 
-type ModelSnapshotListener = (result: ExternalAgentModels) => void
 interface PendingModelProbe {
   result: Promise<ExternalAgentModels>
-  listeners: Set<ModelSnapshotListener>
-  snapshot?: ExternalAgentModels
+  readSnapshot: () => Promise<ExternalAgentModels>
 }
 
 // Retained pages and the composer can request the same catalog together.
@@ -317,18 +315,15 @@ export const externalCliSettingsApi = {
     const key = JSON.stringify([agentId, conversationId ?? null, force])
     let pending = pendingModelProbes.get(key)
     if (!pending) {
-      const listeners = new Set<ModelSnapshotListener>()
-      if (onSnapshot) listeners.add(onSnapshot)
+      let snapshotRead: Promise<ExternalAgentModels> | undefined
       const request: PendingModelProbe = {
-        listeners,
+        readSnapshot: () => snapshotRead ??= invoke<Partial<ExternalAgentModels>>(
+          'chat_detect_external_agent_models', { agentId, conversationId, force, snapshotOnly: true },
+        ).then(modelResult),
         result: Promise.resolve().then(async () => {
-          if (onSnapshot) {
-            const snapshot = modelResult(await invoke<Partial<ExternalAgentModels>>(
-              'chat_detect_external_agent_models', { agentId, conversationId, force, snapshotOnly: true },
-            ))
-            if (!snapshot.refreshing) return snapshot
-            request.snapshot = snapshot
-            for (const listener of listeners) listener(snapshot)
+          if (snapshotRead) {
+            const saved = await snapshotRead.catch(() => undefined)
+            if (saved && !saved.refreshing) return saved
           }
           return modelResult(await invoke<Partial<ExternalAgentModels>>(
             'chat_detect_external_agent_models', { agentId, conversationId, force },
@@ -339,15 +334,14 @@ export const externalCliSettingsApi = {
       }
       pending = request
       pendingModelProbes.set(key, request)
-    } else if (onSnapshot) {
-      pending.listeners.add(onSnapshot)
-      if (pending.snapshot) onSnapshot(pending.snapshot)
     }
-    try {
-      return await pending.result
-    } finally {
-      if (onSnapshot) pending.listeners.delete(onSnapshot)
+    if (onSnapshot) {
+      // A settings page may join a live probe started by a caller that only wants the final catalog.
+      void pending.readSnapshot().then(snapshot => {
+        if (snapshot.refreshing && pendingModelProbes.get(key) === pending) onSnapshot(snapshot)
+      }).catch(() => { /* The final catalog can still succeed. */ })
     }
+    return pending.result
   },
 
   async externalCliInstallInfo(agentId: string): Promise<ExternalCliInstallInfo | null> {

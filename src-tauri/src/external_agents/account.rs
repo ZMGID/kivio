@@ -2,6 +2,7 @@
 #[cfg(unix)]
 mod antigravity_status;
 mod grok_identity;
+mod kimi_binding;
 mod persisted;
 mod snapshot;
 pub(super) use persisted::PersistedQuota;
@@ -20,13 +21,35 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{path::Path, process::Stdio, time::Duration};
+use std::{
+    ffi::{OsStr, OsString},
+    path::Path,
+    process::Stdio,
+    time::Duration,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
 use uuid::Uuid;
 
 type AccountOutput = tokio::io::Lines<BufReader<super::diagnostics::AgentStdout>>;
+
+fn explicit_command_env(command: &Command, key: &str) -> Option<Option<OsString>> {
+    command.as_std().get_envs().find_map(|(name, value)| {
+        let matches = if cfg!(windows) {
+            name.to_string_lossy().eq_ignore_ascii_case(key)
+        } else {
+            name == OsStr::new(key)
+        };
+        matches.then(|| value.map(OsStr::to_os_string))
+    })
+}
+
+fn command_env(command: &Command, key: &str) -> Option<OsString> {
+    explicit_command_env(command, key)
+        .unwrap_or_else(|| std::env::var_os(key))
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+}
 
 #[derive(Clone, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
@@ -454,7 +477,7 @@ async fn probe_stdio(
         };
         let account = if grok {
             let email = grok_identity::email(&agent_cli_command(def, bin), bin, cwd);
-            json!({"email":email})
+            json!({"type":email.as_ref().map(|_| "grok"),"email":email})
         } else {
             account
         };

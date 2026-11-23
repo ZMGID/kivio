@@ -713,8 +713,11 @@ pub async fn chat_external_cli_account(
     };
     let cwd = resolve_detection_cwd(&app, project)?;
     let scope = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-    let disk_path = (def.id == "codex" && conversation_id.is_none())
-        .then(|| PersistedQuota::path(&state.usage_dir));
+    let disk_path = if project.is_none() {
+        PersistedQuota::path(&state.usage_dir, def)
+    } else {
+        None
+    };
     if mode != AccountSnapshotMode::Refresh {
         if let Some(cached) = state.external_accounts.peek(def, &scope, mode, requested) {
             return Ok(Some(cached));
@@ -728,27 +731,34 @@ pub async fn chat_external_cli_account(
     let bin = crate::external_agents::spawn::resolve_binary(def)
         .await
         .ok_or("CLI 未安装或不在 PATH")?;
-    let identity = LaunchIdentity::capture(def, &bin);
-    let disk = disk_path.and_then(|path| PersistedQuota::for_codex(path, def, &bin, &scope));
-    let (snapshot, updated) = state
-        .external_accounts
-        .read(
-            def.id,
-            (identity.clone(), scope),
-            mode,
-            requested,
-            || identity.ensure_current(def, &bin),
-            || async {
-                let _resource = super::session::live::ResourceLease::pending(def.id)?;
-                account::probe(def, probe, &bin, &cwd).await
-            },
-            disk.as_ref(),
-        )
-        .await?;
-    if updated {
-        let _ = app.emit("external-cli-account-updated", def.id);
+    for _ in 0..2 {
+        let identity = LaunchIdentity::capture(def, &bin);
+        let disk = PersistedQuota::for_cli(disk_path.clone(), def, &bin, &scope);
+        let (snapshot, updated) = state
+            .external_accounts
+            .read(
+                def.id,
+                (identity.clone(), scope.clone()),
+                mode,
+                requested,
+                || identity.ensure_current(def, &bin),
+                || async {
+                    let _resource = super::session::live::ResourceLease::pending(def.id)?;
+                    account::probe(def, probe, &bin, &cwd).await
+                },
+                disk.as_ref(),
+            )
+            .await?;
+        if updated {
+            let _ = app.emit("external-cli-account-updated", def.id);
+        }
+        if snapshot.is_some() || mode == AccountSnapshotMode::Cached {
+            return Ok(snapshot);
+        }
+        // A CLI can replace its credential during a quota read, including OAuth refresh.
+        // Reprobe once with the new owner instead of publishing under the previous login.
     }
-    Ok(snapshot)
+    Err("CLI 登录状态已变更，请刷新额度".into())
 }
 
 #[derive(serde::Serialize)]
