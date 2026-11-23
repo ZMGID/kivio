@@ -165,23 +165,9 @@ fn is_executable_file(path: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// macOS：dscl 读 OpenDirectory 的登录 shell（GUI/CLI 任何启动方式下都准确）。
 #[cfg(target_os = "macos")]
 fn login_shell() -> Option<String> {
-    let user = std::env::var("USER").ok()?;
-    let output = std::process::Command::new("dscl")
-        .args([".", "-read", &format!("/Users/{user}"), "UserShell"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.trim()
-        .strip_prefix("UserShell:")
-        .map(str::trim)
-        .filter(|shell| shell.starts_with('/'))
-        .map(str::to_string)
+    crate::path_env::macos_account_shell(std::time::Duration::from_secs(3))
 }
 
 /// Linux：getent passwd 末段即登录 shell（kivio 目前不发 Linux，保留兜底路径）。

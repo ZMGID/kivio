@@ -135,9 +135,9 @@ fn capture_stdout_with_timeout(
 #[cfg(target_os = "macos")]
 const LOGIN_SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Merge the current `PATH` with the login-shell `PATH` and common install
-/// directories, deduplicate (preserving order), and write the result back to
-/// the process `PATH`.
+/// Prefer the login shell's `PATH`, then append any additional inherited and
+/// common install directories. Write the deduplicated result to the process
+/// `PATH`.
 ///
 /// The expensive part — spawning the user's login shell to read its `PATH` —
 /// runs **at most once per process** (guarded by [`Once`]). Startup calls this
@@ -169,13 +169,13 @@ pub fn enrich_path_macos() {
 /// order-preserving. Pure — no env access — so it is unit-testable without
 /// mutating shared process state.
 ///
-/// Order: existing `PATH` first (preserves current resolution order), then any
-/// login-shell additions, then defaults for entries neither source provided.
+/// Preserve the login shell's executable lookup order. Keep inherited paths
+/// and common install directories available as fallbacks.
 #[cfg(any(target_os = "macos", test))]
 fn merge_paths_unix(current: &str, login: Option<&str>, defaults: &[String]) -> String {
     let mut seen: HashSet<String> = HashSet::new();
     let mut merged: Vec<String> = Vec::new();
-    for source in [current, login.unwrap_or("")] {
+    for source in [login.unwrap_or(""), current] {
         for seg in source.split(':') {
             push_unique(seg, &mut seen, &mut merged, |s| s.to_string());
         }
@@ -218,21 +218,74 @@ fn common_dirs_macos(home: Option<std::path::PathBuf>) -> Vec<String> {
     dirs
 }
 
-/// Read the user's login-shell `PATH` by running
-/// `$SHELL -l -i -c 'echo $PATH'` with a hard timeout. Returns `None` on any
-/// failure (spawn error, non-zero exit, timeout, empty output) so the caller
-/// falls back to the common-directory defaults. Never panics, never blocks
-/// past [`LOGIN_SHELL_TIMEOUT`].
+/// Read the macOS account's configured shell for launches without a usable
+/// inherited `SHELL` and for the dock terminal's shell selection.
 #[cfg(target_os = "macos")]
-fn login_shell_path() -> Option<String> {
+pub(crate) fn macos_account_shell(timeout: std::time::Duration) -> Option<String> {
     use crate::proc::NoConsoleWindow;
     use std::process::{Command, Stdio};
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let user = std::env::var("USER").ok()?;
+    let mut cmd = Command::new("/usr/bin/dscl");
+    cmd.args([".", "-read", &format!("/Users/{user}"), "UserShell"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .no_console_window();
+    let output = capture_stdout_with_timeout(cmd, timeout)?;
+    output
+        .trim()
+        .strip_prefix("UserShell:")
+        .map(str::trim)
+        .filter(|shell| shell.starts_with('/'))
+        .map(str::to_owned)
+}
+
+/// Try the inherited shell, the account shell, then the macOS default within
+/// one startup deadline. Finder and other desktop launchers can omit `SHELL`.
+#[cfg(target_os = "macos")]
+fn login_shell_path() -> Option<String> {
+    use std::time::Instant;
+
+    let deadline = Instant::now() + LOGIN_SHELL_TIMEOUT;
+    let inherited = std::env::var("SHELL").ok();
+    let remaining = || deadline.saturating_duration_since(Instant::now());
+    let probe = |shell: &str| {
+        let timeout = remaining();
+        if shell.is_empty() || timeout.is_zero() {
+            return None;
+        }
+        read_login_shell_path(shell, timeout)
+    };
+
+    if let Some(path) = inherited.as_deref().and_then(probe) {
+        return Some(path);
+    }
+    let account = (!remaining().is_zero())
+        .then(|| macos_account_shell(remaining()))
+        .flatten();
+    if let Some(path) = account
+        .as_deref()
+        .filter(|shell| Some(*shell) != inherited.as_deref())
+        .and_then(probe)
+    {
+        return Some(path);
+    }
+    let default = "/bin/zsh";
+    if [inherited.as_deref(), account.as_deref()].contains(&Some(default)) {
+        return None;
+    }
+    probe(default)
+}
+
+#[cfg(target_os = "macos")]
+fn read_login_shell_path(shell: &str, timeout: std::time::Duration) -> Option<String> {
+    use crate::proc::NoConsoleWindow;
+    use std::process::{Command, Stdio};
 
     // Spawn the login+interactive shell so it sources the rc files that set
     // PATH (e.g. ~/.zshrc), then echo the resulting PATH on a single line.
-    let mut cmd = Command::new(&shell);
+    let mut cmd = Command::new(shell);
     cmd.args(["-l", "-i", "-c", "echo \"$PATH\""])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -241,7 +294,7 @@ fn login_shell_path() -> Option<String> {
 
     // Enforce the timeout via the shared helper: if the shell hangs (slow rc),
     // give up rather than blocking startup.
-    let path = capture_stdout_with_timeout(cmd, LOGIN_SHELL_TIMEOUT)?;
+    let path = capture_stdout_with_timeout(cmd, timeout)?;
     let path = path.trim().to_string();
     if path.is_empty() {
         None
@@ -603,8 +656,7 @@ fn apple_locale() -> Option<String> {
 /// Order: process `PATH` first (preserves current resolution order), then
 /// system, then user, then profile, then common-dir defaults. A dir already
 /// present from an earlier source (e.g. a system node install) therefore wins
-/// over a later profile source (e.g. fnm's node) — a documented tradeoff that
-/// mirrors the macOS branch's `current`-first ordering.
+/// over a later profile source (e.g. fnm's node).
 #[cfg(any(target_os = "windows", test))]
 fn merge_paths_windows(
     current: &str,
@@ -940,23 +992,18 @@ mod tests {
         assert_eq!(unique.len(), segs.len(), "PATH has duplicate segments");
     }
 
-    /// Login-shell PATH entries are merged after the current PATH but before
-    /// defaults, and overlap is deduped.
+    /// The login shell's executable wins when an inherited path contains an
+    /// older installation of the same command.
     #[test]
-    fn merge_unix_includes_login_shell_path() {
-        let current = "/usr/bin:/bin";
-        let login = "/opt/homebrew/bin:/usr/bin"; // /usr/bin overlaps
-        let defaults = common_dirs_macos(None);
+    fn merge_unix_preserves_login_shell_precedence() {
+        let current = "/opt/homebrew/bin:/usr/bin:/inherited-only/bin";
+        let login = "/node/bin:/opt/homebrew/bin:/usr/bin";
+        let defaults = ["/usr/local/bin".to_string()];
 
-        let result = merge_paths_unix(current, Some(login), &defaults);
-        let segs: Vec<&str> = result.split(':').collect();
-
-        assert_eq!(segs[0], "/usr/bin");
-        assert_eq!(segs[1], "/bin");
-        // login-only entry comes right after current PATH, before /usr/local/bin default.
-        assert_eq!(segs[2], "/opt/homebrew/bin");
-        // /usr/bin not duplicated.
-        assert_eq!(segs.iter().filter(|s| **s == "/usr/bin").count(), 1);
+        assert_eq!(
+            merge_paths_unix(current, Some(login), &defaults),
+            "/node/bin:/opt/homebrew/bin:/usr/bin:/inherited-only/bin:/usr/local/bin"
+        );
     }
 
     // ----- Windows merge / expand (pure helpers; compiled & tested on all OSes) -----
