@@ -25,6 +25,8 @@ pub(in crate::external_agents) struct PersistedQuota {
 struct Reading {
     owner: String,
     checked_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan: Option<String>,
     windows: Vec<Window>,
 }
 
@@ -116,7 +118,9 @@ impl PersistedQuota {
             return None;
         }
         Some(json!({
-            "agentId": "codex", "account": null, "credits": null, "unavailable": null,
+            "agentId": "codex",
+            "account": reading.plan.map(|plan| json!({"type":"chatgpt","email":null,"plan":plan})),
+            "credits": null, "unavailable": null,
             "checkedAt": reading.checked_at, "windows": reading.windows, "nextRefreshAt": 0,
         }))
     }
@@ -137,6 +141,7 @@ impl PersistedQuota {
         let reading = Reading {
             owner: self.owner.clone(),
             checked_at,
+            plan: snapshot["account"]["plan"].as_str().map(str::to_owned),
             windows,
         };
         if let Ok(content) = serde_json::to_string(&reading) {
@@ -358,7 +363,7 @@ mod tests {
         ProbeReading {
             snapshot: json!({
                 "agentId": "codex", "checkedAt": 100, "unavailable": null,
-                "account": {"type": "chatgpt", "email": "user@example.test"},
+                "account": {"type": "chatgpt", "email": "user@example.test", "plan": "Pro 20×"},
                 "credits": {"balance": "125"},
                 "windows": [{"name": "Weekly", "usedPercent": 51, "resetsAt": 1784840060, "windowDurationMins": 10080}],
             }),
@@ -367,7 +372,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reopens_only_quota_readings_and_refreshes_after_restore() {
+    async fn reopens_quota_and_plan_before_refresh() {
         let profile = Profile::new();
         let first = AccountSnapshots::default();
         assert!(
@@ -399,7 +404,7 @@ mod tests {
         assert_eq!(restored["windows"][0]["usedPercent"], 51.0);
         assert_eq!(restored["checkedAt"], 100);
         assert_eq!(restored["nextRefreshAt"], 0);
-        assert!(restored["account"].is_null());
+        assert_eq!(restored["account"]["plan"], "Pro 20×");
 
         let (stale, updated) = profile
             .read(&restarted, AccountSnapshotMode::Automatic, || {
@@ -409,8 +414,16 @@ mod tests {
         assert!(updated);
         let stale = stale.unwrap();
         assert_eq!(stale["windows"], restored["windows"]);
+        assert_eq!(stale["account"]["plan"], "Pro 20×");
         assert_eq!(stale["refreshError"], "timeout");
         assert_eq!(fs::read_to_string(profile.path()).unwrap(), content);
+
+        let mut legacy: Value = serde_json::from_str(&content).unwrap();
+        legacy.as_object_mut().unwrap().remove("plan");
+        fs::write(profile.path(), legacy.to_string()).unwrap();
+        let legacy = profile.disk().restore().unwrap();
+        assert_eq!(legacy["windows"], restored["windows"]);
+        assert!(legacy["account"].is_null());
 
         profile.read(&restarted, AccountSnapshotMode::Refresh, || Ok(ProbeReading {
             snapshot: json!({"agentId":"codex", "checkedAt":200, "unavailable":"signed out", "windows":[]}),
