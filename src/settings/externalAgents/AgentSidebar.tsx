@@ -3,7 +3,7 @@ import type { DetectedExternalAgent } from '../../api/externalCliSettings'
 import { Button, IconButton } from '../../components/Button'
 import { i18n, type Lang } from '../../components/i18n'
 import { getCliInstallJob } from '../cliInstallJobs'
-import { SearchInput, Toggle } from '../components'
+import { Toggle } from '../components'
 import { deriveCliMaintenance, getCliInstallInfo } from './cliMaintenance'
 import { IconBox } from './shared'
 
@@ -28,8 +28,6 @@ export function AgentSidebar({
   selectedId,
   onSelect,
   onToggle,
-  query,
-  onQuery,
   scanning,
   scanFailed,
   onRescan,
@@ -41,8 +39,6 @@ export function AgentSidebar({
   selectedId: string | null
   onSelect: (id: string) => void
   onToggle: (id: string, enabled: boolean) => void
-  query: string
-  onQuery: (value: string) => void
   scanning: boolean
   scanFailed: boolean
   onRescan: () => void
@@ -53,16 +49,16 @@ export function AgentSidebar({
   const t = i18n[lang]
 
   return (
-    <nav className="kv-cli-nav" aria-label={t.externalAgentsSearch}>
-      <div className="kv-cli-search">
-        <SearchInput
-          className="min-w-0 flex-1"
-          value={query}
-          onChange={onQuery}
-          placeholder={t.externalAgentsSearch}
-          aria-label={t.externalAgentsSearch}
-          clearLabel={t.dialogClear}
-        />
+    <nav className="kv-cli-nav" aria-label={t.tabExternalAgents}>
+      <div className="kv-cli-nav-actions">
+        {updatableIds.length > 1 && (
+          <div className="kv-cli-nav-updates">
+            <span>{t.externalAgentsUpdatesCount.replace('{count}', String(updatableIds.length))}</span>
+            <Button size="sm" variant="ghost" onClick={onUpdateAll}>
+              {t.externalAgentsUpdateAll}
+            </Button>
+          </div>
+        )}
         <IconButton
           size="sm"
           variant="ghost"
@@ -73,15 +69,6 @@ export function AgentSidebar({
           <RefreshCw size={13} className={scanning ? 'animate-spin' : ''} />
         </IconButton>
       </div>
-
-      {updatableIds.length > 1 && (
-        <div className="kv-cli-nav-updates">
-          <span>{t.externalAgentsUpdatesCount.replace('{count}', String(updatableIds.length))}</span>
-          <Button size="sm" variant="ghost" onClick={onUpdateAll}>
-            {t.externalAgentsUpdateAll}
-          </Button>
-        </div>
-      )}
 
       <div className="kv-cli-nav-list custom-scrollbar">
         {rows.map(({ agent, disabled, summary, attention }) => {
@@ -146,7 +133,7 @@ export function AgentSidebar({
               ? t.externalAgentsRescanning
               : scanFailed
                 ? t.externalAgentsDetectFailed
-                : t.externalAgentsNoMatch}
+                : t.externalAgentsEmpty}
           </p>
         )}
       </div>

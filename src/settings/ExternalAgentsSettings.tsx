@@ -36,7 +36,6 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
   const [scanning, setScanning] = useState(false)
   const [scanFailed, setScanFailed] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
   const [subpage, setSubpage] = useState<'pi-extensions' | 'pi-skills' | null>(null)
   useCliMaintenanceRevision()
 
@@ -95,7 +94,6 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
 
   // 已启用、已停用、未安装依次排列，同一状态保留探测顺序。
   const rows = useMemo<AgentRow[]>(() => {
-    const needle = query.trim().toLowerCase()
     const summarize = (agent: DetectedExternalAgent, disabled: boolean) => {
       if (!agent.available) return { summary: t.externalAgentsNotInstalled, attention: false }
       if (disabled) return { summary: t.externalAgentsDisabledGroup, attention: false }
@@ -112,10 +110,6 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
       }
     }
     return agents
-      .filter(
-        (agent) =>
-          !needle || agent.name.toLowerCase().includes(needle) || agent.id.includes(needle),
-      )
       .map((agent) => {
         const disabled = isDisabled(agent)
         return { agent, disabled, ...summarize(agent, disabled) }
@@ -124,7 +118,7 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
         if (a.agent.available && b.agent.available) return Number(a.disabled) - Number(b.disabled)
         return Number(b.agent.available) - Number(a.agent.available)
       })
-  }, [agents, isDisabled, overrides, query, t])
+  }, [agents, isDisabled, overrides, t])
 
   const updatableIds = agents
     .filter((agent) => activeIds.includes(agent.id))
@@ -174,8 +168,6 @@ export function ExternalAgentsSettings({ lang, settings, updateChat }: ExternalA
           selectedId={selectedId}
           onSelect={setSelectedId}
           onToggle={(id, enabled) => patchOverride(id, { disabled: !enabled })}
-          query={query}
-          onQuery={setQuery}
           scanning={scanning}
           scanFailed={scanFailed}
           onRescan={() => void rescan()}

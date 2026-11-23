@@ -624,7 +624,7 @@ describe('ExternalAgentsSettings', () => {
     }
     render(<Panel />)
 
-    const list = within(screen.getByRole('navigation', { name: '搜索 CLI' }))
+    const list = within(screen.getByRole('navigation', { name: '本地 CLI 管理' }))
     const toggle = await list.findByRole('switch', { name: 'Claude Code 启用' })
     const claude = list.getByRole('button', { name: /^Claude Code/ })
     const pi = list.getByRole('button', { name: /^Pi\b/ })
@@ -977,11 +977,11 @@ describe('ExternalAgentsSettings', () => {
     fireEvent.click(entry.closest('button')!)
 
     expect(await screen.findByText('Pi Package')).toBeInTheDocument()
-    expect(screen.queryByPlaceholderText('搜索 CLI')).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: '本地 CLI 管理' })).not.toBeInTheDocument()
     expect(screen.queryByText('可执行文件')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /返回/ }))
-    expect(await screen.findByPlaceholderText('搜索 CLI')).toBeInTheDocument()
+    expect(await screen.findByRole('navigation', { name: '本地 CLI 管理' })).toBeInTheDocument()
     expect(screen.getByText('可执行文件')).toBeInTheDocument()
   })
 
@@ -1014,11 +1014,11 @@ describe('ExternalAgentsSettings', () => {
     fireEvent.click(entry.closest('button')!)
 
     expect(await screen.findByText('注册 /skill:name 命令')).toBeInTheDocument()
-    expect(screen.queryByPlaceholderText('搜索 CLI')).not.toBeInTheDocument()
+    expect(screen.queryByRole('navigation', { name: '本地 CLI 管理' })).not.toBeInTheDocument()
     expect(screen.queryByText('可执行文件')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /返回/ }))
-    expect(await screen.findByPlaceholderText('搜索 CLI')).toBeInTheDocument()
+    expect(await screen.findByRole('navigation', { name: '本地 CLI 管理' })).toBeInTheDocument()
     expect(screen.getByText('可执行文件')).toBeInTheDocument()
   })
 

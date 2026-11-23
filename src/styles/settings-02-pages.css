@@ -2406,7 +2406,15 @@ html[data-focus-source="keyboard"] .kv-provider-card:focus-visible {
   align-items: center;
   gap: 4px;
 }
+.kv-cli-nav-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
 .kv-cli-nav-updates {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
