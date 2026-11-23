@@ -2,17 +2,17 @@ import { FolderIcon as FolderOpen } from '../../components/FileIcon'
 import { ErrorNotice } from '../../components/AppNotice'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { ArrowLeft, ChevronDown, ExternalLink, GitBranch, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
+import { ArrowLeft, ChevronRight, ExternalLink, GitBranch, Loader2, MoreHorizontal, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import { api, isTauriRuntime } from '../../api/tauri'
 import { MARKET_CHANGED_EVENT, type Marketplace, type MarketplacePlugin, type MarketPlugin } from '../../api/market'
 import type { PluginPackage } from '../../api/pluginPackages'
 import { Button, IconButton } from '../../components/Button'
 import { confirmDialog } from '../../components/dialogQueue'
 import { useLang } from '../../components/i18n'
-import { Input, Toggle } from '../../settings/public/controls'
+import { SearchInput, Toggle } from '../../settings/public/controls'
 import { DefaultPluginIcon } from '../../settings/public/icons'
-import { DockContextMenu, type DockMenuAnchor } from '../dock/DockContextMenu'
 import { useWindowStore } from '../../utils/windowStore'
+import { AddMenuButton, CenterHeader } from './PluginCenterParts'
 import { PluginImportDialog } from './PluginImportDialog'
 import { MarketplaceDialog } from './MarketplaceDialog'
 import { claudeMarketplaceIcon, marketDetailHash, marketHash, marketPluginIdFromHash, pluginAction } from './marketModel'
@@ -37,6 +37,8 @@ import './market.css'
 
 /** 离开再回来时保留搜索词与滚动位置。 */
 const viewState = { query: '', scroll: 0 }
+/** 分组折叠时露出的条目数（两列各三行）。 */
+const SECTION_PREVIEW = 6
 
 export type MarketPageProps = {
   heading?: ReactNode
@@ -64,11 +66,10 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
   const { snapshot, packages, packageError, markets, marketError, loading, loadError, busyIds, actionError } = state
   const [marketDialog, setMarketDialog] = useState<'add' | 'manage' | null>(null)
   const [scope, setScope] = useState<'public' | 'personal'>('public')
-  const [addMenu, setAddMenu] = useState<DockMenuAnchor | null>(null)
   const [importKind, setImportKind] = useState<ImportKind | null>(null)
   const [query, setQuery] = useState(viewState.query)
   const [selected, setSelected] = useState(marketPluginIdFromHash)
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const scroller = useRef<HTMLDivElement>(null)
   const surface = useRef({ marketDialog, importKind, onUse, onSkillsChanged })
   surface.current = { marketDialog, importKind, onUse, onSkillsChanged }
@@ -131,7 +132,7 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
   }, [])
 
   useEffect(() => {
-    const onHash = () => { setSelected(marketPluginIdFromHash()); setAddMenu(null) }
+    const onHash = () => { setSelected(marketPluginIdFromHash()) }
     window.addEventListener('hashchange', onHash)
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
@@ -144,7 +145,8 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
     const q = query.trim().toLowerCase()
     return !q || `${plugin.manifest.name} ${plugin.manifest.summary}`.toLowerCase().includes(q)
   }
-  const installed = snapshot.plugins.filter((p) => p.local?.status === 'ready' && matches(p))
+  // 「已安装」是固定的快捷入口：公开与个人插件放在一起，不受搜索和范围切换影响。
+  const installed = snapshot.plugins.filter((p) => p.local?.status === 'ready')
   const sections = useMemo(() => {
     const listed = snapshot.plugins.filter(matches)
     const buckets = new Map<string, MarketPlugin[]>()
@@ -166,7 +168,8 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
   const chosen = snapshot.plugins.find((p) => p.manifest.id === selected)
   const chosenPackage = packages.find(p => packageKey(p) === selected)
   const bundledPackageIds = new Set(snapshot.plugins.flatMap(p => p.local?.packageId ? [p.local.packageId] : []))
-  const personal = packages.filter(p => !bundledPackageIds.has(p.id)).filter(p => `${p.name} ${p.description}`.toLowerCase().includes(query.trim().toLowerCase()))
+  const ownPackages = packages.filter(p => !bundledPackageIds.has(p.id))
+  const personal = ownPackages.filter(p => `${p.name} ${p.description}`.toLowerCase().includes(query.trim().toLowerCase()))
   const entryPackage = (market: Marketplace, entry: MarketplacePlugin) => packages.find(p => p.marketplace?.source === market.source && p.marketplace?.plugin === entry.name)
   const packageIcon = (plugin: PluginPackage) => claudeMarketplaceIcon(plugin.marketplace?.source, plugin.marketplace?.plugin ?? plugin.name)
   const chosenEntry = markets.flatMap(market => market.plugins.map(entry => ({ market, entry }))).find(({ market, entry }) => entryKey(market, entry) === selected)
@@ -201,6 +204,42 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
     if (!plugin.local) return ''
     if (plugin.local.status === 'failed') return text('需修复', 'Needs repair')
     return plugin.local.enabled ? '' : text('未加载', 'Not loaded')
+  }
+
+  /** 列表行：左侧图标与名称打开详情，右侧放一个动作。三类来源共用同一行结构。 */
+  const marketRow = (key: string, icon: ReactNode, name: string, description: string | null | undefined, onOpen: () => void, action: ReactNode) => (
+    <article className="kv-market-row" key={key}>
+      <button type="button" className="kv-market-row-info" onClick={onOpen}>
+        {icon}
+        <span className="min-w-0"><strong>{name}</strong><span title={description || undefined}>{description}</span></span>
+      </button>
+      <span className="kv-market-row-actions">{action}</span>
+    </article>
+  )
+  const installButton = (busy: boolean, onClick: () => void) => (
+    <IconButton variant="ghost" size="md" label={text('安装', 'Install')} disabled={busy} onClick={onClick}>
+      {busy ? <Loader2 size={16} className="animate-spin" /> : <Plus size={18} />}
+    </IconButton>
+  )
+  const moreButton = (name: string, onClick: () => void) => (
+    <IconButton variant="ghost" size="md" label={text(`${name} 更多操作`, `More options for ${name}`)} onClick={onClick}><MoreHorizontal size={18} /></IconButton>
+  )
+  /** 分组默认只露前几行，点标题展开全部；搜索时直接给出全部匹配项。 */
+  const renderSection = (key: string, title: string, rows: ReactNode[]) => {
+    const expandable = !query.trim() && rows.length > SECTION_PREVIEW
+    const open = !!expanded[key]
+    return (
+      <section className="kv-market-section" key={key}>
+        <h2>{expandable ? (
+          <button type="button" className="kv-market-section-toggle" aria-expanded={open}
+            title={open ? text('收起', 'Show less') : text(`查看全部 ${rows.length} 个`, `Show all ${rows.length}`)}
+            onClick={() => setExpanded(current => ({ ...current, [key]: !current[key] }))}>
+            <span>{title}</span><ChevronRight size={18} className={open ? 'is-open' : undefined} aria-hidden="true" />
+          </button>
+        ) : title}</h2>
+        <div className="kv-market-rows">{expandable && !open ? rows.slice(0, SECTION_PREVIEW) : rows}</div>
+      </section>
+    )
   }
 
   const uninstall = async (plugin: MarketPlugin) => {
@@ -377,52 +416,43 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
           )
         ) : (
           <>
-            <header className="kv-market-heading">
-              <div className="min-w-0">
-                {heading ?? <h1>{text('插件市场', 'Plugin marketplace')}</h1>}
-                <p>{text('用插件为 Kivio 扩展技能、命令与 MCP 能力', 'Extend Kivio with skills, commands and MCP through plugins')}</p>
-              </div>
-              <div className="kv-market-toolbar">
-                <IconButton size="md" label={text('刷新', 'Refresh')} disabled={loading} onClick={() => void refreshMarketInventory()}>
+            <CenterHeader
+              heading={heading ?? <h1>{text('插件市场', 'Plugin marketplace')}</h1>}
+              subtitle={text('用插件为 Kivio 扩展技能、命令与 MCP 能力', 'Extend Kivio with skills, commands and MCP through plugins')}
+              actions={<>
+                <SearchInput value={query} onChange={setQuery} clearLabel={text('清除搜索', 'Clear search')}
+                  placeholder={text('搜索插件', 'Search plugins')} aria-label={text('搜索插件', 'Search plugins')} />
+                <IconButton size="md" variant="ghost" label={text('刷新', 'Refresh')} disabled={loading} onClick={() => void refreshMarketInventory()}>
                   <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
                 </IconButton>
-                <IconButton size="md" label={text('管理插件市场', 'Manage marketplaces')} disabled={!isTauriRuntime()} onClick={() => setMarketDialog('manage')}><Settings2 size={16} /></IconButton>
-                <Button variant="primary" disabled={!isTauriRuntime()} aria-haspopup="menu" aria-expanded={!!addMenu}
-                  onClick={e => { const rect = e.currentTarget.getBoundingClientRect(); setAddMenu({ left: rect.right - 190, top: rect.bottom + 6 }) }}>
-                  {text('添加', 'Add')}<ChevronDown size={14} />
-                </Button>
-              </div>
-            </header>
+                <IconButton size="md" variant="ghost" label={text('管理插件市场', 'Manage marketplaces')} disabled={!isTauriRuntime()} onClick={() => setMarketDialog('manage')}><Settings2 size={16} /></IconButton>
+                <AddMenuButton label={text('添加', 'Add')} disabled={!isTauriRuntime()} items={[
+                  { key: 'marketplace', label: text('添加插件市场', 'Add marketplace'), icon: <Plus size={16} />, onSelect: () => setMarketDialog('add') },
+                  { key: 'local', label: text('从本地目录导入', 'Import from a folder'), icon: <FolderOpen open size={16} />, onSelect: () => setImportKind('local') },
+                  { key: 'git', label: text('从 Git 仓库导入', 'Import from Git'), icon: <GitBranch size={16} />, onSelect: () => setImportKind('git') },
+                ]} />
+              </>}
+            />
 
-            <label className="kv-market-search">
-              <Input value={query} onChange={setQuery} placeholder={text('搜索插件', 'Search plugins')} aria-label={text('搜索插件', 'Search plugins')} />
-            </label>
+            {/* 已安装：图标 + 名称的快捷入口，公开与个人插件放在一起，不受搜索和范围切换影响。 */}
+            {installed.length + ownPackages.length > 0 && (
+              <section className="kv-market-installed">
+                <h2>{text('已安装', 'Installed')}</h2>
+                {installed.map((plugin) => (
+                  <button type="button" key={plugin.manifest.id} className="kv-market-installed-item" title={plugin.manifest.name} aria-label={plugin.manifest.name}
+                    onClick={() => { window.location.hash = marketDetailHash(plugin.manifest.id) }}>
+                    <PluginIcon plugin={plugin} /><span>{plugin.manifest.name}</span>
+                  </button>
+                ))}
+                {ownPackages.map(plugin => (
+                  <button type="button" key={packageKey(plugin)} className="kv-market-installed-item" title={plugin.name} aria-label={plugin.name} onClick={() => openPackage(plugin)}>
+                    <PluginIcon src={packageIcon(plugin)} /><span>{plugin.name}</span>
+                  </button>
+                ))}
+              </section>
+            )}
 
-            <section className="kv-market-installed">
-              <h2>{text('已安装', 'Installed')}</h2>
-              {installed.length + personal.length ? (
-                <div className="kv-market-installed-row">
-                  {installed.map((plugin) => (
-                    <button
-                      type="button"
-                      key={plugin.manifest.id}
-                      className="kv-market-installed-item"
-                      title={plugin.manifest.name}
-                      aria-label={plugin.manifest.name}
-                      onClick={() => { window.location.hash = marketDetailHash(plugin.manifest.id) }}
-                    >
-                      <PluginIcon plugin={plugin} />
-                    </button>
-                  ))}
-                  {personal.map(plugin => <button type="button" key={packageKey(plugin)} className="kv-market-installed-item"
-                    title={plugin.name} aria-label={plugin.name} onClick={() => openPackage(plugin)}><PluginIcon src={packageIcon(plugin)} /></button>)}
-                </div>
-              ) : (
-                <p className="kv-market-muted">{query.trim() ? text('没有找到相关插件', 'No matching plugins') : text('还没有安装插件', 'No plugins installed yet')}</p>
-              )}
-            </section>
-
-            <div className="kv-market-tabs" role="tablist" aria-label={text('插件分类', 'Plugin scope')}>
+            <div className="kv-market-scope" role="tablist" aria-label={text('插件范围', 'Plugin scope')} data-tauri-drag-region="false">
               {(['public', 'personal'] as const).map((value, index) => <button type="button" role="tab" key={value}
                 id={`market-tab-${value}`} aria-controls="market-list" aria-selected={scope === value} tabIndex={scope === value ? 0 : -1}
                 onClick={() => setScope(value)} onKeyDown={e => {
@@ -435,9 +465,9 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
                 }}>{value === 'public' ? text('公开', 'Public') : text('个人', 'Personal')}</button>)}
             </div>
 
-            {!isTauriRuntime() && <p className="kv-market-muted">{text('浏览器预览 · 请在 Kivio 桌面端安装和使用插件。', 'Browser preview · Install and use plugins in the Kivio desktop app.')}</p>}
+            {!isTauriRuntime() && <p className="kv-market-muted mb-4">{text('浏览器预览 · 请在 Kivio 桌面端安装和使用插件。', 'Browser preview · Install and use plugins in the Kivio desktop app.')}</p>}
             {(loadError || packageError || marketError) && (
-              <div role="status" className="kv-market-warning">
+              <div role="status" className="kv-market-warning mb-4">
                 {text('部分插件暂时无法读取。', 'Some plugins could not be loaded.')} {loadError || packageError || marketError}
                 <Button size="sm" onClick={() => void refreshMarketInventory()}>{text('重试', 'Retry')}</Button>
               </div>
@@ -446,38 +476,21 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
             <div id="market-list" role="tabpanel" aria-labelledby={`market-tab-${scope}`}>
             {scope === 'personal' ? (
               <>
-              {catalogSections.map(({ market, entries }) => <section className="kv-market-section" key={market.id}>
-                <h2>{market.name}<small>{entries.length}</small></h2>
-                <div className="kv-market-rows">{entries.map(entry => <article className="kv-market-row" key={entry.name}>
-                  <button type="button" className="kv-market-row-info" onClick={() => {
-                    const installedPackage = entryPackage(market, entry)
-                    if (installedPackage) openPackage(installedPackage)
-                    else window.location.hash = marketDetailHash(entryKey(market, entry))
-                  }}>
-                    <PluginIcon src={claudeMarketplaceIcon(market.source, entry.name)} /><span className="min-w-0"><strong>{entry.displayName}</strong><span>{entry.description || entry.unavailableReason}</span></span>
-                  </button>
-                  {entryPackage(market, entry) ? <IconButton variant="ghost" label={text(`${entry.displayName} 更多操作`, `More options for ${entry.displayName}`)} onClick={() => {
-                    const installedPackage = entryPackage(market, entry)
-                    if (installedPackage) openPackage(installedPackage)
-                  }}><MoreHorizontal size={16} /></IconButton>
-                    : entry.unavailableReason ? <Button size="sm" onClick={() => { window.location.hash = marketDetailHash(entryKey(market, entry)) }}>{text('查看原因', 'Details')}</Button>
-                    : <Button size="sm" disabled={busyIds.has(entryKey(market, entry))} onClick={() => void runInstallEntry(market, entry)}>{busyIds.has(entryKey(market, entry)) ? text('安装中…', 'Installing…') : text('安装', 'Install')}</Button>}
-                </article>)}</div>
-              </section>)}
-              {(standalone.length > 0 || !catalogSections.length) && <section className="kv-market-section">
-                <h2>{text('个人插件', 'Personal plugins')}</h2>
-                {standalone.length ? <div className="kv-market-rows">{standalone.map(plugin => (
-                  <article className="kv-market-row" key={plugin.id}>
-                    <button type="button" className="kv-market-row-info" onClick={() => openPackage(plugin)}>
-                      <PluginIcon src={packageIcon(plugin)} /><span className="min-w-0"><strong>{plugin.name}</strong><span>{plugin.description}</span></span>
-                    </button>
-                    <IconButton variant="ghost" label={text(`${plugin.name} 更多操作`, `More options for ${plugin.name}`)} onClick={() => openPackage(plugin)}><MoreHorizontal size={16} /></IconButton>
-                  </article>
-                ))}</div> : <div className="kv-market-empty"><DefaultPluginIcon size={28} strokeWidth={1.75} />
-                  <p>{query.trim() ? text('没有找到相关插件', 'No matching plugins') : text('添加你自己的插件', 'Add your own plugins')}</p>
-                  {!query.trim() && <Button size="sm" onClick={() => setMarketDialog('add')}>{text('添加插件市场', 'Add marketplace')}</Button>}
-                </div>}
-              </section>}
+              {catalogSections.map(({ market, entries }) => renderSection(`market:${market.id}`, market.name, entries.map(entry => {
+                const installedPackage = entryPackage(market, entry)
+                const key = entryKey(market, entry)
+                return marketRow(entry.name, <PluginIcon src={claudeMarketplaceIcon(market.source, entry.name)} />, entry.displayName, entry.description || entry.unavailableReason,
+                  () => { if (installedPackage) openPackage(installedPackage); else window.location.hash = marketDetailHash(key) },
+                  installedPackage ? moreButton(entry.displayName, () => openPackage(installedPackage))
+                    : entry.unavailableReason ? <Button size="sm" onClick={() => { window.location.hash = marketDetailHash(key) }}>{text('查看原因', 'Details')}</Button>
+                    : installButton(busyIds.has(key), () => void runInstallEntry(market, entry)))
+              })))}
+              {standalone.length > 0 && renderSection('standalone', text('个人插件', 'Personal plugins'), standalone.map(plugin =>
+                marketRow(plugin.id, <PluginIcon src={packageIcon(plugin)} />, plugin.name, plugin.description, () => openPackage(plugin), moreButton(plugin.name, () => openPackage(plugin)))))}
+              {!catalogSections.length && !standalone.length && <div className="kv-market-empty"><DefaultPluginIcon size={28} strokeWidth={1.75} />
+                <p>{query.trim() ? text('没有找到相关插件', 'No matching plugins') : text('添加你自己的插件', 'Add your own plugins')}</p>
+                {!query.trim() && <Button size="sm" onClick={() => setMarketDialog('add')}>{text('添加插件市场', 'Add marketplace')}</Button>}
+              </div>}
               </>
             ) : loading && !snapshot.plugins.length ? (
               <div className="kv-market-rows" aria-busy="true">{[0, 1, 2, 3].map((i) => <div key={i} className="kv-skeleton kv-market-skeleton" />)}</div>
@@ -487,50 +500,21 @@ export function MarketPage({ onUse, onSkillsChanged, heading }: MarketPageProps)
                 <p>{query.trim() ? text('没有找到相关插件', 'No matching plugins') : text('暂无插件', 'No plugins yet')}</p>
                 {query.trim() && <Button size="sm" onClick={() => setQuery('')}>{text('查看全部', 'Show all')}</Button>}
               </div>
-            ) : sections.map((section) => (
-              <section className="kv-market-section" key={section.id}>
-                <h2>{section.name}</h2>
-                {!collapsed[section.id] && (
-                  <div className="kv-market-rows">
-                    {section.items.map((plugin) => (
-                      <article className="kv-market-row" key={plugin.manifest.id}>
-                        <button type="button" className="kv-market-row-info" onClick={() => { window.location.hash = marketDetailHash(plugin.manifest.id) }}>
-                          <PluginIcon plugin={plugin} />
-                          <span className="min-w-0">
-                            <strong>{plugin.manifest.name}</strong>
-                            <span>{plugin.manifest.summary}</span>
-                          </span>
-                        </button>
-                        <span className="kv-market-row-actions">
-                          {statusText(plugin) && <span className="kv-market-status">{statusText(plugin)}</span>}
-                          {plugin.local?.status === 'ready' ? <IconButton variant="ghost"
-                            label={text(`${plugin.manifest.name} 更多操作`, `More options for ${plugin.manifest.name}`)}
-                            onClick={() => { window.location.hash = marketDetailHash(plugin.manifest.id) }}><MoreHorizontal size={16} /></IconButton> : primaryButton(plugin)}
-                        </span>
-                      </article>
-                    ))}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  className="kv-market-collapse"
-                  aria-expanded={!collapsed[section.id]}
-                  onClick={() => setCollapsed((current) => ({ ...current, [section.id]: !current[section.id] }))}
-                >
-                  {collapsed[section.id] ? text('展开', 'Expand') : text('收起', 'Collapse')}
-                </button>
-              </section>
-            ))}
+            ) : sections.map((section) => renderSection(section.id, section.name, section.items.map((plugin) => {
+              const open = () => { window.location.hash = marketDetailHash(plugin.manifest.id) }
+              const status = statusText(plugin)
+              return marketRow(plugin.manifest.id, <PluginIcon plugin={plugin} />, plugin.manifest.name, plugin.manifest.summary, open, <>
+                {status && <span className="kv-market-status">{status}</span>}
+                {plugin.local?.status === 'ready' ? moreButton(plugin.manifest.name, open)
+                  : pluginAction(plugin) === 'install' ? installButton(busyIds.has(plugin.manifest.id), () => void runCatalogPlugin(plugin))
+                  : primaryButton(plugin)}
+              </>)
+            })))}
             </div>
           </>
         )}
         {actionError && <ErrorNotice message={actionError} />}
       </div>
-      {addMenu && <DockContextMenu anchor={addMenu} onClose={() => setAddMenu(null)} items={[
-        { key: 'marketplace', label: text('添加插件市场', 'Add marketplace'), icon: <Plus size={16} />, onSelect: () => setMarketDialog('add') },
-        { key: 'local', label: text('从本地目录导入', 'Import from a folder'), icon: <FolderOpen open size={16} />, onSelect: () => setImportKind('local') },
-        { key: 'git', label: text('从 Git 仓库导入', 'Import from Git'), icon: <GitBranch size={16} />, onSelect: () => setImportKind('git') },
-      ]} />}
       {marketDialog && <MarketplaceDialog mode={marketDialog} zh={zh} onClose={() => setMarketDialog(null)} />}
       {importKind && <PluginImportDialog kind={importKind} zh={zh} onClose={() => setImportKind(null)} />}
     </section>

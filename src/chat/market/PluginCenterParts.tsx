@@ -13,11 +13,9 @@ export function CenterHeader({ heading, subtitle, actions }: {
 }) {
   return (
     <header className="kv-market-heading">
-      <div className="min-w-0">
-        {heading}
-        <p>{subtitle}</p>
-      </div>
+      <div className="kv-market-heading-title">{heading}</div>
       <div className="kv-market-toolbar" data-tauri-drag-region="false">{actions}</div>
+      <p>{subtitle}</p>
     </header>
   )
 }

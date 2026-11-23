@@ -338,13 +338,35 @@ describe('MarketPage', () => {
     vi.mocked(marketApi.install).mockResolvedValue(snapshot(plugin({ status: 'ready', enabled: true, error: null })))
     render(<MarketPage onUse={vi.fn()} onSkillsChanged={onSkillsChanged} />)
     await screen.findByText('效率办公')
-    expect(screen.getByText('还没有安装插件')).toBeInTheDocument()
+    // 没有已安装插件时不占位，列表直接从分组开始。
+    expect(screen.queryByRole('heading', { name: '已安装' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '安装' }))
     await waitFor(() => expect(marketApi.install).toHaveBeenCalledWith('feishu-cli'))
     fireEvent.click(await screen.findByRole('button', { name: '飞书 CLI' }))
     await screen.findByRole('button', { name: '使用' })
     expect(screen.getByRole('heading', { name: '飞书 CLI' })).toBeInTheDocument()
     expect(onSkillsChanged).toHaveBeenCalled()
+  })
+
+  it('previews six plugins per category, expands from the heading and shows every match while searching', async () => {
+    const many = Array.from({ length: 8 }, (_, i) => {
+      const item = plugin()
+      return { ...item, manifest: { ...item.manifest, id: `tool-${i}`, name: `Tool ${i}`, summary: `Summary ${i}` } }
+    })
+    vi.mocked(marketApi.snapshot).mockResolvedValue({ categories: [{ id: 'productivity', name: '效率办公' }], plugins: many })
+    render(<MarketPage onUse={vi.fn()} onSkillsChanged={vi.fn()} />)
+    const heading = await screen.findByRole('button', { name: '效率办公' })
+    expect(screen.getAllByRole('button', { name: '安装' })).toHaveLength(6)
+    expect(screen.queryByText('Tool 7')).not.toBeInTheDocument()
+    fireEvent.click(heading)
+    expect(heading).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getAllByRole('button', { name: '安装' })).toHaveLength(8)
+    fireEvent.click(heading)
+    fireEvent.change(screen.getByLabelText('搜索插件'), { target: { value: 'tool' } })
+    expect(screen.getAllByRole('button', { name: '安装' })).toHaveLength(8)
+    expect(screen.queryByRole('button', { name: '效率办公' })).not.toBeInTheDocument()
+    // 搜索词会跨页面保留，清掉以免影响后续用例。
+    fireEvent.change(screen.getByLabelText('搜索插件'), { target: { value: '' } })
   })
 
   it('surfaces install failures without claiming success', async () => {
