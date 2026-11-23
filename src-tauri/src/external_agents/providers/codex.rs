@@ -88,6 +88,7 @@ pub(crate) fn launch_config(
 pub(crate) fn is_missing_codex_thread_error(raw: &str) -> bool {
     let hay = raw.to_ascii_lowercase();
     hay.contains("thread not found")
+        || hay.contains("no rollout found for thread id")
         || hay.contains("unknown thread")
         || hay.contains("no such thread")
         || hay.contains("thread does not exist")
@@ -174,6 +175,9 @@ mod tests {
     #[test]
     fn missing_codex_thread_is_recognized() {
         assert!(is_missing_codex_thread_error("thread not found: thr_abc"));
+        assert!(is_missing_codex_thread_error(
+            "thread-start: no rollout found for thread id thr_abc"
+        ));
         assert!(is_missing_codex_thread_error("Unknown thread"));
         assert!(!is_missing_codex_thread_error(
             "codex app-server handshake timeout"

@@ -5,27 +5,30 @@ import { Button, IconButton } from '../components/Button'
 import { i18n, useLang } from '../components/i18n'
 import type { DetectedExternalAgent } from '../api/externalCliSettings'
 import { cliCreditAmount, cliRemaining, cliResetTime, cliWindowLabel } from '../api/cliAccountFormat'
+import { useChatCliAccountScope, type CliAccountConversation } from './useChatCliAccountScope'
 import { useCliAccount } from '../api/useCliAccount'
 import { usePopoverMenu } from './usePopoverMenu'
 import { useClampedMenuPosition } from './useClampedMenuPosition'
 
 /** One read-only account view shared by the main and independent chat titlebars. */
-export function ExternalCliAccount({ agent, conversationId }: {
+export function ExternalCliAccount({ agent, conversation, draftProjectId }: {
   agent: Pick<DetectedExternalAgent, 'id' | 'name' | 'capabilities'> | undefined
-  conversationId?: string | null
+  conversation?: CliAccountConversation | null
+  draftProjectId?: string | null
 }) {
   const agentId = agent?.capabilities.account === 'native' ? agent.id : undefined
   const lang = useLang()
   const zh = lang === 'zh'
   const t = i18n[lang]
   const [open, setOpen] = useState(false)
-  const { account: status, loading, error, refresh } = useCliAccount(agentId, conversationId)
+  const target = useChatCliAccountScope(conversation, draftProjectId)
+  const { account: status, loading, error, refresh } = useCliAccount(agentId, target, conversation?.id)
   const [anchor, setAnchor] = useState({ left: 0, top: 0 })
   const menu = useRef<HTMLDivElement>(null)
   const hasWindows = Boolean(status?.windows.length)
   const position = useClampedMenuPosition(menu, anchor)
   usePopoverMenu(open, () => setOpen(false), menu)
-  useEffect(() => { setOpen(false) }, [agentId, conversationId, hasWindows])
+  useEffect(() => { setOpen(false) }, [agentId, conversation?.id, target, hasWindows])
   // 非账号登录（API key 等）读不到额度：圆环没有可画的数据，整个不显示。
   if (!status?.windows.length) return null
   const resetLabel = (value: string | number | null) => {

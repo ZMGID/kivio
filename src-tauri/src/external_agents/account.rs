@@ -103,6 +103,11 @@ pub(super) struct ProbeReading {
     definitively_unavailable: bool,
 }
 
+pub(super) fn unavailable_snapshot(agent: &str, reason: &str) -> Value {
+    json!({"agentId":agent,"account":null,"windows":[],"credits":null,
+        "unavailable":reason,"checkedAt":chrono::Utc::now().timestamp()})
+}
+
 fn reading(
     agent: &str,
     protocol: AccountProtocol,

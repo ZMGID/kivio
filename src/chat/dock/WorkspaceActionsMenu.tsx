@@ -780,7 +780,7 @@ function WorkspaceActionsPanel({
           )}
 
           {show.usage && usage && (
-            <WorkspaceUsageSection source={usage} conversationId={conversationId} active={open} lang={lang} />
+            <WorkspaceUsageSection source={usage} active={open} lang={lang} />
           )}
           {show.context && <WorkspaceContextSection contextState={contextState ?? null} lang={lang} />}
         </div>,

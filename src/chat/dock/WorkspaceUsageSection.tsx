@@ -8,6 +8,7 @@ import { notifyError } from '../../components/appNoticeStore'
 import { peekSettings } from '../../api/settingsCache'
 import { cliRemaining, cliResetTime, cliWindowLabel } from '../../api/cliAccountFormat'
 import { useCliAccount } from '../../api/useCliAccount'
+import { useChatCliAccountScope, type CliAccountConversation } from '../useChatCliAccountScope'
 import { reportedContextTokens, CONTEXT_CRITICAL_PERCENT, CONTEXT_WARNING_PERCENT } from '../contextPanel'
 import { formatTokens } from '../../utils/tokens'
 import type { ConversationContextState } from '../types'
@@ -18,6 +19,8 @@ export type WorkspaceUsageSource = {
   externalAgentId: string | null
   /** 外部 CLI 支持读取账号额度。 */
   externalAccount: boolean
+  conversation: CliAccountConversation | null
+  draftProjectId?: string | null
 }
 
 type UsageWindow = { label: string; remaining: number | null; detail: string }
@@ -57,12 +60,13 @@ function Heading({ children }: { children: string }) {
 }
 
 /** 读取当前模型账号的额度窗口；不支持额度的供应商返回空数组。 */
-function useUsageWindows(source: WorkspaceUsageSource, conversationId: string | null, active: boolean, lang: Lang) {
+function useUsageWindows(source: WorkspaceUsageSource, active: boolean, lang: Lang) {
   const [oauthWindows, setOauthWindows] = useState<UsageWindow[] | null>(null)
   const zh = lang === 'zh'
   const t = i18n[lang]
   const { providerId, externalAgentId, externalAccount } = source
-  const { account, error, loading } = useCliAccount(active && externalAccount ? externalAgentId : null, conversationId)
+  const target = useChatCliAccountScope(source.conversation, source.draftProjectId)
+  const { account, error, loading } = useCliAccount(active && externalAccount ? externalAgentId : null, target)
   useEffect(() => {
     setOauthWindows(null)
     if (!active || externalAgentId) return
@@ -97,14 +101,13 @@ function useUsageWindows(source: WorkspaceUsageSource, conversationId: string | 
   return { windows, error: error ?? account?.unavailable ?? null }
 }
 
-export function WorkspaceUsageSection({ source, conversationId, active, lang }: {
+export function WorkspaceUsageSection({ source, active, lang }: {
   source: WorkspaceUsageSource
-  conversationId: string | null
   active: boolean
   lang: Lang
 }) {
   const t = i18n[lang]
-  const { windows, error } = useUsageWindows(source, conversationId, active, lang)
+  const { windows, error } = useUsageWindows(source, active, lang)
   if (active && !source.externalAgentId && peekSettings()?.providers.find(item => item.id === source.providerId)?.request.oauth?.provider === 'chatgpt') {
     return <PanelSection>
       <Heading>{t.workspaceItemUsage}</Heading>

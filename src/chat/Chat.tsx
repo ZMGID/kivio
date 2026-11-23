@@ -2604,7 +2604,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     <ConversationTitlebarControls
       activeAgentRuntime={activeAgentRuntime}
       externalAgent={activeExternalAgent}
-      conversationId={currentConversation?.id ?? null}
+      draftProjectId={selectedProject?.id}
+      conversation={currentConversation}
       runtimeLocked={Boolean(currentConversation?.runtime_locked) || conversationOccupied}
       usesExternalRuntime={usesExternalRuntime}
       usesChatRuntime={usesChatRuntime}
@@ -2650,6 +2651,8 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
         }
       })()}
       usage={{
+        conversation: currentConversation,
+        draftProjectId: selectedProject?.id,
         providerId: activeProviderId,
         externalAgentId: usesExternalRuntime ? activeAgentRuntime.externalAgentId ?? null : null,
         externalAccount: activeExternalAgent?.capabilities.account === 'native',
@@ -2685,6 +2688,7 @@ export default function Chat({ onSettingsChange, onContentReady }: ChatProps) {
     draftWorktree,
     composerDraftSetters,
     contextState,
+    selectedProject?.id,
     selectedProject?.name,
     streamCoarse.streaming,
     streamCoarse.streamFrozen,

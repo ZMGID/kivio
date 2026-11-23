@@ -284,7 +284,20 @@ fn codex_fingerprint(home: &Path, cwd: &Path) -> Option<String> {
         return None;
     }
     let tokens = &auth["tokens"];
-    fingerprint(&(home, cwd, &tokens["account_id"], &tokens["id_token"]))
+    // A different provider endpoint can report limits for a different recipient
+    // with the same local login. Bind disk reads to the same routes as live slots.
+    let routes = provider_profile::configured_credentials(
+        super::super::types::ProviderProfileStrategy::Codex,
+        &serde_json::to_value(&config).ok()?,
+        &std::hash::BuildHasherDefault::<std::hash::DefaultHasher>::default(),
+    );
+    fingerprint(&(
+        home,
+        cwd,
+        &tokens["account_id"],
+        &tokens["id_token"],
+        routes,
+    ))
 }
 
 fn file_absent(path: &Path) -> bool {
@@ -455,7 +468,7 @@ key = "oauth/kimi-code"
                     (identity, self.workspace.clone()),
                     mode,
                     Instant::now(),
-                    || Ok(()),
+                    |_| Ok(()),
                     || ready(probe()),
                     self.disk().as_ref(),
                 )
@@ -474,6 +487,71 @@ key = "oauth/kimi-code"
             }),
             definitively_unavailable: false,
         }
+    }
+
+    #[tokio::test]
+    async fn first_send_keeps_project_quota_after_native_writes_and_drops_changed_owners() {
+        // Isolate the process environment used by the real peek and validation paths.
+        const CHILD: &str = "KIVIO_TEST_QUOTA_FIRST_SEND";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    std::thread::current().name().unwrap(),
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env_remove("CODEX_ACCESS_TOKEN")
+                .env_remove("CODEX_API_KEY")
+                .env_remove("OPENAI_API_KEY")
+                .env_remove("OPENAI_IDENTITY_TOKEN_FILE")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            return;
+        }
+        let profile = Profile::new("codex");
+        let home = &profile.home;
+        let cwd = &profile.workspace;
+        std::env::set_var("CODEX_HOME", home);
+        let def = get_agent_def("codex").unwrap();
+        let bin = std::env::current_exe().unwrap();
+        let cache = AccountSnapshots::default();
+        let disk = PersistedQuota::for_cli(None, def, &bin, cwd).unwrap();
+        let captured = LaunchIdentity::capture(def, &bin);
+        let native = home.join("config.toml");
+        let (published, updated) = cache
+            .read(
+                def.id,
+                (captured.clone(), cwd.clone()),
+                AccountSnapshotMode::Automatic,
+                Instant::now(),
+                |launch| launch.ensure_current(def, &bin),
+                || async {
+                    fs::write(&native, "[projects.example]\ntrust_level='trusted'\n").unwrap();
+                    Ok(reported())
+                },
+                Some(&disk),
+            )
+            .await
+            .unwrap();
+        assert!(updated);
+        assert_eq!(published.as_ref().unwrap()["windows"][0]["usedPercent"], 51);
+        assert!(captured.ensure_current(def, &bin).is_err());
+        let peek = || cache.peek(def, cwd, AccountSnapshotMode::Cached, Instant::now());
+        assert_eq!(peek(), published);
+        fs::write(&native, "model_provider='another'").unwrap();
+        assert_eq!(peek(), None);
+        assert!(!disk.matches_current_profile());
+        fs::remove_file(native).unwrap();
+        assert_eq!(peek(), published);
+        fs::remove_file(home.join("auth.json")).unwrap();
+        assert_eq!(peek(), None);
     }
 
     #[tokio::test]

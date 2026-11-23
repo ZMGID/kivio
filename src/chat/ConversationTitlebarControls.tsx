@@ -6,6 +6,7 @@ import { i18n, type Lang } from '../components/i18n'
 import { AgentModelPicker } from './AgentModelPicker'
 import { PermissionPicker } from './PermissionPicker'
 import { ExternalCliAccount } from './ExternalCliAccount'
+import type { CliAccountConversation } from './useChatCliAccountScope'
 import { SidebarToggleIcon } from './SidebarToggleIcon'
 import { usesNativeTitlebar } from './platform'
 import { WorkspaceActionsMenu, type WorkspaceEnvironment } from './dock/WorkspaceActionsMenu'
@@ -16,7 +17,8 @@ import type { AgentRuntimeConfig, ConversationContextState, DetectedExternalAgen
 export interface ConversationTitlebarControlsProps {
   activeAgentRuntime: AgentRuntimeConfig
   externalAgent?: DetectedExternalAgent
-  conversationId: string | null
+  conversation: CliAccountConversation | null
+  draftProjectId?: string | null
   /** 有消息、或主窗已被弹出占住：锁死 kind / agent。 */
   runtimeLocked: boolean
   usesExternalRuntime: boolean
@@ -53,7 +55,8 @@ export interface ConversationTitlebarControlsProps {
 export const ConversationTitlebarControls = memo(function ConversationTitlebarControls({
   activeAgentRuntime,
   externalAgent,
-  conversationId,
+  conversation,
+  draftProjectId,
   runtimeLocked,
   usesExternalRuntime,
   usesChatRuntime,
@@ -82,6 +85,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
   contextState,
 }: ConversationTitlebarControlsProps) {
   // 工作区面板对所有 agent 对话可用；无项目对话里不含 Git，且默认收起（见 WorkspaceActionsMenu）。
+  const conversationId = conversation?.id ?? null
   const showWorkspace = !usesChatRuntime
   return (
     <>
@@ -113,7 +117,7 @@ export const ConversationTitlebarControls = memo(function ConversationTitlebarCo
         </div>
         {usesExternalRuntime && (
           <div className="shrink-0" data-tauri-drag-region="false">
-            <ExternalCliAccount agent={externalAgent} conversationId={conversationId} />
+            <ExternalCliAccount agent={externalAgent} conversation={conversation} draftProjectId={draftProjectId} />
           </div>
         )}
       </div>

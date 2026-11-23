@@ -695,11 +695,12 @@ pub async fn chat_external_cli_account(
     state: tauri::State<'_, AppState>,
     agent_id: String,
     conversation_id: Option<String>,
+    project_id: Option<String>,
     mode: Option<super::account::AccountSnapshotMode>,
 ) -> Result<Option<serde_json::Value>, String> {
     use super::{
         account::{self, AccountSnapshotMode, PersistedQuota},
-        overrides::LaunchIdentity,
+        overrides::{launch_revision, LaunchIdentity},
         types::AccountProtocol,
     };
     let requested = std::time::Instant::now();
@@ -707,58 +708,80 @@ pub async fn chat_external_cli_account(
     let def = get_agent_def(&agent_id).ok_or("未知 CLI")?;
     let probe = def.account.ok_or("此 CLI 未提供账号额度查询")?;
     // These two reports read the CLI profile's account, independent of the chat workspace.
-    let project = match probe.protocol {
-        AccountProtocol::KimiWeb | AccountProtocol::AntigravityUsage => None,
-        _ => conversation_id.as_deref(),
+    let (conversation, project) = match probe.protocol {
+        AccountProtocol::KimiWeb | AccountProtocol::AntigravityUsage => (None, None),
+        _ => (conversation_id.as_deref(), project_id.as_deref()),
     };
-    let cwd = resolve_detection_cwd(&app, project)?;
-    let scope = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-    let disk_path = if project.is_none() {
+    let unavailable = |reason: &str| {
+        (mode != AccountSnapshotMode::Cached).then(|| account::unavailable_snapshot(def.id, reason))
+    };
+    let disk_path = if conversation.is_none() && project.is_none() {
         PersistedQuota::path(&state.usage_dir, def)
     } else {
         None
     };
-    if mode != AccountSnapshotMode::Refresh {
-        if let Some(cached) = state.external_accounts.peek(def, &scope, mode, requested) {
-            return Ok(Some(cached));
-        }
-        if mode == AccountSnapshotMode::Cached
-            && !disk_path.as_ref().is_some_and(|path| path.is_file())
-        {
-            return Ok(None);
-        }
-    }
-    let bin = crate::external_agents::spawn::resolve_binary(def)
-        .await
-        .ok_or("CLI 未安装或不在 PATH")?;
     for _ in 0..2 {
-        let identity = LaunchIdentity::capture(def, &bin);
+        let cwd = match (conversation, project) {
+            (None, Some(id)) => crate::chat::storage::find_project_by_id(&app, id)
+                .and_then(super::workspace::project_cli_root),
+            _ => resolve_detection_cwd(&app, conversation),
+        };
+        let cwd = match cwd {
+            Ok(cwd) => cwd,
+            Err(reason) => return Ok(unavailable(&reason)),
+        };
+        let scope = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+        if mode != AccountSnapshotMode::Refresh {
+            if let Some(cached) = state.external_accounts.peek(def, &scope, mode, requested) {
+                return Ok(Some(cached));
+            }
+            if mode == AccountSnapshotMode::Cached
+                && !disk_path.as_ref().is_some_and(|path| path.is_file())
+            {
+                return Ok(None);
+            }
+        }
+        let Some(revision) = launch_revision(def.id) else {
+            continue;
+        };
+        let resolved = super::spawn::resolve_binary(def)
+            .await
+            .map(|bin| (LaunchIdentity::capture(def, &bin), bin));
+        if launch_revision(def.id) != Some(revision) {
+            continue;
+        }
+        let Some((identity, bin)) = resolved else {
+            return Ok(unavailable("CLI 未安装或不在 PATH"));
+        };
         let disk = PersistedQuota::for_cli(disk_path.clone(), def, &bin, &scope);
-        let (snapshot, updated) = state
+        // A mismatched launch or credential invalidates the entire acquisition.
+        // Resolve again from scratch; a previous owner's report must never be published.
+        let Ok((snapshot, updated)) = state
             .external_accounts
             .read(
                 def.id,
-                (identity.clone(), scope.clone()),
+                (identity, scope),
                 mode,
                 requested,
-                || identity.ensure_current(def, &bin),
+                |launch| launch.ensure_current(def, &bin),
                 || async {
                     let _resource = super::session::live::ResourceLease::pending(def.id)?;
                     account::probe(def, probe, &bin, &cwd).await
                 },
                 disk.as_ref(),
             )
-            .await?;
+            .await
+        else {
+            continue;
+        };
         if updated {
             let _ = app.emit("external-cli-account-updated", def.id);
         }
         if snapshot.is_some() || mode == AccountSnapshotMode::Cached {
             return Ok(snapshot);
         }
-        // A CLI can replace its credential during a quota read, including OAuth refresh.
-        // Reprobe once with the new owner instead of publishing under the previous login.
     }
-    Err("CLI 登录状态已变更，请刷新额度".into())
+    Ok(unavailable("CLI 账号或启动配置持续变更，请重新刷新额度"))
 }
 
 #[derive(serde::Serialize)]
@@ -788,6 +811,7 @@ pub(crate) async fn chat_external_cli_redeem_codex_reset_credit(
         app,
         state,
         def.id.into(),
+        None,
         None,
         Some(super::account::AccountSnapshotMode::Refresh),
     )

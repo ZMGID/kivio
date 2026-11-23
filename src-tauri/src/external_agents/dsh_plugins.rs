@@ -4,7 +4,7 @@
 mod config;
 use config::SettingsDocument;
 pub(crate) use config::{
-    native_settings_path, parse_cordis_yaml, preserve_legacy_launch_settings,
+    declared_settings, native_settings_path, parse_cordis_yaml, preserve_legacy_launch_settings,
     read_effective_settings, read_profile_settings, render_cordis_yaml,
 };
 

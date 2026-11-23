@@ -267,13 +267,16 @@ export interface ExternalCliAccount {
   nextRefreshAt?: number
 }
 
+export type CliAccountScope = string | { projectId: string } | null
+
 export type AccountSnapshotMode = 'cached' | 'automatic' | 'refresh'
 
 /** Settings and Chat share one transport owner for external CLI configuration. */
 export const externalCliSettingsApi = {
-  async getExternalCliAccount(agentId: string, conversationId?: string | null, mode: AccountSnapshotMode = 'automatic'): Promise<ExternalCliAccount | null> {
+  async getExternalCliAccount(agentId: string, scope?: CliAccountScope, mode: AccountSnapshotMode = 'automatic'): Promise<ExternalCliAccount | null> {
     if (!isTauriRuntime()) throw new Error('Account discovery requires the desktop app')
-    return invoke<ExternalCliAccount | null>('chat_external_cli_account', { agentId, conversationId, mode })
+    const target = scope && typeof scope === 'object' ? scope : { conversationId: scope }
+    return invoke<ExternalCliAccount | null>('chat_external_cli_account', { agentId, ...target, mode })
   },
   async redeemCodexResetCredit(target: CodexResetCreditTarget, availableCount: number) {
     return invoke<{ outcome: CodexResetCreditOutcome; refreshed: boolean }>(

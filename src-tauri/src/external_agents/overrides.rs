@@ -117,12 +117,18 @@ impl Drop for LaunchUpdate {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct LaunchIdentity {
+    owner: LaunchOwner,
+    profile: u64,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct LaunchOwner {
     agent: &'static str,
     binary: PathBuf,
     executable: Option<ExecutableRevision>,
     revision: Option<u64>,
     environment: u64,
-    profile: u64,
+    credentials: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -167,8 +173,8 @@ impl std::fmt::Debug for LaunchIdentity {
 }
 
 impl LaunchIdentity {
-    pub(super) fn binary_for(&self, agent: &str) -> Option<&Path> {
-        (self.agent == agent).then_some(self.binary.as_path())
+    pub(super) fn owner(&self) -> &LaunchOwner {
+        &self.owner
     }
 
     pub(crate) fn capture(def: &RuntimeAgentDef, bin: &Path) -> Self {
@@ -213,13 +219,17 @@ impl LaunchIdentity {
         config: Option<&ExternalCliAgentConfig>,
         env: &BTreeMap<OsString, OsString>,
     ) -> Self {
+        let files = provider_profile::launch_file_revision(def, bin, config, env, &*LAUNCH_HASHER);
         Self {
-            agent: def.id,
-            binary: bin.to_owned(),
-            executable: ExecutableRevision::read(bin),
-            revision,
-            environment: LAUNCH_HASHER.hash_one(env),
-            profile: provider_profile::launch_file_revision(def, bin, config, env, &*LAUNCH_HASHER),
+            owner: LaunchOwner {
+                agent: def.id,
+                binary: bin.to_owned(),
+                executable: ExecutableRevision::read(bin),
+                revision,
+                environment: LAUNCH_HASHER.hash_one(env),
+                credentials: files.credentials,
+            },
+            profile: files.profile,
         }
     }
 
@@ -228,30 +238,40 @@ impl LaunchIdentity {
     }
 
     pub(crate) fn ensure_current(&self, def: &RuntimeAgentDef, bin: &Path) -> Result<(), String> {
-        self.compare_current(def, bin, false).map(|_| ())
+        let current = Self::capture(def, bin);
+        self.owner.validate(&current.owner)?;
+        if self.profile != current.profile {
+            return Err("external CLI launch configuration changed (native profile); retry".into());
+        }
+        Ok(())
     }
 
-    /// Codex reads its native profile at process launch. A pre-dispatch reconnect may use a
-    /// newer profile, but must never reuse arguments prepared for different host settings.
-    pub(crate) fn refreshed_native_profile(
+    pub(super) fn snapshot_for_argv(
         &self,
         def: &RuntimeAgentDef,
         bin: &Path,
-    ) -> Result<Self, String> {
-        self.compare_current(def, bin, true)
-    }
-
-    fn compare_current(
-        &self,
-        def: &RuntimeAgentDef,
-        bin: &Path,
-        allow_profile_change: bool,
     ) -> Result<Self, String> {
         let current = Self::capture(def, bin);
+        self.owner.validate(&current.owner)?;
+        Ok(current)
+    }
+}
+impl LaunchOwner {
+    pub(super) fn binary_for(&self, agent: &str) -> Option<&Path> {
+        (self.agent == agent).then_some(self.binary.as_path())
+    }
+
+    /// A matched session may write its native configuration while starting. The launch
+    /// still belongs to this turn only while the host settings and credentials agree.
+    pub(super) fn ensure_current(&self, def: &RuntimeAgentDef, bin: &Path) -> Result<(), String> {
+        self.validate(LaunchIdentity::capture(def, bin).owner())
+    }
+
+    fn validate(&self, current: &Self) -> Result<(), String> {
         let changed = if self.revision.is_none()
             || current.revision.is_none()
             || self.revision != current.revision
-            || current.revision != launch_revision(def.id)
+            || current.revision != launch_revision(current.agent)
         {
             Some("settings")
         } else if self.agent != current.agent
@@ -261,8 +281,8 @@ impl LaunchIdentity {
             Some("executable")
         } else if self.environment != current.environment {
             Some("environment")
-        } else if !allow_profile_change && self.profile != current.profile {
-            Some("native profile")
+        } else if self.credentials != current.credentials {
+            Some("credentials")
         } else {
             None
         };
@@ -270,7 +290,7 @@ impl LaunchIdentity {
             Some(reason) => Err(format!(
                 "external CLI launch configuration changed ({reason}); retry"
             )),
-            None => Ok(current),
+            None => Ok(()),
         }
     }
 }
@@ -483,6 +503,7 @@ mod tests {
         std::fs::write(&auth, b"new account").unwrap();
         let second = capture(&environment);
         assert_ne!(first, second);
+        assert!(first.owner != second.owner);
 
         environment.insert("OPENAI_API_KEY".into(), "fixture-key".into());
         let third = capture(&environment);
@@ -509,20 +530,25 @@ mod tests {
         .unwrap();
         assert_eq!(first, capture());
 
-        for setting in [
-            "model_provider = 'relay'",
-            "[model_providers.relay]\nbase_url = 'https://example.com/v1'",
-            "[mcp_servers.node]\ncommand = 'node'",
-            "approval_policy = 'never'",
-            "sandbox_mode = 'read-only'",
-            "[projects.'d:\\work']\ntrust_level = 'trusted'",
-            "[hooks.state.plugin]\ntrusted_hash = 'h'",
-            "[plugins.example]\nenabled = true",
-            "unknown_future_setting = true",
-            "invalid toml",
+        for (setting, same_owner) in [
+            ("model_provider = 'relay'", false),
+            (
+                "[model_providers.relay]\nbase_url = 'https://example.com/v1'",
+                false,
+            ),
+            ("[mcp_servers.node]\ncommand = 'node'", true),
+            ("approval_policy = 'never'", true),
+            ("sandbox_mode = 'read-only'", true),
+            ("[projects.'d:\\work']\ntrust_level = 'trusted'", true),
+            ("[hooks.state.plugin]\ntrusted_hash = 'h'", true),
+            ("[plugins.example]\nenabled = true", true),
+            ("unknown_future_setting = true", true),
+            ("invalid toml", false),
         ] {
             std::fs::write(&config, setting).unwrap();
-            assert_ne!(first, capture(), "{setting}");
+            let changed = capture();
+            assert_ne!(first, changed, "{setting}");
+            assert_eq!(first.owner == changed.owner, same_owner, "{setting}");
         }
     }
 

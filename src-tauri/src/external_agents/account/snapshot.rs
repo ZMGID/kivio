@@ -9,7 +9,10 @@ use std::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::super::{overrides::LaunchIdentity, types::RuntimeAgentDef};
+use super::super::{
+    overrides::{LaunchIdentity, LaunchOwner},
+    types::RuntimeAgentDef,
+};
 use super::{CodexResetTarget, PersistedQuota, ProbeReading};
 
 const AUTOMATIC_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
@@ -65,11 +68,7 @@ impl Slot {
                     && !reading.definitively_unavailable;
                 (reading.snapshot, failed)
             }
-            Err(error) => (
-                json!({"agentId":agent,"account":null,"windows":[],"credits":null,
-                    "unavailable":error,"checkedAt":chrono::Utc::now().timestamp()}),
-                true,
-            ),
+            Err(error) => (super::unavailable_snapshot(agent, &error), true),
         };
         if failed {
             if let Some(previous) =
@@ -114,7 +113,41 @@ fn same_reported_account(previous: &Value, next: &Value) -> bool {
     })
 }
 
-type SlotKey = (LaunchIdentity, PathBuf, Option<String>);
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(in crate::external_agents) enum AccountLaunch {
+    Identified(LaunchOwner),
+    Unverified(LaunchIdentity),
+}
+
+impl AccountLaunch {
+    fn new(identity: LaunchIdentity, disk: Option<&PersistedQuota>) -> Self {
+        if disk.is_some() {
+            Self::Identified(identity.owner().clone())
+        } else {
+            Self::Unverified(identity)
+        }
+    }
+
+    fn owner(&self) -> &LaunchOwner {
+        match self {
+            Self::Identified(owner) => owner,
+            Self::Unverified(identity) => identity.owner(),
+        }
+    }
+
+    pub(in crate::external_agents) fn ensure_current(
+        &self,
+        def: &RuntimeAgentDef,
+        bin: &Path,
+    ) -> Result<(), String> {
+        match self {
+            Self::Identified(owner) => owner.ensure_current(def, bin),
+            Self::Unverified(identity) => identity.ensure_current(def, bin),
+        }
+    }
+}
+
+type SlotKey = (AccountLaunch, PathBuf, Option<String>);
 
 /// The desktop process owns quotas across webviews. Project-sensitive profiles
 /// stay isolated by cwd, and native launch changes make old snapshots unreachable.
@@ -138,14 +171,14 @@ impl AccountSnapshots {
             let ((identity, _, owner), (_, slot)) = slots
                 .iter()
                 .filter(|((identity, scope, _), _)| {
-                    scope == cwd && identity.binary_for(def.id).is_some()
+                    scope == cwd && identity.owner().binary_for(def.id).is_some()
                 })
                 .max_by_key(|(_, (accessed, _))| *accessed)?;
             (identity.clone(), owner.clone(), slot.clone())
         };
         let snapshot = slot.snapshot(mode, requested)?;
-        let binary = identity.binary_for(def.id)?;
-        if !identity.still_current(def, binary) {
+        let binary = identity.owner().binary_for(def.id)?;
+        if identity.ensure_current(def, binary).is_err() {
             return None;
         }
         let current = PersistedQuota::for_cli(None, def, binary, cwd);
@@ -182,15 +215,21 @@ impl AccountSnapshots {
         key: (LaunchIdentity, PathBuf),
         mode: AccountSnapshotMode,
         requested: Instant,
-        validate: impl Fn() -> Result<(), String>,
+        validate: impl Fn(&AccountLaunch) -> Result<(), String>,
         probe: impl FnOnce() -> F,
         disk: Option<&PersistedQuota>,
     ) -> Result<(Option<Value>, bool), String>
     where
         F: Future<Output = Result<ProbeReading, String>>,
     {
+        let launch = AccountLaunch::new(key.0, disk);
+        let validate = || validate(&launch);
         validate()?;
-        let key = (key.0, key.1, disk.map(|disk| disk.owner().to_owned()));
+        let key = (
+            launch.clone(),
+            key.1,
+            disk.map(|disk| disk.owner().to_owned()),
+        );
         let slot = match self.slot(key.clone(), AccountSnapshotMode::Cached) {
             Some(slot) => slot,
             None => {
@@ -277,7 +316,7 @@ mod tests {
                 key("default"),
                 mode,
                 requested,
-                || Ok(()),
+                |_| Ok(()),
                 || async {
                     probes.fetch_add(1, Ordering::Relaxed);
                     tokio::task::yield_now().await;
@@ -317,7 +356,7 @@ mod tests {
                 key("default"),
                 AccountSnapshotMode::Refresh,
                 Instant::now(),
-                || Ok(()),
+                |_| Ok(()),
                 || std::future::ready(next),
                 None,
             )
@@ -337,7 +376,7 @@ mod tests {
                 key("default"),
                 AccountSnapshotMode::Automatic,
                 Instant::now(),
-                || Ok(()),
+                |_| Ok(()),
                 || async { panic!("automatic failure retry must honor the interval") },
                 None,
             )
@@ -367,7 +406,7 @@ mod tests {
                 key("first"),
                 AccountSnapshotMode::Refresh,
                 Instant::now(),
-                || {
+                |_| {
                     current
                         .load(Ordering::Relaxed)
                         .then_some(())
@@ -387,7 +426,7 @@ mod tests {
                 key(scope),
                 AccountSnapshotMode::Cached,
                 Instant::now(),
-                || Ok(()),
+                |_| Ok(()),
                 || async { panic!("cache reads must never probe") },
                 None,
             )
@@ -399,7 +438,7 @@ mod tests {
                 key("first"),
                 AccountSnapshotMode::Refresh,
                 Instant::now(),
-                || Ok(()),
+                |_| Ok(()),
                 || async { Ok(report("b@example.test", 40, 200)) },
                 None,
             )

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { ExternalCliAccount } from './ExternalCliAccount'
+import { WorkspaceUsageSection } from './dock/WorkspaceUsageSection'
 import { externalCliSettingsApi, onExternalCliAccountUpdated, type ExternalCliAccount as Account } from '../api/externalCliSettings'
 import type { ProviderCapabilities } from '../generated/chatProtocol'
 import { peekSettings, subscribeSettings } from '../api/settingsCache'
@@ -41,9 +42,9 @@ it('reads quota on mount and ignores identity responses from a previous CLI', as
   get.mockResolvedValue({ agentId: 'test-cli', account: { email: 'current@example.test', type: 'firstParty', plan: 'max' },
     windows: [{ name: 'five_hour', usedPercent: 99, resetsAt: null, windowDurationMins: null }],
     credits: null, unavailable: null, checkedAt: 123 })
-  const view = render(<ExternalCliAccount agent={{ id: 'codex', name: 'Codex', capabilities }} conversationId="c1" />)
+  const view = render(<ExternalCliAccount agent={{ id: 'codex', name: 'Codex', capabilities }} conversation={{ id: 'c1', folder: 'Legacy' }} />)
   await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
-  view.rerender(<ExternalCliAccount agent={{ id: 'test-cli', name: 'Test CLI', capabilities }} conversationId="c2" />)
+  view.rerender(<ExternalCliAccount agent={{ id: 'test-cli', name: 'Test CLI', capabilities }} conversation={{ id: 'c2', folder: 'Legacy' }} />)
   await waitFor(() => expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 1%'))
   fireEvent.click(screen.getByRole('button', { name: 'CLI 账号与额度' }))
   await screen.findByText(/current@example\.test/)
@@ -66,7 +67,7 @@ it('refreshes changed CLI settings and discards the previous account response', 
     credits: null, unavailable: null, checkedAt: 1,
   }
   get.mockResolvedValue(current)
-  render(<ExternalCliAccount agent={{ id: 'codex', name: 'Codex', capabilities }} conversationId="configured" />)
+  render(<ExternalCliAccount agent={{ id: 'codex', name: 'Codex', capabilities }} conversation={{ id: 'configured', folder: 'Legacy' }} />)
   await waitFor(() => expect(get).toHaveBeenCalledTimes(1))
   const listener = vi.mocked(subscribeSettings).mock.calls[0][0]
   const settings = makeSettings()
@@ -86,7 +87,7 @@ it('renders a newer shared snapshot without requesting another probe', async () 
     windows: [{ name: 'five_hour', usedPercent: 5, resetsAt: null, windowDurationMins: 300 }],
   }
   get.mockResolvedValueOnce(reading)
-  render(<ExternalCliAccount agent={{ id: 'event-cli', name: 'Event CLI', capabilities }} conversationId="c1" />)
+  render(<ExternalCliAccount agent={{ id: 'event-cli', name: 'Event CLI', capabilities }} conversation={{ id: 'c1', folder: 'Legacy' }} />)
   await waitFor(() => expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 95%'))
 
   const listener = vi.mocked(onExternalCliAccountUpdated).mock.calls[0][0]
@@ -160,4 +161,32 @@ it('checks the local quota owner on focus and drops a late reply from the previo
   get.mockResolvedValueOnce(account(65))
   render(panel)
   await waitFor(() => expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 35%'))
+})
+
+it.each([null, 'first'])('keeps the quota on first send in scope %s and isolates a different project', async projectId => {
+  const agent = { id: `project-codex-${projectId}`, name: 'Codex', capabilities }
+  const report: Account = {
+    agentId: agent.id, account: null, credits: null, unavailable: null, checkedAt: 123,
+    windows: [{ name: 'Weekly', usedPercent: 32, resetsAt: null, windowDurationMins: null }],
+  }
+  get.mockResolvedValueOnce(report)
+  const view = render(<ExternalCliAccount agent={agent} draftProjectId={projectId} />)
+  const ring = await screen.findByRole('button', { name: 'CLI 账号与额度' })
+  expect(ring).toHaveAttribute('title', '剩余 68%')
+  const panel = render(<WorkspaceUsageSection source={{
+    providerId: '', externalAgentId: agent.id, externalAccount: true, conversation: null, draftProjectId: projectId,
+  }} active lang="en" />)
+  expect(await screen.findByText('68% left')).toBeVisible()
+  expect(get).toHaveBeenCalledTimes(1)
+  panel.unmount()
+  get.mockResolvedValueOnce(report)
+  view.rerender(<ExternalCliAccount agent={agent} conversation={{ id: 'first-message', project_id: projectId }} />)
+  expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 68%')
+  await waitFor(() => expect(get).toHaveBeenLastCalledWith(agent.id, projectId ? { projectId } : null, 'cached'))
+  expect(screen.getByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 68%')
+
+  get.mockResolvedValueOnce({ ...report, windows: [{ ...report.windows[0], usedPercent: 90 }] })
+  view.rerender(<ExternalCliAccount agent={agent} draftProjectId="second" />)
+  expect(screen.queryByRole('button', { name: 'CLI 账号与额度' })).toBeNull()
+  expect(await screen.findByRole('button', { name: 'CLI 账号与额度' })).toHaveAttribute('title', '剩余 10%')
 })

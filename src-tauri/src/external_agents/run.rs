@@ -691,6 +691,9 @@ async fn run_external_cli_reply_owned(
         include_partial_messages: true,
     };
 
+    // Discovery can initialize a profile. Take the reuse snapshot alongside argv resolution,
+    // including Claude's native model aliases, before opening a process for this turn.
+    let launch_identity = launch_identity.snapshot_for_argv(def, &resolved_bin)?;
     // Claude: external_model is catalog id (picker); wire value is settings-mapped runtime.
     // Resolve once at the boundary so launch argv and mid-session set_model share one id space.
     let wire_model = match def.run.model_selection {
@@ -826,14 +829,7 @@ async fn run_external_cli_reply_owned(
     if crate::external_agents::overrides::launch_revision(def.id) != Some(launch_revision) {
         return Err("external CLI configuration changed; retry".into());
     }
-    // Codex reads its native profile at launch; refresh that profile after prompt preparation.
-    // Other CLIs may already have resolved model aliases into argv, so keep their full guard.
-    let launch_identity = if def.stream_format == StreamFormat::CodexAppServer {
-        launch_identity.refreshed_native_profile(def, &resolved_bin)?
-    } else {
-        launch_identity.ensure_current(def, &resolved_bin)?;
-        launch_identity
-    };
+    launch_identity.owner().ensure_current(def, &resolved_bin)?;
     let mut spawned_opt = if persistent {
         None
     } else {
@@ -1031,6 +1027,7 @@ async fn run_external_cli_reply_owned(
                     conversation.agent_runtime.external_sandbox.clone(),
                     conversation.agent_runtime.external_agent_preset.clone(),
                     &launch_config,
+                    resume_ctx.is_resuming,
                     rewind_first_prompt
                         .as_ref()
                         .map_or(composed.full_prompt.as_str(), |prompt| {
@@ -1721,6 +1718,7 @@ async fn run_persistent_turn<E, C>(
     sandbox: Option<String>,
     preset: Option<String>,
     launch_config: &LaunchConfig,
+    argv_resumes: bool,
     first_prompt: &str,
     reuse_prompt: &str,
     images: &[crate::external_agents::attachments::ImageBlock],
@@ -1748,7 +1746,6 @@ where
     let conversation_id = conversation.id.as_str();
     let cwd_str = cwd.to_string_lossy().to_string();
     let protocol_tag = persistent_protocol_tag(protocol);
-    let mut launch_config = launch_config.clone();
 
     // 本轮实际使用的启动参数。resume 失效时会被改写成「开新会话」（见
     // `drop_resume_for_fresh_session`），所以不能直接用调用方那份不可变的 `args`。
@@ -1798,7 +1795,7 @@ where
         conversation_id,
         agent_id,
         &cwd_str,
-        &launch_config,
+        launch_config,
     )? {
         Some((control, claimed, true)) if !force_reconnect => {
             _busy = Some(claimed);
@@ -1884,7 +1881,17 @@ where
                 // We intended to continue an existing native session iff a matching handle was
                 // persisted. If the resume then fails and we fall back to fresh, the prior context
                 // is lost and the user must be told (R4) rather than silently getting a blank slate.
-                let mut intended_resume = resume_native.is_some();
+                let mut intended_resume = match protocol {
+                    StreamFormat::ClaudeStreamJson
+                        if turn_args
+                            .iter()
+                            .any(|arg| arg == "--session-id" || arg == "--resume") =>
+                    {
+                        turn_args.iter().any(|arg| arg == "--resume")
+                    }
+                    StreamFormat::PiRpc => resume_native.is_some() || argv_resumes,
+                    _ => resume_native.is_some(),
+                };
                 let mut recovered_prompt = None;
                 let connected = match connect_persistent_session(
                     app,
@@ -1900,13 +1907,13 @@ where
                     resume_native.clone(),
                     additional_directories,
                     rewind.codex_visible_users.as_deref(),
-                    &mut launch_config,
                 )
                 .await
                 {
                     Ok(connected) => connected,
                     Err(err)
                         if !dropped_resume
+                            && intended_resume
                             && (is_missing_resume_target(&err, agent_id)
                                 || (rewind.expected_resume_id.is_some()
                                     && protocol == StreamFormat::AcpJsonRpc
@@ -1959,7 +1966,6 @@ where
                             None,
                             additional_directories,
                             None,
-                            &mut launch_config,
                         )
                         .await?
                     }
@@ -1984,7 +1990,6 @@ where
                             None,
                             additional_directories,
                             None,
-                            &mut launch_config,
                         )
                         .await?
                     }
@@ -2020,7 +2025,6 @@ where
                         None,
                         additional_directories,
                         None,
-                        &mut launch_config,
                     )
                     .await?
                 } else {
@@ -2115,7 +2119,7 @@ where
             &control,
             &delivery,
             &|| match launch_config.identity.as_ref() {
-                Some(identity) => identity.ensure_current(
+                Some(identity) => identity.owner().ensure_current(
                     get_agent_def(agent_id).ok_or("unknown external CLI")?,
                     resolved_bin,
                 ),
@@ -2237,7 +2241,7 @@ where
             reasoning.as_deref(),
             sandbox.as_deref(),
             preset.as_deref(),
-            &mut launch_config,
+            launch_config,
             resumable_native.clone(),
             additional_directories,
         )
@@ -2285,7 +2289,7 @@ async fn publish_live_session(
                         return Err("cancelled".into());
                     }
                     if let Some(identity) = session.launch_config.identity.as_ref() {
-                        identity.ensure_current(
+                        identity.owner().ensure_current(
                             get_agent_def(&session.agent_id).ok_or("unknown external CLI")?,
                             &resolved_bin,
                         )?;
@@ -2337,7 +2341,7 @@ async fn reconnect_fresh(
     reasoning: Option<&str>,
     sandbox: Option<&str>,
     preset: Option<&str>,
-    launch_config: &mut LaunchConfig,
+    launch_config: &LaunchConfig,
     resume_native: Option<String>,
     additional_directories: &[String],
 ) -> Result<
@@ -2372,7 +2376,6 @@ async fn reconnect_fresh(
         resume_native,
         additional_directories,
         None,
-        launch_config,
     )
     .await?;
     publish_live_session(
@@ -2616,8 +2619,7 @@ fn persistent_failure_action(
     if possibly_sent {
         return PersistentFailureAction::Fatal;
     }
-    // Replaying the same launch recipe cannot repair an invalid identity. Native-profile
-    // changes during Codex connect are already handled before publication, with a fresh recipe.
+    // Replaying the same launch recipe cannot repair a change of owner or host settings.
     if crate::external_agents::errors::is_launch_configuration_error(err) {
         return PersistentFailureAction::Fatal;
     }
@@ -4072,97 +4074,6 @@ async fn append_wake_turn_message(
 /// `dsh_idle_sink`：dsh 轮间的任务边沿 + 子代理进度 + 唤醒轮正文。
 #[allow(clippy::too_many_arguments)]
 async fn connect_persistent_session(
-    app: &AppHandle,
-    conversation_id: &str,
-    protocol: StreamFormat,
-    resolved_bin: &std::path::Path,
-    args: &[String],
-    cwd: &std::path::Path,
-    model: Option<&str>,
-    reasoning: Option<&str>,
-    sandbox: Option<&str>,
-    preset: Option<&str>,
-    mut resume_native: Option<String>,
-    additional_directories: &[String],
-    mut codex_rewind: Option<&[String]>,
-    launch_config: &mut LaunchConfig,
-) -> Result<PersistentConnection, String> {
-    if protocol != StreamFormat::CodexAppServer {
-        return connect_persistent_session_once(
-            app,
-            conversation_id,
-            protocol,
-            resolved_bin,
-            args,
-            cwd,
-            model,
-            reasoning,
-            sandbox,
-            preset,
-            resume_native,
-            additional_directories,
-            codex_rewind,
-        )
-        .await;
-    }
-    let def = get_agent_def("codex").ok_or("unknown external CLI")?;
-    if let Some(identity) = &launch_config.identity {
-        launch_config.identity = Some(identity.refreshed_native_profile(def, resolved_bin)?);
-    }
-
-    let mut original_resumed = None;
-    for attempt in 0..2 {
-        let mut connection = connect_persistent_session_once(
-            app,
-            conversation_id,
-            protocol,
-            resolved_bin,
-            args,
-            cwd,
-            model,
-            reasoning,
-            sandbox,
-            preset,
-            resume_native.clone(),
-            additional_directories,
-            codex_rewind,
-        )
-        .await?;
-        let validation = launch_config.identity.as_ref().map_or(Ok(()), |identity| {
-            identity.ensure_current(def, resolved_bin)
-        });
-        match validation {
-            Ok(()) => {
-                // Resuming the empty thread created by our own retry is still a first turn:
-                // it must receive the composed system prompt and attachments exactly once.
-                connection.resumed = original_resumed.unwrap_or(connection.resumed);
-                return Ok(connection);
-            }
-            Err(error) => {
-                close_live_control(&connection.control).await?;
-                if attempt == 1 {
-                    return Err(error);
-                }
-                let identity = launch_config
-                    .identity
-                    .as_ref()
-                    .ok_or(error)?
-                    .refreshed_native_profile(def, resolved_bin)?;
-                original_resumed = Some(connection.resumed);
-                resume_native = Some(connection.native_id.clone());
-                codex_rewind = None;
-                // Drop the old credential before opening its replacement. No user prompt has
-                // reached this connection, so resuming the thread cannot replay tool work.
-                drop(connection);
-                launch_config.identity = Some(identity);
-            }
-        }
-    }
-    unreachable!("bounded Codex connection attempts")
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn connect_persistent_session_once(
     app: &AppHandle,
     conversation_id: &str,
     protocol: StreamFormat,

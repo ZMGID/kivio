@@ -238,6 +238,25 @@ fn cached_bundle_settings(path: &Path) -> Result<Mapping, String> {
     Ok(settings)
 }
 
+pub(crate) fn declared_settings(path: &Path, text: &str) -> Result<Mapping, String> {
+    if path.file_name().is_some_and(|name| name == "settings.yaml") {
+        return serde_yaml::from_str::<Option<Mapping>>(text)
+            .map(Option::unwrap_or_default)
+            .map_err(|e| format!("解析 dsh settings.yaml 失败：{e}"));
+    }
+    if path
+        .parent()
+        .is_some_and(|parent| parent.ends_with(Path::new("profiles").join(KIVIO_PROFILE)))
+        && crate::external_agents::dsh_profile::looks_like_legacy_profile(text)
+    {
+        let config = crate::external_agents::overrides::agent_config("dsh").unwrap_or_default();
+        let native =
+            crate::external_agents::dsh_profile::legacy_native_patch(text, &config.providers)?;
+        return patch_configs(native.as_deref().unwrap_or(text));
+    }
+    patch_configs(text)
+}
+
 pub(super) struct SettingsDocument {
     pub path: PathBuf,
     pub effective: Mapping,
@@ -253,27 +272,11 @@ impl SettingsDocument {
         let legacy = path.file_name().is_some_and(|name| name == "settings.yaml");
         let mut home_overrides = Mapping::new();
         let mut inherited = Mapping::new();
+        let native = declared_settings(path, &text)?;
         let effective = if legacy {
-            if text.trim().is_empty() {
-                Mapping::new()
-            } else {
-                serde_yaml::from_str::<Option<Mapping>>(&text)
-                    .map_err(|e| format!("解析 dsh settings.yaml 失败：{e}"))?
-                    .unwrap_or_default()
-            }
+            native
         } else {
             let home = path.ancestors().nth(3).ok_or("dsh profile 路径无效")?;
-            let native = if crate::external_agents::dsh_profile::looks_like_legacy_profile(&text) {
-                let config =
-                    crate::external_agents::overrides::agent_config("dsh").unwrap_or_default();
-                let filtered = crate::external_agents::dsh_profile::legacy_native_patch(
-                    &text,
-                    &config.providers,
-                )?;
-                patch_configs(filtered.as_deref().unwrap_or(&text))?
-            } else {
-                patch_configs(&text)?
-            };
             home_overrides = patch_configs(&read_optional(&home.join(PATCH_FILE))?)?;
             inherited = bundle_settings(path.parent().ok_or("dsh profile 路径无效")?)?;
             let mut full = inherited.clone();

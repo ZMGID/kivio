@@ -88,7 +88,7 @@ function TitlebarPills({
         </div>
         {usesExternalRuntime && (
           <div className="shrink-0" data-tauri-drag-region="false">
-            <ExternalCliAccount agent={externalAgent} conversationId={conversation?.id} />
+            <ExternalCliAccount agent={externalAgent} conversation={conversation} />
           </div>
         )}
       </div>

@@ -17,7 +17,7 @@ vi.mock('./dock/WorkspaceActionsMenu', () => ({
   WorkspaceActionsMenu: () => <div data-testid="workspace-panel" />,
 }))
 const base = {
-  conversationId: 'c1',
+  conversation: { id: 'c1' },
   runtimeLocked: false,
   usesChatRuntime: false,
   activeProviderId: 'p',
@@ -70,9 +70,9 @@ describe('ConversationTitlebarControls', () => {
     )
     expect(queryByTestId('workspace-panel')).not.toBeNull()
 
-    rerender(<ConversationTitlebarControls {...props} conversationId="no-project" projectName={null} />)
+    rerender(<ConversationTitlebarControls {...props} conversation={{ id: 'no-project' }} projectName={null} />)
     expect(queryByTestId('workspace-panel')).not.toBeNull()
-    rerender(<ConversationTitlebarControls {...props} conversationId={null} projectName={null} workdir="" />)
+    rerender(<ConversationTitlebarControls {...props} conversation={null} projectName={null} workdir="" />)
     expect(queryByTestId('workspace-panel')).not.toBeNull()
   })
 

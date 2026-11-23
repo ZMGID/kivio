@@ -1,8 +1,9 @@
-import { useMemo, useSyncExternalStore } from 'react'
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import {
   externalCliSettingsApi,
   onExternalCliAccountUpdated,
   type AccountSnapshotMode,
+  type CliAccountScope,
   type DetectedExternalAgent,
   type ExternalCliAccount,
 } from './externalCliSettings'
@@ -30,7 +31,7 @@ function connect() {
   return connection
 }
 
-function createEntry(agentId: string, conversationId?: string | null) {
+function createEntry(agentId: string, target: CliAccountScope) {
   const listeners = new Set<() => void>()
   const scope = (settings: Settings | null) => [
     settings?.chat?.externalCliAgents?.[agentId],
@@ -59,7 +60,7 @@ function createEntry(agentId: string, conversationId?: string | null) {
     const revision = scopeRevision
     const task = Promise.resolve().then(async () => {
       try {
-        const account = await externalCliSettingsApi.getExternalCliAccount(agentId, conversationId, mode)
+        const account = await externalCliSettingsApi.getExternalCliAccount(agentId, target, mode)
         if (revision !== scopeRevision) return
         if (mode === 'cached' && !account) {
           if (request >= applied && view.account) {
@@ -142,7 +143,7 @@ function createEntry(agentId: string, conversationId?: string | null) {
           nextCheckAt = 0
           initialCacheRead = load('cached')
           await initialCacheRead
-        } else if (!conversationId && !view.account) {
+        } else if (!target && !view.account) {
           initialCacheRead ??= load('cached')
           await initialCacheRead
         }
@@ -153,9 +154,8 @@ function createEntry(agentId: string, conversationId?: string | null) {
   }
 }
 
-function accountEntry(agentId: string, conversationId?: string | null) {
-  const project = conversationId ?? null
-  const key = JSON.stringify([agentId, project])
+function accountEntry(agentId: string, target: CliAccountScope = null) {
+  const key = JSON.stringify([agentId, target])
   let entry = entries.get(key)
   if (entry) return entry
   if (entries.size >= MAX_SCOPES) {
@@ -165,7 +165,7 @@ function accountEntry(agentId: string, conversationId?: string | null) {
       if (entries.size < MAX_SCOPES) break
     }
   }
-  entry = createEntry(agentId, project)
+  entry = createEntry(agentId, target)
   entries.set(key, entry)
   return entry
 }
@@ -174,8 +174,13 @@ const subscribeEmpty = () => () => {}
 const getEmpty = () => EMPTY
 
 /** A webview retains the last published view. The desktop still owns probe freshness and identity. */
-export function useCliAccount(agentId: string | null | undefined, conversationId?: string | null) {
-  const entry = useMemo(() => agentId ? accountEntry(agentId, conversationId) : null, [agentId, conversationId])
+export function useCliAccount(agentId: string | null | undefined, target?: CliAccountScope, conversationId?: string) {
+  const entry = useMemo(() => agentId ? accountEntry(agentId, target) : null, [agentId, target])
+  useEffect(() => {
+    // A newly opened conversation can share a workspace entry. Verify the login
+    // while its existing reading is visible, including when a draft is first saved.
+    if (conversationId && entry?.getSnapshot().account) entry.onFocus()
+  }, [entry, conversationId])
   const view = useSyncExternalStore(entry?.subscribe ?? subscribeEmpty, entry?.getSnapshot ?? getEmpty, getEmpty)
   return useMemo(() => ({
     ...view,

@@ -1092,13 +1092,19 @@ pub(super) fn launch_profile_changed(
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) struct NativeLaunchRevision {
+    pub(super) profile: u64,
+    pub(super) credentials: Option<u64>,
+}
+
 pub(super) fn launch_file_revision(
     def: &RuntimeAgentDef,
     bin: &Path,
     config: Option<&ExternalCliAgentConfig>,
     env: &BTreeMap<OsString, OsString>,
     hasher: &impl BuildHasher,
-) -> u64 {
+) -> NativeLaunchRevision {
     use ProviderProfileStrategy::*;
 
     let env_path = |key: &str| {
@@ -1163,30 +1169,184 @@ pub(super) fn launch_file_revision(
         _ => {}
     }
 
-    let revisions: Vec<_> = files
-        .into_iter()
-        .filter_map(|path| {
-            let revision = launch_config_file_revision(&path, def.provider_profile, hasher)?;
-            Some((path, revision))
-        })
-        .collect();
-    hasher.hash_one(revisions)
+    let mut profile = Vec::new();
+    let mut credentials = Vec::new();
+    for path in files {
+        if let Some(file) = launch_config_file_revision(&path, def.provider_profile, hasher) {
+            if let Some(owner) = file.credentials {
+                credentials.push((path.clone(), owner));
+            }
+            profile.push((path, file.profile));
+        }
+    }
+    NativeLaunchRevision {
+        profile: hasher.hash_one(profile),
+        credentials: (!credentials.is_empty()).then(|| hasher.hash_one(credentials)),
+    }
+}
+
+// These are explicit credential inputs in native configuration. Preserve the provider name
+// in the digest so moving a secret between routes changes ownership as well.
+pub(super) fn configured_credentials(
+    strategy: ProviderProfileStrategy,
+    config: &Value,
+    hasher: &impl BuildHasher,
+) -> Option<u64> {
+    use ProviderProfileStrategy::*;
+    let mut values = Vec::new();
+    let mut collect = |name: &str, obj: &Value, keys: &[&str]| {
+        for key in keys {
+            if let Some(value) = obj
+                .get(*key)
+                .filter(|value| !value.is_null() && value.as_str() != Some(""))
+            {
+                values.push((name.to_owned(), (*key).to_owned(), value.to_string()));
+            }
+        }
+    };
+    let (routes, keys): (_, &[&str]) = match strategy {
+        Claude => {
+            collect("", config, &["apiKeyHelper"]);
+            collect(
+                "env",
+                &config["env"],
+                &[
+                    "ANTHROPIC_AUTH_TOKEN",
+                    "ANTHROPIC_API_KEY",
+                    "ANTHROPIC_BASE_URL",
+                    "CLAUDE_CODE_USE_VERTEX",
+                    "CLAUDE_CODE_USE_BEDROCK",
+                ],
+            );
+            (&Value::Null, &[])
+        }
+        Codex => {
+            collect(
+                "",
+                config,
+                &[
+                    "model_provider",
+                    "chatgpt_base_url",
+                    "cli_auth_credentials_store",
+                    "forced_login_method",
+                    "forced_chatgpt_workspace_id",
+                ],
+            );
+            (
+                &config["model_providers"],
+                &[
+                    "base_url",
+                    "env_key",
+                    "experimental_bearer_token",
+                    "http_headers",
+                    "env_http_headers",
+                    "auth",
+                ],
+            )
+        }
+        Grok => {
+            collect(
+                "",
+                config,
+                &[
+                    "api_key",
+                    "base_url",
+                    "auth",
+                    "endpoints",
+                    "grok_com_config",
+                ],
+            );
+            if config["model"].is_object() {
+                collect("models", &config["models"], &["default"]);
+            }
+            (
+                &config["model"],
+                &["base_url", "api_key", "api_key_env", "headers"],
+            )
+        }
+        Kimi => {
+            if let Some(model) = config["default_model"].as_str() {
+                collect("selected model", &config["models"][model], &["provider"]);
+            }
+            (
+                &config["providers"],
+                &[
+                    "base_url",
+                    "baseUrl",
+                    "api_key",
+                    "api_key_env",
+                    "apiKey",
+                    "apiKeyEnv",
+                    "custom_headers",
+                    "customHeaders",
+                    "oauth",
+                ],
+            )
+        }
+        Pi => (&config["providers"], &["baseUrl", "apiKey", "headers"]),
+        Dsh => {
+            for (key, fields) in [
+                ("llm-deepseek", &["baseURL", "apiKeyEnv", "apiKey"][..]),
+                ("agent-default-model", &["provider"][..]),
+                ("api-gateway", &["provider"][..]),
+            ] {
+                collect(key, &config[key], fields);
+            }
+            (
+                &config["llm-pi-ai"]["providers"],
+                &["baseURL", "apiKeyEnv", "apiKey", "headers"],
+            )
+        }
+        OpenCode => {
+            if let Some((provider, _)) = config["model"].as_str().and_then(|id| id.split_once('/'))
+            {
+                collect(
+                    "selected provider",
+                    &serde_json::json!({"id":provider}),
+                    &["id"],
+                );
+            }
+            (&config["provider"], &["baseURL", "apiKey", "headers"])
+        }
+        _ => return None,
+    };
+    if let Some(routes) = routes.as_object() {
+        for (name, route) in routes {
+            let options = if strategy == OpenCode {
+                &route["options"]
+            } else {
+                route
+            };
+            collect(name, options, keys);
+        }
+    }
+    (!values.is_empty()).then(|| hasher.hash_one(values))
 }
 
 fn launch_config_file_revision(
     path: &Path,
     strategy: ProviderProfileStrategy,
     hasher: &impl BuildHasher,
-) -> Option<u64> {
+) -> Option<NativeLaunchRevision> {
+    let file = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
+    let credential_file = matches!(
+        file,
+        "auth.json" | ".credentials.json" | ".credentials.yaml" | ".env"
+    );
+    let revision = |profile: u64| NativeLaunchRevision {
+        profile,
+        credentials: Some(profile),
+    };
     let metadata = std::fs::metadata(path).ok()?;
     if !metadata.is_file() {
         return None;
     }
-    // shortcut: use metadata for large files. Stream a digest if a CLI starts storing large credential files.
+    // A configuration we cannot parse might carry credentials. Keep its revision pinned
+    // until the next send, including the bounded fallback for oversized files.
     const LIMIT: u64 = 2 * 1024 * 1024;
     let metadata_revision = || hasher.hash_one((metadata.len(), metadata.modified().ok()));
     if metadata.len() > LIMIT {
-        return Some(metadata_revision());
+        return Some(revision(metadata_revision()));
     }
     let mut content = Vec::new();
     if std::fs::File::open(path)
@@ -1194,7 +1354,7 @@ fn launch_config_file_revision(
         .is_err()
         || content.len() as u64 > LIMIT
     {
-        return Some(metadata_revision());
+        return Some(revision(metadata_revision()));
     }
     match (strategy, path.file_name().and_then(OsStr::to_str)) {
         (
@@ -1219,13 +1379,20 @@ fn launch_config_file_revision(
                         config.remove(key);
                     }
                 }
-                return (strategy != ProviderProfileStrategy::Codex || !config.is_empty())
-                    .then(|| hasher.hash_one(toml::Value::Table(config).to_string()));
+                let credentials = serde_json::to_value(&config)
+                    .ok()
+                    .and_then(|values| configured_credentials(strategy, &values, hasher));
+                return (strategy != ProviderProfileStrategy::Codex || !config.is_empty()).then(
+                    || NativeLaunchRevision {
+                        profile: hasher.hash_one(toml::Value::Table(config).to_string()),
+                        credentials,
+                    },
+                );
             }
         }
         (ProviderProfileStrategy::Codex, Some("auth.json")) => {
             if let Some(auth) = codex_launch_auth(&content) {
-                return Some(hasher.hash_one(auth.to_string()));
+                return Some(revision(hasher.hash_one(auth.to_string())));
             }
         }
         (
@@ -1270,8 +1437,31 @@ fn launch_config_file_revision(
                 let empty_is_default = claude_settings
                     || pi_settings
                     || (strategy == ProviderProfileStrategy::Pi && name == "auth.json");
-                return (!empty_is_default || !config.is_empty())
-                    .then(|| hasher.hash_one(Value::Object(config).to_string()));
+                let is_empty = config.is_empty();
+                let config = Value::Object(config);
+                return (!empty_is_default || !is_empty).then(|| {
+                    let profile = hasher.hash_one(config.to_string());
+                    NativeLaunchRevision {
+                        profile,
+                        credentials: if credential_file {
+                            (!is_empty).then_some(profile)
+                        } else {
+                            configured_credentials(strategy, &config, hasher)
+                        },
+                    }
+                });
+            }
+        }
+        (ProviderProfileStrategy::Dsh, Some("cordis.patch.yml" | "settings.yaml")) => {
+            if let Some(settings) = std::str::from_utf8(&content)
+                .ok()
+                .and_then(|text| super::dsh_plugins::declared_settings(path, text).ok())
+                .and_then(|settings| serde_json::to_value(settings).ok())
+            {
+                return Some(NativeLaunchRevision {
+                    profile: hasher.hash_one(&content),
+                    credentials: configured_credentials(strategy, &settings, hasher),
+                });
             }
         }
         (ProviderProfileStrategy::Dsh, Some(".credentials.yaml")) => {
@@ -1280,12 +1470,12 @@ fn launch_config_file_revision(
                     .ok()
                     .and_then(|value| serde_json::to_value(value).ok())
             {
-                return Some(hasher.hash_one(Value::Object(config).to_string()));
+                return Some(revision(hasher.hash_one(Value::Object(config).to_string())));
             }
         }
         _ => {}
     }
-    Some(hasher.hash_one(content))
+    Some(revision(hasher.hash_one(content)))
 }
 
 pub(super) fn codex_launch_auth(content: &[u8]) -> Option<Value> {
